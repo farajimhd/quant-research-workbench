@@ -15,7 +15,7 @@ def grid(prices,spread=0.):
 @pytest.mark.parametrize('prices',[[10,11,12,11,10],[10,9,8,9,10],[10]*5,[10,12,9,14,8]])
 def test_dynamic_program_matches_exhaustive_paths(prices):
     rows=grid(prices,.02);cost=5.;risk=.2
-    result=solve_actions(rows,lot_shares=1,inventory_steps=1,cost_bps=cost,risk_bps_per_second=risk)
+    result=solve_actions(rows,cost_bps=cost,risk_bps_per_second=risk)
     best=float('-inf')
     for actions in product((-1,0,1),repeat=len(rows)):
         if actions[-1]!=0:continue
@@ -34,15 +34,15 @@ def test_dynamic_program_matches_exhaustive_paths(prices):
 
 
 def test_costs_flat_prices_and_missing_quotes_do_not_invent_profit():
-    result=solve_actions(grid([10]*8),lot_shares=1,inventory_steps=2)
+    result=solve_actions(grid([10]*8))
     assert not result['moves'] and result['net_cash']==0
     rows=grid([10,20,30,40]);rows[1]['quote']=None;rows[2]['quote']=None
-    r=solve_actions(rows,lot_shares=1,inventory_steps=1,cost_bps=0,risk_bps_per_second=0)
+    r=solve_actions(rows,cost_bps=0,risk_bps_per_second=0)
     assert [x['action'] for x in r['path']]==['enter_long','hold','hold','exit_long']
 
 
 def test_action_values_are_relative_to_hold_and_infeasible_are_null():
-    r=solve_actions(grid([10,11,12]),lot_shares=1,inventory_steps=1,cost_bps=0,risk_bps_per_second=0)
+    r=solve_actions(grid([10,11,12]),cost_bps=0,risk_bps_per_second=0)
     assert r['values'][0][1][1]==0
     assert r['values'][0][1][2]==pytest.approx(1.)
     assert r['values'][0][1][0]<0
@@ -52,9 +52,9 @@ def test_action_values_are_relative_to_hold_and_infeasible_are_null():
     assert r['path'][-1]['forced_terminal_unwind']
 
 
-def test_liquidity_and_notional_caps_prevent_additions_but_allow_reductions():
-    rows=grid([10,11,12,13]);rows[0]['volume_10s']=0
-    r=solve_actions(rows,lot_shares=1,inventory_steps=2,max_notional=11.5,cost_bps=0,risk_bps_per_second=0)
+def test_unit_positions_preserve_entry_activity_gate_and_allow_exit():
+    rows=grid([10,11,12,13]);rows[0]['trades_10s']=0
+    r=solve_actions(rows,cost_bps=0,risk_bps_per_second=0)
     assert r['path'][0]['after']==0
     assert max(abs(x['after']) for x in r['path'])==1
     assert r['net_cash']==pytest.approx(2.)
@@ -83,7 +83,7 @@ def test_window_contract_is_bounded_and_historical():
 
 def test_all_initial_state_action_values_match_exhaustive_continuations():
     rows=grid([10,11,9,12],.02)
-    r=solve_actions(rows,lot_shares=1,inventory_steps=1,cost_bps=5,risk_bps_per_second=.2)
+    r=solve_actions(rows,cost_bps=5,risk_bps_per_second=.2)
     for state,before in enumerate((-1,0,1)):
         by_first={}
         for path in product((-1,0,1),repeat=4):
@@ -100,3 +100,24 @@ def test_all_initial_state_action_values_match_exhaustive_continuations():
             actual=r['values'][0][state][j]
             if target not in by_first:assert actual is None
             else:assert actual==pytest.approx(by_first[target]-by_first[before])
+
+
+def test_sizing_is_fixed_to_one_and_requests_reject_sizing_controls():
+    from src.backend.hindsight_action_service import ActionRequest
+    result=solve_actions(grid([10,11,12,13,14]))
+    assert result['inventory']==[-1,0,1] and result['position_size']==1
+    assert all(abs(s['before'])<=1 and abs(s['after'])<=1 for s in result['path'])
+    assert not any(s['action'].startswith(('add_','reduce_')) for s in result['path'])
+    for key in ('lot_shares','inventory_steps','max_notional','participation'):
+        with pytest.raises(ValueError):
+            ActionRequest(ticker='SUGP',session_date='2026-08-21',**{key:1})
+
+
+def test_action_runs_keep_the_price_at_each_action_change():
+    r=solve_actions(grid([10,11,12,13,14]),cost_bps=0,risk_bps_per_second=0)
+    runs=r['action_runs']
+    assert [x['action'] for x in runs]==['enter_long','hold','exit_long']
+    assert [(x['start_index'],x['end_index']) for x in runs]==[(0,0),(1,3),(4,4)]
+    assert [x['price'] for x in runs]==[10,11,14]
+    assert runs[1]['end_time']==4
+    assert sum(x['end_index']-x['start_index']+1 for x in runs)==len(r['path'])

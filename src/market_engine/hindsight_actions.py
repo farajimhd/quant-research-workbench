@@ -72,20 +72,33 @@ def action_name(before, after):
     return ('add_' if abs(after)>abs(before) else 'reduce_')+('long' if before>0 else 'short')
 
 
-def solve_actions(rows, *, lot_shares=25, inventory_steps=4, max_notional=1000.,
-                  cost_bps=5., max_spread_bps=150., participation=.05,
+def action_runs(path, rows):
+    """One price-anchored segment per uninterrupted chosen action."""
+    runs=[]
+    for i,step in enumerate(path):
+        if not runs or runs[-1]['action']!=step['action']:
+            if runs:
+                runs[-1].update(end_index=i-1,end_time=step['time'])
+            runs.append(dict(action=step['action'],before=step['before'],start_index=i,
+                             start_time=step['time'],price=step['price'] if step['price'] is not None else rows[i]['mark']))
+    if runs:runs[-1].update(end_index=len(path)-1,end_time=path[-1]['time'])
+    return runs
+
+
+def solve_actions(rows, *,
+                  cost_bps=5., max_spread_bps=150.,
                   risk_bps_per_second=.01):
     if not rows or any(rows[i]['time']-rows[i-1]['time']!=1 for i in range(1,len(rows))):
         raise ValueError('Action labels require a contiguous 1-second grid')
-    if not 1<=lot_shares<=1000 or not 1<=inventory_steps<=8 or len(rows)>7201:
+    if len(rows)>7201:
         raise ValueError('Action research grid exceeds its bounded contract')
-    if not all(isfinite(v) for v in (max_notional,cost_bps,max_spread_bps,participation,risk_bps_per_second)) or not (
-            max_notional>0 and 0<=cost_bps<=100 and 0<=max_spread_bps<=1000 and 0<participation<=1 and 0<=risk_bps_per_second<=10):
+    if not all(isfinite(v) for v in (cost_bps,max_spread_bps,risk_bps_per_second)) or not (
+            0<=cost_bps<=100 and 0<=max_spread_bps<=1000 and 0<=risk_bps_per_second<=10):
         raise ValueError('Invalid action-value settings')
-    inventory=np.arange(-inventory_steps,inventory_steps+1)*lot_shares
-    n=len(inventory);zero=inventory_steps;count=len(rows)
+    inventory=np.array([-1,0,1])
+    n=len(inventory);zero=1;count=len(rows)
     delta=inventory[None,:]-inventory[:,None]
-    permitted=(np.abs(delta)<=lot_shares)&(inventory[:,None]*inventory[None,:]>=0)
+    permitted=(np.abs(delta)<=1)&(inventory[:,None]*inventory[None,:]>=0)
     holding=delta==0
     increasing=np.abs(inventory[None,:])>np.abs(inventory[:,None])
     fee=cost_bps/10000
@@ -99,12 +112,11 @@ def solve_actions(rows, *, lot_shares=25, inventory_steps=4, max_notional=1000.,
         if quote:
             bid,ask=quote['bid'],quote['ask']
             capacity=np.where(delta>0,quote['ask_size'],quote['bid_size'])
-            liquid=(np.abs(delta)<=capacity)&(np.abs(delta)<=row['volume_10s']*participation)
+            liquid=np.abs(delta)<=capacity
             admission=((ask-bid)/((ask+bid)/2)*10000<=max_spread_bps)&(row['trades_10s']>=3)
-            exposure=np.abs(inventory[None,:])*np.where(inventory[None,:]>=0,ask,bid)<=max_notional
-            allowed=holding|(permitted&liquid&(~increasing|(admission&exposure)))
+            allowed=holding|(permitted&liquid&(~increasing|admission))
             cash=np.where(delta>0,-delta*ask*(1+fee),-delta*bid*(1-fee))
-        penalty=(inventory/(lot_shares*inventory_steps))**2*mark*(lot_shares*inventory_steps)*risk_bps_per_second/10000
+        penalty=inventory**2*mark*risk_bps_per_second/10000
         if index==count-1:penalty=np.zeros(n)
         values=np.where(allowed,cash+next_value[None,:]-penalty[None,:],-np.inf)
         # Hold wins ties, preventing arbitrary turnover when values are equal.
@@ -129,7 +141,7 @@ def solve_actions(rows, *, lot_shares=25, inventory_steps=4, max_notional=1000.,
             quote=row['quote'];price=quote['ask'] if change>0 else quote['bid']
             cash=-change*price-abs(change)*price*fee
         cash_total+=cash
-        risk=0. if i==count-1 else (after/(lot_shares*inventory_steps))**2*(row['mark'] or 0.)*(lot_shares*inventory_steps)*risk_bps_per_second/10000
+        risk=0. if i==count-1 else after**2*(row['mark'] or 0.)*risk_bps_per_second/10000
         risk_total+=risk
         event=dict(time=row['time'],before=before,after=after,action=action_name(before,after),
                    price=price,cash_flow=cash,advantage=float(advantages[i,state,target]),state_index=state,
@@ -144,13 +156,13 @@ def solve_actions(rows, *, lot_shares=25, inventory_steps=4, max_notional=1000.,
         state=target
     if state!=zero or move is not None:raise AssertionError('Terminal inventory is not flat')
     if abs(cash_total-risk_total-objective)>1e-6:raise AssertionError('Action cash/risk reconciliation failed')
-    return dict(algorithm='hindsight-inventory-action-values-v1',hindsight_only=True,
-        value_unit='USD advantage over holding with optimal hindsight continuation',
+    return dict(algorithm='hindsight-unit-action-values-v2',hindsight_only=True,
+        position_size=1,value_unit='USD per unit advantage over holding with optimal hindsight continuation',
         terminal_rule='Flat at selected window end; future labels unavailable until then',
         short_availability='Hypothetical: borrow availability and borrow costs not established',
         inventory=inventory.tolist(),grid=rows,
         values=[[[float(x) if np.isfinite(x) else None for x in vector] for vector in matrix] for matrix in advantages],
-        path=path,moves=moves,net_cash=cash_total,risk_penalty=risk_total,objective=objective,
-        spectrum=dict(negative=-1.,positive=1.,unit='USD advantage',clipped_colors=True),
+        path=path,moves=moves,action_runs=action_runs(path,rows),net_cash=cash_total,risk_penalty=risk_total,objective=objective,
+        spectrum=dict(negative=-.05,positive=.05,unit='USD advantage',clipped_colors=True),
         counts=dict(seconds=count,moves=len(moves),adjustments=sum(p['before']!=p['after'] for p in path),
                     infeasible_values=int(np.isnan(advantages).sum())))

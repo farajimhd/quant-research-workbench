@@ -58,9 +58,14 @@ def review_action_values(page, screenshot_path):
     before=int(slider.input_value());slider.focus();page.keyboard.press('ArrowRight')
     assert int(slider.input_value())==before+1, 'Keyboard did not advance decision time'
     page.keyboard.press('ArrowLeft')
-    inventory=page.get_by_role('combobox',name='Action starting inventory')
+    inventory=page.get_by_role('combobox',name='Action starting position')
     inventory.select_option('0')
-    assert '-100' in page.locator('.action-values-table').inner_text(), 'Inventory selection did not update action targets'
+    assert 'Exit short' in page.locator('.action-values-table').inner_text(), 'Position selection did not update actions'
+    assert result['position_size']==1 and result['inventory']==[-1,0,1]
+    runs=result['action_runs']
+    assert sum(r['end_index']-r['start_index']+1 for r in runs)==len(result['path'])
+    assert all(a['action']!=b['action'] for a,b in zip(runs,runs[1:]))
+    assert not page.get_by_role('spinbutton',name='Shares per adjustment',exact=True).count()
     inventory.select_option(str(result['path'][before]['state_index']))
     page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__action-details.png')),full_page=True)
     page.get_by_role('button',name='Center this second on chart').click()
@@ -74,6 +79,13 @@ def review_action_values(page, screenshot_path):
     toggle.click();page.mouse.move(0,0);page.wait_for_timeout(250)
     assert pane.screenshot()==shown,'Action toggle altered the chart viewport or underlying rendering'
     if page.locator('#action-value-review').count():
+        assert page.evaluate('''() => {
+          const p=window.actionReviewPrimitive;
+          return p.hits.every(h=>{
+            const run=p.result.action_runs.find(r=>h.index>=r.start_index && h.index<=r.end_index);
+            return run && Math.abs(h.y-p.series.priceToCoordinate(run.price))<0.001;
+          });
+        }'''), 'Action line height changed within a run'
         hit=page.evaluate('''() => window.actionReviewPrimitive.hits.find(h => h.x1>30 && h.x2>h.x1 && h.y>30)''')
         assert hit, 'No clickable action segments'
         bounds=pane.bounding_box()
