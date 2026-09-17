@@ -1,63 +1,87 @@
 from datetime import datetime, timezone
-from itertools import product
-
 import pytest
-
 from src.market_engine.hindsight_actions import ActionGrid, solve_actions
 
 
-def grid(prices,spread=0.):
+def grid(prices, spread=0.):
     return [dict(time=i,mark=p,volume_10s=10000,trades_10s=10,
                  quote=dict(at=i,bid=p-spread/2,ask=p+spread/2,bid_size=1000,ask_size=1000))
             for i,p in enumerate(prices)]
 
 
-@pytest.mark.parametrize('prices',[[10,11,12,11,10],[10,9,8,9,10],[10]*5,[10,12,9,14,8]])
-def test_dynamic_program_matches_exhaustive_paths(prices):
-    rows=grid(prices,.02);cost=5.;risk=.2
-    result=solve_actions(rows,cost_bps=cost,risk_bps_per_second=risk)
-    best=float('-inf')
-    for actions in product((-1,0,1),repeat=len(rows)):
-        if actions[-1]!=0:continue
-        previous=0;value=0.;valid=True
-        for i,after in enumerate(actions):
-            if abs(after-previous)>1:valid=False;break
-            delta=after-previous;q=rows[i]['quote'];price=q['ask'] if delta>0 else q['bid']
-            value-=delta*price+abs(delta)*price*cost/10000
-            if i<len(rows)-1:value-=after**2*prices[i]*risk/10000
-            previous=after
-        if valid:best=max(best,value)
-    assert result['objective']==pytest.approx(best)
-    assert result['net_cash']-result['risk_penalty']==pytest.approx(best)
-    assert result['path'][-1]['after']==0
-    assert sum(m['net_cash'] for m in result['moves'])==pytest.approx(result['net_cash'])
+def test_user_example_profit_and_65_second_hold_excludes_later_reward():
+    prices=[3.5]*181;prices[65]=4.34;prices[100]=8.
+    r=solve_actions(grid(prices),decision_end=0)
+    label=r['labels'][0]
+    assert label['action']=='buy'
+    assert label['profit']==pytest.approx(.84)
+    assert label['hold_seconds']==65 and label['exit_time']==65
+    assert r['position_size']==1 and r['max_hold_seconds']==90
 
 
-def test_costs_flat_prices_and_missing_quotes_do_not_invent_profit():
-    result=solve_actions(grid([10]*8))
-    assert not result['moves'] and result['net_cash']==0
-    rows=grid([10,20,30,40]);rows[1]['quote']=None;rows[2]['quote']=None
-    r=solve_actions(rows,cost_bps=0,risk_bps_per_second=0)
-    assert [x['action'] for x in r['path']]==['enter_long','hold','hold','exit_long']
+def test_short_profit_and_earliest_equal_best_exit():
+    prices=[5.]*91;prices[30]=4.;prices[60]=4.
+    label=solve_actions(grid(prices),decision_end=0)['labels'][0]
+    assert label['action']=='sell' and label['profit']==1
+    assert label['hold_seconds']==30
 
 
-def test_action_values_are_relative_to_hold_and_infeasible_are_null():
-    r=solve_actions(grid([10,11,12]),cost_bps=0,risk_bps_per_second=0)
-    assert r['values'][0][1][1]==0
-    assert r['values'][0][1][2]==pytest.approx(1.)
-    assert r['values'][0][1][0]<0
-    assert r['values'][0][0][2] is None
-    # At the terminal boundary holding nonzero inventory is impossible; values
-    # are explicitly marked as forced unwind rather than an infinite benefit.
-    assert r['path'][-1]['forced_terminal_unwind']
+def test_90_second_boundary_is_included_but_91_is_excluded():
+    prices=[10.]*92;prices[90]=12.;prices[91]=20.
+    label=solve_actions(grid(prices),decision_end=0)['labels'][0]
+    assert label['profit']==2 and label['hold_seconds']==90
 
 
-def test_unit_positions_preserve_entry_activity_gate_and_allow_exit():
-    rows=grid([10,11,12,13]);rows[0]['trades_10s']=0
-    r=solve_actions(rows,cost_bps=0,risk_bps_per_second=0)
-    assert r['path'][0]['after']==0
-    assert max(abs(x['after']) for x in r['path'])==1
-    assert r['net_cash']==pytest.approx(2.)
+def test_spread_and_fees_are_explicit_and_gross_is_not_relative_advantage():
+    prices=[10.]*91;prices[5]=11.
+    label=solve_actions(grid(prices,.02),decision_end=0,cost_bps=5)['labels'][0]
+    assert label['profit']==pytest.approx(.98)
+    assert label['long']['net_profit']==pytest.approx(.98-(10.01+10.99)*.0005)
+    assert label['long']['entry_price']==10.01
+    assert label['long']['exit_price']==10.99
+
+
+def test_flat_market_waits_and_missing_quotes_are_not_wait_labels():
+    rows=grid([10.]*91,.02)
+    assert solve_actions(rows,decision_end=0)['labels'][0]['action']=='wait'
+    rows[0]['quote']=None
+    label=solve_actions(rows,decision_end=0)['labels'][0]
+    assert label['action']=='unavailable' and label['profit'] is None
+
+
+def test_incomplete_horizon_is_explicit_and_missing_exits_are_excluded():
+    rows=grid([10.]*91);rows[50]['quote']=None
+    rows[51]['quote']['bid']=11;rows[51]['quote']['ask']=11
+    r=solve_actions(rows)
+    assert r['labels'][0]['hold_seconds']==51
+    assert r['labels'][1]['reason']=='incomplete_90s_horizon'
+    assert r['labels'][1]['profit'] is None
+    for row in rows[1:]:row['quote']=None
+    assert solve_actions(rows,decision_end=0)['labels'][0]['reason']=='no_eligible_exit_quote'
+
+
+def test_overlapping_entries_are_independent_not_one_position_policy():
+    rows=grid([10+i*.01 for i in range(95)])
+    labels=solve_actions(rows,decision_end=4)['labels']
+    assert all(x['action']=='buy' and x['hold_seconds']==90 for x in labels)
+    assert all(x['profit']==pytest.approx(.9) for x in labels)
+
+
+@pytest.mark.parametrize('seed',[2,7,19])
+def test_matches_exhaustive_eligible_future_prices(seed):
+    import random
+    rng=random.Random(seed);rows=grid([10+rng.random() for _ in range(121)],.02)
+    for i in (7,23,45,67):rows[i]['quote']=None
+    result=solve_actions(rows,decision_end=30,max_spread_bps=1000)
+    for i,label in enumerate(result['labels']):
+        if not rows[i]['quote']:continue
+        eligible=[(j,rows[j]['quote']) for j in range(i+1,i+91) if rows[j]['quote']]
+        for side in ('long','short'):
+            entry=rows[i]['quote']['ask' if side=='long' else 'bid']
+            profits=[((q['bid']-entry if side=='long' else entry-q['ask']),j) for j,q in eligible]
+            best=max(p for p,j in profits);first=next(j for p,j in profits if p==best)
+            assert label[side]['gross_profit']==pytest.approx(best)
+            assert label[side]['hold_seconds']==first-i
 
 
 def test_sampler_uses_only_asof_quotes_and_trailing_activity():
@@ -81,43 +105,9 @@ def test_window_contract_is_bounded_and_historical():
     with pytest.raises(ValueError):ActionRequest(ticker='SUGP',session_date='2026-08-21',start_time='04:00:01')
 
 
-def test_all_initial_state_action_values_match_exhaustive_continuations():
-    rows=grid([10,11,9,12],.02)
-    r=solve_actions(rows,cost_bps=5,risk_bps_per_second=.2)
-    for state,before in enumerate((-1,0,1)):
-        by_first={}
-        for path in product((-1,0,1),repeat=4):
-            if path[-1]!=0:continue
-            q=before;value=0.;valid=True
-            for i,target in enumerate(path):
-                if abs(target-q)>1:valid=False;break
-                delta=target-q;quote=rows[i]['quote'];p=quote['ask'] if delta>0 else quote['bid']
-                value-=delta*p+abs(delta)*p*.0005
-                if i<3:value-=target**2*rows[i]['mark']*.2/10000
-                q=target
-            if valid:by_first[path[0]]=max(by_first.get(path[0],float('-inf')),value)
-        for j,target in enumerate((-1,0,1)):
-            actual=r['values'][0][state][j]
-            if target not in by_first:assert actual is None
-            else:assert actual==pytest.approx(by_first[target]-by_first[before])
 
 
-def test_sizing_is_fixed_to_one_and_requests_reject_sizing_controls():
+def test_removed_policy_and_sizing_options_are_rejected():
     from src.backend.hindsight_action_service import ActionRequest
-    result=solve_actions(grid([10,11,12,13,14]))
-    assert result['inventory']==[-1,0,1] and result['position_size']==1
-    assert all(abs(s['before'])<=1 and abs(s['after'])<=1 for s in result['path'])
-    assert not any(s['action'].startswith(('add_','reduce_')) for s in result['path'])
-    for key in ('lot_shares','inventory_steps','max_notional','participation'):
-        with pytest.raises(ValueError):
-            ActionRequest(ticker='SUGP',session_date='2026-08-21',**{key:1})
-
-
-def test_action_runs_keep_the_price_at_each_action_change():
-    r=solve_actions(grid([10,11,12,13,14]),cost_bps=0,risk_bps_per_second=0)
-    runs=r['action_runs']
-    assert [x['action'] for x in runs]==['enter_long','hold','exit_long']
-    assert [(x['start_index'],x['end_index']) for x in runs]==[(0,0),(1,3),(4,4)]
-    assert [x['price'] for x in runs]==[10,11,14]
-    assert runs[1]['end_time']==4
-    assert sum(x['end_index']-x['start_index']+1 for x in runs)==len(r['path'])
+    for key in ('lot_shares','inventory_steps','max_notional','participation','risk_bps_per_second'):
+        with pytest.raises(ValueError):ActionRequest(ticker='SUGP',session_date='2026-08-21',**{key:1})

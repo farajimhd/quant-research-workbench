@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.backend.qmd_gateway_client import qmd_history_base_url
 from src.market_engine.historical_source import QmdHistoricalEventSource
-from src.market_engine.hindsight_actions import ActionGrid, solve_actions
+from src.market_engine.hindsight_actions import ActionGrid, solve_actions, MAX_HOLD_SECONDS
 
 router=APIRouter(prefix='/api/research/hindsight-actions',tags=['hindsight research'])
 _pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='hindsight-actions')
@@ -27,9 +27,8 @@ class ActionRequest(BaseModel):
     session_date:date
     start_time:time=time(4)
     window_minutes:int=Field(default=30,ge=1,le=120)
-    cost_bps:float=Field(default=5,ge=0,le=100,allow_inf_nan=False)
+    cost_bps:float=Field(default=0,ge=0,le=100,allow_inf_nan=False)
     max_spread_bps:float=Field(default=150,ge=0,le=1000,allow_inf_nan=False)
-    risk_bps_per_second:float=Field(default=.01,ge=0,le=10,allow_inf_nan=False)
 
     @model_validator(mode='after')
     def window(self):
@@ -38,7 +37,7 @@ class ActionRequest(BaseModel):
         start,end=self.bounds()
         if self.start_time<time(4) or end>datetime.combine(self.session_date,time(20),NY):
             raise ValueError('Research window must be within 04:00-20:00 New York')
-        if end>datetime.now(timezone.utc):raise ValueError('Select a completed historical window')
+        if min(end+timedelta(seconds=MAX_HOLD_SECONDS),datetime.combine(self.session_date,time(20),NY))>datetime.now(timezone.utc):raise ValueError('The full 90-second future window must be historical')
         return self
 
     def bounds(self):
@@ -48,10 +47,11 @@ class ActionRequest(BaseModel):
 
 async def calculate_actions(request,progress=lambda **kwargs:None):
     start,end=request.bounds();started=monotonic()
-    # Ten-second pre-roll supplies trailing activity at the first decision.
+    lookahead_end=min(end+timedelta(seconds=MAX_HOLD_SECONDS),datetime.combine(request.session_date,time(20),NY))
+    # Read the future horizon too; never truncate labels at the display-window end.
     source=QmdHistoricalEventSource(qmd_history_base_url(),start=start-timedelta(seconds=10),
-        end=end+timedelta(microseconds=1),tickers=[request.ticker.upper()],batch_size=100000)
-    sampler=ActionGrid(start.timestamp(),end.timestamp())
+        end=lookahead_end+timedelta(microseconds=1),tickers=[request.ticker.upper()],batch_size=100000)
+    sampler=ActionGrid(start.timestamp(),lookahead_end.timestamp())
     async for rows in source.stream_rows():
         for row in rows:sampler.observe(row)
         progress(stage='events',events=sampler.counts['events'],through=str(sampler.last),elapsed_seconds=monotonic()-started)
@@ -59,16 +59,17 @@ async def calculate_actions(request,progress=lambda **kwargs:None):
     grid=sampler.finish()
     progress(stage='values',events=sampler.counts['events'])
     parameters=request.model_dump(exclude={'ticker','session_date','start_time','window_minutes'})
-    result=await asyncio.to_thread(solve_actions,grid,**parameters)
+    result=await asyncio.to_thread(solve_actions,grid,decision_end=end.timestamp(),**parameters)
     return dict(result,ticker=request.ticker.upper(),session_date=str(request.session_date),
-        start=start.isoformat(),end=end.isoformat(),label_available_at=end.isoformat(),
+        start=start.isoformat(),end=end.isoformat(),label_available_at=lookahead_end.isoformat(),source_end=lookahead_end.isoformat(),
         parameters=request.model_dump(mode='json'),source_revision=source.source_revision,
         source_counts=dict(sampler.counts),elapsed_seconds=monotonic()-started,
         limitations=['Observed NBBO sizes are not guaranteed fills; no queue or market-impact model.',
             'Fixed one-unit positions; no sizing, capital allocation or participation schedule.',
             'No market-relative rank: this result covers one ticker.',
-            'Each state/action value assumes optimal future decisions with perfect hindsight.',
-            'No stop-loss policy; fixed one-unit exposure and holding cost define risk here.'])
+            'Independent overlapping entry opportunities; profits must not be summed as portfolio returns.',
+            'Gross profit includes quoted spread; displayed net profit also deducts the configured fees.',
+            'No stop-loss or portfolio policy; the only holding limit is 90 seconds.'])
 
 
 def _run(job_id,request):

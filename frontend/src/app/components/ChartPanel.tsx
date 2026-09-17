@@ -1935,7 +1935,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const hindsightDuration = hindsightRef.current.length ? estimateCandleDuration(timeline) : 60;
     hindsightPrimitiveRef.current?.setState(hindsightRef.current, (time) => xForAnnotationTime(chart, time, timeline, hindsightDuration));
     hindsightActionsPrimitiveRef.current?.setState(hindsightActionsRef.current.result,
-      (time) => xForAnnotationTime(chart, time, timeline, estimateCandleDuration(timeline)), hindsightActionsRef.current.inspect);
+      (time) => xForAnnotationTime(chart, time, timeline, estimateCandleDuration(timeline)), hindsightActionsRef.current.inspect, currentPayload.candles);
     const swing = swingStructureRef.current;
     structureGapPrimitiveRef.current?.setState(structureGapsRef.current,
       time => xForAnnotationTime(chart, Math.max(timeline[0]?.time ?? 0, Math.min(time, timeline.at(-1)?.time ?? 0)), timeline),

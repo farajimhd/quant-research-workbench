@@ -1,4 +1,4 @@
-"""Real endpoint, chart and keyboard checks for the hindsight action spectrum."""
+"""Real endpoint, candle-label and keyboard checks for hindsight opportunities."""
 import json
 from datetime import datetime
 from pathlib import Path
@@ -36,84 +36,52 @@ def review_action_values(page, screenshot_path):
     toggle=chart.get_by_role('button',name='Hindsight action values',exact=True)
     with page.expect_response(lambda r:r.request.method=='POST' and r.url.endswith('/api/research/hindsight-actions')) as response:
         toggle.click(timeout=30000)
-    job=response.value.json()
-    job=job.get('data',job)
-    details=chart.get_by_role('button',name='Action value details',exact=True)
-    details.click()
-    try:
-        page.wait_for_function("""() => document.querySelector('.action-values-table') ||
-            document.querySelector('.action-values-error')""",timeout=45000)
-    except Exception as exc:
-        page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__action-failure.png')),full_page=True)
-        raise RuntimeError(f'Action inspector failed: {page.locator(".action-values-controls").all_text_contents()}; initial response: {job}') from exc
+    job=response.value.json();job=job.get('data',job)
+    details=chart.get_by_role('button',name='Action value details',exact=True);details.click()
+    page.wait_for_function("() => document.querySelector('.action-values-table') || document.querySelector('.action-values-error')",timeout=45000)
     if page.locator('.action-values-error').count():raise RuntimeError(page.locator('.action-values-status').inner_text())
     url=urlsplit(page.url)
     response=page.request.get(f'{url.scheme}://{url.netloc}/api/research/hindsight-actions/{job["id"]}').json()
     result=response.get('data',response)['result']
-    assert result['hindsight_only'] and result['counts']['seconds']==1801, 'Unexpected label window'
-    assert result['path'][-1]['after']==0, 'Terminal inventory is not flat'
-    move=max(result['moves'],key=lambda x:abs(x['net_cash']))
-    page.get_by_role('combobox',name='Inspect hindsight move').select_option(str(move['number']))
-    slider=page.get_by_role('slider',name='Action decision second')
-    before=int(slider.input_value());slider.focus();page.keyboard.press('ArrowRight')
-    assert int(slider.input_value())==before+1, 'Keyboard did not advance decision time'
-    page.keyboard.press('ArrowLeft')
-    inventory=page.get_by_role('combobox',name='Action starting position')
-    inventory.select_option('0')
-    assert 'Exit short' in page.locator('.action-values-table').inner_text(), 'Position selection did not update actions'
-    assert result['position_size']==1 and result['inventory']==[-1,0,1]
-    runs=result['action_runs']
-    assert sum(r['end_index']-r['start_index']+1 for r in runs)==len(result['path'])
-    assert all(a['action']!=b['action'] for a,b in zip(runs,runs[1:]))
-    assert not page.get_by_role('spinbutton',name='Shares per adjustment',exact=True).count()
-    inventory.select_option(str(result['path'][before]['state_index']))
+    assert result['max_hold_seconds']==90 and result['position_size']==1
+    assert result['counts']['seconds']==1801
+    assert all(x['hold_seconds'] is None or 0<=x['hold_seconds']<=90 for x in result['labels'])
+    assert result['labels'][-1]['reason']!='incomplete_90s_horizon'
+    slider=page.get_by_role('slider',name='Action decision second');slider.fill('595')
+    slider.focus();page.keyboard.press('ArrowRight');assert slider.input_value()=='596';page.keyboard.press('ArrowLeft')
     page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__action-details.png')),full_page=True)
-    page.get_by_role('button',name='Center this second on chart').click()
-    page.mouse.move(0,0);page.wait_for_timeout(350)
+    page.get_by_role('button',name='Center this second on chart').click();page.mouse.move(0,0);page.wait_for_timeout(500)
     pane=chart.locator('.chart-pane-canvas').first
-    shown=pane.screenshot()
-    page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__action-lines.png')),full_page=True)
-    toggle.click();page.mouse.move(0,0);page.wait_for_timeout(250)
-    hidden=pane.screenshot()
-    assert shown!=hidden,'Action values did not paint on the price chart'
-    toggle.click();page.mouse.move(0,0);page.wait_for_timeout(250)
-    assert pane.screenshot()==shown,'Action toggle altered the chart viewport or underlying rendering'
+    shown=pane.screenshot();page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__candle-labels.png')),full_page=True)
     if page.locator('#action-value-review').count():
-        assert page.evaluate('''() => {
+        evidence=page.evaluate("""() => {
           const p=window.actionReviewPrimitive;
-          return p.hits.every(h=>{
-            const run=p.result.action_runs.find(r=>h.index>=r.start_index && h.index<=r.end_index);
-            return run && Math.abs(h.y-p.series.priceToCoordinate(run.price))<0.001;
-          });
-        }'''), 'Action line height changed within a run'
-        hit=page.evaluate('''() => { const p=window.actionReviewPrimitive; return p.hits.find(h => h.x1>30 && h.x2>h.x1 && h.y>30 && !p.labelHits.some(l=>Math.abs(l.y-h.y)<15 && (h.x1+h.x2)/2>=l.x1 && (h.x1+h.x2)/2<=l.x2)); }''')
-        assert hit, 'No clickable action segments'
-        bounds=pane.bounding_box()
-        zoom=pane.evaluate('(e) => e.getBoundingClientRect().width/e.offsetWidth')
-        left=page.evaluate('() => window.actionReviewPrimitive.chart.priceScale("left").width()')
-        page.mouse.click(bounds['x']+(left+(hit['x1']+hit['x2'])/2)*zoom,bounds['y']+hit['y']*zoom)
-        try:page.get_by_role('dialog',name='Hindsight action values',exact=True).wait_for(timeout=5000)
-        except Exception as exc:
-            observed=page.evaluate('() => ({point:window.actionReviewPoint, hits:window.actionReviewPrimitive.hits.slice(0,3)})')
-            raise RuntimeError(f'Line click failed: {hit=}, {zoom=}, {left=}, {observed=}') from exc
-        assert int(page.get_by_role('slider',name='Action decision second').input_value())==hit['index'], 'Line click selected wrong second'
-        page.keyboard.press('Escape')
-        # A second native chart click inside its double-click interval is a zoom gesture.
-        page.wait_for_timeout(600)
-        label=page.evaluate('() => window.actionReviewPrimitive.labelHits.find(h=>h.x1>0 && h.y>15)')
-        assert label, 'No clickable value labels'
-        page.mouse.click(bounds['x']+(left+(label['x1']+label['x2'])/2)*zoom,bounds['y']+label['y']*zoom)
-        dialog=page.get_by_role('dialog',name='Hindsight action values',exact=True)
-        dialog.wait_for(timeout=5000)
-        assert dialog.get_attribute('aria-modal')=='true'
+          const hits=p.labelHits;
+          const valid=p.candles.filter(c=>c.isClosed!==false && p.result.labels.some(r=>r.time===(c.endTime??c.time+1)));
+          const width=p.chart.timeScale().width();
+          const visible=valid.filter(c=>{const x=p.coordinate(c.time);return x!=null&&x>=0&&x<=width;});
+          return {count:hits.length,expected:visible.length,underCandles:hits.every(h=>{
+            const c=p.candles.find(c=>c.time===h.candleTime);
+            return h.y1>p.series.priceToCoordinate(c.low) && p.result.labels[h.index].time===(c.endTime??c.time+1);
+          }),label:hits.find(h=>h.x1>20&&h.y1>20&&h.y2<p.chart.chartElement().clientHeight-35)};
+        }""")
+        assert evidence['count']==evidence['expected'] and evidence['count']>0, evidence
+        assert evidence['underCandles'],evidence
+        label=evidence['label'];assert label
+        bounds=pane.bounding_box();zoom=pane.evaluate('(e)=>e.getBoundingClientRect().width/e.offsetWidth')
+        left=page.evaluate('()=>window.actionReviewPrimitive.chart.priceScale("left").width()')
+        page.mouse.click(bounds['x']+(left+(label['x1']+label['x2'])/2)*zoom,bounds['y']+(label['y1']+label['y2'])/2*zoom)
+        dialog=page.get_by_role('dialog',name='Hindsight action values',exact=True);dialog.wait_for(timeout=5000)
         assert int(page.get_by_role('slider',name='Action decision second').input_value())==label['index']
         box=dialog.bounding_box();viewport=page.viewport_size
-        assert abs(box['x']+box['width']/2-viewport['width']/2)<3, 'Modal not horizontally centered'
-        assert abs(box['y']+box['height']/2-viewport['height']/2)<3, 'Modal not vertically centered'
+        assert dialog.get_attribute('aria-modal')=='true'
+        assert abs(box['x']+box['width']/2-viewport['width']/2)<3
+        assert abs(box['y']+box['height']/2-viewport['height']/2)<3
         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem+'__label-modal.png')),full_page=True)
         page.keyboard.press('Escape')
+    toggle.click();page.mouse.move(0,0);page.wait_for_timeout(300)
+    assert pane.screenshot()!=shown,'Candle labels did not hide'
+    toggle.click();page.mouse.move(0,0);page.wait_for_timeout(300)
     details.click();page.keyboard.press('Escape')
     assert not page.get_by_role('dialog',name='Hindsight action values',exact=True).count()
-    assert details.evaluate('(e) => e === document.activeElement')
-    return dict(seconds=result['counts']['seconds'],moves=len(result['moves']),adjustments=result['counts']['adjustments'],
-                net_cash=result['net_cash'],paint_reversible=True,keyboard=True)
+    return dict(counts=result['counts'],max_hold_seconds=90,per_candle=True,modal=True)
