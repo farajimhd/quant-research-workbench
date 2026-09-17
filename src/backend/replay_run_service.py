@@ -183,6 +183,7 @@ class _ProvisionalMacdState:
     sample_count: int = 0
     forming_second: datetime | None = None
     forming_open: float | None = None
+    forming_high: float | None = None
 
     @staticmethod
     def _ema(previous: float | None, value: float, period: int) -> float:
@@ -205,6 +206,7 @@ class _ProvisionalMacdState:
         if self.forming_second is not None and self.forming_second < observed_at.replace(microsecond=0):
             self.forming_second = None
             self.forming_open = None
+            self.forming_high = None
 
     def observe_forming_candle(self, price: float, observed_at: datetime) -> float | None:
         if price <= 0:
@@ -213,6 +215,9 @@ class _ProvisionalMacdState:
         if self.forming_second != second:
             self.forming_second = second
             self.forming_open = price
+            self.forming_high = price
+        else:
+            self.forming_high = max(self.forming_high or price, price)
         return self.forming_open
 
     def preview(self, price: float) -> tuple[float, float, float] | None:
@@ -242,6 +247,7 @@ class _ProvisionalMacdState:
                 self.forming_second.isoformat() if self.forming_second else None
             ),
             "forming_open": self.forming_open,
+            "forming_high": self.forming_high,
         }
 
     @classmethod
@@ -254,6 +260,7 @@ class _ProvisionalMacdState:
             sample_count=max(0, int(payload.get("sample_count") or 0)),
             forming_second=_optional_checkpoint_time(payload.get("forming_second")),
             forming_open=_optional_positive(payload.get("forming_open")),
+            forming_high=_optional_positive(payload.get("forming_high")),
         )
 
 
@@ -4135,7 +4142,9 @@ class ReplayRunController:
             market_pressure=self._market_pressure_snapshot(event.ticker, event.ts),
             price=price,
             bar_open=forming_open,
-            bar_high=None,
+            bar_high=(provisional_macd.forming_high if provisional_macd and any(
+                row.parameters.get('historical_hod',{}).get('setup_immediate_tail_body_ratio')
+                for row in ticker_assignments) else None),
             bid=float(quote.bid_price if quote else base.bid),
             ask=float(quote.ask_price if quote else base.ask),
             macd_line=macd_line,

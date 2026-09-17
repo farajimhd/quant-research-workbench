@@ -6417,9 +6417,16 @@ class AssignedLongMomentumStrategy:
                     if assignment.parameters.get('historical_hod_contract'):
                         state['historical_hod_state'] = dict(state.get('historical_hod_state') or {}, used_episode=True)
                         state.pop('early_stop_reentry', None)
-                        if assignment.parameters.get('historical_hod', {}).get('setup_stalled_seconds'):
+                        hod_settings = assignment.parameters.get('historical_hod', {})
+                        if any(hod_settings.get(k) for k in ('setup_stalled_seconds','setup_immediate_tail_body_ratio',
+                                'setup_entry_resistance_seconds','setup_resistance_return_exit')):
                             active = deepcopy(state.get('historical_hod_entry') or {})
                             active.setdefault('first_fill_at', snapshot.updated_at.timestamp())
+                            tight_stop = getattr(snapshot, 'tight_reentry_stop', None)
+                            if tight_stop is not None:
+                                state.update(initial_stop=tight_stop, active_stop=tight_stop)
+                                active['stop'] = tight_stop
+                                state.pop('topping_tail_reentry', None)
                             state['historical_hod_entry'] = active
                     if assignment.parameters.get('macd_r3_contract'):
                         state['r3_ever_filled'] = True
