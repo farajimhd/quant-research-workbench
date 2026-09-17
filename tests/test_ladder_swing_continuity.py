@@ -75,3 +75,37 @@ def test_old_swing_remains_eligible_when_a_new_macd_episode_starts():
     result = host.evaluate(advance(assignment, first), observation(i=30))
     assert result.evaluation.intents[0].action == 'enter_long'
     assert result.state['vwap_ladder_entry']['swing']['pivot_at'] < result.state['vwap_ladder_episode']['started_at']
+
+
+@pytest.mark.parametrize('case, accepted', [('recovered', True), ('no_recovery', False),
+    ('resistance', False), ('future_support', False), ('no_touch', False), ('unknown_gap', False),
+    ('role_flip_at_touch', True)])
+def test_undercut_requires_causal_support_touch_and_completed_recovery(case, accepted):
+    from copy import deepcopy
+    from dataclasses import replace
+    from src.trading_runtime import vwap_resistance_ladder as V
+    host, assignment, observation = fixture()
+    o = observation()
+    swing = o.structural_detector_state['row']['local_swings'][0]
+    at = swing['pivot_at']
+    support = dict(o.structural_support_levels[0], lower=9.50, upper=9.55, price=9.52)
+    if case == 'resistance': support['side'] = -1
+    if case == 'future_support': support['confirmed_at_ms'] = (at+1)*1000
+    touch = dict(time=at-1, end=at, low=9.49, high=9.495 if case=='no_touch' else 9.53,
+                 close=9.49)
+    market = dict(reset=False, row=dict(local_swings=[], confirmed_swings=[],
+                                      developing_swings={'low': {'pivot_at': at}}))
+    previous = {}
+    if case == 'role_flip_at_touch':
+        previous['vwap_support_bands'] = {support['unified_level_id']: deepcopy(support)}
+        support['side'] = -1
+    V.observe_support_bounces(market, previous, touch, [support])
+    recovered = dict(reset=case=='unknown_gap', row=deepcopy(o.structural_detector_state['row']))
+    V.observe_support_bounces(recovered, market,
+        dict(time=at, end=at+1, low=9.49, high=9.53, close=9.49 if case=='no_recovery' else 9.52), [])
+    o = replace(o, structural_support_levels=(support,), structural_detector_state={'row': recovered['row']})
+    result = host.evaluate(assignment, o)
+    assert bool(result.evaluation.intents) == accepted
+    if accepted:
+        assert result.evaluation.intents[0].action == 'enter_long'
+        assert result.state['vwap_ladder_entry']['swing']['price'] == 9.49

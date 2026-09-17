@@ -21,6 +21,11 @@ Contract: `vwap-midpoint-resistance-ladder-v1`. Backtest Candidate 313:
   native 1s stream proves no eligible intervening candles and contains both
   bordering candles. Unknown gaps and session/book changes still reset the
   detector. Old ladder replay checkpoints require a fresh run.
+- A confirmed swing can also undercut a support band and recover. Its pivot
+  candle must touch a band already classified as support before that candle;
+  a completed close must recover above the frozen lower edge, and entry must
+  remain above it. The original band and recovery time are retained with the
+  active/developing swing, independent of MACD episodes or later V7 role changes.
 - Count distinct physical resistance IDs once per session, across positions;
   retain their pre-break bands across role flips. R1 and R2 do not move an
   early position's stop. R3 trails below R1, R4 below R2, always two behind.

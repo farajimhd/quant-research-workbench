@@ -105,10 +105,53 @@ def observe_market(o, state):
 def support_swing(o, rows, cutoff):
     row = (o.structural_detector_state or {}).get('row', {})
     supports = [r for r in rows.values() if r.get('side') in (1, 'support')]
-    return H.initial_swing_low(row, dict(lower=o.price), o.observed_at.timestamp(),
-        price_only=True, pivot_not_before=cutoff,
-        eligible=lambda swing: any(r['confirmed_at_ms']/1000 <= swing['pivot_at']
-            and r['lower'] <= swing['price'] <= r['upper'] for r in supports))
+    def recovered(swing):
+        return next((w for w in row.get('vwap_support_bounces', [])
+            if w['pivot_at'] == swing['pivot_at'] and w['pivot_price'] == swing['price']
+            and w.get('recovered_at') is not None and w['recovered_at'] <= o.observed_at.timestamp()
+            and o.price > w['support']['lower']), None)
+    def supported(swing):
+        if any(r['confirmed_at_ms']/1000 <= swing['pivot_at']
+               and r['lower'] <= swing['price'] <= r['upper'] for r in supports):
+            return True
+        return recovered(swing) is not None
+    candidate = H.initial_swing_low(row, dict(lower=o.price), o.observed_at.timestamp(),
+        price_only=True, pivot_not_before=cutoff, eligible=supported)
+    if candidate and recovered(candidate):
+        candidate['support_bounce'] = deepcopy(recovered(candidate))
+    return candidate
+
+
+def observe_support_bounces(market, previous, bar, level_rows):
+    """Retain causal support contacts for active/developing swing lows only."""
+    from types import SimpleNamespace
+    from datetime import timezone
+    row = market['row']
+    pivots = {s['pivot_at'] for s in row.get('local_swings', []) + row.get('confirmed_swings', [])
+              if s.get('side') in (1, 'support')}
+    developing = (row.get('developing_swings') or {}).get('low') or {}
+    if developing.get('pivot_at') is not None:
+        pivots.add(developing['pivot_at'])
+    pivots.add(bar['end'])
+    witnesses = [] if market.get('reset') else deepcopy(previous.get('vwap_support_bounces', []))
+    witnesses = [w for w in witnesses if w['pivot_at'] in pivots]
+    current = levels(SimpleNamespace(observed_at=datetime.fromtimestamp(bar['end'], timezone.utc),
+        structural_support_levels=level_rows, structural_resistance_levels=(), structural_transition_levels=()))
+    # A touch may flip/refit the band at this close. Use the preceding known
+    # geometry for that candle, not the changed classification caused by it.
+    known = dict(current)
+    if not market.get('reset'):
+        known.update(previous.get('vwap_support_bands', {}))
+    for r in known.values():
+        if (r.get('side') in (1, 'support') and r['confirmed_at_ms']/1000 <= bar['time']
+                and bar['low'] < r['lower'] <= bar['high']):
+            witnesses.append(dict(pivot_at=bar['end'], pivot_price=bar['low'], support=deepcopy(r)))
+    for w in witnesses:
+        if w.get('recovered_at') is None and bar['close'] > w['support']['lower']:
+            w['recovered_at'] = bar['end']
+    market['vwap_support_bounces'] = witnesses
+    market['vwap_support_bands'] = current
+    row['vwap_support_bounces'] = deepcopy(witnesses)
 
 
 def evaluate(host, a, o, p, old_state):
