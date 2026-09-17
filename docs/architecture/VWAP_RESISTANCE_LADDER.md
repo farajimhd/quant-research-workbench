@@ -15,6 +15,12 @@ Contract: `vwap-midpoint-resistance-ladder-v1`. Backtest Candidate 313:
 - Initial stop one tick below a confirmed swing low inside a V7 support
   band that existed by the swing pivot. Actual bands are retained when
   the shared projection also carries point-price geometry.
+- Swing history is independent of MACD episodes. A confirmed, still-valid
+  post-04:05 swing may predate the current episode. Historical replay preserves
+  it across same-session gaps of up to 30 seconds only when a complete, pinned
+  native 1s stream proves no eligible intervening candles and contains both
+  bordering candles. Unknown gaps and session/book changes still reset the
+  detector. Old ladder replay checkpoints require a fresh run.
 - Count distinct physical resistance IDs once per session, across positions;
   retain their pre-break bands across role flips. R1 and R2 do not move an
   early position's stop. R3 trails below R1, R4 below R2, always two behind.
