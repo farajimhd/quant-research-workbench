@@ -67,6 +67,38 @@ def test_breakout_cannot_enter_from_price_already_above_trigger():
     assert not host.evaluate(a,o).evaluation.intents
 
 
+def test_witnessed_breakout_waits_for_indicator_confirmation_and_survives_restart():
+    import json
+    host,a,o = later()
+    o.source_values['indicator.macd.line@1s']['value'] = -.1
+    first = host.evaluate(a,o)
+    assert not first.evaluation.intents
+    a = replace(a,state=json.loads(json.dumps(first.state)))
+    o.source_values['indicator.macd.line@1s']['value'] = .1
+    second = host.evaluate(a,replace(o,observed_at=NOW+timedelta(milliseconds=50)))
+    assert second.evaluation.signals[0].reason == 'post_move_breakout'
+    assert 'pending_breakout' not in second.state['post_move_entry_clock']
+
+
+@pytest.mark.parametrize('failure', ['price', 'episode', 'reference', 'target'])
+def test_pending_breakout_is_invalidated_before_confirmation(failure):
+    host,a,o = later()
+    o.source_values['indicator.macd.line@1s']['value'] = -.1
+    first = host.evaluate(a,o)
+    a = replace(a,state=first.state)
+    if failure == 'price':
+        o = replace(o,price=4.)
+    elif failure == 'episode':
+        o.source_values['indicator.macd.line@10s']['value'] = -.1
+    elif failure == 'target':
+        o = replace(o,price=4.12)
+    else:
+        o = replace(o,structural_session_high=4.09)
+    r = host.evaluate(a,o)
+    assert not r.evaluation.intents
+    assert 'pending_breakout' not in r.state['post_move_entry_clock']
+
+
 def pullback():
     host,a,o = later()
     for tf in ('100ms','5s','10s','30s'):

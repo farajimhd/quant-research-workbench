@@ -3657,7 +3657,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         await self._check_flat_intrabar_entry("prior_completed_frame_top_n_below_session_high", False, recovery=True)
 
     async def _check_flat_intrabar_entry(self, mode: str, armed: bool, live_entry: bool = False, body_entry: bool = False, recovery: bool = False) -> None:
-        now = datetime(2026, 8, 21, 4, 2, 52, tzinfo=NEW_YORK)
+        now = datetime(2026, 8, 21, 4, 6, 52, tzinfo=NEW_YORK)
         parameters = default_long_momentum_parameters()
         parameters['entry_body_breakout'] = dict(enabled=body_entry, offset_ticks=1)
         parameters["structural_entry"].update({
@@ -3747,7 +3747,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         event = _debug_market_events(({
             "kind": "trade",
             "ticker": "SUGP",
-            "ts": "2026-08-21T04:02:52.250-04:00",
+            "ts": "2026-08-21T04:06:52.250-04:00",
             "sequence": 90,
             "price": 3.41,
             "size": 100,
@@ -3764,9 +3764,12 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observation.evaluation_events, ("market_data_update",))
         self.assertNotIn("bar_close", observation.evaluation_events)
         self.assertIn("indicator.macd.line@1s", observation.changed_source_ids)
+        from src.trading_runtime.vwap_resistance_ladder import macd
+        self.assertEqual(macd(observation, '1s'), dict(line=.02, signal=.01, at=now.timestamp()))
+        self.assertEqual(observation.source_values['indicator.macd.line@1s']['sample_kind'], 'forming')
 
     async def test_managed_position_market_event_evaluates_latest_indicators_without_claiming_bar_close(self) -> None:
-        now = datetime(2026, 8, 21, 4, 2, 57, tzinfo=NEW_YORK)
+        now = datetime(2026, 8, 21, 4, 6, 57, tzinfo=NEW_YORK)
         parameters = default_long_momentum_parameters()
         parameters["structural_entry"].update(
             enabled=True, selection_mode="prior_completed_frame_top_n_below_session_high"
@@ -3846,7 +3849,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         event = _debug_market_events(({
             "kind": "trade",
             "ticker": "SUGP",
-            "ts": "2026-08-21T04:02:57.250-04:00",
+            "ts": "2026-08-21T04:06:57.250-04:00",
             "sequence": 91,
             "price": 3.47,
             "size": 100,
@@ -3887,7 +3890,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         next_event = _debug_market_events(({
             "kind": "trade",
             "ticker": "SUGP",
-            "ts": "2026-08-21T04:02:57.650-04:00",
+            "ts": "2026-08-21T04:06:57.650-04:00",
             "sequence": 92,
             "price": 3.45,
             "size": 100,

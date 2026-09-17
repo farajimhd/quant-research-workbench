@@ -79,6 +79,18 @@ def test_macd_inputs_fail_closed(tf, failure):
     assert not host.evaluate(a, o).evaluation.intents
 
 
+def test_completed_macd_is_preserved_when_forming_preview_overlays_source():
+    _,_,obs = fixture()
+    o = obs()
+    for name in ('line', 'signal'):
+        key = f'indicator.macd.{name}@1s'
+        o.source_values[key+':completed'] = deepcopy(o.source_values[key])
+        o.source_values[key] = dict(value=-1.,observed_at=NOW.isoformat(),sample_kind='forming')
+    assert V.macd(o,'1s')['line'] == .1
+    del o.source_values['indicator.macd.line@1s:completed']
+    assert V.macd(o,'1s') is None
+
+
 def test_two_additions_and_third_break_first_stop_advance_survive_restart():
     host, a, obs = entered()
     for index, price in enumerate([10.23, 10.43, 10.63, 10.83], 1):

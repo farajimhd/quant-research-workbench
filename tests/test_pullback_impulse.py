@@ -99,3 +99,36 @@ def test_immutable_successor_enables_approved_threshold():
     result = prepare_payload(baseline)
     assert baseline == before
     assert result['strategy']['profiles'][-1]['parameters']['vwap_ladder']['pullback_min_rise_pct'] == 5
+
+
+def test_qualified_pullback_waits_for_macd_without_one_second_expiry():
+    host,a,o = pullback()
+    a.parameters['vwap_ladder'].update(group_resistances=1,pullback_min_rise_pct=5.)
+    t = o.observed_at.timestamp()
+    row = o.structural_detector_state['row']
+    row['local_swings'][0].update(pivot_at=t-22,confirmed_at=t-20)
+    row['vwap_retests'][0].update(pivot_at=t-22,recovered_at=t-20)
+    a.state['vwap_ladder_market']['pullback_impulse'] = dict(
+        move=dict(id=t-30,base=3.5,base_at=t-60,peak=4.1,peak_at=t-25))
+    r = host.evaluate(a,o)
+    assert r.evaluation.signals[0].reason == 'post_move_pullback'
+    a.state['vwap_ladder_market']['pullback_impulse']['move']['invalid'] = True
+    assert not host.evaluate(a,o).evaluation.intents
+
+
+def test_ineligible_higher_anchor_does_not_hide_qualified_pullback():
+    host,a,o = pullback()
+    a.parameters['vwap_ladder'].update(group_resistances=1,pullback_min_rise_pct=5.)
+    t = o.observed_at.timestamp()
+    a.state['vwap_ladder_market']['pullback_impulse'] = dict(
+        move=dict(id=t-10,base=3.5,base_at=t-40,peak=4.1,peak_at=t-5))
+    row = o.structural_detector_state['row']
+    invalid = dict(row['local_swings'][0],price=4.,pivot_at=t-1)
+    witness = deepcopy(row['vwap_retests'][0])
+    witness.update(pivot_at=t-1,pivot_price=4.)
+    witness['anchor'].update(lower=3.95,upper=3.99)
+    row['local_swings'].append(invalid)
+    row['vwap_retests'].append(witness)
+    r = host.evaluate(a,o)
+    assert r.evaluation.signals[0].reason == 'post_move_pullback'
+    assert r.evaluation.intents[0].metadata['initial_swing']['price'] == 3.92

@@ -4201,9 +4201,13 @@ class ReplayRunController:
                 ("indicator.macd.signal@1s", macd_signal),
                 ("indicator.macd.histogram@1s", macd_histogram),
             ):
+                # A forming preview must not erase the completed sample used by
+                # native multi-timeframe strategies. Keep both authorities.
+                source_values[source_id + ':completed'] = dict(base.source_values.get(source_id) or {})
                 source_values[source_id] = {
                     "observed_at": event.ts.isoformat(),
                     "value": value,
+                    "sample_kind": "forming",
                 }
                 changed_source_ids.append(source_id)
         if forming_open is not None:

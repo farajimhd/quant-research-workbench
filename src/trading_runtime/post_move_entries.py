@@ -27,6 +27,33 @@ def breakout_crossing(o, market, previous_price, tick, offset_ticks):
     return None
 
 
+def pending_breakout(o, market, clock, previous_price, tick, offset_ticks, episode, observe):
+    """Keep a witnessed crossing until confirmation or structural invalidation.
+
+    No crossing is invented from an already-above price. The current reference,
+    price and episode are checked again on every strategy evaluation.
+    """
+    reference = breakout_reference(market, o.structural_session_high or 0)
+    pending = clock.get('pending_breakout')
+    def identity(row):
+        return tuple(row.get(k) for k in ('unified_level_id', 'lower', 'upper'))
+    if pending and (not reference or identity(pending['anchor']) != identity(reference)
+            or o.price < pending['trigger'] or not episode.get('bullish')
+            or o.price >= pending['target_price']
+            or episode.get('used') or pending['episode_id'] != episode.get('started_at')):
+        clock.pop('pending_breakout', None)
+        pending = None
+    if observe and episode.get('bullish') and not episode.get('used'):
+        crossing = breakout_crossing(o, market, previous_price, tick, offset_ticks)
+        if crossing:
+            target = midpoint_target(market, crossing['anchor'], tick)
+            if target and o.price < target['price']:
+                pending = dict(crossing, witnessed_at=o.observed_at.isoformat(),
+                               target_price=target['price'], episode_id=episode.get('started_at'))
+                clock['pending_breakout'] = pending
+    return deepcopy(pending)
+
+
 def midpoint_target(market, reference, tick):
     gap = average_gap(market)
     if gap is None:

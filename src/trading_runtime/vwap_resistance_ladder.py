@@ -41,13 +41,15 @@ def macd(o, timeframe):
     values, stamps = [], []
     period = TIMEFRAMES[timeframe]
     for name in ('line', 'signal'):
-        sample = o.source_values.get(f'indicator.macd.{name}@{timeframe}', {})
+        key = f'indicator.macd.{name}@{timeframe}'
+        sample = o.source_values.get(key + ':completed', o.source_values.get(key, {}))
         value = sample.get('value')
         try:
             at = datetime.fromisoformat(str(sample['observed_at']).replace('Z', '+00:00'))
         except (KeyError, ValueError, TypeError):
             return None
-        if (at.tzinfo is None or type(value) not in (int, float) or not isfinite(value)
+        if (sample.get('sample_kind') == 'forming'
+                or at.tzinfo is None or type(value) not in (int, float) or not isfinite(value)
                 or not 0 <= (o.observed_at-at).total_seconds() < period
                 or abs(at.timestamp()/period-round(at.timestamp()/period)) > 1e-4):
             return None
@@ -375,23 +377,29 @@ def evaluate(host, a, o, p, old_state):
     pullback_move = None
     if post_move:
         from .resistance_zones import entry_anchor
-        from .post_move_entries import breakout_crossing, midpoint_target
+        from .post_move_entries import pending_breakout, midpoint_target
+        witnessed_breakout = pending_breakout(o, market, entry_clock, previous_entry_price,
+            tick, settings['breakout_offset_ticks'], episode, is_trade and late)
         one = samples['1s']
         if (one and one['line'] > one['signal']
                 and (settings.get('pullback_independent_episode') or not episode.get('used'))):
-            anchor = entry_anchor(o, market, not impulse_required, settings['late_entry_breaks'], fresh=True)
-            if anchor and anchor['pivot_at'] in entry_clock['consumed_pullbacks']:
-                anchor = None
+            def eligible(candidate):
+                if candidate['pivot_at'] in entry_clock['consumed_pullbacks']:
+                    return False
+                if impulse_required:
+                    from .pullback_impulse import qualify
+                    return bool(qualify(market, candidate, entry_clock.get('consumed_moves', [])))
+                return True
+            anchor = entry_anchor(o, market, not impulse_required, settings['late_entry_breaks'],
+                                  fresh=not impulse_required, eligible=eligible)
             if anchor and impulse_required:
                 from .pullback_impulse import qualify
                 pullback_move = qualify(market, anchor, entry_clock.get('consumed_moves', []))
-                if not pullback_move:
-                    anchor = None
         if anchor:
             entry_kind = 'post_move_pullback'
         elif late and not episode.get('used') and all(samples[tf] and samples[tf]['line'] > samples[tf]['signal']
                                            for tf in ('100ms','1s','5s','10s')):
-            breakout = breakout_crossing(o, market, previous_entry_price, tick, settings['breakout_offset_ticks'])
+            breakout = witnessed_breakout
             if breakout:
                 entry_kind = 'post_move_breakout'
                 target_selection = midpoint_target(market, breakout['anchor'], tick)
@@ -430,6 +438,7 @@ def evaluate(host, a, o, p, old_state):
         return emit('wait', 'invalid_execution_geometry')
     prior_episode_used = bool(episode.get('used'))
     episode['used'] = True
+    entry_clock.pop('pending_breakout', None)
     if post_move and anchor:
         entry_clock['consumed_pullbacks'].append(anchor['pivot_at'])
         if pullback_move:
