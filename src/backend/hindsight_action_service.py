@@ -27,12 +27,8 @@ class ActionRequest(BaseModel):
     session_date:date
     start_time:time=time(4)
     window_minutes:int=Field(default=30,ge=1,le=120)
-    lot_shares:int=Field(default=25,ge=1,le=1000)
-    inventory_steps:int=Field(default=4,ge=1,le=8)
-    max_notional:float=Field(default=1000,gt=0,le=100000,allow_inf_nan=False)
     cost_bps:float=Field(default=5,ge=0,le=100,allow_inf_nan=False)
     max_spread_bps:float=Field(default=150,ge=0,le=1000,allow_inf_nan=False)
-    participation:float=Field(default=.05,gt=0,le=1,allow_inf_nan=False)
     risk_bps_per_second:float=Field(default=.01,ge=0,le=10,allow_inf_nan=False)
 
     @model_validator(mode='after')
@@ -69,10 +65,10 @@ async def calculate_actions(request,progress=lambda **kwargs:None):
         parameters=request.model_dump(mode='json'),source_revision=source.source_revision,
         source_counts=dict(sampler.counts),elapsed_seconds=monotonic()-started,
         limitations=['Observed NBBO sizes are not guaranteed fills; no queue or market-impact model.',
-            'Participation limits use trailing 10s volume per adjustment; this is not a broker simulation.',
+            'Fixed one-unit positions; no sizing, capital allocation or participation schedule.',
             'No market-relative rank: this result covers one ticker.',
             'Each state/action value assumes optimal future decisions with perfect hindsight.',
-            'No stop-loss policy; bounded inventory, notional and quadratic holding cost define risk here.'])
+            'No stop-loss policy; fixed one-unit exposure and holding cost define risk here.'])
 
 
 def _run(job_id,request):
