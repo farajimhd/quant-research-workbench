@@ -59,9 +59,9 @@ def test_preparation_reuses_filtered_history_without_spawning(tmp_path,monkeypat
     prepared(tmp_path,monkeypatch)
     catalog=V.Catalog(tmp_path)
     monkeypatch.setattr(V,'Catalog',lambda:catalog)
-    async def forbidden(*args,**kwargs):
+    def forbidden(*args,**kwargs):
         raise AssertionError('A verified history must not rebuild')
-    monkeypatch.setattr(asyncio,'create_subprocess_exec',forbidden)
+    monkeypatch.setattr('src.backend.filtered_v7_preparation.subprocess.Popen',forbidden)
     progress=[]
     async def report(*args):progress.append(args)
     asyncio.run(prepare(['TEST'],['2026-08-21'],report))
@@ -85,12 +85,14 @@ def test_preparation_builds_unfiltered_ticker_then_reuses_publication(tmp_path,m
     class Process:
         returncode=None
         terminated=False
-        async def wait(self):
+        def poll(self):
+            return self.returncode
+        def wait(self, timeout=None):
             self.returncode=-1 if self.terminated else 0
         def terminate(self):
             self.terminated=True
     child=Process()
-    async def spawn(*args,**kwargs):
+    def spawn(args,**kwargs):
         calls.append(args)
         if outcome=='cancelled':
             return child
@@ -99,9 +101,9 @@ def test_preparation_builds_unfiltered_ticker_then_reuses_publication(tmp_path,m
             return child
         output,plan=publish(tmp_path,target,read(tmp_path/'main'/'plan.json'))
         write(output/'ready.json',dict(plan_hash=plan['plan_hash']))
-        from types import SimpleNamespace
-        return SimpleNamespace(returncode=0)
-    monkeypatch.setattr(asyncio,'create_subprocess_exec',spawn)
+        child.returncode=0
+        return child
+    monkeypatch.setattr('src.backend.filtered_v7_preparation.subprocess.Popen',spawn)
     async def report(*args):
         if calls and outcome=='cancelled':
             raise asyncio.CancelledError()

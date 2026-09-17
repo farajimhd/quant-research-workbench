@@ -24,7 +24,8 @@ class CoveragePreflightTests(IsolatedAsyncioTestCase):
             controller.definition = SimpleNamespace(mode=RunMode.BACKTEST,
                 experimental_structure_book='level-book-v7', execution_mode='strategy',
                 session_date=datetime(2026, 8, 21).date(), final_session_date=None,
-                requested_start=datetime(2026, 8, 21, 8, tzinfo=UTC))
+                requested_start=datetime(2026, 8, 21, 8, tzinfo=UTC),
+                configuration_revision={'payload': {'strategy': {'parameters': {}}}})
             controller.run_dir = Path(folder)
             controller.run_id = 'test'
             controller._v7_excluded_tickers = set()

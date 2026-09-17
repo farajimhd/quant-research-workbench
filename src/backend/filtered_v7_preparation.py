@@ -1,9 +1,42 @@
 """Backtest orchestration of verified historical checkpoints, never live state."""
 import asyncio
+from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 import subprocess
 import sys
+
+
+def _reap(process):
+    """Do not leave a cancelled preparation writer running in the background."""
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+@asynccontextmanager
+async def preparation_process(*args, **kwargs):
+    # WindowsSelectorEventLoop deliberately serves the API, but has no asyncio
+    # subprocess transport. Shield startup so cancellation cannot lose a child
+    # that Popen is still creating in the worker thread.
+    startup = asyncio.create_task(asyncio.to_thread(subprocess.Popen, args, **kwargs))
+    process = None
+    try:
+        process = await asyncio.shield(startup)
+        yield process
+    finally:
+        if process is None:
+            process = await startup
+        cleanup = asyncio.create_task(asyncio.to_thread(_reap, process))
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await cleanup
+            raise
 
 
 async def prepare(tickers, days, publish):
@@ -36,30 +69,22 @@ async def prepare(tickers, days, publish):
             env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
             flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             with (folder/'preparation.log').open('ab') as log:
-                process = await asyncio.create_subprocess_exec(sys.executable, '-B', '-m',
+                async with preparation_process(sys.executable, '-B', '-m',
                     'research.level_book.v7.filtered_worker', '--runtime', str(folder), '--ticker', ticker,
                     cwd=str(Path(__file__).resolve().parents[2]), env=env,
-                    stdout=log, stderr=log, creationflags=flags)
-                try:
-                    while process.returncode is None:
+                    stdout=log, stderr=log, creationflags=flags) as process:
+                    while process.poll() is None:
                         detail = 'Preparing filtered V7 history: '+ticker
                         progress = target/'progress.json'
                         if progress.exists():
                             p = await asyncio.to_thread(read, progress)
                             detail += f" - {p.get('completed', 0)}/{p.get('total', '?')} sessions; {p.get('stage', 'preparing')}"
                         await publish(completed, total, detail)
-                        try:
-                            await asyncio.wait_for(process.wait(), timeout=2)
-                        except asyncio.TimeoutError:
-                            pass
+                        await asyncio.sleep(2)
                     if process.returncode:
                         error = target/'error.json'
                         reason = (await asyncio.to_thread(read, error)).get('error') if error.exists() else 'see '+str(folder/'preparation.log')
                         raise ValueError(f'Filtered V7 preparation failed for {ticker}: {reason}')
-                finally:
-                    if process.returncode is None:
-                        process.terminate()
-                        await process.wait()
             for day in days:
                 try:
                     book, _ = await asyncio.to_thread(catalog.select, ticker, str(day))
