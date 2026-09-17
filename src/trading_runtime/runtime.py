@@ -552,6 +552,19 @@ class TradingRuntime:
 
         if observation.bid <= 0 or observation.ask < observation.bid:
             return
+        quote_at = observation.observed_at
+        assignments_for_ticker = getattr(self.strategy, 'assignments_for_ticker', None)
+        if assignments_for_ticker and any(
+            a.parameters.get('hindsight_long_contract')
+            for a in assignments_for_ticker(observation.ticker)
+        ):
+            record = observation.source_values.get('market.spread_bps')
+            try:
+                quote_at = datetime.fromisoformat(str(record['observed_at']).replace('Z', '+00:00'))
+                if quote_at.tzinfo is None or quote_at > observation.observed_at:
+                    return
+            except (KeyError, TypeError, ValueError):
+                return
         snapshot = ExecutionMarketSnapshot(
             ticker=observation.ticker,
             bid=observation.bid,
@@ -561,7 +574,7 @@ class TradingRuntime:
                 if isinstance(observation.source_values.get("market.tick_size"), Mapping)
                 else 0.01
             ),
-            observed_at=observation.observed_at,
+            observed_at=quote_at,
             source="signal_stream_occurrence",
             volatility=float(observation.volatility or 0),
             upper_price_band=observation.upper_luld_price,

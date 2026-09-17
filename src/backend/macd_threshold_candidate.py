@@ -6,7 +6,7 @@ PROFILE_ID='macd-threshold-100ms'
 LABEL='100ms MACD thresholds - enter -5 / exit -10 bps'
 
 
-def build(base, *, profile_id=PROFILE_ID, label=LABEL, parameters=None):
+def build(base, *, profile_id=PROFILE_ID, label=LABEL, parameters=None, macd_timeframe='100ms', quantity=100.):
     # Shared declaration plumbing; each saved candidate owns its policy parameters.
     PROFILE_ID, LABEL = profile_id, label
     payload=deepcopy(base)
@@ -14,8 +14,8 @@ def build(base, *, profile_id=PROFILE_ID, label=LABEL, parameters=None):
     rules=[]
     for suffix,source,timeframe,comparator,value in [
         ('price','market.last_price','100ms','greater_than',0.),
-        ('macd','indicator.macd.line','100ms','greater_than',-1e9),
-        ('signal','indicator.macd.signal','100ms','greater_than',-1e9),
+        ('macd','indicator.macd.line',macd_timeframe,'greater_than',-1e9),
+        ('signal','indicator.macd.signal',macd_timeframe,'greater_than',-1e9),
         ('quality-clock','market.last_price','1s','greater_than',0.),
         ('invalid','market.last_price','100ms','less_or_equal',0.)]:
         rules.append(dict(rule_set_id=PROFILE_ID+'-'+suffix,name='Observe '+suffix,enabled=True,
@@ -28,7 +28,7 @@ def build(base, *, profile_id=PROFILE_ID, label=LABEL, parameters=None):
     observe=stage(['price','macd','signal','quality-clock'])
     blocker=stage(['invalid'])
     order=dict(execution_policy='adaptive_urgent',deadline_ms=100,partial_fill_policy='complete_remainder')
-    capital=dict(mode='fixed_quantity',value=DEFAULTS['quantity'],allow_replacement=False)
+    capital=dict(mode='fixed_quantity',value=quantity,allow_replacement=False)
     lifecycle=dict(phase_modes={k:'automatic' for k in ['initial_entry','manage','exit','reentry']},
         trading_behavior=dict(side='long',eligible_sessions=['premarket','regular','after_hours'],
             entry_cutoff_time='20:00:00',flatten_time='20:00:00'),
