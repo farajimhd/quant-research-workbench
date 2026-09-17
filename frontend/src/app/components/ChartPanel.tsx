@@ -2215,8 +2215,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             <span className="toolbar-divider" />
             {showIndicatorControls ? (
               <IndicatorFeatureSelect
-                additionalIndicators={<>{structuralDetector.checkbox}{supertrendIndicator.checkbox}{formingMacd.checkbox}</>}
-                additionalSelectedCount={Number(structuralDetector.enabled)+Number(supertrendIndicator.enabled)+Number(formingMacd.enabled)}
+                additionalIndicators={[structuralDetector.menuItem,supertrendIndicator.menuItem,formingMacd.menuItem]}
                 catalogColumns={catalogColumns}
                 displayItemOptions={displayItemOptions}
                 featureOptions={featureOptions}
@@ -3419,9 +3418,10 @@ function ChartColumnMenuPortal({
   );
 }
 
+type ChartMenuIndicator = ChartDisplayItem & { selected: boolean; onToggle: () => void; onConfigure: () => void; disabled?: boolean };
+
 function IndicatorFeatureSelect({
-  additionalIndicators,
-  additionalSelectedCount = 0,
+  additionalIndicators = [],
   catalogColumns,
   displayItemOptions,
   featureOptions,
@@ -3431,8 +3431,7 @@ function IndicatorFeatureSelect({
   open,
   values
 }: {
-  additionalIndicators?: ReactNode;
-  additionalSelectedCount?: number;
+  additionalIndicators?: ChartMenuIndicator[];
   catalogColumns: ChartCatalogItem[];
   displayItemOptions: ChartDisplayItem[];
   featureOptions: string[];
@@ -3449,11 +3448,12 @@ function IndicatorFeatureSelect({
   const catalogByColumn = new Map(catalogColumns.map((item) => [item.column, item]));
   const displayItems = mergeSessionEquivalentDisplayItems(displayItemOptions.filter((item) => item.presentation?.selectable !== false));
   const standardDisplayItems = displayItems.filter((item) => !chartMenuItemUsesLookahead(item));
-  const groupedDisplayItems = groupChartDisplayItems(standardDisplayItems);
+  const additionalById = new Map(additionalIndicators.map(item => [item.id, item]));
+  const groupedDisplayItems = groupChartDisplayItems([...standardDisplayItems, ...additionalIndicators]);
   const groupedIndicatorOptions = groupColumnOptions(indicatorOptions, catalogByColumn, "Indicators");
   const groupedFeatureOptions = groupColumnOptions(visibleFeatures, catalogByColumn, "Features");
   const selected = new Set(values);
-  const selectedCount = additionalSelectedCount + (usesDisplayItems ? standardDisplayItems.filter((option) => selected.has(option.id)).length : visibleOptions.filter((option) => selected.has(option)).length);
+  const selectedCount = additionalIndicators.filter(item => item.selected).length + (usesDisplayItems ? standardDisplayItems.filter((option) => selected.has(option.id)).length : visibleOptions.filter((option) => selected.has(option)).length);
   const labelForOption = (option: string) => catalogByColumn.get(option)?.title ?? displayName(option);
   const [helpKey, setHelpKey] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -3501,7 +3501,6 @@ function IndicatorFeatureSelect({
       </button>
       {open ? (
         <ChartColumnMenuPortal anchor={triggerRef.current}>
-          {additionalIndicators}
           {usesDisplayItems ? (
             <div className="chart-column-menu-grid">
               {groupedDisplayItems.map((section) => (
@@ -3514,8 +3513,10 @@ function IndicatorFeatureSelect({
                         helpOpen={helpKey === `display:${option.id}`}
                         key={option.id}
                         onHelpToggle={() => toggleHelp(`display:${option.id}`)}
-                        onToggle={() => toggleValue(option.id)}
-                        selected={selected.has(option.id)}
+                        onToggle={additionalById.get(option.id)?.onToggle ?? (() => toggleValue(option.id))}
+                        onConfigure={additionalById.get(option.id)?.onConfigure}
+                        disabled={additionalById.get(option.id)?.disabled}
+                        selected={additionalById.get(option.id)?.selected ?? selected.has(option.id)}
                         subtitle={option.category ? displayName(option.category) : undefined}
                         title={option.title}
                       />
@@ -3526,6 +3527,14 @@ function IndicatorFeatureSelect({
             </div>
           ) : (
             <div className="chart-column-menu-grid">
+              {groupChartDisplayItems(additionalIndicators).map(section => <div className="chart-column-menu-column" key={section.key}>
+                <div className="chart-column-menu-title">{section.label}</div>
+                <div className="chart-column-menu-list feature-list">{section.items.map(option => {
+                  const item = additionalById.get(option.id)!;
+                  return <ChartColumnMenuItem key={item.id} title={item.title} subtitle={item.category} selected={item.selected} disabled={item.disabled}
+                    onToggle={item.onToggle} onConfigure={item.onConfigure} help={helpForDisplayItem(item)} helpOpen={false} onHelpToggle={() => {}} />;
+                })}</div>
+              </div>)}
               {[...groupedIndicatorOptions, ...groupedFeatureOptions].map((section) => (
                 <div className="chart-column-menu-column" key={section.key}>
                   <div className="chart-column-menu-title">{section.label}</div>
@@ -3544,7 +3553,7 @@ function IndicatorFeatureSelect({
                   </div>
                 </div>
               ))}
-              {visibleFeatures.length ? null : <div className="chart-column-menu-empty">No feature columns for this session.</div>}
+              {visibleOptions.length || additionalIndicators.length ? null : <div className="chart-column-menu-empty">No indicators for this session.</div>}
             </div>
           )}
         </ChartColumnMenuPortal>
@@ -4133,6 +4142,8 @@ type ChartColumnHelp = {
 };
 
 function ChartColumnMenuItem({
+  onConfigure,
+  disabled = false,
   help,
   helpOpen,
   onHelpToggle,
@@ -4142,6 +4153,8 @@ function ChartColumnMenuItem({
   title,
   tone
 }: {
+  onConfigure?: () => void;
+  disabled?: boolean;
   help: ChartColumnHelp;
   helpOpen: boolean;
   onHelpToggle: () => void;
@@ -4153,15 +4166,15 @@ function ChartColumnMenuItem({
 }) {
   return (
     <div className={`chart-column-menu-item${selected ? " selected" : ""}${tone === "lookahead" ? " lookahead" : ""}`}>
-      <button className="chart-column-menu-toggle" onClick={onToggle} type="button">
+      <button className="chart-column-menu-toggle" aria-pressed={selected} disabled={disabled} onClick={onToggle} type="button">
         <span className="chart-column-menu-check">{selected ? <Check size={13} /> : null}</span>
         <span className="chart-column-menu-label">
           <span>{title}</span>
           {subtitle ? <small>{subtitle}</small> : null}
         </span>
       </button>
-      <button aria-expanded={helpOpen} aria-label={`Explain ${title}`} className="chart-column-help-button" onClick={onHelpToggle} type="button">
-        <CircleHelp size={13} />
+      <button aria-expanded={onConfigure ? undefined : helpOpen} aria-label={onConfigure ? `Configure ${title}` : `Explain ${title}`} title={onConfigure ? `Configure ${title}` : `Explain ${title}`} className="chart-column-help-button" onClick={onConfigure ?? onHelpToggle} type="button">
+        {onConfigure ? <SlidersHorizontal size={13} /> : <CircleHelp size={13} />}
       </button>
       {helpOpen ? <IndicatorGuideModal help={help} onClose={onHelpToggle} title={title} /> : null}
     </div>
@@ -4995,13 +5008,14 @@ function normalizeStrategyPresentationSettings(settings: Partial<StrategyPresent
 }
 
 function resolveOscillatorThresholdSettings(settings?: Partial<OscillatorThresholdSettings>, group?: OscillatorPaneGroup): OscillatorThresholdSettings {
+  const formingMacdAxis = group?.key === `oscillator:${MACD_DIFFERENCE_PANE}`;
   const emaAxis = group?.series.some(series => series.chartRole === "ema-acceleration") === true;
   const defaultValue = group?.key === "oscillator:rsi" ? 50 : 0;
-  const defaultColor = validHexColor(readNeutralChartColor(), "#667085");
+  const defaultColor = formingMacdAxis ? '#000000' : validHexColor(readNeutralChartColor(), "#667085");
   return {
     ...(group?.key === "oscillator:macd" ? { macdBpsVisible: settings?.macdBpsVisible !== false, macdBpsValue: Number.isFinite(settings?.macdBpsValue) ? settings!.macdBpsValue : 0 } : {}),
     color: validHexColor(settings?.color, defaultColor),
-    lineStyle: settings?.lineStyle === "solid" || settings?.lineStyle === "dotted" || settings?.lineStyle === "dashed" ? settings.lineStyle : emaAxis ? "solid" : "dashed",
+    lineStyle: settings?.lineStyle === "solid" || settings?.lineStyle === "dotted" || settings?.lineStyle === "dashed" ? settings.lineStyle : formingMacdAxis ? "dotted" : emaAxis ? "solid" : "dashed",
     lineWidth: Math.max(1, Math.min(4, Math.round(Number(settings?.lineWidth) || (emaAxis ? 2 : 1)))),
     value: Number.isFinite(Number(settings?.value)) ? Number(settings?.value) : defaultValue,
     visible: settings?.visible !== false,

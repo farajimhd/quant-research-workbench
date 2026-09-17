@@ -89,6 +89,7 @@ class FormingMacdBrowserTests(unittest.TestCase):
                   const React=(await import('/node_modules/.vite/deps/react.js')).default;
                   const dom=await import('/node_modules/.vite/deps/react-dom_client.js');
                   const {ChartPanel}=await import('/src/app/components/ChartPanel.tsx');
+                  const {CHART_INDICATORS}=await import('/src/features/canvas/configuration.ts');
                   document.getElementById('root').style.display='none';
                   const node=document.createElement('div');document.body.appendChild(node);
                   const root=(dom.default??dom).createRoot(node);window.macdRoot=root;
@@ -96,16 +97,32 @@ class FormingMacdBrowserTests(unittest.TestCase):
                   function Harness(){
                     const [tf,setTf]=React.useState('1s'),base=1787301000,d=tf==='1s'?1:5;
                     const candles=React.useMemo(()=>Array.from({length:180/d},(_,i)=>({time:base+i*d,endTime:base+(i+1)*d,isClosed:true,open:10,close:10+.4*Math.sin(i*d/20),high:10.5,low:9.5})),[tf]);
-                    return React.createElement(ChartPanel,{ticker:'TEST',timeframe:tf,timeframes:['1s','5s'],onTimeframeChange:setTf,onTickerChange:()=>{},onVisibleColumnsChange:()=>{},baseHeight:380,settingsStorageKey:'macd-test',visibleColumns:[],featureOptions:[],indicatorOptions:[],displayItemOptions:[],indicatorAsOf:new Date((base+180)*1000).toISOString(),payload:{timeframe:tf,candles,volume:[],overlay_series:[],oscillator_series:[],markers:[],regions:[]}});
+                    return React.createElement(ChartPanel,{ticker:'TEST',timeframe:tf,timeframes:['1s','5s'],onTimeframeChange:setTf,onTickerChange:()=>{},onVisibleColumnsChange:()=>{},baseHeight:380,settingsStorageKey:'macd-test',visibleColumns:[],featureOptions:[],indicatorOptions:[],displayItemOptions:CHART_INDICATORS,indicatorAsOf:new Date((base+180)*1000).toISOString(),payload:{timeframe:tf,candles,volume:[],overlay_series:[],oscillator_series:[],markers:[],regions:[]}});
                   }
                   root.render(React.createElement(Harness));return {vectors:9};
                 }""")
                 self.assertEqual(result['vectors'], 9)
                 page.get_by_role('button', name=re.compile(r'^Indicators')).click()
-                page.get_by_label('Multi-timeframe MACD difference', exact=True).check()
+                output = Path(os.environ['MACD_REVIEW_OUTPUT'])
+                output.mkdir(parents=True, exist_ok=True)
+                menu = page.locator('.chart-column-menu-portal')
+                self.assertEqual(menu.locator('.chart-setting-row').count(), 0)
+                for title, category in [('Multi-timeframe MACD difference', 'Momentum'), ('Supertrend', 'Volatility'), ('Structural detector', 'Price Action')]:
+                    column = menu.locator('.chart-column-menu-column').filter(has=page.locator('.chart-column-menu-title', has_text=category))
+                    self.assertEqual(column.get_by_role('button', name=f'Configure {title}', exact=True).count(), 1)
+                for theme in ['light', 'dark']:
+                    for scale in [.8, .9, 1, 1.1, 1.25]:
+                        page.set_viewport_size({'width': 1200, 'height': 1000})
+                        page.evaluate("""async([theme,s])=>{const d=document.documentElement;(await import('/src/app/theme.ts')).applyThemeDefinition(d,theme);d.style.setProperty('--app-zoom',s);d.style.setProperty('--app-zoom-inverse',1/s);d.style.setProperty('--app-zoomed-viewport-height',`${100/s}vh`);d.style.setProperty('--app-zoomed-viewport-width',`${100/s}vw`)}""", [theme, scale])
+                        page.wait_for_timeout(100)
+                        box=menu.bounding_box()
+                        self.assertLessEqual(box['x']+box['width'], 1201)
+                        self.assertLessEqual(box['y']+box['height'], 1001)
+                        page.screenshot(path=str(output / f'indicator-menu-{theme}-{scale}.png'))
+                page.get_by_role('button', name='Multi-timeframe MACD difference Oscillator pane', exact=True).click()
                 pane_close = page.get_by_role('button', name='Close Multi-timeframe MACD difference pane', exact=True)
                 pane_close.wait_for(state='visible')
-                page.get_by_role('button', name='Configure multi-timeframe MACD', exact=True).click()
+                page.get_by_role('button', name='Configure Multi-timeframe MACD difference', exact=True).click()
                 page.get_by_text('180 points', exact=False).first.wait_for(state='visible')
                 self.assertTrue(page.get_by_label('MACD source 1s', exact=True).is_checked())
                 self.assertTrue(page.get_by_label('MACD source 5s', exact=True).is_checked())
@@ -128,6 +145,13 @@ class FormingMacdBrowserTests(unittest.TestCase):
                 self.assertTrue(page.get_by_role('button', name='Configure MACD − signal · 5s', exact=True).is_visible())
                 self.assertTrue(page.get_by_role('button', name='Configure MACD − signal · 1m', exact=True).is_visible())
                 page.screenshot(path=str(output / 'macd-three-lines.png'))
+                page.get_by_role('button', name='Configure MACD − signal · 1s', exact=True).click()
+                editor = page.locator('.chart-legend-editor')
+                self.assertTrue(editor.get_by_label('Show baseline', exact=True).is_checked())
+                self.assertEqual(editor.get_by_label('Value', exact=True).input_value(), '0')
+                self.assertEqual(editor.get_by_label('Color', exact=True).last.input_value(), '#000000')
+                self.assertEqual(editor.locator('label').filter(has_text=re.compile(r'^Shape')).last.locator('select').input_value(), 'dotted')
+                page.keyboard.press('Escape')
                 page.get_by_role('button', name='5s', exact=True).click()
                 page.get_by_role('button', name='MACD difference · 1s,5s,1m', exact=True).click()
                 self.assertTrue(page.get_by_label('MACD source 1s', exact=True).is_checked())
@@ -140,10 +164,10 @@ class FormingMacdBrowserTests(unittest.TestCase):
                 pane_close.wait_for(state='hidden')
                 self.assertFalse(page.evaluate("JSON.parse(localStorage.getItem('macd-test.forming-macd')).enabled"))
                 page.get_by_role('button', name=re.compile(r'^Indicators')).click()
-                page.get_by_label('Multi-timeframe MACD difference', exact=True).check()
+                page.get_by_role('button', name='Multi-timeframe MACD difference Oscillator pane', exact=True).click()
                 pane_close.wait_for(state='visible')
                 self.assertEqual(page.evaluate("JSON.parse(localStorage.getItem('macd-test.forming-macd')).timeframes"), ['1s', '5s', '1m'])
-                page.get_by_role('button', name='Configure multi-timeframe MACD', exact=True).click()
+                page.get_by_role('button', name='Configure Multi-timeframe MACD difference', exact=True).click()
                 for tf in ['1d', '1w', '1mo', '1y']:
                     page.get_by_label(f'MACD source {tf}', exact=True).check()
                 for tf in ['1s', '5s', '1m']:

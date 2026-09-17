@@ -288,7 +288,9 @@ export function useStructuralDetector(ticker: string, timeframe: string, candles
       <div className="structural-label-actions"><Button variant="primary" onClick={() => setSettingsOpen(false)}>Done</Button></div>
     </Modal> : null}
   </>;
-  return { rows, checkbox, controls, enabled, status, cutoff, labelRows: stored.labelRows };
+  return { rows, checkbox, controls, enabled, status, cutoff, labelRows: stored.labelRows,
+    menuItem: {id:'indicator.structural_detector',title:'Structural detector',group:'price_action',category:'Closed-candle states',selected:enabled,
+      onToggle:()=>change({...stored,key:storageKey,enabled:!enabled}),onConfigure:()=>setSettingsOpen(true)} };
 }
 
 function LabelCommit({onCommit,children}:{onCommit:()=>void;children:ReactNode}) {
