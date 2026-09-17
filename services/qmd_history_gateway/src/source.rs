@@ -584,13 +584,16 @@ struct StructureSplitRevisionRow {
 }
 
 fn annotate_trade_eligibility(mut decoded: MarketEvent, rules: &TradeAggregationRules) -> MarketEvent {
+    let excluded = decoded.is_excluded_from_derived_state();
     if let MarketEvent::Trade(trade) = &mut decoded {
         let rule = rules.resolve(&trade.conditions, trade.ts);
         let delayed = trade.participant_ts.is_some_and(|at| at.timestamp() < trade.ts.timestamp());
-        trade.raw["price_eligible"] = serde_json::json!(rule.update_last && !delayed);
-        trade.raw["high_low_eligible"] = serde_json::json!(rule.update_high_low && !delayed);
-        trade.raw["volume_eligible"] = serde_json::json!(rule.update_volume);
-        trade.raw["eligibility_revision"] = serde_json::json!("qmd-trade-update-v1");
+        trade.raw["price_eligible"] = serde_json::json!(rule.update_last && !excluded);
+        trade.raw["high_low_eligible"] = serde_json::json!(rule.update_high_low && !excluded);
+        trade.raw["volume_eligible"] = serde_json::json!(rule.update_volume && !excluded);
+        trade.raw["eligibility_revision"] = serde_json::json!("qmd-trade-update-v2-0405-et");
+        trade.raw["derived_state_excluded"] = serde_json::json!(excluded);
+        trade.raw["delayed_report"] = serde_json::json!(delayed);
     }
     decoded
 }
@@ -5444,7 +5447,7 @@ mod tests {
             });
             let MarketEvent::Trade(trade) = super::annotate_trade_eligibility(event, &rules) else { panic!("trade"); };
             assert_eq!(trade.raw["price_eligible"], expected);
-            assert_eq!(trade.raw["volume_eligible"], true);
+            assert_eq!(trade.raw["volume_eligible"], execution == at);
         }
     }
 

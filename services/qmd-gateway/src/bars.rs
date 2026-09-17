@@ -65,13 +65,13 @@ impl TradeAggregationRules {
     }
 
     pub fn resolve(&self, conditions: &[u16], timestamp: DateTime<Utc>) -> TradeUpdateRule {
-        if conditions.is_empty() {
-            return TradeUpdateRule::regular();
-        }
         let local_seconds = timestamp
             .with_timezone(&New_York)
             .time()
             .num_seconds_from_midnight();
+        if !cfg!(feature = "historical-campaign-v16") && local_seconds < 4 * 3600 + 5 * 60 {
+            return TradeUpdateRule::excluded();
+        }
         let extended_hours =
             !(REGULAR_SESSION_START_SECONDS..REGULAR_SESSION_END_SECONDS).contains(&local_seconds);
         self.resolve_for_session(conditions, extended_hours)
@@ -1140,7 +1140,7 @@ impl BarShardStore {
 
 impl BarStore {
     fn apply_event(&mut self, event: &MarketEvent) -> Vec<BarRow> {
-        if event.is_delayed_trade_report() {
+        if event.is_excluded_from_derived_state() {
             return Vec::new();
         }
         let mut finalized = Vec::new();
@@ -2337,7 +2337,7 @@ mod tests {
     async fn execution_vwap_accepts_only_inside_fresh_prevailing_nbbo() {
         let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
         let bars = SharedBarStore::new_without_structure(vec!["1s".into()], 8, 1, rules);
-        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 5, 0).unwrap();
 
         bars.apply_event(&MarketEvent::Quote(quote(start, 3.30, 3.32, 1)))
             .await;

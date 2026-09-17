@@ -10,6 +10,7 @@ import numpy as np
 from .historical_session_levels import Settings
 from .historical_level_checkpoint import digest
 from .reaction_band import CONFIG as BAND_CONFIG,partition
+from .derived_trade_policy import POLICY, eligible_completed_second
 
 VERSION='causal-level-book-v7-mle-1'
 EXTRACTION_VERSION='historical-session-reaction-mle-1'
@@ -29,6 +30,8 @@ class StreamingLevelBook:
         self.settings=asdict(settings);self.rows=[];self.pending={};self.previous=None
         self.small=[];self.large=[];self.high=None;self.low=None;self.trend=0;self.hod=None;self.lod=None
         self.bars_processed=0;self.proposals=0;self.merged=0
+        self.input_policy=POLICY;self.excluded_early_seconds=0
+        self.seed_input_policy=prior.get('input_policy', 'legacy-unfiltered') if prior['levels'] else POLICY
         for old in prior['levels']:
             role=old['role_segments'][-1]['role'] if old['role_segments'] else 'transition'
             row=dict(id=old['id'],lower=float(old['lower']*split_factor),upper=float(old['upper']*split_factor),price=float(old['price']*split_factor),
@@ -128,6 +131,9 @@ class StreamingLevelBook:
         t=b['t'];o=b['open'];h=b['high'];l=b['low'];c=b['close']
         if (not all(isfinite(x) for x in b.values()) or t!=int(t) or not self.as_of<t<=self.end or l<=0 or b['volume']<0
                 or h<max(o,c) or l>min(o,c) or (observed_at is not None and (not isfinite(observed_at) or t>observed_at))):raise ValueError('Invalid, future or unordered completed 1s bar')
+        if not eligible_completed_second(t):
+            self.excluded_early_seconds+=1;self.as_of=t
+            return
         gap=self.previous is not None and t-self.previous['t']>self.settings['maximum_gap_seconds']
         noise=self._noise(h-l);self.hod=max(self.hod or h,h);self.lod=min(self.lod or l,l)
         tick=self.settings['tick'];prominence=max(3*tick,self.settings['noise_multiple']*noise,(self.hod-self.lod)*self.settings['range_fraction'])
@@ -192,7 +198,10 @@ class StreamingLevelBook:
         return dict(version=VERSION,book_version=VERSION,ticker=self.ticker,session_date=self.session,as_of=stamp,max_input_timestamp=self.as_of,
             book_hash=self.prior_hash,split_factor=self.split_factor,historical_count=sum(r['historical'] for r in self.rows),
             current_day_count=sum(r['qualified'] and not r['historical'] for r in self.rows),candidate_count=sum(not r['qualified'] for r in self.rows),
-            bars_processed=self.bars_processed,proposals=self.proposals,merged_proposals=self.merged,segments=segments)
+            bars_processed=self.bars_processed,proposals=self.proposals,merged_proposals=self.merged,segments=segments,
+            input_policy=self.input_policy,seed_input_policy=self.seed_input_policy,
+            excluded_early_seconds=self.excluded_early_seconds,
+            qmd_structure_session_high=self.hod)
 
     def historical_checkpoint(self,input_hash):
         rows=deepcopy(self.rows)
@@ -202,6 +211,7 @@ class StreamingLevelBook:
         result=dict(version='historical-level-mle-book-1',source_extraction_version=EXTRACTION_VERSION,band_config={**BAND_CONFIG,'coverage':self.coverage},
             ticker=self.ticker,session=self.session,available_at=self.end,prior_checkpoint_hash=self.prior_hash,input_hash=input_hash,
             levels=rows,split_factor=self.split_factor,split_evidence=self.split_evidence,retrospective=True)
+        result['input_policy']=self.input_policy if self.seed_input_policy == POLICY else 'mixed-legacy-seed'
         result['checkpoint_hash']=digest(result);return result
 
     def checkpoint(self, *, copy_state=True):
@@ -219,6 +229,7 @@ class StreamingLevelBook:
     @classmethod
     def restore(cls,value, *, copy_state=True):
         if value.get('version')!=VERSION or value.get('hash')!=digest({k:v for k,v in value.items() if k!='hash'}):raise ValueError('Streaming checkpoint integrity/version mismatch')
+        if value['state'].get('input_policy') != POLICY:raise ValueError('Streaming input policy changed; rebuild from canonical data')
         # copy_state=False transfers ownership of freshly decoded private
         # scratch data. Hash and version validation are identical in both paths.
         engine=cls.__new__(cls);engine.__dict__.update(deepcopy(value['state']) if copy_state else value['state']);engine.pending={int(k):v for k,v in engine.pending.items()};engine._index();return engine

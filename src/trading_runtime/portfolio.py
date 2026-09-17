@@ -1314,6 +1314,8 @@ class PortfolioManagementEngine:
                 "portfolio_policy": policy.identity,
                 "portfolio_reservation_id": reservation_id,
                 "requested_quantity": requested,
+                **({'unreserved_slice_notional': requested * price}
+                   if intent.metadata.get('unreserved_cash_slice') else {}),
                 **({'cash_tranche_allocation':dict(budget=tranche_hold.cash_tranche_budget,
                     tranche_size=tranche_hold.cash_tranche_size,count=tranche_hold.cash_tranche_count,
                     index=tranche['index'],remaining_budget=tranche_hold.reserved_notional)} if tranche else {}),
@@ -1445,7 +1447,9 @@ class PortfolioManagementEngine:
             if summary is None or price <= 0:
                 return 0.0
             broker_cash_capacity = self._broker_cash_capacity(state)
-            if request.mode == "mandate_fraction":
+            if request.mode == "fixed_notional":
+                requested = request.value / price
+            elif request.mode == "mandate_fraction":
                 requested = broker_cash_capacity * request.value / price
             elif request.mode == "risk_fraction":
                 risk_per_share = _risk_per_share(intent, max(float(intent.quantity), 1.0))

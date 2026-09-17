@@ -924,7 +924,7 @@ impl GenericStructureEngine {
         // its cursor must advance. Its execution belongs to an already closed
         // one-second bucket, however, and must never revise the current
         // structural book, session extrema, pivots, volume profile, or gates.
-        if event.is_delayed_trade_report() {
+        if event.is_excluded_from_derived_state() {
             self.last_ts = Some(ts);
             self.replayed_through = Some(
                 self.replayed_through
@@ -5154,7 +5154,7 @@ mod tests {
             ),
         ])
         .unwrap();
-        let start = new_york_ms(2026, 8, 21, 4, 2, 52);
+        let start = new_york_ms(2026, 8, 21, 4, 5, 52);
         let mut event = trade(start, 3.46, 100.0, 1);
         let MarketEvent::Trade(ref mut print) = event else {
             unreachable!()
@@ -5170,7 +5170,7 @@ mod tests {
     #[cfg(not(feature = "historical-campaign-v16"))]
     #[test]
     fn extrema_ignore_zero_size_and_nonfinite_prices() {
-        let start = new_york_ms(2026, 8, 21, 4, 0, 0);
+        let start = new_york_ms(2026, 8, 21, 4, 5, 0);
         let mut engine = GenericStructureEngine::new("TEST");
         engine.apply_event(&trade(start, 100.0, 100.0, 1), TradeUpdateRule::regular());
         for (index, (price, size)) in [
@@ -5193,11 +5193,11 @@ mod tests {
     }
 
     #[test]
-    fn extended_session_extrema_ignore_trades_outside_four_to_twenty_et() {
+    fn extended_session_extrema_ignore_trades_outside_0405_to_twenty_et() {
         let mut engine = GenericStructureEngine::new("TEST");
         for (sequence, (hour, minute, price)) in [
             (3, 59, 10.0),
-            (4, 0, 100.0),
+            (4, 5, 100.0),
             (19, 59, 101.0),
             (20, 0, 250.0),
         ]
@@ -5221,14 +5221,14 @@ mod tests {
     }
 
     #[test]
-    fn extended_session_extrema_reset_at_next_four_et_trade() {
+    fn extended_session_extrema_reset_at_next_0405_et_trade() {
         let mut engine = GenericStructureEngine::new("TEST");
         engine.apply_event(
             &trade(new_york_ms(2026, 7, 24, 19, 59, 0), 101.0, 100.0, 1),
             TradeUpdateRule::regular(),
         );
         engine.apply_event(
-            &trade(new_york_ms(2026, 7, 25, 4, 0, 0), 75.0, 100.0, 2),
+            &trade(new_york_ms(2026, 7, 25, 4, 5, 0), 75.0, 100.0, 2),
             TradeUpdateRule::regular(),
         );
 
@@ -5737,7 +5737,7 @@ mod tests {
     #[test]
     fn delayed_trade_advances_audit_cursor_without_revising_structure() {
         let mut engine = GenericStructureEngine::new("TEST");
-        let fresh_at = new_york_ms(2026, 8, 21, 4, 2, 52);
+        let fresh_at = new_york_ms(2026, 8, 21, 4, 5, 52);
         let fresh = trade(fresh_at, 3.46, 100.0, 17);
         engine.apply_event(&fresh, TradeUpdateRule::regular());
 

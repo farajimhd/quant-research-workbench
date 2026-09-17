@@ -41,7 +41,7 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, OwnedSemaphorePermit, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v35";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v58";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v59-0405-et";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "retrospective-split-adjusted-v2";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 const PREPARED_BAR_CACHE_SCHEMA_VERSION: u16 = 11;
@@ -2416,7 +2416,7 @@ impl HistoricalDerivedCache {
                         continue;
                     }
                     let event = self.source.market_event(compact);
-                    if event.is_delayed_trade_report() {
+                    if event.is_excluded_from_derived_state() {
                         continue;
                     }
                     if let Some(builder) = structure_projection.as_mut() {
@@ -5317,7 +5317,7 @@ mod tests {
         let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
         let short = SharedBarStore::new(vec!["100ms".into(), "1s".into()], 5, 1, rules.clone());
         let long = SharedBarStore::new(vec!["100ms".into(), "1s".into()], 1000, 1, rules);
-        let start = Utc.with_ymd_and_hms(2026, 8, 19, 8, 0, 0).unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 8, 19, 8, 5, 0).unwrap();
         let mut a = Vec::new(); let mut b = Vec::new();
         for i in 0..120 {
             let at = start + Duration::milliseconds(i * 100);

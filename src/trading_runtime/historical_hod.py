@@ -695,6 +695,14 @@ def observe_frame(frame, saved, parameters, snapshot=None):
     if parameters.get('r1_ladder_contract') in {'r1-hod-resistance-ladder-v4','r1-hod-resistance-ladder-v5','r1-hod-resistance-ladder-v6'} and frame.timeframe == '1s':
         d['prior_r1_vwap'] = (d.get('vwap') if frame.as_of.timestamp()-d.get('closed_at',0) == 1 else None)
     observe(o,d,parameters.get('historical_hod',DEFAULTS))
+    if parameters.get('vwap_ladder_contract') and frame.timeframe == '1s':
+        from .vwap_resistance_ladder import observe_market
+        from src.market_engine.derived_trade_policy import eligible_trade_time
+        if eligible_trade_time(frame.as_of.timestamp()-1):
+            o.structural_transition_levels = ()
+            tracker = deepcopy(d.get('vwap_ladder_market', {}))
+            observe_market(o, tracker)
+            d['vwap_ladder_market'] = tracker
     if parameters.get('r1_ladder_contract') in {
             'r1-hod-resistance-ladder-v2','r1-hod-resistance-ladder-v3','r1-hod-resistance-ladder-v4','r1-hod-resistance-ladder-v5','r1-hod-resistance-ladder-v6'}:
         from .r1_ladder import observe_session_hod

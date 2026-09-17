@@ -147,6 +147,41 @@ class PortfolioCausationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unreserved_slices_leave_cash_for_other_positions_and_clip_adds(self):
+        policy = PortfolioPolicy(maximum_position_fraction=1., maximum_ticker_fraction=1.,
+            maximum_planned_risk_fraction=.5, maximum_open_risk_fraction=.5, entry_fee_buffer_bps=0.)
+        engine = self.engine([PortfolioAccountProfile('cash', 'C1', 'replay', 'simulated', policy)])
+        engine.synchronize_snapshot('C1', summary=summary('C1', equity=9000, available=9000),
+            ledger=ledger('C1', cash=9000), positions=[])
+        first = replace(intent('initial', price=10, invalidation=9),
+            capital_request=CapitalRequest(mode='mandate_fraction', value=1/3),
+            metadata={'assignment_id': 'assignment-AAPL', 'unreserved_cash_slice': True})
+        decision, approved = await engine.approve(first, account_id='C1')
+        self.assertIsNotNone(approved)
+        self.assertEqual(approved.metadata['unreserved_slice_notional'], 3000)
+        self.assertEqual(approved.quantity, 300)
+        self.assertFalse(any(r.cash_tranche_key for r in engine.reservations.values()))
+        engine.on_order_group_update(OrderGroupSnapshot(group_id='initial', intent_id='initial',
+            account_id='C1', ticker='AAPL', action='enter_long', state=OrderManagementState.FILLED,
+            client_order_ids=(), broker_order_ids=(), submitted_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc), filled_quantity=300, remaining_quantity=0,
+            warning_message_ids=(), rejection_reason='', decision_to_submit_ms=0, policy_version=1,
+            reentry_after_fill=False, assignment_id='assignment-AAPL'))
+        engine.synchronize_snapshot('C1', summary=summary('C1', equity=9000, available=6000),
+            ledger=ledger('C1', cash=6000), positions=[position('C1', 'AAPL', 300, 10)])
+        other = replace(intent('other', ticker='MSFT', price=10, invalidation=9),
+            capital_request=CapitalRequest(mode='fixed_notional', value=4800))
+        _, other_approved = await engine.approve(other, account_id='C1')
+        self.assertIsNotNone(other_approved)
+        self.assertEqual(other_approved.quantity, 480)
+        add = replace(intent('add', action='add_long', price=12, invalidation=10),
+            capital_request=CapitalRequest(mode='fixed_notional', value=3000))
+        # $3,000 is invested and $4,800 reserved for MSFT, leaving $1,200.
+        add_decision, added = await engine.approve(add, account_id='C1')
+        self.assertIsNotNone(added, add_decision)
+        self.assertEqual(added.quantity, 100)
+        self.assertFalse(any(r.cash_tranche_key for r in engine.reservations.values()))
+
     def setUp(self) -> None:
         TEST_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=TEST_RUNTIME_ROOT)

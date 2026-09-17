@@ -300,7 +300,7 @@ pub struct MicrostructureIntervalWindow {
 
 impl MicrostructureIntervalWindow {
     pub fn apply_event(&mut self, event: &MarketEvent) {
-        if event.is_delayed_trade_report() {
+        if event.is_excluded_from_derived_state() {
             return;
         }
         self.events.push_back(event.clone());

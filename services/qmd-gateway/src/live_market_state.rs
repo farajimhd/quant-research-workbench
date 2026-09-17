@@ -419,7 +419,7 @@ fn evaluate_market_event(
     halt_market_context: &HaltMarketContext,
     event: MarketEvent,
 ) -> Vec<LiveSymbolMarketStateEvent> {
-    if event.is_delayed_trade_report() {
+    if event.is_excluded_from_derived_state() {
         return Vec::new();
     }
     match event {

@@ -304,7 +304,7 @@ impl CrossSectionEngine {
     }
 
     async fn apply_event(&mut self, event: MarketEvent) -> Result<(), String> {
-        if event.is_delayed_trade_report() {
+        if event.is_excluded_from_derived_state() {
             return Ok(());
         }
         let ticker = event.ticker().to_ascii_uppercase();
@@ -2571,7 +2571,7 @@ mod tests {
         let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
         let mut engine =
             CrossSectionEngine::new_market_only_with_trade_rules(rules, HashMap::new());
-        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).single().unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 5, 0).single().unwrap();
         for event in [
             trade_with_size("AAPL", start.timestamp_millis() + 100, 10.0, 100.0),
             trade_with_size("AAPL", start.timestamp_millis() + 1_100, 10.1, 120.0),
