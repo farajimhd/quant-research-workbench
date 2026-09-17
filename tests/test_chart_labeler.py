@@ -153,6 +153,22 @@ class LabelerTests(unittest.TestCase):
 
     @patch("src.backend.historical_scanner_service.historical_scanner_reference_projection")
     @patch("src.backend.qmd_gateway_client.qmd_history_get_json")
+    def test_identity_universe_does_not_wait_for_market(self, market, reference):
+        reference.return_value = {"AAA": {"listing_id": "a", "float_shares": 1000}}
+        result = self.client.get("/api/research/labeler/universe", params={"session_date": "2026-09-15", "include_market": False})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["rows"][0]["ticker"], "AAA")
+        market.assert_not_called()
+
+    @patch("src.backend.qmd_gateway_client.qmd_history_get_json")
+    def test_market_summary_uses_full_market_authority(self, market):
+        market.return_value = {"rows": [{"symbol": "AAA", "volume": 100}]}
+        result = self.client.get("/api/research/labeler/market", params={"session_date": "2026-09-15"})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertNotIn("tickers", market.call_args.args[1])
+
+    @patch("src.backend.historical_scanner_service.historical_scanner_reference_projection")
+    @patch("src.backend.qmd_gateway_client.qmd_history_get_json")
     def test_universe_reads_entire_session_and_preserves_market_fields(self, market, reference):
         reference.return_value = {"AAA": {"listing_id": "a", "float_shares": 1000}, "ABR PRD": {"listing_id": "preferred"}}
         market.return_value = {"rows": [{"symbol": "AAA", "last": 11, "change_pct": 10, "volume": 12000}]}
@@ -173,6 +189,7 @@ class LabelerTests(unittest.TestCase):
         params = self.scope.model_dump(mode="json")
         product.return_value = SimpleNamespace(payload={"bars": [], "has_more": True}, complete=None)
         self.assertEqual(self.client.get("/api/research/labeler/chart", params=params).status_code, 503)
+        self.assertEqual(product.call_args.args[0].stage, "prices")
         product.return_value = SimpleNamespace(payload={"bars": []}, complete=None)
         self.assertEqual(self.client.get("/api/research/labeler/chart", params=params).status_code, 503)
         certified = {"request_complete": True, "complete_for_history": True}
