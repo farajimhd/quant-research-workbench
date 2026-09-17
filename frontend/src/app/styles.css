@@ -16255,6 +16255,22 @@ button {
   flex-wrap: wrap;
 }
 .hindsight-controls { display: flex; align-items: center; gap: 0.4rem; min-width: 0; flex-wrap: wrap; }
+.action-values-status { font-variant-numeric: tabular-nums; font-size: .8rem; padding-block: .3rem; }
+.chart-shell.fill-height:has(> .action-values-caption) { grid-template-rows: auto auto minmax(0, 1fr); }
+.action-values-caption { display: flex; flex-shrink: 0; align-items: center; gap: .7rem; flex-wrap: wrap; font-size: .7rem; color: var(--muted-foreground); padding: .35rem .5rem; border-bottom: 1px solid var(--border); }
+.action-values-caption .action-values-legend { min-width: 10rem; }
+.action-values-caption .action-values-legend i:first-of-type { background: linear-gradient(to right, var(--semantic-negative), var(--semantic-neutral)); }
+.action-values-caption .action-values-legend i:last-of-type { background: linear-gradient(to right, var(--semantic-neutral), var(--semantic-positive)); }
+.action-values-error, .action-values-table .negative { color: var(--semantic-negative); }
+.action-values-table .positive { color: var(--semantic-positive); }
+.action-values-legend { display: flex; align-items: center; gap: .4rem; font-size: .7rem; }
+.action-values-legend i { flex: 1; height: .5rem; min-width: 2rem; background: linear-gradient(to right, var(--semantic-negative), var(--semantic-neutral), var(--semantic-positive)); border-radius: .15rem; }
+.action-values-inspector { border-block: 1px solid var(--border); padding-block: .5rem; }
+.action-values-time { width: 100%; }
+.action-values-table { width: 100%; border-collapse: collapse; font-size: .75rem; font-variant-numeric: tabular-nums; margin-block: .4rem; }
+.action-values-table th, .action-values-table td { padding: .35rem; text-align: right; border-bottom: 1px solid var(--border); }
+.action-values-table th:first-child, .action-values-table td:first-child { text-align: left; }
+.action-values-controls .chart-setting-row input { max-width: 8rem; min-width: 0; }
 .hindsight-controls .toolbar-button { width: auto; flex: 0 0 auto; padding-inline: 0.5rem; gap: 0.35rem; }
 .hindsight-summary { color: var(--muted-foreground); font-size: 0.75rem; max-width: 28rem; overflow-wrap: anywhere; }
 .hindsight-details { width: min(480px, calc(var(--app-zoomed-viewport-width) - 16px)); }
