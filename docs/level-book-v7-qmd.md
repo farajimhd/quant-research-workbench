@@ -1,5 +1,27 @@
 # QMD Level book V7
 
+## Automatic filtered history for ladder backtests
+
+VWAP-ladder backtests now prepare missing filtered histories before the QMD
+coverage gate, for every selected ticker and session. The same path handles
+single-ticker and full-market requests; no ticker or intraday-window whitelist
+is used. The full published historical prefix is rebuilt from canonical compact
+events with the 04:05 ET policy, frozen identity/conditions, and current V7 fitter.
+An immutable, content-addressed successor lives under the shared V7 runtime's
+`filtered-v7-on-demand-v1` directory. Original campaigns remain unchanged.
+
+Preparation runs one bounded worker at a time, reports ticker and durable session
+progress, and terminates its child when the backtest is cancelled. Same-ticker
+requests coordinate through an OS lock. Receipts permit resume; only a verified
+`ready.json` publication can replace a historical seed. Subsequent requests reuse
+the history. QMD checks for publication without requiring another service restart.
+The catalog identity includes the policy authority and numerical/kernel identity;
+checkpoint hashes still pin the actual seed separately.
+
+First-time full-market preparation can be substantial. Missing canonical history,
+unresolved identities, empty books and dates beyond published historical coverage
+remain explicit coverage failures/exclusions; this does not fabricate those data.
+
 The app's level-book selector and main `indicator.qmd_unified_structure`
 presentation use V7. Archived trade journals keep their original identities;
 opening a saved run does not authorize resuming its retired level-book engine.

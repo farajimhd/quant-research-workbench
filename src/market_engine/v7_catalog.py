@@ -67,7 +67,9 @@ class Catalog:
                 if not re.fullmatch(r'[A-Z0-9.\- ]{1,30}',ticker):
                     raise ValueError('Invalid V7 ticker')
                 self.by_ticker.setdefault(ticker,[]).append((path.parent,plan,row))
-        self.fingerprint=digest([p['plan_hash'] for _,p in self.plans])
+        from .filtered_v7_history import VERSION, kernel
+        self.fingerprint=digest(dict(plans=[p['plan_hash'] for _,p in self.plans],
+                                     filtered_successor=VERSION, kernel=kernel()))
 
     @lru_cache(maxsize=128)
     def sources(self,ticker):
@@ -92,6 +94,8 @@ class Catalog:
     def select(self,ticker,session):
         """Choose the exact preceding source session, never an older stale book."""
         candidates=self.sources(ticker)
+        from .filtered_v7_history import available_sources
+        candidates = candidates + available_sources(self.root, ticker, candidates)
         if not candidates:
             reasons = sorted({row.get('reason', 'unpublished') for _, plan in self.plans
                               for row in plan['rows'] if row['ticker'] == ticker})

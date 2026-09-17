@@ -12,6 +12,13 @@ from src.market_engine.derived_trade_policy import POLICY
 @pytest.mark.parametrize('policy', [None, 'legacy-unfiltered', POLICY])
 def test_ladder_preflight_checks_single_symbol_and_filtered_seed(tmp_path, monkeypatch, book_id, policy):
     from src.backend import qmd_gateway_client
+    from src.backend import filtered_v7_preparation
+
+    prepared = []
+    async def prepare(tickers, days, progress):
+        prepared.append((tickers, days))
+        await progress(1, 1, 'verified')
+    monkeypatch.setattr(filtered_v7_preparation, 'prepare', prepare)
 
     async def publish(**kwargs):
         pass
@@ -36,3 +43,4 @@ def test_ladder_preflight_checks_single_symbol_and_filtered_seed(tmp_path, monke
         with pytest.raises(ValueError, match='data preparation failure, not a zero-trade'):
             asyncio.run(ReplayRunController._prepare_v7_coverage(controller))
     assert calls == [dict(tickers=['SUGP'], as_of='2026-08-21T04:00:00-04:00')]
+    assert prepared == [(['SUGP'], [date(2026, 8, 21)])]
