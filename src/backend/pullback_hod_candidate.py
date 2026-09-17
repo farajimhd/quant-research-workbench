@@ -1,7 +1,7 @@
 """Immutable pullback strategy retaining the screened family's admission filters."""
 from copy import deepcopy
 
-from src.trading_runtime.pullback_hod import CONTRACT, DEFAULTS
+from src.trading_runtime.pullback_hod import CONTRACT, DEFAULTS, RISE_CONTRACT
 
 BASELINE_ID = '657a81d7-25f4-416e-8c9a-636105abe5a8'
 BASELINE_HASH = '787f28b3df6afafb596d0fa7f0ed5b1e03b231cc91cbff68684a447428fa3b62'
@@ -9,6 +9,22 @@ PARENT_PROFILE = 'v7-222-session-rvol-2x-closed-tail-v2'
 PROFILE = 'pullback-hod-v1'
 PLAN = 'v7-setup-recovery-v9-backtest'
 LABEL = 'HOD pullback / bullish swing-low recovery v1'
+RISE_BASELINE_ID = '1a3a1113-34b7-4048-b73d-dac4d0e603a7'
+RISE_BASELINE_HASH = '2dee972dff9a2483e504c86923fd1776d70fa45d9aa8c6b44f14a580cb20c6d2'
+RISE_PROFILE = 'swing-rise-pullback-hod-v2'
+RISE_LABEL = 'HOD swing-low rise / pullback reentry v2'
+RISE_DESCRIPTION = (
+    'Initial entry is a completed bullish 1s rise from a confirmed swing low, without '
+    'requiring a preceding swing high or pullback. Retains v1 bullish-candle quality, '
+    'upper-30%-of-VWAP-to-HOD entry zone, $1-$20 price, RVOL >= 2, liquidity, volume, '
+    'session and first-allocation sizing filters. Stop below the low; trail higher lows. '
+    'Retains failed-top and failed-HOD-break exits. While holding, record advancement '
+    'of at least one tick above actual average entry and its observed peak. Only after '
+    'the position is filled flat does this arm pullback reentry: a new confirmed low '
+    'formed after exit, at least two ticks below the held peak, followed by a completed '
+    'bullish rise. A trade that never advanced permits a fresh initial swing-low setup. '
+    'No exit-request, partial-exit or MACD-episode shortcut. Research candidate; not screened.'
+)
 DESCRIPTION = (
     'Independent completed-1s pullback policy. Retains the $1-$20 price, session RVOL >= 2, '
     'liquidity, spread, session, completed-volume and first-allocation sizing settings. '
@@ -59,3 +75,32 @@ def create():
     return create_test_candidate(label=LABEL,canvas_revision=payload['canvas']['revision'],
         canvas_profile=payload['canvas']['profile'],configuration=payload,
         run_plan_id=PLAN,strategy_profile_id=PROFILE)
+
+
+def prepare_rise_payload(baseline,published_profiles):
+    if baseline['candidate_id'] != RISE_BASELINE_ID or baseline['content_hash'] != RISE_BASELINE_HASH:
+        raise ValueError('Swing-rise source candidate identity changed')
+    payload = deepcopy(baseline['payload'])
+    parent = next(p for p in payload['strategy']['profiles'] if p['profile_id']==PROFILE)
+    profile = deepcopy(parent)
+    profile.update(profile_id=RISE_PROFILE,name=RISE_LABEL,description=RISE_DESCRIPTION,
+                   publication_status='draft',editable=True,derived_from_profile_id=PROFILE)
+    profile['parameters']['pullback_hod_contract'] = RISE_CONTRACT
+    payload['strategy']['profiles'] = [deepcopy(published_profiles.get(p['profile_id'],p))
+                                      for p in payload['strategy']['profiles']]+[profile]
+    plan = next(p for p in payload['run_plans']['plans'] if p['run_plan_id']==PLAN)
+    if plan['allowed_environments'] != ['backtest']:
+        raise ValueError('Swing-rise candidate must remain backtest-only')
+    plan.update(profile_id=RISE_PROFILE,name=RISE_LABEL,description=RISE_DESCRIPTION)
+    return payload
+
+
+def create_rise():
+    from .trading_configuration_service import configuration_candidate, configuration_base, create_test_candidate
+    baseline = configuration_candidate(RISE_BASELINE_ID,required=True)
+    published = {p['profile_id']:p for p in configuration_base()['strategy']['profiles']
+                 if p.get('publication_status')=='published'}
+    payload = prepare_rise_payload(baseline,published)
+    return create_test_candidate(label=RISE_LABEL,canvas_revision=payload['canvas']['revision'],
+        canvas_profile=payload['canvas']['profile'],configuration=payload,
+        run_plan_id=PLAN,strategy_profile_id=RISE_PROFILE)

@@ -9,6 +9,7 @@ from math import isfinite
 from . import historical_hod as H, session_relative_volume, trade_volume
 
 CONTRACT = 'pullback-hod-v1'
+RISE_CONTRACT = 'swing-rise-pullback-hod-v2'
 DEFAULTS = dict(entry_zone_fraction=.3, maximum_swing_age_s=30.,
                 minimum_pullback_ticks=2., minimum_body_fraction=.3,
                 minimum_close_location=.6, top_retreat_atr=.5,
@@ -16,7 +17,7 @@ DEFAULTS = dict(entry_zone_fraction=.3, maximum_swing_age_s=30.,
 
 
 def configure(p):
-    if p.get('pullback_hod_contract') != CONTRACT or p.get('historical_hod_contract') != H.CONTRACT:
+    if p.get('pullback_hod_contract') not in (CONTRACT,RISE_CONTRACT) or p.get('historical_hod_contract') != H.CONTRACT:
         raise ValueError('Pullback HOD requires its versioned market adapter')
     if p.get('r1_ladder_contract'):
         raise ValueError('Pullback HOD cannot compose R1 policy')
@@ -35,8 +36,8 @@ def swing_key(swing):
     return (swing['pivot_at'], swing['lower'])
 
 
-def entry_setup(row, market, settings, tick, used=None):
-    """A current green recovery of a confirmed low, with a preceding swing high."""
+def entry_setup(row, market, settings, tick, used=None, *, rising=False, last_exit=None):
+    """V1 requires a prior pullback; V2 separates initial rise from reentry."""
     bar, prior = market.get('bar') or {}, market.get('prior_bar') or {}
     now = bar.get('end', 0)
     hod, vwap = market.get('prior_hod'), market.get('vwap')
@@ -51,13 +52,22 @@ def entry_setup(row, market, settings, tick, used=None):
         return None, 'confirmed_pullback_low_unavailable'
     if used and swing_key(swing) <= tuple(used):
         return None, 'waiting_for_new_pullback_low'
-    highs = [x for x in row.get('local_swings', [])+row.get('confirmed_swings', [])
-             if x.get('side') in (-1,'resistance')
-             and all(type(x.get(k)) in (int,float) and isfinite(x[k]) for k in ('pivot_at','confirmed_at','price'))
-             and 0 < x['pivot_at'] < swing['pivot_at'] and x['pivot_at'] <= x['confirmed_at'] <= now]
-    high = max(highs,key=lambda x:x['pivot_at'],default=None)
-    if not high or high['price']-swing['price'] < tick*settings['minimum_pullback_ticks']:
-        return None, 'preceding_pullback_high_unavailable'
+    reentry = rising and last_exit and last_exit.get('advanced')
+    high = None
+    if reentry:
+        if swing['pivot_at'] <= last_exit['at']:
+            return None, 'waiting_for_post_exit_pullback_low'
+        high = last_exit['peak']
+        if high['price']-swing['price'] < tick*settings['minimum_pullback_ticks']:
+            return None, 'waiting_for_post_exit_pullback_depth'
+    elif not rising:
+        highs = [x for x in row.get('local_swings', [])+row.get('confirmed_swings', [])
+                 if x.get('side') in (-1,'resistance')
+                 and all(type(x.get(k)) in (int,float) and isfinite(x[k]) for k in ('pivot_at','confirmed_at','price'))
+                 and 0 < x['pivot_at'] < swing['pivot_at'] and x['pivot_at'] <= x['confirmed_at'] <= now]
+        high = max(highs,key=lambda x:x['pivot_at'],default=None)
+        if not high or high['price']-swing['price'] < tick*settings['minimum_pullback_ticks']:
+            return None, 'preceding_pullback_high_unavailable'
     width = bar['high']-bar['low']
     body = bar['close']-bar['open']
     if (bar['low'] < swing['lower'] or width <= 0 or body < tick-1e-9
@@ -66,7 +76,40 @@ def entry_setup(row, market, settings, tick, used=None):
             or bar['close'] <= prior['close']):
         return None, 'waiting_for_bullish_pullback_recovery'
     return dict(swing=deepcopy(swing), preceding_high=deepcopy(high), candle=deepcopy(bar),
-                hod=hod, zone_lower=lower), ''
+                hod=hod, zone_lower=lower,
+                **(dict(entry_kind='pullback_reentry' if reentry else 'initial_swing_rise',
+                        prior_exit=deepcopy(last_exit) if reentry else None) if rising else {})), ''
+
+
+def observe_advance(active,o,market,tick,fresh):
+    """Track only prices observed while actually holding the position."""
+    filled = active.get('first_fill_at')
+    if filled is None or o.average_price <= 0:
+        return
+    traded = ('market_data_update' in o.evaluation_events
+              and 'market.last_price' in o.changed_source_ids
+              and o.observed_at.timestamp() > filled)
+    prices = [o.price] if traded else []
+    bar = market.get('bar') or {}
+    if fresh and bar.get('time',0) >= filled:
+        prices.append(bar['high'])
+    if not prices:
+        return
+    price = max(prices)
+    if price > active.get('advance_peak',{}).get('price',0):
+        active['advance_peak'] = dict(price=price,at=o.observed_at.timestamp())
+    if active['advance_peak']['price'] >= o.average_price+tick-1e-9:
+        active['advanced'] = True
+
+
+def record_exit(state,at,remaining):
+    """A filled-flat position, never an exit intent, arms the reentry cycle."""
+    active = state.get('pullback_entry') or {}
+    if remaining is None or abs(float(remaining)) > 1e-9 or not active.get('first_fill_at'):
+        return
+    state['pullback_last_exit'] = dict(at=at.timestamp(),advanced=bool(active.get('advanced')),
+        peak=deepcopy(active.get('advance_peak')),entry_at=active['first_fill_at'],
+        reason=state.get('last_exit_reason',''))
 
 
 def top_failure(active, market, settings, tick, fresh):
@@ -118,7 +161,9 @@ def evaluate(host,a,o,p,state):
     if d.get('session') != session:
         d.clear(); d['session'] = session
         state.pop('pullback_used_swing',None)
+        state.pop('pullback_last_exit',None)
     adapter,s,tick = p['historical_hod'],p['pullback_hod'],p['execution']['tick_size']
+    rising = p['pullback_hod_contract'] == RISE_CONTRACT
     market = o.structural_detector_state or {}
     passive = market.get('historical_hod_observation') or {}
     if passive.get('session') == session and passive.get('observed_at') == now:
@@ -132,7 +177,7 @@ def evaluate(host,a,o,p,state):
     row = market.get('row') or {}
     detector_fresh = bool(fresh and market.get('book',{}).get('version') in H.BOOK_VERSIONS
         and market.get('book',{}).get('fingerprint') and row.get('effective_at') == now)
-    evidence = dict(contract=CONTRACT,historical_hod_reference=dict(hod=d.get('prior_hod'),at=now))
+    evidence = dict(contract=p['pullback_hod_contract'],historical_hod_reference=dict(hod=d.get('prior_hod'),at=now))
     active = state.get('pullback_entry') or {}
     acquired = o.position_quantity > 0
     pending = a.status == Status.ENTRY_PENDING or bool(state.get('pending_capital_request'))
@@ -158,6 +203,8 @@ def evaluate(host,a,o,p,state):
     luld = H.regular_luld(o,adapter,tick,state.setdefault('backtest_luld_estimate',{})
         if adapter['backtest_luld_estimation_enabled'] else None) if regular else None
     if acquired:
+        if rising:
+            observe_advance(active,o,d,tick,fresh)
         reason = ('session_flatten' if flatten else 'manual_exit' if state.get('manual_exit_requested')
                   else 'protective_stop' if stop and o.price <= stop else '')
         if not reason and luld and not luld['lower_exit'] < o.bid < luld['price']:
@@ -210,7 +257,11 @@ def evaluate(host,a,o,p,state):
                                       minimum_ratio=adapter['setup_minimum_volume_ratio'])
         evidence['volume_confirmation'] = volume
         if not volume['passed']: return result('wait','completed_volume_gate')
-    setup,reason = entry_setup(row,d,s,tick,state.get('pullback_used_swing'))
+    setup,reason = entry_setup(row,d,s,tick,state.get('pullback_used_swing'),
+        rising=rising,last_exit=state.get('pullback_last_exit'))
+    if rising:
+        evidence['entry_cycle'] = dict(prior_exit=deepcopy(state.get('pullback_last_exit')),
+            kind='pullback_reentry' if (state.get('pullback_last_exit') or {}).get('advanced') else 'initial_swing_rise')
     if reason: return result('wait',reason)
     evidence['pullback_setup'] = setup
     swing = setup['swing']
@@ -230,7 +281,7 @@ def evaluate(host,a,o,p,state):
     state.update(pullback_entry=active,pullback_used_swing=swing_key(swing),initial_stop=stop,active_stop=stop,
         structural_profit_targets=[target],entry_reference_price=o.ask,entry_at=o.observed_at.isoformat(),
         entries=state.get('entries',0)+1,last_exit_reason='',entry_acquisition_exit_latched=False)
-    return result('enter_long','bullish_candle_after_pullback_low',Status.ENTRY_PENDING,
+    return result('enter_long',setup.get('entry_kind','bullish_candle_after_pullback_low'),Status.ENTRY_PENDING,
         invalidation_price=stop,profit_target_price=target,
         capital_request=CapitalRequest(mode='mandate_fraction' if adapter['sizing_mode']=='cash_tranches' else 'risk_fraction',
             value=adapter['cash_fraction'] if adapter['sizing_mode']=='cash_tranches' else adapter['risk_fraction'],
