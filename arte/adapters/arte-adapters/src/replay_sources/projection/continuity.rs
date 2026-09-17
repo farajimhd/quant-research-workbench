@@ -69,6 +69,28 @@ impl Projection {
     }
 }
 impl HistoricalEmptySpan {
+    /// Historical-only consumption; source knowledge is not the replay clock.
+    pub fn observe_swings(
+        &self,
+        state: &mut arte_core::local_swings::State,
+        bar: &arte_core::market::Bar,
+        run: &Pinned,
+        scope: Scope,
+        evaluated_at_ns: u64,
+    ) -> Result<()> {
+        self.require(run, scope, self.provenance.interval, evaluated_at_ns)?;
+        if evaluated_at_ns < bar.end_ns {
+            return Err(Error::Unready(
+                "historical swing candle is not completed".into(),
+            ));
+        }
+        state.observe_with_empty_span(
+            bar,
+            scope,
+            &self.source,
+            self.provenance.source_knowledge_cutoff_ns,
+        )
+    }
     pub fn provenance(&self) -> &Provenance {
         &self.provenance
     }

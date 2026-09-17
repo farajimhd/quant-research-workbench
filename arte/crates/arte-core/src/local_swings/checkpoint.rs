@@ -64,11 +64,13 @@ impl State {
             .snapshot
             .as_ref()
             .ok_or_else(|| Error::Invalid("local swing snapshot missing".into()))?;
+        let gap_duration = self.gap_duration(previous.end_ns)?;
         let expected_end = self
             .sequence
             .checked_sub(1)
             .and_then(|n| n.checked_mul(1_000_000_000))
-            .and_then(|n| self.generation.checked_add(n));
+            .and_then(|n| self.generation.checked_add(n))
+            .and_then(|n| n.checked_add(gap_duration));
         if self.generation == 0
             || expected_end != Some(previous.end_ns)
             || previous.start_ns.checked_add(1_000_000_000) != Some(previous.end_ns)
@@ -93,6 +95,10 @@ impl State {
             at >= self.generation
                 && at <= previous.end_ns
                 && (at - self.generation).is_multiple_of(1_000_000_000)
+                && !self
+                    .gaps
+                    .iter()
+                    .any(|g| at > g.interval.start && at <= g.interval.end)
         };
         for extreme in [&self.high, &self.low] {
             let e = extreme
@@ -154,7 +160,7 @@ impl State {
         bounds(context, maximum_bytes)?;
         self.validate_recovery()?;
         let saved = Saved {
-            version: 1,
+            version: 2,
             context: context.into(),
             configuration: self.configuration_hash()?,
             state: self.clone(),
@@ -190,7 +196,7 @@ impl State {
         let saved: Saved = serde_json::from_slice(&image.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
         let expected = Self::new(instrument, session, config)?.configuration_hash()?;
-        if saved.version != 1
+        if saved.version != 2
             || saved.context != context
             || saved.configuration != expected
             || saved.state.configuration_hash()? != expected

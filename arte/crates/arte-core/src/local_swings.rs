@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 pub const VERSION: &str = "arte-local-directional-swings-v1";
 mod checkpoint;
+mod continuity;
 #[cfg(test)]
 mod tests;
 #[derive(Clone, Serialize, Deserialize)]
@@ -72,6 +73,7 @@ pub struct State {
     session: u32,
     generation: u64,
     sequence: u64,
+    gaps: Vec<continuity::Gap>,
     next_id: u64,
     previous: Option<Bar>,
     ranges: VecDeque<f64>,
@@ -94,6 +96,7 @@ impl State {
             session,
             generation: 0,
             sequence: 0,
+            gaps: Vec::new(),
             next_id: 0,
             previous: None,
             ranges: VecDeque::new(),
@@ -118,13 +121,13 @@ impl State {
     /// certification is inferred. Scope is immutable for this session owner.
     pub fn observe(&mut self, bar: &Bar) -> Result<()> {
         self.snapshot()?;
-        let result = self.update(bar);
+        let result = self.update(bar, false);
         if result.is_err() {
             self.failed = true;
         }
         result
     }
-    fn update(&mut self, bar: &Bar) -> Result<()> {
+    fn update(&mut self, bar: &Bar, preserve_gap: bool) -> Result<()> {
         if bar.start_ns.checked_add(1_000_000_000) != Some(bar.end_ns)
             || [bar.open, bar.high, bar.low, bar.close]
                 .iter()
@@ -142,7 +145,7 @@ impl State {
             .previous
             .as_ref()
             .is_some_and(|p| bar.start_ns > p.end_ns);
-        if gap {
+        if gap && !preserve_gap {
             *self = Self::new(self.instrument, self.session, self.config.clone())?;
         }
         if self.generation == 0 {
@@ -273,7 +276,7 @@ impl State {
         self.snapshot = Some(Snapshot {
             at_ns: bar.end_ns,
             swings,
-            gap_reset: gap,
+            gap_reset: gap && !preserve_gap,
         });
         Ok(())
     }

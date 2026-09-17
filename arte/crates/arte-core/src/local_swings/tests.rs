@@ -1,4 +1,142 @@
 use super::*;
+use crate::{
+    acquisition::{trade_seconds::Builder, Authority, Certificate, Page},
+    coverage::Interval,
+    event_order::Scope,
+    events::EventKind,
+};
+fn empty_proof(start: u64, end: u64) -> crate::acquisition::trade_seconds::EmptySpan {
+    let scope = Scope {
+        provider: 1,
+        instrument: 1,
+        session: 20260915,
+    };
+    let interval = Interval {
+        start: start * 1_000_000_000,
+        end: end * 1_000_000_000,
+    };
+    let cert = Certificate {
+        schema_version: 1,
+        authority: Authority {
+            provider: 1,
+            instrument: 1,
+            kind: EventKind::Trade,
+            source_revision: "test".into(),
+            contract_hash: "a".repeat(64),
+            capabilities_hash: "b".repeat(64),
+        },
+        interval,
+        first_request_hash: "c".repeat(64),
+        pages: vec![Page {
+            request_hash: "c".repeat(64),
+            response_hash: "d".repeat(64),
+            next_request_hash: None,
+            acquired_at_ns: interval.end,
+            source_rows: 0,
+            accepted_rows: 0,
+            rejected_rows: 0,
+            deduplicated_rows: 0,
+            batches: vec![],
+            identity_checked: true,
+            ordering_checked: true,
+            interval_checked: true,
+        }],
+        published_at_ns: interval.end,
+    };
+    Builder::new(cert, scope, 100)
+        .unwrap()
+        .finish()
+        .unwrap()
+        .1
+        .prove_empty(interval, interval.end)
+        .unwrap()
+}
+fn epoch() -> u64 {
+    chrono::DateTime::parse_from_rfc3339("2026-09-15T14:00:00Z")
+        .unwrap()
+        .timestamp() as u64
+}
+#[test]
+fn certified_gap_preserves_sequence_extremes_and_recovery() {
+    let base = epoch();
+    let scope = Scope {
+        provider: 1,
+        instrument: 1,
+        session: 20260915,
+    };
+    let mut state = State::new(1, scope.session, config()).unwrap();
+    let mut contiguous = state.clone();
+    for (i, price) in [10., 9.8, 10.].into_iter().enumerate() {
+        state.observe(&bar(base + i as u64, price)).unwrap();
+        contiguous.observe(&bar(base + i as u64, price)).unwrap();
+    }
+    let proof = empty_proof(base + 3, base + 8);
+    let next = bar(base + 8, 10.2);
+    state
+        .observe_with_empty_span(&next, scope, &proof, next.end_ns)
+        .unwrap();
+    contiguous.observe(&bar(base + 3, 10.2)).unwrap();
+    assert_eq!(state.sequence, contiguous.sequence);
+    assert_eq!(state.direction, contiguous.direction);
+    assert_eq!(state.levels.len(), contiguous.levels.len());
+    assert_eq!(state.ranges, contiguous.ranges);
+    assert!(!state.snapshot().unwrap().unwrap().gap_reset);
+    let context = "e".repeat(64);
+    let image = state.checkpoint(&context, 100_000).unwrap();
+    let mut restored = State::restore_checkpoint(
+        &image,
+        &image.id,
+        &context,
+        1,
+        scope.session,
+        config(),
+        Some(&next),
+        100_000,
+    )
+    .unwrap();
+    state.observe(&bar(base + 9, 10.)).unwrap();
+    restored.observe(&bar(base + 9, 10.)).unwrap();
+    assert_eq!(
+        content_hash(&state).unwrap(),
+        content_hash(&restored).unwrap()
+    );
+    // A recovery image cannot erase the elapsed empty interval.
+    restored.gaps.clear();
+    assert!(restored.checkpoint(&context, 100_000).is_err());
+}
+#[test]
+fn wrong_unknown_long_or_cross_session_gap_fails_closed() {
+    let base = epoch();
+    let scope = Scope {
+        provider: 1,
+        instrument: 1,
+        session: 20260915,
+    };
+    for (start, end, provider, cutoff) in [
+        (base + 1, base + 5, 2, u64::MAX),
+        (base + 1, base + 5, 1, 0),
+        (base + 1, base + 32, 1, u64::MAX),
+        (base + 2, base + 5, 1, u64::MAX),
+        (base + 86401, base + 86405, 1, u64::MAX),
+    ] {
+        let mut state = State::new(1, scope.session, config()).unwrap();
+        state
+            .observe(&bar(
+                if start > base + 86400 {
+                    base + 86400
+                } else {
+                    base
+                },
+                10.,
+            ))
+            .unwrap();
+        let proof = empty_proof(start, end);
+        assert!(state
+            .observe_with_empty_span(&bar(end, 10.), Scope { provider, ..scope }, &proof, cutoff)
+            .is_err());
+        assert!(state.snapshot().is_err());
+    }
+}
 fn config() -> Config {
     Config {
         reversal_bps: 50.,
