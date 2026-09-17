@@ -182,6 +182,7 @@ export function pageForServiceMode(mode: ServicePageMode): PageKey {
 
 export function isCompactContentPage(page: PageKey) {
   return page === "canvas-configuration"
+    || page === "labeler"
     || page === "replay-trading"
     || page === "backtest-trading"
     || page === "backtest-debug";

@@ -5,6 +5,7 @@ import { Activity, Check, Clock3, Globe2, Link2, MapPin, Maximize2, Minimize2, P
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { api, apiCached, query, type ApiError } from "../api/client";
+const LabelerContainer = lazy(() => import("../app/components/LabelerContainer").then(module => ({ default: module.LabelerContainer })));
 import "./HistoricalWorkspace.css";
 import "../app/configurationVisuals.css";
 import {
@@ -13,6 +14,7 @@ import {
   CANVAS_REGISTRY_UPDATED_EVENT,
   CANVAS_LINK_GROUPS,
   MAIN_CANVAS_ID,
+  LABELER_CANVAS_ID,
   NEWS_READER_CANVAS_ID,
   SEC_READER_CANVAS_ID,
   canvasLinkGroupDefinition,
@@ -207,6 +209,7 @@ export function CanvasFocusPage() {
     />;
   }
   const canvasId = params.get("canvas") || MAIN_CANVAS_ID;
+  if (canvasId === LABELER_CANVAS_ID) return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} />;
   const requestedInstanceId = params.get("container") || undefined;
   const requestedNewsId = params.get("news") || undefined;
   const requestedSecCik = params.get("sec_cik") || undefined;
@@ -349,6 +352,7 @@ function ReplayFocusTransportStatus({ run }: { run: CanvasReplayRun }) {
 export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, readOnly = false, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId, transient = false }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; readOnly?: boolean; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string; transient?: boolean }) {
   const runtimeMode: CanvasRuntimeMode = replayRun?.mode === "backtest" || replayRun?.mode === "backtest_debug" ? replayRun.mode : replayRun ? "replay" : requestedRuntimeMode ?? "canvas";
   const liveMode = runtimeMode === "live" || runtimeMode === "paper";
+  const labelerCanvas = canvasId === LABELER_CANVAS_ID;
   const durableTerminalReview = Boolean(
     replayRun
     && (runtimeMode === "backtest" || runtimeMode === "backtest_debug")
@@ -412,7 +416,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const editableProfileRevisionRef = useRef(0);
   const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<string | null>(null);
   const [settingsContainerId, setSettingsContainerId] = useState<string | null>(null);
-  const managementEnabled = !transient && (manager || Boolean(runtimeBase));
+  const managementEnabled = !transient && (manager || labelerCanvas || Boolean(runtimeBase));
   const workspaceDefinitions = useMemo(() => readOnly
     ? TRADING_WORKSPACE_CONTAINERS.filter((definition) => !READ_ONLY_BLOCKED_CONTAINERS.has(definition.id))
     : TRADING_WORKSPACE_CONTAINERS, [readOnly]);
@@ -420,7 +424,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
   const primarySettings = instanceSettings(registry, primaryChartId);
-  const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "signal_stream", "watchlist", "strategy_activity"]);
+  const dedicatedContainers = new Set<WorkspaceContainerId>(["labeler", "chart", "charts_quotes", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "signal_stream", "watchlist", "strategy_activity"]);
   const historicalTradingContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes"]);
   const [visiblePanels, setVisiblePanels] = useState<Record<string, boolean>>({});
   const [heldClock, setHeldClock] = useState({ runId: replayRun?.run_id, time: replayRun?.current_time });
@@ -475,7 +479,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const previewClocks = useMemo(() => previewClockReadings(previewContext, liveMode ? new Date(liveClockInstant) : undefined), [liveClockInstant, liveMode, previewContext]);
   const clockIcons = [Clock3, MapPin, Globe2];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
-  const livePerformance = useTradingPerformance({ enabled: !readOnly && !replayRun, requestedAccountKeys: liveMode ? resolvedAccountKeys : undefined, mode: liveMode ? runtimeMode : "paper" });
+  const livePerformance = useTradingPerformance({ enabled: !labelerCanvas && !readOnly && !replayRun, requestedAccountKeys: liveMode ? resolvedAccountKeys : undefined, mode: liveMode ? runtimeMode : "paper" });
   const performanceState: LivePerformanceState = replayRun
     ? {
         data: preview?.trading.performance_snapshot ?? null,
@@ -736,6 +740,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   }, [accountSignature, activeSymbol, contextError, contextReady, liveMode, previewContainerKey, previewContext.previewTime, previewContext.sessionDate, replayRun?.current_time, replayRun?.run_id, replayRun?.status, replayRuntimeReady, runtimeMode]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
+    if (definition.id === "labeler") return { detail: "Historical session selection and save status are shown inside Labeler.", sourceLabel: "QMD History · Manual labels", status: "ready" };
     if (definition.id === "chart") {
       return {
         detail: "Canonical QMD bars using the container's own timeframe and indicator configuration.",
@@ -1106,7 +1111,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   return (
     <div className={manager ? "canvas-config-page" : "canvas-config-page canvas-focus-page"}>
       <header className="canvas-config-toolbar">
-        <div className="canvas-clock-control" aria-label="Preview clock">
+        {labelerCanvas ? <strong>Labeler Canvas</strong> : <><div className="canvas-clock-control" aria-label="Preview clock">
           <div className="canvas-clock-zones" aria-label="Preview time zones">
             {previewClocks.map((clock, index) => {
               const Icon = clockIcons[index];
@@ -1114,9 +1119,9 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
             })}
           </div>
         </div>
-        <MarketStatusBadge value={marketStatus} />
+        <MarketStatusBadge value={marketStatus} /></>}
         {contextError && !replayRun ? <span className="canvas-context-warning" title={contextError}>Saved clock</span> : null}
-        <div className="canvas-mode-context-slot">{modeControls}{readOnly ? null : <TradingPerformanceStrip state={performanceState} />}</div>
+        <div className="canvas-mode-context-slot">{modeControls}{readOnly || labelerCanvas ? null : <TradingPerformanceStrip state={performanceState} />}</div>
         {managementEnabled ? <div className="canvas-toolbar-actions">{manager ? <button className="button secondary compact canvas-set-default" disabled={!workspaceState || !editableProfileReady} onClick={() => void saveDefaultLayout()} title="Save this composition as the shared draft default. Publish it from Trading Configuration before Live or Paper can use it." type="button"><Save size={13} /> {defaultSaved ? "Shared default saved" : "Save shared default"}</button> : null}<button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 
@@ -1318,7 +1323,9 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
   return <div className="canvas-container-preview">
     {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={instanceId}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange)}</div> : null}
-    <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
+    <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "labeler"
+        ? <Suspense fallback={<LoadingState fill label="Loading Labeler" />}><LabelerContainer instanceId={instanceId} /></Suspense>
+      : definition.id === "chart"
         ? <ChartContainerPreview canvasId={canvasId} cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} liveMode={liveMode} onLinkContextChange={onLinkContextChange} previewContext={previewContext} readOnly={readOnly} runId={signalStreamRunId} runtimeMode={runtimeMode} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
       : definition.id === "charts_quotes"
         ? <ChartsQuotesContainerPreview canvasId={canvasId} cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} liveMode={liveMode} onLinkContextChange={onLinkContextChange} previewContext={previewContext} readOnly={readOnly} runId={signalStreamRunId} runtimeMode={runtimeMode} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
@@ -1567,6 +1574,7 @@ function stringArraysEqual(previous: readonly string[], next: readonly string[])
 
 
 function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, linkContext: CanvasLinkContext, updateSettings: SettingsUpdater, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void) {
+  if (id === "labeler") return <div className="canvas-settings-note">Choose the session inside Labeler. Each ticker opens at 1h. Submit each long or short interval to persist it immediately; complete the session separately.</div>;
   if (id === "microstructure") return <><TextField label="Symbol" onChange={(value) => { const symbol = value.toUpperCase(); updateSettings((state) => ({ ...state, chart: { ...state.chart, symbol } })); onLinkContextChange({ symbol }); }} value={linkContext.symbol} /><div className="canvas-settings-note">The symbol follows the selected link color. Quotes and trades share one QMD event stream; each table retains its latest 1,024 decoded rows at the shared historical clock.</div></>;
   if (id === "facts") return <><TextField label="Symbol" onChange={(value) => { const symbol = value.toUpperCase(); updateSettings((state) => ({ ...state, chart: { ...state.chart, symbol } })); onLinkContextChange({ symbol }); }} value={linkContext.symbol} /><div className="canvas-settings-note">Facts follow the selected link color and shared point-in-time clock. Reported values remain distinct from explicitly labeled estimates, ranges, and upper bounds.</div></>;
   const settingsId = id as keyof ContainerSettings;

@@ -1,4 +1,4 @@
-import { containerSupportsCanvasLink, type WorkspaceContainerId } from "./tradingWorkspace";
+import { containerSupportsCanvasLink, TRADING_WORKSPACE_LAYOUT_VERSION, type WorkspaceContainerId } from "./tradingWorkspace";
 import type { WorkspaceWindowLayout } from "./components/WorkspaceCanvas";
 import { normalizeWorkspaceGroups, type WorkspaceGroup } from "./workspaceGroups";
 
@@ -42,6 +42,7 @@ export type CanvasRegistry = {
 };
 
 export const MAIN_CANVAS_ID = "main";
+export const LABELER_CANVAS_ID = "labeler";
 export const LIVE_OBSERVATION_CANVAS_ID = "live-observation";
 export const NEWS_READER_CANVAS_ID = "news-reader";
 export const SEC_READER_CANVAS_ID = "sec-reader";
@@ -307,6 +308,25 @@ export function ensureNewsReaderCanvas(): CanvasRecord {
   const canvas = { id: NEWS_READER_CANVAS_ID, label: "News Reader" };
   writeCanvasRegistry({ ...registry, canvases: [...registry.canvases, canvas] });
   window.dispatchEvent(new CustomEvent(CANVAS_REGISTRY_UPDATED_EVENT));
+  return canvas;
+}
+
+/** A personal Canvas composition; labels themselves are persisted by the backend. */
+export function ensureLabelerCanvas(): CanvasRecord {
+  const registry = readCanvasRegistry();
+  const existing = registry.canvases.find(canvas => canvas.id === LABELER_CANVAS_ID);
+  const canvas = existing ?? { id: LABELER_CANVAS_ID, label: "Labeler" };
+  const stored = readCanvasWorkspaceState(LABELER_CANVAS_ID) ?? registry.workspaceStates?.[LABELER_CANVAS_ID];
+  const state: CanvasWorkspaceState = stored ?? {
+    groups: {}, instances: { "labeler-main": "labeler" }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
+    layouts: { "labeler-main": { x: 0, y: 0, w: 1400, h: 900, z: 1, minimized: false, fullscreen: true } },
+    openIds: ["labeler-main"],
+  };
+  if (!existing || !stored) {
+    writeCanvasWorkspaceState(LABELER_CANVAS_ID, state);
+    writeCanvasRegistry({ ...registry, canvases: existing ? registry.canvases : [...registry.canvases, canvas], workspaceStates: { ...registry.workspaceStates, [LABELER_CANVAS_ID]: state } });
+    window.dispatchEvent(new CustomEvent(CANVAS_REGISTRY_UPDATED_EVENT));
+  }
   return canvas;
 }
 

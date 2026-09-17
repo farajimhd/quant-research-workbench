@@ -424,6 +424,7 @@ def _container(
 
 
 CONTAINER_DEFINITIONS = (
+    _container("labeler", "Labeler", "frontend/src/app/components/LabelerContainer.tsx", products=("qmd.chart", "qmd.scanner"), inputs=()),
     _container("chart", "Chart", "frontend/src/app/components/ChartPanel.tsx", products=("qmd.chart",), inputs=("workspace.clock_context", "workspace.symbol_context")),
     _container("charts_quotes", "Charts & Quotes", "frontend/src/app/components/MarketMicrostructureContainers.tsx", products=("qmd.chart", "qmd.intraday_bars"), inputs=("workspace.clock_context", "workspace.symbol_context")),
     _container("facts", "Stock Facts", "frontend/src/app/components/StockFactsContainer.tsx", inputs=("workspace.clock_context", "workspace.symbol_context")),

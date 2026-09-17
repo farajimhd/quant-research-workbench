@@ -57,6 +57,37 @@ class LabelerTests(unittest.TestCase):
         self.assertEqual([e["event"] for e in exported["events"]], ["ENTER_LONG", "EXIT_LONG"])
         self.assertEqual(service.millis(exported["events"][1]["timestamp"]) - service.millis(exported["events"][0]["timestamp"]), 100)
 
+    def test_each_submission_is_durable_before_session_completion(self):
+        first = self.interval()
+        second = self.interval(id="b", direction="SHORT", entry_timestamp=service.iso(self.start + 200), exit_timestamp=service.iso(self.start + 300), entry_price=10.5, exit_price=10.2)
+        self.assertEqual(self.put(status="in_progress", ranges=[first]).status_code, 200)
+        with service.database() as db:
+            self.assertEqual([json.loads(row[0]) for row in db.execute("SELECT body FROM label_ranges")], [first])
+        loaded = self.client.get("/api/research/labeler/review", params=self.scope.model_dump(mode="json")).json()
+        self.assertEqual(loaded["ranges"], [first])
+        self.assertEqual(self.put(status="in_progress", ranges=[first, second], expected_revision=loaded["revision"]).status_code, 200)
+        # A stale editor cannot erase either submitted position.
+        self.assertEqual(self.put(status="in_progress", ranges=[], expected_revision=0).status_code, 409)
+        with service.database() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM label_ranges").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT count(*) FROM revisions").fetchone()[0], 2)
+        self.assertEqual(self.client.get("/api/research/labeler/export").json()["reviews"], [])
+        self.assertEqual(self.put(status="completed", ranges=[first, second], expected_revision=2).status_code, 200)
+        self.assertEqual(len(self.client.get("/api/research/labeler/export").json()["reviews"][0]["ranges"]), 2)
+
+    def test_existing_review_ranges_are_migrated_without_timestamp_changes(self):
+        self.assertEqual(self.put().status_code, 200)
+        with service.database() as db:
+            db.execute("DELETE FROM label_ranges")
+            db.execute("PRAGMA user_version=0")
+        with service.database() as db:
+            self.assertEqual(json.loads(db.execute("SELECT body FROM label_ranges").fetchone()[0]), self.interval())
+            self.assertEqual(db.execute("SELECT count(*) FROM revisions").fetchone()[0], 1)
+
+    def test_invalid_review_query_is_validation_error(self):
+        response = self.client.get("/api/research/labeler/review", params={**self.scope.model_dump(mode="json"), "timeframe": "bogus"})
+        self.assertEqual(response.status_code, 422)
+
     def test_retries_idempotent_and_conflicting_editor_rejected(self):
         self.assertEqual(self.put().status_code, 200)
         self.assertEqual(self.put().json()["revision"], 1)

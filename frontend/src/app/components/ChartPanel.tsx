@@ -1540,7 +1540,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const previousLast = previousTimeline.at(-1)?.time;
     const appended = previousLast === undefined ? 0 : timeline.filter((bar) => bar.time > previousLast).length;
     const removed = timeline.length ? previousTimeline.filter((bar) => bar.time < timeline[0].time).length : 0;
-    const followLatest = currentRange && previousTimeline.length && currentRange.to >= previousTimeline.length - 1;
+    const followLatest = !labeling && currentRange && previousTimeline.length && currentRange.to >= previousTimeline.length - 1;
     previousTimelineRef.current = timeline;
     candleBoundsRef.current = candleValueBounds(payload.candles);
     // Trade guides participate in the candle series autoscale. Seed the
