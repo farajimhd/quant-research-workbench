@@ -695,7 +695,7 @@ def observe_frame(frame, saved, parameters, snapshot=None):
     if parameters.get('r1_ladder_contract') in {'r1-hod-resistance-ladder-v4','r1-hod-resistance-ladder-v5','r1-hod-resistance-ladder-v6'} and frame.timeframe == '1s':
         d['prior_r1_vwap'] = (d.get('vwap') if frame.as_of.timestamp()-d.get('closed_at',0) == 1 else None)
     observe(o,d,parameters.get('historical_hod',DEFAULTS))
-    if parameters.get('vwap_ladder_contract') and frame.timeframe == '1s':
+    if parameters.get('vwap_ladder_contract') and frame.timeframe == '1s' and not parameters.get('vwap_ladder', {}).get('group_resistances'):
         from .vwap_resistance_ladder import observe_market
         from src.market_engine.derived_trade_policy import eligible_trade_time
         if eligible_trade_time(frame.as_of.timestamp()-1):

@@ -10,6 +10,7 @@ from src.market_engine.derived_trade_policy import POLICY
 
 CONTRACT = 'vwap-midpoint-resistance-ladder-v1'
 DEFAULTS = dict(cash_fraction=1., late_entry_breaks=6, stop_offset_ticks=1.)
+RETEST_DEFAULTS = dict(group_resistances=0, require_late_retest=0, allow_retest_stop_fallback=0)
 TIMEFRAMES = {'100ms': .1, '1s': 1., '5s': 5., '10s': 10., '30s': 30.}
 
 
@@ -19,12 +20,12 @@ def configure(p):
     if any(p.get(k) for k in ('r1_ladder_contract', 'pullback_hod_contract')):
         raise ValueError('VWAP ladder cannot compose another entry policy')
     raw = p.get('vwap_ladder', {})
-    if set(raw) - set(DEFAULTS):
+    if set(raw) - set(DEFAULTS) - set(RETEST_DEFAULTS):
         raise ValueError('Unknown VWAP ladder setting')
-    s = dict(DEFAULTS, **raw)
+    s = {**DEFAULTS, **RETEST_DEFAULTS, **raw}
     if (any(type(v) not in (int, float) or not isfinite(v) for v in s.values())
             or not 0 < s['cash_fraction'] <= 1 or s['late_entry_breaks'] not in (4, 6)
-            or s['stop_offset_ticks'] < 1):
+            or s['stop_offset_ticks'] < 1 or any(s[k] not in (0, 1) for k in RETEST_DEFAULTS)):
         raise ValueError('Invalid VWAP ladder settings')
     p['vwap_ladder'] = s
 
@@ -80,8 +81,11 @@ def release_unfilled_episode(state):
         state['vwap_ladder_episode'] = dict(episode, used=False)
 
 
-def observe_market(o, state):
+def observe_market(o, state, settings=None):
     """Remember physical resistance IDs before role flips; recrosses count once."""
+    if (settings or {}).get('group_resistances'):
+        from .resistance_zones import observe
+        return observe(o, state, levels(o))
     session = o.observed_at.astimezone(H.NY).date().isoformat()
     if state.get('session') != session:
         state.clear(); state.update(session=session, known={}, broken=[])
@@ -93,7 +97,7 @@ def observe_market(o, state):
             crossed.append((key, row))
     for key, row in sorted(crossed, key=lambda item: item[1]['upper']):
         state['broken'].append(key)
-        state.setdefault('break_rows', {})[key] = deepcopy(row)
+        state.setdefault('break_rows', {})[key] = dict(deepcopy(row), broken_at=o.observed_at.timestamp())
     for key, row in rows.items():
         if row.get('side') in (-1, 'resistance') or row.get('role') == 'resistance':
             state['known'][key] = row
@@ -167,7 +171,7 @@ def evaluate(host, a, o, p, old_state):
     if passive and market.get('at', 0) < passive.get('at', 0) <= now:
         previous_market = market
         market = deepcopy(passive)
-        if previous_market.get('session') == market.get('session'):
+        if not settings.get('group_resistances') and previous_market.get('session') == market.get('session'):
             # A completed candle can miss an intrabar break already seen in the
             # trade stream. Passive history may extend, never erase that evidence.
             market['broken'] = list(dict.fromkeys((*previous_market.get('broken', []), *market['broken'])))
@@ -196,8 +200,9 @@ def evaluate(host, a, o, p, old_state):
     if passive and market is not None:
         crossed = [(key, market['break_rows'][key]) for key in market.get('broken', [])
                    if key not in prior_broken]
-    if now >= cutoff and is_trade and now > market.get('at', 0):
-        crossed.extend(observe_market(o, market))
+    group_clock = not settings.get('group_resistances') or ('bar_close' in o.evaluation_events and o.source_timeframe == '100ms')
+    if now >= cutoff and is_trade and group_clock and now > market.get('at', 0):
+        crossed.extend(observe_market(o, market, settings))
     rows = levels(o)
     count = len(market.get('broken', []))
     evidence = dict(contract=CONTRACT, macd_samples=samples, session_resistance_breaks=count,
@@ -310,21 +315,31 @@ def evaluate(host, a, o, p, old_state):
         return emit('wait', 'below_vwap_hod_midpoint')
     swing = support_swing(o, rows, cutoff)
     late = count >= settings['late_entry_breaks']
+    anchor = None
+    if (late and settings.get('require_late_retest') or not swing and settings.get('allow_retest_stop_fallback')):
+        from .resistance_zones import entry_anchor
+        anchor = entry_anchor(o, market, late, settings['late_entry_breaks'])
+        if anchor is None:
+            return emit('wait', 'late_pullback_retest_required' if late else 'level_retest_stop_required')
+        swing = anchor['swing']
     overhead = sorted((r for k, r in market.get('known', {}).items()
         if k not in market.get('broken', []) and r['lower'] > o.ask), key=lambda r: r['lower'])
     distance = 1 if late else 2 if count >= 4 else 3
     if not swing or len(overhead) < distance:
         return emit('wait', 'support_swing_or_overhead_resistances_unavailable')
-    stop = floor((swing['lower']-settings['stop_offset_ticks']*tick+1e-9)/tick)*tick
+    stop_base = anchor['anchor']['lower'] if anchor else swing['lower']
+    stop = floor((stop_base-settings['stop_offset_ticks']*tick+1e-9)/tick)*tick
     target = (floor((overhead[distance-1]['upper']+1e-9)/tick)+1)*tick
     if not 0 < stop < o.bid <= o.ask < target:
         return emit('wait', 'invalid_execution_geometry')
     episode['used'] = True
     state.update(vwap_ladder_entry=dict(entry_price=o.ask, requested_at=now, broken=[], late=late,
-        target_moves=0, add_opportunities=0, swing=swing, episode_id=episode['started_at']), initial_stop=stop, active_stop=stop,
+        target_moves=0, add_opportunities=0, swing=swing, retest_anchor=anchor, episode_id=episode['started_at']), initial_stop=stop, active_stop=stop,
         structural_profit_targets=[target], entry_at=o.observed_at.isoformat(), entry_reference_price=o.ask,
         entries=state.get('entries', 0)+1, entry_acquisition_exit_latched=False)
     return emit('enter_long', 'vwap_midpoint_all_macd', Status.ENTRY_PENDING,
         invalidation_price=stop, profit_target_price=target,
         capital_request=CapitalRequest(mode='mandate_fraction', value=settings['cash_fraction']/3),
-        metadata=dict(unreserved_cash_slice=True, initial_stop=stop, active_stop=stop, profit_targets=[target]))
+        metadata=dict(unreserved_cash_slice=True, initial_stop=stop, active_stop=stop, profit_targets=[target],
+            initial_swing=swing, retest_anchor=anchor, grouping_threshold=market.get('grouping_threshold'),
+            grouping_gap_samples=market.get('grouping_gap_samples')))
