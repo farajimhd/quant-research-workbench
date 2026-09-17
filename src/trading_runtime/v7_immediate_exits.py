@@ -26,13 +26,18 @@ def observe_floor(state, observation, market, fresh):
     now = observation.observed_at.timestamp()
     if now <= floor['at']:
         return
+    if floor.get('expired'):
+        return
+    if 'episode' not in floor or floor['episode'] != market.get('episode'):
+        floor.update(expired=True,expired_at=now,expiry_reason='momentum_episode_ended')
+        return
     # Completed lows cover intervening trades; quote-only observations cannot
     # invent a trade-price breach. The exit candle's own low predates the floor.
     bar = market.get('bar') or {}
     traded = ('market_data_update' in observation.evaluation_events
               and 'market.last_price' in observation.changed_source_ids)
     low = bar.get('low') if fresh and bar.get('time', 0) >= floor['at'] else None
-    if ((traded and observation.price < floor['close'])
+    if not floor.get('breached') and ((traded and observation.price < floor['close'])
             or (low is not None and low < floor['close'])):
         floor.update(breached=True, breached_at=now)
 
@@ -45,22 +50,26 @@ def assess(entry, observation, market, settings, fresh):
         return '', {'ready': False, 'reason': 'first_fill_clock_unavailable'}
     current = entry.setdefault('immediate_exits', {})
     bar = market.get('bar') or {}
-    completed = bool(fresh and bar.get('time', 0) >= filled
+    completed = bool(fresh and bar.get('end', 0) > filled
                      and bar.get('end', 0) > current.get('candle_at', 0))
+    if completed:
+        current['candle_at'] = bar['end']
     traded = ('market_data_update' in observation.evaluation_events
               and 'market.last_price' in observation.changed_source_ids)
-    forming = (observation.bar_open, observation.bar_high, observation.price)
-    if traded and all(type(v) in (int, float) and isfinite(v) and v > 0 for v in forming):
-        opening, high, close = forming
+    closed_policy = bool(settings.get('setup_tail_closed_candle'))
+    tail_values = ((bar.get('open'),bar.get('high'),bar.get('close')) if closed_policy
+                   else (observation.bar_open, observation.bar_high, observation.price))
+    tail_ready = completed if closed_policy else traded
+    if tail_ready and all(type(v) in (int, float) and isfinite(v) and v > 0 for v in tail_values):
+        opening, high, close = tail_values
         tail = high - max(opening, close)
         body = abs(close - opening)
         ratio = settings['setup_immediate_tail_body_ratio']
         if ratio and tail > 0 and tail > ratio * body + 1e-12:
             return 'topping_tail_immediate', dict(ready=True, candle=dict(
-                open=opening, high=high, close=close, observed_at=now, forming=True),
+                open=opening, high=high, close=close, observed_at=now, forming=not closed_policy,
+                **({'time':bar['time'],'end':bar['end']} if closed_policy else {})),
                 upper_wick=tail, body=body, minimum_body_ratio=ratio)
-    if completed:
-        current['candle_at'] = bar['end']
     if not (completed or traded):
         return '', {'ready': True}
     price = observation.price
@@ -92,7 +101,7 @@ def assess(entry, observation, market, settings, fresh):
             item['departed'] = True
             continue
         inside = level['lower'] <= price <= level['upper']
-        if completed:
+        if completed and bar.get('time',0) >= filled:
             inside = inside and bar['low'] >= level['lower'] and bar['high'] <= level['upper']
         if not inside:
             item['departed'] = True
