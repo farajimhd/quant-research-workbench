@@ -13,6 +13,10 @@ RISE_BASELINE_ID = '1a3a1113-34b7-4048-b73d-dac4d0e603a7'
 RISE_BASELINE_HASH = '2dee972dff9a2483e504c86923fd1776d70fa45d9aa8c6b44f14a580cb20c6d2'
 RISE_PROFILE = 'swing-rise-pullback-hod-v2'
 RISE_LABEL = 'HOD swing-low rise / pullback reentry v2'
+MACD_BASELINE_ID = 'c9a26ae8-19ac-4305-afe5-1c4145d09d28'
+MACD_BASELINE_HASH = '87ac121f5c093a8d0e6524c8708e574cc66f052d9b72029497d7b1f407dc0db5'
+MACD_PROFILE = 'swing-rise-pullback-hod-macd10s-v3'
+MACD_LABEL = 'HOD swing-low rise / pullback reentry / 10s MACD v3'
 RISE_DESCRIPTION = (
     'Initial entry is a completed bullish 1s rise from a confirmed swing low, without '
     'requiring a preceding swing high or pullback. Retains v1 bullish-candle quality, '
@@ -104,3 +108,35 @@ def create_rise():
     return create_test_candidate(label=RISE_LABEL,canvas_revision=payload['canvas']['revision'],
         canvas_profile=payload['canvas']['profile'],configuration=payload,
         run_plan_id=PLAN,strategy_profile_id=RISE_PROFILE)
+
+
+def prepare_macd_payload(baseline,published_profiles):
+    if baseline['candidate_id'] != MACD_BASELINE_ID or baseline['content_hash'] != MACD_BASELINE_HASH:
+        raise ValueError('10s MACD source candidate identity changed')
+    payload=deepcopy(baseline['payload'])
+    parent=next(p for p in payload['strategy']['profiles'] if p['profile_id']==RISE_PROFILE)
+    profile=deepcopy(parent)
+    description=parent['description']+' Initial entries and pullback reentries require the latest completed '
+    description+='native 10s MACD line >= signal; equality is allowed. Missing, mismatched or stale samples '
+    description+='block entries. Cancel remaining entry acquisition when the gate closes; position exits are unchanged.'
+    profile.update(profile_id=MACD_PROFILE,name=MACD_LABEL,description=description,
+                   publication_status='draft',editable=True,derived_from_profile_id=RISE_PROFILE)
+    profile['parameters']['pullback_hod']['entry_macd_10s_enabled']=1
+    payload['strategy']['profiles']=[deepcopy(published_profiles.get(p['profile_id'],p))
+                                    for p in payload['strategy']['profiles']]+[profile]
+    plan=next(p for p in payload['run_plans']['plans'] if p['run_plan_id']==PLAN)
+    if plan['allowed_environments'] != ['backtest']:
+        raise ValueError('10s MACD candidate must remain backtest-only')
+    plan.update(profile_id=MACD_PROFILE,name=MACD_LABEL,description=description)
+    return payload
+
+
+def create_macd():
+    from .trading_configuration_service import configuration_candidate,configuration_base,create_test_candidate
+    baseline=configuration_candidate(MACD_BASELINE_ID,required=True)
+    published={p['profile_id']:p for p in configuration_base()['strategy']['profiles']
+               if p.get('publication_status')=='published'}
+    payload=prepare_macd_payload(baseline,published)
+    return create_test_candidate(label=MACD_LABEL,canvas_revision=payload['canvas']['revision'],
+        canvas_profile=payload['canvas']['profile'],configuration=payload,
+        run_plan_id=PLAN,strategy_profile_id=MACD_PROFILE)
