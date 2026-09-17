@@ -12,7 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.backend.qmd_gateway_client import qmd_history_base_url
 from src.market_engine.historical_source import QmdHistoricalEventSource
-from src.market_engine.hindsight_actions import ActionGrid, solve_actions, MAX_HOLD_SECONDS
+from src.market_engine.hindsight_actions import ActionGrid, solve_actions
+from src.backend.hindsight_service import calculate as calculate_hindsight, HindsightRequest
 
 router=APIRouter(prefix='/api/research/hindsight-actions',tags=['hindsight research'])
 _pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='hindsight-actions')
@@ -27,6 +28,7 @@ class ActionRequest(BaseModel):
     session_date:date
     start_time:time=time(4)
     window_minutes:int=Field(default=30,ge=1,le=120)
+    lookback_seconds:float=Field(default=2,ge=0,le=30,allow_inf_nan=False)
     cost_bps:float=Field(default=0,ge=0,le=100,allow_inf_nan=False)
     max_spread_bps:float=Field(default=150,ge=0,le=1000,allow_inf_nan=False)
 
@@ -37,7 +39,7 @@ class ActionRequest(BaseModel):
         start,end=self.bounds()
         if self.start_time<time(4) or end>datetime.combine(self.session_date,time(20),NY):
             raise ValueError('Research window must be within 04:00-20:00 New York')
-        if min(end+timedelta(seconds=MAX_HOLD_SECONDS),datetime.combine(self.session_date,time(20),NY))>datetime.now(timezone.utc):raise ValueError('The full 90-second future window must be historical')
+        if datetime.combine(self.session_date,time(20),NY)>datetime.now(timezone.utc):raise ValueError('MACD hindsight requires a completed historical session')
         return self
 
     def bounds(self):
@@ -47,21 +49,30 @@ class ActionRequest(BaseModel):
 
 async def calculate_actions(request,progress=lambda **kwargs:None):
     start,end=request.bounds();started=monotonic()
-    lookahead_end=min(end+timedelta(seconds=MAX_HOLD_SECONDS),datetime.combine(request.session_date,time(20),NY))
-    # Read the future horizon too; never truncate labels at the display-window end.
+    base=await calculate_hindsight(HindsightRequest(ticker=request.ticker,session_date=request.session_date,lookback_seconds=request.lookback_seconds),progress)
+    targets=base['positions']
+    # Reuse the actual base labels, including moves below the visual 5% filter.
+    relevant=[]
+    for side in ('long','short'):
+        future=sorted((p for p in targets if p['direction']==side and p['exit_time']>start.timestamp()),key=lambda p:p['exit_time'])
+        relevant.extend(p for p in future if p['exit_time']<=end.timestamp())
+        after=next((p for p in future if p['exit_time']>end.timestamp()),None)
+        if after:relevant.append(after)
+    lookahead_end=datetime.fromtimestamp(max([end.timestamp()]+[p['exit_time'] for p in relevant]),NY)
     source=QmdHistoricalEventSource(qmd_history_base_url(),start=start-timedelta(seconds=10),
         end=lookahead_end+timedelta(microseconds=1),tickers=[request.ticker.upper()],batch_size=100000)
-    sampler=ActionGrid(start.timestamp(),lookahead_end.timestamp())
+    sampler=ActionGrid(start.timestamp(),end.timestamp(),target_times=[p['exit_time'] for p in relevant])
     async for rows in source.stream_rows():
         for row in rows:sampler.observe(row)
         progress(stage='events',events=sampler.counts['events'],through=str(sampler.last),elapsed_seconds=monotonic()-started)
         if monotonic()-started>600:raise RuntimeError('Research time budget exceeded; no partial labels published')
     grid=sampler.finish()
     progress(stage='values',events=sampler.counts['events'])
-    parameters=request.model_dump(exclude={'ticker','session_date','start_time','window_minutes'})
-    result=await asyncio.to_thread(solve_actions,grid,decision_end=end.timestamp(),**parameters)
+    parameters=request.model_dump(exclude={'ticker','session_date','start_time','window_minutes','lookback_seconds'})
+    result=await asyncio.to_thread(solve_actions,grid,targets=relevant,target_quotes=sampler.target_quotes,decision_end=end.timestamp(),**parameters)
     return dict(result,ticker=request.ticker.upper(),session_date=str(request.session_date),
-        start=start.isoformat(),end=end.isoformat(),label_available_at=lookahead_end.isoformat(),source_end=lookahead_end.isoformat(),
+        start=start.isoformat(),end=end.isoformat(),label_available_at=base['end'],source_end=lookahead_end.isoformat(),
+        base_hindsight=dict(algorithm=base['algorithm'],parameters=base['parameters'],source_revision=base['source_revision'],macd_provenance=base['macd_provenance']),
         parameters=request.model_dump(mode='json'),source_revision=source.source_revision,
         source_counts=dict(sampler.counts),elapsed_seconds=monotonic()-started,
         limitations=['Observed NBBO sizes are not guaranteed fills; no queue or market-impact model.',
@@ -69,7 +80,9 @@ async def calculate_actions(request,progress=lambda **kwargs:None):
             'No market-relative rank: this result covers one ticker.',
             'Independent overlapping entry opportunities; profits must not be summed as portfolio returns.',
             'Gross profit includes quoted spread; displayed net profit also deducts the configured fees.',
-            'No stop-loss or portfolio policy; the only holding limit is 90 seconds.'])
+            'No fixed holding cap: each direction uses its next base MACD hindsight exit.',
+            'MACD targets use eligible trade extrema; action values use quotes at those exact targets.',
+            'The base visual 5% filter does not remove targets from calculation.'])
 
 
 def _run(job_id,request):

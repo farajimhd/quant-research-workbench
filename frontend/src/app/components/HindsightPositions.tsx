@@ -130,7 +130,7 @@ export function useHindsightPositions(ticker: string, sessionDate?: string) {
     </form>
     </HindsightDetails> : null}
   </div> : null;
-  return { controls, positions: current.visible ? selected ?? EMPTY : EMPTY };
+  return { controls, lookbackSeconds: request.settings.lookback_seconds, positions: current.visible ? selected ?? EMPTY : EMPTY };
 }
 
 /** Independent paint-only layer: contributes nothing to autoscale or trade state. */

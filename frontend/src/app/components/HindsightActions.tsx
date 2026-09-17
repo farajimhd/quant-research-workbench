@@ -5,18 +5,19 @@ import { api } from '../../api/client';
 import { Modal } from './Modal';
 
 type Outcome = { entry_price: number; exit_price: number; exit_time: number; hold_seconds: number; gross_profit: number; net_profit: number };
-type Opportunity = { time: number; action: 'buy' | 'sell' | 'wait' | 'unavailable'; profit: number | null; hold_seconds: number | null; exit_time: number | null; long: Outcome | null; short: Outcome | null; reason: string | null; available_at: number };
+type MacdTarget = { position_number: number; entry_time: number; exit_time: number; entry_price: number; exit_price: number; macd_open: number; macd_close: number };
+type Opportunity = { time: number; action: 'buy' | 'sell' | 'wait' | 'unavailable'; profit: number | null; hold_seconds: number | null; exit_time: number | null; long: Outcome | null; short: Outcome | null; reason: string | null; available_at: number | null; targets: Partial<Record<'long' | 'short', MacdTarget>>; action_reasons: Partial<Record<'long' | 'short', string>> };
 type Candle = { time: number; endTime?: number; isClosed?: boolean; low: number; high: number };
-export type ActionValues = { ticker: string; start: string; end: string; source_end: string; labels: Opportunity[]; max_hold_seconds: number; counts: Record<string, number>; limitations: string[] };
+export type ActionValues = { ticker: string; start: string; end: string; source_end: string; labels: Opportunity[]; horizon: string; counts: Record<string, number>; limitations: string[] };
 type Job = { id: string; status: 'queued' | 'running' | 'completed' | 'failed'; events?: number; stage?: string; error?: string; result?: ActionValues };
 const defaults = { start_time: '04:00', window_minutes: 30, cost_bps: 0, max_spread_bps: 150 };
-const clock = (t: number) => new Date(t * 1000).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour12: false });
+const clock = (t: number) => new Date(t * 1000).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
 const money = (v: number | null) => v == null ? '--' : `${v < 0 ? '-' : '+'}$${Number(Math.abs(v).toFixed(4))}`;
 const actionName = (v: Opportunity['action']) => ({ buy: 'Buy long', sell: 'Open short', wait: 'Stay flat', unavailable: 'N/A' })[v];
 const actionLegend = <div className="action-values-legend"><span style={{ color: 'var(--semantic-positive)' }}>Buy long</span><span style={{ color: 'var(--semantic-neutral)' }}>Stay flat / unavailable</span><span style={{ color: 'var(--semantic-negative)' }}>Open short</span></div>;
 
-export function useHindsightActions(ticker: string, sessionDate?: string, focus?: (start: number, end: number) => void) {
-  const identity = `${ticker}:${sessionDate ?? ''}`;
+export function useHindsightActions(ticker: string, sessionDate?: string, focus?: (start: number, end: number) => void, lookbackSeconds = 2) {
+  const identity = `${ticker}:${sessionDate ?? ''}:${lookbackSeconds}`;
   const [state, setState] = useState<{ identity: string; job?: Job; visible: boolean; error?: string }>({ identity, visible: false });
   const [settings, setSettings] = useState(defaults);
   const [request, setRequest] = useState<{ identity: string; settings: typeof defaults; nonce: number }>();
@@ -45,31 +46,38 @@ export function useHindsightActions(ticker: string, sessionDate?: string, focus?
       }
     };
     setState({ identity, visible: true });
-    void api<Job>('/api/research/hindsight-actions', { method: 'POST', body: JSON.stringify({ ticker, session_date: sessionDate, ...request.settings }), signal: controller.signal, timeoutMs: 15000 }).then(receive).catch(failed);
+    void api<Job>('/api/research/hindsight-actions', { method: 'POST', body: JSON.stringify({ ticker, session_date: sessionDate, ...request.settings, lookback_seconds: lookbackSeconds }), signal: controller.signal, timeoutMs: 15000 }).then(receive).catch(failed);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [identity, request, ticker, sessionDate]);
+  }, [identity, request, ticker, sessionDate, lookbackSeconds]);
   const selected = result?.labels[Math.min(step, result.labels.length - 1)];
   const generate = () => setRequest(r => ({ identity, settings: { ...settings }, nonce: (r?.nonce ?? 0) + 1 }));
   const controls = sessionDate ? <div className="hindsight-controls action-values-controls">
     <button type="button" className="toolbar-button" aria-label="Hindsight action values" aria-pressed={current.visible} disabled={busy}
-      title="Best gross profit per share within 90 seconds. Uses future quotes; not a prediction."
+      title="Gross profit per share at the next base MACD hindsight exit. Uses future quotes; not a prediction."
       onClick={() => result ? setState(s => ({ ...s, visible: !s.visible })) : generate()}><Activity size={15} /><span>{busy ? 'Finding best exits...' : 'Action values'}</span></button>
     <button ref={detailsButton} type="button" className="toolbar-button" aria-label="Action value details" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}><SlidersHorizontal size={15} /></button>
     {current.error ? <span className="action-values-error" role="alert">Action values failed. Open details to retry.</span> : null}
     {open ? <Modal className="action-values-modal" onClose={close} title="Hindsight action values" closeOnBackdrop>
-      <p className="chart-settings-help">{ticker} / {sessionDate} / New York time. Size 1. Maximum hold: 90s.</p>
+      <p className="chart-settings-help">{ticker} / {sessionDate} / New York time. Size 1. Exit targets: base MACD hindsight (swing lookback {lookbackSeconds}s).</p>
       <div className="action-values-status" role="status">{current.error || (busy ? `${(current.job?.events ?? 0).toLocaleString()} canonical events / ${current.job?.stage ?? 'queued'}` : result ? `${result.counts.seconds} independent entry opportunities. Profits cannot be added together.` : 'Generate action values, then click a completed candle.')}</div>
       {actionLegend}
-      <p className="chart-settings-help">Compare independent actions starting flat at this candle close. Buy long and Open short are separate new trades, not a connected entry and exit. Values are gross dollars per share within the next 90 seconds.</p>
+      <p className="chart-settings-help">Compare independent actions starting flat at this candle close. Buy long and Open short are separate new trades, not a connected entry and exit. Values are gross dollars per share at each direction's next base MACD hindsight exit.</p>
       {result && selected ? <section className="action-values-inspector" aria-label="Action value inspector">
         <label className="chart-setting-row">Candle close / decision <b>{clock(selected.time)}</b></label>
         <input className="action-values-time" aria-label="Action decision second" type="range" min={0} max={result.labels.length - 1} step={1} value={step} onChange={e => setStep(e.target.valueAsNumber)} />
-        <p><strong>Best entry action: {actionName(selected.action)}</strong></p>
+        <p><strong>Best valued entry action: {actionName(selected.action)}</strong></p>
         {selected.reason ? <p className="chart-settings-help">{selected.reason.replaceAll('_', ' ')}</p> : null}
-        <table className="action-values-table"><thead><tr><th>Action</th><th>Entry price</th><th>Best exit price / time</th><th>Value ($/share)</th><th>Hold</th></tr></thead><tbody>{(['long', 'short'] as const).map(side => {
+        <table className="action-values-table"><thead><tr><th>Action</th><th>Entry price</th><th>Target quote / time</th><th>Value ($/share)</th><th>Hold</th></tr></thead><tbody>{(['long', 'short'] as const).map(side => {
           const value = selected[side];
-          return <tr key={side}><td>{side === 'long' ? 'Buy long' : 'Open short'}</td><td>{value?.entry_price.toFixed(4) ?? '--'}</td><td>{value ? `${value.exit_price.toFixed(4)} @ ${clock(value.exit_time)}` : '--'}</td><td>{value ? money(value.gross_profit) : '--'}</td><td>{value ? `${value.hold_seconds}s` : '--'}</td></tr>;
+          return <tr key={side}><td>{side === 'long' ? 'Buy long' : 'Open short'}</td><td>{value?.entry_price.toFixed(4) ?? '--'}</td><td>{value ? `${value.exit_price.toFixed(4)} @ ${clock(value.exit_time)}` : '--'}</td><td>{value ? money(value.gross_profit) : '--'}</td><td>{value ? `${Number(value.hold_seconds.toFixed(3))}s` : '--'}</td></tr>;
         })}<tr><td>Stay flat</td><td>--</td><td>No trade</td><td>{money(0)}</td><td>0s</td></tr></tbody></table>
+        <details className="chart-settings-help" open><summary>Base MACD targets</summary>
+          {(['long', 'short'] as const).map(side => {
+            const target = selected.targets[side];
+            return <p key={side}><b>{side === 'long' ? 'Long' : 'Short'}:</b> {target ? `Move #${target.position_number}, target ${clock(target.exit_time)} at trade price $${target.exit_price.toFixed(4)}. MACD interval ${clock(target.macd_open)} to ${clock(target.macd_close)}.` : 'No future base target.'} {selected.action_reasons[side]?.replaceAll('_', ' ')}</p>;
+          })}
+          <p>The value table uses bid/ask quotes at these exact trade-extreme timestamps. Trade prices and quotes can differ. Targets include moves below the base overlay's display filter.</p>
+        </details>
         <p className="chart-settings-help">Stay flat is the $0 no-trade baseline, not the value of waiting and entering later. Unavailable entries show --; negative returns remain visible.</p>
         <details className="chart-settings-help"><summary>Actions for an existing position</summary>
           <table className="action-values-table"><thead><tr><th>Action</th><th>Value</th><th>Required context</th></tr></thead><tbody>
@@ -90,14 +98,14 @@ export function useHindsightActions(ticker: string, sessionDate?: string, focus?
         <button type="submit" className="toolbar-button hindsight-apply" disabled={busy}>Generate action values</button>
       </form>
       <details className="chart-settings-help"><summary>Calculation and limitations</summary>
-        <p>At each completed candle end, enter long at the fresh ask or short at the fresh bid. Search the next 1-90 seconds for the highest bid or lowest ask. Equal best exits choose the earliest time. Choose the direction with the larger positive gross profit; equal profits choose the shorter hold, then Buy.</p>
+        <p>At each completed candle end, enter long at the fresh ask or short at the fresh bid. For each direction, use the first base MACD hindsight exit strictly after this decision. Do not search later moves for a better price. Entry can precede the base move start; its exit remains the fixed target. Choose the larger positive quoted profit.</p>
         <p>Quotes must be at most 1s old with one unit available. Entries require three trades in the trailing 10s and the configured spread limit. Gross profit already reflects quoted spread; fees are separate. This is retrospective labeling, not model training or a trading strategy.</p>
-        <p>No borrow, queue, market-impact or stop-loss model. Overlapping opportunities cannot be summed into a portfolio return. Incomplete 90s windows are unavailable, not silently shortened.</p>
+        <p>No borrow, queue, market-impact or stop-loss model. Overlapping opportunities cannot be summed into a portfolio return. Missing target quotes and directions without a future target are unavailable; no fixed holding cap is applied.</p>
       </details>
     </Modal> : null}
   </div> : null;
   const caption = current.visible && result ? <div className="action-values-caption">
-    <span>Hindsight / click a completed candle to compare action values / max hold 90s</span>{actionLegend}<span>Independent entries / shorts hypothetical</span>
+    <span>Hindsight / click a completed candle to compare action values / base MACD exit targets</span>{actionLegend}<span>Independent entries / shorts hypothetical</span>
   </div> : null;
   return { controls, caption, result: current.visible ? result : undefined, inspect };
 }

@@ -43,20 +43,23 @@ def review_action_values(page, screenshot_path):
     url=urlsplit(page.url)
     response=page.request.get(f'{url.scheme}://{url.netloc}/api/research/hindsight-actions/{job["id"]}').json()
     result=response.get('data',response)['result']
-    assert result['max_hold_seconds']==90 and result['position_size']==1
+    assert result['horizon']=='next_base_macd_exit_per_direction' and result['position_size']==1
     assert result['counts']['seconds']==1801
-    assert all(x['hold_seconds'] is None or 0<=x['hold_seconds']<=90 for x in result['labels'])
-    assert result['labels'][-1]['reason']!='incomplete_90s_horizon'
+    assert all(x['hold_seconds'] is None or x['hold_seconds']>=0 for x in result['labels'])
     slider=page.get_by_role('slider',name='Action decision second');slider.fill('595')
     slider.focus();page.keyboard.press('ArrowRight');assert slider.input_value()=='596';page.keyboard.press('ArrowLeft')
     table=page.locator('.action-values-inspector > .action-values-table')
     for name in ('Buy long','Open short','Stay flat'):assert table.get_by_role('cell',name=name,exact=True).count()==1
+    assert '04:09:55.000' in page.locator('.action-values-inspector').inner_text()
     selected=result['labels'][595]
-    assert selected['long']['gross_profit']>0 and selected['short']['gross_profit']<0
     for side in ('long','short'):
         value=selected[side]['gross_profit']
         expected=('+' if value>=0 else '-')+'$'+format(abs(value),'.4f').rstrip('0').rstrip('.')
         assert expected in table.inner_text()
+    slider.fill('664')
+    assert result['labels'][664]['short']['exit_time']==1787299868.067424
+    assert '04:11:08.067' in table.inner_text()
+    slider.fill('595')
     page.get_by_text('Actions for an existing position',exact=True).click()
     assert page.get_by_role('cell',name='Not calculated',exact=True).count()==4
     page.get_by_text('Actions for an existing position',exact=True).click()
@@ -94,4 +97,4 @@ def review_action_values(page, screenshot_path):
     toggle.click();page.mouse.move(0,0);page.wait_for_timeout(300)
     details.click();page.keyboard.press('Escape')
     assert not page.get_by_role('dialog',name='Hindsight action values',exact=True).count()
-    return dict(counts=result['counts'],max_hold_seconds=90,candle_click=True,modal=True)
+    return dict(counts=result['counts'],horizon='macd',candle_click=True,modal=True)
