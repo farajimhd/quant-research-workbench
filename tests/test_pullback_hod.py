@@ -324,3 +324,65 @@ def test_10s_macd_dependencies_are_opt_in_and_gate_boolean_is_validated():
     for bad in (-1,2,'1',float('nan')):
         a.parameters['pullback_hod']['entry_macd_10s_enabled']=bad
         with pytest.raises(ValueError):S.resolve_long_momentum_parameters(a.parameters)
+
+
+def test_higher_low_trailing_intent_protects_actual_held_quantity():
+    host,a,o=rising_fixture()
+    entered=host.evaluate(a,o)
+    state=deepcopy(a.state)
+    state.update(pullback_entry=deepcopy(entered.state['pullback_entry']),active_stop=9.9,
+                 structural_profit_targets=[10.3])
+    state['pullback_entry']['first_fill_at']=o.observed_at.timestamp()-5
+    r=host.evaluate(replace(a,state=state,status=S.AssignmentStatus.MANAGING),
+                    replace(o,position_quantity=37,average_price=9.95))
+    intent=next(i for i in r.evaluation.intents if i.action=='replace_protective_stop')
+    assert intent.quantity==37
+    assert 9.9 < intent.invalidation_price < o.bid
+
+
+def test_improving_macd_uses_distinct_consecutive_samples_and_survives_restart():
+    def gate(at,line,signal=0.):
+        return dict(observed_at=at,line=line,signal=signal,passed=line>=signal,
+                    reason='macd_10s_entry_allowed' if line>=signal else 'macd_10s_below_signal')
+    history={}
+    assert not P.improving_macd_gate(gate(100,.01),history)['passed']
+    assert P.improving_macd_gate(gate(110,.02),history)['passed']
+    restored=deepcopy(history)
+    assert P.improving_macd_gate(gate(110,.02),restored)['passed']
+    assert restored==history
+    assert not P.improving_macd_gate(gate(120,.02),restored)['passed']
+    assert not P.improving_macd_gate(gate(130,.01),restored)['passed']
+    assert not P.improving_macd_gate(gate(150,.03),restored)['passed']
+    assert not P.improving_macd_gate(gate(140,.04),restored)['passed']
+    assert not P.improving_macd_gate(gate(160,-.01),restored)['passed']
+
+
+@pytest.mark.parametrize('failure',[None,'pivot_close_boundary','old_pivot','prior_red','lower_low','prior_before_pivot'])
+def test_fresh_sustained_rise_filters_completed_candles(failure):
+    settings=dict(P.DEFAULTS,sustained_rise_enabled=1,maximum_swing_age_s=10.)
+    swing=dict(side='support',state='active',price=10.,lower=9.99,upper=10.01,
+               pivot_at=97.,confirmed_at=98.)
+    market=dict(prior_hod=10.2,vwap=9.5,prior_bar=candle(99,10.03,10.07,10.02,10.06),
+                bar=candle(100,10.06,10.12,10.05,10.11))
+    if failure=='old_pivot':swing['pivot_at']=89.
+    if failure=='prior_red':market['prior_bar']['open']=10.08
+    if failure=='lower_low':market['bar']['low']=10.01
+    if failure=='pivot_close_boundary':swing['pivot_at']=98.
+    if failure=='prior_before_pivot':swing.update(pivot_at=99.,confirmed_at=99.)
+    setup,reason=P.entry_setup(dict(local_swings=[swing]),market,settings,.01,rising=True)
+    assert bool(setup)==(failure in (None,'pivot_close_boundary')),reason
+
+
+def test_refined_candidate_changes_only_requested_entry_settings():
+    from src.backend import pullback_hod_candidate as C
+    profile=dict(profile_id=C.MACD_PROFILE,description='baseline',parameters=dict(
+        pullback_hod=dict(P.DEFAULTS,entry_macd_10s_enabled=1)),lifecycle={'unchanged':True})
+    baseline=dict(candidate_id=C.REFINED_BASELINE_ID,content_hash=C.REFINED_BASELINE_HASH,payload=dict(
+        strategy=dict(profiles=[profile]),run_plans=dict(plans=[dict(run_plan_id=C.PLAN,allowed_environments=['backtest'])])))
+    original=deepcopy(baseline)
+    output=C.prepare_refined_payload(baseline,{})['strategy']['profiles'][-1]
+    assert baseline==original
+    expected=deepcopy(profile['parameters'])
+    expected['pullback_hod'].update(sustained_rise_enabled=1,entry_macd_improving_enabled=1,maximum_swing_age_s=10.)
+    assert output['parameters']==expected
+    assert output['lifecycle']==profile['lifecycle']
