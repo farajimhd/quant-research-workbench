@@ -24,7 +24,7 @@ import sqlite3
 import time
 import urllib.parse
 from collections import deque
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, time as clock_time, timedelta
@@ -663,6 +663,32 @@ class ReplayFrameSpool:
                     )
         finally:
             connection.close()
+
+    def empty_interval(self, ticker, previous_end, next_end):
+        """Prove absent eligible seconds from a complete, pinned native stream.
+
+        Both bordering candles must exist. A missing consumer frame therefore
+        cannot be mistaken for a quiet interval. Only the consumed prefix is read.
+        """
+        start, end = previous_end, next_end - 1
+        if not 0 < end - start <= 30:
+            return None
+        if datetime.fromtimestamp(start, NEW_YORK).date() != datetime.fromtimestamp(end, NEW_YORK).date():
+            return None
+        with closing(sqlite3.connect(f'file:{self.path.as_posix()}?mode=ro', uri=True)) as connection:
+            row = connection.execute("SELECT authority_json FROM strategy_frame_streams WHERE ticker=? AND timeframe='1s'",
+                                     (ticker,)).fetchone()
+            authority = json.loads(row[0]) if row else {}
+            if (authority.get('complete_for_history') is not True or not authority.get('revision_token')
+                    or not authority.get('source_plan_hash')):
+                return None
+            times = [r[0] for r in connection.execute(
+                "SELECT as_of_us FROM strategy_frames WHERE ticker=? AND timeframe='1s' AND as_of_us>=? AND as_of_us<=? ORDER BY as_of_us",
+                (ticker, round(start*1e6), round(next_end*1e6)))]
+        if times != [round(start*1e6), round(next_end*1e6)]:
+            return None
+        return dict(contract='canonical-empty-interval-1', start=start, end=end, ticker=ticker,
+                    fingerprint=authority['revision_token'], source_plan_hash=authority['source_plan_hash'])
 
     def append(self, frames: list[ReplayDerivedFrame]) -> None:
         if not frames:
@@ -1937,6 +1963,7 @@ class ReplayRunController:
                 "processed_frames": self._processed_frames,
                 "experimental_session_highs": deepcopy(getattr(self, "_experimental_session_highs", {})),
                 "derived_trade_policy": "exclude-trades-before-0405-et-v1",
+                "ladder_swing_continuity": "prepared-native-empty-interval-v1",
                 "completed_range_windows": {ticker: window.checkpoint() for ticker, window
                     in getattr(self, "_completed_range_windows", {}).items()},
                 "level_load_contract": LEVEL_LOAD_CONTRACT,
@@ -2503,6 +2530,7 @@ class ReplayRunController:
             self._preparation_stage = "strategy_frames"
             await self._publish(force=True)
             frame_source = await self._load_strategy_frames()
+            self._continuity_frame_source = frame_source if isinstance(frame_source, ReplayFrameSpool) else None
             if self.definition.prepare_frames_only:
                 if self._preparation_completed_units != self._preparation_total_units:
                     raise RuntimeError('Frame preparation returned incomplete streams')
@@ -3159,6 +3187,9 @@ class ReplayRunController:
         from src.market_engine.derived_trade_policy import POLICY
         if controller.get('derived_trade_policy') != POLICY:
             raise ValueError('Replay checkpoint predates the 04:05 derived-trade policy; start a new run')
+        parameters = (self.definition.configuration_revision['payload'].get('strategy') or {}).get('parameters') or {}
+        if parameters.get('vwap_ladder_contract') and controller.get('ladder_swing_continuity') != 'prepared-native-empty-interval-v1':
+            raise ValueError('Replay checkpoint predates ladder swing continuity; start a new run')
         self._experimental_session_highs = deepcopy(controller.get("experimental_session_highs") or {})
         from src.trading_runtime.completed_candle_range import CompletedCandleRange
         if self._entry_range_policy().get('require_range_context') and 'completed_range_windows' not in controller:
@@ -3545,8 +3576,13 @@ class ReplayRunController:
             stream = self._structural_market_streams.get(frame.ticker)
             if stream is None:
                 stream = self._structural_market_streams[frame.ticker] = MarketStream(saved)
+            proof = None
+            source = getattr(self, '_continuity_frame_source', None)
+            previous_end = saved.get('row', {}).get('effective_at')
+            if parameters.get('vwap_ladder_contract') and source is not None and previous_end is not None:
+                proof = source.empty_interval(frame.ticker, previous_end, end)
             market = stream.observe(bar, snapshot['unified_levels'], self._recovery_book_identity,
-                                    parameters.get('structural_detector_settings'))
+                                    parameters.get('structural_detector_settings'), continuity=proof)
             if historical_hod:
                 from src.trading_runtime.historical_hod import observe_frame
                 market['historical_hod_observation'] = observe_frame(frame,

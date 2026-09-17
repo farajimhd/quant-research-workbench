@@ -77,21 +77,23 @@ class MarketStream:
         self._checkpoint = (saved or {}).get('checkpoint')
         self.engine = None
 
-    def observe(self, bar, levels, book, settings=None):
+    def observe(self, bar, levels, book, settings=None, *, continuity=None):
         _validate_market(bar, levels, book)
         saved = self.saved
         if saved.get('row', {}).get('effective_at', 0) >= bar['end']:
             return saved
         session = datetime.fromtimestamp(bar['time'], NY).date().isoformat()
+        from src.market_engine.structural_detector import certified_empty_interval
+        continuous = certified_empty_interval(saved.get('row', {}).get('candle'), bar, continuity)
         reset = (saved.get('session') != session or saved.get('book') != book
-                 or saved.get('row', {}).get('effective_at') != bar['time'])
+                 or saved.get('row', {}).get('effective_at') != bar['time'] and not continuous)
         if reset:
             self.engine = StructuralDetector(DetectorSettings(**(settings or {})))
         elif self.engine is None:
             self.engine = restore(self._checkpoint)
         self._checkpoint = None
         # Published observations must not alias the detector's mutable state.
-        row = deepcopy(self.engine.observe(bar, levels, 'available'))
+        row = deepcopy(self.engine.observe(bar, levels, 'available', continuity=continuity))
         self.saved = dict(session=session, book=deepcopy(book), row=row, reset=reset)
         return self.saved
 

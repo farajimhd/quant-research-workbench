@@ -22,6 +22,15 @@ from .structural_signal import observe as observe_signal
 VERSION = 'structural-candle-detector-11'
 
 
+def certified_empty_interval(previous, bar, proof):
+    """A bounded same-session gap requires explicit source-owned evidence."""
+    return bool(previous and proof and proof.get('contract') == 'canonical-empty-interval-1'
+        and proof.get('start') == previous['end'] and proof.get('end') == bar['time']
+        and 0 < bar['time'] - previous['end'] <= 30 and proof.get('fingerprint')
+        and datetime.fromtimestamp(bar['time'], ZoneInfo('America/New_York')).date()
+            == datetime.fromtimestamp(previous['time'], ZoneInfo('America/New_York')).date())
+
+
 @dataclass(frozen=True)
 class DetectorSettings:
     reversal_bps: float = 50
@@ -148,10 +157,7 @@ class StructuralDetector:
         gap = bool(self.last and (start>self.last['end'] or end-start<86400 and
             datetime.fromtimestamp(start,ZoneInfo('America/New_York')).date()!=
             datetime.fromtimestamp(self.last['time'],ZoneInfo('America/New_York')).date()))
-        certified=bool(gap and continuity and continuity.get('contract')=='canonical-empty-interval-1' and
-            continuity.get('start')==self.last['end'] and continuity.get('end')==start and
-            0<start-self.last['end']<=30 and continuity.get('fingerprint') and
-            datetime.fromtimestamp(start,ZoneInfo('America/New_York')).date()==datetime.fromtimestamp(self.last['time'],ZoneInfo('America/New_York')).date())
+        certified=bool(gap and certified_empty_interval(self.last, bar, continuity))
         if certified: gap=False
         if gap:
             interrupted_position = self.signal_state.get('setup')
