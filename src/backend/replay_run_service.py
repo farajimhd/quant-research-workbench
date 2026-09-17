@@ -2184,6 +2184,11 @@ class ReplayRunController:
 
     async def _canvas_payload_unlocked(self, symbol: str) -> dict[str, Any]:
         if self._runtime is None or self._journal is None:
+            if self.status == "failed":
+                raise ValueError(
+                    f"{self.definition.mode.value.title()} initialization failed during "
+                    f"{self._preparation_stage}: {self.error or 'No error detail was recorded'}"
+                )
             raise ValueError("Replay trading state is not ready")
         # Capture the display clock before yielding: positions, journal evidence
         # and chart requests must describe the same publication, not a later tick.
@@ -2771,7 +2776,7 @@ class ReplayRunController:
             await self._finish("stopped")
             raise
         except Exception as exc:
-            self.error = str(exc)
+            self.error = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
             await self._finish("failed")
         finally:
             await asyncio.to_thread(self._session_relative_volume_store.close)
