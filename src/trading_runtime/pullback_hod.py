@@ -4,6 +4,7 @@ Historical HOD supplies shared, causal market inputs, never entry permission.
 """
 from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime
 from math import isfinite
 
 from . import historical_hod as H, session_relative_volume, trade_volume
@@ -13,7 +14,7 @@ RISE_CONTRACT = 'swing-rise-pullback-hod-v2'
 DEFAULTS = dict(entry_zone_fraction=.3, maximum_swing_age_s=30.,
                 minimum_pullback_ticks=2., minimum_body_fraction=.3,
                 minimum_close_location=.6, top_retreat_atr=.5,
-                top_confirmation_seconds=5.)
+                top_confirmation_seconds=5., entry_macd_10s_enabled=0)
 
 
 def configure(p):
@@ -25,11 +26,39 @@ def configure(p):
     if set(raw)-set(DEFAULTS):
         raise ValueError('Unknown pullback HOD setting')
     s = dict(DEFAULTS, **raw)
-    if any(type(v) not in (int,float) or not isfinite(v) or v <= 0 for v in s.values()):
+    if type(s['entry_macd_10s_enabled']) not in (int,float) or s['entry_macd_10s_enabled'] not in (0,1):
+        raise ValueError('10s MACD entry gate must be a numeric boolean switch')
+    if any(type(v) not in (int,float) or not isfinite(v) or v <= 0
+           for k,v in s.items() if k != 'entry_macd_10s_enabled'):
         raise ValueError('Pullback settings must be finite positive numbers')
     if any(s[k] > 1 for k in ('entry_zone_fraction','minimum_body_fraction','minimum_close_location')):
         raise ValueError('Pullback fractions must not exceed one')
     p['pullback_hod'] = s
+
+
+def macd_entry_gate(o):
+    """Use only matching, completed native 10s samples; never a 1s fallback."""
+    now = o.observed_at.timestamp()
+    result = dict(timeframe='10s',kind='completed',passed=False,reason='macd_10s_unavailable')
+    stamps=[]
+    for field in ('line','signal'):
+        sample=o.source_values.get(f'indicator.macd.{field}@10s')
+        if not isinstance(sample,dict):return result
+        value=sample.get('value')
+        if type(value) not in (int,float) or not isfinite(value):return result
+        try:
+            at=datetime.fromisoformat(str(sample['observed_at']).replace('Z','+00:00'))
+        except (KeyError,ValueError,TypeError):
+            return result
+        if at.tzinfo is None:return result
+        stamp=at.timestamp()
+        if stamp % 10 != 0 or not 0 <= now-stamp < 10:return result
+        stamps.append(stamp)
+        result[field]=value
+    if stamps[0] != stamps[1]:return result
+    passed=result['line'] >= result['signal']
+    return dict(result,passed=passed,observed_at=stamps[0],age_seconds=now-stamps[0],
+                reason='macd_10s_entry_allowed' if passed else 'macd_10s_below_signal')
 
 
 def swing_key(swing):
@@ -179,6 +208,9 @@ def evaluate(host,a,o,p,state):
         and market.get('book',{}).get('fingerprint') and row.get('effective_at') == now)
     evidence = dict(contract=p['pullback_hod_contract'],historical_hod_reference=dict(hod=d.get('prior_hod'),at=now))
     active = state.get('pullback_entry') or {}
+    macd_gate = macd_entry_gate(o) if s['entry_macd_10s_enabled'] else None
+    if macd_gate is not None:evidence['entry_macd_10s']=macd_gate
+    macd_blocked = macd_gate is not None and not macd_gate['passed']
     acquired = o.position_quantity > 0
     pending = a.status == Status.ENTRY_PENDING or bool(state.get('pending_capital_request'))
     behavior = p.get('strategy_behavior',{})
@@ -192,8 +224,21 @@ def evaluate(host,a,o,p,state):
             state.pop('pending_capital_request',None)
             metadata.update(position_fraction=1.,cancel_entry_acquisition=True,
                             reentry_after_fill=reason != 'session_flatten' and a.permissions.reenter)
-        return host._result(a,o,action,reason,1. if action=='enter_long' else 0.,1.,state,
+        # A partial fill is already a position, but its remaining acquisition
+        # must stop when the entry gate closes. Keep all position protection.
+        cancel_remaining = (action != 'exit' and acquired and active and macd_blocked
+                            and not active.get('macd_acquisition_cancelled'))
+        if cancel_remaining:
+            active['macd_acquisition_cancelled']=True
+            state.pop('pending_capital_request',None)
+        output=host._result(a,o,action,reason,1. if action=='enter_long' else 0.,1.,state,
                             status or a.status,metadata=metadata,**kw)
+        if cancel_remaining:
+            cancel=StrategyIntent(intent_id=output.evaluation.signals[0].signal_id+'-macd-cancel',ticker=o.ticker,
+                event_time=o.observed_at,action='cancel_entry',quantity=0,reference_price=o.price,
+                reason=macd_gate['reason'],metadata={'assignment_id':a.assignment_id})
+            return replace(output,evaluation=replace(output.evaluation,intents=(cancel,*output.evaluation.intents)))
+        return output
     if a.status == Status.EXIT_PENDING or o.pending_exit_quantity > 0:
         remaining = max(0.,o.position_quantity-o.pending_exit_quantity)
         return (result('exit',state.get('last_exit_reason') or 'exit_pending',Status.EXIT_PENDING,quantity=remaining)
@@ -225,14 +270,15 @@ def evaluate(host,a,o,p,state):
                     metadata=dict(previous_stop=stop,active_stop=proposed,stop_swing=swing))
         return result('hold','pullback_structure_valid',Status.MANAGING,invalidation_price=stop,profit_target_price=target)
     if pending:
-        invalid = (flatten or not active or now-active.get('confirmed_at',0) >= adapter['confirmation_lifetime_ms']/1000
+        invalid = (macd_blocked or flatten or not active or now-active.get('confirmed_at',0) >= adapter['confirmation_lifetime_ms']/1000
                    or o.price <= stop or o.ask > active.get('maximum_buy_price',0))
         if invalid:
             state.pop('pending_capital_request',None)
-            output = result('wait','pullback_entry_expired',Status.WATCHING)
+            reason=macd_gate['reason'] if macd_blocked else 'pullback_entry_expired'
+            output = result('wait',reason,Status.WATCHING)
             cancel = StrategyIntent(intent_id=output.evaluation.signals[0].signal_id+'-cancel',ticker=o.ticker,
                 event_time=o.observed_at,action='cancel_entry',quantity=0,reference_price=o.price,
-                reason='pullback_entry_expired',metadata={'assignment_id':a.assignment_id})
+                reason=reason,metadata={'assignment_id':a.assignment_id})
             return replace(output,evaluation=replace(output.evaluation,intents=(cancel,)))
         return result('wait','entry_fill_pending',Status.ENTRY_PENDING)
     if a.status in (Status.DISABLED,Status.PAUSED,Status.COMPLETED,Status.ERROR) or not a.permissions.observe or not a.permissions.enter or (state.get('entries',0) and not a.permissions.reenter):
@@ -242,6 +288,8 @@ def evaluate(host,a,o,p,state):
         return result('wait','outside_entry_session')
     if not detector_fresh:
         return result('wait','waiting_for_completed_pullback_structure')
+    if macd_blocked:
+        return result('wait',macd_gate['reason'])
     ready,quality = H.tradability(o,dict(p,structural_recovery=dict(H.QUALITY_DEFAULTS,**adapter)),row,state,producer_freshness=True)
     evidence['liquidity_admission'] = quality
     if not ready: return result('wait','liquidity_or_spread_gate')

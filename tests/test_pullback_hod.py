@@ -253,3 +253,74 @@ def test_rise_candidate_changes_only_entry_contract_and_preserves_v1():
     assert result['parameters']==expected
     assert result['lifecycle']==profile['lifecycle']
     assert payload['run_plans']['plans'][0]['allowed_environments']==['backtest']
+
+
+def macd_fixture(line=.1,signal=.05):
+    from datetime import datetime,timezone
+    host,a,o=rising_fixture()
+    a.parameters['pullback_hod']['entry_macd_10s_enabled']=1
+    boundary=int(o.observed_at.timestamp()//10)*10
+    values={f'indicator.macd.{field}@10s':dict(value=value,
+        observed_at=datetime.fromtimestamp(boundary,timezone.utc).isoformat())
+        for field,value in [('line',line),('signal',signal)]}
+    return host,a,replace(o,source_values={**o.source_values,**values})
+
+
+@pytest.mark.parametrize('reentry',[False,True])
+@pytest.mark.parametrize('line,signal,allowed',[(.1,.05,True),(.05,.05,True),(-.1,-.1,True),(-.1,0.,False),(.04,.05,False)])
+def test_10s_macd_gates_both_entry_paths_with_equality_allowed(reentry,line,signal,allowed):
+    host,a,o=macd_fixture(line,signal)
+    if reentry:
+        now=o.observed_at.timestamp()
+        a.state['pullback_last_exit']=dict(at=now-4,advanced=True,peak=dict(price=10.12,at=now-5),entry_at=now-8)
+    result=host.evaluate(a,o)
+    assert any(i.action=='enter_long' for i in result.evaluation.intents)==allowed
+    assert result.evaluation.signals[0].metadata['entry_macd_10s']['passed']==allowed
+
+
+@pytest.mark.parametrize('bad',['missing','stale','future','mismatched','naive','nan','wrong_timeframe'])
+def test_10s_macd_never_uses_missing_stale_or_other_timeframe_values(bad):
+    from datetime import datetime,timezone,timedelta
+    host,a,o=macd_fixture()
+    values=deepcopy(o.source_values);key='indicator.macd.signal@10s'
+    at=datetime.fromisoformat(values[key]['observed_at'])
+    if bad=='missing':values.pop(key)
+    if bad=='stale':
+        for key10 in ('indicator.macd.line@10s','indicator.macd.signal@10s'):
+            values[key10]['observed_at']=(at-timedelta(seconds=10)).isoformat()
+    if bad=='future':
+        for key10 in ('indicator.macd.line@10s','indicator.macd.signal@10s'):
+            values[key10]['observed_at']=(at+timedelta(seconds=10)).isoformat()
+    if bad=='mismatched':values[key]['observed_at']=(at-timedelta(seconds=10)).isoformat()
+    if bad=='naive':values[key]['observed_at']=at.replace(tzinfo=None).isoformat()
+    if bad=='nan':values[key]['value']=float('nan')
+    if bad=='wrong_timeframe':values={k.replace('@10s','@1s'):v for k,v in values.items()}
+    r=host.evaluate(a,replace(o,source_values=values,macd_line=1.,macd_signal=0.))
+    assert not r.evaluation.intents
+    assert r.evaluation.signals[0].reason=='macd_10s_unavailable'
+
+
+@pytest.mark.parametrize('partial',[False,True])
+def test_10s_macd_cancels_pending_acquisition_without_forcing_position_exit(partial):
+    host,a,o=macd_fixture()
+    entered=host.evaluate(a,o)
+    a=replace(a,state=entered.state,status=S.AssignmentStatus.MANAGING if partial else S.AssignmentStatus.ENTRY_PENDING)
+    values=deepcopy(o.source_values);values['indicator.macd.line@10s']['value']=0.
+    o=replace(o,source_values=values,source_timeframe='',evaluation_events=('market_data_update',),
+              position_quantity=50 if partial else 0,average_price=10.02 if partial else 0)
+    result=host.evaluate(a,o)
+    assert any(i.action=='cancel_entry' and i.reason=='macd_10s_below_signal' for i in result.evaluation.intents)
+    assert not any(i.action=='exit' for i in result.evaluation.intents)
+    if partial:
+        again=host.evaluate(replace(a,state=result.state,status=result.status),o)
+        assert not any(i.action=='cancel_entry' for i in again.evaluation.intents)
+
+
+def test_10s_macd_dependencies_are_opt_in_and_gate_boolean_is_validated():
+    _,a,_=rising_fixture()
+    assert '10s' not in S.strategy_rule_timeframes(a.parameters)
+    a.parameters['pullback_hod']['entry_macd_10s_enabled']=1
+    assert S.strategy_rule_timeframes(a.parameters)=={'100ms','1s','5s','10s'}
+    for bad in (-1,2,'1',float('nan')):
+        a.parameters['pullback_hod']['entry_macd_10s_enabled']=bad
+        with pytest.raises(ValueError):S.resolve_long_momentum_parameters(a.parameters)
