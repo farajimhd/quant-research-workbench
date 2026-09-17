@@ -1,7 +1,15 @@
-.forming-macd-settings { display: grid; gap: 12px; max-width: 620px; }
-.forming-macd-settings p { margin: 0; line-height: 1.5; }
-.forming-macd-settings fieldset { border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
-.forming-macd-timeframes { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px; }
-.forming-macd-timeframes label { display: flex; align-items: center; gap: 8px; }
-.forming-macd-status { margin: 0; padding-left: 20px; overflow-wrap: anywhere; }
+.forming-macd-modal { width: min(600px, calc(var(--app-zoomed-viewport-width, 100vw) - 32px)); max-height: calc(var(--app-zoomed-viewport-height, 100vh) - 32px); }
+.forming-macd-settings { display: grid; gap: 12px; }
+.forming-macd-timeframes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.forming-macd-timeframes fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.forming-macd-timeframes legend { color: var(--muted-foreground); font-size: 11px; font-weight: 600; margin-bottom: 6px; }
+.forming-macd-timeframes .chart-setting-toggle { min-height: 30px; }
+.forming-macd-details { border-top: 1px solid var(--border); padding-top: 12px; font-size: 12px; }
+.forming-macd-details summary { cursor: pointer; font-weight: 600; }
+.forming-macd-details .chart-settings-help { margin-top: 10px; }
+.forming-macd-status { display: grid; gap: 8px; margin: 12px 0 0; }
+.forming-macd-status > div { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 12px; }
+.forming-macd-status dt { font-weight: 600; }
+.forming-macd-status dd { margin: 0; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.forming-macd-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
 .chart-component-toolbar .forming-macd-trigger { width: auto; min-width: max-content; flex-shrink: 0; white-space: nowrap; padding-inline: 8px; }

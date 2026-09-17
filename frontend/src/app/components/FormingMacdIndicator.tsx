@@ -83,21 +83,38 @@ export function useFormingMacd(storageKey: string, symbol: string, chartTimefram
     data: points,
   })) : [], [settings.enabled, projected]);
   const editor = <div className="forming-macd-settings">
-    <p>Select multiple source timeframes to plot together. The chart timeframe controls the sampling axis; MACD uses 12/26/9 source candles.</p>
-    <fieldset><legend>MACD source timeframes</legend><div className="forming-macd-timeframes">
-      {MACD_TIMEFRAMES.map(tf => <label key={tf}><input type="checkbox" aria-label={`MACD source ${tf}`}
+    <section className="chart-settings-section">
+      <h3>Source timeframes</h3>
+      <p className="chart-settings-help">Plot one MACD − signal line per selected timeframe. Keep at least one selected.</p>
+      <div className="forming-macd-timeframes">
+      {([
+        ['Seconds', MACD_TIMEFRAMES.slice(0, 5)],
+        ['Minutes & hours', MACD_TIMEFRAMES.slice(5, 8)],
+        ['Days & longer', MACD_TIMEFRAMES.slice(8)],
+      ] as const).map(([title, timeframes]) => <fieldset key={title}><legend>{title}</legend>
+      {timeframes.map(tf => <label className="chart-setting-toggle" key={tf}><input type="checkbox" aria-label={`MACD source ${tf}`}
         checked={settings.timeframes.includes(tf)} disabled={settings.timeframes.length === 1 && settings.timeframes.includes(tf)}
         onChange={event => change({ timeframes: MACD_TIMEFRAMES.filter(candidate => candidate === tf ? event.target.checked : settings.timeframes.includes(candidate)) })} />{tf}</label>)}
-    </div></fieldset>
-    <p>Each line is forming MACD minus forming signal in price units, sampled at the chart candle’s close or current cursor. Previews never compound or borrow a future candle close. QMD’s completed MACD history supplies the seed.</p>
-    <p>Calendar MACD uses canonical daily closes, adjusted before weekly, monthly, or yearly aggregation. Values use the chart’s price basis.</p>
-    {settings.enabled && <ul className="forming-macd-status" aria-live="polite">{settings.timeframes.map(tf => <li key={tf}><strong>{tf}</strong>: {status(tf)}</li>)}</ul>}
-    <div><Button type="button" onClick={() => { change({ enabled: false }); setOpen(false); }}>Remove oscillator</Button></div>
+      </fieldset>)}</div>
+      <p className="chart-settings-help">{settings.timeframes.length} selected · Chart interval: {chartTimeframe} · MACD: 12 / 26 / 9</p>
+    </section>
+    {settings.enabled && <details className="forming-macd-details">
+      <summary>Data status ({settings.timeframes.length}){settings.timeframes.some(tf => values[tf]?.error) ? ' · Unavailable' : ''}</summary>
+      <dl className="forming-macd-status" aria-live="polite">{settings.timeframes.map(tf => <div key={tf}><dt>{tf}</dt><dd>{status(tf)}</dd></div>)}</dl>
+    </details>}
+    <details className="forming-macd-details"><summary>Calculation details</summary>
+      <p className="chart-settings-help">Each line uses forming MACD minus forming signal in price units, sampled at the chart candle’s close or current cursor. Values use the chart’s price basis.</p>
+      <p className="chart-settings-help">QMD’s completed MACD history supplies the starting values. Forming values do not compound or use future candle closes. Calendar timeframes use daily closes, adjusted before weekly, monthly, or yearly aggregation.</p>
+    </details>
+    <div className="forming-macd-actions">
+      <Button variant="ghost" disabled={!settings.enabled} onClick={() => { change({ enabled: false }); setOpen(false); }}>Remove oscillator</Button>
+      <Button variant="primary" onClick={() => setOpen(false)}>Done</Button>
+    </div>
   </div>;
   return { enabled: settings.enabled, series, remove: () => change({ enabled: false }),
     menuItem: { id: MACD_DIFFERENCE_ID, title: 'Multi-timeframe MACD difference', group: 'momentum', category: 'Oscillator pane', selected: settings.enabled,
       onToggle: () => change({enabled: !settings.enabled}), onConfigure: () => setOpen(true) },
     controls: <>{settings.enabled && <button className="toolbar-button forming-macd-trigger" type="button" onClick={() => setOpen(true)} title={settings.timeframes.map(tf => `${tf}: ${status(tf)}`).join('\n')}>MACD difference · {selection}{settings.timeframes.some(tf => values[tf]?.error) ? ' · Unavailable' : settings.timeframes.some(tf => !values[tf]?.source) ? ' · Loading' : ''}</button>}
-      {open && <Modal title="Multi-timeframe MACD difference" onClose={() => setOpen(false)}>{editor}</Modal>}</>,
+      {open && <Modal className="forming-macd-modal" title="Multi-timeframe MACD difference" onClose={() => setOpen(false)}>{editor}</Modal>}</>,
   };
 }
