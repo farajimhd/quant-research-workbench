@@ -4,6 +4,8 @@ import { positionReferenceSegments, tradeGuideSpan } from "./tradeGuideGeometry"
 import { strategyReferenceLabel, type StrategyReferenceSegment } from "../../features/canvas/strategyReferencePresentation";
 import { LevelReactionPrimitive, useLevelReaction } from "./LevelReaction";
 import { macdBpsPoints } from "./macdBps";
+import { useFormingMacd } from './FormingMacdIndicator';
+import { MACD_DIFFERENCE_PANE } from '../../features/canvas/formingMacd';
 import { HindsightPrimitive, useHindsightPositions } from "./HindsightPositions";
 import { SwingStructurePrimitive, useSwingStructure } from "./SwingStructure";
 import { StructureGapPrimitive, useStructureGaps } from "./StructureGaps";
@@ -77,6 +79,7 @@ type ChartSeries = {
   colorMode?: "confidence-sign" | "sign";
   column: string;
   displayItemId?: string;
+  emptyMessage?: string;
   label: string;
   paneKey?: string;
   style: "line" | "histogram";
@@ -1024,6 +1027,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     settingsStorageKey || 'chart.structural-detector', indicatorSplitAdjusted, payload?.volume);
   const structuralDetectorRef = useRef(structuralDetector);
   const supertrendIndicator=useSupertrend(settingsStorageKey || 'chart',timeframe,payload?.candles ?? [],indicatorAsOf);
+  const formingMacd = useFormingMacd(settingsStorageKey || 'chart', ticker, timeframe, chartTimeframeSeconds(timeframe), payload?.candles ?? [], indicatorAsOf, payload?.timeframe, indicatorSplitAdjusted);
   const supertrendRendererRef=useRef<SupertrendRenderer|null>(null);
   structuralDetectorRef.current = structuralDetector;
   const structuralDetectorPrimitiveRef = useRef<StructuralDetectorPrimitive | null>(null);
@@ -1096,6 +1100,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     label:`EMA ${emaLength} second derivative`,axisTitle:accelerationUnits[emaUnits],paneKey:'ema-acceleration',chartRole:'ema-acceleration',
     style:'line',color:'var(--info)',lineWidth:2,data:emaCurvature});
   if (macdBpsEnabled) displayedOscillatorSeries.push(...macdBpsSeries.filter((series) => visibleColumnLookup.has(seriesSelectionKey(series))));
+  displayedOscillatorSeries.push(...formingMacd.series);
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
   const oscillatorPaneTotalHeight = oscillatorPaneGroups.reduce((total, group) => total + defaultOscillatorPaneHeight(group), 0);
   const nativeChartHeight: CSSProperties["height"] = fullscreen
@@ -1623,7 +1628,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     if (!priceChartRef.current) return;
     updateOscillatorPanes(oscillatorPaneGroups);
-  }, [payload, visibleColumnKey, timeframe, oscillatorThresholdSettings, emaCurvature, emaUnits, emaLength]);
+  }, [payload, visibleColumnKey, timeframe, oscillatorThresholdSettings, emaCurvature, emaUnits, emaLength, formingMacd.series]);
 
   function applyChartAppearance() {
     const palette = readChartPalette();
@@ -2121,6 +2126,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }
 
   const closeOscillatorPane = (group: OscillatorPaneGroup) => {
+    if (group.key === `oscillator:${MACD_DIFFERENCE_PANE}`) { formingMacd.remove(); return; }
     const paneItems = new Set(group.series.map((series) => seriesSelectionKey(series)));
     const nextColumns = visibleColumns.filter((column) => !paneItems.has(column.toLowerCase()));
     if (nextColumns.length !== visibleColumns.length) {
@@ -2209,8 +2215,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             <span className="toolbar-divider" />
             {showIndicatorControls ? (
               <IndicatorFeatureSelect
-                additionalIndicators={<>{structuralDetector.checkbox}{supertrendIndicator.checkbox}</>}
-                additionalSelectedCount={Number(structuralDetector.enabled)+Number(supertrendIndicator.enabled)}
+                additionalIndicators={<>{structuralDetector.checkbox}{supertrendIndicator.checkbox}{formingMacd.checkbox}</>}
+                additionalSelectedCount={Number(structuralDetector.enabled)+Number(supertrendIndicator.enabled)+Number(formingMacd.enabled)}
                 catalogColumns={catalogColumns}
                 displayItemOptions={displayItemOptions}
                 featureOptions={featureOptions}
@@ -2282,6 +2288,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         {levelReaction.controls}
         {structuralDetector.controls}
         {supertrendIndicator.controls}
+        {formingMacd.controls}
         <button
           className="toolbar-button"
           data-chart-settings-trigger="true"
@@ -4653,7 +4660,7 @@ function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, setting
       semanticColor: item.colorMode === "sign",
       semanticColors: { down: appearance.downColor, neutral: readNeutralChartColor(), up: appearance.upColor },
       showValue: settings.showValue,
-      value: latest === null ? "-" : item.chartRole==="ema-acceleration" ? latest.toPrecision(4) : item.chartRole === "macd-bps" ? `${latest.toFixed(1)} bps` : formatPrice(latest),
+      value: latest === null ? item.emptyMessage ?? "-" : item.chartRole === 'forming-macd-difference' ? latest.toPrecision(6) : item.chartRole==="ema-acceleration" ? latest.toPrecision(4) : item.chartRole === "macd-bps" ? `${latest.toFixed(1)} bps` : formatPrice(latest),
       visible: settings.visible
     };
   });
@@ -4828,6 +4835,7 @@ function formatOscillatorPaneLabel(group: OscillatorPaneGroup) {
     return group.series.length === 1 ? group.series[0].label : `QMD ${group.key.slice("oscillator:qmd_".length).replaceAll("_", " ")}`;
   }
   if (group.key === "oscillator:macd") return "MACD Pane";
+  if (group.key === `oscillator:${MACD_DIFFERENCE_PANE}`) return "Multi-timeframe MACD difference";
   if (group.key === "oscillator:pane_2") return "Pane 2";
   if (group.key === "oscillator:pane_3") return "Pane 3";
   if (group.series.length === 1) return group.series[0].label;
