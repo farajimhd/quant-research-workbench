@@ -3547,7 +3547,7 @@ class ReplayRunController:
             tracker = deepcopy(saved.get('vwap_ladder_market', {}))
             observe_market(SimpleNamespace(observed_at=frame.as_of, price=frame.bar['close'],
                 structural_support_levels=(), structural_transition_levels=(),
-                structural_resistance_levels=tuple(snapshot['unified_levels'])), tracker)
+                structural_resistance_levels=tuple(snapshot['unified_levels'])), tracker, parameters.get('vwap_ladder'))
             saved['vwap_ladder_market'] = tracker
             market['historical_hod_observation'] = saved
             return
@@ -3591,6 +3591,14 @@ class ReplayRunController:
                 market['historical_hod_observation'] = observe_frame(frame,
                     saved.get('historical_hod_observation', {}), parameters,
                     dict(snapshot, session_high=self._experimental_session_high(frame.ticker,frame.as_of)))
+            if parameters.get('vwap_ladder', {}).get('allow_retest_stop_fallback') or parameters.get('vwap_ladder', {}).get('require_late_retest'):
+                from src.trading_runtime.resistance_zones import observe_retests
+                from src.trading_runtime.vwap_resistance_ladder import levels
+                from types import SimpleNamespace
+                causal_levels = levels(SimpleNamespace(observed_at=frame.as_of, structural_support_levels=(),
+                    structural_resistance_levels=snapshot['unified_levels'], structural_transition_levels=()))
+                observe_retests(market, saved, bar, causal_levels,
+                    market.get('historical_hod_observation', {}).get('vwap_ladder_market', {}))
             self._candle_detector_states[frame.ticker] = {'structural_recovery':market}
             return
         if frame.timeframe != '1s' or not (parameters.get('episode_management') or {}).get('detector_candle_states_enabled'):
