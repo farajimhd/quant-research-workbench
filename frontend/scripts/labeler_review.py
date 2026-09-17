@@ -19,6 +19,8 @@ def install_labeler_fixture(context):
         if path.endswith("/universe"):
             fulfill({"start": "2026-09-15T13:30:00.000Z", "end": "2026-09-15T20:00:00.000Z", "rows": [{"ticker": symbol, "float_shares": 2400000 if symbol == "AAA" else None, "float_quality": "reported", "change_pct": 8.2, "volume": 180000,
                                 "review_status": state["reviews"].get(symbol, {}).get("status", "unreviewed"), "range_count": len(state["reviews"].get(symbol, {}).get("ranges", []))} for symbol in ("AAA", "BBB", "CCC")]})
+        elif path.endswith("/market"):
+            fulfill({"rows": [{"symbol": ticker, "volume": 180000, "change_pct": 8.2} for ticker in ("AAA", "BBB", "CCC")]})
         elif path.endswith("/chart"):
             state["requests"].append((ticker, scope["timeframe"]))
             step = durations[scope["timeframe"]]
@@ -47,6 +49,18 @@ def install_labeler_fixture(context):
 def review_labeler(page, state, screenshot_path):
     page.locator('[data-window-kind="labeler"]').wait_for(state="visible")
     page.locator(".labeler-status").get_by_text("Full session certified", exact=True).wait_for()
+    geometry = page.locator('.labeler-workspace').evaluate("""el => {
+      const panel = el.getBoundingClientRect();
+      const left = el.querySelector('.labeler-sidebar').getBoundingClientRect();
+      const right = el.querySelector('.labeler-main').getBoundingClientRect();
+      const chart = el.querySelector('.chart-shell').getBoundingClientRect();
+      return {width:panel.width,left:left.width,leftHeight:left.height,rightHeight:right.height,height:panel.height,bottom:panel.bottom,chartHeight:chart.height,viewport:innerHeight};
+    }""")
+    assert geometry['left'] <= geometry['width'] * .2 + 1, geometry
+    assert abs(geometry['leftHeight'] - geometry['height']) < 2, geometry
+    assert abs(geometry['rightHeight'] - geometry['height']) < 2, geometry
+    assert geometry['bottom'] <= geometry['viewport'] + 2, geometry
+    assert geometry['chartHeight'] > 180, geometry
     assert state["requests"][0] == ("AAA", "1h"), state["requests"]
     page.get_by_role("button", name="No opportunity & next", exact=True).click()
     page.wait_for_function("document.querySelector('.labeler-status strong')?.textContent === 'BBB'")

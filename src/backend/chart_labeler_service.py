@@ -215,7 +215,7 @@ def save_review(request: SaveReview):
 
 
 @router.get("/universe")
-def universe(session_date: date, session: Literal["regular", "extended"] = "regular", timeframe: str = "1h", label_set: str = "default"):
+def universe(session_date: date, session: Literal["regular", "extended"] = "regular", timeframe: str = "1h", label_set: str = "default", include_market: bool = True):
     from src.backend.historical_scanner_service import historical_scanner_reference_projection
     from src.backend.qmd_gateway_client import qmd_history_get_json
     try:
@@ -224,7 +224,7 @@ def universe(session_date: date, session: Literal["regular", "extended"] = "regu
         reference = historical_scanner_reference_projection(as_of)
         if not reference:
             raise RuntimeError("Historical tradable reference universe is unavailable")
-        snapshot = qmd_history_get_json("/snapshot/scanner-market", {"start": iso(start), "end": iso(end), "as_of": iso(end)}, timeout=180)
+        snapshot = market_summary(session_date, session) if include_market else {"rows": []}
         if not isinstance(snapshot, dict) or not isinstance(snapshot.get("rows"), list):
             raise RuntimeError("Historical session market summary is unavailable")
         market_rows = snapshot["rows"]
@@ -235,15 +235,34 @@ def universe(session_date: date, session: Literal["regular", "extended"] = "regu
         market = {r["symbol"]: r for r in market_rows}
         rows = []
         with database() as db:
+            reviews = {key: json.loads(body) for key, body in db.execute("SELECT key, body FROM reviews")}
             for ticker, facts in sorted(reference.items()):
                 scope = Scope(session_date=session_date, session=session, ticker=ticker, timeframe=timeframe, label_set=label_set)
-                saved = db.execute("SELECT body FROM reviews WHERE key=?", (scope_key(scope),)).fetchone()
-                review = json.loads(saved[0]) if saved else empty_review(scope)
+                review = reviews.get(scope_key(scope)) or empty_review(scope)
                 market_row = market.get(ticker, {})
                 rows.append({**market_row, **facts, "ticker": ticker,
                              "change_pct": market_row.get("change_pct"),
                              "review_status": review["status"], "range_count": len(review["ranges"])})
         return {"rows": rows, "start": iso(start), "end": iso(end), "as_of": iso(end), "market_provenance": metadata}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.get("/market")
+def market_summary(session_date: date, session: Literal["regular", "extended"] = "regular"):
+    """Enrich the scanner independently of identity and chart loading."""
+    from src.backend.qmd_gateway_client import qmd_history_get_json
+    try:
+        start, end = bounds(session_date, session)
+        params = {"start": iso(start), "end": iso(end), "as_of": iso(end)}
+        snapshot = qmd_history_get_json("/snapshot/scanner-market", params, timeout=180)
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("rows"), list):
+            raise RuntimeError("Historical session market summary is unavailable")
+        if len(snapshot["rows"]) >= 20000:
+            raise RuntimeError("Historical session summary reached the upstream row cap")
+        return snapshot
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except RuntimeError as exc:
@@ -257,17 +276,25 @@ def chart(session_date: date, ticker: str, session: Literal["regular", "extended
     try:
         scope = Scope(session_date=session_date, ticker=ticker, session=session, timeframe=timeframe, label_set=label_set)
         start, end = bounds(session_date, session)
-        window_ms = end - start if TIMEFRAMES[timeframe] >= 60000 else 1800000
-        a, b = start + window * window_ms, min(end, start + (window + 1) * window_ms)
-        if a >= end:
+        # End every page on a candle boundary; hourly regular sessions start
+        # halfway through the first candle. Never publish a partial candle as closed.
+        window_ms = max(1800000, TIMEFRAMES[timeframe])
+        first_end = min(end, (start // window_ms + 1) * window_ms)
+        windows = [(start, first_end)]
+        cursor = first_end
+        while cursor < end:
+            windows.append((cursor, min(end, cursor + window_ms)))
+            cursor += window_ms
+        if window >= len(windows):
             raise ValueError("Window is outside the selected session")
+        a, b = windows[window]
         revision = qmd_historical_source_revision(start=iso(start), end=iso(end), tickers=[ticker])
         facts = historical_scanner_reference_projection(datetime.fromisoformat(iso(end).replace("Z", "+00:00")), tickers=(ticker,)).get(ticker, {})
         identity = facts.get("listing_id") or facts.get("symbol_id")
         if not identity:
             raise RuntimeError("Historical instrument identity is unavailable")
         result = qmd_product_request(QmdProductRequest("chart", authority="history", mode="backtest", ticker=ticker,
-            timeframe=timeframe, start=iso(a), end=iso(b), as_of=iso(b), stage="bars", limit=20000,
+            timeframe=timeframe, start=iso(a), end=iso(b), as_of=iso(b), stage="prices", limit=20000,
             include_structure=False, include_market_signals=False, timeout_seconds=180))
         payload = result.payload
         if not isinstance(payload, dict) or not isinstance(payload.get("bars"), list) or payload.get("has_more") or result.complete is False:
@@ -301,7 +328,7 @@ def chart(session_date: date, ticker: str, session: Literal["regular", "extended
         with database() as db:
             db.execute("INSERT OR IGNORE INTO evidence VALUES (?, ?)", (evidence_id, canonical(evidence)))
         return {**evidence, "evidence_id": evidence_id, "next_window": window + 1 if b < end else None,
-                "window_count": (end - start + window_ms - 1) // window_ms}
+                "window_count": len(windows)}
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except RuntimeError as exc:

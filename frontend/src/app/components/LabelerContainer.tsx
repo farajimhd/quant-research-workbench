@@ -38,6 +38,8 @@ export function LabelerContainer({ instanceId }: { instanceId: string }) {
   const [universeError, setUniverseError] = useState("");
   const [busy, setBusy] = useState(false);
   const [universeBusy, setUniverseBusy] = useState(false);
+  const [marketState, setMarketState] = useState("");
+  const [marketComplete, setMarketComplete] = useState(false);
   const [saveState, setSaveState] = useState("Saved");
   const [draft, setDraft] = useState<LabelRange[] | null>(null);
   const [draftStatus, setDraftStatus] = useState("in_progress");
@@ -65,9 +67,22 @@ export function LabelerContainer({ instanceId }: { instanceId: string }) {
   useEffect(() => {
     const controller = new AbortController();
     if (!day) return () => controller.abort();
-    setUniverseBusy(true); setUniverseError(""); setRows([]); setTicker(""); setTimeframe("1h");
-    api<{ rows: Row[]; start: string; end: string }>(`/api/research/labeler/universe${query({ session_date: day, session })}`, { signal: controller.signal, timeoutMs: 210000 })
-      .then(result => { if (!controller.signal.aborted) { setRows(result.rows); setSessionBounds([Date.parse(result.start), Date.parse(result.end)]); setTablePage(0); setTicker(result.rows[0]?.ticker ?? ""); } })
+    setUniverseBusy(true); setUniverseError(""); setMarketComplete(false); setMarketState(""); setSort("ticker"); setRows([]); setTicker(""); setTimeframe("1h");
+    api<{ rows: Row[]; start: string; end: string }>(`/api/research/labeler/universe${query({ session_date: day, session, include_market: false })}`, { signal: controller.signal, timeoutMs: 210000 })
+      .then(async result => {
+        if (controller.signal.aborted) return;
+        setRows(result.rows); setSessionBounds([Date.parse(result.start), Date.parse(result.end)]); setTablePage(0); setTicker(result.rows[0]?.ticker ?? ""); setUniverseBusy(false);
+        setMarketState("Loading session statistics...");
+        const enrich = (market: { rows: Record<string, unknown>[] }) => {
+          const values = new Map(market.rows.map(row => [String(row.symbol), row]));
+          setRows(current => current.map(row => ({ ...row, ...values.get(row.ticker) })));
+        };
+        try {
+          const market = await api<{ rows: Record<string, unknown>[] }>(`/api/research/labeler/market${query({ session_date: day, session })}`, { signal: controller.signal, timeoutMs: 210000 });
+          if (controller.signal.aborted) return;
+          enrich(market); setMarketComplete(true); setMarketState("");
+        } catch (reason) { if (!controller.signal.aborted) setMarketState(`Statistics unavailable: ${message(reason)}. Reload session to retry.`); }
+      })
       .catch(reason => { if (!controller.signal.aborted) setUniverseError(message(reason)); })
       .finally(() => { if (!controller.signal.aborted) setUniverseBusy(false); });
     return () => controller.abort();
@@ -169,13 +184,12 @@ export function LabelerContainer({ instanceId }: { instanceId: string }) {
   const chosen = ranges.find(r => r.id === selected);
   const ready = !chartFailed && !locked && bars.length > 0 && !!review;
   return <div className="labeler-page" data-labeler-instance={instanceId}>
-    <header className="labeler-heading"><div><h1>Labeler</h1><span>Hindsight annotations · America/New_York · exact UTC timestamps</span></div><span>{rows.filter(r => ["completed", "no_opportunity"].includes(r.review_status)).length} / {rows.length} reviewed</span>
-      <button onClick={async () => { try { const data = await api("/api/research/labeler/export"); const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const a = document.createElement("a"); a.href = url; a.download = "chart-labels.json"; a.click(); URL.revokeObjectURL(url); } catch (reason) { setError(message(reason)); } }}>Export completed</button></header>
+
     <div className="labeler-workspace">
       <aside className="labeler-sidebar"><div className="labeler-controls">
         <label>Session date<input type="date" value={day} disabled={locked} onChange={e => { if (e.target.value) setDay(e.target.value); }} /></label>
         <label>Session<select value={session} disabled={locked} onChange={e => setSession(e.target.value)}><option value="regular">Regular hours</option><option value="extended">04:00–20:00 ET</option></select></label>
-        <label>View timeframe<select aria-label="View timeframe" value={timeframe} disabled={locked} onChange={e => setTimeframe(e.target.value)}>{frames.map(f => <option key={f}>{f}</option>)}</select></label>
+
         <label>Find ticker<input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search symbols" /></label>
         <label>Review status<select value={filter} onChange={e => setFilter(e.target.value)}>{["all", "unreviewed", "in_progress", "completed", "no_opportunity"].map(s => <option key={s} value={s}>{s.replaceAll("_", " ")}</option>)}</select></label>
         <button disabled={locked || universeBusy} onClick={() => setReload(v => v + 1)}>Reload session</button>
@@ -183,14 +197,15 @@ export function LabelerContainer({ instanceId }: { instanceId: string }) {
       {contextError ? <p role="alert">{contextError}</p> : !day ? <p role="status">Finding the latest covered session…</p> : null}
       {universeBusy ? <p role="status">Loading historical universe…</p> : null}
       {universeError ? <p role="alert">{universeError}</p> : null}
-      <div className="labeler-table-scroll"><table><thead><tr>{[["ticker", "Ticker"], ["float_shares", "Float"], ["change_pct", "Session %"], ["volume", "Volume"]].map(([key, title]) => <th key={key}><button title={key === "change_pct" ? "Last trade versus first trade in the selected session" : key === "volume" ? "Total trade volume in the selected session" : title} onClick={() => setSort(key)}>{title}</button></th>)}<th>Review</th></tr></thead><tbody>
+      {marketState ? <p className="labeler-market-state" role="status">{marketState}</p> : null}
+      <div className="labeler-table-scroll"><table className="market-list-table"><thead><tr>{[["ticker", "Ticker"], ["float_shares", "Float"], ["change_pct", "Session %"], ["volume", "Volume"]].map(([key, title]) => <th key={key}><button disabled={!marketComplete && ["change_pct", "volume"].includes(key)} title={key === "change_pct" ? "Last trade versus first trade in the selected session" : key === "volume" ? "Total trade volume in the selected session" : title} onClick={() => setSort(key)}>{title}</button></th>)}<th>Review</th></tr></thead><tbody>
         {visible.slice(effectivePage * 100, (effectivePage + 1) * 100).map(row => <tr key={row.ticker} aria-selected={ticker === row.ticker} onClick={() => { if (!locked && ticker !== row.ticker) { setTicker(row.ticker); setTimeframe("1h"); } }}><td><button disabled={locked} onClick={() => { setTicker(row.ticker); setTimeframe("1h"); }}>{row.ticker}</button></td><td title={`Historical float · ${row.float_quality ?? "unavailable"} · ${row.float_source ?? "source unavailable"}`}>{format(row.float_shares)}</td><td>{format(row.change_pct)}</td><td>{format(row.volume ?? row.day_volume)}</td><td>{row.review_status.replaceAll("_", " ")}{row.range_count ? ` (${row.range_count})` : ""}</td></tr>)}
       </tbody></table>{!universeBusy && !universeError && !visible.length ? <p>No matching tickers.</p> : null}</div>
-      <div className="labeler-pagination"><button disabled={effectivePage === 0} onClick={() => setTablePage(effectivePage - 1)}>Previous</button><span>Page {effectivePage + 1} / {pageCount}</span><button disabled={effectivePage + 1 >= pageCount} onClick={() => setTablePage(effectivePage + 1)}>Next</button></div><small>Historical universe membership does not guarantee intraday liquidity or short borrow.</small></aside>
+      <div className="labeler-pagination"><button disabled={effectivePage === 0} onClick={() => setTablePage(effectivePage - 1)}>Previous</button><span>Page {effectivePage + 1} / {pageCount}</span><button disabled={effectivePage + 1 >= pageCount} onClick={() => setTablePage(effectivePage + 1)}>Next</button></div><div className="labeler-summary"><span>{rows.filter(r => ["completed", "no_opportunity"].includes(r.review_status)).length} / {rows.length} reviewed</span><button onClick={async () => { try { const data = await api("/api/research/labeler/export"); const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const a = document.createElement("a"); a.href = url; a.download = "chart-labels.json"; a.click(); URL.revokeObjectURL(url); } catch (reason) { setError(message(reason)); } }}>Export completed</button></div></aside>
       <main className="labeler-main"><div className="labeler-status" role="status"><strong>{ticker || "Choose a session"}</strong><span>{review?.status.replaceAll("_", " ")}</span><span>{progress}</span><span>{saveState}</span></div>
-        <div className="labeler-session-actions"><button disabled={!ready || !complete || ranges.length > 0} onClick={() => void finish("no_opportunity")}>No opportunity & next</button><button disabled={!ready || !complete || !ranges.length} onClick={() => void finish("completed")}>Complete & next</button><small>Every ticker starts at 1h.</small></div>
-        {error ? <div className="labeler-error" role="alert">{error}{draft && !busy ? <><button onClick={() => void persist(draft, draftStatus)}>Retry save</button><button onClick={() => { setDraft(null); setCandidate(null); setReload(v => v + 1); }}>Discard unsaved draft and reload</button></> : null}</div> : null}
-        {bars.length > 0 ? <ChartPanel key={`${day}:${session}:${ticker}:${timeframe}`} ticker={ticker} timeframe={timeframe} timeframes={frames} payload={payload} featureOptions={[]} indicatorOptions={[]} visibleColumns={[]} visibleSupervisionGroups={[]} onTickerChange={() => {}} onTimeframeChange={value => { if (!locked) setTimeframe(value); }} onVisibleColumnsChange={() => {}} onVisibleSupervisionGroupsChange={() => {}} tickerEditable={false} toolbarVariant="compact" showIndicatorControls={false} showSupervisionControls={false} baseHeight={540}
+        <div className="labeler-session-actions"><label>View timeframe<select aria-label="View timeframe" value={timeframe} disabled={locked} onChange={e => setTimeframe(e.target.value)}>{frames.map(f => <option key={f}>{f}</option>)}</select></label><button disabled={!ready || !complete || ranges.length > 0} onClick={() => void finish("no_opportunity")}>No opportunity & next</button><button disabled={!ready || !complete || !ranges.length} onClick={() => void finish("completed")}>Complete & next</button></div>
+        {error ? <div className="labeler-error" role="alert">{error}{chartFailed ? <button onClick={() => setReload(v => v + 1)}>Retry chart</button> : null}{draft && !busy ? <><button onClick={() => void persist(draft, draftStatus)}>Retry save</button><button onClick={() => { setDraft(null); setCandidate(null); setReload(v => v + 1); }}>Discard unsaved draft and reload</button></> : null}</div> : null}
+        {bars.length > 0 ? <ChartPanel key={`${day}:${session}:${ticker}:${timeframe}`} ticker={ticker} timeframe={timeframe} timeframes={frames} payload={payload} featureOptions={[]} indicatorOptions={[]} visibleColumns={[]} visibleSupervisionGroups={[]} onTickerChange={() => {}} onTimeframeChange={value => { if (!locked) setTimeframe(value); }} onVisibleColumnsChange={() => {}} onVisibleSupervisionGroupsChange={() => {}} tickerEditable={false} toolbarVariant="compact" showIndicatorControls={false} showSupervisionControls={false} fillHeight baseHeight={300}
           initialFitMode="last_market_day" appearanceDefaults={{ legendGutterVisible: false, rightLegendGutterVisible: false }} settingsStorageKey={`chart-labeler.${instanceId}`}
           labeling={{ ranges: candidate && !draft ? [...ranges, candidate] : ranges, active: ready && mode !== "select", selected, pendingTime: pending ? Math.round(pending.time * 1000) : undefined, onPick: pick, onSelect: setSelected, onMove: move }}
           toolbarActions={<div className="labeler-tools">{(["select", "LONG", "SHORT"] as const).map(tool => <button disabled={!ready} key={tool} aria-pressed={mode === tool} onClick={() => { setMode(tool); setPending(null); }}>{tool === "select" ? "Select" : `${tool === "LONG" ? "Long" : "Short"} range`}</button>)}
@@ -199,12 +214,12 @@ export function LabelerContainer({ instanceId }: { instanceId: string }) {
             <button disabled={!ready || !chosen} onClick={() => { edit(ranges.filter(r => r.id !== selected)); setSelected(null); }}>Delete</button>
             {candidate && !draft ? <div className="labeler-submit"><strong>{candidate.direction}</strong> {time(candidate.entry_timestamp)} → {time(candidate.exit_timestamp)}<button disabled={busy} onClick={() => { setUndo(current => [...current, ranges]); setRedo([]); void persist([...ranges, candidate].sort((a, b) => Date.parse(a.entry_timestamp) - Date.parse(b.entry_timestamp))); }}>Submit range</button><button disabled={busy} onClick={() => { setCandidate(null); setSelected(null); setSaveState("Saved"); }}>Discard range</button></div> : null}
           </div>} /> : <div className="labeler-chart-placeholder" role="status">{complete ? "No observed candles in this session. A negative review cannot be certified." : progress || "Select a ticker to load its hourly chart."}</div>}
-        <div className="labeler-inspector"><span>{pending ? "Choose the exit candle. Escape cancels." : mode === "LONG" || mode === "SHORT" ? "Choose the entry candle, then the exit candle." : "Select a range or drag an endpoint. Boundaries snap to candle open and close."}</span>
+        <div className="labeler-inspector" hidden={!ranges.length && !candidate && !pending}><span>{pending ? "Choose the exit candle. Escape cancels." : mode === "LONG" || mode === "SHORT" ? "Choose the entry candle, then the exit candle." : "Select a range or drag an endpoint. Boundaries snap to candle open and close."}</span>
           {chosen ? <div><strong>{chosen.direction}</strong> {time(chosen.entry_timestamp)} → {time(chosen.exit_timestamp)} · {chosen.entry_price} → {chosen.exit_price} · {((Date.parse(chosen.exit_timestamp) - Date.parse(chosen.entry_timestamp)) / 1000).toFixed(3)} s · Gross reference {((chosen.exit_price / chosen.entry_price - 1) * (chosen.direction === "LONG" ? 100 : -100)).toFixed(2)}%
             <button disabled={!ready} onClick={() => setMode("entry")}>Choose new entry</button><button disabled={!ready} onClick={() => setMode("exit")}>Choose new exit</button></div> : null}
           <div className="labeler-range-list">{ranges.map((r, index) => <button key={r.id} aria-pressed={selected === r.id} onClick={() => setSelected(r.id)}>{index + 1}. {r.direction} {time(r.entry_timestamp)}–{time(r.exit_timestamp)}</button>)}</div>
         </div>
-        <footer className="labeler-footer"><span>Each submitted range is saved. Complete the session to infer wait outside ranges.</span></footer>
+        <footer className="labeler-footer"><span>Times: New York  /  Submit saves each range  /  Complete marks remaining time as wait</span></footer>
       </main>
     </div>
   </div>;
