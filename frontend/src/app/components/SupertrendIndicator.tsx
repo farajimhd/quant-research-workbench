@@ -34,7 +34,8 @@ export function useSupertrend(storageKey:string,timeframe:string,candles:Supertr
   },[enabled,candles,settings.period,settings.multiplier,cutoff]);
   const last=result.points.at(-1);
   return {enabled,points:result.points,
-    checkbox:<label className="chart-setting-row"><span>Supertrend <small>1s price overlay</small></span><input type="checkbox" aria-label="Supertrend" disabled={timeframe!=='1s'} checked={enabled} onChange={e=>change({enabled:e.target.checked})}/></label>,
+    menuItem: {id:'indicator.supertrend',title:'Supertrend',group:'volatility',category:'1s price overlay',selected:enabled,disabled:timeframe!=='1s',
+      onToggle:()=>change({enabled:!enabled}),onConfigure:()=>setOpen(true)},
     controls:<>{timeframe==='1s' && <label className="toolbar-button supertrend-toolbar"><input type="checkbox" aria-label="Show 1s Supertrend" checked={enabled} onChange={e=>change({enabled:e.target.checked})}/>Supertrend</label>}{enabled && <button type="button" className="toolbar-button supertrend-toolbar" onClick={()=>setOpen(true)} title="Supertrend settings: completed candles only">Supertrend {settings.period} × {settings.multiplier} · {result.error ? 'Unavailable' : last ? last.direction===1 ? 'Up' : 'Down' : 'Warming up'}</button>}
       {open && <Modal title="Supertrend settings" onClose={()=>setOpen(false)}><div className="supertrend-settings">
         <label className="chart-setting-row"><span>Show 1s Supertrend</span><input type="checkbox" aria-label="Supertrend visibility" checked={settings.enabled} onChange={e=>change({enabled:e.target.checked})}/></label>

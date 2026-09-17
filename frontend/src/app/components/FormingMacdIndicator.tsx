@@ -95,9 +95,8 @@ export function useFormingMacd(storageKey: string, symbol: string, chartTimefram
     <div><Button type="button" onClick={() => { change({ enabled: false }); setOpen(false); }}>Remove oscillator</Button></div>
   </div>;
   return { enabled: settings.enabled, series, remove: () => change({ enabled: false }),
-    checkbox: <div className="forming-macd-menu-row"><label className="chart-setting-row"><span>Multi-timeframe MACD difference</span>
-      <input type="checkbox" aria-label="Multi-timeframe MACD difference" checked={settings.enabled} onChange={event => change({ enabled: event.target.checked })} /></label>
-      <button className="toolbar-button" type="button" onClick={() => setOpen(true)} aria-label="Configure multi-timeframe MACD">Configure</button></div>,
+    menuItem: { id: MACD_DIFFERENCE_ID, title: 'Multi-timeframe MACD difference', group: 'momentum', category: 'Oscillator pane', selected: settings.enabled,
+      onToggle: () => change({enabled: !settings.enabled}), onConfigure: () => setOpen(true) },
     controls: <>{settings.enabled && <button className="toolbar-button forming-macd-trigger" type="button" onClick={() => setOpen(true)} title={settings.timeframes.map(tf => `${tf}: ${status(tf)}`).join('\n')}>MACD difference · {selection}{settings.timeframes.some(tf => values[tf]?.error) ? ' · Unavailable' : settings.timeframes.some(tf => !values[tf]?.source) ? ' · Loading' : ''}</button>}
       {open && <Modal title="Multi-timeframe MACD difference" onClose={() => setOpen(false)}>{editor}</Modal>}</>,
   };
