@@ -135,6 +135,48 @@ def test_grouped_management_counts_zone_once_and_survives_json_restart():
     assert len(assignment.state['vwap_ladder_market']['broken']) == 3
 
 
+def test_entry_inside_unbroken_band_counts_that_resistance_for_target():
+    host, assignment, observations = fixture()
+    o = observations()
+    levels = list(o.structural_resistance_levels)
+    levels[0] = dict(levels[0], lower=9.99, upper=10.03)
+    result = host.evaluate(assignment, replace(o, structural_resistance_levels=tuple(levels)))
+    assert result.evaluation.intents[0].profit_target_price == pytest.approx(10.63)
+
+
+def test_add_metadata_uses_target_updated_in_same_evaluation():
+    from tests.test_vwap_resistance_ladder import entered
+    host, assignment, observations = entered()
+    result = host.evaluate(assignment, observations(1, 10.23, 300))
+    add = next(i for i in result.evaluation.intents if i.action == 'add_long')
+    assert add.metadata['profit_targets'] == [add.profit_target_price]
+
+
+@pytest.mark.parametrize('pending_moves', [0, 1])
+def test_regrouping_repairs_target_without_break_add_or_move_budget(pending_moves):
+    from tests.test_vwap_resistance_ladder import advance, S
+    host, assignment, observations = fixture()
+    assignment.parameters['vwap_ladder'].update(group_resistances=1)
+    result = host.evaluate(assignment, observations())
+    assignment = replace(advance(assignment, result), status=S.AssignmentStatus.MANAGING)
+    if pending_moves:
+        # A previous break's replacement was rejected and is still pending.
+        assignment.state['vwap_ladder_entry']['pending_target'] = dict(price=10.73, moves=pending_moves)
+    passive = deepcopy(assignment.state['vwap_ladder_market'])
+    first = passive['known']['zone:R1']
+    second = passive['known'].pop('zone:R2')
+    first.update(upper=second['upper'], members=['R1','R2'])
+    passive['at'] = NOW.timestamp()+1
+    o = observations(1, position=300)
+    o.structural_detector_state['historical_hod_observation'] = {'vwap_ladder_market':passive}
+    result = host.evaluate(assignment, o)
+    assert [i.action for i in result.evaluation.intents] == ['replace_profit_target']
+    assert result.state['structural_profit_targets'] == pytest.approx([10.83])
+    assert result.state['vwap_ladder_entry']['target_moves'] == pending_moves
+    assert result.state['vwap_ladder_entry']['add_opportunities'] == 0
+    assert not result.state['vwap_ladder_market']['broken']
+
+
 def test_candidate_clones_baseline_without_mutating_it():
     from src.backend.vwap_retest_candidate import BASELINE_ID, BASELINE_HASH, PROFILE, PLAN, prepare_payload
     parent = dict(profile_id=V.CONTRACT, parameters={'vwap_ladder': dict(V.DEFAULTS)})

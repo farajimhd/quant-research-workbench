@@ -92,7 +92,7 @@ def observe_retests(market, previous, bar, rows, ladder):
     row['vwap_retests'] = deepcopy(witnesses)
 
 
-def entry_anchor(o, ladder, late, threshold):
+def entry_anchor(o, ladder, late, threshold, *, fresh=False):
     from datetime import datetime, time
     from .historical_hod import NY
     row = (o.structural_detector_state or {}).get('row', {})
@@ -109,6 +109,6 @@ def entry_anchor(o, ladder, late, threshold):
         swing = next((s for s in swings if s.get('side') in (1, 'support')
             and s.get('state', 'active') == 'active' and s['pivot_at'] == witness['pivot_at']
             and s['price'] == witness['pivot_price'] and cutoff <= s['pivot_at'] <= s['confirmed_at'] <= now), None)
-        if swing:
+        if swing and (not fresh or now < max(swing['confirmed_at'], witness['recovered_at'])+1):
             candidates.append(dict(witness, swing=deepcopy(swing)))
     return deepcopy(max(candidates, key=lambda w: (w['anchor']['lower'], w['pivot_at']))) if candidates else None
