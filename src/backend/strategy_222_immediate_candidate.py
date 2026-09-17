@@ -7,6 +7,10 @@ PARENT_PROFILE = 'v7-222-session-rvol-2x'
 PROFILE = 'v7-222-session-rvol-2x-immediate-exits-v1'
 PLAN = 'v7-setup-recovery-v9-backtest'
 LABEL = 'Strategy 222 / RVOL 2x / $1 floor + immediate exits v1'
+CLOSED_BASELINE_ID = '7bfc3132-6fa3-4d44-836c-b4d95ac8020f'
+CLOSED_BASELINE_HASH = '3d5d00fe5a3b646e4046105e4cc36e60ee557a3470b496e1c47e453454126488'
+CLOSED_PROFILE = 'v7-222-session-rvol-2x-closed-tail-v2'
+CLOSED_LABEL = 'Strategy 222 / RVOL 2x / closed-tail exits v2'
 
 
 def prepare_payload(baseline, published_profiles):
@@ -50,3 +54,38 @@ def create():
     return create_test_candidate(label=LABEL,canvas_revision=payload['canvas']['revision'],
         canvas_profile=payload['canvas']['profile'],configuration=payload,
         run_plan_id=PLAN,strategy_profile_id=PROFILE)
+
+
+def prepare_closed_payload(baseline, published_profiles):
+    if baseline['candidate_id'] != CLOSED_BASELINE_ID or baseline['content_hash'] != CLOSED_BASELINE_HASH:
+        raise ValueError('Immediate-exit v1 baseline identity changed')
+    payload = deepcopy(baseline['payload'])
+    parent = next(p for p in payload['strategy']['profiles'] if p['profile_id'] == PROFILE)
+    profile = deepcopy(parent)
+    profile.update(profile_id=CLOSED_PROFILE,name=CLOSED_LABEL,publication_status='draft',
+        editable=True,derived_from_profile_id=PROFILE,
+        description='RVOL 2x with unchanged original entry gates and the $1 floor. '
+        'Topping-tail exits require a completed 1s candle with upper wick greater than 30% of body. '
+        'An unbreached exit close permits tight-stop reentry; a breach expires that opportunity '
+        'without blocking later fresh setups or changing their structural stops. '
+        'Retains the five-second entry resistance timeout and close below broken resistance exit. '
+        'Research version; not screened.')
+    profile['parameters']['historical_hod']['setup_tail_closed_candle'] = 1
+    payload['strategy']['profiles'] = [deepcopy(published_profiles.get(p['profile_id'],p))
+        for p in payload['strategy']['profiles']] + [profile]
+    plan = next(p for p in payload['run_plans']['plans'] if p['run_plan_id'] == PLAN)
+    if plan['allowed_environments'] != ['backtest']:
+        raise ValueError('Successor must remain backtest-only')
+    plan.update(profile_id=CLOSED_PROFILE,name=CLOSED_LABEL,description=profile['description'])
+    return payload
+
+
+def create_closed():
+    from .trading_configuration_service import configuration_candidate, configuration_base, create_test_candidate
+    baseline = configuration_candidate(CLOSED_BASELINE_ID,required=True)
+    published = {p['profile_id']:p for p in configuration_base()['strategy']['profiles']
+                 if p.get('publication_status') == 'published'}
+    payload = prepare_closed_payload(baseline,published)
+    return create_test_candidate(label=CLOSED_LABEL,canvas_revision=payload['canvas']['revision'],
+        canvas_profile=payload['canvas']['profile'],configuration=payload,
+        run_plan_id=PLAN,strategy_profile_id=CLOSED_PROFILE)

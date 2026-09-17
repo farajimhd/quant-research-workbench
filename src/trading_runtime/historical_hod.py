@@ -23,7 +23,7 @@ DEFAULTS = dict(stop_buffer_bps=5., target_offset_ticks=1., target_distance_frac
     minimum_candle_volume=1., risk_fraction=.005, maximum_quantity=10000.,
     sizing_mode='risk_fraction',cash_fraction=.9,tranche_count=3,setup_stalled_seconds=0.,
     setup_immediate_tail_body_ratio=0.,setup_entry_resistance_seconds=0.,setup_resistance_return_exit=0,
-    setup_tail_reentry_stop_ticks=1.,
+    setup_tail_reentry_stop_ticks=1.,setup_tail_closed_candle=0,
     recent_breakout_seconds=30., forming_macd_entry_enabled=1, early_green_stop_enabled=1,
     regular_luld_enabled=0,backtest_luld_estimation_enabled=0,minimum_regular_previous_close=.75,
     luld_buffer_bps=25.,luld_buffer_ticks=2,luld_maximum_age_ms=60000.,v7_zone_enabled=0,entry_zone_fraction=.30,
@@ -64,6 +64,8 @@ def configure(p):
         raise ValueError('Immediate exits require V7 setup')
     if s['setup_tail_reentry_stop_ticks'] != 1:
         raise ValueError('Topping-tail reentry requires a one-tick fill stop')
+    if type(s['setup_tail_closed_candle']) not in (int,float) or s['setup_tail_closed_candle'] not in (0,1):
+        raise ValueError('Closed-candle tail policy must be a numeric boolean switch')
     if (type(s['setup_fresh_pivot_enabled']) not in (int,float)
             or s['setup_fresh_pivot_enabled'] not in (0,1)
             or s['setup_fresh_pivot_enabled'] and not (s['v7_setup_enabled'] and s['setup_early_base_enabled'])):
@@ -142,7 +144,7 @@ def configure(p):
         raise ValueError('Phase progress requires V7 setup')
     if s['sizing_mode'] not in {'risk_fraction','cash_tranches'}:
         raise ValueError('Unknown historical HOD sizing mode')
-    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_immediate_tail_body_ratio','setup_entry_resistance_seconds','setup_resistance_return_exit','setup_stalled_seconds','setup_minimum_session_relative_volume','setup_minimum_volume_ratio','setup_quote_confirmation_enabled','setup_reversal_enabled','setup_fresh_pivot_enabled','setup_below_vwap_base_enabled','setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k not in ('sizing_mode','setup_below_vwap_maximum_distance_atr')):
+    if any(type(v) not in (int,float) or not isfinite(v) or (v < 0 if k in ('setup_tail_closed_candle','setup_immediate_tail_body_ratio','setup_entry_resistance_seconds','setup_resistance_return_exit','setup_stalled_seconds','setup_minimum_session_relative_volume','setup_minimum_volume_ratio','setup_quote_confirmation_enabled','setup_reversal_enabled','setup_fresh_pivot_enabled','setup_below_vwap_base_enabled','setup_base_diagnostics_enabled','setup_support_quote_clearance_selection','setup_recovery_regular_full_range','setup_trail_current_gain_requires_bid','setup_phase_minimum_progress_r','setup_trail_requires_current_gain','setup_recovery_regular_base','setup_base_maximum_extension_fraction','setup_recovery_entry_reclaim','setup_recovery_unprotected_reentry','setup_minimum_300s_range_pct','setup_minimum_60s_progress_pct','setup_add_maximum_upper_wick_fraction','setup_failure_exit_enabled','setup_base_recovery_maximum_range_pct','setup_minimum_trail_progress_r','setup_maximum_bar_gap_s','setup_recovery_stop_gain_guard','setup_early_base_enabled','setup_acquisition_quality_enabled','setup_minimum_quote_clearance_spreads','setup_episode_high_entry','setup_trail_activation_r','setup_failure_seconds','setup_minimum_body_bps','setup_trail_requires_breakout','setup_recovery_preserve_peak','setup_add_requires_range_breakout','setup_recovery_enabled','v7_setup_enabled','v7_encounters_enabled','v7_price_only_enabled','rejection_break_offset_bps','v7_transition_entries_enabled','v7_center_swing_enabled','v7_zone_enabled','entry_breakout_offset','regular_luld_enabled','backtest_luld_estimation_enabled','forming_macd_entry_enabled','early_green_stop_enabled') else v <= 0) for k,v in s.items() if k not in ('sizing_mode','setup_below_vwap_maximum_distance_atr')):
         raise ValueError('Historical HOD settings must be finite and positive')
     if not 0 <= s['setup_failure_seconds'] <= 5 or int(s['setup_failure_seconds']) != s['setup_failure_seconds']:
         raise ValueError('Initial setup failure window must be zero to five completed seconds')
@@ -1033,7 +1035,7 @@ def evaluate(host, a, o, p, state):
             evidence['immediate_exits'] = immediate_evidence
             if reason == 'topping_tail_immediate':
                 state['topping_tail_reentry'] = dict(session=session,at=now,
-                    close=o.price,breached=False)
+                    close=immediate_evidence['candle']['close'],breached=False,episode=d.get('episode'))
         if not reason and luld and (decision_bid >= luld['price'] or decision_bid <= luld['lower_exit']):
             reason = 'luld_buffer_reached'
         if not reason and s['v7_encounters_enabled'] and encounter_reason:
@@ -1163,9 +1165,12 @@ def evaluate(host, a, o, p, state):
     if reversal_invalid:
         cancel_acquisition_reason='support_reversal_acquisition_invalidated'
 
-    tail_invalid = bool(pending and state.get('topping_tail_reentry',{}).get('breached'))
+    pending_floor = state.get('topping_tail_reentry',{})
+    tail_invalid = bool(pending and active.get('tail_reentry')
+                        and (pending_floor.get('breached') or pending_floor.get('expired')))
     if tail_invalid:
-        cancel_acquisition_reason = 'topping_tail_reentry_floor_breached'
+        cancel_acquisition_reason = ('topping_tail_reentry_expired' if pending_floor.get('expired')
+                                     else 'topping_tail_reentry_floor_breached')
     if (tail_invalid or session_volume_invalid or volume_invalid or quote_invalid or reversal_invalid or (encounter_blocked and (pending or acquired) and not encounter_state.get('cancel_notified')) or (pending and (state.get('pending_capital_request') or regular_block) and (regular_block or not active or not ready or not acquisition_momentum_ready or (not momentum_ready and o.price <= (d.get('vwap') or float('inf')))
             or now-active.get('confirmed_at',0) >= s['confirmation_lifetime_ms']/1000
             or o.ask > active.get('maximum_buy_price',0)))):
@@ -1378,9 +1383,10 @@ def evaluate(host, a, o, p, state):
         return result('hold','structure_valid' if detector_fresh else 'awaiting_completed_structure',Status.MANAGING,
             invalidation_price=stop,profit_target_price=target)
     def enter(entry, reason):
-        floor = state.get('topping_tail_reentry')
-        if floor and (floor.get('breached') or o.price < floor['close']):
-            return result('wait','topping_tail_reentry_floor_breached')
+        floor = state.get('topping_tail_reentry') if entry.get('tail_reentry') else None
+        if floor and (floor.get('expired') or floor.get('breached') or o.price < floor['close']):
+            return result('wait','topping_tail_reentry_expired' if floor.get('expired')
+                          else 'topping_tail_reentry_floor_breached')
         return result('enter_long',reason,Status.ENTRY_PENDING,invalidation_price=entry['stop'],profit_target_price=entry['target']['price'],
             capital_request=CapitalRequest(mode='mandate_fraction' if s['sizing_mode']=='cash_tranches' else 'risk_fraction',
                 value=s['cash_fraction'] if s['sizing_mode']=='cash_tranches' else s['risk_fraction'],
@@ -1401,8 +1407,6 @@ def evaluate(host, a, o, p, state):
         return result('wait','unresolved_level_rejection')
     if pending:
         return enter(active,'historical_hod_entry') if state.get('pending_capital_request') else result('wait','entry_fill_pending',Status.ENTRY_PENDING)
-    if state.get('topping_tail_reentry',{}).get('breached'):
-        return result('wait','topping_tail_reentry_floor_breached')
     if (a.status in (Status.DISABLED,Status.PAUSED,Status.COMPLETED,Status.ERROR)
             or not a.permissions.observe or not a.permissions.enter
             or (state.get('entries',0) and not a.permissions.reenter)):
@@ -1542,7 +1546,12 @@ def evaluate(host, a, o, p, state):
             support_reversal=bool(reversal_ready and early_base))
         if blocked_reason:return result('wait',blocked_reason)
     stop = stop_below(swing['lower'],s,tick)
-    tail_reentry = state.get('topping_tail_reentry')
+    tail_floor = state.get('topping_tail_reentry')
+    tail_reentry = tail_floor if tail_floor and not (tail_floor.get('breached') or tail_floor.get('expired')) else None
+    if tail_floor:
+        evidence['topping_tail_reentry'] = dict(tail_floor,
+            applies_to_this_entry=bool(tail_reentry),
+            ordinary_entry_allowed=True)
     if s['setup_minimum_quote_clearance_spreads']:
         # Execution feasibility uses the real quote even when structural
         # selection intentionally uses trade price. Never move the swing stop
@@ -1585,6 +1594,7 @@ def evaluate(host, a, o, p, state):
         management_base=dict(lower=swing['lower'] if s['v7_encounters_enabled'] else boundary['lower'],
             tolerance=max(tick,s['management_tolerance_atr']*atr)),hold_levels={})
     if immediate_enabled:
+        entry['tail_reentry'] = bool(tail_reentry)
         entry['entry_resistance_bands'] = {key:dict(level=level) for key,level in
             v7_immediate_exits.bands(d.get('prior_rows',[])).items()
             if level['lower'] <= o.price <= level['upper']}
