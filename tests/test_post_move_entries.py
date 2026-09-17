@@ -110,6 +110,35 @@ def test_pullback_requires_bullish_one_second_macd():
     assert not host.evaluate(a,o).evaluation.intents
 
 
+def test_pullback_target_reuses_nearest_previously_broken_resistance():
+    host,a,o = pullback()
+    market = a.state['vwap_ladder_market']
+    market['broken'].append('4.03')
+    market['break_rows']['4.03'] = deepcopy(market['known']['4.03'])
+    o.structural_detector_state['row']['vwap_retests'][0]['break_count'] = 7
+    r = host.evaluate(a,o)
+    assert r.evaluation.intents[0].profit_target_price == pytest.approx(4.04)
+
+
+def test_pullback_recross_advances_target_without_incrementing_session_count():
+    host,a,o = pullback()
+    market = a.state['vwap_ladder_market']
+    market['broken'].append('4.03')
+    market['break_rows']['4.03'] = deepcopy(market['known']['4.03'])
+    o.structural_detector_state['row']['vwap_retests'][0]['break_count'] = 7
+    r = host.evaluate(a,o)
+    state = deepcopy(r.state)
+    state['vwap_ladder_market'].update(at=NOW.timestamp()+.1,price=4.031)
+    a = replace(a,state=state,status=S.AssignmentStatus.MANAGING)
+    o = replace(o,observed_at=NOW+timedelta(seconds=.1),price=4.031,
+                bid=4.03,ask=4.035,position_quantity=100)
+    r = host.evaluate(a,o)
+    assert r.state['structural_profit_targets'] == pytest.approx([4.09])
+    assert r.state['vwap_ladder_entry']['broken'] == ['4.03']
+    assert r.state['vwap_ladder_entry']['target_moves'] == 1
+    assert len(r.state['vwap_ladder_market']['broken']) == 7
+
+
 def test_pullback_can_enter_above_vwap_below_midpoint_but_not_below_vwap():
     host,a,o = pullback()
     a.parameters['vwap_ladder']['pullback_above_vwap_only'] = 1
