@@ -8,6 +8,7 @@ import { macdBpsPoints } from "./macdBps";
 import { useFormingMacd } from './FormingMacdIndicator';
 import { MACD_DIFFERENCE_PANE } from '../../features/canvas/formingMacd';
 import { HindsightPrimitive, useHindsightPositions } from "./HindsightPositions";
+import { HindsightActionsPrimitive, useHindsightActions } from "./HindsightActions";
 import { SwingStructurePrimitive, useSwingStructure } from "./SwingStructure";
 import { StructureGapPrimitive, useStructureGaps } from "./StructureGaps";
 import { StructuralDetectorPrimitive, useStructuralDetector } from "./StructuralDetector";
@@ -1007,6 +1008,12 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [supervisionMenuOpen, setSupervisionMenuOpen] = useState(false);
   const [strategyPresentationOpen, setStrategyPresentationOpen] = useState(false);
   const hindsight = useHindsightPositions(ticker, hindsightSessionDate);
+  const hindsightActions = useHindsightActions(ticker, hindsightSessionDate, (start, end) => {
+    executeViewportCommand(() => priceChartRef.current?.timeScale().setVisibleRange({ from: start as Time, to: end as Time }));
+  });
+  const hindsightActionsRef = useRef(hindsightActions);
+  hindsightActionsRef.current = hindsightActions;
+  const hindsightActionsPrimitiveRef = useRef<HindsightActionsPrimitive | null>(null);
   const levelReaction = useLevelReaction(ticker, hindsightSessionDate, indicatorAsOf, timeframe, payload?.candles);
   const [v7Viewport,setV7Viewport]=useState<{ticker:string;first:string;last:string}>();
   const reactionBook=useReactionBook(ticker,hindsightSessionDate || periodEnd,indicatorAsOf,(visibleColumns ?? []).includes('indicator.qmd_unified_structure'),levelBookMode,settingsStorageKey || 'chart',v7Viewport?.ticker===ticker?v7Viewport:undefined);
@@ -1399,6 +1406,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [selectedStrategy?.id, strategyPresentationEnabled]);
 
   useEffect(() => { drawCurrentRegions(); }, [hindsight.positions]);
+  useEffect(() => { drawCurrentRegions(); }, [hindsightActions.result]);
   useEffect(() => { drawCurrentRegions(); }, [swingStructure.segments, swingStructure.lineOpacity, swingStructure.bandOpacity]);
   useEffect(() => { drawCurrentRegions(); }, [structureGaps.segments, structureGaps.setups, structureGaps.selected, structureGaps.opacity]);
 
@@ -1453,6 +1461,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const hindsightPrimitive = new HindsightPrimitive();
     candleSeries.attachPrimitive(hindsightPrimitive);
     hindsightPrimitiveRef.current = hindsightPrimitive;
+    const actionPrimitive = new HindsightActionsPrimitive();
+    candleSeries.attachPrimitive(actionPrimitive);
+    hindsightActionsPrimitiveRef.current = actionPrimitive;
     const swingPrimitive = new SwingStructurePrimitive();
     candleSeries.attachPrimitive(swingPrimitive);
     swingStructurePrimitiveRef.current = swingPrimitive;
@@ -1923,6 +1934,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     syncTradeAnnotationPrimitive(currentPayload, timeline);
     const hindsightDuration = hindsightRef.current.length ? estimateCandleDuration(timeline) : 60;
     hindsightPrimitiveRef.current?.setState(hindsightRef.current, (time) => xForAnnotationTime(chart, time, timeline, hindsightDuration));
+    hindsightActionsPrimitiveRef.current?.setState(hindsightActionsRef.current.result,
+      (time) => xForAnnotationTime(chart, time, timeline, estimateCandleDuration(timeline)), hindsightActionsRef.current.inspect);
     const swing = swingStructureRef.current;
     structureGapPrimitiveRef.current?.setState(structureGapsRef.current,
       time => xForAnnotationTime(chart, Math.max(timeline[0]?.time ?? 0, Math.min(time, timeline.at(-1)?.time ?? 0)), timeline),
@@ -2053,6 +2066,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     tradeAnnotationPrimitiveRef.current = null;
     if (hindsightPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(hindsightPrimitiveRef.current);
     hindsightPrimitiveRef.current = null;
+    if (hindsightActionsPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(hindsightActionsPrimitiveRef.current);
+    hindsightActionsPrimitiveRef.current = null;
     if (swingStructurePrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(swingStructurePrimitiveRef.current);
     swingStructurePrimitiveRef.current = null;
     if (structuralDetectorPrimitiveRef.current && candleRef.current) candleRef.current.detachPrimitive(structuralDetectorPrimitiveRef.current);
@@ -2092,7 +2107,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       const surface = price.parentElement;
       if (fillHeight && surface && shellRef.current) {
         const toolbar = shellRef.current.querySelector<HTMLElement>(":scope > .chart-component-toolbar");
-        const availableHeight = shellRef.current.clientHeight - (toolbar?.clientHeight ?? 0);
+        const actionCaption = shellRef.current.querySelector<HTMLElement>(":scope > .action-values-caption");
+        const availableHeight = shellRef.current.clientHeight - (toolbar?.clientHeight ?? 0) - (actionCaption?.offsetHeight ?? 0);
         if (availableHeight >= 48) {
           surface.style.setProperty("--chart-runtime-height", `${availableHeight}px`);
         }
@@ -2290,7 +2306,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           />
         ) : null}
         <div className="toolbar-spacer" />
-        {!labeling ? <>{hindsight.controls}{levelReaction.controls}{structuralDetector.controls}{supertrendIndicator.controls}{formingMacd.controls}</> : null}
+        {!labeling ? <>{hindsight.controls}{hindsightActions.controls}{levelReaction.controls}{structuralDetector.controls}{supertrendIndicator.controls}{formingMacd.controls}</> : null}
         <button
           className="toolbar-button"
           data-chart-settings-trigger="true"
@@ -2344,6 +2360,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           settings={chartSettings}
         />
       ) : null}
+      {hindsightActions.caption}
       <div className="chart-canvas-stack">
         {!hasChartData ? (
           <div className={`chart-state-overlay${errorMessage ? " error" : ""}`} role={errorMessage ? "alert" : loading ? undefined : "status"}>

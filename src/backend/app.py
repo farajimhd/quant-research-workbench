@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD
 from src.backend.hindsight_service import router as hindsight_router
+from src.backend.hindsight_action_service import router as hindsight_action_router
 from src.backend.swing_structure_service import router as swing_structure_router
 from src.backend.structure_gap_service import router as structure_gap_router
 from src.backend.structural_detector_service import router as structural_detector_router
@@ -602,6 +603,7 @@ app = FastAPI(title="Quant Research Workbench API", version="1.0.0", lifespan=ap
 from src.backend.chart_labeler_service import router as chart_labeler_router
 app.include_router(chart_labeler_router)
 app.include_router(hindsight_router)
+app.include_router(hindsight_action_router)
 app.include_router(swing_structure_router)
 app.include_router(structure_gap_router)
 app.include_router(structural_detector_router)
