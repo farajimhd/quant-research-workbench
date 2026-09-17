@@ -450,7 +450,8 @@ class ReplayRunDefinition:
         recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('macd_hod_contract')
         recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('historical_hod_contract')
         recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('macd_r3_contract')
-        if not self.archived_review_only and not self.experimental_structure_book and self.debug_fixture is None:
+        hindsight_long = self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('hindsight_long_contract')
+        if not self.archived_review_only and not self.experimental_structure_book and self.debug_fixture is None and not hindsight_long:
             object.__setattr__(self, 'experimental_structure_book', 'level-book-v7')
         if self.experimental_structure_book and not self.archived_review_only:
             from src.backend.experimental_structure_book import resolve
@@ -2551,6 +2552,7 @@ class ReplayRunController:
             frame_iterator = BoundedFrameLookahead(frame_source, limit=8192 if getattr(self,'_prepared_v7',None) else 64)
             prefetched_generation = -1
             threshold_only = self.definition.configuration_revision['payload'].get('strategy',{}).get('parameters',{}).get('macd_threshold_contract')
+            threshold_only = threshold_only or self.definition.configuration_revision['payload'].get('strategy',{}).get('parameters',{}).get('hindsight_long_contract')
             if self.definition.debug_fixture is None and not self.definition.experimental_structure_book and not threshold_only:
                 self._historical_structure_frame_iterator = iter(frame_source)
                 self._schedule_historical_structure_prefetch()
@@ -3922,6 +3924,13 @@ class ReplayRunController:
             source_values=dict(source_cache),
         )
         ticker_assignments = self._ticker_assignments(frame.ticker)
+        if any(a.parameters.get('hindsight_long_contract') for a in ticker_assignments):
+            # A bar projection is not a new quote. Retain the actual NBBO clock
+            # so a trade-only interval cannot freshen an old executable price.
+            base = replace(base, source_values={**base.source_values, 'market.spread_bps': {
+                'observed_at': quote.ts.isoformat() if quote else '',
+                'value': (quote.ask_price-quote.bid_price)/quote.midpoint*10000
+                    if quote and quote.midpoint > 0 else None}})
         if frame.ticker not in self._strategy_quality_admitted_tickers:
             quality_rules = [
                 dict(rule_set)
@@ -4085,6 +4094,19 @@ class ReplayRunController:
         if self._runtime is None or self._strategy is None:
             return False
         # Quotes update the broker/NBBO state in ``_process_market_event``.
+        if isinstance(event, QuoteEvent) and event.ticker in self._strategy_engaged_tickers:
+            assignments = tuple(a for a in self._ticker_assignments(event.ticker)
+                                if a.parameters.get('hindsight_long_contract'))
+            base = self._latest_strategy_observations.get(event.ticker)
+            if assignments and base is not None:
+                self._flush_passive_market_events()
+                observation = replace(base, observed_at=event.ts, bid=event.bid_price,
+                    ask=event.ask_price, source_timeframe='', evaluation_events=('market_data_update',),
+                    source_values={**base.source_values, 'market.spread_bps': {
+                        'observed_at': event.ts.isoformat(), 'value': None}},
+                    source_signal_ids=(f'quote:{event.ticker}:{event.ts.isoformat()}:{event.sequence}',))
+                await self._evaluate_strategy_observation(observation, assignments)
+                return True
         # They must not independently re-evaluate a strategy against the last
         # trade price: doing so both invents a stale-price decision and floods
         # the historical journal. The next trade observes the latest quote and
@@ -4587,7 +4609,7 @@ class ReplayRunController:
         # here previously missed real entries and silently skipped structural
         # checkpoint enrichment.
         for assignment in ticker_assignments:
-            if assignment.parameters.get('macd_threshold_contract'):
+            if assignment.parameters.get('macd_threshold_contract') or assignment.parameters.get('hindsight_long_contract'):
                 continue
             if assignment.status == AssignmentStatus.MANAGING:
                 return True
@@ -6167,7 +6189,8 @@ class ReplayRunController:
             "strategy", {}).get("parameters", {}).get("macd_hod_contract") or self.definition.configuration_revision["payload"].get(
             "strategy", {}).get("parameters", {}).get("historical_hod_contract") or self.definition.configuration_revision["payload"].get(
             "strategy", {}).get("parameters", {}).get("macd_threshold_contract") or self.definition.configuration_revision["payload"].get(
-            "strategy", {}).get("parameters", {}).get("macd_r3_contract"))
+            "strategy", {}).get("parameters", {}).get("macd_r3_contract") or self.definition.configuration_revision["payload"].get(
+            "strategy", {}).get("parameters", {}).get("hindsight_long_contract"))
         # Both paths already own their causal signal stream. Structural
         # recovery gets structure exclusively from the selected V6 book.
         prepared_activation = source_native_only or structural_recovery
@@ -9030,7 +9053,7 @@ def _structural_recovery_projection_tickers(
     configuration: dict[str, Any], tickers: tuple[str, ...],
 ) -> list[str] | None:
     parameters = configuration.get("strategy", {}).get("parameters", {})
-    if not (parameters.get("historical_hod_contract") or parameters.get("structural_recovery_contract") or parameters.get("macd_hod_contract") or parameters.get("macd_threshold_contract") or parameters.get("macd_r3_contract")):
+    if not (parameters.get("hindsight_long_contract") or parameters.get("historical_hod_contract") or parameters.get("structural_recovery_contract") or parameters.get("macd_hod_contract") or parameters.get("macd_threshold_contract") or parameters.get("macd_r3_contract")):
         return None
     selected = sorted({ticker.strip().upper() for ticker in tickers if ticker.strip()})
     if not selected:

@@ -218,6 +218,8 @@ def _rule_stage_timeframes(stage: dict[str, Any]) -> set[str]:
 def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
     """Return every derived-data timeframe referenced by active lifecycle rules."""
 
+    if parameters.get('hindsight_long_contract'):
+        return {'100ms', '1s'}
     if parameters.get('vwap_ladder_contract'):
         return {'100ms', '1s', '5s', '10s', '30s'}
     if parameters.get('macd_threshold_contract') or parameters.get('macd_r3_contract'):
@@ -903,6 +905,15 @@ def resolve_long_momentum_parameters(
     if parameters.get('macd_hod_contract'):
         from .macd_hod import configure
         configure(parameters)
+    if parameters.get('hindsight_long_contract'):
+        from .hindsight_long import settings
+        parameters['hindsight_long'] = settings(parameters)
+        parameters['structural_entry']['enabled'] = False
+        parameters['entry_candle_confirmation']['enabled'] = False
+        parameters['protection']['profit_ladder']['enabled'] = False
+        parameters['protection']['trailing']['enabled'] = False
+        parameters['reentry']['enabled'] = True
+        parameters['reentry']['after_protective_exit'] = True
     if parameters.get('macd_threshold_contract'):
         from .macd_threshold import CONTRACT, settings
         if parameters['macd_threshold_contract'] != CONTRACT:
@@ -2725,6 +2736,12 @@ class LongMomentumStrategyEngine:
         self._historical_parameters_cache = None
 
     def evaluate(self, assignment: StrategyAssignment, observation: StrategyObservation) -> StrategyEngineResult:
+        if assignment.parameters.get('hindsight_long_contract'):
+            from .hindsight_long import evaluate
+            if (assignment.strategy_id != STRATEGY_ID or assignment.strategy_revision != self.revision
+                    or assignment.ticker.upper() != observation.ticker.upper()):
+                raise ValueError('Strategy observation identity mismatch')
+            return evaluate(assignment, observation)
         if assignment.parameters.get('macd_r3_contract'):
             from .macd_r3 import CONTRACT, evaluate
             if assignment.parameters['macd_r3_contract'] != CONTRACT:
@@ -6116,6 +6133,9 @@ class AssignedLongMomentumStrategy:
                 continue
             state = dict(assignment.state)
             if str(intent.action) in {"enter_long", "enter_short"}:
+                if assignment.parameters.get('hindsight_long_contract'):
+                    from .hindsight_long import acquisition_update
+                    acquisition_update(state, terminal=True)
                 state.pop("pending_capital_request", None)
                 if assignment.parameters.get('vwap_ladder_contract'):
                     from .vwap_resistance_ladder import release_unfilled_episode
@@ -6378,6 +6398,15 @@ class AssignedLongMomentumStrategy:
                 continue
             state = dict(assignment.state)
             action = str(getattr(snapshot, "action", ""))
+            if assignment.parameters.get('hindsight_long_contract') and action == 'enter_long':
+                from .hindsight_long import acquisition_update
+                acquisition_update(state, terminal=snapshot_state in {'filled', 'cancelled'},
+                                   filled=incremental_fill > 0)
+            if (assignment.parameters.get('hindsight_long_contract')
+                    and action in {'exit', 'reduce_long', 'take_profit'}
+                    and incremental_fill > 0 and aggregate_position_quantity == 0):
+                from .hindsight_long import acquisition_update
+                acquisition_update(state, terminal=True)
             if snapshot_state == "cancelled" and action in {
                 "enter_long",
                 "enter_short",
