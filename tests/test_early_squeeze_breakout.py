@@ -24,7 +24,7 @@ def fixture():
         at = o.observed_at.isoformat()
         for key, value in [('market.volume',100000.),('market.session_dollar_volume',1000000.),
                            ('market.trade_rate_10s',10.),('market.trade_rate_60s',10.),
-                           ('indicator.vwap.execution_value',9.)]:
+                           ('indicator.vwap.execution_value@1s',9.)]:
             sv[key] = dict(value=value, observed_at=at)
         if signal:
             sv[E.SIGNAL] = dict(value=True, observed_at=(NOW-timedelta(seconds=5)).isoformat(), event_id='first')
@@ -55,6 +55,40 @@ def test_midpoint_entry_without_macd_and_cash_thirds():
     assert i.metadata['activation']['activation_event_id']=='first'
 
 
+@pytest.mark.parametrize('case', ['fresh', 'missing', 'stale', 'future', 'below', 'invalid', 'wrong_timeframe'])
+def test_v2_uses_runtime_one_second_vwap_with_its_own_timestamp(case):
+    host,a,obs=fixture()
+    a=advance(a,host.evaluate(a,obs()))
+    o=obs(1,10.42)
+    sv=dict(o.source_values)
+    sv.pop('indicator.vwap.execution_value@1s')
+    # Same producer called by ReplayRunController for every derived frame.
+    sv.update({k:v for k,v in S.strategy_observation_source_values(o,'1s').items()
+               if k.startswith('indicator.vwap.')})
+    key='indicator.vwap.execution_value@1s'
+    if case=='missing':sv.pop(key)
+    if case=='stale':sv[key]['observed_at']=(o.observed_at-timedelta(seconds=3)).isoformat()
+    if case=='future':sv[key]['observed_at']=(o.observed_at+timedelta(seconds=1)).isoformat()
+    if case=='below':sv[key]['value']=11.
+    if case=='invalid':sv[key]['value']=float('nan')
+    if case=='wrong_timeframe':sv['indicator.vwap.execution_value@100ms']=sv.pop(key)
+    # A fresh alias must not hide missing/stale completed-second evidence.
+    sv['indicator.vwap.execution_value']=dict(value=9.,observed_at=o.observed_at.isoformat())
+    r=host.evaluate(a,replace(o,source_values=sv))
+    assert bool(r.evaluation.intents)==(case=='fresh')
+    if case!='fresh':
+        assert r.evaluation.signals[0].reason=='fresh_price_above_vwap_required'
+
+
+def test_v1_keeps_its_original_vwap_lookup():
+    host,a,obs=fixture()
+    a=replace(a,parameters={**a.parameters,'early_squeeze_breakout_contract':E.LEGACY_CONTRACT})
+    a=advance(a,host.evaluate(a,obs()))
+    r=host.evaluate(a,obs(1,10.42))
+    assert not r.evaluation.intents
+    assert r.evaluation.signals[0].metadata['contract']==E.LEGACY_CONTRACT
+
+
 @pytest.mark.parametrize('failure',['no_signal','future_signal','previous_day','red','weak','unfiltered','stale_quote','below_vwap'])
 def test_entry_gates_fail_closed(failure):
     host,a,obs=fixture()
@@ -66,7 +100,7 @@ def test_entry_gates_fail_closed(failure):
     if failure=='weak':o=replace(o,bar_high=10.6)
     if failure=='unfiltered':o=replace(o,structural_resistance_levels=tuple(dict(r,seed_input_policy='legacy') for r in o.structural_resistance_levels))
     if failure=='stale_quote':o.source_values['market.spread_bps']['observed_at']=(NOW-timedelta(seconds=5)).isoformat()
-    if failure=='below_vwap':o=replace(o,execution_vwap=11.)
+    if failure=='below_vwap':o.source_values['indicator.vwap.execution_value@1s']['value']=11.
     assert not host.evaluate(a,o).evaluation.intents
 
 
