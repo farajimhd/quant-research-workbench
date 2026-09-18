@@ -1,0 +1,240 @@
+"""Independent arithmetic/reference checks for local greedy supervision."""
+import math
+import random
+from io import StringIO
+
+import polars as pl
+import pytest
+from rich.console import Console
+
+from scripts.build_hindsight_greedy import (
+    illustrative_row, summarize, merge_summary, flat_policy, report_table,
+    verify_files, phase1_plan,
+)
+from src.market_engine.hindsight_greedy import coefficients, ActionTable, Position
+
+
+def phase1_rows():
+    rows = []
+    for t in (1_000_000, 2_000_000, 3_000_000):
+        row = dict(time_us=t, ticker="B", listing_id="listing:B", quote_valid=True,
+                   bid=10., ask=11., bid_size=100., ask_size=100.)
+        for side in ("long", "short"):
+            row.update({f"{side}_status": "available", f"{side}_target_us": t+3_500_000,
+                        f"{side}_target_id": 1, f"{side}_available_us": t+5_000_000,
+                        f"{side}_hold_seconds": 3.5, f"{side}_bid": 16., f"{side}_ask": 7.})
+        rows.append(row)
+    return pl.DataFrame(rows)
+
+
+def bd():
+    return ActionTable([illustrative_row("B", 10, 6, 3, .99),
+                        illustrative_row("D", 55, 55, 4, .99)],
+                       [Position("B", "long", 5, 10, 10)], mode="long")
+
+
+def test_user_abc_example_discount_and_sizes():
+    state = ActionTable([illustrative_row("A", 50, 5, 4, .99),
+                         illustrative_row("B", 10, 6, 6, .99),
+                         illustrative_row("C", 2, .5, 10, .99)], [], mode="long")
+    assert state.cash == 50
+    results = [state.evaluate({key: size}) for key, size in [("A:long", 1), ("B:long", 5), ("C:long", 25)]]
+    assert [r["undiscounted_future_profit"] for r in results] == [5, 30, 12.5]
+    assert results[1]["discounted_future_value"] == pytest.approx(30*.99**6)
+    assert max(range(3), key=lambda i: results[i]["discounted_future_value"]) == 1
+
+
+@pytest.mark.parametrize("changes,profit,increment", [
+    ({}, 30, 0), ({"B:long": .5}, 33, 3*.99**3),
+    ({"D:long": 1/11}, 35, 5*.99**4),
+    ({"B:long": -2.5, "D:long": 6/11}, 45, 30*.99**4-15*.99**3),
+    ({"B:long": -5, "D:long": 1}, 55, 55*.99**4-30*.99**3),
+    ({"B:long": -1}, 24, -6*.99**3), ({"B:long": -5}, 0, -30*.99**3),
+])
+def test_user_bd_all_action_types(changes, profit, increment):
+    state = bd()
+    assert state.open_cost == 50 and state.cash == 5 and state.budget == 55
+    result = state.evaluate(changes)
+    assert result["feasible"]
+    assert result["undiscounted_future_profit"] == pytest.approx(profit)
+    assert result["delta_vs_hold"] == pytest.approx(increment)
+
+
+def test_exhaustive_fractional_grid_matches_independent_cashflow_oracle():
+    state = bd()
+    best = (-math.inf, None)
+    # Every half-share B / tenth-share D allocation in a bounded reference grid.
+    for b in range(12):
+        for d in range(12):
+            bq, dq = b/2, d/10
+            result = state.evaluate({"B:long": bq-5, "D:long": dq})
+            feasible = 10*bq + 55*dq <= 55+1e-9
+            assert result["feasible"] == feasible
+            if feasible:
+                expected = bq*6*.99**3 + dq*55*.99**4
+                assert result["discounted_future_value"] == pytest.approx(expected)
+                assert result["cash_after"] == pytest.approx(55-10*bq-55*dq)
+                if expected > best[0]:
+                    best = expected, (bq, dq)
+    assert best[1] == (0, 1)
+
+
+def test_many_random_fractional_sizes_not_only_displayed_examples():
+    rng = random.Random(19)
+    state = bd()
+    for _ in range(300):
+        d = rng.random()
+        b = rng.random()*(55-55*d)/10
+        result = state.evaluate({"B:long": b-5, "D:long": d})
+        assert result["feasible"]
+        assert result["discounted_future_value"] == pytest.approx(b*6*.99**3+d*55*.99**4)
+
+
+def test_no_refunding_while_evaluating_and_transaction_order_independent():
+    state = bd()
+    a = state.evaluate({"B:long": -5, "D:long": 1})
+    b = state.evaluate({"D:long": 1, "B:long": -5})
+    assert a["cash_after"] == b["cash_after"] == 0
+    assert state.cash == 5
+    assert not state.evaluate({"B:long": 1})["feasible"]
+    assert not state.evaluate({"B:long": -6})["feasible"]
+    assert not state.evaluate({"D:long": -1e-12})["feasible"]
+
+
+def test_spread_and_cost_are_not_charged_again_to_retained_shares():
+    frame = coefficients(phase1_rows(), .99, .1)
+    long = frame.filter(pl.col("side") == "long").row(0, named=True)
+    assert long["entry_price"] == pytest.approx(11.1)
+    assert long["close_price"] == pytest.approx(9.9)
+    assert long["open_profit_per_share"] == pytest.approx(4.8)
+    assert long["hold_profit_per_share"] == pytest.approx(6)
+    assert long["discount"] == pytest.approx(.99**3.5)
+    short = frame.filter(pl.col("side") == "short").row(0, named=True)
+    assert short["open_profit_per_share"] == pytest.approx(2.8)
+    assert short["hold_profit_per_share"] == pytest.approx(4)
+    state = ActionTable([long], [Position("B", "long", .5, 8, 8)], mode="long")
+    result = state.evaluate({"B:long": -.5})
+    assert result["realized_pnl_now"] == pytest.approx(.95)
+    assert result["discounted_future_value"] == 0
+    assert result["cash_after"] == pytest.approx(state.cash + .5*9.9)
+
+
+def test_short_release_locks_sale_proceeds_and_no_double_count():
+    rows = [illustrative_row("S", 10, 3, 4, .99, "short")]
+    state = ActionTable(rows, [], mode="short")
+    opened = state.evaluate({"S:short": 1})
+    assert opened["cash_after"] == 0
+    assert not state.evaluate({"S:short": 2})["feasible"]
+    rows[0]["close_price"] = 8
+    held = ActionTable(rows, [Position("S", "short", 1, 10, 10)], mode="short")
+    closed = held.evaluate({"S:short": -1})
+    assert closed["cash_after"] == 12
+    assert closed["realized_pnl_now"] == 2
+
+
+def test_three_modes_and_reversal_require_close_of_other_side():
+    rows = [illustrative_row("B", 10, 3, 4, .99, side) for side in ("long", "short")]
+    for mode, keys in [("long", {"B:long"}), ("short", {"B:short"}), ("long_short", {"B:long", "B:short"})]:
+        assert set(ActionTable(rows, [], mode=mode).rows) == keys
+    state = ActionTable(rows, [Position("B", "long", 1, 10, 10)])
+    assert state.evaluate({"B:long": -1, "B:short": 1})["feasible"]
+    assert not state.evaluate({"B:long": -.5, "B:short": .5})["feasible"]
+
+
+def test_missing_labels_never_turn_into_zero_or_change_budget():
+    frame = phase1_rows().with_columns(pl.lit("target_quote_unavailable").alias("long_status"))
+    values = coefficients(frame)
+    row = values.filter(pl.col("side") == "long").row(0, named=True)
+    assert row["can_open"] and not row["value_available"]
+    state = ActionTable([row], [Position("B", "long", 1, 11, 11)], mode="long")
+    assert state.budget == 11
+    assert state.evaluate({})["value_status"] == "unavailable"
+    exited = state.evaluate({"B:long": -1})
+    assert exited["discounted_future_value"] == 0 and exited["delta_vs_hold"] is None
+    policy = flat_policy(summarize(values, "long"))
+    assert policy["chosen_action"].null_count() == policy.height
+
+
+def test_merged_market_table_matches_direct_all_listing_reduction_and_ties():
+    a = coefficients(phase1_rows())
+    b = a.with_columns(pl.lit("A").alias("ticker"), pl.lit("listing:A").alias("listing_id"))
+    for mode in ("long", "short", "long_short"):
+        merged = merge_summary(summarize(a, mode), summarize(b, mode))
+        direct = summarize(pl.concat([a, b]), mode)
+        assert merged.to_dicts() == direct.to_dicts()
+        assert all(key.startswith("A:") for key in merged["best_key"])
+
+
+def test_all_negative_chooses_wait_and_unknown_does_not_get_ranked():
+    values = coefficients(phase1_rows()).with_columns(pl.lit(-1.).alias("open_value_per_dollar"))
+    policy = flat_policy(summarize(values, "long_short"))
+    assert policy["chosen_action"].to_list() == ["wait"]*3
+    assert policy["discounted_value"].to_list() == [0.]*3
+
+
+@pytest.mark.parametrize("gamma,cost", [(0, 0), (1.1, 0), (float("nan"), 0), (.99, -1), (.99, float("inf"))])
+def test_bad_parameters_fail(gamma, cost):
+    with pytest.raises(ValueError):
+        coefficients(phase1_rows(), gamma, cost)
+
+
+def test_integrity_fails_and_no_missing_completion_fallback(tmp_path):
+    (tmp_path/"file").write_text("bad")
+    with pytest.raises(ValueError, match="integrity"):
+        verify_files(tmp_path, {"file": "wrong"})
+    with pytest.raises(FileNotFoundError):
+        phase1_plan(tmp_path)
+
+
+def test_narrow_plain_terminal_shows_action_sizes_and_value_units():
+    state = bd()
+    report = dict(state=state.describe(), actions=[dict(name="Add B", changes={"B:long": .5},
+                                                       result=state.evaluate({"B:long": .5}))])
+    out = StringIO()
+    Console(file=out, width=80, color_system=None).print(report_table(report))
+    assert "Share changes" in out.getvalue() and "+0.5" in out.getvalue() and "32.0199" in out.getvalue()
+    assert "\x1b[" not in out.getvalue()
+
+
+def test_runnable_builder_resume_stop_and_corrupt_source(tmp_path, monkeypatch):
+    from datetime import date
+    from scripts.build_hindsight_greedy import main, file_hash
+    from src.market_engine.hindsight_phase1 import bounds, digest
+    from src.market_engine.level_book_store import write, read
+    monkeypatch.setenv("QW_RUNTIME_ROOT", str(tmp_path))
+    source = tmp_path / "source"
+    listing = dict(ticker="B", listing_id="listing:B")
+    plan = dict(version="hindsight-phase1-macd-v1", date="2026-08-21",
+                selected=[listing], scope="explicit_canary")
+    plan["plan_hash"] = digest(plan)
+    write(source/"plan.json", plan)
+    write(source/"complete.json", dict(plan_hash=plan["plan_hash"], listing_count=1, rows=57601))
+    folder = source/"listings"/digest(listing)[:20]
+    folder.mkdir(parents=True)
+    left, right = bounds(date(2026, 8, 21))
+    base = phase1_rows().head(1).drop("time_us")
+    frame = pl.DataFrame({"time_us": range(left, right+1, 1_000_000)}).join(base, how="cross")
+    for side in ("long", "short"):
+        frame = frame.with_columns(
+            pl.lit(left+3_500_000).alias(side+"_target_us"),
+            pl.lit(left+5_000_000).alias(side+"_available_us"),
+            ((left+3_500_000-pl.col("time_us"))/1e6).alias(side+"_hold_seconds"),
+            pl.when(pl.col("time_us") < left+3_500_000).then(pl.lit("available"))
+            .otherwise(pl.lit("no_future_macd_target")).alias(side+"_status"))
+    frame.write_parquet(folder/"opportunities.parquet")
+    write(folder/"ready.json", dict(plan_hash=plan["plan_hash"], listing=listing, rows=57601,
+                                    files={"opportunities.parquet": file_hash(folder/"opportunities.parquet")}))
+    args = ["build", "--phase1", str(source)]
+    assert main(args) == 0
+    output = next((tmp_path/"hindsight-greedy"/"2026-08-21").iterdir())
+    assert main(args) == 0
+    assert read(output/"summary.json")["counts"] == dict(completed=0, reused=1, failed=0)
+    (output/"STOP").touch()
+    assert main(args) == 2 and not (output/"complete.json").exists()
+    assert read(output/"summary.json")["status"] == "interrupted"
+    (output/"STOP").unlink()
+    assert main(args) == 0
+    with (folder/"opportunities.parquet").open("ab") as stream:
+        stream.write(b"corrupt")
+    assert main(args) == 2 and not (output/"complete.json").exists()
+    assert read(output/"summary.json")["counts"]["failed"] == 1
