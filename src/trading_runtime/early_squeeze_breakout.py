@@ -51,6 +51,7 @@ def record_exit(state, at, role, remaining, *, contract=CONTRACT):
     stopped = role in ('protective_stop', 'trailing_stop', 'protective_exit') or (
         role == 'managed_exit' and state.get('last_exit_reason') == 'protective_stop')
     d = state.setdefault('squeeze_breakout', {})
+    d.pop('initial_breakout', None)
     if stopped and active.get('first_fill_at') and active.get('peak_close'):
         active.setdefault('stopout_reference', dict(high=active['peak_close'], anchor=deepcopy(active['anchor']),
                              breakout_at=active['breakout_at'], stopped_at=at.timestamp()))
@@ -171,6 +172,10 @@ def evaluate(host, a, o, p, old_state):
             for key, _ in crossed:
                 if key not in broken:
                     broken.append(key)
+                if aligned and held and active:
+                    lifecycle = active.setdefault('broken_levels', [])
+                    if key not in lifecycle:
+                        lifecycle.append(key)
             # Retain witnessed resistance geometry across role flips.
             known = deepcopy(prior_rows)
             known.update({k:r for k,r in current_rows.items()
@@ -186,6 +191,23 @@ def evaluate(host, a, o, p, old_state):
         d.update(close=o.price, closed_at=now, last_open=o.bar_open)
         if active and (held or a.status == Status.ENTRY_PENDING) and not active.get('stopout_reference'):
             active['peak_close'] = max(active.get('peak_close', o.price), o.price)
+        if (aligned and not held and a.status != Status.ENTRY_PENDING and not d.get('recovery')
+                and filtered and structure_fresh and now >= d.get('activated_at', float('inf'))):
+            # Remember a causal R1 cross before liquidity/VWAP/close-location
+            # gates, so a later qualifying green candle can confirm it.
+            setup = d.get('initial_breakout')
+            if setup and o.price <= (setup['anchor']['lower']+setup['anchor']['upper'])/2:
+                d.pop('initial_breakout', None)
+                setup = None
+            if not setup:
+                candidates = [r for r in prior_resistance.values() if prior_hod and r['upper'] < prior_hod
+                              and r['confirmed_at_ms']/1000 <= now-1]
+                anchor = max(candidates, key=lambda r:(r['upper'],r['unified_level_id']), default=None)
+                if anchor and previous_close is not None and previous_close <= (anchor['lower']+anchor['upper'])/2 < o.price:
+                    setup = dict(anchor=deepcopy(anchor), breakout_at=now, peak_close=o.price)
+                    d['initial_breakout'] = setup
+            if setup:
+                setup['peak_close'] = max(setup['peak_close'], o.price)
     evidence = dict(contract=p['early_squeeze_breakout_contract'], activation=deepcopy({k:v for k,v in d.items()
         if k in ('activated_at', 'activation_event_id')}), filtered_v7=filtered)
 
@@ -248,14 +270,16 @@ def evaluate(host, a, o, p, old_state):
                 if o.price <= pending[key]['upper']:
                     pending.pop(key)  # A future fresh green recross can renew it.
             overhead = overhead_levels(d,o.ask,tick,p['early_squeeze_breakout_contract'])
-            count = len(d.get('broken', []))
+            count = len(active.get('broken_levels', [])) if aligned else len(d.get('broken', []))
             distance = 1 if count >= 6 else 2 if count >= 4 else 3
             if len(overhead) >= distance and (aligned or (crossed and (not active['late'] or active['target_moves'] < 2))):
                 proposal = target_price(overhead[distance-1],tick,p['early_squeeze_breakout_contract'])
                 if proposal > max(target, o.ask):
                     pending_target = active.get('pending_target', {})
                     if proposal > pending_target.get('price', 0):
-                        active['pending_target'] = dict(price=proposal, moves=active['target_moves']+1)
+                        active['pending_target'] = dict(price=proposal, moves=active['target_moves']+1,
+                            selection=dict(level=deepcopy(overhead[distance-1]), price=proposal, ordinal=distance),
+                            break_count=count)
             pending_target = active.get('pending_target', {})
             if quote and pending_target.get('price', 0) > max(target, o.ask):
                 proposal = pending_target['price']
@@ -264,7 +288,9 @@ def evaluate(host, a, o, p, old_state):
                 active['target_moves'] = pending_target['moves']
                 results.append(emit('replace_profit_target', 'resistance_target_advance', Status.MANAGING,
                     quantity=o.position_quantity, profit_target_price=proposal,
-                    metadata=dict(previous_profit_target=target, squeeze_previous_target_moves=previous_moves)))
+                    metadata=dict(previous_profit_target=target, squeeze_previous_target_moves=previous_moves,
+                                  position_resistance_breaks=pending_target.get('break_count', count),
+                                  profit_target_selection=deepcopy(pending_target.get('selection', {})))))
                 target = proposal
             if green and pending and quote and a.permissions.add and active.get('slice_notional', 0) > 0 and stop < o.bid <= o.ask < target:
                 keys = sorted(pending)
@@ -326,13 +352,16 @@ def evaluate(host, a, o, p, old_state):
         candidates = [r for r in prior_resistance.values() if prior_hod and r['upper'] < prior_hod
                       and r['confirmed_at_ms']/1000 <= now-1]
         anchor = max(candidates, key=lambda r:(r['upper'], r['unified_level_id']), default=None)
-        if not anchor or previous_close is None or not previous_close <= (anchor['lower']+anchor['upper'])/2 < o.price:
+        setup = d.get('initial_breakout') if aligned else None
+        if aligned:
+            anchor = setup['anchor'] if setup else None
+        if not anchor or (not aligned and (previous_close is None or not previous_close <= (anchor['lower']+anchor['upper'])/2 < o.price)):
             return emit('wait', 'waiting_for_fresh_r1_midpoint_break')
         if o.bar_high <= o.bar_low or o.price < o.bar_low+.75*(o.bar_high-o.bar_low):
             return emit('wait', 'initial_close_not_top_quarter')
         stop = below(anchor['lower'], o.bid, tick)
         stop_source = 'broken_resistance_lower'
-    count = len(d.get('broken', []))
+    count = 0 if aligned else len(d.get('broken', []))
     distance = 1 if count >= 6 else 2 if count >= 4 else 3
     overhead = overhead_levels(d,o.ask,tick,p['early_squeeze_breakout_contract'],anchor['unified_level_id'])
     if len(overhead) < distance:
@@ -343,8 +372,10 @@ def evaluate(host, a, o, p, old_state):
     for key in ('liquidation_origin_fill_role', 'liquidation_origin_reentry_after_fill',
                 'profit_target_liquidation_required', 'target_replenishment_pending', 'last_exit_reason'):
         state.pop(key, None)
-    state.update(squeeze_entry=dict(anchor=deepcopy(anchor), breakout_at=recovery['breakout_at'] if recovery else now,
-        peak_close=o.price, entry_price=o.ask, requested_at=now, added_levels=[], pending_adds={},
+    setup = d.get('initial_breakout') if aligned and not recovery else None
+    state.update(squeeze_entry=dict(anchor=deepcopy(anchor), breakout_at=recovery['breakout_at'] if recovery else setup['breakout_at'] if setup else now,
+        peak_close=max(o.price, setup['peak_close']) if setup else o.price,
+        entry_price=o.ask, requested_at=now, added_levels=[], pending_adds={}, broken_levels=[],
         late=count>=6, target_moves=0), initial_stop=stop, active_stop=stop, structural_profit_targets=[target],
         entry_reference_price=o.ask, entry_at=o.observed_at.isoformat(), entries=state.get('entries', 0)+1,
         entry_acquisition_exit_latched=False)
@@ -352,7 +383,8 @@ def evaluate(host, a, o, p, old_state):
         invalidation_price=stop, profit_target_price=target,
         capital_request=CapitalRequest(mode='mandate_fraction', value=1./3),
         metadata=dict(unreserved_cash_slice=True, entry_selection=deepcopy(anchor), stop_source=stop_source,
-            frozen_reentry_high=recovery['high'] if recovery else None, session_resistance_breaks=count,
+            frozen_reentry_high=recovery['high'] if recovery else None,
+            **({'position_resistance_breaks':count} if aligned else {'session_resistance_breaks':count}),
             profit_target_selection=dict(level=deepcopy(overhead[distance-1]), price=target, ordinal=distance),
             unified_structural_trigger={'current_snapshot':{'levels':[dict(anchor,
                 entry_boundary=recovery['high'] if recovery else (anchor['lower']+anchor['upper'])/2)],

@@ -6,16 +6,19 @@ from src.trading_runtime.early_squeeze_breakout import CONTRACT
 from src.trading_runtime.structural_recovery import CONTRACT as DATA_CONTRACT, DEFAULTS
 
 PROFILE_ID = CONTRACT
-LABEL = 'Early Squeeze / session resistance targets / fixed-distance trail v5'
+LABEL = 'Early Squeeze / lifecycle resistance targets / fixed-distance trail v5'
 BASELINE_ID = 'fc03b276-7584-4772-a50f-51424f9bfea3'
 BASELINE_HASH = '85dff0666442f78d63dee8972d6c1e11a5599eb78316727a128fc829636d5bd6'
 DESCRIPTION = (
     'Watch from the first available Early Squeeze occurrence only, including single-ticker runs. '
-    'Filtered V7 seed and causal completed-candle levels; green completed 1s R1 midpoint crossover '
-    'above VWAP with close in its top quarter. Buy one third of eligible cash; each new green '
+    'Filtered V7 seed and causal completed-candle levels; after an R1 midpoint crossover, a later '
+    'completed green 1s candle may confirm above that midpoint and VWAP with close in its top quarter. '
+    'A close back at or below the midpoint resets the setup. Buy one third of eligible cash; each new green '
     '1s resistance break adds the original cash tranche without MACD or close-location gates. '
-    'Full-position targets select the third current overhead resistance before four session breaks, '
-    'the second at four or five, and the first at six or more. Reevaluate each completed 1s level update; '
+    'Full-position targets select the third current overhead resistance before four position-lifecycle breaks, '
+    'the second at four or five, and the first at six or more. Count distinct broken resistances only while '
+    'holding; each new position, including reentry, starts at zero and selects the third overhead resistance. '
+    'Reevaluate each completed 1s level update; '
     'targets advance upward without an advance-count cap. Target price is the selected midpoint; '
     '2.5% spread cap. Initial stop one tick '
     'below broken resistance lower edge; real-time bid-high trailing preserves the initial filled '

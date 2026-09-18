@@ -91,13 +91,57 @@ def test_v1_keeps_its_original_vwap_lookup():
 
 @pytest.mark.parametrize('count,ordinal,price',[(0,3,11.01),(3,3,11.01),(4,2,10.81),(5,2,10.81),(6,1,10.61),(10,1,10.61)])
 def test_target_table_uses_selected_overhead_midpoint(count,ordinal,price):
-    host,a,obs=fixture();a=advance(a,host.evaluate(a,obs()))
-    a.state['squeeze_breakout']['broken']=[f'prior-{i}' for i in range(count)]
-    result=host.evaluate(a,obs(1,10.42));intent=result.evaluation.intents[0]
+    host,a,obs=entered()
+    a.state['squeeze_entry']['broken_levels']=[f'held-{i}' for i in range(count)]
+    a.state['structural_profit_targets']=[10.5]
+    result=host.evaluate(a,obs(2,10.42,100))
+    intent=next(i for i in result.evaluation.intents if i.action=='replace_profit_target')
     selection=intent.metadata['profit_target_selection']
     assert selection['ordinal']==ordinal
     assert intent.profit_target_price==pytest.approx(price)
     assert selection['level']['lower'] < price < selection['level']['upper']
+
+
+def test_new_position_ignores_session_breaks_and_reentry_resets_count():
+    host,a,obs=fixture();a=advance(a,host.evaluate(a,obs()))
+    a.state['squeeze_breakout']['broken']=[f'prior-{i}' for i in range(20)]
+    r=host.evaluate(a,obs(1,10.42));a=advance(a,r)
+    assert r.evaluation.intents[0].metadata['profit_target_selection']['ordinal']==3
+    a.state['squeeze_entry'].update(first_fill_at=NOW.timestamp()+1,broken_levels=['one','two','three','four','five','six'])
+    E.record_exit(a.state,NOW+timedelta(seconds=2),'protective_stop',0.)
+    r=host.evaluate(replace(a,status=S.AssignmentStatus.REENTRY_COOLDOWN),obs(3,10.6))
+    assert r.evaluation.intents[0].metadata['profit_target_selection']['ordinal']==3
+    assert r.state['squeeze_entry']['broken_levels']==[]
+
+
+@pytest.mark.parametrize('failure',['weak','vwap','liquidity','red'])
+def test_later_green_confirmation_preserves_original_breakout(failure):
+    host,a,obs=fixture();a=advance(a,host.evaluate(a,obs()))
+    o=obs(1,10.5,high=11. if failure=='weak' else 10.51,
+          open_price=10.505 if failure=='red' else 10.45)
+    if failure=='vwap':o.source_values['indicator.vwap.execution_value@1s']['value']=11.
+    if failure=='liquidity':o=replace(o,bid=10.,ask=11.)
+    r=host.evaluate(a,o);assert not r.evaluation.intents
+    a=advance(a,r)
+    # Original band may have changed role; the observed breakout is retained.
+    o=obs(2,10.48)
+    o=replace(o,structural_resistance_levels=tuple(r for r in o.structural_resistance_levels if r['lower']>10.5))
+    r=host.evaluate(a,o)
+    assert r.evaluation.intents[0].action=='enter_long'
+    assert r.state['squeeze_entry']['breakout_at']==NOW.timestamp()+1
+    assert r.state['squeeze_entry']['peak_close']==10.5
+
+
+def test_failed_breakout_requires_new_cross_and_old_contract_keeps_same_candle_rule():
+    for contract in (E.CONTRACT,E.MIDPOINT_CONTRACT):
+        host,a,obs=fixture();a=replace(a,parameters={**a.parameters,'early_squeeze_breakout_contract':contract})
+        a=advance(a,host.evaluate(a,obs()))
+        a=advance(a,host.evaluate(a,obs(1,10.5,high=11.)))
+        if contract==E.CONTRACT:
+            a=advance(a,host.evaluate(a,obs(2,10.4)))
+            assert 'initial_breakout' not in a.state['squeeze_breakout']
+        else:
+            assert not host.evaluate(a,obs(2,10.51)).evaluation.intents
 
 
 def test_midpoint_target_ignores_stale_roles_and_band_whose_midpoint_is_below_ask():
@@ -162,6 +206,7 @@ def test_original_resistance_can_add_after_midpoint_entry():
 def test_targets_follow_updated_levels_on_red_candle_without_advance_cap():
     host,a,obs=entered()
     a.state['squeeze_entry'].update(late=True,target_moves=2)
+    a.state['squeeze_entry']['broken_levels']=[f'held-{n}' for n in range(6)]
     a.state['squeeze_breakout']['broken']=[f'old-{n}' for n in range(6)]
     o=obs(2,10.44,100,open_price=10.45,high=10.46)
     o=replace(o,structural_resistance_levels=tuple(r for r in o.structural_resistance_levels if r['lower']>=11.2))
