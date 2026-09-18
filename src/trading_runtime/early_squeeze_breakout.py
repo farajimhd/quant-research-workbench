@@ -13,12 +13,13 @@ from .signals import CapitalRequest
 
 LEGACY_CONTRACT = 'early-squeeze-r1-fixed-trail-v1'
 VWAP_CONTRACT = 'early-squeeze-r1-fixed-trail-v2'
-CONTRACT = 'early-squeeze-r1-fixed-trail-v3'
+RECOVERY_CONTRACT = 'early-squeeze-r1-fixed-trail-v3'
+CONTRACT = 'early-squeeze-r1-fixed-trail-v4'
 SIGNAL = 'signal.activation.price-squeeze-early'
 
 
 def configure(p):
-    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, CONTRACT):
+    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, CONTRACT):
         raise ValueError('Early Squeeze breakout requires its versioned filtered V7 adapter')
     foreign = [k for k,v in p.items() if k.endswith('_contract') and v
                and k not in ('early_squeeze_breakout_contract', 'structural_recovery_contract')]
@@ -42,7 +43,7 @@ def below(anchor, bid, tick):
 def record_exit(state, at, role, remaining, *, contract=CONTRACT):
     """Only actual exit fills can authorize stop-out recovery."""
     active = state.get('squeeze_entry') or {}
-    if contract == CONTRACT and not active.get('first_fill_at'):
+    if contract in (RECOVERY_CONTRACT, CONTRACT) and not active.get('first_fill_at'):
         # Multiple child fills may each report an already-flat aggregate.
         # The first completed lifecycle owns its frozen recovery reference.
         return
@@ -94,6 +95,24 @@ def observe_context(o, previous):
     known.update(resistance)
     return dict(session=session, closed_at=now, close=o.price, hod=o.structural_session_high,
                 levels=known, resistance=resistance, broken=broken, previous=prior)
+
+
+def target_price(level, tick, contract):
+    if contract == CONTRACT:
+        # A sell limit uses the nearest valid tick to the band midpoint.
+        return round(floor(((level['lower']+level['upper'])/2)/tick+.5+1e-9)*tick, 10)
+    return round((floor(level['upper']/tick+1e-9)+1)*tick, 10)
+
+
+def overhead_levels(market, ask, tick, contract, exclude=''):
+    if contract == CONTRACT:
+        # A band containing the ask is not overhead when its midpoint is
+        # already below the executable entry. Use current resistance roles.
+        return sorted((r for k,r in market.get('resistance', {}).items()
+            if k != exclude and (r['lower']+r['upper'])/2 > ask
+            and target_price(r,tick,contract) > ask), key=lambda r:((r['lower']+r['upper'])/2,r['unified_level_id']))
+    return sorted((r for k,r in market.get('levels', {}).items()
+        if k not in market.get('broken', []) and k != exclude and r['upper'] > ask), key=lambda r:r['lower'])
 
 
 def evaluate(host, a, o, p, old_state):
@@ -226,12 +245,11 @@ def evaluate(host, a, o, p, old_state):
             for key in list(pending):
                 if o.price <= pending[key]['upper']:
                     pending.pop(key)  # A future fresh green recross can renew it.
-            overhead = sorted((r for k,r in d.get('levels', {}).items()
-                               if k not in d.get('broken', []) and r['upper'] > o.ask), key=lambda r:r['lower'])
+            overhead = overhead_levels(d,o.ask,tick,p['early_squeeze_breakout_contract'])
             count = len(d.get('broken', []))
             distance = 1 if count >= 6 else 2 if count >= 4 else 3
             if crossed and len(overhead) >= distance and (not active['late'] or active['target_moves'] < 2):
-                proposal = round((floor(overhead[distance-1]['upper']/tick+1e-9)+1)*tick, 10)
+                proposal = target_price(overhead[distance-1],tick,p['early_squeeze_breakout_contract'])
                 if proposal > max(target, o.ask):
                     pending_target = active.get('pending_target', {})
                     if proposal > pending_target.get('price', 0):
@@ -294,7 +312,7 @@ def evaluate(host, a, o, p, old_state):
         if now <= recovery['stopped_at'] or o.price <= recovery['high']:
             return emit('wait', 'waiting_for_frozen_close_high')
         anchor = recovery['anchor']
-        swing = H.initial_swing_low(row, dict(lower=float('inf') if p['early_squeeze_breakout_contract'] == CONTRACT else o.bid),
+        swing = H.initial_swing_low(row, dict(lower=float('inf') if p['early_squeeze_breakout_contract'] in (RECOVERY_CONTRACT, CONTRACT) else o.bid),
                                    now, pivot_not_before=recovery['breakout_at'],
                                    eligible=lambda s:s['lower'] > anchor['upper'])
         stop_anchor = swing['lower'] if swing else o.bar_open
@@ -312,11 +330,10 @@ def evaluate(host, a, o, p, old_state):
         stop_source = 'broken_resistance_lower'
     count = len(d.get('broken', []))
     distance = 1 if count >= 6 else 2 if count >= 4 else 3
-    overhead = sorted((r for k,r in d.get('levels', {}).items() if k not in d.get('broken', [])
-                       and r['unified_level_id'] != anchor['unified_level_id'] and r['upper'] > o.ask), key=lambda r:r['lower'])
+    overhead = overhead_levels(d,o.ask,tick,p['early_squeeze_breakout_contract'],anchor['unified_level_id'])
     if len(overhead) < distance:
         return emit('wait', 'overhead_resistance_target_unavailable')
-    target = round((floor(overhead[distance-1]['upper']/tick+1e-9)+1)*tick, 10)
+    target = target_price(overhead[distance-1],tick,p['early_squeeze_breakout_contract'])
     if not 0 < stop < o.bid <= o.ask < target:
         return emit('wait', 'unrepresentable_stop_or_target')
     for key in ('liquidation_origin_fill_role', 'liquidation_origin_reentry_after_fill',

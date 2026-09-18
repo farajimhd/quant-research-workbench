@@ -6,7 +6,7 @@ from src.trading_runtime.early_squeeze_breakout import CONTRACT
 from src.trading_runtime.structural_recovery import CONTRACT as DATA_CONTRACT, DEFAULTS
 
 PROFILE_ID = CONTRACT
-LABEL = 'Early Squeeze / R1 midpoint / green-close adds / fixed-distance trail v3'
+LABEL = 'Early Squeeze / resistance midpoint targets / fixed-distance trail v4'
 BASELINE_ID = 'fc03b276-7584-4772-a50f-51424f9bfea3'
 BASELINE_HASH = '85dff0666442f78d63dee8972d6c1e11a5599eb78316727a128fc829636d5bd6'
 DESCRIPTION = (
@@ -14,12 +14,12 @@ DESCRIPTION = (
     'Filtered V7 seed and causal completed-candle levels; green completed 1s R1 midpoint crossover '
     'above VWAP with close in its top quarter. Buy one third of eligible cash; each new green '
     '1s overhead resistance break adds the original cash tranche without MACD or close-location gates. '
-    'Full-position 3/2/1 overhead-resistance targets with upward-only advances. Initial stop one tick '
+    'Full-position 3/2/1 overhead-resistance midpoint targets with upward-only advances; 2.5% spread cap. Initial stop one tick '
     'below broken resistance lower edge; real-time bid-high trailing preserves the initial filled '
     'entry-to-stop distance. After stop-out, green completed 1s close above the frozen post-break '
     'closing high reenters; stop below a confirmed swing above the resistance, otherwise below the '
     'last completed candle open, offset under current bid. No MACD, RVOL, impulse, pullback, ATR, '
-    'special midpoint target, or structural trailing trading rules.'
+    'special late-breakout target, or structural trailing trading rules.'
 )
 
 

@@ -217,7 +217,8 @@ def _rule_stage_timeframes(stage: dict[str, Any]) -> set[str]:
 
 def supported_custom_execution_contracts() -> tuple[str, ...]:
     """Loaded-executor capability, used before saving a new research candidate."""
-    return ('early-squeeze-r1-fixed-trail-v1', 'early-squeeze-r1-fixed-trail-v2', 'early-squeeze-r1-fixed-trail-v3')
+    return ('early-squeeze-r1-fixed-trail-v1', 'early-squeeze-r1-fixed-trail-v2',
+            'early-squeeze-r1-fixed-trail-v3', 'early-squeeze-r1-fixed-trail-v4')
 
 
 def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:

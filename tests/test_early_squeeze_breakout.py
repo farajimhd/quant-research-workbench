@@ -49,7 +49,7 @@ def test_midpoint_entry_without_macd_and_cash_thirds():
     host,a,obs=fixture();a=advance(a,host.evaluate(a,obs()))
     r=host.evaluate(a,obs(1,10.42));i=r.evaluation.intents[0]
     assert i.invalidation_price == pytest.approx(10.39)
-    assert i.profit_target_price == pytest.approx(11.03)
+    assert i.profit_target_price == pytest.approx(11.01)
     assert i.capital_request.value == pytest.approx(1/3)
     assert S.strategy_rule_timeframes(a.parameters)=={'100ms','1s'}
     assert i.metadata['activation']['activation_event_id']=='first'
@@ -87,6 +87,33 @@ def test_v1_keeps_its_original_vwap_lookup():
     r=host.evaluate(a,obs(1,10.42))
     assert not r.evaluation.intents
     assert r.evaluation.signals[0].metadata['contract']==E.LEGACY_CONTRACT
+
+
+@pytest.mark.parametrize('count,ordinal,price',[(0,3,11.01),(3,3,11.01),(4,2,10.81),(5,2,10.81),(6,1,10.61),(10,1,10.61)])
+def test_target_table_uses_selected_overhead_midpoint(count,ordinal,price):
+    host,a,obs=fixture();a=advance(a,host.evaluate(a,obs()))
+    a.state['squeeze_breakout']['broken']=[f'prior-{i}' for i in range(count)]
+    result=host.evaluate(a,obs(1,10.42));intent=result.evaluation.intents[0]
+    selection=intent.metadata['profit_target_selection']
+    assert selection['ordinal']==ordinal
+    assert intent.profit_target_price==pytest.approx(price)
+    assert selection['level']['lower'] < price < selection['level']['upper']
+
+
+def test_midpoint_target_ignores_stale_roles_and_band_whose_midpoint_is_below_ask():
+    def level(key,low,high):return dict(unified_level_id=key,lower=low,upper=high)
+    inside=level('inside',7.2,7.6);over=level('over',7.7,7.9);stale=level('stale',7.5,7.7)
+    market=dict(levels={r['unified_level_id']:r for r in (inside,over,stale)},
+                resistance={r['unified_level_id']:r for r in (inside,over)},broken=['over'])
+    assert E.overhead_levels(market,7.5,.01,E.CONTRACT)==[over]
+    assert E.target_price(over,.01,E.CONTRACT)==pytest.approx(7.8)
+
+
+def test_v3_preserves_above_band_target():
+    host,a,obs=fixture()
+    a=replace(a,parameters={**a.parameters,'early_squeeze_breakout_contract':E.RECOVERY_CONTRACT})
+    a=advance(a,host.evaluate(a,obs()))
+    assert host.evaluate(a,obs(1,10.42)).evaluation.intents[0].profit_target_price==pytest.approx(11.03)
 
 
 @pytest.mark.parametrize('failure',['no_signal','future_signal','previous_day','red','weak','unfiltered','stale_quote','below_vwap'])
@@ -337,7 +364,7 @@ def test_actual_simulated_broker_bracket_uses_only_explicit_stop_and_full_target
             stops=[x for x in orders if group.broker_order_roles.get(str(x.orderId))=='protective_stop']
             targets=[x for x in orders if group.broker_order_roles.get(str(x.orderId))=='profit_target']
             assert stops and all(x.auxPrice==pytest.approx(10.39) for x in stops)
-            assert targets and all(x.price==pytest.approx(11.03) for x in targets)
+            assert targets and all(x.price==pytest.approx(11.01) for x in targets)
             assert all(x.totalSize==100 for x in stops+targets)
         finally:
             await manager.close();journal.close()
