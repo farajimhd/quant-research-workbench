@@ -6,7 +6,7 @@ from src.trading_runtime.early_squeeze_breakout import CONTRACT
 from src.trading_runtime.structural_recovery import CONTRACT as DATA_CONTRACT, DEFAULTS
 
 PROFILE_ID = CONTRACT
-LABEL = 'Early Squeeze / R1 midpoint / green-close adds / fixed-distance trail v2'
+LABEL = 'Early Squeeze / R1 midpoint / green-close adds / fixed-distance trail v3'
 BASELINE_ID = 'fc03b276-7584-4772-a50f-51424f9bfea3'
 BASELINE_HASH = '85dff0666442f78d63dee8972d6c1e11a5599eb78316727a128fc829636d5bd6'
 DESCRIPTION = (
@@ -34,7 +34,8 @@ def build(base, baseline):
     profile.update(description=DESCRIPTION, derived_from_profile_id=source_profile['profile_id'])
     # Explicit allowlist: no inherited 317 entry, management or exit settings.
     liquidity = deepcopy(source_profile['parameters']['liquidity_admission'])
-    liquidity.update(minimum_price=.01, maximum_price=None)
+    liquidity.update(minimum_price=.01, maximum_price=None, maximum_admission_spread_bps=250.,
+                     maximum_current_spread_bps=250., maximum_spread_bps=250.)
     parameters = dict(early_squeeze_breakout_contract=CONTRACT,
         structural_recovery_contract=DATA_CONTRACT, structural_recovery=dict(DEFAULTS),
         structural_detector_settings={}, liquidity_admission=liquidity,
@@ -53,6 +54,7 @@ def build(base, baseline):
     lifecycle['initial_entry']['add_steps'] = []
     lifecycle['exit'] = {'rule_sets':[]}
     plan = next(p for p in payload['run_plans']['plans'] if p['run_plan_id'] == plan_id)
+    plan['action_authority'] = {**plan.get('action_authority', {}), 'add':'automatic'}
     plan.update(description=DESCRIPTION, signal_stream_ids=['price-squeeze-early'],
         # Include an earlier same-session signal when the requested run begins
         # later. Session-watch activation latches the first chronological event.

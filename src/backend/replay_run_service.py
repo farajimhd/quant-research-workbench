@@ -3940,7 +3940,9 @@ class ReplayRunController:
             source_values=dict(source_cache),
         )
         ticker_assignments = self._ticker_assignments(frame.ticker)
-        if any(a.parameters.get('hindsight_long_contract') for a in ticker_assignments):
+        if any(a.parameters.get('hindsight_long_contract') or
+               a.parameters.get('early_squeeze_breakout_contract') == 'early-squeeze-r1-fixed-trail-v3'
+               for a in ticker_assignments):
             # A bar projection is not a new quote. Retain the actual NBBO clock
             # so a trade-only interval cannot freshen an old executable price.
             base = replace(base, source_values={**base.source_values, 'market.spread_bps': {

@@ -12,6 +12,39 @@ from tests.test_early_squeeze_breakout import fixture, NOW
 from src.trading_runtime import early_squeeze_breakout as E
 
 
+def test_completed_frame_preserves_actual_quote_clock(tmp_path):
+    from src.backend.replay_run_service import ReplayDerivedFrame, _debug_market_events
+    from src.trading_runtime.journal import TradingJournal
+    async def run():
+        _,a,_=fixture()
+        assignment=dict(assignment_id=a.assignment_id,account_key='primary',ticker=a.ticker,
+            conid=a.conid,status='watching',parameters=a.parameters,
+            permissions=dict(observe=True,enter=True,add=True,reduce=True,exit=True,reenter=True))
+        controller=ReplayRunController(ReplayRunDefinition(session_date=NOW.date(),start_time=time(4),
+            tickers=(a.ticker,),configuration_revision=approved_configuration(assignments=[assignment])),runtime_root=tmp_path)
+        controller._journal=TradingJournal(tmp_path/'journal.sqlite3')
+        try:
+            await controller._initialize_runtime()
+            # This projection test supplies its own market frame and quote;
+            # structural history is covered by the separate V7 adapter test.
+            controller._experimental_structure_snapshot=AsyncMock(return_value={'unified_levels':[]})
+            controller._runtime.process_account_strategy_observation=AsyncMock()
+            controller._stream_tickers=(a.ticker,)
+            controller._quotes[a.ticker]=_debug_market_events((dict(kind='quote',ticker=a.ticker,
+                ts=NOW.isoformat(),bid_price=10.4,ask_price=10.42),))[0]
+            frame=ReplayDerivedFrame(as_of=NOW+timedelta(seconds=3),ticker=a.ticker,timeframe='1s',sequence=1,
+                bar=dict(open=10.3,high=10.5,low=10.2,close=10.42,volume=1000),indicator={'execution_vwap':9.})
+            await controller._process_strategy_frame(frame)
+            o=controller._runtime.process_account_strategy_observation.await_args.args[0]
+            assert o.source_values['market.spread_bps']['observed_at']==NOW.isoformat()
+            assert not E.V.fresh_quote(o)
+        finally:
+            if controller._runtime:
+                await controller._runtime.order_manager.close()
+            controller._journal.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('single_ticker',[False,True])
 @pytest.mark.parametrize('start_hour',[4,9])
 def test_first_occurrence_availability_is_identical_for_named_and_session_runs(tmp_path,single_ticker,start_hour):

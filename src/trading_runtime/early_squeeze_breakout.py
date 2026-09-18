@@ -12,12 +12,13 @@ from . import historical_hod as H, vwap_resistance_ladder as V
 from .signals import CapitalRequest
 
 LEGACY_CONTRACT = 'early-squeeze-r1-fixed-trail-v1'
-CONTRACT = 'early-squeeze-r1-fixed-trail-v2'
+VWAP_CONTRACT = 'early-squeeze-r1-fixed-trail-v2'
+CONTRACT = 'early-squeeze-r1-fixed-trail-v3'
 SIGNAL = 'signal.activation.price-squeeze-early'
 
 
 def configure(p):
-    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, CONTRACT):
+    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, CONTRACT):
         raise ValueError('Early Squeeze breakout requires its versioned filtered V7 adapter')
     foreign = [k for k,v in p.items() if k.endswith('_contract') and v
                and k not in ('early_squeeze_breakout_contract', 'structural_recovery_contract')]
@@ -38,9 +39,13 @@ def below(anchor, bid, tick):
     return round(floor((min(anchor, bid)-tick)/tick+1e-9)*tick, 10)
 
 
-def record_exit(state, at, role, remaining):
+def record_exit(state, at, role, remaining, *, contract=CONTRACT):
     """Only actual exit fills can authorize stop-out recovery."""
     active = state.get('squeeze_entry') or {}
+    if contract == CONTRACT and not active.get('first_fill_at'):
+        # Multiple child fills may each report an already-flat aggregate.
+        # The first completed lifecycle owns its frozen recovery reference.
+        return
     stopped = role in ('protective_stop', 'trailing_stop', 'protective_exit') or (
         role == 'managed_exit' and state.get('last_exit_reason') == 'protective_stop')
     d = state.setdefault('squeeze_breakout', {})
@@ -274,11 +279,11 @@ def evaluate(host, a, o, p, old_state):
     evidence['liquidity_admission'] = quality
     if not ready:
         return emit('wait', 'liquidity_or_spread_gate')
-    vwap_key = ('indicator.vwap.execution_value@1s' if p['early_squeeze_breakout_contract'] == CONTRACT
+    vwap_key = ('indicator.vwap.execution_value@1s' if p['early_squeeze_breakout_contract'] != LEGACY_CONTRACT
                 else 'indicator.vwap.execution_value')
     vwap_source = o.source_values.get(vwap_key, {})
     vwap_at = stamp(vwap_source.get('observed_at'))
-    vwap = vwap_source.get('value') if p['early_squeeze_breakout_contract'] == CONTRACT else o.execution_vwap
+    vwap = vwap_source.get('value') if p['early_squeeze_breakout_contract'] != LEGACY_CONTRACT else o.execution_vwap
     evidence['vwap_gate'] = dict(source_id=vwap_key, observed_at=vwap_source.get('observed_at'),
                                  value=vwap, close=o.price)
     if (not vwap_at or not 0 <= (o.observed_at-vwap_at).total_seconds() <= 2
@@ -289,7 +294,8 @@ def evaluate(host, a, o, p, old_state):
         if now <= recovery['stopped_at'] or o.price <= recovery['high']:
             return emit('wait', 'waiting_for_frozen_close_high')
         anchor = recovery['anchor']
-        swing = H.initial_swing_low(row, dict(lower=o.bid), now, pivot_not_before=recovery['breakout_at'],
+        swing = H.initial_swing_low(row, dict(lower=float('inf') if p['early_squeeze_breakout_contract'] == CONTRACT else o.bid),
+                                   now, pivot_not_before=recovery['breakout_at'],
                                    eligible=lambda s:s['lower'] > anchor['upper'])
         stop_anchor = swing['lower'] if swing else o.bar_open
         stop = below(stop_anchor, o.bid, tick)

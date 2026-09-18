@@ -226,6 +226,54 @@ def test_fill_callback_creates_frozen_reentry_and_capital_callback_funds_own_sli
     updated=adapter._assignments[key]
     assert updated.state['squeeze_breakout']['recovery']['high']==10.42
     assert updated.status==S.AssignmentStatus.REENTRY_COOLDOWN
+    # Two protective children can each report a flat aggregate in the same
+    # broker event. The second fill must not erase the completed stop-out.
+    asyncio.run(adapter.on_order_group_update(snapshot,aggregate_position_quantity=0.))
+    again=adapter._assignments[key]
+    assert again.state['squeeze_breakout']['recovery']==updated.state['squeeze_breakout']['recovery']
+    reentry=host.evaluate(again,obs(3,10.6))
+    assert reentry.evaluation.intents[0].metadata['reason_code']=='stopout_close_high_reentry'
+
+
+@pytest.mark.parametrize('spread,allowed',[(249.,True),(251.,False)])
+def test_two_point_five_percent_spread_boundary(spread,allowed):
+    host,a,obs=fixture()
+    a.parameters['liquidity_admission'].update(maximum_current_spread_bps=250.,
+        maximum_admission_spread_bps=250.,maximum_spread_bps=250.)
+    a=advance(a,host.evaluate(a,obs()))
+    o=obs(1,10.42);half=o.price*spread/20000
+    r=host.evaluate(a,replace(o,bid=o.price-half,ask=o.price+half))
+    assert bool(r.evaluation.intents)==allowed
+
+
+def test_duplicate_flat_fills_do_not_erase_recovery_during_unfilled_retry():
+    _,a,_=entered()
+    E.record_exit(a.state,NOW,'protective_stop',0.)
+    frozen=deepcopy(a.state['squeeze_breakout']['recovery'])
+    a.state['squeeze_entry']={'requested_at':NOW.timestamp()+1}
+    E.record_exit(a.state,NOW,'protective_stop',0.)
+    assert a.state['squeeze_breakout']['recovery']==frozen
+
+
+def test_v2_keeps_historical_flat_callback_behavior():
+    _,a,_=entered()
+    E.record_exit(a.state,NOW,'protective_stop',0.,contract=E.VWAP_CONTRACT)
+    E.record_exit(a.state,NOW,'protective_stop',0.,contract=E.VWAP_CONTRACT)
+    assert 'recovery' not in a.state['squeeze_breakout']
+
+
+def test_reentry_offsets_confirmed_swing_anchor_above_bid_without_discarding_it():
+    host,a,obs=entered()
+    E.record_exit(a.state,NOW+timedelta(seconds=2),'protective_stop',0.)
+    a=replace(a,status=S.AssignmentStatus.REENTRY_COOLDOWN)
+    o=obs(4,10.8,open_price=10.75)
+    swing=dict(side=1,state='active',lower=10.9,price=10.91,upper=10.92,
+               pivot_at=NOW.timestamp()+2,confirmed_at=NOW.timestamp()+3)
+    o=replace(o,structural_detector_state={'row':{**o.structural_detector_state['row'],'local_swings':[swing]}})
+    result=host.evaluate(a,o)
+    intent=result.evaluation.intents[0]
+    assert intent.metadata['stop_source']=='confirmed_swing_above_resistance'
+    assert intent.invalidation_price==pytest.approx(E.below(swing['lower'],o.bid,.01))
 
 
 def test_rejected_add_is_not_consumed_and_retry_has_no_macd_or_top_quarter_gate():

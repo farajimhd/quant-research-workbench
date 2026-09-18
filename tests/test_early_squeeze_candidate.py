@@ -28,6 +28,8 @@ def test_compiled_candidate_has_only_agreed_contract_and_occurrence_population()
     assert sorted(k for k in p if k.endswith('_contract'))==['early_squeeze_breakout_contract','structural_recovery_contract']
     assert not any(k in p for k in ('vwap_ladder','episode_management','historical_hod','momentum_management','profit_pocket'))
     assert p['liquidity_admission']['maximum_price'] is None
+    for key in ('maximum_current_spread_bps','maximum_admission_spread_bps','maximum_spread_bps'):
+        assert p['liquidity_admission'][key]==250.
     assert strategy_rule_timeframes(p)=={'100ms','1s'}
     assert resolve_long_momentum_parameters(p)['early_squeeze_breakout_contract']==C.PROFILE_ID
     runtime,_,_=_build_configuration_release(canvas_revision=canvas['revision'],canvas_profile=canvas['profile'],
@@ -36,6 +38,8 @@ def test_compiled_candidate_has_only_agreed_contract_and_occurrence_population()
     assert plan['signal_stream_ids']==['price-squeeze-early']
     assert plan['activation']['watch_duration']=='session'
     assert plan['activation']['watchlist_policy']=='not_required'
+    from src.backend.trading_configuration_service import _effective_campaign_policy
+    assert _effective_campaign_policy(plan)['add_authority']=='automatic'
     assert 'live' not in plan['allowed_environments']
     assert profile['lifecycle']['initial_entry']['capital_request']['mode']=='mandate_fraction'
     assert profile['lifecycle']['initial_entry']['capital_request']['value']==pytest.approx(1/3)
