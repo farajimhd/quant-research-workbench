@@ -95,7 +95,7 @@ class Catalog:
         """Choose the exact preceding source session, never an older stale book."""
         candidates=self.sources(ticker)
         from .filtered_v7_history import available_sources
-        candidates = candidates + available_sources(self.root, ticker, candidates)
+        candidates = candidates + available_sources(self.root, ticker, candidates, session)
         if not candidates:
             reasons = sorted({row.get('reason', 'unpublished') for _, plan in self.plans
                               for row in plan['rows'] if row['ticker'] == ticker})
@@ -125,7 +125,11 @@ class Catalog:
                     return book,dict(campaign=str(target.parent.parent.relative_to(self.root)),
                         plan_hash=plan['plan_hash'],source_plan=source,last_source_session=days[-1],
                         checkpoint_session=day,verified_empty_sessions=empty,book_id=BOOK_ID,catalog_hash=self.fingerprint)
+                if plan.get('input_policy') == POLICY:
+                    raise CoverageUnavailable('No eligible preceding filtered V7 checkpoint for '+ticker+' '+session)
             except FileNotFoundError:
+                if plan.get('derivation') == 'filtered-v7-on-demand-v1':
+                    raise ValueError('Published filtered V7 checkpoint is missing; no legacy fallback')
                 failures.append(str(target))
                 continue
         raise CoverageUnavailable(f'Verified preceding V7 checkpoint unavailable for {ticker} {session}; no stale or legacy fallback')

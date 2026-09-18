@@ -14,6 +14,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runtime', type=Path, required=True)
     parser.add_argument('--ticker', required=True)
+    parser.add_argument('--before', help='Prepare only source sessions preceding this ISO session date')
     args = parser.parse_args()
     load_env_files(discover_clickhouse_env_files(), verbose=False)
     print('Preparing filtered V7 history for '+args.ticker, flush=True)
@@ -30,7 +31,11 @@ def main():
             continue
         try:
             if not (paths(args.runtime, args.ticker)/'ready.json').exists():
-                worker(SimpleNamespace(runtime=args.runtime, ticker=args.ticker, threads=1))
+                if args.before:
+                    from .filtered_prefix import worker as prefix_worker
+                    prefix_worker(SimpleNamespace(runtime=args.runtime,ticker=args.ticker,threads=1,before=args.before))
+                else:
+                    worker(SimpleNamespace(runtime=args.runtime, ticker=args.ticker, threads=1))
         finally:
             lock.__exit__(None, None, None)
         break

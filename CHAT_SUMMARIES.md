@@ -7,6 +7,17 @@ each year.
 
 ## 2026
 
+### [2026-09-17 - Trading Journal and filtered V7 preparation](docs/codex/chat-summaries/2026/CHAT-20260917-UNKNOWN-trading-journal-filtered-v7.md)
+
+- Task ID: `01a0b19f-533f-72d0-aed3-e2b1de599695`; related: TASK-0211, TASK-0212, TASK-0206.
+- Written: 2026-09-18 PDT; exact start time unavailable.
+
+Journal cleanup, Windows cancellation, MLE reliability and bounded filtered preparation.
+Immutable prefixes preserve reuse; worker freshness and ETA improve visibility. The
+four-ticker sample improved from 51.0s to 14.1s with exact hashes. A consumer-pinned
+workstation launcher covers 6,441 eligible tickers and reports 239 deferred identities.
+Full campaign and trading acceptance remain open.
+
 ### [2026-09-11 07:46 PDT - V7 strategy and full-session backtest](docs/codex/chat-summaries/2026/CHAT-20260911-0746-v7-strategy-full-session-backtest.md)
 
 - Chat/task ID: `01a090ef-8081-7c91-8e26-154dcab43253`

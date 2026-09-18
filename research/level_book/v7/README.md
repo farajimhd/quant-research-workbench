@@ -218,3 +218,92 @@ API: `GET /api/research/level-book-v7/catalog` and
 and `time_et`. Prepared dates are explicitly listed in the catalog. The initial
 campaign prepares August 21; it does not claim every historical date is already
 published for chart serving.
+
+
+## On-demand filtered preparation
+
+Backtest preparation runs independent ticker processes concurrently. Sessions within a
+ticker remain sequential. `FILTERED_V7_WORKERS` defaults to `4` and accepts `1` through
+`4`; processes also share a four-slot budget across runs on the API event loop. Each
+child uses one BLAS/OpenMP thread and one ClickHouse query thread. Failure or cancellation
+reaps all children owned by that run. A per-successor OS lock serializes duplicate requests.
+
+`filtered_worker --before YYYY-MM-DD` builds only source sessions strictly before the
+latest requested Backtest session. It preserves the frozen full source plan and the
+existing numerical/source-file identity. Verified earlier receipts are reused; later
+requests extend the same chain. Full `ready.json` histories remain reusable. A partial
+build publishes an immutable `prefixes/YYYY-MM-DD.json`, never a full readiness marker.
+Catalog readers check marker identity, source manifest, cutoff, terminal receipt, and
+the requested checkpoint. Missing or corrupt published filtered checkpoints cannot fall
+back to unfiltered books. A history containing only verified empty sessions is unavailable,
+not permission to serve an unfiltered book.
+
+Receipt and checkpoint writes remain immediate. Replaceable UI progress snapshots are
+limited to two per second, including during resume; terminal state is always written.
+Backtest Details exposes fixed worker slots, session counts, retry/resume counts, update
+age, completed/reused/unavailable/failed ticker counts, throughput, and an approximate ETA.
+ETA starts after two rebuilt tickers and conservatively treats remaining tickers as builds.
+
+Validation on 2026-09-18 used AEG, AEHL, AEON, and AESI with certified histories through
+2026-08-13, extending through 2026-08-18. Before UI-write throttling, one/two/four workers
+took 51.0/27.4/15.8 seconds. All twelve terminal checkpoint hashes exactly matched the
+existing full histories. With progress throttling the repeat measured 38.0/24.3/14.1
+seconds, again with identical hashes. This bounded local-checkpoint benchmark supports the four-worker
+default; it is not a cold 895-ticker runtime forecast. Profiles of AEON and AESI on August
+18 showed checkpoint deep-copy work dominating those sessions. The numerical kernel is
+unchanged so existing prepared histories retain their identities.
+
+Focused validation: `test_filtered_v7_prefix`, `test_filtered_v7_pool`,
+`test_filtered_v7_history`, `test_preparation_process`, `test_v7_catalog`, and
+`test_level_book_v7_campaign`. Visual validation uses the frontend launcher's
+`ui:review -- --filtered-v7-preparation` fixture (running, starting, failure states).
+
+
+## Prepare every filtered V7 history on the workstation
+
+Use `scripts/prepare_filtered_v7.py` for the filtered successor campaign; the older
+`run_level_book_v7_workstation.py` resumes its original frozen campaign only.
+The laptop exports a consumer-pinned manifest once with `prepare_filtered_v7.py plan`.
+Run the synchronized source from the workstation's existing V7 environment:
+
+```powershell
+python -B scripts/prepare_filtered_v7.py preflight
+python -B scripts/prepare_filtered_v7.py run
+```
+
+The single `run` command performs preflight, verifies/resumes every eligible ticker,
+and builds its full frozen source history. Default scope is 6,441 eligible tickers,
+2,484,145 sessions, and 239 separately reported deferred identities in the September 18
+inventory. It does not invent missing identity authority or overwrite original histories.
+All price reads come from canonical ClickHouse; output uses the same workstation store
+through local `D:/TradingML/runtimes/level-book-v7`, so the laptop discovers the results.
+The frozen source interval ends September 12 (last trading session September 11).
+
+Default concurrency is the CPU/RAM budget capped at 16 persistent processes. Explicit
+`--workers 32` is accepted only if the host budget permits it, up to 60 workers. Each
+process has one SQL and one BLAS/OpenMP thread. The budget reserves OS/service capacity
+and admits two GiB per slot; it is not a memory hard limit. A low-free-memory guard stops
+at checkpoint boundaries. Four workers were exercised with canonical data; higher
+concurrency is resource-gated, not yet throughput-benchmarked on the workstation.
+
+```powershell
+python -B scripts/prepare_filtered_v7.py run --workers 32
+python -B scripts/prepare_filtered_v7.py monitor --page 2
+python -B scripts/prepare_filtered_v7.py status
+python -B scripts/prepare_filtered_v7.py stop
+```
+
+Ctrl+C/stop finish current session checkpoints. Rerun the same command to verify receipts
+and resume; failed tickers are retried while complete checkpoints are reused. The fixed
+worker table pages to fit terminal height. Status persists every second, includes full
+failure/deferred reasons, and preserves the final outcome. Exit code 0 means all rows
+complete, 1 means failures, and 2 means interrupted or complete with deferred gaps.
+The controller records each execution and cannot run twice under the same campaign lock.
+Backtest and campaign writers also share per-successor locks.
+
+Plans/status live under `filtered-preparation-campaigns/filtered-v7-workstation-v1`.
+A manifest pins the laptop consumer's exact source bytes, Python 3.12.12 Anaconda build,
+NumPy 2.4.0, SciPy 1.16.3, scheduler hashes, population, and parent campaign identities.
+Mismatch fails before any fitting. Never edit a frozen manifest to bypass a mismatch;
+use the matching environment/source or export a new explicitly named `--campaign` from
+the laptop after an intentional contract change. No ClickHouse tables are created.

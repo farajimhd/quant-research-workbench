@@ -3367,6 +3367,9 @@ def capture(args: argparse.Namespace) -> int:
                     if args.labeler:
                         from labeler_review import review_labeler
                         review_labeler(page, labeler_state, screenshot_path)
+                    if args.filtered_v7_preparation:
+                        from filtered_v7_review import review_filtered_v7
+                        review_filtered_v7(page, screenshot_path)
                     if args.journal_layout:
                         from journal_layout_review import review_journal_layout
                         review_journal_layout(page, screenshot_path)
@@ -3531,6 +3534,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--structural-detector-fixture', help='backend detector result JSON for independent candle-label rendering and indicator-form validation')
     result.add_argument('--backtest-presets', action='store_true', help='verify ticker defaults and V5 selection with stubbed books and warmup; never launch a run')
     result.add_argument('--backtest-warmup-presentation', action='store_true', help='validate active warmup modal and journal shell without changing the run')
+    result.add_argument("--filtered-v7-preparation", action="store_true", help="review bounded preparation workers and failure states")
     result.add_argument("--journal-layout", action="store_true", help="review compact open positions, chart layout and lifecycle selection with deterministic data")
     result.add_argument('--strategy-activity-evidence', action='store_true', help='verify evidence caching, refreshed projections, row switching and deselection using a component fixture')
     result.add_argument('--full-market-backtest', action='store_true', help='verify full-market setup and intercept the single launch request without starting a backtest')

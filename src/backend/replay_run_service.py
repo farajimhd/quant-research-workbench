@@ -1697,6 +1697,7 @@ class ReplayRunController:
                 "completed": self._preparation_completed_units,
                 "total": self._preparation_total_units,
                 "signals": getattr(self, "_signal_preparation", None),
+                "filtered_v7": deepcopy(getattr(self, "_filtered_v7_progress", None)),
             },
             "preparation_cache": {
                 "strategy_frames": self._strategy_frame_cache_status,
@@ -2871,7 +2872,9 @@ class ReplayRunController:
                 self._preparation_completed_units = done
                 self._preparation_total_units = total
                 await self._publish(force=True)
-            await prepare(names, days, progress)
+            async def details(value):
+                self._filtered_v7_progress = value
+            await prepare(names, days, progress, publish_details=details)
         self._preparation_stage = 'level_book_coverage'
         self._preparation_completed_units = 0
         self._preparation_total_units = len(names) * len(days)

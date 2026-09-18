@@ -41,7 +41,7 @@ def test_qmd_catalog_sees_atomic_successor_without_restart_or_hash_drift(tmp_pat
     assert provenance['campaign'].replace('\\','/').startswith('filtered-v7-on-demand-v1/')
     assert catalog.fingerprint==fingerprint
     assert parent==before
-    with pytest.raises(V.CoverageUnavailable):
+    with pytest.raises(ValueError,match='no legacy fallback'):
         catalog.select('TEST','2026-08-22')
 
 
@@ -135,3 +135,32 @@ def test_preparation_builds_unfiltered_ticker_then_reuses_publication(tmp_path,m
     assert len(calls)==1
     assert calls[0][-2:]==('--ticker','TEST')
     assert catalog.select('TEST','2026-08-21')[0]['input_policy']==V.POLICY
+
+
+def test_prefix_serves_only_certified_boundary_and_detects_corruption(tmp_path,monkeypatch):
+    target,_=prepared(tmp_path,monkeypatch)
+    output,plan=publish(tmp_path,target,read(tmp_path/'main'/'plan.json'))
+    source=read(output/'source-plan.json')
+    receipt=read(output/'receipts'/'2026-08-20.json')
+    value=dict(version=1,plan_hash=plan['plan_hash'],ticker='TEST',before='2026-08-21',through='2026-08-20',sessions=1,source_plan_hash=digest(source),checkpoint_hash=receipt['checkpoint_hash'])
+    value['prefix_hash']=digest(value)
+    path=output/'prefixes'/'2026-08-21.json';write(path,value)
+    catalog=V.Catalog(tmp_path)
+    assert catalog.select('TEST','2026-08-21')[1]['campaign']!='main'
+    with pytest.raises(V.CoverageUnavailable):catalog.select('TEST','2026-08-22')
+    value['sessions']=2;write(path,value,immutable=False)
+    with pytest.raises(ValueError,match='prefix integrity'):catalog.select('TEST','2026-08-21')
+    value['sessions']=1;write(path,value,immutable=False)
+    (output/'books'/'2026-08-20.json.gz').unlink()
+    with pytest.raises(ValueError,match='no legacy fallback'):catalog.select('TEST','2026-08-21')
+
+
+def test_published_filtered_empty_history_cannot_serve_legacy_book(tmp_path,monkeypatch):
+    target,_=prepared(tmp_path,monkeypatch)
+    output,plan=publish(tmp_path,target,read(tmp_path/'main'/'plan.json'))
+    receipt=read(output/'receipts'/'2026-08-20.json')
+    receipt.update(state='empty',parent_hash=None);receipt.pop('checkpoint_hash')
+    write(output/'receipts'/'2026-08-20.json',receipt,immutable=False)
+    write(output/'ready.json',dict(plan_hash=plan['plan_hash']))
+    with pytest.raises(V.CoverageUnavailable,match='No eligible preceding filtered'):
+        V.Catalog(tmp_path).select('TEST','2026-08-21')

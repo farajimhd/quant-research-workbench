@@ -1,6 +1,7 @@
 """Content-addressed filtered successors of published V7 campaign histories."""
 from copy import deepcopy
 from functools import lru_cache
+from datetime import date
 import sys
 
 from .derived_trade_policy import POLICY
@@ -31,7 +32,7 @@ def successor(root, parent, ticker):
     return root / VERSION / plan['plan_hash'], plan
 
 
-def available_sources(root, ticker, candidates):
+def available_sources(root, ticker, candidates, session=None):
     """Publication is per ticker; never cache absence in a long-lived QMD worker."""
     from .level_book_store import read
     result = []
@@ -45,15 +46,48 @@ def available_sources(root, ticker, candidates):
         if plan != expected:
             raise ValueError('Filtered V7 successor plan differs from pinned authority')
         target = folder / 'tickers' / plan['rows'][0]['directory']
-        # Only completely verified ticker histories become serving authority.
-        if not (target / 'ready.json').exists():
+        if not (target / 'source-plan.json').exists():
+            if (target / 'ready.json').exists() or any((target / 'prefixes').glob('*.json')):
+                raise ValueError('Published filtered V7 source plan is missing')
             continue
-        ready = read(target / 'ready.json')
         source = read(target / 'source-plan.json')
-        if ready['plan_hash'] != plan['plan_hash'] or source['plan_hash'] != plan['plan_hash']:
+        if source['plan_hash'] != plan['plan_hash']:
             raise ValueError('Filtered V7 publication identity mismatch')
         days = [d['source_date'] for d in source['days']]
         if days != sorted(set(days)) or any(d['ticker'] != ticker for d in source['days']):
             raise ValueError('Filtered V7 source sessions must be unique and ticker-specific')
+        if (target / 'ready.json').exists():
+            if read(target / 'ready.json')['plan_hash'] != plan['plan_hash']:
+                raise ValueError('Filtered V7 publication identity mismatch')
+        elif session:
+            required = [d for d in days if d < session]
+            if not required:
+                continue
+            publications = sorted((target / 'prefixes').glob('*.json'))
+            covered = False
+            for path in publications:
+                value = read(path)
+                if (value.get('prefix_hash') != digest({k:v for k,v in value.items() if k!='prefix_hash'})
+                        or value.get('version') != 1 or value.get('plan_hash') != plan['plan_hash']
+                        or value.get('ticker') != ticker or value.get('source_plan_hash') != digest(source)):
+                    raise ValueError('Filtered V7 prefix integrity mismatch')
+                if date.fromisoformat(value['before']).isoformat() != path.stem:
+                    raise ValueError('Filtered V7 prefix boundary mismatch')
+                prefix = [d for d in days if d < value['before']]
+                if not prefix or value['sessions'] != len(prefix) or value['through'] != prefix[-1]:
+                    raise ValueError('Filtered V7 prefix coverage mismatch')
+                # Bind publication to its terminal receipt, including an empty suffix.
+                from research.level_book.v7.campaign_source import source_hash
+                receipt = read(target / 'receipts' / (prefix[-1] + '.json'))
+                expected_hash = receipt.get('checkpoint_hash') if receipt['state'] == 'complete' else receipt.get('parent_hash')
+                if (receipt['state'] not in ('complete', 'empty')
+                        or receipt['source_hash'] != source_hash(source['days'][len(prefix)-1], plan['rules'])
+                        or value['checkpoint_hash'] != expected_hash):
+                    raise ValueError('Filtered V7 prefix terminal receipt mismatch')
+                covered |= value['through'] >= required[-1]
+            if not covered:
+                continue
+        else:
+            continue
         result.append((target, plan, source))
     return result

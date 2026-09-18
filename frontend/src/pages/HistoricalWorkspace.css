@@ -79,6 +79,11 @@
 .backtest-exclusion-table :is(th, td) { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .backtest-exclusion-table th { color: var(--muted-foreground); font-weight: 500; }
 .backtest-exclusion-table td:last-child { overflow-wrap: anywhere; }
+.filtered-v7-preparation { border-top: 1px solid var(--border); padding-top: 14px; min-width: 0; }
+.filtered-v7-preparation p, .filtered-v7-workers caption { color: var(--muted-foreground); font-size: 11px; line-height: 1.5; }
+.filtered-v7-workers caption { text-align: left; padding: 10px 0; }
+.filtered-v7-workers small { display: block; color: var(--muted-foreground); margin-top: 4px; overflow-wrap: anywhere; }
+.filtered-v7-workers table { min-width: 440px; font-variant-numeric: tabular-nums; }
 
 .replay-setup-page {
   display: grid;
