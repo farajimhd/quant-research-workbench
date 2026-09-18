@@ -52,6 +52,46 @@ def test_robust_fit_small_samples_and_tick_floor():
         with pytest.raises(ValueError):fit(bad,.01)
 
 
+def test_aci_boundary_fit_regression_preserves_likelihood_and_floor():
+    from src.market_engine.reaction_center import objective_gradient, converged
+    prices=[19.54]+[19.55]*6
+    result=fit(prices,.01)
+    assert result['status']=='estimated'
+    assert result['center']==pytest.approx(19.54916403049,abs=1e-10)
+    assert result['scale']==pytest.approx(.005,abs=1e-12)
+    assert result['scale_at_floor']
+    assert result==fit(prices,.01)
+    assert fit(list(reversed(prices)),.01)['center']==pytest.approx(result['center'],abs=1e-9)
+    y=(np.array(prices)-19.55)/.01
+    point=np.array([(result['center']-19.55)/.01,math.log(result['scale']/.01)])
+    objective=lambda p:objective_gradient(p,y)
+    assert converged(SimpleNamespace(success=True,fun=objective(point)[0],x=point),
+                     objective,[(y.min(),y.max()),(math.log(.5),math.log(np.ptp(y)*2))])
+
+
+@pytest.mark.parametrize('success,point', [(False,[0.,math.log(.5)]),
+    (True,[0.,math.log(.5)]), (True,[float('nan'),0.]), (True,[2.,0.])])
+def test_retry_cannot_accept_failed_nonstationary_nonfinite_or_out_of_bounds_fit(monkeypatch,success,point):
+    import src.market_engine.reaction_center as module
+    calls=[]
+    def reject(objective,start,**kwargs):
+        calls.append(kwargs['method'])
+        return SimpleNamespace(success=success,fun=0.,x=np.array(point))
+    monkeypatch.setattr(module,'minimize',reject)
+    assert fit([19.54]+[19.55]*6,.01)['status']=='fit_failed'
+    assert calls==['L-BFGS-B','SLSQP']
+
+
+def test_successful_primary_fit_never_uses_retry(monkeypatch):
+    import src.market_engine.reaction_center as module
+    original=module.minimize
+    def primary_only(*args,**kwargs):
+        assert kwargs['method']=='L-BFGS-B'
+        return original(*args,**kwargs)
+    monkeypatch.setattr(module,'minimize',primary_only)
+    assert fit([100.]*8,.01)['status']=='estimated'
+
+
 def test_reaction_observations_and_overlap_are_not_crossing_prices():
     bars=[dict(t=i,high=100+i*.01,low=99-i*.01) for i in range(10)]
     events=[dict(at=1,resolved_at=3,role='resistance',outcome='rejection'),

@@ -10,7 +10,7 @@ CONFIG = dict(version=VERSION, degrees_of_freedom=4, minimum_observations=3,
               scale_floor_ticks=.5, observation='1s extreme from contact through resolution',
               overlap_policy='first nonoverlapping resolved rejection per role')
 
-SOLVER_VERSION = 'student-t-analytic-gradient-1'
+SOLVER_VERSION = 'student-t-analytic-gradient-bounded-retry-2'
 
 
 def objective_gradient(parameters, prices, degrees_of_freedom=4):
@@ -80,6 +80,20 @@ def fit(prices, tick):
                      options=dict(gtol=1e-8,ftol=0.,maxls=50,maxiter=1000))
             for loc in np.unique(np.quantile(y,[.25,.5,.75]))]
     valid=[r for r in trials if converged(r,objective,bounds)]
+    if not valid:
+        # Repeated prices can collapse all quantile starts onto a scale-boundary
+        # solution where L-BFGS-B's line search terminates abnormally. Retry the
+        # same likelihood and bounds with a different numerical method, never
+        # accepting the failed result or substituting old/fixed band geometry.
+        # At most three retries; already accepted fits retain their exact path.
+        lower,upper=np.asarray(bounds).T
+        for trial in trials:
+            start=(np.clip(trial.x,lower,upper) if np.isfinite(trial.x).all()
+                   else np.clip([0.,math.log(spread)],lower,upper))
+            retry=minimize(objective,start,jac=True,method='SLSQP',bounds=bounds,
+                           options=dict(ftol=1e-14,maxiter=1000))
+            if converged(retry,objective,bounds):
+                valid.append(retry)
     if not valid:
         return dict(result,status='fit_failed')
     best=min(valid,key=lambda r:(r.fun,float(r.x[0])))

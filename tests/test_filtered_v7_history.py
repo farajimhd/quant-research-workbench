@@ -53,6 +53,20 @@ def test_corrupt_successor_cannot_fall_back_to_unfiltered_history(tmp_path,monke
         V.Catalog(tmp_path).select('TEST','2026-08-21')
 
 
+def test_numerical_source_change_creates_distinct_immutable_successor(tmp_path,monkeypatch):
+    from src.market_engine import filtered_v7_history as module
+    prepared(tmp_path,monkeypatch)
+    parent=read(tmp_path/'main'/'plan.json');before=deepcopy(parent)
+    kernel=deepcopy(module.kernel())
+    monkeypatch.setattr(module,'kernel',lambda:deepcopy(kernel))
+    old_path,old=successor(tmp_path,parent,'TEST')
+    kernel['source_files']['src/market_engine/reaction_center.py']='f'*64
+    new_path,new=successor(tmp_path,parent,'TEST')
+    assert old_path!=new_path and old['plan_hash']!=new['plan_hash']
+    assert old['rows']==new['rows'] and old['parent_plan_hash']==new['parent_plan_hash']
+    assert parent==before
+
+
 def test_preparation_reuses_filtered_history_without_spawning(tmp_path,monkeypatch):
     import asyncio
     from src.backend.filtered_v7_preparation import prepare

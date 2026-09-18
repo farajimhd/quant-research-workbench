@@ -29,6 +29,18 @@ def test_distinct_reaction_modes_split_instead_of_one_wide_band():
     assert modes[0][1]['upper']<modes[1][1]['lower']
 
 
+def test_failed_refit_of_qualified_band_still_fails_closed(monkeypatch):
+    s=empty()
+    for i,p in enumerate([5,5.001,4.999]):
+        s._proposal(p,1100+i*10,'resistance',{'t':1102+i*10},.2)
+    row=s.rows[0]; before=deepcopy(row)
+    monkeypatch.setattr('src.market_engine.streaming_level_book.partition',
+        lambda values,coverage: [(values,dict(status='fit_failed'))])
+    with pytest.raises(ValueError,match='no stale-band fallback'):
+        s._refit(row,1202,'resistance',row['observations']+observations([5.03]))
+    assert row==before
+
+
 def test_new_reaction_outside_old_band_refits_without_redrawing_old_segments():
     s=empty()
     for i,p in enumerate([5,5.001,4.999]):s._proposal(p,1100+i*10,'resistance',{'t':1102+i*10},.2)
