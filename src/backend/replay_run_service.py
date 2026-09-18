@@ -2862,7 +2862,7 @@ class ReplayRunController:
         days = market_sessions(self.definition.session_date,
                                self.definition.final_session_date or self.definition.session_date)
         parameters = (self.definition.configuration_revision['payload'].get('strategy') or {}).get('parameters') or {}
-        if parameters.get('vwap_ladder_contract'):
+        if (parameters.get('vwap_ladder_contract') or parameters.get('early_squeeze_breakout_contract')):
             from .filtered_v7_preparation import prepare
             async def progress(done, total, detail):
                 if getattr(self, '_stop_requested', False):
@@ -2893,7 +2893,7 @@ class ReplayRunController:
                 report['catalog_hash'] = packet['catalog_hash']
                 for row in rows:
                     parameters = (self.definition.configuration_revision['payload'].get('strategy') or {}).get('parameters') or {}
-                    if parameters.get('vwap_ladder_contract') and row['eligible']:
+                    if (parameters.get('vwap_ladder_contract') or parameters.get('early_squeeze_breakout_contract')) and row['eligible']:
                         from src.market_engine.derived_trade_policy import POLICY
                         if row.get('input_policy') != POLICY:
                             raise ValueError(f"Filtered V7 history unavailable for {row['ticker']} on {day}: "
@@ -3206,7 +3206,7 @@ class ReplayRunController:
         if controller.get('derived_trade_policy') != POLICY:
             raise ValueError('Replay checkpoint predates the 04:05 derived-trade policy; start a new run')
         parameters = (self.definition.configuration_revision['payload'].get('strategy') or {}).get('parameters') or {}
-        if parameters.get('vwap_ladder_contract') and controller.get('ladder_swing_continuity') != 'prepared-native-empty-interval-v2':
+        if (parameters.get('vwap_ladder_contract') or parameters.get('early_squeeze_breakout_contract')) and controller.get('ladder_swing_continuity') != 'prepared-native-empty-interval-v2':
             raise ValueError('Replay checkpoint predates ladder swing continuity; start a new run')
         self._experimental_session_highs = deepcopy(controller.get("experimental_session_highs") or {})
         from src.trading_runtime.completed_candle_range import CompletedCandleRange
@@ -3597,7 +3597,7 @@ class ReplayRunController:
             proof = None
             source = getattr(self, '_continuity_frame_source', None)
             previous_end = saved.get('row', {}).get('effective_at')
-            if parameters.get('vwap_ladder_contract') and source is not None and previous_end is not None:
+            if (parameters.get('vwap_ladder_contract') or parameters.get('early_squeeze_breakout_contract')) and source is not None and previous_end is not None:
                 proof = source.empty_interval(frame.ticker, previous_end, end)
             market = stream.observe(bar, snapshot['unified_levels'], self._recovery_book_identity,
                                     parameters.get('structural_detector_settings'), continuity=proof)
@@ -3617,6 +3617,14 @@ class ReplayRunController:
                     structural_resistance_levels=snapshot['unified_levels'], structural_transition_levels=()))
                 observe_retests(market, saved, bar, causal_levels,
                     market.get('historical_hod_observation', {}).get('vwap_ladder_market', {}))
+            if parameters.get('early_squeeze_breakout_contract'):
+                from types import SimpleNamespace
+                from src.trading_runtime.early_squeeze_breakout import observe_context
+                market['early_squeeze_context'] = observe_context(SimpleNamespace(
+                    observed_at=frame.as_of, price=bar['close'],
+                    structural_session_high=self._experimental_session_high(frame.ticker, frame.as_of),
+                    structural_support_levels=(), structural_transition_levels=(),
+                    structural_resistance_levels=snapshot['unified_levels']), saved.get('early_squeeze_context', {}))
             self._candle_detector_states[frame.ticker] = {'structural_recovery':market}
             return
         if frame.timeframe != '1s' or not (parameters.get('episode_management') or {}).get('detector_candle_states_enabled'):

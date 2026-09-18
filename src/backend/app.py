@@ -5201,6 +5201,12 @@ async def trading_backtest_configuration_options(candidate_id: str = "") -> dict
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/api/trading/strategy-execution-contracts")
+def trading_strategy_execution_contracts() -> dict[str, Any]:
+    from src.trading_runtime.strategy_engine import supported_custom_execution_contracts
+    return {"schema_version": 1, "contracts": list(supported_custom_execution_contracts())}
+
+
 @app.get("/api/trading/configuration/approved")
 def trading_configuration_approved() -> dict[str, Any]:
     result = approved_configuration()

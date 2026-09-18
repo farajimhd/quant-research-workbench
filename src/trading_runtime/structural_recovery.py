@@ -49,10 +49,12 @@ def configure(p):
             for k in ('minimum_current_trade_rate_10s','minimum_current_trade_rate_60s')):
         raise ValueError('Latched admission requires positive current trade-rate gates')
     for key in LIQUIDITY:
+        if key == 'maximum_price' and p.get('early_squeeze_breakout_contract') and liquidity[key] is None:
+            continue  # New policy has no inherited price-universe ceiling.
         if key not in ('enabled','latched') and (type(liquidity[key]) not in (int,float)
                 or not isfinite(liquidity[key]) or liquidity[key] <= 0):
             raise ValueError('Tradability thresholds must be finite and positive')
-    if liquidity['minimum_price'] >= liquidity['maximum_price']:
+    if liquidity['maximum_price'] is not None and liquidity['minimum_price'] >= liquidity['maximum_price']:
         raise ValueError('Invalid tradable price range')
     p['liquidity_admission'] = liquidity
     p['entry_candle_confirmation']['enabled'] = False

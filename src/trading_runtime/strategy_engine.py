@@ -215,9 +215,16 @@ def _rule_stage_timeframes(stage: dict[str, Any]) -> set[str]:
     return timeframes
 
 
+def supported_custom_execution_contracts() -> tuple[str, ...]:
+    """Loaded-executor capability, used before saving a new research candidate."""
+    return ('early-squeeze-r1-fixed-trail-v1',)
+
+
 def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
     """Return every derived-data timeframe referenced by active lifecycle rules."""
 
+    if parameters.get('early_squeeze_breakout_contract'):
+        return {'100ms', '1s'}
     if parameters.get('hindsight_long_contract'):
         return {'100ms', '1s'}
     if parameters.get('vwap_ladder_contract'):
@@ -895,6 +902,9 @@ def resolve_long_momentum_parameters(
         configure(parameters)
     if parameters.get('r1_ladder_contract'):
         from .r1_ladder import configure
+        configure(parameters)
+    if parameters.get('early_squeeze_breakout_contract'):
+        from .early_squeeze_breakout import configure
         configure(parameters)
     if parameters.get('vwap_ladder_contract'):
         from .vwap_resistance_ladder import configure
@@ -2804,6 +2814,9 @@ class LongMomentumStrategyEngine:
                 assignment.parameters,
                 revision=self.revision,
             )
+        if parameters.get('early_squeeze_breakout_contract'):
+            from .early_squeeze_breakout import evaluate
+            return evaluate(self, assignment, observation, parameters, state)
         if parameters.get('vwap_ladder_contract'):
             from .vwap_resistance_ladder import evaluate
             return evaluate(self, assignment, observation, parameters, state)
@@ -5501,7 +5514,8 @@ class LongMomentumStrategyEngine:
                     i.resolved_execution_policy().envelope, maximum_buy_price=None,
                     persist_until_cancelled=True, deadline_ms=0)),
                 metadata={**i.metadata, 'entry_completion_quote': 'ask', 'mandatory_broker_target': True}) for i in intents)
-        if action == 'enter_long' and assignment.parameters.get('structural_recovery_contract') and intents:
+        if (action == 'enter_long' and assignment.parameters.get('structural_recovery_contract')
+                and not assignment.parameters.get('early_squeeze_breakout_contract') and intents):
             ceiling = state['recovery_entry']['maximum_buy_price']
             intents = tuple(replace(i, reference_price=observation.ask,
                 execution_policy=replace(i.resolved_execution_policy(),
@@ -5725,6 +5739,14 @@ def _protection_profile_from_phase(
     profit_target_price: float | None,
     trailing_amount: float | None,
 ) -> ProtectionProfile | None:
+    if parameters.get('early_squeeze_breakout_contract'):
+        # This version owns its stop and full target, independently of legacy
+        # catalog slices, ATR stops, profit pockets and broker trailing rules.
+        if not (invalidation_price and profit_target_price and 0 < invalidation_price < profit_target_price):
+            raise ValueError('Early Squeeze requires an explicit stop and full target')
+        return ProtectionProfile('early-squeeze-fixed-stop-full-target', 1, slices=(
+            ProtectionSlice('all', 1., StopRule(StopRuleType.FIXED_PRICE, price=invalidation_price),
+                            profit_target_price=profit_target_price),))
     reference = str(payload.get("protection_profile") or "")
     configured = dict(
         dict(parameters.get("protection_profile_catalog") or {}).get(reference)
@@ -6132,6 +6154,9 @@ class AssignedLongMomentumStrategy:
             if assignment.assignment_id != assignment_id:
                 continue
             state = dict(assignment.state)
+            if intent.action == "add_long" and intent.metadata.get("squeeze_add_levels"):
+                from .early_squeeze_breakout import release_add
+                release_add(state, intent.metadata["squeeze_add_levels"])
             if str(intent.action) in {"enter_long", "enter_short"}:
                 if assignment.parameters.get('hindsight_long_contract'):
                     from .hindsight_long import acquisition_update
@@ -6152,6 +6177,8 @@ class AssignedLongMomentumStrategy:
                 self._assignments[key] = replace(assignment, state=state, updated_at=event_time)
                 return
             if str(intent.action) == "replace_profit_target":
+                if 'squeeze_previous_target_moves' in intent.metadata:
+                    state['squeeze_entry'] = dict(state['squeeze_entry'], target_moves=intent.metadata['squeeze_previous_target_moves'])
                 if 'vwap_ladder_previous_target_moves' in intent.metadata:
                     state['vwap_ladder_entry'] = dict(state['vwap_ladder_entry'],
                         target_moves=intent.metadata['vwap_ladder_previous_target_moves'])
@@ -6285,7 +6312,8 @@ class AssignedLongMomentumStrategy:
                 state.pop("pending_capital_request", None)
                 state.pop("pending_capital_reasons", None)
                 if intent.metadata.get('unreserved_cash_slice'):
-                    state['vwap_ladder_entry'] = dict(state['vwap_ladder_entry'],
+                    entry_key = 'squeeze_entry' if assignment.parameters.get('early_squeeze_breakout_contract') else 'vwap_ladder_entry'
+                    state[entry_key] = dict(state[entry_key],
                         slice_notional=float(intent.metadata['unreserved_slice_notional']))
                 updated = replace(assignment, state=state)
                 self._assignments[key] = updated
@@ -6398,6 +6426,15 @@ class AssignedLongMomentumStrategy:
                 continue
             state = dict(assignment.state)
             action = str(getattr(snapshot, "action", ""))
+            if assignment.parameters.get('early_squeeze_breakout_contract') and action == 'add_long':
+                active = deepcopy(state.get('squeeze_entry') or {})
+                request_id = str(getattr(snapshot, 'intent_id', ''))
+                if snapshot_state == 'cancelled' or incremental_fill > 0:
+                    keys = active.get('add_requests', {}).pop(request_id, [])
+                    state['squeeze_entry'] = active
+                    if snapshot_state == 'cancelled' and not float(getattr(snapshot, 'filled_quantity', 0) or 0):
+                        from .early_squeeze_breakout import release_add
+                        release_add(state, keys)
             if assignment.parameters.get('hindsight_long_contract') and action == 'enter_long':
                 from .hindsight_long import acquisition_update
                 acquisition_update(state, terminal=snapshot_state in {'filled', 'cancelled'},
@@ -6460,6 +6497,11 @@ class AssignedLongMomentumStrategy:
                 return
             if action in {"enter_long", "add_long", "enter_short", "add_short"}:
                 if action == 'enter_long' and incremental_fill > 0:
+                    if assignment.parameters.get('early_squeeze_breakout_contract'):
+                        active = deepcopy(state['squeeze_entry'])
+                        active.setdefault('first_fill_at', snapshot.updated_at.timestamp())
+                        state['squeeze_entry'] = active
+                        state.setdefault('squeeze_breakout', {}).pop('recovery', None)
                     if assignment.parameters.get('vwap_ladder_contract'):
                         state['vwap_ladder_entry'] = dict(state['vwap_ladder_entry'],
                             first_fill_at=snapshot.updated_at.timestamp())
@@ -6511,6 +6553,9 @@ class AssignedLongMomentumStrategy:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
+                if assignment.parameters.get('early_squeeze_breakout_contract') and incremental_fill > 0:
+                    from .early_squeeze_breakout import record_exit
+                    record_exit(state, snapshot.updated_at, fill_role, aggregate_position_quantity)
                 if assignment.parameters.get('pullback_hod_contract') == 'swing-rise-pullback-hod-v2' and incremental_fill > 0:
                     from .pullback_hod import record_exit
                     record_exit(state, snapshot.updated_at, aggregate_position_quantity)
