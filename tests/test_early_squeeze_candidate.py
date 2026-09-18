@@ -28,6 +28,8 @@ def test_compiled_candidate_has_only_agreed_contract_and_occurrence_population()
     assert sorted(k for k in p if k.endswith('_contract'))==['early_squeeze_breakout_contract','structural_recovery_contract']
     assert not any(k in p for k in ('vwap_ladder','episode_management','historical_hod','momentum_management','profit_pocket'))
     assert p['liquidity_admission']['maximum_price'] is None
+    assert p['strategy_behavior']['entry_cutoff_time']==''
+    assert p['strategy_behavior']['flatten_time']==''
     for key in ('maximum_current_spread_bps','maximum_admission_spread_bps','maximum_spread_bps'):
         assert p['liquidity_admission'][key]==250.
     assert strategy_rule_timeframes(p)=={'100ms','1s'}

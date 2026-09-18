@@ -7916,8 +7916,11 @@ function drawTradeAnnotationPrimitiveGeometry(
       const y = priceSeries.priceToCoordinate(point.price);
       const color = point.kind === "stop" ? stopColor : successColor;
       if (left === null || right === null || y === null) return;
+      // Do not turn an already-ended off-screen order into a visible minimum
+      // width guide at the chart edge. Protection rails follow effective time.
+      if (right < 0 || left > width || right < left) return;
       drawCanvasTradeGuide(context, Math.max(0, left), Math.min(width, right), y, color,
-        point.kind === "stop" ? "SL" : "TP", chartBackground, width, height,
+        `${point.kind === "stop" ? "SL" : "TP"} ${formatPrice(point.price)}`, chartBackground, width, height,
         lineStyle, labelStyle, labelLayout, elements.connector);
       if (lineStyle.visible && next?.active && next.time <= endTime) {
         const nextY = priceSeries.priceToCoordinate(next.price);

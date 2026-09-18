@@ -6,19 +6,22 @@ from src.trading_runtime.early_squeeze_breakout import CONTRACT
 from src.trading_runtime.structural_recovery import CONTRACT as DATA_CONTRACT, DEFAULTS
 
 PROFILE_ID = CONTRACT
-LABEL = 'Early Squeeze / resistance midpoint targets / fixed-distance trail v4'
+LABEL = 'Early Squeeze / session resistance targets / fixed-distance trail v5'
 BASELINE_ID = 'fc03b276-7584-4772-a50f-51424f9bfea3'
 BASELINE_HASH = '85dff0666442f78d63dee8972d6c1e11a5599eb78316727a128fc829636d5bd6'
 DESCRIPTION = (
     'Watch from the first available Early Squeeze occurrence only, including single-ticker runs. '
     'Filtered V7 seed and causal completed-candle levels; green completed 1s R1 midpoint crossover '
     'above VWAP with close in its top quarter. Buy one third of eligible cash; each new green '
-    '1s overhead resistance break adds the original cash tranche without MACD or close-location gates. '
-    'Full-position 3/2/1 overhead-resistance midpoint targets with upward-only advances; 2.5% spread cap. Initial stop one tick '
+    '1s resistance break adds the original cash tranche without MACD or close-location gates. '
+    'Full-position targets select the third current overhead resistance before four session breaks, '
+    'the second at four or five, and the first at six or more. Reevaluate each completed 1s level update; '
+    'targets advance upward without an advance-count cap. Target price is the selected midpoint; '
+    '2.5% spread cap. Initial stop one tick '
     'below broken resistance lower edge; real-time bid-high trailing preserves the initial filled '
     'entry-to-stop distance. After stop-out, green completed 1s close above the frozen post-break '
-    'closing high reenters; stop below a confirmed swing above the resistance, otherwise below the '
-    'last completed candle open, offset under current bid. No MACD, RVOL, impulse, pullback, ATR, '
+    'closing high reenters; stop below a confirmed swing above the resistance, otherwise at the '
+    'last completed candle open, offset only if needed under current bid. No MACD, RVOL, impulse, pullback, ATR, '
     'special late-breakout target, or structural trailing trading rules.'
 )
 
@@ -40,7 +43,8 @@ def build(base, baseline):
         structural_recovery_contract=DATA_CONTRACT, structural_recovery=dict(DEFAULTS),
         structural_detector_settings={}, liquidity_admission=liquidity,
         execution=deepcopy(source_profile['parameters'].get('execution', {'tick_size':.01,'limit_offset_bps':5.})),
-        strategy_behavior=deepcopy(source_profile['lifecycle']['trading_behavior']),
+        strategy_behavior=dict(side='long', eligible_sessions=['premarket','regular','after_hours'],
+                               entry_cutoff_time='', flatten_time=''),
         entry_rules=deepcopy(profile['parameters']['entry_rules']),
         sizing=dict(request_mode='mandate_fraction', request_value=1/3, allow_replacement=False),
         add=dict(enabled=True), reentry=dict(enabled=True, cooldown_ms=0, unlimited_attempts=True,

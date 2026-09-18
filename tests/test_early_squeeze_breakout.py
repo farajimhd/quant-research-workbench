@@ -131,17 +131,53 @@ def test_entry_gates_fail_closed(failure):
     assert not host.evaluate(a,o).evaluation.intents
 
 
-def test_activation_does_not_move_to_later_occurrence_or_allow_straddling_bar():
+def test_activation_uses_confirmation_time_and_does_not_move_to_later_occurrence():
     host,a,obs=fixture();first=obs()
     first.source_values[E.SIGNAL]['observed_at']=(NOW+timedelta(milliseconds=500)).isoformat()
     a=advance(a,host.evaluate(a,first));o=obs(1,10.42)
     o.source_values[E.SIGNAL]['observed_at']=(NOW+timedelta(milliseconds=500)).isoformat()
-    r=host.evaluate(a,o);assert not r.evaluation.intents
-    assert r.evaluation_payload['reason']=='waiting_for_post_squeeze_candle'
+    r=host.evaluate(a,o);assert r.evaluation.intents[0].action == 'enter_long'
     a=advance(a,r);o=obs(2,10.4)
     o.source_values[E.SIGNAL]['observed_at']=(NOW+timedelta(seconds=2)).isoformat()
     r=host.evaluate(a,o)
     assert r.state['squeeze_breakout']['activated_at']==NOW.timestamp()+.5
+
+
+def test_valid_fallback_open_is_not_lowered_by_an_extra_tick():
+    host,a,obs=entered()
+    E.record_exit(a.state,NOW+timedelta(seconds=2),'protective_stop',0.)
+    a=replace(a,status=S.AssignmentStatus.REENTRY_COOLDOWN)
+    intent=host.evaluate(a,obs(3,10.6,open_price=10.5)).evaluation.intents[0]
+    assert intent.invalidation_price==pytest.approx(10.5)
+
+
+def test_original_resistance_can_add_after_midpoint_entry():
+    host,a,obs=entered()
+    result=host.evaluate(a,obs(2,10.44,100))
+    adds=[i for i in result.evaluation.intents if i.action=='add_long']
+    assert len(adds)==1
+    assert adds[0].metadata['squeeze_add_levels']==[a.state['squeeze_entry']['anchor']['unified_level_id']]
+
+
+def test_targets_follow_updated_levels_on_red_candle_without_advance_cap():
+    host,a,obs=entered()
+    a.state['squeeze_entry'].update(late=True,target_moves=2)
+    a.state['squeeze_breakout']['broken']=[f'old-{n}' for n in range(6)]
+    o=obs(2,10.44,100,open_price=10.45,high=10.46)
+    o=replace(o,structural_resistance_levels=tuple(r for r in o.structural_resistance_levels if r['lower']>=11.2))
+    result=host.evaluate(a,o)
+    targets=[i for i in result.evaluation.intents if i.action=='replace_profit_target']
+    assert len(targets)==1 and targets[0].profit_target_price==pytest.approx(11.21)
+    assert result.state['squeeze_entry']['target_moves']==3
+    assert not any(i.action=='add_long' for i in result.evaluation.intents)
+
+
+def test_entry_uses_configured_execution_instead_of_custom_100ms_ask_ceiling():
+    host,a,obs=fixture();a=advance(a,host.evaluate(a,obs()))
+    intent=host.evaluate(a,obs(1,10.42)).evaluation.intents[0]
+    envelope=intent.resolved_execution_policy().envelope
+    assert envelope.deadline_ms!=100
+    assert envelope.maximum_buy_price!=10.43
 
 
 def test_realtime_fixed_distance_does_not_rebase_on_add_average_or_lower_stop():
@@ -165,9 +201,10 @@ def test_every_green_resistance_break_adds_even_weak_close_and_bearish_macd():
     for i,price in enumerate((10.63,10.83,11.03,11.23),2):
         r=host.evaluate(a,obs(i,price,100,high=price+.4))
         adds=[x for x in r.evaluation.intents if x.action=='add_long']
-        assert len(adds)==1 and adds[0].capital_request.value==3000.
+        # First move clears both the entry band's upper edge and the next band.
+        assert len(adds)==1 and adds[0].capital_request.value==(6000. if i==2 else 3000.)
         a=advance(a,r)
-    assert len(a.state['squeeze_entry']['added_levels'])==4
+    assert len(a.state['squeeze_entry']['added_levels'])==5
     r=host.evaluate(a,obs(6,11.24,100))
     assert not any(i.action=='add_long' for i in r.evaluation.intents)
 

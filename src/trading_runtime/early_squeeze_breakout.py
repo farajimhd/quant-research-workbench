@@ -14,12 +14,13 @@ from .signals import CapitalRequest
 LEGACY_CONTRACT = 'early-squeeze-r1-fixed-trail-v1'
 VWAP_CONTRACT = 'early-squeeze-r1-fixed-trail-v2'
 RECOVERY_CONTRACT = 'early-squeeze-r1-fixed-trail-v3'
-CONTRACT = 'early-squeeze-r1-fixed-trail-v4'
+MIDPOINT_CONTRACT = 'early-squeeze-r1-fixed-trail-v4'
+CONTRACT = 'early-squeeze-r1-fixed-trail-v5'
 SIGNAL = 'signal.activation.price-squeeze-early'
 
 
 def configure(p):
-    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, CONTRACT):
+    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, MIDPOINT_CONTRACT, CONTRACT):
         raise ValueError('Early Squeeze breakout requires its versioned filtered V7 adapter')
     foreign = [k for k,v in p.items() if k.endswith('_contract') and v
                and k not in ('early_squeeze_breakout_contract', 'structural_recovery_contract')]
@@ -43,7 +44,7 @@ def below(anchor, bid, tick):
 def record_exit(state, at, role, remaining, *, contract=CONTRACT):
     """Only actual exit fills can authorize stop-out recovery."""
     active = state.get('squeeze_entry') or {}
-    if contract in (RECOVERY_CONTRACT, CONTRACT) and not active.get('first_fill_at'):
+    if contract in (RECOVERY_CONTRACT, MIDPOINT_CONTRACT, CONTRACT) and not active.get('first_fill_at'):
         # Multiple child fills may each report an already-flat aggregate.
         # The first completed lifecycle owns its frozen recovery reference.
         return
@@ -98,14 +99,14 @@ def observe_context(o, previous):
 
 
 def target_price(level, tick, contract):
-    if contract == CONTRACT:
+    if contract in (MIDPOINT_CONTRACT, CONTRACT):
         # A sell limit uses the nearest valid tick to the band midpoint.
         return round(floor(((level['lower']+level['upper'])/2)/tick+.5+1e-9)*tick, 10)
     return round((floor(level['upper']/tick+1e-9)+1)*tick, 10)
 
 
 def overhead_levels(market, ask, tick, contract, exclude=''):
-    if contract == CONTRACT:
+    if contract in (MIDPOINT_CONTRACT, CONTRACT):
         # A band containing the ask is not overhead when its midpoint is
         # already below the executable entry. Use current resistance roles.
         return sorted((r for k,r in market.get('resistance', {}).items()
@@ -118,6 +119,7 @@ def overhead_levels(market, ask, tick, contract, exclude=''):
 def evaluate(host, a, o, p, old_state):
     from .strategy_engine import AssignmentStatus as Status, _at_or_after_session_time
     state = deepcopy(old_state)
+    aligned = p['early_squeeze_breakout_contract'] == CONTRACT
     # Use resolved infrastructure settings, never the raw inherited profile.
     a = replace(a, parameters=p)
     tick = p['execution']['tick_size']
@@ -199,7 +201,7 @@ def evaluate(host, a, o, p, old_state):
             order_intent={'execution_policy':'adaptive_urgent', 'protection_profile':'structural-single-target'}, **kw)
         if action in ('enter_long', 'add_long'):
             result = replace(result, evaluation=replace(result.evaluation, intents=tuple(
-                replace(i, reference_price=o.ask, execution_policy=replace(i.resolved_execution_policy(),
+                replace(i, reference_price=o.ask, execution_policy=i.resolved_execution_policy() if aligned else replace(i.resolved_execution_policy(),
                     envelope=replace(i.resolved_execution_policy().envelope, deadline_ms=100,
                         persist_until_cancelled=False, maximum_buy_price=o.ask)),
                     metadata={**i.metadata, 'mandatory_broker_target':True, 'wait_for_capital':False})
@@ -235,12 +237,12 @@ def evaluate(host, a, o, p, old_state):
                 results.append(emit('replace_protective_stop', 'fixed_distance_price_trail', Status.MANAGING,
                                     quantity=o.position_quantity, invalidation_price=stop,
                                     metadata=dict(previous_stop=previous_stop)))
-        if green and filtered and structure_fresh:
+        if (fresh if aligned else green) and filtered and structure_fresh:
             # Every distinct held-position break gets an opportunity, without MACD.
             seen = active.setdefault('added_levels', [])
             pending = active.setdefault('pending_adds', {})
-            for key, level in crossed:
-                if key != active['anchor']['unified_level_id'] and level['upper'] > active['entry_price'] and key not in seen:
+            for key, level in crossed if green else []:
+                if key not in seen and (aligned or (key != active['anchor']['unified_level_id'] and level['upper'] > active['entry_price'])):
                     pending.setdefault(key, deepcopy(level))
             for key in list(pending):
                 if o.price <= pending[key]['upper']:
@@ -248,7 +250,7 @@ def evaluate(host, a, o, p, old_state):
             overhead = overhead_levels(d,o.ask,tick,p['early_squeeze_breakout_contract'])
             count = len(d.get('broken', []))
             distance = 1 if count >= 6 else 2 if count >= 4 else 3
-            if crossed and len(overhead) >= distance and (not active['late'] or active['target_moves'] < 2):
+            if len(overhead) >= distance and (aligned or (crossed and (not active['late'] or active['target_moves'] < 2))):
                 proposal = target_price(overhead[distance-1],tick,p['early_squeeze_breakout_contract'])
                 if proposal > max(target, o.ask):
                     pending_target = active.get('pending_target', {})
@@ -264,7 +266,7 @@ def evaluate(host, a, o, p, old_state):
                     quantity=o.position_quantity, profit_target_price=proposal,
                     metadata=dict(previous_profit_target=target, squeeze_previous_target_moves=previous_moves)))
                 target = proposal
-            if pending and quote and a.permissions.add and active.get('slice_notional', 0) > 0 and stop < o.bid <= o.ask < target:
+            if green and pending and quote and a.permissions.add and active.get('slice_notional', 0) > 0 and stop < o.bid <= o.ask < target:
                 keys = sorted(pending)
                 results.append(emit('add_long', 'green_resistance_break_addition', Status.MANAGING,
                     invalidation_price=stop, profit_target_price=target,
@@ -286,7 +288,7 @@ def evaluate(host, a, o, p, old_state):
     phase = 'premarket' if local.hour < 9 or (local.hour == 9 and local.minute < 30) else 'regular' if local.hour < 16 else 'after_hours'
     if flatten or not o.market_open or phase not in behavior['eligible_sessions'] or _at_or_after_session_time(o.observed_at, behavior['entry_cutoff_time']):
         return emit('wait', 'outside_entry_session')
-    if 'activated_at' not in d or now-1 < d['activated_at']:
+    if 'activated_at' not in d or (now if aligned else now-1) < d['activated_at']:
         return emit('wait', 'waiting_for_post_squeeze_candle')
     if not green:
         return emit('wait', 'waiting_for_completed_green_1s')
@@ -312,11 +314,13 @@ def evaluate(host, a, o, p, old_state):
         if now <= recovery['stopped_at'] or o.price <= recovery['high']:
             return emit('wait', 'waiting_for_frozen_close_high')
         anchor = recovery['anchor']
-        swing = H.initial_swing_low(row, dict(lower=float('inf') if p['early_squeeze_breakout_contract'] in (RECOVERY_CONTRACT, CONTRACT) else o.bid),
+        swing = H.initial_swing_low(row, dict(lower=float('inf') if p['early_squeeze_breakout_contract'] in (RECOVERY_CONTRACT, MIDPOINT_CONTRACT, CONTRACT) else o.bid),
                                    now, pivot_not_before=recovery['breakout_at'],
                                    eligible=lambda s:s['lower'] > anchor['upper'])
         stop_anchor = swing['lower'] if swing else o.bar_open
         stop = below(stop_anchor, o.bid, tick)
+        if aligned and not swing and stop_anchor < o.bid:
+            stop = round(floor(stop_anchor/tick+1e-9)*tick, 10)
         stop_source = 'confirmed_swing_above_resistance' if swing else 'last_completed_candle_open_offset'
     else:
         candidates = [r for r in prior_resistance.values() if prior_hod and r['upper'] < prior_hod
