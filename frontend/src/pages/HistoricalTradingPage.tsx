@@ -1,4 +1,5 @@
 import { Modal } from "../app/components/Modal";
+import { FilteredV7Preparation } from "../app/components/FilteredV7Preparation";
 import { BacktestRecoveryState } from "../app/components/BacktestRecoveryState";
 import { BacktestRunHistory } from "../app/components/BacktestRunHistory";
 import { ArrowLeft, CheckCircle2, CircleStop, Gauge, LoaderCircle, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
@@ -475,6 +476,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <div><dt>Prepared streams</dt><dd>{run.preparation_progress?.completed.toLocaleString() ?? '—'} / {run.preparation_progress?.total.toLocaleString() ?? '—'}</dd></div>
               <div><dt>Eligible tickers</dt><dd>{run.level_book_coverage?.eligible_ticker_count.toLocaleString() ?? '—'}</dd></div></dl>
             {waiting ? <p role="status">{work?.dependencies?.map(item => `${item.path}: attempt ${item.attempt}/${item.max_attempts}. ${item.error}`).join("; ")}</p> : null}
+            {preparation?.filtered_v7 ? <FilteredV7Preparation progress={preparation.filtered_v7} /> : null}
             <h3>Excluded tickers · {run.level_book_coverage?.excluded_ticker_count ?? 0}</h3>
             {run.level_book_coverage?.excluded.length ? <div className="backtest-exclusion-table"><table><thead><tr><th>Ticker</th><th>Session</th><th>Reason</th></tr></thead><tbody>
               {run.level_book_coverage.excluded.map(row => <tr key={`${row.ticker}:${row.session}`}><td>{row.ticker}</td><td>{row.session}</td><td>{row.reason}</td></tr>)}

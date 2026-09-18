@@ -3,6 +3,15 @@ import { useEffect, useRef } from "react";
 import { apiWebSocketUrl } from "../api/client";
 import type { CanvasRegistry } from "./canvasWorkspace";
 
+export type FilteredV7Progress = {
+  total: number; completed: number; reused: number; built: number; unavailable: number; failed: number;
+  active: number; queued: number; before: string; updated_at: string;
+  elapsed_seconds: number; tickers_per_minute: number; eta_seconds: number | null;
+  workers: Array<{ slot: number; ticker: string | null; state: string; stage?: string;
+    completed?: number; total?: number; session?: string; retried?: number; resumed?: number;
+    updated_at?: string; error?: string }>;
+};
+
 export type CanvasReplayRun = {
   account_ids: string[];
   canvas_revision: string;
@@ -49,7 +58,7 @@ export type CanvasReplayRun = {
   };
   progress: number;
   preparation_stage?: "created" | "market_events" | "ready" | "signal_occurrences" | "strategy_frames" | "strategy_runtime" | "watchlist_membership" | "level_book_coverage" | "level_book_working_set" | "signal_identity" | "strategy_quality_admission";
-  preparation_progress?: { completed: number; total: number };
+  preparation_progress?: { completed: number; total: number; filtered_v7?: FilteredV7Progress | null };
   preparation_cache?: { strategy_frames?: "fixture" | "hit" | "miss" | "partial_hit" | "built" | "reusing" | "reused" | "reused_and_built" | "not_requested" | "not_required" | "request_memory" | "run_checkpoint" };
   run_id: string;
   session_date: string;
