@@ -7,15 +7,18 @@ each year.
 
 ## 2026
 
-### [2026-09-18 - Early Squeeze v6 and certified historical signals](docs/codex/chat-summaries/2026/CHAT-20260918-UNKNOWN-squeeze-v6-history.md)
+### [2026-09-18 - Early Squeeze 323-324 and certified historical signals](docs/codex/chat-summaries/2026/CHAT-20260918-UNKNOWN-squeeze-v6-history.md)
 
-Candidate 323 / release 6 corrects fresh current-R1 admission after stop-out and
-obsolete resistance counting. Fourteen JUNS/SUGP position lifecycles were audited.
+Candidate 324 / release 7 adds completed 100 ms, 2x-body, five-tick breakouts,
+gray R1 eligibility, corrected stops and partial liquidation, and 100 ms targets.
+All 14 new JUNS/SUGP lifecycles and 990 fills passed independent audits; 89 tests passed.
 Missing August 18–19 activation history now uses separately certified canonical
 detector reconstruction, with 5,302 and 5,360 first signals. All-ticker initialization
 passed the former memory failure and coverage stages; its bounded diagnostic was
 stopped during frame preparation. Full-session trading acceptance remains open.
 Related: TASK-0014, TASK-0211. Source push is blocked by pre-existing Git divergence.
+August 19 reused 1,553 filtered V7 histories; a v58-to-v59 frame revision change
+required new strategy streams. The authorized stop preserved 920 completed streams.
 
 ### [2026-09-17 - Trading Journal and filtered V7 preparation](docs/codex/chat-summaries/2026/CHAT-20260917-UNKNOWN-trading-journal-filtered-v7.md)
 
