@@ -367,6 +367,23 @@ def test_same_episode_reentry_inherits_resistance_count_for_initial_target():
     assert selection['level']['unified_level_id'] == 'R5'
 
 
+def test_flat_entry_trigger_does_not_advance_episode_target_count():
+    h, a, t, frame_1s, frame_100ms = episode_target_fixture()
+    a = advance(a, h.evaluate(a, t()))
+    a = advance(a, h.evaluate(a, frame_1s(.005, 10.39, .3, .2)))
+    a = advance(a, h.evaluate(a, frame_100ms(.01, 10.39)))
+    macd = a.state['squeeze_breakout']['macd_1s']
+    macd['broken_levels'] = ['R2', 'R3', 'R4', 'R5', 'R6']
+
+    result = h.evaluate(a, t(.015, 10.44))
+
+    assert result.state['squeeze_breakout']['macd_1s']['broken_levels'] == [
+        'R2', 'R3', 'R4', 'R5', 'R6']
+    intent = next(intent for intent in result.evaluation.intents if intent.action == 'enter_long')
+    assert intent.metadata['profit_target_selection']['episode_resistance_breaks'] == 5
+    assert intent.metadata['profit_target_selection']['ordinal'] == 2
+
+
 def test_new_1s_macd_episode_resets_resistance_target_count():
     h, a, t, frame_1s, frame_100ms = episode_target_fixture()
     a = advance(a, h.evaluate(a, t()))

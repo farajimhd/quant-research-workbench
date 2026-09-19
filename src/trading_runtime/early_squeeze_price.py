@@ -179,16 +179,14 @@ def evaluate(host, a, o, p, old_state):
                             d.setdefault('breakout_anchors', {})[key] = deepcopy(level)
             if crossed:
                 d['latest_broken_resistance'] = deepcopy(max((r for _,r in crossed), key=midpoint))
-                if episode_target_continuity and macd.get('open'):
-                    episode_broken = macd.setdefault('broken_levels', [])
-                    for key, level in crossed:
-                        if is_resistance(level) and key not in episode_broken:
-                            episode_broken.append(key)
         if held and active:
             broken = active.setdefault('broken_levels', [])
+            episode_broken = macd.setdefault('broken_levels', []) if episode_target_continuity and macd.get('open') else None
             for key, level in crossed:
                 if is_resistance(level) and key not in broken:
                     broken.append(key)
+                if is_resistance(level) and episode_broken is not None and key not in episode_broken:
+                    episode_broken.append(key)
         d.update(trade_price=o.price, trade_hod=max(prior_hod,o.price), levels=deepcopy(rows))
         if macd_episode_reentry and macd.get('open'):
             macd['high'] = max(macd.get('high', 0.), o.price)
