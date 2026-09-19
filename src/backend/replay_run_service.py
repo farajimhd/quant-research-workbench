@@ -2699,7 +2699,8 @@ class ReplayRunController:
                             await self._process_external_signal_event(signal_event)
                             external_index += 1
                         if frame.as_of < self.definition.requested_start:
-                            if (self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('historical_hod_contract')
+                            if ((self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('historical_hod_contract')
+                                 or self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') == 'early-squeeze-r1-100ms-v7')
                                     and frame.as_of.astimezone(NEW_YORK).date() == self.definition.session_date):
                                 await self._observe_episode_candle(frame)
                             self._remember_strategy_frame(frame)
@@ -3570,6 +3571,13 @@ class ReplayRunController:
         configuration = self.definition.configuration_revision['payload'].get('strategy') or {}
         parameters = configuration.get('parameters') or {}
         historical_hod = bool(parameters.get('historical_hod_contract'))
+        if parameters.get('early_squeeze_breakout_contract') == 'early-squeeze-r1-100ms-v7' and frame.timeframe == '100ms':
+            from src.trading_runtime.early_squeeze_fast import observe_candle
+            from src.market_engine.derived_trade_policy import eligible_trade_time
+            if eligible_trade_time(frame.as_of.timestamp()-.1):
+                market = self._candle_detector_states.setdefault(frame.ticker, {}).setdefault('structural_recovery', {})
+                market['fast_squeeze_context'] = observe_candle(frame, market.get('fast_squeeze_context', {}), market.get('row', {}))
+            return
         if parameters.get('vwap_ladder_contract') and frame.timeframe == '100ms':
             from types import SimpleNamespace
             from src.market_engine.derived_trade_policy import eligible_trade_time
@@ -3643,6 +3651,8 @@ class ReplayRunController:
                     structural_session_high=self._experimental_session_high(frame.ticker, frame.as_of),
                     structural_support_levels=(), structural_transition_levels=(),
                     structural_resistance_levels=snapshot['unified_levels']), saved.get('early_squeeze_context', {}))
+                if 'fast_squeeze_context' in saved:
+                    market['fast_squeeze_context'] = saved['fast_squeeze_context']
             self._candle_detector_states[frame.ticker] = {'structural_recovery':market}
             return
         if frame.timeframe != '1s' or not (parameters.get('episode_management') or {}).get('detector_candle_states_enabled'):
@@ -3730,6 +3740,7 @@ class ReplayRunController:
             source_native_only
             and frame.ticker not in self._strategy_quality_admitted_tickers
             and frame.timeframe != "1s"
+            and self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') != 'early-squeeze-r1-100ms-v7'
         ):
             # The approved volume/spread-quality gate is entirely one-second
             # and event/session sourced. Before it passes, higher-frequency
@@ -3956,7 +3967,7 @@ class ReplayRunController:
         )
         ticker_assignments = self._ticker_assignments(frame.ticker)
         if any(a.parameters.get('hindsight_long_contract') or
-               a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-fixed-trail-v3','early-squeeze-r1-fixed-trail-v4','early-squeeze-r1-fixed-trail-v5','early-squeeze-r1-fixed-trail-v6')
+               a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-fixed-trail-v3','early-squeeze-r1-fixed-trail-v4','early-squeeze-r1-fixed-trail-v5','early-squeeze-r1-fixed-trail-v6','early-squeeze-r1-100ms-v7')
                for a in ticker_assignments):
             # A bar projection is not a new quote. Retain the actual NBBO clock
             # so a trade-only interval cannot freshen an old executable price.
@@ -4129,7 +4140,7 @@ class ReplayRunController:
         # Quotes update the broker/NBBO state in ``_process_market_event``.
         if isinstance(event, QuoteEvent) and event.ticker in self._strategy_engaged_tickers:
             assignments = tuple(a for a in self._ticker_assignments(event.ticker)
-                                if a.parameters.get('hindsight_long_contract'))
+                                if a.parameters.get('hindsight_long_contract') or a.parameters.get('early_squeeze_breakout_contract') == 'early-squeeze-r1-100ms-v7')
             base = self._latest_strategy_observations.get(event.ticker)
             if assignments and base is not None:
                 self._flush_passive_market_events()
@@ -6831,7 +6842,7 @@ class ReplayRunController:
                         )
                     except HistoricalSignalCoverageUnavailable:
                         parameters = self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {})
-                        if parameters.get('early_squeeze_breakout_contract') != 'early-squeeze-r1-fixed-trail-v6':
+                        if parameters.get('early_squeeze_breakout_contract') not in ('early-squeeze-r1-fixed-trail-v6', 'early-squeeze-r1-100ms-v7'):
                             raise
                         from src.backend.historical_signal_preparation import reconstruct_configured_signal_occurrences
                         def reconstruction_progress(status):

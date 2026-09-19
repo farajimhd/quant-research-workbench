@@ -17,11 +17,12 @@ RECOVERY_CONTRACT = 'early-squeeze-r1-fixed-trail-v3'
 MIDPOINT_CONTRACT = 'early-squeeze-r1-fixed-trail-v4'
 LIFECYCLE_CONTRACT = 'early-squeeze-r1-fixed-trail-v5'
 CONTRACT = 'early-squeeze-r1-fixed-trail-v6'
+FAST_CONTRACT = 'early-squeeze-r1-100ms-v7'
 SIGNAL = 'signal.activation.price-squeeze-early'
 
 
 def configure(p):
-    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT):
+    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT, FAST_CONTRACT):
         raise ValueError('Early Squeeze breakout requires its versioned filtered V7 adapter')
     foreign = [k for k,v in p.items() if k.endswith('_contract') and v
                and k not in ('early_squeeze_breakout_contract', 'structural_recovery_contract')]
@@ -45,7 +46,7 @@ def below(anchor, bid, tick):
 def record_exit(state, at, role, remaining, *, contract=CONTRACT):
     """Only actual exit fills can authorize stop-out recovery."""
     active = state.get('squeeze_entry') or {}
-    if contract in (RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT) and not active.get('first_fill_at'):
+    if contract in (RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT, FAST_CONTRACT) and not active.get('first_fill_at'):
         # Multiple child fills may each report an already-flat aggregate.
         # The first completed lifecycle owns its frozen recovery reference.
         return
@@ -119,6 +120,9 @@ def overhead_levels(market, ask, tick, contract, exclude=''):
 
 
 def evaluate(host, a, o, p, old_state):
+    if p['early_squeeze_breakout_contract'] == FAST_CONTRACT:
+        from .early_squeeze_fast import evaluate as evaluate_fast
+        return evaluate_fast(host, a, o, p, old_state)
     from .strategy_engine import AssignmentStatus as Status, _at_or_after_session_time
     state = deepcopy(old_state)
     current_r1 = p['early_squeeze_breakout_contract'] == CONTRACT

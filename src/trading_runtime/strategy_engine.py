@@ -219,7 +219,7 @@ def supported_custom_execution_contracts() -> tuple[str, ...]:
     """Loaded-executor capability, used before saving a new research candidate."""
     return ('early-squeeze-r1-fixed-trail-v1', 'early-squeeze-r1-fixed-trail-v2',
             'early-squeeze-r1-fixed-trail-v3', 'early-squeeze-r1-fixed-trail-v4',
-            'early-squeeze-r1-fixed-trail-v5', 'early-squeeze-r1-fixed-trail-v6')
+            'early-squeeze-r1-fixed-trail-v5', 'early-squeeze-r1-fixed-trail-v6', 'early-squeeze-r1-100ms-v7')
 
 
 def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:

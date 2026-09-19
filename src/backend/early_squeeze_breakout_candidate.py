@@ -31,7 +31,8 @@ DESCRIPTION = (
 )
 
 
-def build(base, baseline):
+def build(base, baseline, *, profile_id=PROFILE_ID, label=LABEL, description=DESCRIPTION):
+    PROFILE_ID, CONTRACT, LABEL, DESCRIPTION = profile_id, profile_id, label, description
     if baseline['candidate_id'] != BASELINE_ID or baseline['content_hash'] != BASELINE_HASH:
         raise ValueError('Strategy 317 sizing source identity changed')
     source = baseline['payload']
@@ -118,7 +119,7 @@ def build(base, baseline):
     return payload, canvas, plan_id
 
 
-def require_loaded_executor():
+def require_loaded_executor(contract=CONTRACT):
     """Prevent an older running backend from falling through to template behavior."""
     import json
     from urllib.error import URLError
@@ -129,7 +130,7 @@ def require_loaded_executor():
             capabilities = json.load(response)
     except (URLError, ValueError, TimeoutError) as exc:
         raise RuntimeError('Candidate activation pending: restart the managed backend when safe to load the executor') from exc
-    if not isinstance(capabilities, dict) or CONTRACT not in capabilities.get('contracts', []):
+    if not isinstance(capabilities, dict) or contract not in capabilities.get('contracts', []):
         raise RuntimeError('Candidate activation pending: the running backend has not loaded the required executor')
 
 
