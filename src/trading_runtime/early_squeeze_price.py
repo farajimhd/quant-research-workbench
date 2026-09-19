@@ -13,9 +13,10 @@ RESISTANCE_CEILING_CONTRACT = 'early-squeeze-r1-price-resistance-ceiling-v12'
 BROKEN_RESISTANCE_CEILING_CONTRACT = 'early-squeeze-r1-price-broken-resistance-ceiling-v13'
 GREEN_CLOSE_CEILING_CONTRACT = 'early-squeeze-r1-price-green-close-ceiling-v14'
 MACD_EPISODE_REENTRY_CONTRACT = 'early-squeeze-r1-price-macd-1s-episode-reentry-v15'
+DUAL_MACD_REENTRY_CONTRACT = 'early-squeeze-r1-price-dual-macd-reentry-v16'
 EPISODE_CONTRACTS = (EPISODE_CONTRACT, RESISTANCE_CEILING_CONTRACT,
                      BROKEN_RESISTANCE_CEILING_CONTRACT, GREEN_CLOSE_CEILING_CONTRACT,
-                     MACD_EPISODE_REENTRY_CONTRACT)
+                     MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT)
 
 
 def midpoint(row):
@@ -68,8 +69,10 @@ def evaluate(host, a, o, p, old_state):
     resistance_ceiling = p['early_squeeze_breakout_contract'] == RESISTANCE_CEILING_CONTRACT
     broken_resistance_cap = p['early_squeeze_breakout_contract'] == BROKEN_RESISTANCE_CEILING_CONTRACT
     green_close_cap = p['early_squeeze_breakout_contract'] in (
-        GREEN_CLOSE_CEILING_CONTRACT, MACD_EPISODE_REENTRY_CONTRACT)
-    macd_episode_reentry = p['early_squeeze_breakout_contract'] == MACD_EPISODE_REENTRY_CONTRACT
+        GREEN_CLOSE_CEILING_CONTRACT, MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT)
+    macd_episode_reentry = p['early_squeeze_breakout_contract'] in (
+        MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT)
+    dual_macd_reentry = p['early_squeeze_breakout_contract'] == DUAL_MACD_REENTRY_CONTRACT
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     state = deepcopy(old_state)
     a = replace(a, parameters=p)
@@ -125,6 +128,15 @@ def evaluate(host, a, o, p, old_state):
             macd.update(observed_at=now, line=o.macd_line, signal=o.macd_signal,
                         high=max(macd.get('high', 0.), o.bar_high or o.price))
     prior_macd_episode_high = macd.get('high', 0.)
+    macd_100ms = d.setdefault('macd_100ms', {}) if dual_macd_reentry else {}
+    macd_100ms_fresh = (dual_macd_reentry and o.source_timeframe == '100ms'
+                        and 'bar_close' in o.evaluation_events
+                        and now > macd_100ms.get('observed_at', 0))
+    if macd_100ms_fresh:
+        valid = all(type(value) in (int, float) and isfinite(value)
+                    for value in (o.macd_line, o.macd_signal))
+        macd_100ms.update(open=bool(valid and o.macd_line > o.macd_signal),
+                          observed_at=now, line=o.macd_line, signal=o.macd_signal)
     prior_rows = d.get('levels', rows)
     crossed = []
     if episode and price_event and structure_fresh:
@@ -172,6 +184,34 @@ def evaluate(host, a, o, p, old_state):
             pending_setup['peak_close'] = max(pending_setup.get('peak_close') or o.price, o.price)
         if active and (held or a.status == Status.ENTRY_PENDING) and not active.get('stopout_reference'):
             active['peak_close'] = max(active.get('peak_close') or o.price, o.price)
+    if dual_macd_reentry and held and active and macd_100ms_fresh and structure_fresh:
+        confirmations = active.setdefault('add_close_confirmations', {})
+        for key, level in rows.items():
+            if is_resistance(level) and o.price > level['upper'] + 1e-9:
+                confirmations[key] = dict(closed_at=now, close=o.price, upper=level['upper'])
+    if dual_macd_reentry and not held and state.get('entries', 0) and macd.get('open'):
+        same_episode = d.get('last_entry_macd_episode') == macd.get('episode_id')
+        review = d.get('reentry_100ms_review')
+        if same_episode and (not review or review.get('entry_count') != state.get('entries')):
+            review = d['reentry_100ms_review'] = dict(
+                episode_id=macd.get('episode_id'), entry_count=state.get('entries'), closes=0,
+                forming_resistances=[], blocked=False)
+        if same_episode and review and macd_100ms_fresh and not review.get('blocked'):
+            review['closes'] += 1
+            for candidate in review['forming_resistances']:
+                if o.price > candidate['price'] + 1e-9:
+                    candidate['broken'] = True
+            for event in market.get('local_events', ()):
+                level = event.get('level') or {}
+                price = level.get('price')
+                if (event.get('state') == 'resistance_forming'
+                        and type(price) in (int, float) and isfinite(price) and price > 0):
+                    review['forming_resistances'].append(dict(
+                        price=float(price), observed_at=now,
+                        broken=o.price > float(price) + 1e-9))
+            if review['closes'] >= 3 and any(
+                    not candidate['broken'] for candidate in review['forming_resistances']):
+                review['blocked'] = True
     green_close = bool(active and held and green_close_cap and o.source_timeframe == '1s'
                        and 'bar_close' in o.evaluation_events and o.bar_open is not None
                        and o.price > o.bar_open)
@@ -190,6 +230,9 @@ def evaluate(host, a, o, p, old_state):
         evidence.update(stop_trigger_source='eligible_trade', prior_breakout_highs=prior_breakout_highs)
     if macd_episode_reentry:
         evidence['macd_1s_episode'] = dict(macd, prior_high=prior_macd_episode_high)
+    if dual_macd_reentry:
+        evidence['macd_100ms_gate'] = dict(macd_100ms)
+        evidence['reentry_100ms_review'] = deepcopy(d.get('reentry_100ms_review'))
 
     def emit(action, reason, status=None, **kw):
         metadata = dict(evidence, active_stop=state.get('active_stop'),
@@ -282,7 +325,8 @@ def evaluate(host, a, o, p, old_state):
                     target = proposal
             if o.bid >= target > 0 and not any(r.evaluation.intents for r in results):
                 return emit('exit', 'profit_target', Status.EXIT_PENDING, quantity=o.position_quantity)
-        if price_event and structure_fresh and quote:
+        add_confirmation_frame = bool(dual_macd_reentry and macd_100ms_fresh)
+        if (price_event or add_confirmation_frame) and structure_fresh and quote:
             pending = active.setdefault('pending_adds', {})
             seen = d.setdefault('attempted_add_levels', []) if strict else active.setdefault('added_levels', [])
             for key, level in crossed:
@@ -291,8 +335,13 @@ def evaluate(host, a, o, p, old_state):
             for key in list(pending):
                 if (strict and not is_resistance(rows.get(key, {}))) or not boundary(pending[key], rows) or o.price < boundary(pending[key], rows)['price']:
                     pending.pop(key)
-            if pending and a.permissions.add and active.get('slice_notional', 0) > 0 and stop < o.bid <= o.ask < target:
-                keys = sorted(pending)
+            confirmed_pending = ({key: level for key, level in pending.items()
+                if key in active.get('add_close_confirmations', {})}
+                if dual_macd_reentry else pending)
+            if (confirmed_pending and (not dual_macd_reentry or macd_100ms.get('open'))
+                    and a.permissions.add and active.get('slice_notional', 0) > 0
+                    and stop < o.bid <= o.ask < target):
+                keys = sorted(confirmed_pending)
                 if strict and not episode:
                     anchor_stop = max(below(rows[k]['lower'], tick) for k in keys)
                     proposal = max(stop, min(anchor_stop, below(min(o.price, o.ask), tick)))
@@ -306,7 +355,8 @@ def evaluate(host, a, o, p, old_state):
                     capital_request=CapitalRequest(mode='fixed_notional', value=active['slice_notional']*len(keys)),
                     metadata=dict(squeeze_add_levels=keys, slice_notional=active['slice_notional'])))
                 seen.extend(keys)
-                pending.clear()
+                for key in keys:
+                    pending.pop(key, None)
         if results:
             return replace(results[-1], state=state, evaluation=replace(results[-1].evaluation,
                 intents=tuple(i for r in results for i in r.evaluation.intents)))
@@ -323,6 +373,8 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
     episode = p['early_squeeze_breakout_contract'] in EPISODE_CONTRACTS
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     macd_episode_reentry = p['early_squeeze_breakout_contract'] == MACD_EPISODE_REENTRY_CONTRACT
+    dual_macd_reentry = p['early_squeeze_breakout_contract'] == DUAL_MACD_REENTRY_CONTRACT
+    macd_episode_reentry = macd_episode_reentry or dual_macd_reentry
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
     if a.status == Status.ENTRY_PENDING or state.get('pending_capital_request'):
         return emit('wait', 'entry_fill_pending', Status.ENTRY_PENDING)
@@ -341,11 +393,19 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
     macd = d.get('macd_1s', {})
     if macd_episode_reentry and not macd.get('open'):
         return emit('wait', 'macd_1s_line_above_signal_required')
+    if dual_macd_reentry and not d.get('macd_100ms', {}).get('open'):
+        return emit('wait', 'macd_100ms_line_above_signal_required')
     same_episode_reentry = bool(macd_episode_reentry and state.get('entries', 0)
                                 and d.get('last_entry_macd_episode') == macd.get('episode_id'))
     if same_episode_reentry and (not price_event or not prior_macd_episode_high
                                  or o.price <= prior_macd_episode_high):
         return emit('wait', 'waiting_for_macd_1s_episode_high_break')
+    if same_episode_reentry and dual_macd_reentry:
+        review = d.get('reentry_100ms_review') or {}
+        if review.get('blocked'):
+            return emit('wait', 'macd_episode_reentry_stopped_by_forming_resistance')
+        if review.get('closes', 0) < 3:
+            return emit('wait', 'waiting_for_three_completed_100ms_reentry_candles')
     anchor = entry_level(rows, prior_hod)
     setup = d.get('initial_breakout')
     limit = boundary(anchor, rows) if anchor else None
