@@ -7,21 +7,18 @@ each year.
 
 ## 2026
 
-### [2026-09-18 - Early Squeeze 323-324 and certified historical signals](docs/codex/chat-summaries/2026/CHAT-20260918-UNKNOWN-squeeze-v6-history.md)
+### [2026-09-18 - Early Squeeze 323-326 and certified historical signals](docs/codex/chat-summaries/2026/CHAT-20260918-UNKNOWN-squeeze-v6-history.md)
 
-Candidate 324 / release 7 adds completed 100 ms, 2x-body, five-tick breakouts,
-gray R1 eligibility, corrected stops and partial liquidation, and 100 ms targets.
-All 14 new JUNS/SUGP lifecycles and 990 fills passed independent audits; 89 tests passed.
-Missing August 18–19 activation history now uses separately certified canonical
-detector reconstruction, with 5,302 and 5,360 first signals. All-ticker initialization
-passed the former memory failure and coverage stages; its bounded diagnostic was
-stopped during frame preparation. Full-session trading acceptance remains open.
-Related: TASK-0014, TASK-0211. Source push is blocked by pre-existing Git divergence.
-August 19 reused 1,553 filtered V7 histories; a v58-to-v59 frame revision change
-required new strategy streams. The authorized stop preserved 920 completed streams.
-Subsequent SUGP review produced corrected v8/325 code: 1.25x bodies, 100 ms
-admission clocks, and latest-resistance recovery stops. Candidate 325 is now published as release 8;
-full-universe V7 resident memory failure prompted lossless inactive-state spilling.
+Candidate 326 / release 9 implements midpoint-only R1 selection, a 10% gap price
+breakout, price-triggered recovery, latest-resistance stops and trade-clock targets.
+SUGP 04:00-04:18 audit passed eight lifecycles; entry at 04:10:25.851 has stop 3.49.
+The full-universe V7 memory failure was fixed with lossless inactive-state spilling;
+all 1,553 tickers prepared and advanced. Unfunded simulator orders now return explicit
+broker rejections instead of aborting Backtest. 150 focused strategy/broker checks passed.
+Earlier 323-325 behavior, certified August 18-19 Early Squeeze reconstruction and
+v58-to-v59 prepared-stream reuse are preserved in the narrative. Full-session and
+JUNS v9 acceptance remain open. Source push is blocked by existing Git divergence.
+Related: TASK-0014, TASK-0211.
 
 ### [2026-09-17 - Trading Journal and filtered V7 preparation](docs/codex/chat-summaries/2026/CHAT-20260917-UNKNOWN-trading-journal-filtered-v7.md)
 

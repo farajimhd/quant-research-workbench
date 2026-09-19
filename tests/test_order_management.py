@@ -459,6 +459,23 @@ class ExecutionTacticTests(unittest.TestCase):
 
 
 class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cash_denial_is_rejected_not_unknown_and_does_not_abort(self):
+        with tempfile.TemporaryDirectory() as directory:
+            broker = SimulatedBrokerAdapter(['DU1'])
+            manager, journal = await self._manager(directory, broker, policy=BrokerCommunicationPolicy())
+            try:
+                requested = portfolio_approved(journal, intent())
+                # Other fills consumed cash after the portfolio/risk snapshot.
+                broker._cash['DU1'] = 1.
+                await manager.submit_intent(requested, account_id='DU1', event=None)
+                group = next(iter(manager._groups.values()))
+                self.assertEqual(group.state, OrderManagementState.REJECTED)
+                self.assertEqual(group.rejection_reason, 'Order exceeds available cash')
+                self.assertEqual(await broker.live_orders(), [])
+            finally:
+                await manager.close()
+                journal.close()
+
     async def test_partial_target_completion_preserves_runner_and_oca_quantity(self):
         from tests.test_trading_runtime import quote
         broker = RecordingBroker()

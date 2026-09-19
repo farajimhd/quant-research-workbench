@@ -454,11 +454,26 @@ class SimulatedBrokerAdapter:
         )
         async with self._lock:
             results: list[dict[str, Any]] = []
+            # Funding denial is a known broker rejection, not an unknown
+            # transport outcome. Check the entire batch before accepting any
+            # parent or protection leg so OMS can release its reservation.
             for order in orders:
+                self._require_matching_account(account_id, order)
+            resolved_orders = [self._resolve_cash_quantity(order) for order in orders]
+            # Supported batches are brackets or OCA alternatives, not an
+            # arbitrary basket of independent buys. Preserve their existing
+            # per-leg funding requirement rather than adding OCA siblings.
+            required_cash = max((
+                (order.price or self._reference_price(order.conid, order.ticker)) * order.quantity
+                + self._commission(order.quantity)
+                for order in resolved_orders if order.side.upper() == 'BUY'), default=0.)
+            if required_cash > self._cash[account_id]:
+                return [{'error': 'Order exceeds available cash', 'errorCode': 201,
+                         'required_cash': required_cash, 'available_cash': self._cash[account_id]}]
+            for order, resolved in zip(orders, resolved_orders):
                 self._require_matching_account(account_id, order)
                 if order.cOID and order.cOID in self._order_ids_by_coid:
                     raise ValueError(f"cOID must be unique: {order.cOID}")
-                resolved = self._resolve_cash_quantity(order)
                 self._pretrade_validate(
                     resolved,
                     oca_group=standalone_oca_group,

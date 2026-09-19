@@ -138,6 +138,17 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
         await self.broker.initialize()
         await self.broker.on_market_event(quote(bid=99, ask=100))
 
+    async def test_unfunded_batch_is_known_rejection_and_accepts_no_legs(self) -> None:
+        order = OrderRequest(acctId='DU123', conid=265598, cOID='first', ticker='AAPL',
+                             orderType='LMT', side='BUY', quantity=101, price=100)
+        child = replace(order,cOID='second',parentId='first',side='SELL',price=110)
+        response = await self.broker.place_orders('DU123', [order, child])
+        self.assertEqual(response[0]['error'], 'Order exceeds available cash')
+        self.assertEqual(response[0]['required_cash'], 10100)
+        self.assertEqual(await self.broker.live_orders(), [])
+        accepted = await self.broker.place_orders('DU123', [replace(order,quantity=60)])
+        self.assertEqual(accepted[0]['order_status'], 'Submitted')
+
     async def test_partial_market_fills_use_quote_liquidity_and_ibkr_statuses(self) -> None:
         # This tests liquidity, so fund the higher-priced second partial fill.
         self.broker = SimulatedBrokerAdapter(["DU123"], SimulationConfig(
