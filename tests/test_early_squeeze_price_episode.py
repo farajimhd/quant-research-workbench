@@ -23,6 +23,12 @@ def broken_resistance_ceiling_opened():
         'early_squeeze_breakout_contract': P.BROKEN_RESISTANCE_CEILING_CONTRACT}), t
 
 
+def green_close_ceiling_opened():
+    h, a, t = opened()
+    return h, replace(a, parameters={**a.parameters,
+        'early_squeeze_breakout_contract': P.GREEN_CLOSE_CEILING_CONTRACT}), t
+
+
 @pytest.mark.parametrize('low,enters', [(10.39, True), (10.42, False)])
 def test_only_below_lower_band_resets_reentry_high(low, enters):
     h, a, t = opened()
@@ -125,6 +131,37 @@ def test_broken_resistance_ceiling_uses_lower_edge_until_next_band_fully_clears(
     assert ceiling['unified_level_id'] == 'R3'
 
 
+def test_green_1s_close_and_trade_break_are_both_required_to_advance_ceiling():
+    h, a, t = green_close_ceiling_opened()
+    a.state['squeeze_entry'].update(trail_distance=.10, peak_price=10.44, structural_stop=10.39)
+    a.state['active_stop'] = 10.39
+
+    trade_break = h.evaluate(a, t(.02, 10.63, 100.))
+    assert trade_break.state['active_stop'] == pytest.approx(10.40)
+    a = advance(a, trade_break)
+
+    red_close = replace(t(.03, 10.63, 100.), source_timeframe='1s',
+        evaluation_events=('bar_close',), changed_source_ids=(), source_signal_ids=('qmd-derived:test:1s',),
+        bar_open=10.64)
+    result = h.evaluate(a, red_close)
+    assert result.state['active_stop'] == pytest.approx(10.40)
+    assert not any(i.action == 'replace_protective_stop' for i in result.evaluation.intents)
+    a = advance(a, result)
+
+    green_close = replace(red_close, observed_at=t(.04).observed_at, price=10.64, bar_open=10.61)
+    result = h.evaluate(a, green_close)
+    assert result.state['active_stop'] == pytest.approx(10.53)
+    ceiling = next(i for i in result.evaluation.intents
+                   if i.action == 'replace_protective_stop').metadata['resistance_ceiling']
+    assert ceiling['unified_level_id'] == 'R3'
+
+
+def test_green_close_contract_enforces_ten_cent_minimum_trail_distance():
+    h, a, t = green_close_ceiling_opened()
+    result = h.evaluate(a, replace(t(.02, 10.45, 100.), average_price=10.45))
+    assert result.state['squeeze_entry']['trail_distance'] == pytest.approx(.10)
+
+
 def test_reset_does_not_retry_consumed_addition():
     h, a, t = opened()
     a.state['squeeze_entry'].update(trail_distance=1., peak_price=10.44, structural_stop=9.44)
@@ -177,6 +214,18 @@ def test_resistance_ceiling_candidate_compiles(monkeypatch):
 def test_broken_resistance_ceiling_candidate_compiles(monkeypatch):
     from copy import deepcopy
     from src.backend import early_squeeze_broken_resistance_ceiling_candidate as C
+    from src.backend.trading_configuration_service import configuration_base, _build_configuration_release
+    from tests.test_early_squeeze_candidate import baseline
+    base = configuration_base()
+    base['strategy']['profiles'] = [p for p in base['strategy']['profiles'] if p['profile_id'] != C.CONTRACT]
+    monkeypatch.setattr('src.backend.trading_configuration_service.configuration_base', lambda: deepcopy(base))
+    payload, canvas, plan = C.build(base, baseline(base))
+    _build_configuration_release(canvas_revision=canvas['revision'], canvas_profile=canvas['profile'], configuration=payload, run_plan_id=plan, strategy_profile_id=C.CONTRACT)
+
+
+def test_green_close_ceiling_candidate_compiles(monkeypatch):
+    from copy import deepcopy
+    from src.backend import early_squeeze_green_close_ceiling_candidate as C
     from src.backend.trading_configuration_service import configuration_base, _build_configuration_release
     from tests.test_early_squeeze_candidate import baseline
     base = configuration_base()

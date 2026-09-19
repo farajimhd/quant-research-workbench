@@ -11,7 +11,9 @@ STRICT_CONTRACT = 'early-squeeze-r1-price-high-v10'
 EPISODE_CONTRACT = 'early-squeeze-r1-price-episode-v11'
 RESISTANCE_CEILING_CONTRACT = 'early-squeeze-r1-price-resistance-ceiling-v12'
 BROKEN_RESISTANCE_CEILING_CONTRACT = 'early-squeeze-r1-price-broken-resistance-ceiling-v13'
-EPISODE_CONTRACTS = (EPISODE_CONTRACT, RESISTANCE_CEILING_CONTRACT, BROKEN_RESISTANCE_CEILING_CONTRACT)
+GREEN_CLOSE_CEILING_CONTRACT = 'early-squeeze-r1-price-green-close-ceiling-v14'
+EPISODE_CONTRACTS = (EPISODE_CONTRACT, RESISTANCE_CEILING_CONTRACT,
+                     BROKEN_RESISTANCE_CEILING_CONTRACT, GREEN_CLOSE_CEILING_CONTRACT)
 
 
 def midpoint(row):
@@ -44,12 +46,13 @@ def unbroken_resistance_ceiling(rows, price, stop):
     return min(candidates, key=lambda r:(r['lower'], r['upper'], r['unified_level_id']), default=None)
 
 
-def broken_resistance_ceiling(active, breakout_anchors, rows, price):
+def broken_resistance_ceiling(active, breakout_anchors, rows, price, confirmed_ids=None):
     """Advance only after price fully clears a resistance's upper edge."""
     current = active.get('trail_resistance_ceiling') or active['anchor']
     catalog = {r['unified_level_id']: r for r in breakout_anchors.values()}
     catalog.update({r['unified_level_id']: r for r in rows.values() if eligible(r)})
-    cleared = [r for r in catalog.values() if r['lower'] > current['lower'] + 1e-9
+    cleared = [r for r in catalog.values() if (confirmed_ids is None or r['unified_level_id'] in confirmed_ids)
+               and r['lower'] > current['lower'] + 1e-9
                and price > r['upper'] + 1e-9]
     if cleared:
         current = max(cleared, key=lambda r:(r['lower'], r['upper'], r['unified_level_id']))
@@ -62,6 +65,7 @@ def evaluate(host, a, o, p, old_state):
     episode = p['early_squeeze_breakout_contract'] in EPISODE_CONTRACTS
     resistance_ceiling = p['early_squeeze_breakout_contract'] == RESISTANCE_CEILING_CONTRACT
     broken_resistance_cap = p['early_squeeze_breakout_contract'] == BROKEN_RESISTANCE_CEILING_CONTRACT
+    green_close_cap = p['early_squeeze_breakout_contract'] == GREEN_CLOSE_CEILING_CONTRACT
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     state = deepcopy(old_state)
     a = replace(a, parameters=p)
@@ -145,6 +149,17 @@ def evaluate(host, a, o, p, old_state):
             pending_setup['peak_close'] = max(pending_setup.get('peak_close') or o.price, o.price)
         if active and (held or a.status == Status.ENTRY_PENDING) and not active.get('stopout_reference'):
             active['peak_close'] = max(active.get('peak_close') or o.price, o.price)
+    green_close = bool(active and held and green_close_cap and o.source_timeframe == '1s'
+                       and 'bar_close' in o.evaluation_events and o.bar_open is not None
+                       and o.price > o.bar_open)
+    if green_close:
+        confirmations = active.setdefault('green_resistance_closes', {})
+        catalog = {r['unified_level_id']: r for r in d.get('breakout_anchors', {}).values()}
+        catalog.update({r['unified_level_id']: r for r in rows.values() if eligible(r)})
+        for key, level in catalog.items():
+            if o.price > level['upper'] + 1e-9:
+                confirmations[key] = dict(closed_at=now, close=o.price, open=o.bar_open,
+                                          upper=level['upper'])
     evidence = dict(contract=p['early_squeeze_breakout_contract'], filtered_v7=filtered,
         activation={k:d.get(k) for k in ('activated_at', 'activation_event_id')})
     evidence['price_breakout'] = evidence_price
@@ -191,20 +206,27 @@ def evaluate(host, a, o, p, old_state):
         if not active:
             return emit('hold', 'position_entry_state_unavailable', Status.MANAGING)
         if not active.get('trail_distance') and o.average_price > stop > 0:
-            active.update(trail_distance=o.average_price-stop, peak_price=o.average_price)
+            distance = o.average_price-stop
+            if green_close_cap:
+                distance = max(distance, .10)
+            active.update(trail_distance=distance, peak_price=o.average_price)
         if (price_event and o.price <= stop) if strict else (quote and o.bid <= stop):
             return emit('exit', 'protective_stop', Status.EXIT_PENDING, quantity=o.position_quantity)
         if state.get('manual_exit_requested'):
             return emit('exit', 'manual_exit', Status.EXIT_PENDING, quantity=o.position_quantity)
         results = []
-        if (price_event if strict else quote) and active.get('trail_distance'):
-            trail_price = o.price if strict else o.bid
+        trail_update = price_event or green_close if strict else bool(quote)
+        if trail_update and active.get('trail_distance'):
+            trail_price = (o.price if price_event else active.get('peak_price', o.price)) if strict else o.bid
             active['peak_price'] = max(active.get('peak_price', trail_price), trail_price)
             proposal = round(floor((active['peak_price']-active['trail_distance'])/tick+1e-9)*tick, 10)
             desired = active.get('structural_stop', stop)
             if desired < (o.price if strict else o.bid):
                 proposal = max(proposal, desired)
-            ceiling = (broken_resistance_ceiling(active, d.get('breakout_anchors', {}), rows, trail_price)
+            ceiling = (broken_resistance_ceiling(active, d.get('breakout_anchors', {}), rows, trail_price,
+                           set(active.get('green_resistance_closes', {})))
+                       if green_close_cap else
+                       broken_resistance_ceiling(active, d.get('breakout_anchors', {}), rows, trail_price)
                        if broken_resistance_cap else
                        unbroken_resistance_ceiling(rows, trail_price, stop) if resistance_ceiling else None)
             if ceiling:
