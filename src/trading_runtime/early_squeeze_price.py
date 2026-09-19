@@ -10,7 +10,8 @@ CONTRACT = 'early-squeeze-r1-price-gap-v9'
 STRICT_CONTRACT = 'early-squeeze-r1-price-high-v10'
 EPISODE_CONTRACT = 'early-squeeze-r1-price-episode-v11'
 RESISTANCE_CEILING_CONTRACT = 'early-squeeze-r1-price-resistance-ceiling-v12'
-EPISODE_CONTRACTS = (EPISODE_CONTRACT, RESISTANCE_CEILING_CONTRACT)
+BROKEN_RESISTANCE_CEILING_CONTRACT = 'early-squeeze-r1-price-broken-resistance-ceiling-v13'
+EPISODE_CONTRACTS = (EPISODE_CONTRACT, RESISTANCE_CEILING_CONTRACT, BROKEN_RESISTANCE_CEILING_CONTRACT)
 
 
 def midpoint(row):
@@ -43,10 +44,24 @@ def unbroken_resistance_ceiling(rows, price, stop):
     return min(candidates, key=lambda r:(r['lower'], r['upper'], r['unified_level_id']), default=None)
 
 
+def broken_resistance_ceiling(active, breakout_anchors, rows, price):
+    """Advance only after price fully clears a resistance's upper edge."""
+    current = active.get('trail_resistance_ceiling') or active['anchor']
+    catalog = {r['unified_level_id']: r for r in breakout_anchors.values()}
+    catalog.update({r['unified_level_id']: r for r in rows.values() if eligible(r)})
+    cleared = [r for r in catalog.values() if r['lower'] > current['lower'] + 1e-9
+               and price > r['upper'] + 1e-9]
+    if cleared:
+        current = max(cleared, key=lambda r:(r['lower'], r['upper'], r['unified_level_id']))
+    active['trail_resistance_ceiling'] = deepcopy(current)
+    return current
+
+
 def evaluate(host, a, o, p, old_state):
     from .strategy_engine import AssignmentStatus as Status
     episode = p['early_squeeze_breakout_contract'] in EPISODE_CONTRACTS
     resistance_ceiling = p['early_squeeze_breakout_contract'] == RESISTANCE_CEILING_CONTRACT
+    broken_resistance_cap = p['early_squeeze_breakout_contract'] == BROKEN_RESISTANCE_CEILING_CONTRACT
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     state = deepcopy(old_state)
     a = replace(a, parameters=p)
@@ -189,7 +204,9 @@ def evaluate(host, a, o, p, old_state):
             desired = active.get('structural_stop', stop)
             if desired < (o.price if strict else o.bid):
                 proposal = max(proposal, desired)
-            ceiling = unbroken_resistance_ceiling(rows, trail_price, stop) if resistance_ceiling else None
+            ceiling = (broken_resistance_ceiling(active, d.get('breakout_anchors', {}), rows, trail_price)
+                       if broken_resistance_cap else
+                       unbroken_resistance_ceiling(rows, trail_price, stop) if resistance_ceiling else None)
             if ceiling:
                 proposal = min(proposal, ceiling['lower'])
             if stop < proposal < (o.price if strict else o.bid):
