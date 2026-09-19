@@ -1,4 +1,4 @@
-"""Candidate 326: event-price admission over midpoint-selected resistance."""
+"""Versioned event-price strategies over midpoint-selected resistance."""
 from copy import deepcopy
 from dataclasses import replace
 from math import floor, isfinite
@@ -7,6 +7,7 @@ from .early_squeeze_fast import below, levels, is_resistance
 from .signals import CapitalRequest
 
 CONTRACT = 'early-squeeze-r1-price-gap-v9'
+STRICT_CONTRACT = 'early-squeeze-r1-price-high-v10'
 
 
 def midpoint(row):
@@ -34,6 +35,7 @@ def boundary(anchor, rows):
 
 def evaluate(host, a, o, p, old_state):
     from .strategy_engine import AssignmentStatus as Status
+    strict = p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     state = deepcopy(old_state)
     a = replace(a, parameters=p)
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
@@ -73,12 +75,19 @@ def evaluate(host, a, o, p, old_state):
     evidence_price = dict(price_event=price_event, previous_price=previous, prior_hod=prior_hod)
     prior_rows = d.get('levels', rows)
     crossed = []
+    prior_breakout_highs = dict(d.get('breakout_highs', {}))
+    if strict and price_event:
+        highs = d.setdefault('breakout_highs', {})
+        for key in highs:
+            highs[key] = max(highs[key], o.price)
     if price_event:
         if structure_fresh and previous is not None and o.price > previous:
             for key, level in prior_rows.items():
                 limit = boundary(level, prior_rows)
                 if eligible(level) and limit and previous < limit['price'] <= o.price:
                     crossed.append((key, level))
+                    if strict:
+                        d.setdefault('breakout_highs', {}).setdefault(key, o.price)
             if crossed:
                 d['latest_broken_resistance'] = deepcopy(max((r for _,r in crossed), key=midpoint))
         if held and active:
@@ -94,15 +103,18 @@ def evaluate(host, a, o, p, old_state):
             pending_setup['peak_close'] = max(pending_setup.get('peak_close') or o.price, o.price)
         if active and (held or a.status == Status.ENTRY_PENDING) and not active.get('stopout_reference'):
             active['peak_close'] = max(active.get('peak_close') or o.price, o.price)
-    evidence = dict(contract=CONTRACT, filtered_v7=filtered,
+    evidence = dict(contract=STRICT_CONTRACT if strict else CONTRACT, filtered_v7=filtered,
         activation={k:d.get(k) for k in ('activated_at', 'activation_event_id')})
     evidence['price_breakout'] = evidence_price
+    if strict:
+        evidence.update(stop_trigger_source='eligible_trade', prior_breakout_highs=prior_breakout_highs)
 
     def emit(action, reason, status=None, **kw):
         metadata = dict(evidence, active_stop=state.get('active_stop'),
             profit_targets=list(state.get('structural_profit_targets') or []),
             position_resistance_breaks=len(active.get('broken_levels', [])),
-            fixed_trail_distance=active.get('trail_distance'), trailing_bid_high=active.get('peak_price'),
+            fixed_trail_distance=active.get('trail_distance'), trailing_bid_high=None if strict else active.get('peak_price'),
+            trailing_trade_high=active.get('peak_price') if strict else None,
             bid=o.bid, ask=o.ask, **kw.pop('metadata', {}))
         if action == 'exit':
             if reason != 'complete_position_liquidation':
@@ -130,22 +142,27 @@ def evaluate(host, a, o, p, old_state):
             return emit('exit', 'complete_position_liquidation', Status.EXIT_PENDING, quantity=remaining)
         return emit('hold', 'exit_fill_pending', Status.EXIT_PENDING)
     if held:
+        if strict and active:
+            key = active['anchor']['unified_level_id']
+            if key not in d.setdefault('entered_levels', []):
+                d['entered_levels'].append(key)
         if not active:
             return emit('hold', 'position_entry_state_unavailable', Status.MANAGING)
         if not active.get('trail_distance') and o.average_price > stop > 0:
             active.update(trail_distance=o.average_price-stop, peak_price=o.average_price)
-        if quote and o.bid <= stop:
+        if (price_event and o.price <= stop) if strict else (quote and o.bid <= stop):
             return emit('exit', 'protective_stop', Status.EXIT_PENDING, quantity=o.position_quantity)
         if state.get('manual_exit_requested'):
             return emit('exit', 'manual_exit', Status.EXIT_PENDING, quantity=o.position_quantity)
         results = []
-        if quote and active.get('trail_distance'):
-            active['peak_price'] = max(active.get('peak_price', o.bid), o.bid)
+        if (price_event if strict else quote) and active.get('trail_distance'):
+            trail_price = o.price if strict else o.bid
+            active['peak_price'] = max(active.get('peak_price', trail_price), trail_price)
             proposal = round(floor((active['peak_price']-active['trail_distance'])/tick+1e-9)*tick, 10)
             desired = active.get('structural_stop', stop)
-            if desired < o.bid:
+            if desired < (o.price if strict else o.bid):
                 proposal = max(proposal, desired)
-            if stop < proposal < o.bid:
+            if stop < proposal < (o.price if strict else o.bid):
                 previous_stop = stop
                 state['active_stop'] = stop = proposal
                 results.append(emit('replace_protective_stop', 'fixed_distance_price_trail', Status.MANAGING,
@@ -172,15 +189,23 @@ def evaluate(host, a, o, p, old_state):
                 return emit('exit', 'profit_target', Status.EXIT_PENDING, quantity=o.position_quantity)
         if price_event and structure_fresh and quote:
             pending = active.setdefault('pending_adds', {})
-            seen = active.setdefault('added_levels', [])
+            seen = d.setdefault('attempted_add_levels', []) if strict else active.setdefault('added_levels', [])
             for key, level in crossed:
-                if is_resistance(level) and key not in seen:
+                if is_resistance(level) and key not in seen and (not strict or is_resistance(rows.get(key, {}))):
                     pending.setdefault(key, deepcopy(level))
             for key in list(pending):
-                if not boundary(pending[key], rows) or o.price < boundary(pending[key], rows)['price']:
+                if (strict and not is_resistance(rows.get(key, {}))) or not boundary(pending[key], rows) or o.price < boundary(pending[key], rows)['price']:
                     pending.pop(key)
             if pending and a.permissions.add and active.get('slice_notional', 0) > 0 and stop < o.bid <= o.ask < target:
                 keys = sorted(pending)
+                if strict:
+                    anchor_stop = max(below(rows[k]['lower'], tick) for k in keys)
+                    proposal = max(stop, min(anchor_stop, below(o.price, tick)))
+                    if proposal > stop:
+                        state['active_stop'] = stop = proposal
+                        active['structural_stop'] = proposal
+                        results.append(emit('replace_protective_stop', 'new_resistance_protection', Status.MANAGING,
+                            quantity=o.position_quantity, invalidation_price=stop))
                 results.append(emit('add_long', 'price_gap_resistance_break_addition', Status.MANAGING,
                     invalidation_price=stop, profit_target_price=target,
                     capital_request=CapitalRequest(mode='fixed_notional', value=active['slice_notional']*len(keys)),
@@ -198,6 +223,7 @@ def evaluate(host, a, o, p, old_state):
 def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
                    structure_fresh, quote, evidence, emit, price_event, previous, prior_hod):
     from .strategy_engine import AssignmentStatus as Status
+    strict = p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
     if a.status == Status.ENTRY_PENDING or state.get('pending_capital_request'):
         return emit('wait', 'entry_fill_pending', Status.ENTRY_PENDING)
@@ -221,14 +247,21 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
         d.pop('initial_breakout', None)
         setup = None
     if price_event and anchor and limit:
-        if not setup and previous is not None and previous < limit['price'] <= o.price:
+        new_high = evidence.get('prior_breakout_highs', {}).get(anchor['unified_level_id'])
+        later_high = strict and anchor['unified_level_id'] in d.get('entered_levels', []) and new_high is not None and o.price > new_high
+        if not setup and previous is not None and (previous < limit['price'] <= o.price or later_high and o.price >= limit['price']):
             setup = dict(anchor=deepcopy(anchor), breakout_at=now, peak_close=None)
             d['initial_breakout'] = setup
         elif setup:
             setup['anchor'] = deepcopy(anchor)
     evidence['price_breakout'].update(selected_level=deepcopy(anchor), boundary=limit)
     confirmed = bool(price_event and setup and limit and o.price >= limit['price'])
-    recovery = d.get('recovery')
+    if strict and confirmed and anchor['unified_level_id'] in d.get('entered_levels', []):
+        previous_high = evidence['prior_breakout_highs'].get(anchor['unified_level_id'])
+        confirmed = previous_high is None or o.price > previous_high
+        if not confirmed:
+            return emit('wait', 'resistance_breakout_new_high_required')
+    recovery = None if strict else d.get('recovery')
     if price_event and recovery:
         if o.price <= recovery['high']:
             recovery.pop('crossed_at', None)
@@ -237,7 +270,7 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
     recovering = bool(price_event and recovery and recovery.get('crossed_at')
                       and now > recovery['stopped_at'] and o.price > recovery['high'])
     if not confirmed and not recovering:
-        return emit('wait', 'waiting_for_price_gap_breakout_or_recovery')
+        return emit('wait', 'waiting_for_price_gap_breakout' if strict else 'waiting_for_price_gap_breakout_or_recovery')
     quality_row = dict(effective_at=now, candle=dict(volume=o.source_values.get('market.trade_size', {}).get('value') if price_event else o.bar_volume))
     ready, quality = H.tradability(o, dict(p, structural_recovery=dict(H.QUALITY_DEFAULTS, **p['structural_recovery'])),
                                   quality_row, state, producer_freshness=True)
@@ -265,23 +298,29 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
         anchor = d.get('latest_broken_resistance', recovery['anchor'])
         desired = below(anchor['lower'], tick)
         stop_source = 'latest_broken_resistance_lower'
-    stop = min(desired, below(o.bid, tick))
+    stop = min(desired, below(o.price if strict else o.bid, tick))
     overhead = sorted((r for r in rows.values() if is_resistance(r)
         and r['unified_level_id'] != anchor['unified_level_id'] and E.target_price(r,tick,E.CONTRACT) > o.ask),
         key=lambda r:(r['lower']+r['upper'],r['unified_level_id']))
     if len(overhead) < 3:
         return emit('wait', 'overhead_resistance_target_unavailable')
     target = E.target_price(overhead[2], tick, E.CONTRACT)
-    if not quote or not 0 < stop < o.bid <= o.ask < target:
+    if not quote or not (0 < stop < (o.price if strict else o.bid) and 0 < o.bid <= o.ask < target):
         return emit('wait', 'unrepresentable_stop_or_target')
     d['latest_broken_resistance'] = deepcopy(anchor)
+    if strict:
+        key = anchor['unified_level_id']
+        d.setdefault('breakout_highs', {}).setdefault(key, o.price)
+        if key not in d.setdefault('attempted_add_levels', []):
+            d['attempted_add_levels'].append(key)
+        d.pop('recovery', None)
     for key in ('liquidation_origin_fill_role', 'liquidation_origin_reentry_after_fill',
                 'profit_target_liquidation_required', 'target_replenishment_pending', 'last_exit_reason'):
         state.pop(key, None)
     state.update(squeeze_entry=dict(anchor=deepcopy(anchor), structural_stop=desired,
         breakout_at=recovery['breakout_at'] if recovery else setup['breakout_at'],
         peak_close=setup.get('peak_close') if not recovery else None,
-        entry_price=o.ask, requested_at=now, added_levels=[],
+        entry_price=o.ask, requested_at=now, single_use_adds=strict, added_levels=[anchor['unified_level_id']] if strict else [],
         pending_adds={}, broken_levels=[], late=False, target_moves=0),
         initial_stop=stop, active_stop=stop, structural_profit_targets=[target],
         entry_reference_price=o.ask, entry_at=o.observed_at.isoformat(),

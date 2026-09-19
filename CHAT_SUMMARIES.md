@@ -7,18 +7,17 @@ each year.
 
 ## 2026
 
-### [2026-09-18 - Early Squeeze 323-326 and certified historical signals](docs/codex/chat-summaries/2026/CHAT-20260918-UNKNOWN-squeeze-v6-history.md)
+### [2026-09-18 - Early Squeeze 323-327 and certified historical signals](docs/codex/chat-summaries/2026/CHAT-20260918-UNKNOWN-squeeze-v6-history.md)
 
-Candidate 326 / release 9 implements midpoint-only R1 selection, a 10% gap price
-breakout, price-triggered recovery, latest-resistance stops and trade-clock targets.
-SUGP 04:00-04:18 audit passed eight lifecycles; entry at 04:10:25.851 has stop 3.49.
-The full-universe V7 memory failure was fixed with lossless inactive-state spilling;
-all 1,553 tickers prepared and advanced. Unfunded simulator orders now return explicit
-broker rejections instead of aborting Backtest. 150 focused strategy/broker checks passed.
-Earlier 323-325 behavior, certified August 18-19 Early Squeeze reconstruction and
-v58-to-v59 prepared-stream reuse are preserved in the narrative. Full-session and
-JUNS v9 acceptance remain open. Source push is blocked by existing Git divergence.
-Related: TASK-0014, TASK-0211.
+327 / release 10 is active: no recovery path, eligible-trade trailing and stop triggers,
+new highs required only for reentry, one add attempt per resistance, current-role checks
+and broken-band protection. The 10% gap remains. Final SUGP replay completed 53,112 events;
+first stop reached 3.48, no repeated add attempts, and zero portfolio rejections.
+67 focused checks and the canonical-price/causal-level audit passed. Earlier 323-326
+behavior, certified August 18-19 signals, prepared-stream reuse, bounded V7 residency
+and explicit simulator cash rejection are preserved in the narrative. JUNS, full-day
+and live-broker trigger acceptance remain open. Remote push is constrained by existing
+Git divergence.
 
 ### [2026-09-17 - Trading Journal and filtered V7 preparation](docs/codex/chat-summaries/2026/CHAT-20260917-UNKNOWN-trading-journal-filtered-v7.md)
 

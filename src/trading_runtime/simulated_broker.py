@@ -889,7 +889,11 @@ class SimulatedBrokerAdapter:
             return None
         if order_type in {"STP", "STOP_LIMIT"} and not state.stop_triggered:
             stop = float(request.auxPrice or 0)
-            state.stop_triggered = market_price >= stop if side == "BUY" else market_price <= stop
+            trade_trigger = (request.raw.get("canonical_metadata") or {}).get("stop_trigger_source") == "eligible_trade"
+            if trade_trigger and (not isinstance(event, TradeEvent) or not event.price_eligible):
+                return None
+            trigger_price = event.price if trade_trigger else market_price
+            state.stop_triggered = trigger_price >= stop if side == "BUY" else trigger_price <= stop
             if not state.stop_triggered:
                 return None
             if order_type == "STP":

@@ -20,11 +20,12 @@ CONTRACT = 'early-squeeze-r1-fixed-trail-v6'
 FAST_CONTRACT = 'early-squeeze-r1-100ms-v7'
 CORRECTED_FAST_CONTRACT = 'early-squeeze-r1-100ms-v8'
 PRICE_CONTRACT = 'early-squeeze-r1-price-gap-v9'
+STRICT_PRICE_CONTRACT = 'early-squeeze-r1-price-high-v10'
 SIGNAL = 'signal.activation.price-squeeze-early'
 
 
 def configure(p):
-    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT, FAST_CONTRACT, CORRECTED_FAST_CONTRACT, PRICE_CONTRACT):
+    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT, FAST_CONTRACT, CORRECTED_FAST_CONTRACT, PRICE_CONTRACT, STRICT_PRICE_CONTRACT):
         raise ValueError('Early Squeeze breakout requires its versioned filtered V7 adapter')
     foreign = [k for k,v in p.items() if k.endswith('_contract') and v
                and k not in ('early_squeeze_breakout_contract', 'structural_recovery_contract')]
@@ -48,9 +49,19 @@ def below(anchor, bid, tick):
 def record_exit(state, at, role, remaining, *, contract=CONTRACT):
     """Only actual exit fills can authorize stop-out recovery."""
     active = state.get('squeeze_entry') or {}
-    if contract in (RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT, FAST_CONTRACT, CORRECTED_FAST_CONTRACT, PRICE_CONTRACT) and not active.get('first_fill_at'):
+    if contract in (RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT, FAST_CONTRACT, CORRECTED_FAST_CONTRACT, PRICE_CONTRACT, STRICT_PRICE_CONTRACT) and not active.get('first_fill_at'):
         # Multiple child fills may each report an already-flat aggregate.
         # The first completed lifecycle owns its frozen recovery reference.
+        return
+    if contract == STRICT_PRICE_CONTRACT:
+        d = state.setdefault('squeeze_breakout', {})
+        key = active['anchor']['unified_level_id']
+        if key not in d.setdefault('entered_levels', []):
+            d['entered_levels'].append(key)
+        d.pop('recovery', None)
+        d.pop('initial_breakout', None)
+        if remaining is not None and abs(remaining) <= 1e-9:
+            state.pop('squeeze_entry', None)
         return
     stopped = role in ('protective_stop', 'trailing_stop', 'protective_exit') or (
         role == 'managed_exit' and state.get('last_exit_reason') == 'protective_stop')
@@ -72,6 +83,11 @@ def release_add(state, keys):
     """An unfunded/unfilled addition remains eligible on a later green close."""
     active = deepcopy(state.get('squeeze_entry') or {})
     if not active:
+        return
+    if active.get('single_use_adds'):
+        for key in keys:
+            active.setdefault('pending_adds', {}).pop(key, None)
+        state['squeeze_entry'] = active
         return
     for key in keys:
         if key in active.get('added_levels', []):
@@ -122,7 +138,7 @@ def overhead_levels(market, ask, tick, contract, exclude=''):
 
 
 def evaluate(host, a, o, p, old_state):
-    if p['early_squeeze_breakout_contract'] == PRICE_CONTRACT:
+    if p['early_squeeze_breakout_contract'] in (PRICE_CONTRACT, STRICT_PRICE_CONTRACT):
         from .early_squeeze_price import evaluate as price_evaluate
         return price_evaluate(host, a, o, p, old_state)
     if p['early_squeeze_breakout_contract'] in (FAST_CONTRACT, CORRECTED_FAST_CONTRACT):
