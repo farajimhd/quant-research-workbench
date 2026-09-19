@@ -1,7 +1,7 @@
 """Run-scoped QMD streaming state over certified, immutable prepared inputs.
 
 Loading arrays is not observation: only rows through the requested cutoff enter
-the shared V7 kernel. There is no current-day network fetch or state eviction.
+the shared V7 kernel. Inactive states spill losslessly to local runtime storage.
 """
 from collections import OrderedDict
 from math import prod
@@ -55,7 +55,8 @@ class PreparedStream:
         self.file_identity = self._file_identity()
         self.max_bytes = max_bytes
         self.bytes = 0
-        self.states = {}
+        from .v7_resident_states import ResidentStates
+        self.states = ResidentStates(self.path.parent)
         self.process = psutil.Process()
         self.memory_checked_at = 0.
         self.db = sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True)
@@ -139,7 +140,7 @@ class PreparedStream:
                 start=self.begin.timestamp(), end=self.end.timestamp(),
                 split_factor=prod(float(s['split_from'])/float(s['split_to']) for s in splits), split_evidence=splits)
             size = retained_bytes(engine.__dict__) + bars.nbytes
-            if self.bytes + size > self.max_bytes:
+            if size > self.max_bytes:
                 raise ValueError('Prepared V7 working set exceeds the explicit resident memory budget; no eviction fallback')
             receipt = dict(ticker=ticker, checkpoint_hash=prior['checkpoint_hash'],
                 input_hash=hashlib.sha256(bars.tobytes()).hexdigest(), bars=len(bars), retained_bytes=size)

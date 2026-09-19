@@ -116,3 +116,55 @@ def test_prepared_seed_cannot_be_from_the_future(tmp_path):
         with pytest.raises(ValueError,match='not available'):stream.prepare(['TEST'])
         assert not stream.states
     finally:stream.close();service.close()
+
+
+def test_spilled_state_preserves_every_prefix_delta_and_retry(tmp_path):
+    service, source = make(tmp_path)
+    path = tmp_path / 'spill.sqlite3'
+    fixture(path, source.bars)
+    stream = PreparedStream(service, path, '2026-08-21', 'fixture')
+    stream.states.capacity = 1
+    directory = stream.states.directory.name
+    try:
+        stream.prepare(['TEST'])
+        decoder = Decoder()
+        saved = []
+        for bar in source.bars:
+            # Force the live engine, arrays, aliases and encoder base through
+            # disk between every pair of observations, like interleaved tickers.
+            stream.states['other'] = {'sentinel': True}
+            assert len(stream.states.resident) == 1
+            packet = stream.snapshot('TEST', at(bar['t']), decoder.version)
+            actual = deepcopy(decoder.decode(json.loads(json.dumps(packet))))
+            expected = service.snapshot('TEST', at(bar['t']), include_segments=False, cursor_id='reference')
+            assert model(actual) == model(expected)
+            saved.append(actual)
+        stream.states['other'] = {'sentinel': True}
+        assert decoder.decode(stream.snapshot('TEST', at(source.bars[9]['t']), decoder.version)) == saved[9]
+        assert stream.prepare(['TEST'])[0]['bars'] == len(source.bars)
+    finally:
+        stream.close()
+        service.close()
+    from pathlib import Path
+    assert not Path(directory).exists()
+
+
+def test_spill_write_failure_keeps_resident_authority(tmp_path, monkeypatch):
+    from src.market_engine.v7_resident_states import ResidentStates
+    import pickle
+    states = ResidentStates(tmp_path, capacity=1)
+    original = {'mutable': [1, 2, 3]}
+    states['first'] = original
+    def fail(*args, **kwargs):
+        raise OSError('disk full')
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(pickle, 'dump', fail)
+            with pytest.raises(OSError, match='disk full'):
+                states['second'] = {'mutable': []}
+        assert states['first'] is original
+        assert 'second' not in states
+        states['second'] = {'mutable': []}
+        assert states['first'] == original
+    finally:
+        states.clear()
