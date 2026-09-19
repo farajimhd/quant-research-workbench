@@ -41,6 +41,14 @@ def review_journal_layout(page, screenshot_path):
     assert journal.get_by_text('Edge snapshot', exact=True).count() == 0
     assert page.locator('.performance-overview-grid').evaluate("el => el.firstElementChild.matches('.performance-active-positions')")
     assert rows.first.evaluate('el => el.scrollWidth <= el.clientWidth + 1'), 'Position row overflows'
+    columns = journal.locator('.performance-position-columns')
+    assert columns.evaluate("el => getComputedStyle(el).position === 'sticky'"), 'Position header must remain sticky'
+    position_list = journal.locator('.performance-active-position-list')
+    header_top = columns.bounding_box()['y']
+    position_list.evaluate("el => { el.style.maxHeight = '72px'; el.scrollTop = el.scrollHeight; }")
+    page.wait_for_timeout(50)
+    assert abs(columns.bounding_box()['y'] - header_top) < 1, 'Position header moved while rows scrolled'
+    position_list.evaluate("el => { el.scrollTop = 0; el.style.maxHeight = ''; }")
     page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem + '__positions.png')), full_page=True)
     rows.first.focus()
     page.keyboard.press('Enter')

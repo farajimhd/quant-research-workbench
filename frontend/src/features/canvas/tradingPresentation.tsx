@@ -858,7 +858,7 @@ export function TradingJournalPreview({ data, onSymbolSelect, settings }: { data
               const {symbol, _position: position} = performanceLifecycleRow(data!, lifecycle);
               return <button className="performance-active-position" key={String(lifecycle.lifecycle_id)} type="button" aria-label={`View ${symbol} position lifecycle`} onClick={() => setSelectedLifecycle(String(lifecycle.lifecycle_id))}>
                 <strong className="performance-position-symbol">{symbol}</strong>
-                <MarketTime className="performance-position-time" value={String(lifecycle.opened_at || "")} />
+                <MarketTime className="performance-position-time" includeSeconds showVancouver={false} value={String(lifecycle.opened_at || "")} />
                 <span className="performance-position-number">{formatCell(lifecycle.current_quantity, "quantity")}</span>
                 <span className="performance-position-number">{formatCell(lifecycle.entry_price, "entry_price")}</span>
                 <strong className="performance-position-pnl" data-tone={numberTone(position?.unrealized_pnl)}>{position?.unrealized_pnl == null ? "—" : signedMoney(position.unrealized_pnl)}</strong>
