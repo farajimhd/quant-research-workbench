@@ -16,6 +16,23 @@ sys.modules[SPEC.name] = service_manager
 SPEC.loader.exec_module(service_manager)
 
 
+def test_managed_python_prefers_ml4t_over_ambient_conda(tmp_path, monkeypatch):
+    preferred = tmp_path / 'miniconda3' / 'envs' / 'ml4t' / 'python.exe'
+    ambient = tmp_path / 'base' / 'python.exe'
+    with mock.patch.object(Path, 'home', return_value=tmp_path), mock.patch.object(
+            Path, 'is_file', lambda path: path in (preferred, ambient)):
+        monkeypatch.setenv('CONDA_PREFIX', str(ambient.parent))
+        assert service_manager._resolve_python('') == preferred.resolve()
+        assert service_manager._resolve_python(str(ambient)) == ambient.resolve()
+
+
+def test_invalid_explicit_python_never_falls_back():
+    import pytest
+    with mock.patch.object(Path, 'is_file', return_value=False):
+        with pytest.raises(service_manager.ServiceManagerError, match='Requested Python does not exist'):
+            service_manager._resolve_python('missing-python.exe')
+
+
 def _options(tmp_path: Path) -> object:
     bar_manifest = tmp_path / "bar.json"
     text_manifest = tmp_path / "text.json"

@@ -1151,16 +1151,21 @@ def _http_json_request(method: str, url: str, payload: Mapping[str, Any] | None,
 
 
 def _resolve_python(requested: str) -> Path:
-    candidates = [Path(requested)] if requested else []
+    if requested:
+        candidate = Path(requested)
+        if not candidate.is_file():
+            raise ServiceManagerError(f"Requested Python does not exist: {requested}")
+        return candidate.resolve()
+    # Managed services must not inherit an unrelated shell's base Conda runtime.
+    # V7 numerical artifacts bind Python/NumPy/SciPy, so changing that runtime
+    # silently makes completed histories appear absent.
+    candidates = [
+        Path.home() / "miniconda3" / "envs" / "ml4t" / "python.exe",
+        Path.home() / "anaconda3" / "envs" / "ml4t" / "python.exe",
+    ]
     if os.environ.get("CONDA_PREFIX"):
         candidates.append(Path(os.environ["CONDA_PREFIX"]) / "python.exe")
-    candidates.extend(
-        [
-            Path.home() / "miniconda3" / "envs" / "ml4t" / "python.exe",
-            Path.home() / "anaconda3" / "envs" / "ml4t" / "python.exe",
-            Path(sys.executable),
-        ]
-    )
+    candidates.append(Path(sys.executable))
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
