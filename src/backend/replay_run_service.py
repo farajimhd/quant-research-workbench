@@ -3941,7 +3941,7 @@ class ReplayRunController:
         )
         ticker_assignments = self._ticker_assignments(frame.ticker)
         if any(a.parameters.get('hindsight_long_contract') or
-               a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-fixed-trail-v3','early-squeeze-r1-fixed-trail-v4','early-squeeze-r1-fixed-trail-v5')
+               a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-fixed-trail-v3','early-squeeze-r1-fixed-trail-v4','early-squeeze-r1-fixed-trail-v5','early-squeeze-r1-fixed-trail-v6')
                for a in ticker_assignments):
             # A bar projection is not a new quote. Retain the actual NBBO clock
             # so a trade-only interval cannot freshen an old executable price.
@@ -6808,12 +6808,27 @@ class ReplayRunController:
                         progress=progress, stopped=lambda: self._stop_requested,
                     )
                 else:
-                    loaded = await asyncio.to_thread(
-                        historical_source_native_signal_occurrences,
-                        stream,
-                        start=self.definition.requested_start,
-                        end=self.definition.session_end,
-                    )
+                    from src.backend.historical_signal_occurrence_service import HistoricalSignalCoverageUnavailable
+                    try:
+                        loaded = await asyncio.to_thread(
+                            historical_source_native_signal_occurrences, stream,
+                            start=self.definition.requested_start, end=self.definition.session_end,
+                        )
+                    except HistoricalSignalCoverageUnavailable:
+                        parameters = self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {})
+                        if parameters.get('early_squeeze_breakout_contract') != 'early-squeeze-r1-fixed-trail-v6':
+                            raise
+                        from src.backend.historical_signal_preparation import reconstruct_configured_signal_occurrences
+                        def reconstruction_progress(status):
+                            self._signal_preparation = status
+                            self._preparation_stage = status['stage']
+                            self._preparation_completed_units = int(status.get('completed') or 0)
+                            self._preparation_total_units = int(status.get('total') or 0)
+                            self.updated_at = datetime.now(UTC)
+                        loaded = await reconstruct_configured_signal_occurrences(stream,
+                            configuration=self.definition.configuration_revision['payload'],
+                            start=self.definition.requested_start, end=self.definition.session_end,
+                            progress=reconstruction_progress, stopped=lambda: self._stop_requested)
             return stream, loaded
 
         loads = [asyncio.create_task(load_stream(stream)) for stream in streams]
@@ -9059,7 +9074,9 @@ def replay_preflight(
 def _uses_source_native_identity_preparation(configuration: dict[str, Any], has_events: bool) -> bool:
     streams = [row for row in configuration.get("signal_activation", {}).get("signal_streams", [])
                if row.get("enabled", True)]
-    return bool(has_events and streams
+    # An empty native stream never authorizes a different activation source.
+    # The loader validates its authority before this preparation decision.
+    return bool(streams
                 and all(str(row.get("occurrence_source") or "").strip() for row in streams)
                 and (configuration.get("run_plan", {}).get("activation", {}).get("watch_duration") == "session"
                      or (not configuration.get("strategy", {}).get("parameters", {}).get("structural_recovery_contract")

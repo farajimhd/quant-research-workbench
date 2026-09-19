@@ -6,14 +6,16 @@ from src.trading_runtime.early_squeeze_breakout import CONTRACT
 from src.trading_runtime.structural_recovery import CONTRACT as DATA_CONTRACT, DEFAULTS
 
 PROFILE_ID = CONTRACT
-LABEL = 'Early Squeeze / lifecycle resistance targets / fixed-distance trail v5'
+LABEL = 'Early Squeeze / fresh current R1 / lifecycle targets v6'
 BASELINE_ID = 'fc03b276-7584-4772-a50f-51424f9bfea3'
 BASELINE_HASH = '85dff0666442f78d63dee8972d6c1e11a5599eb78316727a128fc829636d5bd6'
 DESCRIPTION = (
     'Watch from the first available Early Squeeze occurrence only, including single-ticker runs. '
     'Filtered V7 seed and causal completed-candle levels; after an R1 midpoint crossover, a later '
     'completed green 1s candle may confirm above that midpoint and VWAP with close in its top quarter. '
-    'A close back at or below the midpoint resets the setup. Buy one third of eligible cash; each new green '
+    'A close back at or below the midpoint or a different R1 resets the setup; use the current R1 band. '
+    'A same-candle dip and reclaim also qualifies. Fresh R1 breakouts remain eligible after stop-out '
+    'without waiting for the recovery high. Buy one third of eligible cash; each new green '
     '1s resistance break adds the original cash tranche without MACD or close-location gates. '
     'Full-position targets select the third current overhead resistance before four position-lifecycle breaks, '
     'the second at four or five, and the first at six or more. Count distinct broken resistances only while '
@@ -35,7 +37,23 @@ def build(base, baseline):
     source = baseline['payload']
     source_profile = next(p for p in source['strategy']['profiles']
                           if p['profile_id'] == 'vwap-impulse-pullback-breakout-v4')
-    payload, canvas, plan_id = build_template(base, profile_id=PROFILE_ID, label_override=LABEL)
+    # Published configurations can already contain this candidate. Replace its
+    # generated definitions before building, rather than selecting stale copies.
+    template_base = deepcopy(base)
+    for section, collection, key, identifiers in (
+        ('strategy', 'profiles', 'profile_id', {PROFILE_ID}),
+        ('run_plans', 'plans', 'run_plan_id', {PROFILE_ID+'-backtest'}),
+        ('run_plans', 'universes', 'universe_id', {PROFILE_ID+'-universe'}),
+        ('market_discovery', 'rule_sets', 'rule_set_id',
+         {PROFILE_ID+'-observe', PROFILE_ID+'-invalid-price', PROFILE_ID+'-tradability'}),
+        ('market_discovery', 'watchlists', 'watchlist_id', {PROFILE_ID+'-tradability'}),
+        ('market_discovery', 'signal_streams', 'signal_stream_id', {PROFILE_ID+'-tradability'}),
+    ):
+        template_base[section][collection] = [row for row in template_base[section][collection]
+                                               if row[key] not in identifiers]
+    template_base['portfolio']['mandates'] = [m for m in template_base['portfolio']['mandates']
+                                             if m['run_plan_id'] != PROFILE_ID+'-backtest']
+    payload, canvas, plan_id = build_template(template_base, profile_id=PROFILE_ID, label_override=LABEL)
     profile = next(p for p in payload['strategy']['profiles'] if p['profile_id'] == PROFILE_ID)
     profile.update(description=DESCRIPTION, derived_from_profile_id=source_profile['profile_id'])
     # Explicit allowlist: no inherited 317 entry, management or exit settings.

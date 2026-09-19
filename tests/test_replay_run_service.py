@@ -2424,7 +2424,7 @@ class BacktestPreflightTests(unittest.TestCase):
         self.assertFalse(_uses_source_native_identity_preparation(config, True))
         config["signal_activation"]["signal_streams"][0]["occurrence_source"] = "qmd_squeeze_episode"
         self.assertTrue(_uses_source_native_identity_preparation(config, True))
-        self.assertFalse(_uses_source_native_identity_preparation(config, False))
+        self.assertTrue(_uses_source_native_identity_preparation(config, False))
         config["strategy"] = {"parameters": {"structural_recovery_contract": True}}
         self.assertFalse(_uses_source_native_identity_preparation(config, True))
 

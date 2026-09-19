@@ -25,9 +25,12 @@ def model(value):
     return {k:v for k,v in value.items() if k!='source_audit'}
 
 
-def test_exact_every_prefix_batch_rewind_and_retained_state(tmp_path):
+@pytest.mark.parametrize('revision', ['qmd-derived-v58', 'qmd-derived-v59-0405-et'])
+def test_exact_every_prefix_batch_rewind_and_retained_state(tmp_path, revision):
     service,source=make(tmp_path)
     path=tmp_path/'bars.sqlite3';fixture(path,source.bars)
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE strategy_frame_streams SET authority_json=json_set(authority_json,'$.calculation_revision',?)", (revision,))
     stream=PreparedStream(service,path,'2026-08-21','fixture')
     try:
         receipt=stream.prepare(['TEST'])

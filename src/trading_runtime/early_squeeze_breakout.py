@@ -15,12 +15,13 @@ LEGACY_CONTRACT = 'early-squeeze-r1-fixed-trail-v1'
 VWAP_CONTRACT = 'early-squeeze-r1-fixed-trail-v2'
 RECOVERY_CONTRACT = 'early-squeeze-r1-fixed-trail-v3'
 MIDPOINT_CONTRACT = 'early-squeeze-r1-fixed-trail-v4'
-CONTRACT = 'early-squeeze-r1-fixed-trail-v5'
+LIFECYCLE_CONTRACT = 'early-squeeze-r1-fixed-trail-v5'
+CONTRACT = 'early-squeeze-r1-fixed-trail-v6'
 SIGNAL = 'signal.activation.price-squeeze-early'
 
 
 def configure(p):
-    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, MIDPOINT_CONTRACT, CONTRACT):
+    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT):
         raise ValueError('Early Squeeze breakout requires its versioned filtered V7 adapter')
     foreign = [k for k,v in p.items() if k.endswith('_contract') and v
                and k not in ('early_squeeze_breakout_contract', 'structural_recovery_contract')]
@@ -44,7 +45,7 @@ def below(anchor, bid, tick):
 def record_exit(state, at, role, remaining, *, contract=CONTRACT):
     """Only actual exit fills can authorize stop-out recovery."""
     active = state.get('squeeze_entry') or {}
-    if contract in (RECOVERY_CONTRACT, MIDPOINT_CONTRACT, CONTRACT) and not active.get('first_fill_at'):
+    if contract in (RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT) and not active.get('first_fill_at'):
         # Multiple child fills may each report an already-flat aggregate.
         # The first completed lifecycle owns its frozen recovery reference.
         return
@@ -100,14 +101,14 @@ def observe_context(o, previous):
 
 
 def target_price(level, tick, contract):
-    if contract in (MIDPOINT_CONTRACT, CONTRACT):
+    if contract in (MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT):
         # A sell limit uses the nearest valid tick to the band midpoint.
         return round(floor(((level['lower']+level['upper'])/2)/tick+.5+1e-9)*tick, 10)
     return round((floor(level['upper']/tick+1e-9)+1)*tick, 10)
 
 
 def overhead_levels(market, ask, tick, contract, exclude=''):
-    if contract in (MIDPOINT_CONTRACT, CONTRACT):
+    if contract in (MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT):
         # A band containing the ask is not overhead when its midpoint is
         # already below the executable entry. Use current resistance roles.
         return sorted((r for k,r in market.get('resistance', {}).items()
@@ -120,7 +121,8 @@ def overhead_levels(market, ask, tick, contract, exclude=''):
 def evaluate(host, a, o, p, old_state):
     from .strategy_engine import AssignmentStatus as Status, _at_or_after_session_time
     state = deepcopy(old_state)
-    aligned = p['early_squeeze_breakout_contract'] == CONTRACT
+    current_r1 = p['early_squeeze_breakout_contract'] == CONTRACT
+    aligned = p['early_squeeze_breakout_contract'] in (LIFECYCLE_CONTRACT, CONTRACT)
     # Use resolved infrastructure settings, never the raw inherited profile.
     a = replace(a, parameters=p)
     tick = p['execution']['tick_size']
@@ -165,8 +167,9 @@ def evaluate(host, a, o, p, old_state):
     crossed = []
     if fresh:
         if filtered and structure_fresh:
-            for key, level in prior_rows.items():
-                if previous_close is not None and previous_close <= level['upper'] < o.price:
+            for key, level in (prior_resistance if current_r1 else prior_rows).items():
+                crossing_low = min(previous_close, o.bar_low) if current_r1 and previous_close is not None else previous_close
+                if crossing_low is not None and crossing_low <= level['upper'] < o.price:
                     crossed.append((key, level))
             broken = d.setdefault('broken', [])
             for key, _ in crossed:
@@ -191,19 +194,27 @@ def evaluate(host, a, o, p, old_state):
         d.update(close=o.price, closed_at=now, last_open=o.bar_open)
         if active and (held or a.status == Status.ENTRY_PENDING) and not active.get('stopout_reference'):
             active['peak_close'] = max(active.get('peak_close', o.price), o.price)
-        if (aligned and not held and a.status != Status.ENTRY_PENDING and not d.get('recovery')
+        if (aligned and not held and a.status != Status.ENTRY_PENDING and (current_r1 or not d.get('recovery'))
                 and filtered and structure_fresh and now >= d.get('activated_at', float('inf'))):
             # Remember a causal R1 cross before liquidity/VWAP/close-location
             # gates, so a later qualifying green candle can confirm it.
             setup = d.get('initial_breakout')
+            candidates = [r for r in prior_resistance.values() if prior_hod and r['upper'] < prior_hod
+                          and r['confirmed_at_ms']/1000 <= now-1]
+            latest_r1 = max(candidates, key=lambda r:(r['upper'],r['unified_level_id']), default=None)
+            if current_r1 and setup:
+                if not latest_r1 or latest_r1['unified_level_id'] != setup['anchor']['unified_level_id']:
+                    d.pop('initial_breakout', None)
+                    setup = None
+                else:
+                    setup['anchor'] = deepcopy(latest_r1)
             if setup and o.price <= (setup['anchor']['lower']+setup['anchor']['upper'])/2:
                 d.pop('initial_breakout', None)
                 setup = None
             if not setup:
-                candidates = [r for r in prior_resistance.values() if prior_hod and r['upper'] < prior_hod
-                              and r['confirmed_at_ms']/1000 <= now-1]
-                anchor = max(candidates, key=lambda r:(r['upper'],r['unified_level_id']), default=None)
-                if anchor and previous_close is not None and previous_close <= (anchor['lower']+anchor['upper'])/2 < o.price:
+                anchor = latest_r1
+                crossing_low = min(previous_close, o.bar_low) if current_r1 and previous_close is not None else previous_close
+                if anchor and crossing_low is not None and crossing_low <= (anchor['lower']+anchor['upper'])/2 < o.price:
                     setup = dict(anchor=deepcopy(anchor), breakout_at=now, peak_close=o.price)
                     d['initial_breakout'] = setup
             if setup:
@@ -214,6 +225,10 @@ def evaluate(host, a, o, p, old_state):
     def emit(action, reason, status=None, **kw):
         metadata = dict(evidence, active_stop=state.get('active_stop'),
             profit_targets=list(state.get('structural_profit_targets') or []), **kw.pop('metadata', {}))
+        if current_r1:
+            metadata.update(position_resistance_breaks=len(active.get('broken_levels', [])) if held else 0,
+                            fixed_trail_distance=active.get('trail_distance'),
+                            trailing_bid_high=active.get('peak_price'), bid=o.bid, ask=o.ask)
         if action == 'exit':
             state.update(last_exit_reason=reason, entry_acquisition_exit_latched=True)
             metadata.update(position_fraction=1., cancel_entry_acquisition=True,
@@ -336,11 +351,16 @@ def evaluate(host, a, o, p, old_state):
             or type(vwap) not in (int, float) or not isfinite(vwap) or vwap <= 0 or o.price <= vwap):
         return emit('wait', 'fresh_price_above_vwap_required')
     recovery = d.get('recovery')
+    setup = d.get('initial_breakout')
+    if (current_r1 and setup and o.bar_high > o.bar_low
+            and o.price >= o.bar_low+.75*(o.bar_high-o.bar_low)):
+        # Recovery is an additional opportunity, never a veto on a fresh R1.
+        recovery = None
     if recovery:
         if now <= recovery['stopped_at'] or o.price <= recovery['high']:
             return emit('wait', 'waiting_for_frozen_close_high')
         anchor = recovery['anchor']
-        swing = H.initial_swing_low(row, dict(lower=float('inf') if p['early_squeeze_breakout_contract'] in (RECOVERY_CONTRACT, MIDPOINT_CONTRACT, CONTRACT) else o.bid),
+        swing = H.initial_swing_low(row, dict(lower=float('inf') if p['early_squeeze_breakout_contract'] in (RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT) else o.bid),
                                    now, pivot_not_before=recovery['breakout_at'],
                                    eligible=lambda s:s['lower'] > anchor['upper'])
         stop_anchor = swing['lower'] if swing else o.bar_open

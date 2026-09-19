@@ -88,7 +88,9 @@ class PreparedStream:
             chunks = authority.get('chunks', [authority])
             if not authority.get('complete_for_history') or not chunks or any(
                 row.get('authority') != 'qmd_history_prepared_closed_bars'
-                or row.get('calculation_revision') != 'qmd-derived-v58'
+                # v59 applies the same pre-04:05 exclusion upstream that the
+                # V7 kernel applies to v58. Both retain the certified SIP clock.
+                or row.get('calculation_revision') not in ('qmd-derived-v58', 'qmd-derived-v59-0405-et')
                 or not row.get('complete_for_history')
                 or ':structure-input-v1:archive-sip-condition:recent-participant-aware:' not in row.get('revision_token', '')
                 for row in chunks

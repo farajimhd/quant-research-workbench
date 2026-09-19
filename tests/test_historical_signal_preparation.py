@@ -16,6 +16,34 @@ from src.backend import historical_signal_preparation as service
 
 
 class SignalPreparationTests(IsolatedAsyncioTestCase):
+    async def test_configured_reconstruction_reuses_certified_frozen_population(self):
+        stream = dict(signal_stream_id='early', occurrence_source='qmd_squeeze_episode')
+        config = dict(signal_activation=dict(rule_sets=[], column_catalog=[]))
+        with patch.object(service.asyncio, 'create_subprocess_exec', side_effect=self.fake_producer) as producer:
+            first = await service.reconstruct_configured_signal_occurrences(stream, configuration=config,
+                start=self.start, end=self.end)
+            self.population.side_effect = AssertionError('Cached certification must not query reference data')
+            second = await service.reconstruct_configured_signal_occurrences(stream, configuration=config,
+                start=self.start, end=self.end)
+        self.assertEqual(first, second)
+        self.assertEqual(producer.call_count, 1)
+
+    async def test_configured_reconstruction_pins_exact_rules_without_price_or_common_share_filter(self):
+        from unittest.mock import AsyncMock
+        stream = dict(signal_stream_id='early', occurrence_source='qmd_squeeze_episode',
+                      inclusion_rule_sets=['rule'], exclusion_rule_sets=[])
+        rule = dict(rule_set_id='rule', conditions=[dict(value=123)])
+        config = dict(signal_activation=dict(rule_sets=[rule, dict(rule_set_id='unrelated')], column_catalog=[]))
+        execute = AsyncMock(return_value={'occurrences': []})
+        with patch.object(service, '_execute_plans', execute):
+            await service.reconstruct_configured_signal_occurrences(stream, configuration=config,
+                start=self.start, end=self.end)
+        plan = execute.call_args.args[1][0]
+        self.assertIsNone(plan['recipe']['maximum_price_exclusive'])
+        self.assertEqual(plan['recipe']['configuration']['streams'], [stream])
+        self.assertEqual(plan['recipe']['configuration']['rule_sets'], [rule])
+        self.population.assert_called_with(self.start.date(), common_only=False)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

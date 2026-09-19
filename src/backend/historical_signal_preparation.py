@@ -12,6 +12,7 @@ from datetime import datetime, time
 import hashlib
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -89,7 +90,7 @@ def _recipe(stream: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], Pat
     return request, manifest, path
 
 
-def _population(day) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _population(day, *, common_only=True) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     # Same published, point-in-time classification policy as the original build.
     from src.backend.experimental_structure_book import rows
     _load_repository_env()
@@ -104,9 +105,11 @@ def _population(day) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     included, excluded = [], []
     for row in candidates:
         reason = ""
-        if row["ticker_type_id"] not in {"ticker_type:stocks:cs", "ticker_type:stocks:adrc"}:
+        if not common_only and not re.fullmatch(r'[A-Z0-9.-]{1,32}', row['ticker']):
+            reason = 'unsupported_canonical_ticker_format'
+        elif common_only and row["ticker_type_id"] not in {"ticker_type:stocks:cs", "ticker_type:stocks:adrc"}:
             reason = "not_confirmed_common_share"
-        elif not row.get("classification_first_seen") or row["classification_first_seen"][:10] > day.isoformat():
+        elif common_only and (not row.get("classification_first_seen") or row["classification_first_seen"][:10] > day.isoformat()):
             reason = "classification_not_available"
         if reason:
             excluded.append({**row, "reason": reason})
@@ -132,6 +135,7 @@ def signal_session_plans(stream: dict[str, Any], *, start: datetime, end: dateti
     recipe, manifest, seed_path = _recipe(stream)
     days = market_sessions(start.astimezone(NEW_YORK).date(), end.astimezone(NEW_YORK).date())
     plans = []
+    runtime = _root()
     for day in days:
         session_start = datetime.combine(day, time(4), NEW_YORK)
         session_end = datetime.combine(day, time(20), NEW_YORK)
@@ -141,8 +145,8 @@ def signal_session_plans(stream: dict[str, Any], *, start: datetime, end: dateti
         if _clock(manifest["available_start"], "start") <= left and _clock(manifest["available_end"], "end") >= right:
             plans.append(dict(stream=stream, start=left, end=right, ready=True))
             continue
-        directory = (_root() / "trading/signal-preparation" / _hash(seed_path) / day.isoformat()).resolve()
-        if not directory.is_relative_to(_root()):
+        directory = (runtime / "trading/signal-preparation" / _hash(seed_path) / day.isoformat()).resolve()
+        if not directory.is_relative_to(runtime):
             raise ValueError("Signal preparation escaped the runtime root")
         pin = directory / "artifact.json"
         if pin.exists():
@@ -279,6 +283,52 @@ async def prepared_signal_occurrences(stream: dict[str, Any], *, start: datetime
                                       progress: Callable = lambda status: None,
                                       stopped: Callable = lambda: False) -> dict[str, Any]:
     plans = await asyncio.to_thread(signal_session_plans, stream, start=start, end=end)
+    return await _execute_plans(stream, plans, progress=progress, stopped=stopped)
+
+
+async def reconstruct_configured_signal_occurrences(stream: dict[str, Any], *, configuration: dict[str, Any],
+        start: datetime, end: datetime, progress: Callable = lambda status: None,
+        stopped: Callable = lambda: False) -> dict[str, Any]:
+    """Certify missing native history using the exact saved detector, without price filters."""
+    if stream.get('occurrence_source') != 'qmd_squeeze_episode':
+        raise ValueError('Canonical reconstruction requires a supported native detector')
+    activation = configuration['signal_activation']
+    rule_ids = set(stream.get('inclusion_rule_sets', [])) | set(stream.get('exclusion_rule_sets', []))
+    rules = [deepcopy(r) for r in activation['rule_sets'] if r['rule_set_id'] in rule_ids]
+    if {r['rule_set_id'] for r in rules} != rule_ids:
+        raise ValueError('Canonical signal reconstruction is missing saved detector rules')
+    recipe = dict(configuration=dict(streams=[deepcopy(stream)], rule_sets=rules,
+        column_catalog=deepcopy(activation['column_catalog'])), maximum_price_exclusive=None,
+        population_authority=dict(table='q_live.feature_tradable_universe_v1',
+            classification_table='q_live.id_symbol_v1', accepted_types=['STK'],
+            policy='published_tradable_canonical_us_stocks_v1'))
+    binary = await asyncio.to_thread(_binary)
+    identity = hashlib.sha256(json.dumps(dict(recipe=recipe, producer_sha256=_hash(binary)),
+        sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    recipe['configuration']['configuration_revision'] = identity
+    plans = []
+    for day in market_sessions(start.astimezone(NEW_YORK).date(), end.astimezone(NEW_YORK).date()):
+        left = max(start, datetime.combine(day, time(4), NEW_YORK))
+        right = min(end, datetime.combine(day, time(20), NEW_YORK))
+        if left >= right:
+            continue
+        directory = _root() / 'trading/signal-preparation/configured-v1' / identity / day.isoformat()
+        if (directory / 'plan.json').exists():
+            # _freeze_request verifies these frozen inputs under the producer
+            # lock. Cache reuse must not depend on today's reference database.
+            population, exclusions = [], []
+            plans.append(dict(stream=stream, start=left, end=right, ready=False, directory=directory,
+                recipe=recipe, day=day, population=population, exclusions=exclusions, binary=binary))
+            continue
+        population, exclusions = await asyncio.to_thread(_population, day, common_only=False)
+        plans.append(dict(stream=stream, start=left, end=right, ready=False, directory=directory,
+            recipe=recipe, day=day, population=population, exclusions=exclusions, binary=binary))
+    if not plans:
+        raise ValueError('No market sessions in requested signal reconstruction')
+    return await _execute_plans(stream, plans, progress=progress, stopped=stopped)
+
+
+async def _execute_plans(stream, plans, *, progress, stopped):
     results = []
     for plan in plans:
         if stopped():

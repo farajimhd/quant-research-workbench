@@ -23,6 +23,16 @@ class _Client:
 
 
 class HistoricalSignalOccurrenceServiceTests(unittest.TestCase):
+    def test_empty_recorded_table_does_not_certify_a_signal_free_session(self):
+        from src.backend.historical_signal_occurrence_service import HistoricalSignalCoverageUnavailable
+        client = _Client([])
+        with self.assertRaisesRegex(HistoricalSignalCoverageUnavailable, 'does not certify empty sessions'):
+            historical_source_native_signal_occurrences(
+                dict(signal_stream_id='price-squeeze-early', occurrence_source='qmd_squeeze_episode'),
+                start=datetime(2026, 8, 18, 8, tzinfo=UTC),
+                end=datetime(2026, 8, 19, tzinfo=UTC), client=client)
+        self.assertEqual(len(client.queries), 1)
+
     def test_loads_hashed_occurrences_at_original_availability_clock(self) -> None:
         payload = {
             "event_id": "event-1",

@@ -13,7 +13,7 @@ use std::{collections::{BTreeMap, HashSet, VecDeque}, fs, io::{BufWriter, Write}
 struct Request {
     configuration: SignalStreamConfigurationRequest,
     tickers: Vec<String>,
-    maximum_price_exclusive: f64,
+    maximum_price_exclusive: Option<f64>,
     population_authority: Value,
 }
 
@@ -45,8 +45,7 @@ async fn run() -> Result<(), String> {
     let bytes = fs::read(&args[0]).map_err(|e| e.to_string())?;
     let request_hash = format!("{:x}", Sha256::digest(&bytes));
     let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    if request.tickers.is_empty() || request.tickers.len() > 25_000 || !request.maximum_price_exclusive.is_finite()
-        || request.maximum_price_exclusive <= 0.0 { return Err("Invalid population or price ceiling".into()); }
+    if request.tickers.is_empty() || request.tickers.len() > 25_000 || request.maximum_price_exclusive.is_some_and(|v| !v.is_finite() || v <= 0.0) { return Err("Invalid population or price ceiling".into()); }
     if output.join("manifest.json").exists() { return Err("Certified signal output already exists; validate/reuse it or choose a new output".into()); }
     load_env_files();
     let config = HistoricalGatewayConfig::from_env();
@@ -163,13 +162,13 @@ async fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn emit(event: Value, ceiling: f64, admitted: &mut HashSet<String>, duplicates: &mut u64,
+fn emit(event: Value, ceiling: Option<f64>, admitted: &mut HashSet<String>, duplicates: &mut u64,
     over_price: &mut u64, writer: &mut BufWriter<fs::File>, digest: &mut Sha256) -> Result<(), String> {
     let ticker = event["ticker"].as_str().ok_or("Signal lacks ticker")?;
     if admitted.contains(ticker) { *duplicates += 1; return Ok(()); }
     let price = event["last_price"].as_f64().ok_or("Signal lacks price")?;
     if !price.is_finite() || price <= 0.0 { return Err("Signal has invalid price".into()); }
-    if price >= ceiling { *over_price += 1; return Ok(()); }
+    if ceiling.is_some_and(|limit| price >= limit) { *over_price += 1; return Ok(()); }
     admitted.insert(ticker.to_string());
     let mut bytes = serde_json::to_vec(&event).map_err(|e| e.to_string())?;
     bytes.push(b'\n');
@@ -190,7 +189,7 @@ struct TickerResult {
 }
 
 async fn scan_ticker(source: HistoricalEventSource, day: NaiveDate, range: CanonicalSessionOrdinalRange,
-    configuration: SignalStreamConfigurationRequest, ceiling: f64) -> Result<TickerResult, String> {
+    configuration: SignalStreamConfigurationRequest, ceiling: Option<f64>) -> Result<TickerResult, String> {
     let start = configuration.session_start_utc.timestamp_micros() as u64;
     let end = configuration.session_end_utc.timestamp_micros() as u64;
     let mut engine = HistoricalSqueezeReplay::new(configuration)?;
@@ -219,10 +218,10 @@ async fn scan_ticker(source: HistoricalEventSource, day: NaiveDate, range: Canon
     Ok(result)
 }
 
-fn accept(result: &mut TickerResult, event: Value, ceiling: f64) -> Result<bool, String> {
+fn accept(result: &mut TickerResult, event: Value, ceiling: Option<f64>) -> Result<bool, String> {
     result.signals += 1;
     let price = event["last_price"].as_f64().filter(|v| v.is_finite() && *v > 0.0).ok_or("Invalid signal price")?;
-    if price >= ceiling { result.over_price += 1; return Ok(false); }
+    if ceiling.is_some_and(|limit| price >= limit) { result.over_price += 1; return Ok(false); }
     result.occurrence = Some(event);
     Ok(true)
 }

@@ -19,8 +19,13 @@ def baseline(base):
     return dict(candidate_id=C.BASELINE_ID,content_hash=C.BASELINE_HASH,payload=payload)
 
 
-def test_compiled_candidate_has_only_agreed_contract_and_occurrence_population():
-    base=configuration_base();before=deepcopy(base)
+def test_compiled_candidate_has_only_agreed_contract_and_occurrence_population(monkeypatch):
+    base=configuration_base()
+    # Build against the pre-publication state even when this version is already
+    # published in the developer's journal. Publication immutability stays on.
+    base['strategy']['profiles'] = [p for p in base['strategy']['profiles'] if p['profile_id'] != C.PROFILE_ID]
+    monkeypatch.setattr('src.backend.trading_configuration_service.configuration_base', lambda: deepcopy(base))
+    before=deepcopy(base)
     payload,canvas,plan_id=C.build(base,baseline(base))
     assert base==before
     profile=next(p for p in payload['strategy']['profiles'] if p['profile_id']==C.PROFILE_ID)

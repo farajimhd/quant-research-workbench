@@ -153,6 +153,43 @@ def test_midpoint_target_ignores_stale_roles_and_band_whose_midpoint_is_below_as
     assert E.target_price(over,.01,E.CONTRACT)==pytest.approx(7.8)
 
 
+def test_fresh_current_r1_reclaim_is_not_blocked_by_stopout_recovery():
+    host,a,obs=entered()
+    a.state['squeeze_entry']['peak_close']=11.
+    E.record_exit(a.state,NOW+timedelta(seconds=1.5),'protective_stop',0.)
+    a=replace(a,status=S.AssignmentStatus.REENTRY_COOLDOWN)
+    # Both adjacent closes are above midpoint; this green candle dips under
+    # it and reclaims it while the frozen recovery high remains unrecovered.
+    result=host.evaluate(a,obs(2,10.45,open_price=10.41,low=10.40))
+    intent=result.evaluation.intents[0]
+    assert intent.metadata['reason_code']=='squeeze_r1_midpoint_breakout'
+    assert intent.metadata['frozen_reentry_high'] is None
+    assert intent.invalidation_price==pytest.approx(10.39)
+    assert intent.capital_request.value==pytest.approx(1/3)
+
+
+def test_delayed_confirmation_cannot_use_a_superseded_r1():
+    host,a,obs=fixture();a=advance(a,host.evaluate(a,obs()))
+    # Old R1 crosses but fails the close-location gate. The new snapshot has
+    # a higher HOD, making R3 the current first resistance below it.
+    a=advance(a,host.evaluate(a,replace(obs(1,10.5,high=11.),structural_session_high=10.7)))
+    result=host.evaluate(a,replace(obs(2,10.51),structural_session_high=10.7))
+    assert not result.evaluation.intents
+    assert 'initial_breakout' not in result.state['squeeze_breakout']
+    a=advance(a,result)
+    result=host.evaluate(a,replace(obs(3,10.64),structural_session_high=10.7))
+    assert result.evaluation.intents[0].metadata['entry_selection']['unified_level_id']=='R3'
+
+
+def test_held_break_count_does_not_include_obsolete_resistance_roles():
+    host,a,obs=entered()
+    a.state['squeeze_breakout']['levels']['obsolete']=dict(a.state['squeeze_entry']['anchor'],
+        unified_level_id='obsolete',lower=10.44,upper=10.46)
+    result=host.evaluate(a,obs(2,10.5,100))
+    assert 'obsolete' not in result.state['squeeze_entry']['broken_levels']
+    assert all('obsolete' not in i.metadata.get('squeeze_add_levels',[]) for i in result.evaluation.intents)
+
+
 def test_v3_preserves_above_band_target():
     host,a,obs=fixture()
     a=replace(a,parameters={**a.parameters,'early_squeeze_breakout_contract':E.RECOVERY_CONTRACT})

@@ -23,6 +23,10 @@ MAX_HISTORICAL_SIGNAL_OCCURRENCES = 1_000_000
 SUPPORTED_NATIVE_OCCURRENCE_SOURCES = {"qmd_squeeze_episode"}
 
 
+class HistoricalSignalCoverageUnavailable(RuntimeError):
+    """Recorded occurrences cannot certify the requested historical window."""
+
+
 def historical_source_native_signal_occurrences(
     stream: dict[str, Any],
     *,
@@ -74,6 +78,17 @@ def historical_source_native_signal_occurrences(
         )
     )
     row_count = int((count_rows[0] if count_rows else {}).get("row_count") or 0)
+    if row_count == 0:
+        # A live occurrence table has no coverage certificate. Absence of rows
+        # cannot prove that a historical detector ran and produced no signals.
+        # Certified artifacts handle genuine empty sessions separately.
+        raise HistoricalSignalCoverageUnavailable(
+            f"Historical signal coverage unavailable for {stream_id} "
+            f"in [{start_utc.isoformat()}, {end_utc.isoformat()}): "
+            "the persisted occurrence table contains no records and does not certify empty sessions. "
+            "Prepare a certified canonical historical signal artifact before replay; "
+            "watchlist reconstruction cannot substitute for Early Squeeze activation history."
+        )
     if row_count > MAX_HISTORICAL_SIGNAL_OCCURRENCES:
         raise RuntimeError(
             "Historical Signal Stream occurrence count exceeds bounded loader capacity: "
