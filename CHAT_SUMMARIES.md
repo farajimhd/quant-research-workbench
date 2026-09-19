@@ -18,6 +18,8 @@ behavior, certified August 18-19 signals, prepared-stream reuse, bounded V7 resi
 and explicit simulator cash rejection are preserved in the narrative. JUNS, full-day
 and live-broker trigger acceptance remain open. Remote push is constrained by existing
 Git divergence.
+Subsequent 327 stop/reference crash fixed with entry-price offsets: 31 focused tests
+and saved-configuration SUGP 04:00-04:30 replay (82,406 events) passed.
 
 ### [2026-09-17 - Trading Journal and filtered V7 preparation](docs/codex/chat-summaries/2026/CHAT-20260917-UNKNOWN-trading-journal-filtered-v7.md)
 

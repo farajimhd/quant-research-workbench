@@ -78,7 +78,7 @@ def test_candidate_compiles(monkeypatch):
     from src.backend import early_squeeze_price_high_candidate as C
     from src.backend.trading_configuration_service import configuration_base, _build_configuration_release
     from tests.test_early_squeeze_candidate import baseline
-    base=configuration_base();monkeypatch.setattr('src.backend.trading_configuration_service.configuration_base',lambda:deepcopy(base))
+    base=configuration_base();base['strategy']['profiles']=[p for p in base['strategy']['profiles'] if p['profile_id']!=C.CONTRACT];monkeypatch.setattr('src.backend.trading_configuration_service.configuration_base',lambda:deepcopy(base))
     payload,canvas,plan=C.build(base,baseline(base))
     _build_configuration_release(canvas_revision=canvas['revision'],canvas_profile=canvas['profile'],configuration=payload,run_plan_id=plan,strategy_profile_id=C.CONTRACT)
 
@@ -113,3 +113,38 @@ def test_first_entry_does_not_require_new_high_after_quality_delay():
     r=h.evaluate(a,t(.02,10.44))
     assert any(i.action=='enter_long' for i in r.evaluation.intents)
     assert r.state['squeeze_breakout']['breakout_highs']['R2']==10.46
+
+
+@pytest.mark.parametrize('action',['entry','add'])
+def test_trade_above_ask_offsets_new_protection_below_entry_reference(action):
+    from src.trading_runtime.execution_policies import StopRule, StopRuleType
+    if action=='entry':
+        h,a,t=fixture();a=advance(a,h.evaluate(a,t()))
+        o=replace(t(.01,10.44),bid=10.37,ask=10.39)
+    else:
+        h,a,t=opened()
+        a.state['squeeze_entry'].update(trail_distance=1.,peak_price=10.44)
+        o=replace(t(.02,10.84,100.),bid=10.70,ask=10.72)
+    r=h.evaluate(a,o)
+    i=next(i for i in r.evaluation.intents if i.action==('enter_long' if action=='entry' else 'add_long'))
+    assert i.invalidation_price==pytest.approx(o.ask-.01)
+    assert i.invalidation_price<i.reference_price
+    assert StopRule(rule_type=StopRuleType.FIXED_PRICE,price=i.invalidation_price).resolve(reference_price=i.reference_price,side='long',quantity=100)==i.invalidation_price
+    if action=='add':
+        assert i.invalidation_price>=a.state['active_stop']
+
+
+def test_sugp_failure_41444_trade_409_ask_offsets_411_stop_to_408():
+    h,a,t=fixture()
+    def actual(at,price):
+        o=t(at,price);prototype=o.structural_resistance_levels[0]
+        rows=tuple(dict(prototype,unified_level_id=str(n),lower=lo,upper=hi,role='resistance') for n,(lo,hi) in enumerate([(4.115712839374951,4.131191583329103),(4.255287086882092,4.269974196530766),(4.5,4.52),(4.7,4.72)]))
+        market=deepcopy(o.structural_detector_state);market['fast_squeeze_context']['hod']=4.14
+        return replace(o,bid=4.07,ask=4.09,structural_resistance_levels=rows,structural_support_levels=(),structural_transition_levels=(),structural_detector_state=market,source_values={**o.source_values,'indicator.vwap.execution_value@100ms':dict(value=3.643785349957355,observed_at=o.observed_at.isoformat())})
+    a=advance(a,h.evaluate(a,actual(0.,4.13)))
+    r=h.evaluate(a,actual(.01,4.1444));i=next(i for i in r.evaluation.intents if i.action=='enter_long')
+    assert i.reference_price==4.09
+    assert i.invalidation_price==4.08
+    assert i.metadata['structural_stop']==4.11
+    for rule in i.protection_profile.slices:
+        assert rule.stop.resolve(reference_price=i.reference_price,side='long',quantity=100)==4.08

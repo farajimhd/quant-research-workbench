@@ -200,7 +200,7 @@ def evaluate(host, a, o, p, old_state):
                 keys = sorted(pending)
                 if strict:
                     anchor_stop = max(below(rows[k]['lower'], tick) for k in keys)
-                    proposal = max(stop, min(anchor_stop, below(o.price, tick)))
+                    proposal = max(stop, min(anchor_stop, below(min(o.price, o.ask), tick)))
                     if proposal > stop:
                         state['active_stop'] = stop = proposal
                         active['structural_stop'] = proposal
@@ -298,7 +298,10 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
         anchor = d.get('latest_broken_resistance', recovery['anchor'])
         desired = below(anchor['lower'], tick)
         stop_source = 'latest_broken_resistance_lower'
-    stop = min(desired, below(o.price if strict else o.bid, tick))
+    # Trigger/trailing authority is the trade, but a new buy's fixed stop
+    # must also be below its executable entry reference. Trades can be above
+    # the current ask; offset immediately rather than emitting invalid risk.
+    stop = min(desired, below(min(o.price, o.ask) if strict else o.bid, tick))
     overhead = sorted((r for r in rows.values() if is_resistance(r)
         and r['unified_level_id'] != anchor['unified_level_id'] and E.target_price(r,tick,E.CONTRACT) > o.ask),
         key=lambda r:(r['lower']+r['upper'],r['unified_level_id']))
