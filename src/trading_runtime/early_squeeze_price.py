@@ -14,9 +14,11 @@ BROKEN_RESISTANCE_CEILING_CONTRACT = 'early-squeeze-r1-price-broken-resistance-c
 GREEN_CLOSE_CEILING_CONTRACT = 'early-squeeze-r1-price-green-close-ceiling-v14'
 MACD_EPISODE_REENTRY_CONTRACT = 'early-squeeze-r1-price-macd-1s-episode-reentry-v15'
 DUAL_MACD_REENTRY_CONTRACT = 'early-squeeze-r1-price-dual-macd-reentry-v16'
+EPISODE_TARGET_CONTINUITY_CONTRACT = 'early-squeeze-r1-price-episode-target-continuity-v17'
 EPISODE_CONTRACTS = (EPISODE_CONTRACT, RESISTANCE_CEILING_CONTRACT,
                      BROKEN_RESISTANCE_CEILING_CONTRACT, GREEN_CLOSE_CEILING_CONTRACT,
-                     MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT)
+                     MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT,
+                     EPISODE_TARGET_CONTINUITY_CONTRACT)
 
 
 def midpoint(row):
@@ -40,6 +42,10 @@ def boundary(anchor, rows):
     return dict(price=midpoint(anchor)+.1*(midpoint(next_level)-midpoint(anchor)),
                 midpoint=midpoint(anchor), next_midpoint=midpoint(next_level),
                 next_level_id=next_level['unified_level_id'], gap_fraction=.1)
+
+
+def target_ordinal(broken_count):
+    return 1 if broken_count >= 6 else 2 if broken_count >= 4 else 3
 
 
 def unbroken_resistance_ceiling(rows, price, stop):
@@ -69,10 +75,14 @@ def evaluate(host, a, o, p, old_state):
     resistance_ceiling = p['early_squeeze_breakout_contract'] == RESISTANCE_CEILING_CONTRACT
     broken_resistance_cap = p['early_squeeze_breakout_contract'] == BROKEN_RESISTANCE_CEILING_CONTRACT
     green_close_cap = p['early_squeeze_breakout_contract'] in (
-        GREEN_CLOSE_CEILING_CONTRACT, MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT)
+        GREEN_CLOSE_CEILING_CONTRACT, MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT,
+        EPISODE_TARGET_CONTINUITY_CONTRACT)
     macd_episode_reentry = p['early_squeeze_breakout_contract'] in (
-        MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT)
-    dual_macd_reentry = p['early_squeeze_breakout_contract'] == DUAL_MACD_REENTRY_CONTRACT
+        MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT,
+        EPISODE_TARGET_CONTINUITY_CONTRACT)
+    dual_macd_reentry = p['early_squeeze_breakout_contract'] in (
+        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT)
+    episode_target_continuity = p['early_squeeze_breakout_contract'] == EPISODE_TARGET_CONTINUITY_CONTRACT
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     state = deepcopy(old_state)
     a = replace(a, parameters=p)
@@ -120,7 +130,7 @@ def evaluate(host, a, o, p, old_state):
         bullish = valid and o.macd_line > o.macd_signal
         if bullish and not macd.get('open'):
             macd.clear()
-            macd.update(open=True, episode_id=now, high=0., started_at=now)
+            macd.update(open=True, episode_id=now, high=0., started_at=now, broken_levels=[])
         elif not bullish:
             macd.clear()
             macd.update(open=False, observed_at=now, line=o.macd_line, signal=o.macd_signal)
@@ -169,6 +179,11 @@ def evaluate(host, a, o, p, old_state):
                             d.setdefault('breakout_anchors', {})[key] = deepcopy(level)
             if crossed:
                 d['latest_broken_resistance'] = deepcopy(max((r for _,r in crossed), key=midpoint))
+                if episode_target_continuity and macd.get('open'):
+                    episode_broken = macd.setdefault('broken_levels', [])
+                    for key, level in crossed:
+                        if is_resistance(level) and key not in episode_broken:
+                            episode_broken.append(key)
         if held and active:
             broken = active.setdefault('broken_levels', [])
             for key, level in crossed:
@@ -189,6 +204,25 @@ def evaluate(host, a, o, p, old_state):
         for key, level in rows.items():
             if is_resistance(level) and o.price > level['upper'] + 1e-9:
                 confirmations[key] = dict(closed_at=now, close=o.price, upper=level['upper'])
+        if episode_target_continuity:
+            tracker = active.get('forming_resistance_exit')
+            if tracker and o.price > tracker['upper'] + 1e-9:
+                active.pop('forming_resistance_exit', None)
+            for event in market.get('local_events', ()):
+                forming = event.get('level') or {}
+                price = forming.get('price')
+                if event.get('state') != 'resistance_forming' or type(price) not in (int, float):
+                    continue
+                band = min((level for level in rows.values() if is_resistance(level)
+                            and level['lower'] - 1e-9 <= price <= level['upper'] + 1e-9),
+                           key=lambda level:(abs(midpoint(level)-price), level['unified_level_id']),
+                           default=None)
+                if band:
+                    current = active.get('forming_resistance_exit')
+                    if not current or current['unified_level_id'] != band['unified_level_id']:
+                        active['forming_resistance_exit'] = dict(
+                            unified_level_id=band['unified_level_id'], lower=band['lower'],
+                            upper=band['upper'], forming_price=float(price), started_at=now)
     if dual_macd_reentry and not held and state.get('entries', 0) and macd.get('open'):
         same_episode = d.get('last_entry_macd_episode') == macd.get('episode_id')
         review = d.get('reentry_100ms_review')
@@ -273,6 +307,11 @@ def evaluate(host, a, o, p, old_state):
                 d['entered_levels'].append(key)
         if not active:
             return emit('hold', 'position_entry_state_unavailable', Status.MANAGING)
+        forming_exit = active.get('forming_resistance_exit') if episode_target_continuity else None
+        if forming_exit and now-forming_exit['started_at'] > 5.:
+            return emit('exit', 'forming_resistance_dwell_exit', Status.EXIT_PENDING,
+                        quantity=o.position_quantity,
+                        metadata=dict(forming_resistance=deepcopy(forming_exit), dwell_seconds=now-forming_exit['started_at']))
         if not active.get('trail_distance') and o.average_price > stop > 0:
             distance = o.average_price-stop
             if green_close_cap and not active.get('same_macd_episode_reentry'):
@@ -307,8 +346,8 @@ def evaluate(host, a, o, p, old_state):
                         resistance_ceiling=deepcopy(ceiling))))
         # Re-rank on eligible trade prices using the causal V7 snapshot.
         if price_event and quote and structure_fresh:
-            count = len(active.get('broken_levels', []))
-            ordinal = 1 if count >= 6 else 2 if count >= 4 else 3
+            count = len(macd.get('broken_levels', [])) if episode_target_continuity else len(active.get('broken_levels', []))
+            ordinal = target_ordinal(count)
             overhead = sorted((r for r in rows.values() if is_resistance(r)
                 and E.target_price(r, tick, E.CONTRACT) > o.ask), key=lambda r:(r['lower']+r['upper'], r['unified_level_id']))
             if len(overhead) >= ordinal:
@@ -373,7 +412,9 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
     episode = p['early_squeeze_breakout_contract'] in EPISODE_CONTRACTS
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     macd_episode_reentry = p['early_squeeze_breakout_contract'] == MACD_EPISODE_REENTRY_CONTRACT
-    dual_macd_reentry = p['early_squeeze_breakout_contract'] == DUAL_MACD_REENTRY_CONTRACT
+    dual_macd_reentry = p['early_squeeze_breakout_contract'] in (
+        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT)
+    episode_target_continuity = p['early_squeeze_breakout_contract'] == EPISODE_TARGET_CONTINUITY_CONTRACT
     macd_episode_reentry = macd_episode_reentry or dual_macd_reentry
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
     if a.status == Status.ENTRY_PENDING or state.get('pending_capital_request'):
@@ -481,9 +522,11 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
     overhead = sorted((r for r in rows.values() if is_resistance(r)
         and r['unified_level_id'] != anchor['unified_level_id'] and E.target_price(r,tick,E.CONTRACT) > o.ask),
         key=lambda r:(r['lower']+r['upper'],r['unified_level_id']))
-    if len(overhead) < 3:
+    broken_count = len(macd.get('broken_levels', [])) if episode_target_continuity else 0
+    ordinal = target_ordinal(broken_count) if episode_target_continuity else 3
+    if len(overhead) < ordinal:
         return emit('wait', 'overhead_resistance_target_unavailable')
-    target = E.target_price(overhead[2], tick, E.CONTRACT)
+    target = E.target_price(overhead[ordinal-1], tick, E.CONTRACT)
     if not quote or not (0 < stop < (o.price if strict else o.bid) and 0 < o.bid <= o.ask < target):
         return emit('wait', 'unrepresentable_stop_or_target')
     d['latest_broken_resistance'] = deepcopy(anchor)
@@ -500,7 +543,7 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
         breakout_at=recovery['breakout_at'] if recovery else setup['breakout_at'],
         peak_close=setup.get('peak_close') if not recovery else None,
         entry_price=o.ask, requested_at=now, single_use_adds=strict, added_levels=[anchor['unified_level_id']] if strict else [],
-        pending_adds={}, broken_levels=[], late=False, target_moves=0,
+        pending_adds={}, broken_levels=list(macd.get('broken_levels', [])) if episode_target_continuity else [], late=False, target_moves=0,
         same_macd_episode_reentry=same_episode_reentry),
         initial_stop=stop, active_stop=stop, structural_profit_targets=[target],
         entry_reference_price=o.ask, entry_at=o.observed_at.isoformat(),
@@ -514,6 +557,7 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
         metadata=dict(unreserved_cash_slice=True, entry_selection=deepcopy(anchor), stop_source=stop_source,
             structural_stop=desired, breakout_boundary=limit if not recovery else dict(price=recovery['high'], kind='frozen_closing_high'),
             frozen_reentry_high=recovery['high'] if recovery else None,
-            profit_target_selection=dict(level=deepcopy(overhead[2]),price=target,ordinal=3),
+            profit_target_selection=dict(level=deepcopy(overhead[ordinal-1]),price=target,ordinal=ordinal,
+                                         episode_resistance_breaks=broken_count),
             unified_structural_trigger={'current_snapshot':{'levels':[dict(anchor, entry_boundary=limit['price'] if not recovery else recovery['high'])],
                 'session_high':prior_hod,'selected_at':o.observed_at.isoformat(),'frozen_at_entry':True}}))

@@ -72,6 +72,12 @@ def dual_macd_fixture():
     return h, a, t, frame_1s, frame_100ms
 
 
+def episode_target_fixture():
+    h, a, t, frame_1s, frame_100ms = dual_macd_fixture()
+    return h, replace(a, parameters={**a.parameters,
+        'early_squeeze_breakout_contract': P.EPISODE_TARGET_CONTINUITY_CONTRACT}), t, frame_1s, frame_100ms
+
+
 @pytest.mark.parametrize('low,enters', [(10.39, True), (10.42, False)])
 def test_only_below_lower_band_resets_reentry_high(low, enters):
     h, a, t = opened()
@@ -336,6 +342,59 @@ def test_three_100ms_candles_with_unbroken_forming_resistance_stop_same_episode_
     assert blocked.state['squeeze_breakout']['reentry_100ms_review']['blocked']
 
 
+def test_same_episode_reentry_inherits_resistance_count_for_initial_target():
+    h, a, t, frame_1s, frame_100ms = episode_target_fixture()
+    a = advance(a, h.evaluate(a, t()))
+    a = advance(a, h.evaluate(a, frame_1s(.005, 10.39, .3, .2)))
+    a = advance(a, h.evaluate(a, frame_100ms(.01, 10.39)))
+    a = advance(a, h.evaluate(a, t(.015, 10.44)))
+    a.state['squeeze_entry'].update(first_fill_at=t().observed_at.timestamp(), slice_notional=3000.)
+    a.state['squeeze_breakout']['macd_1s'].update(
+        high=10.62, broken_levels=['R2', 'R3', 'R4', 'R5', 'R6'])
+    E.record_exit(a.state, t(.02).observed_at, 'protective_stop', 0,
+                  contract=P.EPISODE_TARGET_CONTINUITY_CONTRACT)
+    a = replace(a, status=S.AssignmentStatus.WATCHING)
+    a = advance(a, h.evaluate(a, t(.025, 10.39)))
+    a = advance(a, h.evaluate(a, frame_100ms(.03, 10.39)))
+    a = advance(a, h.evaluate(a, frame_100ms(.04, 10.39)))
+    a = advance(a, h.evaluate(a, frame_100ms(.05, 10.39)))
+
+    reentry = h.evaluate(a, t(.06, 10.63))
+    intent = next(intent for intent in reentry.evaluation.intents if intent.action == 'enter_long')
+    selection = intent.metadata['profit_target_selection']
+    assert selection['ordinal'] == 2
+    assert selection['episode_resistance_breaks'] == 5
+    assert selection['level']['unified_level_id'] == 'R5'
+
+
+def test_new_1s_macd_episode_resets_resistance_target_count():
+    h, a, t, frame_1s, frame_100ms = episode_target_fixture()
+    a = advance(a, h.evaluate(a, t()))
+    a = advance(a, h.evaluate(a, frame_1s(.005, 10.39, .3, .2)))
+    a.state['squeeze_breakout']['macd_1s']['broken_levels'] = ['R2', 'R3', 'R4', 'R5', 'R6']
+    a = advance(a, h.evaluate(a, frame_1s(.01, 10.39, .1, .2)))
+    a = advance(a, h.evaluate(a, frame_1s(.02, 10.39, .3, .2)))
+    assert a.state['squeeze_breakout']['macd_1s']['broken_levels'] == []
+
+
+def test_unbroken_forming_resistance_over_five_seconds_exits_position():
+    h, a, t, frame_1s, frame_100ms = episode_target_fixture()
+    a = advance(a, h.evaluate(a, t()))
+    a = advance(a, h.evaluate(a, frame_1s(.005, 10.39, .3, .2)))
+    a = advance(a, h.evaluate(a, frame_100ms(.01, 10.39)))
+    a = advance(a, h.evaluate(a, t(.015, 10.44)))
+    a.state['squeeze_entry'].update(first_fill_at=t().observed_at.timestamp(), slice_notional=3000.)
+    a = replace(a, status=S.AssignmentStatus.MANAGING)
+    forming = dict(state='resistance_forming', level=dict(price=10.61, confirmed_at=None))
+    a = advance(a, h.evaluate(a, frame_100ms(.03, 10.60, local_events=(forming,), position=100.)))
+
+    result = h.evaluate(a, t(5.04, 10.60, 100.))
+    intent = next(intent for intent in result.evaluation.intents if intent.action == 'exit')
+    assert intent.reason == 'forming_resistance_dwell_exit'
+    assert intent.metadata['forming_resistance']['unified_level_id'] == 'R3'
+    assert intent.metadata['dwell_seconds'] > 5.
+
+
 def test_reset_does_not_retry_consumed_addition():
     h, a, t = opened()
     a.state['squeeze_entry'].update(trail_distance=1., peak_price=10.44, structural_stop=9.44)
@@ -424,6 +483,18 @@ def test_macd_episode_reentry_candidate_compiles(monkeypatch):
 def test_dual_macd_reentry_candidate_compiles(monkeypatch):
     from copy import deepcopy
     from src.backend import early_squeeze_dual_macd_reentry_candidate as C
+    from src.backend.trading_configuration_service import configuration_base, _build_configuration_release
+    from tests.test_early_squeeze_candidate import baseline
+    base = configuration_base()
+    base['strategy']['profiles'] = [p for p in base['strategy']['profiles'] if p['profile_id'] != C.CONTRACT]
+    monkeypatch.setattr('src.backend.trading_configuration_service.configuration_base', lambda: deepcopy(base))
+    payload, canvas, plan = C.build(base, baseline(base))
+    _build_configuration_release(canvas_revision=canvas['revision'], canvas_profile=canvas['profile'], configuration=payload, run_plan_id=plan, strategy_profile_id=C.CONTRACT)
+
+
+def test_episode_target_continuity_candidate_compiles(monkeypatch):
+    from copy import deepcopy
+    from src.backend import early_squeeze_episode_target_continuity_candidate as C
     from src.backend.trading_configuration_service import configuration_base, _build_configuration_release
     from tests.test_early_squeeze_candidate import baseline
     base = configuration_base()
