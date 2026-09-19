@@ -168,6 +168,8 @@ class Service:
         self.catalog=catalog or Catalog()
         if max_sessions<1:raise ValueError('V7 resident session limit must be positive')
         self.cache=RuntimeCache(local_cache)
+        from .v7_preparation_cache import ArtifactCache
+        self.preparation_cache=ArtifactCache(Path(local_cache)/'immutable-preparation')
         self.source=source or QmdSource(self.cache)
         self.sessions=OrderedDict();self.max_sessions=max_sessions
         # SHA objects cannot be serialized. Retain only these small digest

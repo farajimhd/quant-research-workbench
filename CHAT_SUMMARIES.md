@@ -7,19 +7,16 @@ each year.
 
 ## 2026
 
-### [2026-09-18 - Early Squeeze 323-327 and certified historical signals](docs/codex/chat-summaries/2026/CHAT-20260918-UNKNOWN-squeeze-v6-history.md)
+### [2026-09-18 - Early Squeeze 323-328 and reusable V7 preparation](docs/codex/chat-summaries/2026/CHAT-20260918-UNKNOWN-squeeze-v6-history.md)
 
-327 / release 10 is active: no recovery path, eligible-trade trailing and stop triggers,
-new highs required only for reentry, one add attempt per resistance, current-role checks
-and broken-band protection. The 10% gap remains. Final SUGP replay completed 53,112 events;
-first stop reached 3.48, no repeated add attempts, and zero portfolio rejections.
-67 focused checks and the canonical-price/causal-level audit passed. Earlier 323-326
-behavior, certified August 18-19 signals, prepared-stream reuse, bounded V7 residency
-and explicit simulator cash rejection are preserved in the narrative. JUNS, full-day
-and live-broker trigger acceptance remain open. Remote push is constrained by existing
-Git divergence.
-Subsequent 327 stop/reference crash fixed with entry-price offsets: 31 focused tests
-and saved-configuration SUGP 04:00-04:30 replay (82,406 events) passed.
+328 / release 11 is active: below-lower-band breakout reset and one original
+fixed-distance trade-price trail retained through additions. Final SUGP audit
+completed 82,406 events; third entry 04:10:25.851248, stop 3.49; zero portfolio
+rejections. Persistent verified V7 artifacts reused all 1,553 ticker preparations
+in 88 seconds versus 240 seconds. Forty-seven strategy and 52 V7 tests, 376 Rust
+tests (four ignored), frontend build and 12 visual scenarios passed. Exact V7
+HTTP transport parity passed after activation; user declined another SUGP replay.
+JUNS/full-day/live-broker acceptance and remote delivery remain open.
 
 ### [2026-09-17 - Trading Journal and filtered V7 preparation](docs/codex/chat-summaries/2026/CHAT-20260917-UNKNOWN-trading-journal-filtered-v7.md)
 

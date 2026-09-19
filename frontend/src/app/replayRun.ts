@@ -58,7 +58,7 @@ export type CanvasReplayRun = {
   };
   progress: number;
   preparation_stage?: "created" | "market_events" | "ready" | "signal_occurrences" | "strategy_frames" | "strategy_runtime" | "watchlist_membership" | "level_book_coverage" | "level_book_working_set" | "signal_identity" | "strategy_quality_admission";
-  preparation_progress?: { completed: number; total: number; filtered_v7?: FilteredV7Progress | null };
+  preparation_progress?: { completed: number; total: number; v7_reuse?: { bars: number; seeds: number; loaded: number } | null; filtered_v7?: FilteredV7Progress | null };
   preparation_cache?: { strategy_frames?: "fixture" | "hit" | "miss" | "partial_hit" | "built" | "reusing" | "reused" | "reused_and_built" | "not_requested" | "not_required" | "request_memory" | "run_checkpoint" };
   run_id: string;
   session_date: string;

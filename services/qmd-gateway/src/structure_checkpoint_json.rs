@@ -7,10 +7,17 @@ use crate::generic_structure::GenericStructureCheckpoint;
 use serde_json::{value::RawValue, Map, Number, Value};
 
 pub fn decode_checkpoint(text: &str) -> Result<GenericStructureCheckpoint, String> {
+    serde_json::from_value(decode_value(text)?)
+        .map_err(|error| format!("invalid checkpoint state: {error}"))
+}
+
+/// Exact numeric JSON for authoritative state and the V7 worker bridge.
+/// Keep this scoped: the historical certification canonicalizer must retain
+/// its existing representation rather than changing the global JSON parser.
+pub fn decode_value(text: &str) -> Result<Value, String> {
     let raw: &RawValue =
         serde_json::from_str(text).map_err(|error| format!("invalid checkpoint JSON: {error}"))?;
-    serde_json::from_value(exact_value(raw, 0)?)
-        .map_err(|error| format!("invalid checkpoint state: {error}"))
+    exact_value(raw, 0)
 }
 
 fn exact_value(raw: &RawValue, depth: usize) -> Result<Value, String> {

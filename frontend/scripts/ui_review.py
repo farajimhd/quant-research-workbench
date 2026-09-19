@@ -2377,6 +2377,17 @@ def capture(args: argparse.Namespace) -> int:
                         "localStorage.setItem(" + json.dumps(f"{storage_prefix}.{args.canvas_id}") + ", " + json.dumps(json.dumps(storage_payload)) + ");"
                     )
                 page = context.new_page()
+                if args.v7_preparation_cache:
+                    if not args.historical_run_id:
+                        raise ValueError('V7 preparation review requires a saved historical run')
+                    def cached_preparation(route):
+                        response = route.fetch()
+                        value = response.json()
+                        value.update(status='warming', runtime_ready=False, work_progress=None, preparation_stage='level_book_working_set',
+                            preparation_progress=dict(completed=768, total=1554,
+                                v7_reuse=dict(bars=768, seeds=768, loaded=768)))
+                        route.fulfill(response=response, json=value)
+                    page.route(re.compile('/api/trading/backtest/runs/' + re.escape(args.historical_run_id) + r'(\?.*)?$'), cached_preparation)
                 if args.full_market_backtest:
                     full_market_requests = []
                     plan = dict(name='V7 full session / first Early Squeeze', profile_id='fixture', run_plan_id='fixture-plan', strategy_id='fixture', strategy_revision=1)
@@ -3306,6 +3317,11 @@ def capture(args: argparse.Namespace) -> int:
                         page.get_by_role('button',name='Ticker preset',exact=True).click()
                         page.get_by_role('option',name='SUGP',exact=True).click()
                         page.get_by_role('button',name='Level book',exact=True).filter(has_text='Swing book v6 - daily survivors · SUGP').wait_for(timeout=args.timeout_ms)
+                    if args.v7_preparation_cache and scenario['page']=='backtest-trading':
+                        facts = page.locator('.historical-backtest-progress-facts')
+                        facts.get_by_text('768 / 1,554 loaded', exact=True).wait_for()
+                        facts.get_by_text('768 bar sets reused · 768 opening books reused', exact=True).wait_for()
+                        result['v7_preparation_cache_labels'] = True
                     if args.backtest_warmup_presentation and scenario['page']=='backtest-trading':
                         journal=page.locator('.performance-journal')
                         journal.wait_for(state='visible',timeout=args.timeout_ms)
@@ -3322,7 +3338,7 @@ def capture(args: argparse.Namespace) -> int:
                             expected=round(100*completed/total)
                             actual=int(progress.get_attribute('aria-valuenow'))
                             facts=header.locator('.historical-backtest-progress-facts').inner_text()
-                            if 'exact events' in facts or 'Through' in facts or 'prepared' not in facts:raise RuntimeError('Warmup facts must describe preparation, not execution')
+                            if 'exact events' in facts or 'Through' in facts or not any(word in facts for word in ('prepared', 'verified', 'loaded')):raise RuntimeError('Warmup facts must describe preparation, not execution')
                             if abs(actual-expected)>1:raise RuntimeError(f'Warmup progress {actual}% does not match streams {completed}/{total}')
                             if f'{actual}%' not in header.locator('.historical-backtest-progress-heading').inner_text():raise RuntimeError('Heading disagrees with progress bar')
                         if dialog.locator('tbody tr').count()!=4:raise RuntimeError('Expected all four coverage exclusions in modal')
@@ -3534,6 +3550,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument('--structural-detector-fixture', help='backend detector result JSON for independent candle-label rendering and indicator-form validation')
     result.add_argument('--backtest-presets', action='store_true', help='verify ticker defaults and V5 selection with stubbed books and warmup; never launch a run')
     result.add_argument('--backtest-warmup-presentation', action='store_true', help='validate active warmup modal and journal shell without changing the run')
+    result.add_argument('--v7-preparation-cache', action='store_true', help='review verified cache reuse labels with a read-only saved-run response fixture')
     result.add_argument("--filtered-v7-preparation", action="store_true", help="review bounded preparation workers and failure states")
     result.add_argument("--journal-layout", action="store_true", help="review compact open positions, chart layout and lifecycle selection with deterministic data")
     result.add_argument('--strategy-activity-evidence', action='store_true', help='verify evidence caching, refreshed projections, row switching and deselection using a component fixture')

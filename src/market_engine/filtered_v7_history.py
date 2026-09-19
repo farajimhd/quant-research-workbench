@@ -34,18 +34,22 @@ def successor(root, parent, ticker):
 
 def available_sources(root, ticker, candidates, session=None):
     """Publication is per ticker; never cache absence in a long-lived QMD worker."""
-    from .level_book_store import read
+    from .v7_catalog import read
+    from .v7_preparation_cache import watch
     result = []
     for _, parent, _ in candidates:
         if parent.get('input_policy') == POLICY:
             continue
         folder, expected = successor(root, parent, ticker)
+        watch(folder / 'plan.json')
         if not (folder / 'plan.json').exists():
             continue
         plan = read(folder / 'plan.json')
         if plan != expected:
             raise ValueError('Filtered V7 successor plan differs from pinned authority')
         target = folder / 'tickers' / plan['rows'][0]['directory']
+        for name in ('source-plan.json', 'ready.json', 'prefixes'):
+            watch(target / name)
         if not (target / 'source-plan.json').exists():
             if (target / 'ready.json').exists() or any((target / 'prefixes').glob('*.json')):
                 raise ValueError('Published filtered V7 source plan is missing')

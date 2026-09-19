@@ -1,12 +1,11 @@
 """Explicit workstation V7 campaign authority; no discovery of legacy books."""
 from bisect import bisect_left
-from functools import lru_cache
 import os
 from pathlib import Path
 import re
 
 from src.runtime_paths import WORKSTATION_RUNTIME_ROOT
-from .level_book_store import read, verified_book
+from .level_book_store import read as store_read, verified_book as store_verified_book
 from .historical_level_checkpoint import digest
 from .streaming_level_book import EXTRACTION_VERSION
 from .reaction_band import CONFIG
@@ -14,6 +13,18 @@ from .derived_trade_policy import POLICY
 
 BOOK_ID = 'level-book-v7'
 FILTERED_CAMPAIGN = 'filtered-0405-v1'
+
+
+def read(path):
+    from .v7_preparation_cache import watch
+    watch(path)
+    return store_read(path)
+
+
+def verified_book(path):
+    from .v7_preparation_cache import watch
+    watch(path)
+    return store_verified_book(path)
 
 
 class CoverageUnavailable(ValueError):
@@ -44,6 +55,11 @@ def checked_json(path, key):
 class Catalog:
     def __init__(self, root=None):
         self.root = Path(root) if root is not None else shared_root()
+        from .v7_preparation_cache import ArtifactCache, identity
+        from src.runtime_paths import runtime_root
+        cache_root = self.root / 'preparation-cache' if root is not None else runtime_root() / 'qmd_history' / 'v7-preparation-cache'
+        self.preparation_cache = ArtifactCache(cache_root)
+        self.plan_dependencies = {str((self.root / relative / 'plan.json').resolve()): identity(self.root / relative / 'plan.json') for relative in (*CAMPAIGNS, FILTERED_CAMPAIGN)}
         self.plans=[];self.by_ticker={}
         for relative in (*CAMPAIGNS, FILTERED_CAMPAIGN):
             path=self.root/relative/'plan.json'
@@ -71,7 +87,6 @@ class Catalog:
         self.fingerprint=digest(dict(plans=[p['plan_hash'] for _,p in self.plans],
                                      filtered_successor=VERSION, kernel=kernel()))
 
-    @lru_cache(maxsize=128)
     def sources(self,ticker):
         result=[]
         for root,plan,row in self.by_ticker.get(ticker,[]):
@@ -92,6 +107,25 @@ class Catalog:
         return result
 
     def select(self,ticker,session):
+        from .v7_preparation_cache import dependencies, watch
+        from src.data_provider.file_lock import file_lock
+        for path, expected in self.plan_dependencies.items():
+            if watch(path) != expected:
+                raise ValueError('V7 campaign publication changed; reload catalog')
+        key = self.preparation_cache.key(['selection-v1', str(self.root.resolve()), self.fingerprint, ticker, session])
+        # Fixed stripes coalesce concurrent misses without accumulating a
+        # permanent lock file for every ticker/session ever requested.
+        with file_lock(self.preparation_cache.root / 'locks' / (key[:2] + '.lock')):
+            saved = self.preparation_cache.get(key)
+            if saved is not None:
+                return saved
+            with dependencies() as deps:
+                result = self._select(ticker, session)
+            deps.update(self.plan_dependencies)
+            self.preparation_cache.put(key, result, deps)
+            return result
+
+    def _select(self,ticker,session):
         """Choose the exact preceding source session, never an older stale book."""
         candidates=self.sources(ticker)
         from .filtered_v7_history import available_sources

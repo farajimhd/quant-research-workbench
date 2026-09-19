@@ -531,3 +531,41 @@ after the run exhausted retries and completed its checkpoint. Delayed backend
 child cleanup required a second managed restart after verifying the child had
 exited. The failed 8c5022c3 run remains reviewable and resumable at 4,380,591 events;
 no playback resume was issued during validation.
+
+## Persistent V7 preparation certificates
+
+Repeated sessions now reuse local verified catalog selections, validated prepared
+bar arrays, and zero-input opening engines. Each cache namespace has a 2 GiB
+compressed-payload budget with oldest-artifact eviction. SQLite commits publish
+complete checksum-protected artifacts; interrupted writes cannot publish a partial
+certificate. Compression is lossless and does not change the worker RSS limit.
+
+Catalog certificates bind the campaign/kernel identity, ticker, session, source
+plans, receipts, checkpoint files and filtered-publication dependencies. File
+identity changes, missing files and new publications invalidate reuse. Missing
+coverage is never cached as permanent absence. Corrupt cached payloads fail
+explicitly. Campaign-plan changes require catalog reload. The numerical kernel
+and existing filtered-successor identities are unchanged by this cache layer.
+
+Prepared arrays additionally bind the immutable frame-file identity (including
+WAL identity), causal source-clock authority and session. Opening engines bind
+the verified checkpoint hash, kernel, session and current point-in-time split
+evidence. Completeness, resume-source equality and source availability checks
+remain in the serving path. A hit deserializes a fresh engine with zero consumed
+bars; playback offsets, snapshots, encoders and spill files remain private to
+each run. No historical preparation receipt permits observing future bars.
+
+The UI reports coverage as verified and working sets as loaded, with separate
+counts of reused bar arrays and opening engines. It still walks the requested
+population to validate identity and initialize independent playback. Thus the
+counter can appear again without recalculating unchanged history. Cache hits do
+not certify full-day trading correctness or profitability.
+
+Validation on the retained August 19 frame population reused 1,553/1,553 bar
+arrays and opening engines in a new process: 88.031 seconds versus 240.015
+seconds for the build pass. All identities and 64 sampled snapshots matched.
+This measures preparation, not full-day trading throughput. The QMD V7 worker
+JSON bridge uses scoped exact numeric decoding to preserve Python float bits;
+the historical certification canonicalizer is unchanged. Four post-restart
+HTTP streams matched direct-worker snapshots exactly. Evidence:
+`D:/TradingML/runtimes/strategy-audits/squeeze-v11`.

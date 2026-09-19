@@ -63,8 +63,8 @@ class PreparedStream:
         self.db.execute('PRAGMA query_only=ON')
 
     def _file_identity(self):
-        stat = self.path.stat()
-        return stat.st_size, stat.st_mtime_ns
+        from .v7_preparation_cache import identity
+        return identity(self.path), identity(str(self.path) + '-wal')
 
     def close(self):
         self.db.close()
@@ -99,21 +99,31 @@ class PreparedStream:
                 raise ValueError(f'{ticker}: prepared bars lack the certified V7 causal source-clock contract')
             if authority.get('start') and (stamp(authority['start']) > self.begin or stamp(authority['end']) < self.required_end):
                 raise ValueError(f'{ticker}: prepared stream does not cover the requested causal prefix')
-            values = []
-            for micros, encoded in self.db.execute("SELECT as_of_us,bar_json FROM strategy_frames WHERE ticker=? AND timeframe='1s' ORDER BY as_of_us,sequence", (ticker,)):
-                bar = json.loads(encoded)
-                second = micros / 1_000_000
-                if not self.begin.timestamp() < second <= self.end.timestamp():
-                    continue
-                if bar.get('sym') != ticker or bar.get('timeframe') != '1s' or stamp(bar['bar_end']).timestamp() != second or second != int(second):
-                    raise ValueError('Prepared V7 bar identity/timestamp mismatch')
-                row = [second, *(float(bar[k]) for k in ('open', 'high', 'low', 'close', 'volume'))]
-                if values and second <= values[-1][0]:
-                    raise ValueError('Duplicate or unordered prepared V7 bar')
-                if not np.isfinite(row).all() or row[3] <= 0 or row[5] < 0 or row[3] > min(row[1], row[4]) or row[2] < max(row[1], row[4]):
-                    raise ValueError('Invalid prepared V7 OHLCV')
-                values.append(row)
-            bars = np.asarray(values, dtype=np.float64).reshape((-1, 6))
+            cache = self.service.preparation_cache
+            bar_key = cache.key(['prepared-bars-v1', str(self.path), self.file_identity, ticker, self.day, authority])
+            bars = cache.get(bar_key)
+            bars_reused = bars is not None
+            if bars is None:
+                values = []
+                for micros, encoded in self.db.execute("SELECT as_of_us,bar_json FROM strategy_frames WHERE ticker=? AND timeframe='1s' ORDER BY as_of_us,sequence", (ticker,)):
+                    bar = json.loads(encoded)
+                    second = micros / 1_000_000
+                    if not self.begin.timestamp() < second <= self.end.timestamp():
+                        continue
+                    if bar.get('sym') != ticker or bar.get('timeframe') != '1s' or stamp(bar['bar_end']).timestamp() != second or second != int(second):
+                        raise ValueError('Prepared V7 bar identity/timestamp mismatch')
+                    row = [second, *(float(bar[k]) for k in ('open', 'high', 'low', 'close', 'volume'))]
+                    if values and second <= values[-1][0]:
+                        raise ValueError('Duplicate or unordered prepared V7 bar')
+                    if not np.isfinite(row).all() or row[3] <= 0 or row[5] < 0 or row[3] > min(row[1], row[4]) or row[2] < max(row[1], row[4]):
+                        raise ValueError('Invalid prepared V7 OHLCV')
+                    values.append(row)
+                bars = np.asarray(values, dtype=np.float64).reshape((-1, 6))
+                from .v7_preparation_cache import identity
+                if self.file_identity != self._file_identity():
+                    raise ValueError('Prepared V7 source changed during validation')
+                cache.put(bar_key, bars, {str(self.path): identity(self.path),
+                    str(self.path) + '-wal': identity(str(self.path) + '-wal')})
             bars.flags.writeable = False
             if expected is not None:
                 try:
@@ -136,14 +146,24 @@ class PreparedStream:
             if prior['available_at'] > self.begin.timestamp():
                 raise ValueError('Prepared V7 checkpoint is not available at the session opening')
             splits = self.service.source.splits(ticker, prior['session'], self.day, self.begin)
-            engine = StreamingLevelBook(prior, ticker=ticker, session=self.day,
-                start=self.begin.timestamp(), end=self.end.timestamp(),
-                split_factor=prod(float(s['split_from'])/float(s['split_to']) for s in splits), split_evidence=splits)
+            from .filtered_v7_history import kernel
+            seed_key = cache.key(['opening-engine-v1', self.service.catalog.fingerprint, kernel(),
+                ticker, self.day, prior['checkpoint_hash'], splits])
+            engine = cache.get(seed_key)
+            seed_reused = engine is not None
+            if engine is None:
+                engine = StreamingLevelBook(prior, ticker=ticker, session=self.day,
+                    start=self.begin.timestamp(), end=self.end.timestamp(),
+                    split_factor=prod(float(s['split_from'])/float(s['split_to']) for s in splits), split_evidence=splits)
+                cache.put(seed_key, engine, {})
+            if engine.bars_processed != 0:
+                raise ValueError('Cached V7 seed contains playback state')
             size = retained_bytes(engine.__dict__) + bars.nbytes
             if size > self.max_bytes:
                 raise ValueError('Prepared V7 working set exceeds the explicit resident memory budget; no eviction fallback')
             receipt = dict(ticker=ticker, checkpoint_hash=prior['checkpoint_hash'],
-                input_hash=hashlib.sha256(bars.tobytes()).hexdigest(), bars=len(bars), retained_bytes=size)
+                input_hash=hashlib.sha256(bars.tobytes()).hexdigest(), bars=len(bars), retained_bytes=size,
+                prepared_bars_reused=bars_reused, opening_seed_reused=seed_reused)
             self.states[ticker] = dict(engine=engine, bars=bars, offset=0, cutoff=self.begin.timestamp(),
                 provenance={k:v for k,v in provenance.items() if k!='source_plan'},
                 authority=authority, receipt=receipt, encoder=Encoder(), projection=None, revision=None,

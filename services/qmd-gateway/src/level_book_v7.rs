@@ -38,7 +38,8 @@ impl Worker {
         self.input.write_all(b"\n").and_then(|_| self.input.flush()).map_err(|e| e.to_string())?;
         let mut line = String::new();
         if self.output.read_line(&mut line).map_err(|e| e.to_string())? == 0 { return Err("V7 worker closed its stream".into()); }
-        let response: Value = serde_json::from_str(&line).map_err(|e| format!("V7 protocol error: {e}"))?;
+        let response = crate::structure_checkpoint_json::decode_value(&line)
+            .map_err(|e| format!("V7 protocol error: {e}"))?;
         Ok(response)
     }
 }
@@ -198,4 +199,24 @@ pub async fn history_checkpoint(Json(request): Json<ChartCheckpointRequest>) -> 
 }
 pub async fn live_checkpoint(Json(request): Json<ChartCheckpointRequest>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     chart_checkpoint(request,"live").await
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn worker_numbers_survive_json_transport_exactly() {
+        // Actual prepared V7 values previously moved by one ULP when the
+        // gateway parsed the worker's shortest-roundtrip JSON decimals.
+        for (encoded, expected) in [
+            ("0.029486105635594922", 0.029486105635594922_f64),
+            ("134.05905117744715", 134.05905117744715_f64),
+            ("137.98287219208225", 137.98287219208225_f64),
+        ] {
+            let value = crate::structure_checkpoint_json::decode_value(encoded).unwrap();
+            assert_eq!(value.as_f64().unwrap().to_bits(), expected.to_bits());
+            let response = serde_json::to_string(&value).unwrap();
+            let restored = crate::structure_checkpoint_json::decode_value(&response).unwrap();
+            assert_eq!(restored.as_f64().unwrap().to_bits(), expected.to_bits());
+        }
+    }
 }

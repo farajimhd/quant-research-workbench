@@ -1698,6 +1698,7 @@ class ReplayRunController:
                 "total": self._preparation_total_units,
                 "signals": getattr(self, "_signal_preparation", None),
                 "filtered_v7": deepcopy(getattr(self, "_filtered_v7_progress", None)),
+                "v7_reuse": deepcopy(getattr(self, "_v7_preparation_reuse", None)),
             },
             "preparation_cache": {
                 "strategy_frames": self._strategy_frame_cache_status,
@@ -2700,7 +2701,7 @@ class ReplayRunController:
                             external_index += 1
                         if frame.as_of < self.definition.requested_start:
                             if ((self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('historical_hod_contract')
-                                 or self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10'))
+                                 or self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11'))
                                     and frame.as_of.astimezone(NEW_YORK).date() == self.definition.session_date):
                                 await self._observe_episode_candle(frame)
                             self._remember_strategy_frame(frame)
@@ -3571,7 +3572,7 @@ class ReplayRunController:
         configuration = self.definition.configuration_revision['payload'].get('strategy') or {}
         parameters = configuration.get('parameters') or {}
         historical_hod = bool(parameters.get('historical_hod_contract'))
-        if parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10') and frame.timeframe == '100ms':
+        if parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11') and frame.timeframe == '100ms':
             from src.trading_runtime.early_squeeze_fast import observe_candle
             from src.market_engine.derived_trade_policy import eligible_trade_time
             if eligible_trade_time(frame.as_of.timestamp()-.1):
@@ -3740,7 +3741,7 @@ class ReplayRunController:
             source_native_only
             and frame.ticker not in self._strategy_quality_admitted_tickers
             and frame.timeframe != "1s"
-            and self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') not in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10')
+            and self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') not in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11')
         ):
             # The approved volume/spread-quality gate is entirely one-second
             # and event/session sourced. Before it passes, higher-frequency
@@ -3967,7 +3968,7 @@ class ReplayRunController:
         )
         ticker_assignments = self._ticker_assignments(frame.ticker)
         if any(a.parameters.get('hindsight_long_contract') or
-               a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-fixed-trail-v3','early-squeeze-r1-fixed-trail-v4','early-squeeze-r1-fixed-trail-v5','early-squeeze-r1-fixed-trail-v6','early-squeeze-r1-100ms-v7','early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10')
+               a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-fixed-trail-v3','early-squeeze-r1-fixed-trail-v4','early-squeeze-r1-fixed-trail-v5','early-squeeze-r1-fixed-trail-v6','early-squeeze-r1-100ms-v7','early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11')
                for a in ticker_assignments):
             # A bar projection is not a new quote. Retain the actual NBBO clock
             # so a trade-only interval cannot freshen an old executable price.
@@ -4102,7 +4103,7 @@ class ReplayRunController:
             detector_stream = self._candle_detector_states[frame.ticker]
             if 'structural_recovery' in detector_stream:
                 market = detector_stream['structural_recovery']
-                if parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10'):
+                if parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11'):
                     market = dict(market, fast_structure_evidence={k:snapshot[k]
                         for k in ('as_of', 'max_input_timestamp')})
                 values = dict(base.source_values)
@@ -4143,7 +4144,7 @@ class ReplayRunController:
         # Quotes update the broker/NBBO state in ``_process_market_event``.
         if isinstance(event, QuoteEvent) and event.ticker in self._strategy_engaged_tickers:
             assignments = tuple(a for a in self._ticker_assignments(event.ticker)
-                                if a.parameters.get('hindsight_long_contract') or a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10'))
+                                if a.parameters.get('hindsight_long_contract') or a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11'))
             base = self._latest_strategy_observations.get(event.ticker)
             if assignments and base is not None:
                 self._flush_passive_market_events()
@@ -4209,7 +4210,7 @@ class ReplayRunController:
                and bool(dict(assignment.parameters.get("structural_entry") or {}).get("enabled"))
                for assignment in ticker_assignments):
             structural = await self._event_structure_context(event)
-            if any(a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10')
+            if any(a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11')
                    for a in ticker_assignments):
                 base = replace(base, structural_detector_state={**(base.structural_detector_state or {}),
                     'fast_structure_evidence': structural.get('fast_structure_evidence', {})})
@@ -4254,7 +4255,7 @@ class ReplayRunController:
         # a rule comparing the latest trade with a 1s/5s indicator does not
         # accidentally compare that indicator with the stale bar close.
         source_values["market.last_price"] = market_price
-        if any(a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10')
+        if any(a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11')
                for a in ticker_assignments):
             source_values['market.trade_size'] = dict(observed_at=event.ts.isoformat(), value=float(event.size))
             # The replay merge has consumed every completed frame before this
@@ -4374,6 +4375,7 @@ class ReplayRunController:
         pool=PreparedV7Cursors(uuid4().hex,build,tickers)
         self._preparation_stage='level_book_working_set'
         self._preparation_completed_units=0
+        self._v7_preparation_reuse = dict(bars=0, seeds=0, loaded=0)
         self._preparation_total_units=len(tickers)
         await self._publish(force=True)
         receipts=[]
@@ -4398,6 +4400,8 @@ class ReplayRunController:
                     cursor.snapshots[second]=seed
                     self._warm_prepared_v7_projection(row['ticker'],seed)
                 receipts.extend(packet['rows'])
+                self._v7_preparation_reuse = dict(bars=sum(bool(r.get('prepared_bars_reused')) for r in receipts),
+                    seeds=sum(bool(r.get('opening_seed_reused')) for r in receipts), loaded=len(receipts))
                 self._preparation_completed_units=len(receipts)
                 self.updated_at=datetime.now(UTC)
                 await self._publish(force=True)
@@ -4566,7 +4570,7 @@ class ReplayRunController:
             snapshot = await self._experimental_structure_snapshot(event.ticker, event.ts, 'event',
                 int(event.raw.get('arrival_sequence', event.sequence)))
             result = context(snapshot, float(event.price))
-            if self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10'):
+            if self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11'):
                 result['fast_structure_evidence'] = {k:snapshot[k] for k in ('as_of', 'max_input_timestamp')}
             return result
         sessions = self._event_structure_sessions
@@ -6863,7 +6867,7 @@ class ReplayRunController:
                         )
                     except HistoricalSignalCoverageUnavailable:
                         parameters = self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {})
-                        if parameters.get('early_squeeze_breakout_contract') not in ('early-squeeze-r1-fixed-trail-v6', 'early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10'):
+                        if parameters.get('early_squeeze_breakout_contract') not in ('early-squeeze-r1-fixed-trail-v6', 'early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11'):
                             raise
                         from src.backend.historical_signal_preparation import reconstruct_configured_signal_occurrences
                         def reconstruction_progress(status):

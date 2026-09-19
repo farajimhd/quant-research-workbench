@@ -8,6 +8,7 @@ from .signals import CapitalRequest
 
 CONTRACT = 'early-squeeze-r1-price-gap-v9'
 STRICT_CONTRACT = 'early-squeeze-r1-price-high-v10'
+EPISODE_CONTRACT = 'early-squeeze-r1-price-episode-v11'
 
 
 def midpoint(row):
@@ -35,7 +36,8 @@ def boundary(anchor, rows):
 
 def evaluate(host, a, o, p, old_state):
     from .strategy_engine import AssignmentStatus as Status
-    strict = p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
+    episode = p['early_squeeze_breakout_contract'] == EPISODE_CONTRACT
+    strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     state = deepcopy(old_state)
     a = replace(a, parameters=p)
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
@@ -75,6 +77,19 @@ def evaluate(host, a, o, p, old_state):
     evidence_price = dict(price_event=price_event, previous_price=previous, prior_hod=prior_hod)
     prior_rows = d.get('levels', rows)
     crossed = []
+    if episode and price_event and structure_fresh:
+        # A failed band starts a new episode only below its lower edge.
+        # Do not reset HOD, the held position's trail, or lifecycle targets.
+        for key in list(d.get('breakout_highs', {})):
+            band = rows.get(key) or d.get('breakout_anchors', {}).get(key)
+            if band and o.price < band['lower']:
+                d['breakout_highs'].pop(key)
+                d['entered_levels'] = [value for value in d.get('entered_levels', []) if value != key]
+                setup = d.get('initial_breakout')
+                if setup and setup['anchor']['unified_level_id'] == key:
+                    d.pop('initial_breakout', None)
+                active.get('pending_adds', {}).pop(key, None)
+                d.setdefault('reset_at', {})[key] = now
     prior_breakout_highs = dict(d.get('breakout_highs', {}))
     if strict and price_event:
         highs = d.setdefault('breakout_highs', {})
@@ -88,6 +103,8 @@ def evaluate(host, a, o, p, old_state):
                     crossed.append((key, level))
                     if strict:
                         d.setdefault('breakout_highs', {}).setdefault(key, o.price)
+                        if episode:
+                            d.setdefault('breakout_anchors', {})[key] = deepcopy(level)
             if crossed:
                 d['latest_broken_resistance'] = deepcopy(max((r for _,r in crossed), key=midpoint))
         if held and active:
@@ -103,7 +120,7 @@ def evaluate(host, a, o, p, old_state):
             pending_setup['peak_close'] = max(pending_setup.get('peak_close') or o.price, o.price)
         if active and (held or a.status == Status.ENTRY_PENDING) and not active.get('stopout_reference'):
             active['peak_close'] = max(active.get('peak_close') or o.price, o.price)
-    evidence = dict(contract=STRICT_CONTRACT if strict else CONTRACT, filtered_v7=filtered,
+    evidence = dict(contract=p['early_squeeze_breakout_contract'], filtered_v7=filtered,
         activation={k:d.get(k) for k in ('activated_at', 'activation_event_id')})
     evidence['price_breakout'] = evidence_price
     if strict:
@@ -144,7 +161,7 @@ def evaluate(host, a, o, p, old_state):
     if held:
         if strict and active:
             key = active['anchor']['unified_level_id']
-            if key not in d.setdefault('entered_levels', []):
+            if (not episode or key in d.get('breakout_highs', {})) and key not in d.setdefault('entered_levels', []):
                 d['entered_levels'].append(key)
         if not active:
             return emit('hold', 'position_entry_state_unavailable', Status.MANAGING)
@@ -198,7 +215,7 @@ def evaluate(host, a, o, p, old_state):
                     pending.pop(key)
             if pending and a.permissions.add and active.get('slice_notional', 0) > 0 and stop < o.bid <= o.ask < target:
                 keys = sorted(pending)
-                if strict:
+                if strict and not episode:
                     anchor_stop = max(below(rows[k]['lower'], tick) for k in keys)
                     proposal = max(stop, min(anchor_stop, below(min(o.price, o.ask), tick)))
                     if proposal > stop:
@@ -223,7 +240,8 @@ def evaluate(host, a, o, p, old_state):
 def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
                    structure_fresh, quote, evidence, emit, price_event, previous, prior_hod):
     from .strategy_engine import AssignmentStatus as Status
-    strict = p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
+    episode = p['early_squeeze_breakout_contract'] == EPISODE_CONTRACT
+    strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
     if a.status == Status.ENTRY_PENDING or state.get('pending_capital_request'):
         return emit('wait', 'entry_fill_pending', Status.ENTRY_PENDING)
@@ -320,7 +338,7 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
     for key in ('liquidation_origin_fill_role', 'liquidation_origin_reentry_after_fill',
                 'profit_target_liquidation_required', 'target_replenishment_pending', 'last_exit_reason'):
         state.pop(key, None)
-    state.update(squeeze_entry=dict(anchor=deepcopy(anchor), structural_stop=desired,
+    state.update(squeeze_entry=dict(anchor=deepcopy(anchor), structural_stop=stop if episode else desired,
         breakout_at=recovery['breakout_at'] if recovery else setup['breakout_at'],
         peak_close=setup.get('peak_close') if not recovery else None,
         entry_price=o.ask, requested_at=now, single_use_adds=strict, added_levels=[anchor['unified_level_id']] if strict else [],
