@@ -11,6 +11,12 @@ def opened():
     return h, replace(a, parameters={**a.parameters, 'early_squeeze_breakout_contract': P.EPISODE_CONTRACT}), t
 
 
+def resistance_ceiling_opened():
+    h, a, t = opened()
+    return h, replace(a, parameters={**a.parameters,
+        'early_squeeze_breakout_contract': P.RESISTANCE_CEILING_CONTRACT}), t
+
+
 @pytest.mark.parametrize('low,enters', [(10.39, True), (10.42, False)])
 def test_only_below_lower_band_resets_reentry_high(low, enters):
     h, a, t = opened()
@@ -47,6 +53,47 @@ def test_addition_keeps_original_distance_and_one_stop():
     assert result.state['active_stop'] == pytest.approx(10.76)
 
 
+def test_resistance_ceiling_holds_trail_inside_band_until_upper_edge_breaks():
+    h, a, t = resistance_ceiling_opened()
+    a.state['squeeze_entry'].update(trail_distance=.01, peak_price=10.44, structural_stop=10.39)
+    a.state['active_stop'] = 10.39
+
+    between = h.evaluate(a, t(.02, 10.55, 100.))
+    assert between.state['active_stop'] == pytest.approx(10.54)
+    assert next(i for i in between.evaluation.intents
+                if i.action == 'replace_protective_stop').metadata['resistance_ceiling']['unified_level_id'] == 'R3'
+
+    a = advance(a, between)
+    inside_observation = t(.03, 10.61, 100.)
+    r3 = next(r for r in inside_observation.structural_resistance_levels
+              if r['unified_level_id'] == 'R3')
+    inside_observation = replace(inside_observation,
+        structural_resistance_levels=tuple(r for r in inside_observation.structural_resistance_levels
+                                           if r['unified_level_id'] != 'R3'),
+        structural_transition_levels=inside_observation.structural_transition_levels +
+            (dict(r3, role='transition', transition_from='resistance'),))
+    inside = h.evaluate(a, inside_observation)
+    assert inside.state['active_stop'] == pytest.approx(10.60)
+    a = advance(a, inside)
+    held = h.evaluate(a, t(.04, 10.62, 100.))
+    assert held.state['active_stop'] == pytest.approx(10.60)
+    assert not any(i.action == 'replace_protective_stop' for i in held.evaluation.intents)
+
+    a = advance(a, held)
+    broken = h.evaluate(a, t(.05, 10.63, 100.))
+    assert broken.state['active_stop'] == pytest.approx(10.62)
+    move = next(i for i in broken.evaluation.intents if i.action == 'replace_protective_stop')
+    assert move.metadata['resistance_ceiling']['unified_level_id'] == 'R4'
+
+
+def test_candidate_328_retains_uncapped_trail_for_reproducibility():
+    h, a, t = opened()
+    a.state['squeeze_entry'].update(trail_distance=.01, peak_price=10.44, structural_stop=10.39)
+    a.state['active_stop'] = 10.39
+    result = h.evaluate(a, t(.02, 10.62, 100.))
+    assert result.state['active_stop'] == pytest.approx(10.61)
+
+
 def test_reset_does_not_retry_consumed_addition():
     h, a, t = opened()
     a.state['squeeze_entry'].update(trail_distance=1., peak_price=10.44, structural_stop=9.44)
@@ -75,6 +122,18 @@ def test_offset_entry_keeps_actual_stop_as_trail_anchor():
 def test_candidate_compiles(monkeypatch):
     from copy import deepcopy
     from src.backend import early_squeeze_price_episode_candidate as C
+    from src.backend.trading_configuration_service import configuration_base, _build_configuration_release
+    from tests.test_early_squeeze_candidate import baseline
+    base = configuration_base()
+    base['strategy']['profiles'] = [p for p in base['strategy']['profiles'] if p['profile_id'] != C.CONTRACT]
+    monkeypatch.setattr('src.backend.trading_configuration_service.configuration_base', lambda: deepcopy(base))
+    payload, canvas, plan = C.build(base, baseline(base))
+    _build_configuration_release(canvas_revision=canvas['revision'], canvas_profile=canvas['profile'], configuration=payload, run_plan_id=plan, strategy_profile_id=C.CONTRACT)
+
+
+def test_resistance_ceiling_candidate_compiles(monkeypatch):
+    from copy import deepcopy
+    from src.backend import early_squeeze_resistance_ceiling_candidate as C
     from src.backend.trading_configuration_service import configuration_base, _build_configuration_release
     from tests.test_early_squeeze_candidate import baseline
     base = configuration_base()

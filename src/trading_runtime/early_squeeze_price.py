@@ -9,6 +9,8 @@ from .signals import CapitalRequest
 CONTRACT = 'early-squeeze-r1-price-gap-v9'
 STRICT_CONTRACT = 'early-squeeze-r1-price-high-v10'
 EPISODE_CONTRACT = 'early-squeeze-r1-price-episode-v11'
+RESISTANCE_CEILING_CONTRACT = 'early-squeeze-r1-price-resistance-ceiling-v12'
+EPISODE_CONTRACTS = (EPISODE_CONTRACT, RESISTANCE_CEILING_CONTRACT)
 
 
 def midpoint(row):
@@ -34,9 +36,17 @@ def boundary(anchor, rows):
                 next_level_id=next_level['unified_level_id'], gap_fraction=.1)
 
 
+def unbroken_resistance_ceiling(rows, price, stop):
+    """Return the nearest still-unbroken resistance lower edge above the stop."""
+    candidates = [r for r in rows.values() if eligible(r)
+                  and r['lower'] >= stop - 1e-9 and price <= r['upper'] + 1e-9]
+    return min(candidates, key=lambda r:(r['lower'], r['upper'], r['unified_level_id']), default=None)
+
+
 def evaluate(host, a, o, p, old_state):
     from .strategy_engine import AssignmentStatus as Status
-    episode = p['early_squeeze_breakout_contract'] == EPISODE_CONTRACT
+    episode = p['early_squeeze_breakout_contract'] in EPISODE_CONTRACTS
+    resistance_ceiling = p['early_squeeze_breakout_contract'] == RESISTANCE_CEILING_CONTRACT
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     state = deepcopy(old_state)
     a = replace(a, parameters=p)
@@ -179,11 +189,15 @@ def evaluate(host, a, o, p, old_state):
             desired = active.get('structural_stop', stop)
             if desired < (o.price if strict else o.bid):
                 proposal = max(proposal, desired)
+            ceiling = unbroken_resistance_ceiling(rows, trail_price, stop) if resistance_ceiling else None
+            if ceiling:
+                proposal = min(proposal, ceiling['lower'])
             if stop < proposal < (o.price if strict else o.bid):
                 previous_stop = stop
                 state['active_stop'] = stop = proposal
                 results.append(emit('replace_protective_stop', 'fixed_distance_price_trail', Status.MANAGING,
-                    quantity=o.position_quantity, invalidation_price=stop, metadata=dict(previous_stop=previous_stop)))
+                    quantity=o.position_quantity, invalidation_price=stop, metadata=dict(previous_stop=previous_stop,
+                        resistance_ceiling=deepcopy(ceiling))))
         # Re-rank on eligible trade prices using the causal V7 snapshot.
         if price_event and quote and structure_fresh:
             count = len(active.get('broken_levels', []))
@@ -240,7 +254,7 @@ def evaluate(host, a, o, p, old_state):
 def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
                    structure_fresh, quote, evidence, emit, price_event, previous, prior_hod):
     from .strategy_engine import AssignmentStatus as Status
-    episode = p['early_squeeze_breakout_contract'] == EPISODE_CONTRACT
+    episode = p['early_squeeze_breakout_contract'] in EPISODE_CONTRACTS
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
     if a.status == Status.ENTRY_PENDING or state.get('pending_capital_request'):
