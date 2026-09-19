@@ -19,6 +19,8 @@ stopped during frame preparation. Full-session trading acceptance remains open.
 Related: TASK-0014, TASK-0211. Source push is blocked by pre-existing Git divergence.
 August 19 reused 1,553 filtered V7 histories; a v58-to-v59 frame revision change
 required new strategy streams. The authorized stop preserved 920 completed streams.
+Subsequent SUGP review produced corrected v8/325 code: 1.25x bodies, 100 ms
+admission clocks, and latest-resistance recovery stops. Validated; activation awaits restart approval.
 
 ### [2026-09-17 - Trading Journal and filtered V7 preparation](docs/codex/chat-summaries/2026/CHAT-20260917-UNKNOWN-trading-journal-filtered-v7.md)
 
