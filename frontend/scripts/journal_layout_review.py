@@ -61,6 +61,7 @@ def review_journal_layout(page, screenshot_path):
     for mode, message in [('empty', 'No open positions.'), ('waiting', 'Waiting for position data.')]:
         page.evaluate('(mode) => window.renderJournalReview(mode)', mode)
         journal.get_by_text(message, exact=True).wait_for()
+        assert journal.locator('.performance-position-columns').count() == 1, f'Position header missing in {mode} state'
         page.screenshot(path=str(screenshot_path.with_name(screenshot_path.stem + f'__{mode}.png')), full_page=True)
     page.evaluate("window.renderJournalReview('populated')")
     rows.first.wait_for()

@@ -853,7 +853,7 @@ export function TradingJournalPreview({ data, onSymbolSelect, settings }: { data
         <section className="performance-active-positions" aria-label="Open positions">
           <header><strong>Open positions</strong><span>{data ? openLifecycles.length : "—"}</span></header>
           <div className="performance-active-position-list">
-            {openLifecycles.length ? <div aria-hidden="true" className="performance-position-columns"><span>Ticker</span><span>Opened</span><span>Qty</span><span>Filled</span><span>P&amp;L</span></div> : null}
+            <div aria-hidden="true" className="performance-position-columns"><span>Ticker</span><span>Opened</span><span>Qty</span><span>Filled</span><span>P&amp;L</span></div>
             {openLifecycles.length ? openLifecycles.map(lifecycle => {
               const {symbol, _position: position} = performanceLifecycleRow(data!, lifecycle);
               return <button className="performance-active-position" key={String(lifecycle.lifecycle_id)} type="button" aria-label={`View ${symbol} position lifecycle`} onClick={() => setSelectedLifecycle(String(lifecycle.lifecycle_id))}>
