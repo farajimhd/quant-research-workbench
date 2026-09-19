@@ -59,6 +59,13 @@ type BacktestRun = CanvasReplayRun & {
   };
 };
 
+type BacktestRunIdentity = {
+  run_id: string;
+  strategy_id?: string;
+  strategy_name?: string;
+  strategy_revision?: number;
+};
+
 type BacktestResults = {
   as_of: string;
   closed_trades: Array<Record<string, unknown>>;
@@ -160,6 +167,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [creating, setCreating] = useState(false);
   const [run, setRun] = useState<BacktestRun | null>(null);
+  const [activeRunIdentity, setActiveRunIdentity] = useState<BacktestRunIdentity | null>(null);
   const [restoreError, setRestoreError] = useState("");
   const [restoreAttempt, setRestoreAttempt] = useState(0);
   const [results, setResults] = useState<BacktestResults | null>(null);
@@ -207,6 +215,18 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       });
     return () => controller.abort();
   }, [selectedRunId, restoreAttempt]);
+
+  useEffect(() => {
+    if (!run?.run_id) { setActiveRunIdentity(null); return; }
+    const controller = new AbortController();
+    setActiveRunIdentity(null);
+    void api<{ rows: BacktestRunIdentity[] }>("/api/trading/backtest/runs", { signal: controller.signal, timeoutMs: 60_000 })
+      .then((payload) => {
+        if (!controller.signal.aborted) setActiveRunIdentity(payload.rows.find((row) => row.run_id === run.run_id) ?? null);
+      })
+      .catch(() => { /* The header remains explicit rather than borrowing identity from another run. */ });
+    return () => controller.abort();
+  }, [run?.run_id]);
 
   function returnToSetup() {
     persistSelectedRun("");
@@ -456,6 +476,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     const progressPercent = Math.round(Math.max(0, Math.min(1, phaseProgress || 0)) * 100);
     const progressLabel = warming ? "Backtest warm-up" : "Backtest";
     const runScope = run.tickers?.length ? run.tickers.join(", ") : "Configured strategy universe";
+    const selectedPlanMatchesRun = run.configuration_revision_id === candidateId && selectedPlan?.run_plan_id === runPlanId;
+    const strategyName = activeRunIdentity?.strategy_name || activeRunIdentity?.strategy_id || (selectedPlanMatchesRun ? selectedPlan?.name : "") || "Strategy unavailable";
+    const strategyRevision = activeRunIdentity?.strategy_revision || (selectedPlanMatchesRun ? selectedPlan?.strategy_revision : 0);
     return <CanvasWorkspaceSurface
       canvasId="main"
       manager={false}
@@ -467,7 +490,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         <div className="historical-backtest-progress-heading"><strong>{warming || checkpointing || waiting ? <LoaderCircle aria-hidden="true" className="spin" size={12} /> : null} {workLabel}</strong><b>{checkpointing ? `${Math.floor(work?.elapsed_seconds ?? 0)}s` : progressKnown ? `${progressPercent}%` : "Preparing"}</b></div>
 
         <div aria-label={`${progressLabel} progress`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={progressKnown ? progressPercent : undefined} aria-valuetext={checkpointing ? `${workLabel} - ${Math.floor(work?.elapsed_seconds ?? 0)} seconds` : warming && preparation?.total ? `${preparation.completed.toLocaleString()} of ${preparation.total.toLocaleString()} ${preparationVerb} · ${progressPercent}%` : progressKnown ? `${progressPercent}%` : "Preparing"} className="historical-backtest-progress-track" role="progressbar"><span style={{ width: `${progressPercent}%` }} /></div>
-        <div className="historical-backtest-progress-facts" role="status">{waiting ? <><span>{work?.dependencies?.[0]?.path.split("/").pop()} · attempt {work?.dependencies?.[0]?.attempt} / {work?.dependencies?.[0]?.max_attempts}</span><span>{Math.floor(work?.elapsed_seconds ?? 0)}s · retrying required data</span></> : checkpointing ? <><span>{work?.stop_requested ? 'Stop requested · finishing durable checkpoint' : 'Engine held at a causal boundary'}</span><span>Progress updates remain available</span></> : warming ? <>
+        <div className="historical-backtest-progress-facts" role="status"><span className="historical-backtest-strategy"><small>Strategy</small><strong title={strategyName}>{strategyName}{strategyRevision ? ` · r${strategyRevision}` : ""}</strong></span>{waiting ? <><span>{work?.dependencies?.[0]?.path.split("/").pop()} · attempt {work?.dependencies?.[0]?.attempt} / {work?.dependencies?.[0]?.max_attempts}</span><span>{Math.floor(work?.elapsed_seconds ?? 0)}s · retrying required data</span></> : checkpointing ? <><span>{work?.stop_requested ? 'Stop requested · finishing durable checkpoint' : 'Engine held at a causal boundary'}</span><span>Progress updates remain available</span></> : warming ? <>
           <span>{run.preparation_stage === "strategy_frames" ? "Strategy streams" : run.preparation_stage?.replaceAll("_", " ") || "Preparing"}</span>
           <span>{progressKnown && preparation ? `${preparation.completed.toLocaleString()} / ${preparation.total.toLocaleString()} ${preparationVerb}` : "Waiting for preparation totals"}</span>
           {run.preparation_stage === "level_book_working_set" && preparation?.v7_reuse ? <span>{preparation.v7_reuse.bars.toLocaleString()} bar sets reused · {preparation.v7_reuse.seeds.toLocaleString()} opening books reused</span> : null}

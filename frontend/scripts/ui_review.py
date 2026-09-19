@@ -3326,6 +3326,10 @@ def capture(args: argparse.Namespace) -> int:
                         journal=page.locator('.performance-journal')
                         journal.wait_for(state='visible',timeout=args.timeout_ms)
                         header=page.locator('.historical-backtest-progress')
+                        strategy_cell=header.locator('.historical-backtest-strategy')
+                        strategy_cell.wait_for(state='visible',timeout=args.timeout_ms)
+                        if not strategy_cell.locator('strong').inner_text().strip():raise RuntimeError('Backtest header omitted strategy identity')
+                        if abs(strategy_cell.evaluate('el => parseFloat(getComputedStyle(el).width)')-220)>1:raise RuntimeError('Backtest strategy cell width changed')
                         before=header.bounding_box()['height']
                         trigger=page.get_by_role('button',name=re.compile('^Details'))
                         trigger.click()

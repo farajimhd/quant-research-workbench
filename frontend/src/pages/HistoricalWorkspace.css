@@ -54,6 +54,31 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.historical-backtest-progress-facts > .historical-backtest-strategy {
+  align-items: baseline;
+  border-right: 1px solid var(--border);
+  display: grid;
+  flex: 0 0 220px;
+  gap: 1px;
+  max-width: 220px;
+  min-width: 220px;
+  padding-right: 9px;
+  width: 220px;
+}
+.historical-backtest-strategy small {
+  color: var(--muted-foreground);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.historical-backtest-strategy strong {
+  color: var(--foreground);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .backtest-preparation-modal {
   width: min(640px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
