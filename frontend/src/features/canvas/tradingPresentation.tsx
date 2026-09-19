@@ -853,16 +853,15 @@ export function TradingJournalPreview({ data, onSymbolSelect, settings }: { data
         <section className="performance-active-positions" aria-label="Open positions">
           <header><strong>Open positions</strong><span>{data ? openLifecycles.length : "—"}</span></header>
           <div className="performance-active-position-list">
+            {openLifecycles.length ? <div aria-hidden="true" className="performance-position-columns"><span>Ticker</span><span>Opened</span><span>Qty</span><span>Filled</span><span>P&amp;L</span></div> : null}
             {openLifecycles.length ? openLifecycles.map(lifecycle => {
               const {symbol, _position: position} = performanceLifecycleRow(data!, lifecycle);
               return <button className="performance-active-position" key={String(lifecycle.lifecycle_id)} type="button" aria-label={`View ${symbol} position lifecycle`} onClick={() => setSelectedLifecycle(String(lifecycle.lifecycle_id))}>
-                <span className="performance-position-identity"><strong>{symbol}</strong><small>{String(lifecycle.side)}</small></span>
-                <span className="performance-position-pnl" data-tone={numberTone(position?.unrealized_pnl)}><small>Unrealized P&amp;L</small><strong>{position?.unrealized_pnl == null ? "—" : signedMoney(position.unrealized_pnl)}</strong></span>
-                <span className="performance-position-facts">
-                  <span><small>Opened</small><span><MarketTime includeSeconds value={String(lifecycle.opened_at || "")} /></span></span>
-                  <span><small>Qty</small><span>{formatCell(lifecycle.current_quantity, "quantity")}</span></span>
-                  <span><small>Avg. entry</small><span>{formatCell(lifecycle.entry_price, "entry_price")}</span></span>
-                </span>
+                <strong className="performance-position-symbol">{symbol}</strong>
+                <MarketTime className="performance-position-time" value={String(lifecycle.opened_at || "")} />
+                <span className="performance-position-number">{formatCell(lifecycle.current_quantity, "quantity")}</span>
+                <span className="performance-position-number">{formatCell(lifecycle.entry_price, "entry_price")}</span>
+                <strong className="performance-position-pnl" data-tone={numberTone(position?.unrealized_pnl)}>{position?.unrealized_pnl == null ? "—" : signedMoney(position.unrealized_pnl)}</strong>
               </button>;
             }) : <p role="status">{data ? "No open positions." : "Waiting for position data."}</p>}
           </div>
