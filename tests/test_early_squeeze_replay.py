@@ -12,6 +12,34 @@ from tests.test_early_squeeze_breakout import fixture, NOW
 from src.trading_runtime import early_squeeze_breakout as E
 
 
+def test_certified_empty_activation_completes_without_market_or_watchlist_scan(tmp_path):
+    async def run():
+        configuration = approved_configuration()
+        configuration['payload']['signal_activation'] = dict(signal_streams=[dict(
+            signal_stream_id='price-squeeze-early', occurrence_source='qmd_squeeze_episode')])
+        configuration['payload']['run_plan'] = dict(activation=dict(
+            watch_duration='session', watchlist_policy='not_required'))
+        controller = ReplayRunController(ReplayRunDefinition(session_date=NOW.date(), start_time=time(4),
+            configuration_revision=configuration), runtime_root=tmp_path)
+        controller.run_dir.mkdir(parents=True, exist_ok=True)
+        controller._load_historical_signal_events = AsyncMock(return_value=[])
+        controller._publish = AsyncMock()
+        controller._finish = AsyncMock()
+        controller._prepare_historical_watchlist_timeline = AsyncMock()
+        controller._initialize_runtime = AsyncMock()
+        try:
+            await controller._run_engine()
+            assert not controller.error, controller.error
+            controller._finish.assert_awaited_once_with('completed')
+            controller._prepare_historical_watchlist_timeline.assert_not_awaited()
+            controller._initialize_runtime.assert_not_awaited()
+            assert controller._runtime_inputs_ready
+        finally:
+            if controller._journal is not None:
+                controller._journal.close()
+    asyncio.run(run())
+
+
 def test_completed_frame_preserves_actual_quote_clock(tmp_path):
     from src.backend.replay_run_service import ReplayDerivedFrame, _debug_market_events
     from src.trading_runtime.journal import TradingJournal

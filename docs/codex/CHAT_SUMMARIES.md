@@ -2,6 +2,16 @@
 
 ## 2026
 
+### [2026-09-18 - Early Squeeze v6 and certified historical signals](docs/codex/chat-summaries/2026/CHAT-20260918-UNKNOWN-squeeze-v6-history.md)
+
+Candidate 323 / release 6 corrects fresh current-R1 admission after stop-out and
+obsolete resistance counting. Fourteen JUNS/SUGP position lifecycles were audited.
+Missing August 18–19 activation history now uses separately certified canonical
+detector reconstruction, with 5,302 and 5,360 first signals. All-ticker initialization
+passed the former memory failure and coverage stages; its bounded diagnostic was
+stopped during frame preparation. Full-session trading acceptance remains open.
+Related: TASK-0014, TASK-0211. Source push is blocked by pre-existing Git divergence.
+
 ### [2026-09-08 16:16 PDT - Strategy, independent candle detector and V6 campaigns](docs/codex/chat-summaries/2026/CHAT-20260908-1616-strategy-detector-v6-campaign.md)
 
 - Chat/task ID: `01a0834e-a0f6-7551-8c40-025356273ee8`

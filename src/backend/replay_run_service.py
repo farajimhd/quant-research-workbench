@@ -2472,6 +2472,21 @@ class ReplayRunController:
             source_native_identity_only = _uses_source_native_identity_preparation(
                 configuration, bool(self._historical_external_signal_events),
             )
+            if (source_native_identity_only and not self._historical_external_signal_events
+                    and self._resume_state is None):
+                # A certified empty result (including an explicit ticker with
+                # no occurrence) authorizes no trades and needs no market scan.
+                # Missing uncertified history has already failed in the loader.
+                self._record_data_authority('strategy_signal_admission', {
+                    'authority': 'first_native_signal_session_watch',
+                    'admitted_ticker_count': 0,
+                    'use': 'certified empty activation population; no execution',
+                })
+                self._runtime_inputs_ready = True
+                self._preparation_stage = 'ready'
+                self.current_time = self.definition.session_end
+                await self._finish('completed')
+                return
             if source_native_identity_only:
                 self._preparation_stage = "signal_identity"
                 await self._publish(force=True)
