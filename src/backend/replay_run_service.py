@@ -2701,7 +2701,7 @@ class ReplayRunController:
                             external_index += 1
                         if frame.as_of < self.definition.requested_start:
                             if ((self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('historical_hod_contract')
-                                 or self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17'))
+                                 or self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18'))
                                     and frame.as_of.astimezone(NEW_YORK).date() == self.definition.session_date):
                                 await self._observe_episode_candle(frame)
                             self._remember_strategy_frame(frame)
@@ -3572,7 +3572,7 @@ class ReplayRunController:
         configuration = self.definition.configuration_revision['payload'].get('strategy') or {}
         parameters = configuration.get('parameters') or {}
         historical_hod = bool(parameters.get('historical_hod_contract'))
-        if parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17') and frame.timeframe == '100ms':
+        if parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18') and frame.timeframe == '100ms':
             from src.trading_runtime.early_squeeze_fast import observe_candle
             from src.market_engine.derived_trade_policy import eligible_trade_time
             if eligible_trade_time(frame.as_of.timestamp()-.1):
@@ -3741,7 +3741,7 @@ class ReplayRunController:
             source_native_only
             and frame.ticker not in self._strategy_quality_admitted_tickers
             and frame.timeframe != "1s"
-            and self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') not in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17')
+            and self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') not in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18')
         ):
             # The approved volume/spread-quality gate is entirely one-second
             # and event/session sourced. Before it passes, higher-frequency
@@ -3968,7 +3968,7 @@ class ReplayRunController:
         )
         ticker_assignments = self._ticker_assignments(frame.ticker)
         if any(a.parameters.get('hindsight_long_contract') or
-               a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-fixed-trail-v3','early-squeeze-r1-fixed-trail-v4','early-squeeze-r1-fixed-trail-v5','early-squeeze-r1-fixed-trail-v6','early-squeeze-r1-100ms-v7','early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17')
+               a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-fixed-trail-v3','early-squeeze-r1-fixed-trail-v4','early-squeeze-r1-fixed-trail-v5','early-squeeze-r1-fixed-trail-v6','early-squeeze-r1-100ms-v7','early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18')
                for a in ticker_assignments):
             # A bar projection is not a new quote. Retain the actual NBBO clock
             # so a trade-only interval cannot freshen an old executable price.
@@ -4103,7 +4103,7 @@ class ReplayRunController:
             detector_stream = self._candle_detector_states[frame.ticker]
             if 'structural_recovery' in detector_stream:
                 market = detector_stream['structural_recovery']
-                if parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17'):
+                if parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18'):
                     market = dict(market, fast_structure_evidence={k:snapshot[k]
                         for k in ('as_of', 'max_input_timestamp')})
                 values = dict(base.source_values)
@@ -4144,7 +4144,7 @@ class ReplayRunController:
         # Quotes update the broker/NBBO state in ``_process_market_event``.
         if isinstance(event, QuoteEvent) and event.ticker in self._strategy_engaged_tickers:
             assignments = tuple(a for a in self._ticker_assignments(event.ticker)
-                                if a.parameters.get('hindsight_long_contract') or a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17'))
+                                if a.parameters.get('hindsight_long_contract') or a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18'))
             base = self._latest_strategy_observations.get(event.ticker)
             if assignments and base is not None:
                 self._flush_passive_market_events()
@@ -4210,7 +4210,7 @@ class ReplayRunController:
                and bool(dict(assignment.parameters.get("structural_entry") or {}).get("enabled"))
                for assignment in ticker_assignments):
             structural = await self._event_structure_context(event)
-            if any(a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17')
+            if any(a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18')
                    for a in ticker_assignments):
                 base = replace(base, structural_detector_state={**(base.structural_detector_state or {}),
                     'fast_structure_evidence': structural.get('fast_structure_evidence', {})})
@@ -4255,7 +4255,7 @@ class ReplayRunController:
         # a rule comparing the latest trade with a 1s/5s indicator does not
         # accidentally compare that indicator with the stale bar close.
         source_values["market.last_price"] = market_price
-        if any(a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17')
+        if any(a.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18')
                for a in ticker_assignments):
             source_values['market.trade_size'] = dict(observed_at=event.ts.isoformat(), value=float(event.size))
             # The replay merge has consumed every completed frame before this
@@ -4570,7 +4570,7 @@ class ReplayRunController:
             snapshot = await self._experimental_structure_snapshot(event.ticker, event.ts, 'event',
                 int(event.raw.get('arrival_sequence', event.sequence)))
             result = context(snapshot, float(event.price))
-            if self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17'):
+            if self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18'):
                 result['fast_structure_evidence'] = {k:snapshot[k] for k in ('as_of', 'max_input_timestamp')}
             return result
         sessions = self._event_structure_sessions
@@ -6867,7 +6867,7 @@ class ReplayRunController:
                         )
                     except HistoricalSignalCoverageUnavailable:
                         parameters = self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {})
-                        if parameters.get('early_squeeze_breakout_contract') not in ('early-squeeze-r1-fixed-trail-v6', 'early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17'):
+                        if parameters.get('early_squeeze_breakout_contract') not in ('early-squeeze-r1-fixed-trail-v6', 'early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18'):
                             raise
                         from src.backend.historical_signal_preparation import reconstruct_configured_signal_occurrences
                         def reconstruction_progress(status):
