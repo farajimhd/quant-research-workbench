@@ -44,7 +44,9 @@
   .canvas-mode-context-slot > .historical-backtest-progress { width: 100%; }
 }
 .historical-backtest-progress .historical-backtest-progress-facts {
-  flex-wrap: nowrap;
+  display: grid;
+  grid-template-columns: 336px 336px;
+  justify-content: end;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -58,12 +60,12 @@
   align-items: baseline;
   border-right: 1px solid var(--border);
   display: grid;
-  flex: 0 0 220px;
+  flex: 0 0 336px;
   gap: 1px;
-  max-width: 220px;
-  min-width: 220px;
+  max-width: 336px;
+  min-width: 336px;
   padding-right: 9px;
-  width: 220px;
+  width: 336px;
 }
 .historical-backtest-strategy small {
   color: var(--muted-foreground);
@@ -78,6 +80,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.historical-backtest-run-facts {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: hidden;
+}
+.historical-backtest-run-facts > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .backtest-preparation-modal {
   width: min(640px, calc(100vw - 32px));

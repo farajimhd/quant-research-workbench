@@ -3329,7 +3329,10 @@ def capture(args: argparse.Namespace) -> int:
                         strategy_cell=header.locator('.historical-backtest-strategy')
                         strategy_cell.wait_for(state='visible',timeout=args.timeout_ms)
                         if not strategy_cell.locator('strong').inner_text().strip():raise RuntimeError('Backtest header omitted strategy identity')
-                        if abs(strategy_cell.evaluate('el => parseFloat(getComputedStyle(el).width)')-220)>1:raise RuntimeError('Backtest strategy cell width changed')
+                        if abs(strategy_cell.evaluate('el => parseFloat(getComputedStyle(el).width)')-336)>1:raise RuntimeError('Backtest strategy cell width changed')
+                        if strategy_cell.locator('strong').evaluate('el => el.scrollWidth > el.clientWidth + 1'):raise RuntimeError('Backtest strategy identity is truncated')
+                        run_facts=header.locator('.historical-backtest-run-facts')
+                        if abs(run_facts.evaluate('el => el.getBoundingClientRect().width')-strategy_cell.evaluate('el => el.getBoundingClientRect().width'))>1:raise RuntimeError('Backtest lower header row is not split 50/50')
                         before=header.bounding_box()['height']
                         trigger=page.get_by_role('button',name=re.compile('^Details'))
                         trigger.click()
