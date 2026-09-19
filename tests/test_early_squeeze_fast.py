@@ -126,23 +126,27 @@ def test_recovery_without_qualifying_swing_uses_last_completed_open():
     assert intent.invalidation_price==pytest.approx(10.5)
 
 
-def test_fast_candidate_compiles_without_inherited_trading_gates(monkeypatch):
-    from src.backend import early_squeeze_fast_candidate as C
+@pytest.mark.parametrize('corrected',[False,True])
+def test_fast_candidate_compiles_without_inherited_trading_gates(monkeypatch,corrected):
+    from src.backend import early_squeeze_fast_candidate, early_squeeze_fast_corrected_candidate
+    C=early_squeeze_fast_corrected_candidate if corrected else early_squeeze_fast_candidate
     from src.backend.trading_configuration_service import configuration_base, _build_configuration_release
     from tests.test_early_squeeze_candidate import baseline
     base=configuration_base()
+    # Model the pre-publication state; retain production immutability checks.
+    base['strategy']['profiles']=[p for p in base['strategy']['profiles'] if p['profile_id']!=C.CONTRACT]
     monkeypatch.setattr('src.backend.trading_configuration_service.configuration_base',lambda:deepcopy(base))
     before=deepcopy(base)
     payload,canvas,plan=C.build(base,baseline(base))
     assert base==before
-    profile=next(p for p in payload['strategy']['profiles'] if p['profile_id']==F.CONTRACT)
+    profile=next(p for p in payload['strategy']['profiles'] if p['profile_id']==C.CONTRACT)
     p=profile['parameters']
     assert not p['require_open_macd_for_entry'] and not p['require_positive_macd_signal_for_entry']
     assert p['liquidity_admission']['maximum_current_spread_bps']==250.
     assert p['sizing']['request_value']==pytest.approx(1/3)
     assert sorted(k for k in p if k.endswith('_contract'))==['early_squeeze_breakout_contract','structural_recovery_contract']
     _build_configuration_release(canvas_revision=canvas['revision'],canvas_profile=canvas['profile'],
-        configuration=payload,run_plan_id=plan,strategy_profile_id=F.CONTRACT)
+        configuration=payload,run_plan_id=plan,strategy_profile_id=C.CONTRACT)
 
 
 def test_replay_collects_100ms_body_history_before_activation():

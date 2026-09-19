@@ -7,6 +7,7 @@ from . import early_squeeze_breakout as E, historical_hod as H, vwap_resistance_
 from .signals import CapitalRequest
 
 CONTRACT = 'early-squeeze-r1-100ms-v7'
+CORRECTED_CONTRACT = 'early-squeeze-r1-100ms-v8'
 
 
 def below(value, tick):
@@ -68,6 +69,8 @@ def evaluate(host, a, o, p, old_state):
     from .strategy_engine import AssignmentStatus as Status
     state = deepcopy(old_state)
     a = replace(a, parameters=p)
+    corrected = p['early_squeeze_breakout_contract'] == CORRECTED_CONTRACT
+    multiplier = 1.25 if corrected else 2.
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
     session = o.observed_at.astimezone(H.NY).date().isoformat()
     d = state.setdefault('squeeze_breakout', {})
@@ -80,7 +83,7 @@ def evaluate(host, a, o, p, old_state):
              and ctx.get('session') == session and ctx.get('at') == now and now > d.get('closed_at', 0))
     green = fresh and o.price > o.bar_open
     mean = ctx.get('mean_before')
-    big = green and mean is not None and o.price-o.bar_open + 1e-10 >= 2*mean
+    big = green and mean is not None and o.price-o.bar_open + 1e-10 >= multiplier*mean
     sample = o.source_values.get(E.SIGNAL, {})
     at = E.stamp(sample.get('observed_at'))
     if sample.get('value') is True and at and at <= o.observed_at and at.astimezone(H.NY).date().isoformat() == session:
@@ -89,6 +92,12 @@ def evaluate(host, a, o, p, old_state):
     rows = levels(o)
     filtered = bool(rows) and all(r.get('input_policy') == V.POLICY and r.get('seed_input_policy') == V.POLICY for r in rows.values())
     structure_fresh = filtered and 0 <= now-row.get('effective_at', 0) <= 1.000001
+    if corrected:
+        proof = market.get('fast_structure_evidence', {})
+        cutoff, last_input = proof.get('as_of'), proof.get('max_input_timestamp')
+        structure_fresh = (filtered and type(cutoff) in (int,float) and type(last_input) in (int,float)
+            and isfinite(cutoff) and isfinite(last_input) and last_input <= cutoff
+            and 0 <= now-cutoff < 1.000001)
     held, active = o.position_quantity > 0, state.get('squeeze_entry') or {}
     stop = float(state.get('active_stop') or 0)
     target = float((state.get('structural_profit_targets') or [0])[0])
@@ -100,6 +109,13 @@ def evaluate(host, a, o, p, old_state):
         if green and structure_fresh and previous is not None:
             crossed = [(k, r) for k, r in prior_rows.items() if is_resistance(r)
                        and min(previous, o.bar_low) <= r['upper'] < o.price]
+            if corrected:
+                stop_crossings = [r for r in prior_rows.values()
+                    if (is_resistance(r) or r.get('role') == 'transition' and r.get('transition_from') == 'resistance')
+                    and min(previous, o.bar_low) <= r['upper'] < o.price]
+                if stop_crossings:
+                    d['latest_broken_resistance'] = deepcopy(max(stop_crossings,
+                        key=lambda r:(r['upper'],r['unified_level_id'])))
         if held and active:
             broken = active.setdefault('broken_levels', [])
             for key, _ in crossed:
@@ -108,10 +124,10 @@ def evaluate(host, a, o, p, old_state):
         d.update(close=o.price, closed_at=now, levels=deepcopy(rows))
         if active and (held or a.status == Status.ENTRY_PENDING) and not active.get('stopout_reference'):
             active['peak_close'] = max(active.get('peak_close', o.price), o.price)
-    evidence = dict(contract=CONTRACT, filtered_v7=filtered,
+    evidence = dict(contract=p['early_squeeze_breakout_contract'], filtered_v7=filtered,
         activation={k:d.get(k) for k in ('activated_at', 'activation_event_id')},
         candle_strength=dict(timeframe='100ms', body=o.price-o.bar_open if fresh else None,
-            prior_green_count=ctx.get('count_before'), prior_mean_body=mean, multiplier=2., qualifies=bool(big)))
+            prior_green_count=ctx.get('count_before'), prior_mean_body=mean, multiplier=multiplier, qualifies=bool(big)))
 
     def emit(action, reason, status=None, **kw):
         metadata = dict(evidence, active_stop=state.get('active_stop'),
@@ -214,6 +230,7 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh, green, big,
                    structure_fresh, quote, evidence, emit):
     from .strategy_engine import AssignmentStatus as Status
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
+    corrected = p['early_squeeze_breakout_contract'] == CORRECTED_CONTRACT
     if a.status == Status.ENTRY_PENDING or state.get('pending_capital_request'):
         return emit('wait', 'entry_fill_pending', Status.ENTRY_PENDING)
     if a.status in (Status.DISABLED, Status.PAUSED, Status.COMPLETED, Status.ERROR):
@@ -244,15 +261,17 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh, green, big,
     if not green:
         return emit('wait', 'waiting_for_completed_green_100ms')
     if not big:
-        return emit('wait', 'green_body_below_twice_session_average')
+        return emit('wait', 'green_body_below_1_25_session_average' if corrected else 'green_body_below_twice_session_average')
+    quality_row = dict(effective_at=now, candle=dict(volume=o.bar_volume)) if corrected else row
     ready, quality = H.tradability(o, dict(p, structural_recovery=dict(H.QUALITY_DEFAULTS, **p['structural_recovery'])),
-                                  row, state, producer_freshness=True)
+                                  quality_row, state, producer_freshness=True)
     evidence['liquidity_admission'] = quality
     if not ready:
         return emit('wait', 'liquidity_or_spread_gate')
-    source = o.source_values.get('indicator.vwap.execution_value@1s', {})
+    vwap_source = 'indicator.vwap.execution_value@100ms' if corrected else 'indicator.vwap.execution_value@1s'
+    source = o.source_values.get(vwap_source, {})
     at, vwap = E.stamp(source.get('observed_at')), source.get('value')
-    evidence['vwap_gate'] = dict(source_id='indicator.vwap.execution_value@1s', value=vwap,
+    evidence['vwap_gate'] = dict(source_id=vwap_source, value=vwap,
                                observed_at=source.get('observed_at'), close=o.price)
     if not at or not 0 <= now-at.timestamp() <= 1.000001 or type(vwap) not in (int,float) or not isfinite(vwap) or not 0 < vwap < o.price:
         return emit('wait', 'fresh_price_above_vwap_required')
@@ -269,12 +288,18 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh, green, big,
         anchor = recovery['anchor']
         if o.price+1e-9 < anchor['upper']+5*tick:
             return emit('wait', 'five_tick_upper_band_clearance_required')
-        invalid = set(ctx.get('invalid_swings', []))
-        swing = H.initial_swing_low(row, dict(lower=float('inf')), now,
-            pivot_not_before=recovery['breakout_at'],
-            eligible=lambda s:s['lower'] > anchor['upper'] and swing_key(s) not in invalid)
-        desired = below(swing['lower'], tick) if swing else round(floor(o.bar_open/tick+1e-9)*tick, 10)
-        stop_source = 'confirmed_swing_above_resistance' if swing else 'last_completed_candle_open_offset'
+        if corrected:
+            # Changing the stop anchor must not tighten the recovery signal.
+            anchor = d.get('latest_broken_resistance', anchor)
+            desired = below(anchor['lower'], tick)
+            stop_source = 'latest_broken_resistance_lower'
+        else:
+            invalid = set(ctx.get('invalid_swings', []))
+            swing = H.initial_swing_low(row, dict(lower=float('inf')), now,
+                pivot_not_before=recovery['breakout_at'],
+                eligible=lambda s:s['lower'] > anchor['upper'] and swing_key(s) not in invalid)
+            desired = below(swing['lower'], tick) if swing else round(floor(o.bar_open/tick+1e-9)*tick, 10)
+            stop_source = 'confirmed_swing_above_resistance' if swing else 'last_completed_candle_open_offset'
     else:
         return emit('wait', 'waiting_for_confirmed_r1_or_recovery')
     stop = min(desired, below(o.bid, tick))
@@ -286,6 +311,8 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh, green, big,
     target = E.target_price(overhead[2], tick, E.CONTRACT)
     if not quote or not 0 < stop < o.bid <= o.ask < target:
         return emit('wait', 'unrepresentable_stop_or_target')
+    if corrected:
+        d['latest_broken_resistance'] = deepcopy(anchor)
     for key in ('liquidation_origin_fill_role', 'liquidation_origin_reentry_after_fill',
                 'profit_target_liquidation_required', 'target_replenishment_pending', 'last_exit_reason'):
         state.pop(key, None)
@@ -296,6 +323,8 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh, green, big,
         initial_stop=stop, active_stop=stop, structural_profit_targets=[target],
         entry_reference_price=o.ask, entry_at=o.observed_at.isoformat(),
         entries=state.get('entries',0)+1, entry_acquisition_exit_latched=False)
+    if corrected:
+        state['squeeze_entry']['recovery_trigger_anchor'] = deepcopy(recovery['anchor'] if recovery else anchor)
     return emit('enter_long', 'stopout_close_high_reentry' if recovery else 'squeeze_r1_100ms_breakout', Status.ENTRY_PENDING,
         invalidation_price=stop, profit_target_price=target,
         capital_request=CapitalRequest(mode='mandate_fraction', value=1/3),
