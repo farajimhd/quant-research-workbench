@@ -1,12 +1,14 @@
 # Early Squeeze candidates 323-328 and reusable V7 preparation
 
 - Chat started: Exact original start unavailable; continued September 18, 2026
-- Summary written: September 18, 2026, America/Vancouver
+- Chat last activity: 2026-09-19 07:39 PDT
+- Summary written: 2026-09-19 07:39 PDT
 - Chat/task identifier: 01a0b4ac-d46f-7f82-b2f7-1565b42ba926
-- Scope: TASK-0014 and TASK-0211
-- Source completeness: User requirements visible; earlier implementation recovered through compacted context and inspected artifacts; final source, regression and initialization validation performed in this continuation.
+- Repository: D:/TradingCodes/quant-research-workbench
+- Related task-history entries: TASK-0014 and TASK-0211
+- Source completeness: Partial. User requirements visible; earlier implementation recovered through compacted context and inspected artifacts; final source, regression and initialization validation performed in this continuation.
 
-## Aligned strategy
+## Initial alignment (later superseded)
 
 The user requested an independent Early Squeeze strategy, using Strategy 317's sizing infrastructure without inheriting its trading rules. First Early Squeeze availability controls activation for both a selected ticker and a whole-session run. Levels use filtered V7 history. Initial entries use the current first resistance below prior HOD: a midpoint breakout followed by a completed green one-second candle closing in its top quarter, above the midpoint and VWAP. A later qualifying candle is permitted while the setup remains the current R1. Spread is capped at 2.5%; modest volume and liquidity requirements remain.
 
@@ -93,4 +95,35 @@ A four-worker August 19 preparation benchmark verified all 1,553 eligible ticker
 
 HTTP parity exposed one-ULP changes in the Rust worker JSON bridge. It now uses the existing exact numeric parser only for that bridge; the historical certification canonicalizer remains unchanged. All 257 core Rust tests and 119 history tests passed (four ignored). After managed activation, four actual HTTP streams reused both artifacts and exactly matched direct-worker snapshot hashes. The accepted SUGP replay predates this transport correction. A proposed additional replay never started because immutable publication prevented rebuilding its profile; the user then explicitly instructed not to rerun SUGP because they had just tested it.
 
-Evidence is under `D:/TradingML/runtimes/strategy-audits/squeeze-v11`. JUNS, full-day trading and live-broker acceptance remain open. Source delivery is subject to existing remote divergence; never force-push or synchronize workstation source before a successful push. Automatic approval review blocked deletion of five stopped diagnostic spill directories with reason "blocked by policy"; they remain in runtime storage. Diagnostic processes were stopped.
+Evidence is under `D:/TradingML/runtimes/strategy-audits/squeeze-v11`. JUNS, full-day trading and live-broker acceptance remain open. Source delivery was initially blocked by remote divergence, resolved below. Automatic approval review blocked deletion of five stopped diagnostic spill directories with reason "blocked by policy"; they remain in runtime storage. Diagnostic processes were stopped.
+
+
+## Repository reconciliation and delivery
+
+Commit `989d36f1` delivered v11/cache changes locally; its push initially failed. The user then requested repair of an unfinished merge with nine conflicts: local main was 256 commits ahead and 90 behind. Every incoming conflicted blob exactly matched an older local ancestor; resolving only conflict blocks in favor of the newer local code produced exactly the pre-merge tree. Remote labeler, forming-MACD and R1-ladder implementations were already represented locally. No strategy behavior changed. Twenty-one focused episode, filtered-history and cache tests passed. Merge `63fc842a` was pushed normally; local/remote main matched and the working tree was clean. SUGP was not rerun.
+
+## Durable decisions
+
+- Confirmed: first Early Squeeze activation; filtered causal V7; midpoint R1; price-gap admission; lifecycle 3/2/1 upward midpoint targets; trade-price stops; below-band episode reset; original whole-position trail through additions; consumed add attempts survive resets.
+- Architecture: versioned executors and immutable releases; source-verified persistent artifacts with private playback state.
+- Rejected/superseded: separate recovery, mandatory candle/body gates, bid-based trailing, addition stop ratchets and repeated rejected-add retries.
+- Uncertainty: preparation speed and bounded SUGP correctness do not establish full-day performance or strategy acceptance.
+
+## Delivered outcomes
+
+328/release 11, certified August 18-19 activation histories, bounded reusable V7 preparation, exact worker JSON transport, stop/target presentation and merged source delivery are recorded above. TASK-0014 and TASK-0211 remain in progress.
+
+## Unfinished work
+
+- TASK-0014: JUNS and live-broker acceptance remain unverified. Next owner must reconcile actual executions before widening acceptance. Read the v11 executor, candidate and audit evidence; do not rerun SUGP without a new request.
+- TASK-0211: full-day trading/P&L and sustained playback remain unvalidated; the preparation benchmark cannot close these. Next, inspect the user's existing run and agree any additional campaign.
+- Workstation synchronization was not performed; the successful push now permits the normal managed synchronization workflow when requested.
+- Five diagnostic spill directories remain because automatic cleanup approval was blocked; do not bypass that rejection.
+
+## Unavailable or incomplete source chats
+
+Earlier portions of this same task are partly compacted; retained narrative/evidence supplies their implementation history. Other inventoried tasks were not reviewed for this update. Preserve latest user clarifications over historical rules above.
+
+## Handoff to the next chat
+
+Read TASK-0014/TASK-0211 and the latest v11 section first. Preserve the reset and single-trail rules. Inspect existing user-run evidence before proposing more validation; SUGP reruns remain disallowed. Source is pushed; workstation deployment and broader acceptance remain separate actions.

@@ -16,7 +16,9 @@ rejections. Persistent verified V7 artifacts reused all 1,553 ticker preparation
 in 88 seconds versus 240 seconds. Forty-seven strategy and 52 V7 tests, 376 Rust
 tests (four ignored), frontend build and 12 visual scenarios passed. Exact V7
 HTTP transport parity passed after activation; user declined another SUGP replay.
-JUNS/full-day/live-broker acceptance and remote delivery remain open.
+JUNS/full-day/live-broker acceptance remains open. Merge conflicts were resolved
+without behavior changes; 21 checks passed and merge 63fc842a was pushed.
+Updated September 19, 2026.
 
 ### [2026-09-17 - Trading Journal and filtered V7 preparation](docs/codex/chat-summaries/2026/CHAT-20260917-UNKNOWN-trading-journal-filtered-v7.md)
 
