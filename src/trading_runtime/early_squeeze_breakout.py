@@ -25,11 +25,12 @@ EPISODE_PRICE_CONTRACT = 'early-squeeze-r1-price-episode-v11'
 RESISTANCE_CEILING_PRICE_CONTRACT = 'early-squeeze-r1-price-resistance-ceiling-v12'
 BROKEN_RESISTANCE_CEILING_PRICE_CONTRACT = 'early-squeeze-r1-price-broken-resistance-ceiling-v13'
 GREEN_CLOSE_CEILING_PRICE_CONTRACT = 'early-squeeze-r1-price-green-close-ceiling-v14'
+MACD_EPISODE_REENTRY_PRICE_CONTRACT = 'early-squeeze-r1-price-macd-1s-episode-reentry-v15'
 SIGNAL = 'signal.activation.price-squeeze-early'
 
 
 def configure(p):
-    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT, FAST_CONTRACT, CORRECTED_FAST_CONTRACT, PRICE_CONTRACT, STRICT_PRICE_CONTRACT, EPISODE_PRICE_CONTRACT, RESISTANCE_CEILING_PRICE_CONTRACT, BROKEN_RESISTANCE_CEILING_PRICE_CONTRACT, GREEN_CLOSE_CEILING_PRICE_CONTRACT):
+    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT, FAST_CONTRACT, CORRECTED_FAST_CONTRACT, PRICE_CONTRACT, STRICT_PRICE_CONTRACT, EPISODE_PRICE_CONTRACT, RESISTANCE_CEILING_PRICE_CONTRACT, BROKEN_RESISTANCE_CEILING_PRICE_CONTRACT, GREEN_CLOSE_CEILING_PRICE_CONTRACT, MACD_EPISODE_REENTRY_PRICE_CONTRACT):
         raise ValueError('Early Squeeze breakout requires its versioned filtered V7 adapter')
     foreign = [k for k,v in p.items() if k.endswith('_contract') and v
                and k not in ('early_squeeze_breakout_contract', 'structural_recovery_contract')]
@@ -145,7 +146,8 @@ def evaluate(host, a, o, p, old_state):
     if p['early_squeeze_breakout_contract'] in (PRICE_CONTRACT, STRICT_PRICE_CONTRACT, EPISODE_PRICE_CONTRACT,
                                                 RESISTANCE_CEILING_PRICE_CONTRACT,
                                                 BROKEN_RESISTANCE_CEILING_PRICE_CONTRACT,
-                                                GREEN_CLOSE_CEILING_PRICE_CONTRACT):
+                                                GREEN_CLOSE_CEILING_PRICE_CONTRACT,
+                                                MACD_EPISODE_REENTRY_PRICE_CONTRACT):
         from .early_squeeze_price import evaluate as price_evaluate
         return price_evaluate(host, a, o, p, old_state)
     if p['early_squeeze_breakout_contract'] in (FAST_CONTRACT, CORRECTED_FAST_CONTRACT):

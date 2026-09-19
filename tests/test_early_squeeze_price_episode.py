@@ -29,6 +29,27 @@ def green_close_ceiling_opened():
         'early_squeeze_breakout_contract': P.GREEN_CLOSE_CEILING_CONTRACT}), t
 
 
+def macd_episode_fixture():
+    h, a, t = old_fixture()
+    a = replace(a, parameters={**a.parameters,
+        'early_squeeze_breakout_contract': P.MACD_EPISODE_REENTRY_CONTRACT})
+
+    def frame(offset, price, line, signal, high=None):
+        observation = t(offset, price)
+        market = dict(observation.structural_detector_state)
+        market['fast_squeeze_context'] = {
+            **market['fast_squeeze_context'],
+            'at': observation.observed_at.timestamp(),
+            'close': price,
+        }
+        return replace(observation, source_timeframe='1s', evaluation_events=('bar_close',),
+            changed_source_ids=(), source_signal_ids=('qmd-derived:test:1s',),
+            bar_open=price-.01, bar_high=high or price, bar_low=price-.02,
+            macd_line=line, macd_signal=signal, structural_detector_state=market)
+
+    return h, a, t, frame
+
+
 @pytest.mark.parametrize('low,enters', [(10.39, True), (10.42, False)])
 def test_only_below_lower_band_resets_reentry_high(low, enters):
     h, a, t = opened()
@@ -162,6 +183,62 @@ def test_green_close_contract_enforces_ten_cent_minimum_trail_distance():
     assert result.state['squeeze_entry']['trail_distance'] == pytest.approx(.10)
 
 
+def test_all_entries_require_bullish_completed_1s_macd():
+    h, a, t, frame = macd_episode_fixture()
+    a = advance(a, h.evaluate(a, t()))
+    a = advance(a, h.evaluate(a, frame(.005, 10.39, .1, .2)))
+    result = h.evaluate(a, t(.01, 10.44))
+    assert not result.evaluation.intents
+    assert result.evaluation.signals[0].reason == 'macd_1s_line_above_signal_required'
+
+    a = advance(a, h.evaluate(a, frame(.015, 10.39, .3, .2)))
+    result = h.evaluate(a, t(.02, 10.44))
+    assert any(intent.action == 'enter_long' for intent in result.evaluation.intents)
+
+
+def test_same_macd_episode_reentry_breaks_prior_high_and_uses_resistance_stop_without_ten_cent_floor():
+    h, a, t, frame = macd_episode_fixture()
+    a = advance(a, h.evaluate(a, t()))
+    a = advance(a, h.evaluate(a, frame(.005, 10.39, .3, .2, high=10.40)))
+    a = advance(a, h.evaluate(a, t(.01, 10.44)))
+    a.state['squeeze_entry'].update(first_fill_at=t().observed_at.timestamp(), slice_notional=3000.)
+    a = replace(a, status=S.AssignmentStatus.MANAGING)
+    a = advance(a, h.evaluate(a, t(.02, 10.62, 100.)))
+    E.record_exit(a.state, t(.025).observed_at, 'protective_stop', 0,
+                  contract=P.MACD_EPISODE_REENTRY_CONTRACT)
+    a = replace(a, status=S.AssignmentStatus.WATCHING)
+
+    below_high = h.evaluate(a, t(.03, 10.62))
+    assert not below_high.evaluation.intents
+    assert below_high.evaluation.signals[0].reason == 'waiting_for_macd_1s_episode_high_break'
+    a = advance(a, below_high)
+
+    reentry = h.evaluate(a, t(.04, 10.63))
+    intent = next(intent for intent in reentry.evaluation.intents if intent.action == 'enter_long')
+    assert intent.invalidation_price == pytest.approx(10.59)
+    assert intent.metadata['stop_source'] == 'reentry_resistance_below_lower'
+    assert reentry.state['squeeze_entry']['same_macd_episode_reentry']
+
+    managing = replace(advance(a, reentry), status=S.AssignmentStatus.MANAGING)
+    managed = h.evaluate(managing, replace(t(.05, 10.64, 100.), average_price=10.63))
+    assert managed.state['squeeze_entry']['trail_distance'] == pytest.approx(.04)
+
+
+def test_new_bullish_macd_episode_does_not_inherit_old_episode_high():
+    h, a, t, frame = macd_episode_fixture()
+    a = advance(a, h.evaluate(a, t()))
+    a = advance(a, h.evaluate(a, frame(.005, 10.39, .3, .2, high=10.40)))
+    a = advance(a, h.evaluate(a, t(.01, 10.44)))
+    E.record_exit(a.state, t(.015).observed_at, 'protective_stop', 0,
+                  contract=P.MACD_EPISODE_REENTRY_CONTRACT)
+    a = replace(a, status=S.AssignmentStatus.WATCHING)
+    a = advance(a, h.evaluate(a, frame(.02, 10.39, .1, .2, high=10.45)))
+    a = advance(a, h.evaluate(a, frame(.03, 10.39, .3, .2, high=10.40)))
+    a = advance(a, h.evaluate(a, t(.035, 10.39)))
+    result = h.evaluate(a, t(.04, 10.44))
+    assert any(intent.action == 'enter_long' for intent in result.evaluation.intents)
+
+
 def test_reset_does_not_retry_consumed_addition():
     h, a, t = opened()
     a.state['squeeze_entry'].update(trail_distance=1., peak_price=10.44, structural_stop=9.44)
@@ -226,6 +303,18 @@ def test_broken_resistance_ceiling_candidate_compiles(monkeypatch):
 def test_green_close_ceiling_candidate_compiles(monkeypatch):
     from copy import deepcopy
     from src.backend import early_squeeze_green_close_ceiling_candidate as C
+    from src.backend.trading_configuration_service import configuration_base, _build_configuration_release
+    from tests.test_early_squeeze_candidate import baseline
+    base = configuration_base()
+    base['strategy']['profiles'] = [p for p in base['strategy']['profiles'] if p['profile_id'] != C.CONTRACT]
+    monkeypatch.setattr('src.backend.trading_configuration_service.configuration_base', lambda: deepcopy(base))
+    payload, canvas, plan = C.build(base, baseline(base))
+    _build_configuration_release(canvas_revision=canvas['revision'], canvas_profile=canvas['profile'], configuration=payload, run_plan_id=plan, strategy_profile_id=C.CONTRACT)
+
+
+def test_macd_episode_reentry_candidate_compiles(monkeypatch):
+    from copy import deepcopy
+    from src.backend import early_squeeze_macd_episode_reentry_candidate as C
     from src.backend.trading_configuration_service import configuration_base, _build_configuration_release
     from tests.test_early_squeeze_candidate import baseline
     base = configuration_base()
