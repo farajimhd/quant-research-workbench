@@ -16,10 +16,11 @@ MACD_EPISODE_REENTRY_CONTRACT = 'early-squeeze-r1-price-macd-1s-episode-reentry-
 DUAL_MACD_REENTRY_CONTRACT = 'early-squeeze-r1-price-dual-macd-reentry-v16'
 EPISODE_TARGET_CONTINUITY_CONTRACT = 'early-squeeze-r1-price-episode-target-continuity-v17'
 FORMING_EPISODE_CONTRACT = 'early-squeeze-r1-price-forming-episode-v18'
+CONFIRMED_BREAKOUT_CONTRACT = 'early-squeeze-r1-price-confirmed-breakout-v19'
 EPISODE_CONTRACTS = (EPISODE_CONTRACT, RESISTANCE_CEILING_CONTRACT,
                      BROKEN_RESISTANCE_CEILING_CONTRACT, GREEN_CLOSE_CEILING_CONTRACT,
                      MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT,
-                     EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT)
+                     EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
 
 
 def midpoint(row):
@@ -43,6 +44,64 @@ def boundary(anchor, rows):
     return dict(price=midpoint(anchor)+.1*(midpoint(next_level)-midpoint(anchor)),
                 midpoint=midpoint(anchor), next_midpoint=midpoint(next_level),
                 next_level_id=next_level['unified_level_id'], gap_fraction=.1)
+
+
+def observe_entry_breakout(d, rows, *, now, price, previous, prior_hod,
+                           entries, price_event, closed_100ms, structure_fresh):
+    """V19: select the obstacle first, then witness its completed-bar break.
+
+    Initial entries retain the HOD-selected resistance. Later episodes arm
+    the nearest not-yet-cleared band at the start of the move, never a search
+    for a conveniently broken band below price. Reaching a higher band makes
+    that band govern, even if it has not broken yet.
+    """
+    macd = d.get('macd_1s', {})
+    setup = d.get('entry_breakout')
+    if not macd.get('open') or setup and setup['episode_id'] != macd.get('episode_id'):
+        d.pop('entry_breakout', None)
+        setup = None
+    if not macd.get('open') or not (price_event or closed_100ms):
+        return
+    if not structure_fresh:
+        # An unobserved close could have invalidated the band. Do not reuse
+        # an earlier confirmation after an authority gap.
+        d.pop('entry_breakout', None)
+        return
+    anchor = rows.get(setup['anchor']['unified_level_id']) if setup else None
+    if anchor and not eligible(anchor):
+        anchor = None
+    if not anchor:
+        reference = previous if price_event and previous is not None else price
+        anchor = (min((r for r in rows.values() if eligible(r) and r['upper'] >= reference),
+                      key=lambda r:(midpoint(r), r['unified_level_id']), default=None)
+                  if entries else entry_level(rows, prior_hod))
+    if anchor:
+        approached = [r for r in rows.values() if eligible(r)
+                      and midpoint(r) > midpoint(anchor) and r['lower'] <= price]
+        if approached:
+            anchor = max(approached, key=lambda r:(midpoint(r), r['unified_level_id']))
+    limit = boundary(anchor, rows) if anchor else None
+    if not anchor or not limit:
+        d.pop('entry_breakout', None)
+        return
+    signature = [anchor['unified_level_id'], anchor['lower'], anchor['upper'],
+                 limit['next_level_id'], limit['price']]
+    threshold = max(anchor['upper'], limit['price'])
+    if not setup or setup['signature'] != signature:
+        setup = dict(anchor=deepcopy(anchor), boundary=deepcopy(limit), signature=signature,
+                     episode_id=macd['episode_id'], armed_at=now, armed_price=price,
+                     breakout_at=now, peak_close=None, confirmation=None,
+                     approach_observed=bool(price <= threshold or price_event
+                         and previous is not None and previous <= threshold))
+        d['entry_breakout'] = setup
+    if price <= threshold:
+        setup['confirmation'] = None
+        setup['approach_observed'] = True
+    if closed_100ms and setup['approach_observed'] and now > setup['armed_at'] and price > threshold:
+        setup['confirmation'] = dict(closed_at=now, close=price, timeframe='100ms',
+                                     upper=anchor['upper'], threshold=threshold,
+                                     episode_id=macd['episode_id'])
+        setup['peak_close'] = max(setup.get('peak_close') or price, price)
 
 
 def forming_macd_1s(o, state, price_event):
@@ -123,15 +182,15 @@ def evaluate(host, a, o, p, old_state):
     broken_resistance_cap = p['early_squeeze_breakout_contract'] == BROKEN_RESISTANCE_CEILING_CONTRACT
     green_close_cap = p['early_squeeze_breakout_contract'] in (
         GREEN_CLOSE_CEILING_CONTRACT, MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT,
-        EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT)
+        EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
     macd_episode_reentry = p['early_squeeze_breakout_contract'] in (
         MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT,
-        EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT)
+        EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
     dual_macd_reentry = p['early_squeeze_breakout_contract'] in (
-        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT)
-    episode_target_continuity = p['early_squeeze_breakout_contract'] in (EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT)
+        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
+    episode_target_continuity = p['early_squeeze_breakout_contract'] in (EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
-    forming_episode = p['early_squeeze_breakout_contract'] == FORMING_EPISODE_CONTRACT
+    forming_episode = p['early_squeeze_breakout_contract'] in (FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
     state = deepcopy(old_state)
     a = replace(a, parameters=p)
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
@@ -333,6 +392,11 @@ def evaluate(host, a, o, p, old_state):
     if dual_macd_reentry:
         evidence['macd_100ms_gate'] = dict(macd_100ms)
         evidence['reentry_100ms_review'] = deepcopy(d.get('reentry_100ms_review'))
+    if p['early_squeeze_breakout_contract'] == CONFIRMED_BREAKOUT_CONTRACT:
+        observe_entry_breakout(d, rows, now=now, price=o.price, previous=previous,
+            prior_hod=prior_hod, entries=state.get('entries', 0), price_event=price_event,
+            closed_100ms=fresh, structure_fresh=structure_fresh)
+        evidence['entry_breakout'] = deepcopy(d.get('entry_breakout'))
 
     def emit(action, reason, status=None, **kw):
         metadata = dict(evidence, active_stop=state.get('active_stop'),
@@ -487,10 +551,10 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     macd_episode_reentry = p['early_squeeze_breakout_contract'] == MACD_EPISODE_REENTRY_CONTRACT
     dual_macd_reentry = p['early_squeeze_breakout_contract'] in (
-        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT)
-    episode_target_continuity = p['early_squeeze_breakout_contract'] in (EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT)
+        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
+    episode_target_continuity = p['early_squeeze_breakout_contract'] in (EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
     macd_episode_reentry = macd_episode_reentry or dual_macd_reentry
-    forming_episode = p['early_squeeze_breakout_contract'] == FORMING_EPISODE_CONTRACT
+    forming_episode = p['early_squeeze_breakout_contract'] in (FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
     if a.status == Status.ENTRY_PENDING or state.get('pending_capital_request'):
         return emit('wait', 'entry_fill_pending', Status.ENTRY_PENDING)
@@ -522,8 +586,9 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
             return emit('wait', 'macd_episode_reentry_stopped_by_forming_resistance')
         if review.get('closes', 0) < 3 or forming_episode and now-review.get('started_at', now) < .3-1e-9:
             return emit('wait', 'waiting_for_three_completed_100ms_reentry_candles')
+    confirmed_entry = p['early_squeeze_breakout_contract'] == CONFIRMED_BREAKOUT_CONTRACT
     anchor = entry_level(rows, prior_hod)
-    if forming_episode and state.get('entries', 0):
+    if forming_episode and not confirmed_entry and state.get('entries', 0):
         candidates = [level for level in rows.values() if eligible(level)
                       and boundary(level, rows) and boundary(level, rows)['price'] <= o.price
                       and level['upper'] < o.price]
@@ -534,7 +599,7 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
                   or not limit or o.price < limit['price']):
         d.pop('initial_breakout', None)
         setup = None
-    if price_event and anchor and limit:
+    if price_event and anchor and limit and not confirmed_entry:
         new_high = evidence.get('prior_breakout_highs', {}).get(anchor['unified_level_id'])
         later_high = strict and anchor['unified_level_id'] in d.get('entered_levels', []) and new_high is not None and o.price > new_high
         current_move = (forming_episode and state.get('entries', 0)
@@ -545,9 +610,16 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
             d['initial_breakout'] = setup
         elif setup:
             setup['anchor'] = deepcopy(anchor)
+    if confirmed_entry:
+        setup = d.get('entry_breakout')
+        anchor = setup['anchor'] if setup else None
+        limit = setup['boundary'] if setup else None
+        confirmation = setup.get('confirmation') if setup else None
+        confirmed = bool(price_event and confirmation and o.price > confirmation['threshold'])
+    else:
+        confirmed = bool(price_event and setup and limit and o.price >= limit['price'])
     evidence['price_breakout'].update(selected_level=deepcopy(anchor), boundary=limit)
-    confirmed = bool(price_event and setup and limit and o.price >= limit['price'])
-    if strict and confirmed and anchor['unified_level_id'] in d.get('entered_levels', []):
+    if strict and not confirmed_entry and confirmed and anchor['unified_level_id'] in d.get('entered_levels', []):
         previous_high = evidence['prior_breakout_highs'].get(anchor['unified_level_id'])
         confirmed = previous_high is None or o.price > previous_high
         if not confirmed:
@@ -561,7 +633,8 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
     recovering = bool(price_event and recovery and recovery.get('crossed_at')
                       and now > recovery['stopped_at'] and o.price > recovery['high'])
     if not confirmed and not recovering:
-        return emit('wait', 'waiting_for_price_gap_breakout' if strict else 'waiting_for_price_gap_breakout_or_recovery')
+        return emit('wait', 'waiting_for_completed_100ms_resistance_breakout' if confirmed_entry
+                    else 'waiting_for_price_gap_breakout' if strict else 'waiting_for_price_gap_breakout_or_recovery')
     quality_row = dict(effective_at=now, candle=dict(volume=o.source_values.get('market.trade_size', {}).get('value') if price_event else o.bar_volume))
     ready, quality = H.tradability(o, dict(p, structural_recovery=dict(H.QUALITY_DEFAULTS, **p['structural_recovery'])),
                                   quality_row, state, producer_freshness=True)
@@ -581,13 +654,17 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
     if (not at or at > o.observed_at or at.astimezone(H.NY).date() != o.observed_at.astimezone(H.NY).date()
             or not latest_completed or type(vwap) not in (int,float) or not isfinite(vwap) or not 0 < vwap < o.price):
         return emit('wait', 'fresh_price_above_vwap_required')
+    trigger_anchor = deepcopy(anchor)
+    stop_anchor = anchor
     if same_episode_reentry:
-        anchor = max((level for level in rows.values() if eligible(level)
+        stop_anchor = max((level for level in rows.values() if eligible(level)
                       and level['upper'] < o.price),
                      key=lambda level:(midpoint(level), level['unified_level_id']), default=None)
-        if not anchor:
+        if not stop_anchor:
             return emit('wait', 'reentry_resistance_below_unavailable')
-        desired = below(anchor['lower'], tick)
+        if not confirmed_entry:
+            anchor = stop_anchor
+        desired = below(stop_anchor['lower'], tick)
         stop_source = 'reentry_resistance_below_lower'
         recovery = None
     elif confirmed:
@@ -629,7 +706,8 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
         peak_close=setup.get('peak_close') if not recovery else None,
         entry_price=o.ask, requested_at=now, single_use_adds=strict, added_levels=[anchor['unified_level_id']] if strict else [],
         pending_adds={}, broken_levels=list(macd.get('broken_levels', [])) if episode_target_continuity else [], late=False, target_moves=0,
-        same_macd_episode_reentry=same_episode_reentry),
+        same_macd_episode_reentry=same_episode_reentry,
+        **(dict(stop_anchor=deepcopy(stop_anchor), trigger_anchor=trigger_anchor) if confirmed_entry else {})),
         initial_stop=stop, active_stop=stop, structural_profit_targets=[target],
         entry_reference_price=o.ask, entry_at=o.observed_at.isoformat(),
         entries=state.get('entries',0)+1, entry_acquisition_exit_latched=False)
@@ -640,6 +718,7 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
         invalidation_price=stop, profit_target_price=target,
         capital_request=CapitalRequest(mode='mandate_fraction', value=1/3),
         metadata=dict(unreserved_cash_slice=True, entry_selection=deepcopy(anchor), stop_source=stop_source,
+            **(dict(stop_selection=deepcopy(stop_anchor), entry_confirmation=deepcopy(confirmation)) if confirmed_entry else {}),
             structural_stop=desired, breakout_boundary=limit if not recovery else dict(price=recovery['high'], kind='frozen_closing_high'),
             frozen_reentry_high=recovery['high'] if recovery else None,
             profit_target_selection=dict(level=deepcopy(overhead[ordinal-1]),price=target,ordinal=ordinal,
