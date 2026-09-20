@@ -1250,13 +1250,17 @@ class TradingRuntime:
             self._persist_strategy_assignments(snapshot.updated_at)
 
     async def _on_order_group_state(self, snapshot) -> None:
-        if snapshot.state in {
+        assignment = self._assignment_for_snapshot(snapshot)
+        midpoint_entry_closed = bool(assignment is not None
+            and assignment.parameters.get('early_squeeze_breakout_contract') == 'early-squeeze-r1-price-midpoint-execution-v21'
+            and snapshot.action == 'add_long' and snapshot.entry_submission_closed)
+        terminal_state = snapshot.state in {
             OrderManagementState.CANCELLED,
             OrderManagementState.REJECTED,
             OrderManagementState.POLICY_BLOCKED,
-        }:
-            assignment = self._assignment_for_snapshot(snapshot)
-            if assignment is not None:
+        }
+        if midpoint_entry_closed or terminal_state:
+            if assignment is not None and terminal_state:
                 self.control_plane.campaigns.release_reservation(assignment)
             handler = getattr(self.strategy, "on_order_group_update", None)
             if handler is not None:

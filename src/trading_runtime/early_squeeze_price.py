@@ -18,10 +18,11 @@ EPISODE_TARGET_CONTINUITY_CONTRACT = 'early-squeeze-r1-price-episode-target-cont
 FORMING_EPISODE_CONTRACT = 'early-squeeze-r1-price-forming-episode-v18'
 CONFIRMED_BREAKOUT_CONTRACT = 'early-squeeze-r1-price-confirmed-breakout-v19'
 VOLATILITY_CHOP_CONTRACT = 'early-squeeze-r1-price-volatility-chop-v20'
+MIDPOINT_EXECUTION_CONTRACT = 'early-squeeze-r1-price-midpoint-execution-v21'
 EPISODE_CONTRACTS = (EPISODE_CONTRACT, RESISTANCE_CEILING_CONTRACT,
                      BROKEN_RESISTANCE_CEILING_CONTRACT, GREEN_CLOSE_CEILING_CONTRACT,
                      MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT,
-                     EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
+                     EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT, MIDPOINT_EXECUTION_CONTRACT)
 
 
 def midpoint(row):
@@ -48,7 +49,7 @@ def boundary(anchor, rows):
 
 
 def observe_entry_breakout(d, rows, *, now, price, previous, prior_hod,
-                           entries, price_event, closed_100ms, structure_fresh):
+                           entries, price_event, closed_100ms, structure_fresh, midpoint_only=False):
     """V19: select the obstacle first, then witness its completed-bar break.
 
     Initial entries retain the HOD-selected resistance. Later episodes arm
@@ -87,7 +88,7 @@ def observe_entry_breakout(d, rows, *, now, price, previous, prior_hod,
         return
     signature = [anchor['unified_level_id'], anchor['lower'], anchor['upper'],
                  limit['next_level_id'], limit['price']]
-    threshold = max(anchor['upper'], limit['price'])
+    threshold = limit['price'] if midpoint_only else max(anchor['upper'], limit['price'])
     if not setup or setup['signature'] != signature:
         setup = dict(anchor=deepcopy(anchor), boundary=deepcopy(limit), signature=signature,
                      episode_id=macd['episode_id'], armed_at=now, armed_price=price,
@@ -105,14 +106,14 @@ def observe_entry_breakout(d, rows, *, now, price, previous, prior_hod,
         setup['peak_close'] = max(setup.get('peak_close') or price, price)
 
 
-def forming_macd_1s(o, state, price_event):
+def forming_macd_1s(o, state, price_event, *, sparse=False):
     """Preview from consecutive authoritative closes; never compound trade updates."""
     now = o.observed_at.timestamp()
     base = state.get('completed_macd_1s', {})
     if o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events:
         current = dict(at=now, line=o.macd_line, signal=o.macd_signal)
         values = (base.get('line'), o.macd_line, o.macd_signal, o.price)
-        if abs(now-base.get('at', 0)-1.) < 1e-6 and all(
+        if (now > base.get('at', now) if sparse else abs(now-base.get('at', 0)-1.) < 1e-6) and all(
                 type(v) in (int, float) and isfinite(v) for v in values):
             af, slow_alpha = 2/13, 2/27
             previous_slow = o.price-(o.macd_line-(1-af)*base['line'])/(af-slow_alpha)
@@ -120,7 +121,14 @@ def forming_macd_1s(o, state, price_event):
         if now > base.get('at', 0):
             state['completed_macd_1s'] = current
         return current
-    if not price_event or not 0 <= now-base.get('at', 0) < 1.000001 or 'slow' not in base:
+    proof = (o.structural_detector_state or {}).get('macd_1s_evidence', {})
+    source_at = E.stamp(proof.get('source_observed_at'))
+    complete_prefix = bool(sparse and proof.get('authority') == 'latest-completed-qmd-1s'
+        and E.stamp(proof.get('as_of')) == o.observed_at and source_at
+        and source_at.timestamp() == base.get('at') and source_at <= o.observed_at
+        and source_at.astimezone(H.NY).date() == o.observed_at.astimezone(H.NY).date()
+        and proof.get('line') == base.get('line') and proof.get('signal') == base.get('signal'))
+    if not price_event or not (0 <= now-base.get('at', 0) < 1.000001 or complete_prefix) or 'slow' not in base:
         return {}
     line = 2/13*o.price+11/13*(base['slow']+base['line'])-(2/27*o.price+25/27*base['slow'])
     return dict(at=now, base_at=base['at'], line=line, signal=.2*line+.8*base['signal'])
@@ -210,22 +218,58 @@ def broken_resistance_ceiling(active, breakout_anchors, rows, price, confirmed_i
     return current
 
 
+def next_resistance_ceiling(active, breakout_anchors, rows, stop):
+    """The next blocker, not the floor of the resistance already cleared."""
+    catalog = dict(breakout_anchors)
+    catalog[active['anchor']['unified_level_id']] = active['anchor']
+    catalog.update(rows)
+    confirmations = active.get('green_resistance_closes', {})
+    blockers = []
+    for key, level in catalog.items():
+        if not eligible(level) or level['lower'] < stop-1e-9:
+            continue
+        proof = confirmations.get(key) or {}
+        if proof.get('upper', 0) >= level['upper'] and proof.get('close', 0) > level['upper']:
+            continue
+        blockers.append(level)
+    current = min(blockers, key=lambda r:(r['lower'], midpoint(r), r['unified_level_id']), default=None)
+    active['trail_resistance_ceiling'] = deepcopy(current)
+    return current
+
+
+def midpoint_add_available(d, key, episode_id):
+    return not any(key in request['keys'] and (not request['terminal']
+        or request['filled'] and request['episode_id'] == episode_id)
+        for request in d.get('midpoint_add_requests', {}).values())
+
+
+def update_midpoint_add(state, request_id, *, filled=False, terminal=False):
+    """Fill-owned episode consumption survives exits and duplicate callbacks."""
+    d = deepcopy(state.get('squeeze_breakout', {}))
+    request = d.get('midpoint_add_requests', {}).get(request_id)
+    if request:
+        request['filled'] = request['filled'] or filled
+        request['terminal'] = request['terminal'] or terminal
+        state['squeeze_breakout'] = d
+
+
 def evaluate(host, a, o, p, old_state):
     from .strategy_engine import AssignmentStatus as Status
+    midpoint_execution = p['early_squeeze_breakout_contract'] == MIDPOINT_EXECUTION_CONTRACT
     episode = p['early_squeeze_breakout_contract'] in EPISODE_CONTRACTS
     resistance_ceiling = p['early_squeeze_breakout_contract'] == RESISTANCE_CEILING_CONTRACT
     broken_resistance_cap = p['early_squeeze_breakout_contract'] == BROKEN_RESISTANCE_CEILING_CONTRACT
     green_close_cap = p['early_squeeze_breakout_contract'] in (
         GREEN_CLOSE_CEILING_CONTRACT, MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT,
-        EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
+        EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT, MIDPOINT_EXECUTION_CONTRACT)
     macd_episode_reentry = p['early_squeeze_breakout_contract'] in (
         MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT,
-        EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
+        EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT, MIDPOINT_EXECUTION_CONTRACT)
     dual_macd_reentry = p['early_squeeze_breakout_contract'] in (
-        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
-    episode_target_continuity = p['early_squeeze_breakout_contract'] in (EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
+        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT, MIDPOINT_EXECUTION_CONTRACT)
+    episode_target_continuity = p['early_squeeze_breakout_contract'] in (EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT, MIDPOINT_EXECUTION_CONTRACT)
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
-    forming_episode = p['early_squeeze_breakout_contract'] in (FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
+    forming_episode = p['early_squeeze_breakout_contract'] in (FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT, MIDPOINT_EXECUTION_CONTRACT)
     state = deepcopy(old_state)
     a = replace(a, parameters=p)
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
@@ -266,7 +310,7 @@ def evaluate(host, a, o, p, old_state):
     macd = d.setdefault('macd_1s', {}) if macd_episode_reentry else {}
     macd_fresh = (macd_episode_reentry and o.source_timeframe == '1s'
                   and 'bar_close' in o.evaluation_events and now > macd.get('observed_at', 0))
-    preview = forming_macd_1s(o, d, price_event) if forming_episode else None
+    preview = forming_macd_1s(o, d, price_event, sparse=midpoint_execution) if forming_episode else None
     if not forming_episode and macd_fresh:
         valid = all(type(value) in (int, float) and isfinite(value)
                     for value in (o.macd_line, o.macd_signal))
@@ -306,6 +350,10 @@ def evaluate(host, a, o, p, old_state):
         macd_100ms.update(open=bool(valid and o.macd_line > o.macd_signal),
                           observed_at=now, line=o.macd_line, signal=o.macd_signal)
     prior_rows = d.get('levels', rows)
+    prior_add_close = d.get('midpoint_add_close') or {}
+    if midpoint_execution and fresh:
+        d['midpoint_add_close'] = dict(price=o.price, at=now,
+            levels=deepcopy(rows) if structure_fresh else {})
     crossed = []
     if episode and price_event and structure_fresh:
         # A failed band starts a new episode only below its lower edge.
@@ -404,7 +452,7 @@ def evaluate(host, a, o, p, old_state):
             if review['closes'] >= 3 and any(
                     not candidate['broken'] for candidate in review['forming_resistances']):
                 review['blocked'] = True
-    volatility_chop = p['early_squeeze_breakout_contract'] == VOLATILITY_CHOP_CONTRACT
+    volatility_chop = p['early_squeeze_breakout_contract'] in (VOLATILITY_CHOP_CONTRACT, MIDPOINT_EXECUTION_CONTRACT)
     chop_volatility = (observe_chop_volatility(d, now, o.bar_high, o.bar_low, o.price)
                        if volatility_chop and macd_fresh else None)
     if forming_episode and held and active and macd_fresh and structure_fresh:
@@ -412,7 +460,8 @@ def evaluate(host, a, o, p, old_state):
             volatility_gate=volatility_chop, volatility=chop_volatility)
     green_close = bool(active and held and green_close_cap and o.source_timeframe == '1s'
                        and 'bar_close' in o.evaluation_events and o.bar_open is not None
-                       and o.price > o.bar_open)
+                       and o.price > o.bar_open
+                       and (not midpoint_execution or macd_fresh and structure_fresh))
     if green_close:
         confirmations = active.setdefault('green_resistance_closes', {})
         catalog = {r['unified_level_id']: r for r in d.get('breakout_anchors', {}).values()}
@@ -431,10 +480,10 @@ def evaluate(host, a, o, p, old_state):
     if dual_macd_reentry:
         evidence['macd_100ms_gate'] = dict(macd_100ms)
         evidence['reentry_100ms_review'] = deepcopy(d.get('reentry_100ms_review'))
-    if p['early_squeeze_breakout_contract'] in (CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT):
+    if p['early_squeeze_breakout_contract'] in (CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT, MIDPOINT_EXECUTION_CONTRACT):
         observe_entry_breakout(d, rows, now=now, price=o.price, previous=previous,
             prior_hod=prior_hod, entries=state.get('entries', 0), price_event=price_event,
-            closed_100ms=fresh, structure_fresh=structure_fresh)
+            closed_100ms=fresh, structure_fresh=structure_fresh, midpoint_only=midpoint_execution)
         evidence['entry_breakout'] = deepcopy(d.get('entry_breakout'))
 
     def emit(action, reason, status=None, **kw):
@@ -461,7 +510,12 @@ def evaluate(host, a, o, p, old_state):
                     'wait_for_capital':False}) for i in result.evaluation.intents)))
             if action == 'add_long':
                 for intent in result.evaluation.intents:
-                    active.setdefault('add_requests', {})[intent.intent_id] = list(metadata['squeeze_add_levels'])
+                    if midpoint_execution:
+                        d.setdefault('midpoint_add_requests', {})[intent.intent_id] = dict(
+                            keys=list(metadata['squeeze_add_levels']), episode_id=macd.get('episode_id'),
+                            filled=False, terminal=False)
+                    else:
+                        active.setdefault('add_requests', {})[intent.intent_id] = list(metadata['squeeze_add_levels'])
         return result
 
     # A partially filled full target owns liquidation. Never add into it, or
@@ -498,14 +552,16 @@ def evaluate(host, a, o, p, old_state):
             return emit('exit', 'manual_exit', Status.EXIT_PENDING, quantity=o.position_quantity)
         results = []
         trail_update = price_event or green_close if strict else bool(quote)
-        if trail_update and active.get('trail_distance'):
+        if trail_update and active.get('trail_distance') and (not midpoint_execution or structure_fresh):
             trail_price = (o.price if price_event else active.get('peak_price', o.price)) if strict else o.bid
             active['peak_price'] = max(active.get('peak_price', trail_price), trail_price)
             proposal = round(floor((active['peak_price']-active['trail_distance'])/tick+1e-9)*tick, 10)
             desired = active.get('structural_stop', stop)
             if desired < (o.price if strict else o.bid):
                 proposal = max(proposal, desired)
-            ceiling = (broken_resistance_ceiling(active, d.get('breakout_anchors', {}), rows, trail_price,
+            ceiling = (next_resistance_ceiling(active, d.get('breakout_anchors', {}), rows, stop)
+                       if midpoint_execution else
+                       broken_resistance_ceiling(active, d.get('breakout_anchors', {}), rows, trail_price,
                            set(active.get('green_resistance_closes', {})))
                        if green_close_cap else
                        broken_resistance_ceiling(active, d.get('breakout_anchors', {}), rows, trail_price)
@@ -540,7 +596,27 @@ def evaluate(host, a, o, p, old_state):
             if o.bid >= target > 0 and not any(r.evaluation.intents for r in results):
                 return emit('exit', 'profit_target', Status.EXIT_PENDING, quantity=o.position_quantity)
         add_confirmation_frame = bool(dual_macd_reentry and macd_100ms_fresh)
-        if (price_event or add_confirmation_frame) and structure_fresh and quote:
+        if (midpoint_execution and fresh and structure_fresh and quote and prior_add_close
+                and macd.get('open') and macd_100ms.get('open') and a.permissions.add
+                and active.get('slice_notional', 0) > 0 and stop < o.bid <= o.ask < target):
+            # One request per resistance: even a partial fill consumes exactly
+            # that resistance. Rejections may retry only on another crossing.
+            for key, level in sorted(rows.items(), key=lambda item:(midpoint(item[1]), item[0])):
+                prior = prior_add_close['levels'].get(key)
+                if (not is_resistance(level) or not prior or not is_resistance(prior)
+                        or midpoint(prior) != midpoint(level)
+                        or not prior_add_close['price'] <= midpoint(level) < o.price
+                        or not midpoint_add_available(d, key, macd.get('episode_id'))):
+                    continue
+                results.append(emit('add_long', 'resistance_midpoint_cross_addition', Status.MANAGING,
+                    invalidation_price=stop, profit_target_price=target,
+                    capital_request=CapitalRequest(mode='fixed_notional', value=active['slice_notional']),
+                    metadata=dict(squeeze_add_levels=[key], slice_notional=active['slice_notional'],
+                        midpoint_add_crossing=dict(level=deepcopy(level), midpoint=midpoint(level),
+                            previous_price=prior_add_close['price'], price=o.price, crossed_at=now,
+                            previous_closed_at=prior_add_close['at'], closed_at=now, timeframe='100ms',
+                            episode_id=macd.get('episode_id')))))
+        if not midpoint_execution and (price_event or add_confirmation_frame) and structure_fresh and quote:
             pending = active.setdefault('pending_adds', {})
             seen = d.setdefault('attempted_add_levels', []) if strict else active.setdefault('added_levels', [])
             for key, level in crossed:
@@ -590,10 +666,10 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     macd_episode_reentry = p['early_squeeze_breakout_contract'] == MACD_EPISODE_REENTRY_CONTRACT
     dual_macd_reentry = p['early_squeeze_breakout_contract'] in (
-        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
-    episode_target_continuity = p['early_squeeze_breakout_contract'] in (EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
+        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT, MIDPOINT_EXECUTION_CONTRACT)
+    episode_target_continuity = p['early_squeeze_breakout_contract'] in (EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT, MIDPOINT_EXECUTION_CONTRACT)
     macd_episode_reentry = macd_episode_reentry or dual_macd_reentry
-    forming_episode = p['early_squeeze_breakout_contract'] in (FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
+    forming_episode = p['early_squeeze_breakout_contract'] in (FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT, MIDPOINT_EXECUTION_CONTRACT)
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
     if a.status == Status.ENTRY_PENDING or state.get('pending_capital_request'):
         return emit('wait', 'entry_fill_pending', Status.ENTRY_PENDING)
@@ -610,6 +686,8 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
     if not structure_fresh:
         return emit('wait', 'filtered_v7_unavailable')
     macd = d.get('macd_1s', {})
+    if p['early_squeeze_breakout_contract'] == MIDPOINT_EXECUTION_CONTRACT and not macd.get('available'):
+        return emit('wait', 'forming_macd_1s_unavailable')
     if macd_episode_reentry and (not macd.get('open') or forming_episode and not macd.get('available')):
         return emit('wait', 'macd_1s_line_above_signal_required')
     if dual_macd_reentry and not d.get('macd_100ms', {}).get('open'):
@@ -625,7 +703,7 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
             return emit('wait', 'macd_episode_reentry_stopped_by_forming_resistance')
         if review.get('closes', 0) < 3 or forming_episode and now-review.get('started_at', now) < .3-1e-9:
             return emit('wait', 'waiting_for_three_completed_100ms_reentry_candles')
-    confirmed_entry = p['early_squeeze_breakout_contract'] in (CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
+    confirmed_entry = p['early_squeeze_breakout_contract'] in (CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT, MIDPOINT_EXECUTION_CONTRACT)
     anchor = entry_level(rows, prior_hod)
     if forming_episode and not confirmed_entry and state.get('entries', 0):
         candidates = [level for level in rows.values() if eligible(level)

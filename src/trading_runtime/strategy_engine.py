@@ -219,7 +219,7 @@ def supported_custom_execution_contracts() -> tuple[str, ...]:
     """Loaded-executor capability, used before saving a new research candidate."""
     return ('early-squeeze-r1-fixed-trail-v1', 'early-squeeze-r1-fixed-trail-v2',
             'early-squeeze-r1-fixed-trail-v3', 'early-squeeze-r1-fixed-trail-v4',
-            'early-squeeze-r1-fixed-trail-v5', 'early-squeeze-r1-fixed-trail-v6', 'early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18', 'early-squeeze-r1-price-confirmed-breakout-v19', 'early-squeeze-r1-price-volatility-chop-v20')
+            'early-squeeze-r1-fixed-trail-v5', 'early-squeeze-r1-fixed-trail-v6', 'early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18', 'early-squeeze-r1-price-confirmed-breakout-v19', 'early-squeeze-r1-price-volatility-chop-v20', 'early-squeeze-r1-price-midpoint-execution-v21')
 
 
 def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
@@ -6157,8 +6157,12 @@ class AssignedLongMomentumStrategy:
                 continue
             state = dict(assignment.state)
             if intent.action == "add_long" and intent.metadata.get("squeeze_add_levels"):
-                from .early_squeeze_breakout import release_add
-                release_add(state, intent.metadata["squeeze_add_levels"])
+                from .early_squeeze_price import MIDPOINT_EXECUTION_CONTRACT, update_midpoint_add
+                if assignment.parameters.get('early_squeeze_breakout_contract') == MIDPOINT_EXECUTION_CONTRACT:
+                    update_midpoint_add(state, intent.intent_id, terminal=True)
+                else:
+                    from .early_squeeze_breakout import release_add
+                    release_add(state, intent.metadata["squeeze_add_levels"])
             if str(intent.action) in {"enter_long", "enter_short"}:
                 if assignment.parameters.get('hindsight_long_contract'):
                     from .hindsight_long import acquisition_update
@@ -6417,10 +6421,16 @@ class AssignedLongMomentumStrategy:
         # than waiting for a terminal group state that may never become
         # FILLED.  Otherwise profit-target replenishment silently loses the
         # target fills that created its entitlement.
+        midpoint_entry_closed = bool(str(getattr(snapshot, 'action', '')) == 'add_long'
+            and any(a.assignment_id == assignment_id and a.parameters.get('early_squeeze_breakout_contract')
+                == 'early-squeeze-r1-price-midpoint-execution-v21' for a in self._assignments.values())
+            and (getattr(snapshot, 'entry_submission_closed', False)
+                 or snapshot_state in {'rejected', 'policy_blocked'}))
         if (
             not assignment_id
             or snapshot_state not in {"filled", "cancelled"}
             and incremental_fill <= 0
+            and not midpoint_entry_closed
         ):
             return
         for key, assignment in self._assignments.items():
@@ -6429,9 +6439,14 @@ class AssignedLongMomentumStrategy:
             state = dict(assignment.state)
             action = str(getattr(snapshot, "action", ""))
             if assignment.parameters.get('early_squeeze_breakout_contract') and action == 'add_long':
+                from .early_squeeze_price import MIDPOINT_EXECUTION_CONTRACT, update_midpoint_add
                 active = deepcopy(state.get('squeeze_entry') or {})
                 request_id = str(getattr(snapshot, 'intent_id', ''))
-                if snapshot_state == 'cancelled' or incremental_fill > 0:
+                if assignment.parameters.get('early_squeeze_breakout_contract') == MIDPOINT_EXECUTION_CONTRACT:
+                    update_midpoint_add(state, request_id,
+                        filled=float(getattr(snapshot, 'filled_quantity', 0) or 0) > 0,
+                        terminal=snapshot_state in {'filled', 'cancelled'} or midpoint_entry_closed)
+                elif snapshot_state == 'cancelled' or incremental_fill > 0:
                     keys = active.get('add_requests', {}).pop(request_id, [])
                     state['squeeze_entry'] = active
                     if snapshot_state == 'cancelled' and not float(getattr(snapshot, 'filled_quantity', 0) or 0):
