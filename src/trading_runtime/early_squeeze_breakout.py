@@ -32,11 +32,13 @@ FORMING_EPISODE_PRICE_CONTRACT = 'early-squeeze-r1-price-forming-episode-v18'
 CONFIRMED_BREAKOUT_PRICE_CONTRACT = 'early-squeeze-r1-price-confirmed-breakout-v19'
 VOLATILITY_CHOP_PRICE_CONTRACT = 'early-squeeze-r1-price-volatility-chop-v20'
 MIDPOINT_EXECUTION_PRICE_CONTRACT = 'early-squeeze-r1-price-midpoint-execution-v21'
+CONSISTENT_PRICE_CONTRACT = 'early-squeeze-consistent-1s-resistance-v22'
+STRUCTURAL_PRICE_CONTRACT = 'early-squeeze-structural-1s-resistance-v23'
 SIGNAL = 'signal.activation.price-squeeze-early'
 
 
 def configure(p):
-    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT, FAST_CONTRACT, CORRECTED_FAST_CONTRACT, PRICE_CONTRACT, STRICT_PRICE_CONTRACT, EPISODE_PRICE_CONTRACT, RESISTANCE_CEILING_PRICE_CONTRACT, BROKEN_RESISTANCE_CEILING_PRICE_CONTRACT, GREEN_CLOSE_CEILING_PRICE_CONTRACT, MACD_EPISODE_REENTRY_PRICE_CONTRACT, DUAL_MACD_REENTRY_PRICE_CONTRACT, EPISODE_TARGET_CONTINUITY_PRICE_CONTRACT, FORMING_EPISODE_PRICE_CONTRACT, CONFIRMED_BREAKOUT_PRICE_CONTRACT, VOLATILITY_CHOP_PRICE_CONTRACT, MIDPOINT_EXECUTION_PRICE_CONTRACT):
+    if p.get('early_squeeze_breakout_contract') not in (LEGACY_CONTRACT, VWAP_CONTRACT, RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT, FAST_CONTRACT, CORRECTED_FAST_CONTRACT, PRICE_CONTRACT, STRICT_PRICE_CONTRACT, EPISODE_PRICE_CONTRACT, RESISTANCE_CEILING_PRICE_CONTRACT, BROKEN_RESISTANCE_CEILING_PRICE_CONTRACT, GREEN_CLOSE_CEILING_PRICE_CONTRACT, MACD_EPISODE_REENTRY_PRICE_CONTRACT, DUAL_MACD_REENTRY_PRICE_CONTRACT, EPISODE_TARGET_CONTINUITY_PRICE_CONTRACT, FORMING_EPISODE_PRICE_CONTRACT, CONFIRMED_BREAKOUT_PRICE_CONTRACT, VOLATILITY_CHOP_PRICE_CONTRACT, MIDPOINT_EXECUTION_PRICE_CONTRACT, CONSISTENT_PRICE_CONTRACT, STRUCTURAL_PRICE_CONTRACT):
         raise ValueError('Early Squeeze breakout requires its versioned filtered V7 adapter')
     foreign = [k for k,v in p.items() if k.endswith('_contract') and v
                and k not in ('early_squeeze_breakout_contract', 'structural_recovery_contract')]
@@ -59,6 +61,10 @@ def below(anchor, bid, tick):
 
 def record_exit(state, at, role, remaining, *, contract=CONTRACT):
     """Only actual exit fills can authorize stop-out recovery."""
+    if contract in (CONSISTENT_PRICE_CONTRACT, STRUCTURAL_PRICE_CONTRACT):
+        if (state.get('squeeze_entry') or {}).get('first_fill_at') and remaining is not None and abs(remaining) <= 1e-9:
+            state.pop('squeeze_entry', None)
+        return
     active = state.get('squeeze_entry') or {}
     if contract in (RECOVERY_CONTRACT, MIDPOINT_CONTRACT, LIFECYCLE_CONTRACT, CONTRACT, FAST_CONTRACT, CORRECTED_FAST_CONTRACT, PRICE_CONTRACT, STRICT_PRICE_CONTRACT, EPISODE_PRICE_CONTRACT, DUAL_MACD_REENTRY_PRICE_CONTRACT, EPISODE_TARGET_CONTINUITY_PRICE_CONTRACT, FORMING_EPISODE_PRICE_CONTRACT, CONFIRMED_BREAKOUT_PRICE_CONTRACT, VOLATILITY_CHOP_PRICE_CONTRACT, MIDPOINT_EXECUTION_PRICE_CONTRACT) and not active.get('first_fill_at'):
         # Multiple child fills may each report an already-flat aggregate.
@@ -150,6 +156,9 @@ def overhead_levels(market, ask, tick, contract, exclude=''):
 
 
 def evaluate(host, a, o, p, old_state):
+    if p['early_squeeze_breakout_contract'] in (CONSISTENT_PRICE_CONTRACT, STRUCTURAL_PRICE_CONTRACT):
+        from .early_squeeze_consistent import evaluate as consistent_evaluate
+        return consistent_evaluate(host, a, o, p, old_state)
     if p['early_squeeze_breakout_contract'] in (PRICE_CONTRACT, STRICT_PRICE_CONTRACT, EPISODE_PRICE_CONTRACT,
                                                 RESISTANCE_CEILING_PRICE_CONTRACT,
                                                 BROKEN_RESISTANCE_CEILING_PRICE_CONTRACT,
