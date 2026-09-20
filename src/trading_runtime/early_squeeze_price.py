@@ -17,10 +17,11 @@ DUAL_MACD_REENTRY_CONTRACT = 'early-squeeze-r1-price-dual-macd-reentry-v16'
 EPISODE_TARGET_CONTINUITY_CONTRACT = 'early-squeeze-r1-price-episode-target-continuity-v17'
 FORMING_EPISODE_CONTRACT = 'early-squeeze-r1-price-forming-episode-v18'
 CONFIRMED_BREAKOUT_CONTRACT = 'early-squeeze-r1-price-confirmed-breakout-v19'
+VOLATILITY_CHOP_CONTRACT = 'early-squeeze-r1-price-volatility-chop-v20'
 EPISODE_CONTRACTS = (EPISODE_CONTRACT, RESISTANCE_CEILING_CONTRACT,
                      BROKEN_RESISTANCE_CEILING_CONTRACT, GREEN_CLOSE_CEILING_CONTRACT,
                      MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT,
-                     EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
+                     EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
 
 
 def midpoint(row):
@@ -125,7 +126,34 @@ def forming_macd_1s(o, state, price_event):
     return dict(at=now, base_at=base['at'], line=line, signal=.2*line+.8*base['signal'])
 
 
-def observe_midpoint_chop(active, rows, now, close):
+def observe_chop_volatility(state, now, high, low, close):
+    """Prior 14 contiguous completed 1s true ranges, in price units, SMA.
+
+    Call only on a new completed 1s bar. The evaluated bar cannot inflate its
+    own tolerance. Warm while flat and retain across MACD episodes/positions;
+    the session-scoped parent state resets this history at the next session.
+    """
+    history = state.setdefault('chop_volatility_1s', {})
+    if now <= history.get('at', 0):
+        return None
+    if not all(type(v) in (int, float) and isfinite(v) for v in (high, low, close)) or not 0 < low <= close <= high:
+        history.clear()
+        return None
+    if abs(now-history.get('at', 0)-1.) > 1e-6:
+        history.clear()
+    samples = history.setdefault('samples', [])
+    prior = (dict(value=sum(r[1] for r in samples)/14, window=14,
+                  timeframe='1s', estimator='prior-completed-true-range-sma',
+                  first_close_at=samples[0][0], last_close_at=samples[-1][0])
+             if len(samples) == 14 else None)
+    previous = history.get('close', close)
+    samples.append([now, max(high-low, abs(high-previous), abs(low-previous))])
+    samples[:] = samples[-14:]
+    history.update(at=now, close=close)
+    return prior
+
+
+def observe_midpoint_chop(active, rows, now, close, *, volatility_gate=False, volatility=None):
     """Five consecutive one-second observations around a fixed band, two crossings."""
     trackers = active.setdefault('midpoint_chop', {})
     for key in list(trackers):
@@ -146,6 +174,13 @@ def observe_midpoint_chop(active, rows, now, close):
         signs = [1 if value > tracker['midpoint'] else -1
                  for _, value in samples if value != tracker['midpoint']]
         crossings = sum(a != b for a, b in zip(signs, signs[1:]))
+        if volatility_gate:
+            threshold = tracker['midpoint']-.5*volatility['value'] if volatility else None
+            tracker['volatility_filter'] = dict(k=.5, volatility=deepcopy(volatility),
+                exit_threshold=threshold, close=close,
+                ready=volatility is not None)
+            if threshold is None or close >= threshold-1e-9:
+                continue
         if len(samples) == 5 and crossings >= 2:
             active['midpoint_chop_exit'] = dict(tracker, unified_level_id=key, crossings=crossings)
 
@@ -182,15 +217,15 @@ def evaluate(host, a, o, p, old_state):
     broken_resistance_cap = p['early_squeeze_breakout_contract'] == BROKEN_RESISTANCE_CEILING_CONTRACT
     green_close_cap = p['early_squeeze_breakout_contract'] in (
         GREEN_CLOSE_CEILING_CONTRACT, MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT,
-        EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
+        EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
     macd_episode_reentry = p['early_squeeze_breakout_contract'] in (
         MACD_EPISODE_REENTRY_CONTRACT, DUAL_MACD_REENTRY_CONTRACT,
-        EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
+        EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
     dual_macd_reentry = p['early_squeeze_breakout_contract'] in (
-        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
-    episode_target_continuity = p['early_squeeze_breakout_contract'] in (EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
+        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
+    episode_target_continuity = p['early_squeeze_breakout_contract'] in (EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
-    forming_episode = p['early_squeeze_breakout_contract'] in (FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
+    forming_episode = p['early_squeeze_breakout_contract'] in (FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
     state = deepcopy(old_state)
     a = replace(a, parameters=p)
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
@@ -369,8 +404,12 @@ def evaluate(host, a, o, p, old_state):
             if review['closes'] >= 3 and any(
                     not candidate['broken'] for candidate in review['forming_resistances']):
                 review['blocked'] = True
+    volatility_chop = p['early_squeeze_breakout_contract'] == VOLATILITY_CHOP_CONTRACT
+    chop_volatility = (observe_chop_volatility(d, now, o.bar_high, o.bar_low, o.price)
+                       if volatility_chop and macd_fresh else None)
     if forming_episode and held and active and macd_fresh and structure_fresh:
-        observe_midpoint_chop(active, rows, now, o.price)
+        observe_midpoint_chop(active, rows, now, o.price,
+            volatility_gate=volatility_chop, volatility=chop_volatility)
     green_close = bool(active and held and green_close_cap and o.source_timeframe == '1s'
                        and 'bar_close' in o.evaluation_events and o.bar_open is not None
                        and o.price > o.bar_open)
@@ -392,7 +431,7 @@ def evaluate(host, a, o, p, old_state):
     if dual_macd_reentry:
         evidence['macd_100ms_gate'] = dict(macd_100ms)
         evidence['reentry_100ms_review'] = deepcopy(d.get('reentry_100ms_review'))
-    if p['early_squeeze_breakout_contract'] == CONFIRMED_BREAKOUT_CONTRACT:
+    if p['early_squeeze_breakout_contract'] in (CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT):
         observe_entry_breakout(d, rows, now=now, price=o.price, previous=previous,
             prior_hod=prior_hod, entries=state.get('entries', 0), price_event=price_event,
             closed_100ms=fresh, structure_fresh=structure_fresh)
@@ -551,10 +590,10 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
     strict = episode or p['early_squeeze_breakout_contract'] == STRICT_CONTRACT
     macd_episode_reentry = p['early_squeeze_breakout_contract'] == MACD_EPISODE_REENTRY_CONTRACT
     dual_macd_reentry = p['early_squeeze_breakout_contract'] in (
-        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
-    episode_target_continuity = p['early_squeeze_breakout_contract'] in (EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
+        DUAL_MACD_REENTRY_CONTRACT, EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
+    episode_target_continuity = p['early_squeeze_breakout_contract'] in (EPISODE_TARGET_CONTINUITY_CONTRACT, FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
     macd_episode_reentry = macd_episode_reentry or dual_macd_reentry
-    forming_episode = p['early_squeeze_breakout_contract'] in (FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT)
+    forming_episode = p['early_squeeze_breakout_contract'] in (FORMING_EPISODE_CONTRACT, CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
     now, tick = o.observed_at.timestamp(), p['execution']['tick_size']
     if a.status == Status.ENTRY_PENDING or state.get('pending_capital_request'):
         return emit('wait', 'entry_fill_pending', Status.ENTRY_PENDING)
@@ -586,7 +625,7 @@ def evaluate_entry(host, a, o, p, state, d, rows, ctx, row, fresh,
             return emit('wait', 'macd_episode_reentry_stopped_by_forming_resistance')
         if review.get('closes', 0) < 3 or forming_episode and now-review.get('started_at', now) < .3-1e-9:
             return emit('wait', 'waiting_for_three_completed_100ms_reentry_candles')
-    confirmed_entry = p['early_squeeze_breakout_contract'] == CONFIRMED_BREAKOUT_CONTRACT
+    confirmed_entry = p['early_squeeze_breakout_contract'] in (CONFIRMED_BREAKOUT_CONTRACT, VOLATILITY_CHOP_CONTRACT)
     anchor = entry_level(rows, prior_hod)
     if forming_episode and not confirmed_entry and state.get('entries', 0):
         candidates = [level for level in rows.values() if eligible(level)
