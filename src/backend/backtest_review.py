@@ -21,6 +21,7 @@ def _json_fields(path, *paths):
 
 
 class SavedBacktestReview:
+    review_only = True
     _monitoring = None
     _task = None
 
@@ -28,12 +29,12 @@ class SavedBacktestReview:
         from src.backend.replay_run_service import _durable_run_selection
         self.run_dir, self.run_id = run_dir, run_dir.name
         selection = _durable_run_selection(run_dir)
-        if not selection or selection.get('status') not in {'completed', 'stopped', 'failed'}:
-            raise ValueError('Only terminal Backtests can be opened for review')
+        if not selection or selection.get('status') not in {'completed', 'stopped', 'failed', 'paused'}:
+            raise ValueError('Only paused or terminal Backtests can be opened for review')
         definition, accounts, sources, status = _json_fields(run_dir / 'manifest.json',
             '$.definition', '$.run.account_ids', '$.run.strategy_debug_sources', '$.run.status')
-        if status not in {'completed', 'stopped', 'failed'}:
-            raise ValueError('Only terminal Backtests can be opened for review')
+        if status not in {'completed', 'stopped', 'failed', 'paused'}:
+            raise ValueError('Only paused or terminal Backtests can be opened for review')
         if definition.get('mode') != 'backtest':
             raise ValueError('Saved-run review accepts Backtest runs only')
         self._run = {**definition, **selection, 'account_ids': accounts or [],
@@ -57,7 +58,7 @@ class SavedBacktestReview:
             version, complete, identity, broker, rvol_artifacts = json.loads(row['projection']) if row else (None, None, None, None, None)
             from src.backend.replay_run_service import RESTART_CHECKPOINT_SCHEMA_VERSION
             if version != RESTART_CHECKPOINT_SCHEMA_VERSION or not complete or not isinstance(broker, dict):
-                raise ValueError('Saved Backtest has no complete review checkpoint')
+                raise ValueError('Saved Backtest has no complete restart checkpoint. Its saved progress cannot safely restore the run; start a new Backtest.')
             expected = dict(run_id=self.run_id, mode='backtest',
                 configuration_revision_id=self._run['configuration_revision_id'],
                 configuration_content_hash=self._run['configuration_content_hash'])

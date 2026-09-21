@@ -1,7 +1,7 @@
 import asyncio
 import json
 from datetime import date, time, timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -11,7 +11,7 @@ from tests.test_replay_run_service import approved_configuration, NEW_YORK
 from tests.test_trading_runtime import quote
 
 
-@pytest.mark.parametrize('status', ['stopped', 'completed', 'failed'])
+@pytest.mark.parametrize('status', ['stopped', 'completed', 'failed', 'paused'])
 def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_path, status):
     async def check():
         from datetime import datetime
@@ -43,6 +43,14 @@ def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_
         source._write_approved_configuration()
         source._write_manifest()
         expected = (await source.canvas_payload('AAPL'))['trading']
+        if status == 'paused':
+            checkpoint = source._journal.load_checkpoint(source.run_id)
+            # Match service shutdown after pause, including a non-interval cursor.
+            source._runtime.processed_events = 2
+            source._runtime.last_event_time = source.current_time
+            source._runtime._latest_checkpoint_cursor = 'last-market-event'
+            await source._runtime.finish(status='paused')
+            assert source._journal.load_checkpoint(source.run_id) == checkpoint
         source._journal.close()
         original = (source.run_dir / 'journal.sqlite3').read_bytes()
         with (patch.object(TradingJournal, 'load_checkpoint', side_effect=AssertionError('Execution checkpoint loaded')),
@@ -51,6 +59,7 @@ def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_
             review = await service.review_saved(source.run_id)
             assert await service.review_saved(source.run_id) is review
             assert review.status == status
+            assert review.review_only and review.snapshot()['review_only']
             assert str(review.definition.session_date) == '2026-07-28'
             assert review.session_relative_volume_artifacts == {'AAPL': 'sha256:pinned-rvol-baseline'}
             assert not hasattr(review, '_session_relative_volume_store')
@@ -84,4 +93,19 @@ def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_
             finally:
                 review._journal.close()
         assert (source.run_dir / 'journal.sqlite3').read_bytes() == original
+        if status == 'paused':
+            # A resident execution still uses play, while a saved read-only view
+            # can be replaced at capacity by an explicitly requested resume.
+            service = ReplayRunService(runtime_root=tmp_path, max_resident_runs=1)
+            source._journal = None
+            service._runs[source.run_id] = source
+            with pytest.raises(ValueError, match='already resident and active'):
+                await service.resume(source.run_id)
+            service._runs.clear()
+            saved = await service.review_saved(source.run_id)
+            with patch.object(ReplayRunController, 'start', new_callable=AsyncMock) as start:
+                resumed = await service.resume(source.run_id)
+                start.assert_awaited_once()
+            assert service.get(source.run_id) is resumed
+            assert saved._journal is None
     asyncio.run(check())

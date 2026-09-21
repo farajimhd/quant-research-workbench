@@ -13,6 +13,7 @@ export type FilteredV7Progress = {
 };
 
 export type CanvasReplayRun = {
+  review_only?: boolean;
   account_ids: string[];
   canvas_revision: string;
   canvas_profile: CanvasRegistry;

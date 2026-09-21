@@ -1123,7 +1123,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             manifest = json.loads(original_manifest)
             manifest["run"]["status"] = "running"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "Only completed or stopped"):
+            with self.assertRaisesRegex(ValueError, "Only paused or terminal"):
                 await ReplayRunService(runtime_root=root).review_saved(source.run_id)
             manifest_path.write_bytes(original_manifest)
             journal = TradingJournal(source.run_dir / "journal.sqlite3")
@@ -1132,7 +1132,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             state["complete"] = False
             journal.save_checkpoint(source.run_id, "invalid", state, source.current_time)
             journal.close()
-            with self.assertRaisesRegex(ValueError, "no complete review checkpoint"):
+            with self.assertRaisesRegex(ValueError, "no complete restart checkpoint"):
                 await ReplayRunService(runtime_root=root).review_saved(source.run_id)
 
     async def test_saved_review_coalesces_requests_and_survives_caller_cancellation(self) -> None:

@@ -132,6 +132,8 @@ class RunConfig:
     run_plan_id: str = ""
     safety_supervisor_enabled: bool = True
     checkpoint_interval_events: int = 1
+    # Historical controllers own complete restart checkpoints under this run ID.
+    write_progress_checkpoints: bool = True
 
     def __post_init__(self) -> None:
         if self.checkpoint_interval_events <= 0:
@@ -402,7 +404,7 @@ class TradingRuntime:
         self.last_event_time = events[-1].ts
         self._set_market_cursor(events[-1])
         interval = self.config.checkpoint_interval_events
-        if prior_count // interval < self.processed_events // interval:
+        if self.config.write_progress_checkpoints and prior_count // interval < self.processed_events // interval:
             self.journal.save_checkpoint(
                 self.run_id,
                 self._latest_checkpoint_cursor,
@@ -447,7 +449,7 @@ class TradingRuntime:
 
     def _record_market_cursor(self, event: MarketEvent) -> None:
         self._set_market_cursor(event)
-        if self.processed_events % self.config.checkpoint_interval_events == 0:
+        if self.config.write_progress_checkpoints and self.processed_events % self.config.checkpoint_interval_events == 0:
             self.journal.save_checkpoint(
                 self.run_id,
                 self._latest_checkpoint_cursor,
@@ -1176,7 +1178,8 @@ class TradingRuntime:
 
     async def finish(self, status: str = "completed") -> None:
         if (
-            self.last_event_time is not None
+            self.config.write_progress_checkpoints
+            and self.last_event_time is not None
             and self._latest_checkpoint_cursor
             and self.processed_events % self.config.checkpoint_interval_events != 0
         ):

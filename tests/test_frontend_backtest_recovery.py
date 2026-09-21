@@ -93,7 +93,7 @@ class BacktestRecoveryBrowserTests(unittest.TestCase):
             finally:
                 browser.close()
 
-    def test_failed_run_opens_review_without_execution_mutations(self) -> None:
+    def test_saved_run_opens_review_without_execution_mutations(self) -> None:
         from playwright.sync_api import sync_playwright
 
         base = os.environ.get("BACKTEST_RECOVERY_URL", "http://127.0.0.1:5173").rstrip("/")
@@ -101,12 +101,14 @@ class BacktestRecoveryBrowserTests(unittest.TestCase):
         path = f"/api/trading/backtest/runs/{run_id}"
         with urlopen(base + path + '?compact=true', timeout=30) as response:
             failure = {**json.load(response), "status": "failed", "error": "Canonical 1s warm-up required"}
+            failure['checkpoint'] = {**failure.get('checkpoint', {}), 'resume_supported': True}
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             try:
-                for resident in (False, True):
+                for status, resident in ((status, resident) for status in ('failed', 'paused') for resident in (False, True)):
+                    failure = {**failure, 'status': status, 'review_only': True}
                     for route_name in ("backtest-trading", "canvas-focus"):
-                        with self.subTest(resident=resident, route=route_name):
+                        with self.subTest(status=status, resident=resident, route=route_name):
                             context = browser.new_context()
                             mutations = []
                             def handle(route):
@@ -131,6 +133,8 @@ class BacktestRecoveryBrowserTests(unittest.TestCase):
                             self.assertEqual(page.get_by_text('This run cannot be reopened for review.', exact=False).count(), 0)
                             if route_name == 'backtest-trading':
                                 page.get_by_role('button', name='Resume from checkpoint', exact=True).wait_for()
+                                self.assertEqual(page.get_by_role('button', name='Resume', exact=True).count(), 0)
+                                self.assertEqual(page.get_by_role('button', name='Stop', exact=True).count(), 0)
                             self.assertTrue(all(item == 'review' for item in mutations))
                             self.assertEqual(bool(mutations), not resident)
                             context.close()

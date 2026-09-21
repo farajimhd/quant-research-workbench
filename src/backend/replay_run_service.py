@@ -3134,6 +3134,7 @@ class ReplayRunController:
                 # Prevent the inner runtime's processed-count-only checkpoint
                 # from overwriting that state in the shared journal row.
                 checkpoint_interval_events=2**63 - 1,
+                write_progress_checkpoints=False,
             ),
             broker,
             self._strategy,
@@ -7353,7 +7354,7 @@ class ReplayRunService:
         if not re.fullmatch(r"[0-9a-fA-F-]{36}", normalized):
             raise KeyError(run_id)
         resident = self._runs.get(normalized)
-        if resident is not None and resident.status not in TERMINAL_REPLAY_STATUSES:
+        if resident is not None and resident.status not in TERMINAL_REPLAY_STATUSES and getattr(resident, 'review_only', False) is not True:
             raise ValueError("Historical run is already resident and active")
         run_dir = (self.runtime_root / normalized).resolve()
         if self.runtime_root != run_dir and self.runtime_root not in run_dir.parents:
@@ -7435,15 +7436,15 @@ class ReplayRunService:
         return await asyncio.shield(task)
 
     async def _review_saved(self, run_id: str) -> ReplayRunController:
-        """Open terminal Backtest evidence without resuming execution."""
+        """Open paused or terminal Backtest evidence without resuming execution."""
 
         normalized = str(run_id or "").strip()
         if not re.fullmatch(r"[0-9a-fA-F-]{36}", normalized):
             raise KeyError(run_id)
         resident = self._runs.get(normalized)
         if resident is not None:
-            if resident.status not in {"completed", "stopped", "failed"}:
-                raise ValueError("Only terminal Backtests can be opened for review")
+            if resident.status not in {"completed", "stopped", "failed"} and getattr(resident, 'review_only', False) is not True:
+                raise ValueError("Only paused saved views or terminal Backtests can be opened for review")
             return resident
         run_dir = (self.runtime_root / normalized).resolve()
         if self.runtime_root != run_dir and self.runtime_root not in run_dir.parents:
@@ -7467,11 +7468,11 @@ class ReplayRunService:
                 (
                     resident
                     for resident in self._runs.values()
-                    if resident.status in TERMINAL_REPLAY_STATUSES
+                    if resident.status in TERMINAL_REPLAY_STATUSES or getattr(resident, 'review_only', False) is True
                 ),
                 key=lambda resident: resident.updated_at,
             )
-            while len(self._runs) >= self.max_resident_runs and terminal:
+            while len(self._runs) >= self.max_resident_runs and controller.run_id not in self._runs and terminal:
                 evicted = terminal.pop(0)
                 if getattr(evicted, '_monitoring', None) is not None:
                     await evicted._monitoring.close()
@@ -7479,7 +7480,7 @@ class ReplayRunService:
                     evicted._journal.close()
                     evicted._journal = None
                 self._runs.pop(evicted.run_id, None)
-            if len(self._runs) >= self.max_resident_runs:
+            if len(self._runs) >= self.max_resident_runs and controller.run_id not in self._runs:
                 raise ReplayRunCapacityError(
                     "Replay resident-run capacity is full; stop or finish an active run "
                     "before creating another"
