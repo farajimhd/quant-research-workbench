@@ -219,7 +219,7 @@ def supported_custom_execution_contracts() -> tuple[str, ...]:
     """Loaded-executor capability, used before saving a new research candidate."""
     return ('early-squeeze-r1-fixed-trail-v1', 'early-squeeze-r1-fixed-trail-v2',
             'early-squeeze-r1-fixed-trail-v3', 'early-squeeze-r1-fixed-trail-v4',
-            'early-squeeze-r1-fixed-trail-v5', 'early-squeeze-r1-fixed-trail-v6', 'early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18', 'early-squeeze-r1-price-confirmed-breakout-v19', 'early-squeeze-r1-price-volatility-chop-v20', 'early-squeeze-r1-price-midpoint-execution-v21', 'early-squeeze-consistent-1s-resistance-v22', 'early-squeeze-structural-1s-resistance-v23')
+            'early-squeeze-r1-fixed-trail-v5', 'early-squeeze-r1-fixed-trail-v6', 'early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18', 'early-squeeze-r1-price-confirmed-breakout-v19', 'early-squeeze-r1-price-volatility-chop-v20', 'early-squeeze-r1-price-midpoint-execution-v21', 'early-squeeze-consistent-1s-resistance-v22', 'early-squeeze-structural-1s-resistance-v23', 'early-squeeze-momentum-v24')
 
 
 def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
@@ -6156,9 +6156,13 @@ class AssignedLongMomentumStrategy:
             if assignment.assignment_id != assignment_id:
                 continue
             state = dict(assignment.state)
+            if assignment.parameters.get('early_squeeze_breakout_contract') == 'early-squeeze-momentum-v24':
+                from .early_squeeze_momentum import purchase_update
+                state = deepcopy(state)
+                purchase_update(state, intent.intent_id, terminal=True)
             if intent.action == "add_long" and intent.metadata.get("squeeze_add_levels"):
                 from .early_squeeze_price import MIDPOINT_EXECUTION_CONTRACT, update_midpoint_add
-                if assignment.parameters.get('early_squeeze_breakout_contract') in (MIDPOINT_EXECUTION_CONTRACT, 'early-squeeze-consistent-1s-resistance-v22', 'early-squeeze-structural-1s-resistance-v23'):
+                if assignment.parameters.get('early_squeeze_breakout_contract') in (MIDPOINT_EXECUTION_CONTRACT, 'early-squeeze-consistent-1s-resistance-v22', 'early-squeeze-structural-1s-resistance-v23', 'early-squeeze-momentum-v24'):
                     update_midpoint_add(state, intent.intent_id, terminal=True)
                 else:
                     from .early_squeeze_breakout import release_add
@@ -6179,10 +6183,18 @@ class AssignedLongMomentumStrategy:
                 return
             if str(intent.action) == "replace_protective_stop":
                 state["active_stop"] = float(intent.metadata["previous_stop"])
+                if 'momentum_previous_stop_steps' in intent.metadata:
+                    active = state['squeeze_entry']
+                    active.update(stop=state['active_stop'], stop_steps=intent.metadata['momentum_previous_stop_steps'],
+                        stop_selection=intent.metadata['momentum_previous_stop_selection'],
+                        stop_reason=intent.metadata['momentum_previous_stop_reason'],
+                        stop_anchor_lower=intent.metadata['momentum_previous_stop_anchor'])
                 state["trailing_support_selection"] = intent.metadata.get("previous_support_selection")
                 self._assignments[key] = replace(assignment, state=state, updated_at=event_time)
                 return
             if str(intent.action) == "replace_profit_target":
+                if 'momentum_previous_multiplier' in intent.metadata:
+                    state['squeeze_entry']['submitted_multiplier'] = intent.metadata['momentum_previous_multiplier']
                 if 'squeeze_previous_target_moves' in intent.metadata:
                     state['squeeze_entry'] = dict(state['squeeze_entry'], target_moves=intent.metadata['squeeze_previous_target_moves'])
                 if 'vwap_ladder_previous_target_moves' in intent.metadata:
@@ -6423,14 +6435,19 @@ class AssignedLongMomentumStrategy:
         # target fills that created its entitlement.
         midpoint_entry_closed = bool(str(getattr(snapshot, 'action', '')) == 'add_long'
             and any(a.assignment_id == assignment_id and a.parameters.get('early_squeeze_breakout_contract')
-                in ('early-squeeze-r1-price-midpoint-execution-v21', 'early-squeeze-consistent-1s-resistance-v22', 'early-squeeze-structural-1s-resistance-v23') for a in self._assignments.values())
+                in ('early-squeeze-r1-price-midpoint-execution-v21', 'early-squeeze-consistent-1s-resistance-v22', 'early-squeeze-structural-1s-resistance-v23', 'early-squeeze-momentum-v24') for a in self._assignments.values())
             and (getattr(snapshot, 'entry_submission_closed', False)
                  or snapshot_state in {'rejected', 'policy_blocked'}))
+        momentum_entry_closed = bool(str(getattr(snapshot, 'action', '')) in {'enter_long', 'add_long'}
+            and any(a.assignment_id == assignment_id and a.parameters.get('early_squeeze_breakout_contract')
+                == 'early-squeeze-momentum-v24' for a in self._assignments.values())
+            and (getattr(snapshot, 'entry_submission_closed', False) or snapshot_state in {'rejected', 'policy_blocked'}))
         if (
             not assignment_id
             or snapshot_state not in {"filled", "cancelled"}
             and incremental_fill <= 0
             and not midpoint_entry_closed
+            and not momentum_entry_closed
         ):
             return
         for key, assignment in self._assignments.items():
@@ -6438,11 +6455,19 @@ class AssignedLongMomentumStrategy:
                 continue
             state = dict(assignment.state)
             action = str(getattr(snapshot, "action", ""))
+            momentum = assignment.parameters.get('early_squeeze_breakout_contract') == 'early-squeeze-momentum-v24'
+            if momentum and action in {'enter_long', 'add_long'}:
+                from .early_squeeze_momentum import purchase_update
+                state = deepcopy(state)
+                purchase_update(state, str(getattr(snapshot, 'intent_id', '')),
+                    filled=incremental_fill > 0 or float(getattr(snapshot, 'filled_quantity', 0) or 0) > 0,
+                    terminal=snapshot_state in {'filled', 'cancelled', 'rejected', 'policy_blocked'} or momentum_entry_closed,
+                    stop=getattr(snapshot, 'momentum_stop', None) if action == 'enter_long' else None)
             if assignment.parameters.get('early_squeeze_breakout_contract') and action == 'add_long':
                 from .early_squeeze_price import MIDPOINT_EXECUTION_CONTRACT, update_midpoint_add
                 active = deepcopy(state.get('squeeze_entry') or {})
                 request_id = str(getattr(snapshot, 'intent_id', ''))
-                if assignment.parameters.get('early_squeeze_breakout_contract') in (MIDPOINT_EXECUTION_CONTRACT, 'early-squeeze-consistent-1s-resistance-v22', 'early-squeeze-structural-1s-resistance-v23'):
+                if assignment.parameters.get('early_squeeze_breakout_contract') in (MIDPOINT_EXECUTION_CONTRACT, 'early-squeeze-consistent-1s-resistance-v22', 'early-squeeze-structural-1s-resistance-v23', 'early-squeeze-momentum-v24'):
                     update_midpoint_add(state, request_id,
                         filled=float(getattr(snapshot, 'filled_quantity', 0) or 0) > 0,
                         terminal=snapshot_state in {'filled', 'cancelled'} or midpoint_entry_closed)
@@ -6461,7 +6486,7 @@ class AssignedLongMomentumStrategy:
                     and incremental_fill > 0 and aggregate_position_quantity == 0):
                 from .hindsight_long import acquisition_update
                 acquisition_update(state, terminal=True)
-            if snapshot_state == "cancelled" and action in {
+            if (snapshot_state == "cancelled" or momentum and snapshot_state in {'rejected', 'policy_blocked'}) and action in {
                 "enter_long",
                 "enter_short",
                 "add_long",
@@ -6570,6 +6595,9 @@ class AssignedLongMomentumStrategy:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
+                if momentum and incremental_fill > 0 and fill_role in {'protective_stop', 'trailing_stop', 'protective_exit'}:
+                    state.setdefault('last_exit_reason', str(getattr(snapshot, 'fill_exit_reason', '') or
+                        (state.get('squeeze_entry') or {}).get('stop_reason') or fill_role))
                 if assignment.parameters.get('early_squeeze_breakout_contract') and incremental_fill > 0:
                     from .early_squeeze_breakout import record_exit
                     record_exit(state, snapshot.updated_at, fill_role, aggregate_position_quantity,
@@ -6599,7 +6627,7 @@ class AssignedLongMomentumStrategy:
                     if level:
                         state["stopped_level_recovery"] = dict(level)
                 target_preserves_remainder = (v5_breakout.episode(assignment.parameters)
-                    or bool(swing_gap.runner_policy(assignment.parameters)))
+                    or bool(swing_gap.runner_policy(assignment.parameters)) or momentum)
                 planned_target_reduction = (fill_role == 'profit_target' and target_preserves_remainder
                     and aggregate_position_quantity is not None and abs(float(aggregate_position_quantity)) > 1e-9)
                 if (incremental_fill > 0 and target_preserves_remainder
@@ -6620,7 +6648,7 @@ class AssignedLongMomentumStrategy:
                     )
                     if not state.get("last_exit_reason"):
                         state["last_exit_reason"] = fill_role or "managed_exit"
-                if assignment.strategy_revision >= 37:
+                if assignment.strategy_revision >= 37 and not (momentum and planned_target_reduction):
                     state["entry_acquisition_exit_latched"] = True
                 incremental = incremental_fill
                 if fill_role == "profit_target" and incremental > 0:

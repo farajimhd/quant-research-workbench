@@ -79,6 +79,8 @@ def _protective_repair_raw(parent_raw: dict[str, Any]) -> dict[str, Any]:
             **dict(raw.get("canonical_metadata") or {}),
             "execution_role": "protective_stop",
             "reason": "protective_stop_filled",
+            **({'exit_reason':(raw.get('canonical_metadata') or {}).get('stop_exit_reason', 'protective_stop')}
+               if (raw.get('canonical_metadata') or {}).get('momentum_target') else {}),
         },
     }
 
@@ -216,6 +218,7 @@ class OrderGroupSnapshot:
     reentry_after_fill: bool
     assignment_id: str
     fill_role: str = ""
+    fill_exit_reason: str = ""
     broker_order_id: str = ""
     slice_id: str = ""
     fill_cumulative_quantity: float = 0.0
@@ -231,6 +234,8 @@ class OrderGroupSnapshot:
     r1_initial_stop: float | None = None
     r1_actual_entry_average: float | None = None
     r1_stop_error: str = ""
+    momentum_fill_average: float | None = None
+    momentum_stop: float | None = None
     tight_reentry_stop: float | None = None
     high_water_price: float = 0.0
     low_water_price: float = 0.0
@@ -287,6 +292,8 @@ class _ManagedOrderGroup:
         fill_cumulative_quantity: float = 0.0,
         fill_incremental_quantity: float = 0.0,
     ) -> OrderGroupSnapshot:
+        request_index = self.broker_order_request_indexes.get(broker_order_id)
+        filled_request = self.orders[request_index] if request_index is not None else None
         return OrderGroupSnapshot(
             group_id=self.group_id,
             intent_id=self.intent.intent_id,
@@ -308,9 +315,12 @@ class _ManagedOrderGroup:
             assignment_id=str(self.intent.metadata.get("assignment_id") or ""),
             r1_initial_stop=(self.intent.invalidation_price if self.intent.metadata.get('r1_stop_bounds') else None),
             r1_actual_entry_average=self.intent.metadata.get('r1_actual_entry_average'),
+            momentum_fill_average=self.intent.metadata.get('momentum_fill_average'),
+            momentum_stop=self.intent.invalidation_price if self.intent.metadata.get('momentum_target') else None,
             r1_stop_error=str(self.intent.metadata.get('r1_stop_error') or ''),
             tight_reentry_stop=(self.intent.invalidation_price if self.intent.metadata.get('tight_reentry_stop') else None),
             fill_role=fill_role,
+            fill_exit_reason=str((filled_request.raw.get('canonical_metadata') or {}).get('exit_reason') or '') if filled_request else '',
             broker_order_id=broker_order_id,
             slice_id=slice_id,
             fill_cumulative_quantity=fill_cumulative_quantity,
@@ -1331,6 +1341,7 @@ class OrderManagementEngine:
         )
         if fill_role == 'entry' and float(order.filledQuantity) > 0:
             await self._reconcile_r1_entry_stop(group, order_id, float(order.filledQuantity), float(order.avgPrice))
+            await self._reconcile_momentum_entry(group, order_id, float(order.filledQuantity), float(order.avgPrice))
         group.broker_order_state_fingerprints[order_id] = fingerprint
         next_state = _management_state(order)
         if next_state in TERMINAL_MANAGEMENT_STATES:
@@ -1807,8 +1818,26 @@ class OrderManagementEngine:
             )
         responses: list[dict[str, Any]] = []
         touched: dict[str, _ManagedOrderGroup] = {}
+        # Validate all tranche authorities before the first broker mutation.
+        multiplier = intent.metadata.get('momentum_target_multiplier')
+        momentum_prices = {}
+        if multiplier is not None:
+            from .early_squeeze_momentum import target_price as momentum_price
+            for group, _, _, _, _ in candidates:
+                momentum = group.intent.metadata.get('momentum_target')
+                if not momentum:
+                    raise ValueError('Momentum target amendment requires tranche target authority')
+                # An unfilled acquisition retains a provisional target; its first
+                # fill will rebase using the upgraded multiplier.
+                basis = group.intent.metadata.get('momentum_fill_average') or group.intent.reference_price
+                momentum_prices[group.group_id] = momentum_price(basis,
+                    momentum['average_gap'], multiplier, momentum['tick_size'])
         async with self._command_lane(account_id):
             for group, broker_order_id, request_index, request, _ in candidates:
+                multiplier = intent.metadata.get('momentum_target_multiplier')
+                momentum = group.intent.metadata.get('momentum_target')
+                if multiplier is not None:
+                    target_price = momentum_prices[group.group_id]
                 replacement = replace(
                     request,
                     price=target_price,
@@ -1822,6 +1851,10 @@ class OrderManagementEngine:
                             ),
                             "replacement_intent_id": intent.intent_id,
                             "target_price": target_price,
+                            **({'exit_reason':f'momentum_target_{multiplier}x',
+                                'momentum_target':{**momentum, 'multiplier':multiplier},
+                                'momentum_fill_average':group.intent.metadata.get('momentum_fill_average')}
+                               if multiplier is not None else {}),
                         },
                     },
                 )
@@ -1845,6 +1878,10 @@ class OrderManagementEngine:
                         if item.profit_target_price is not None else item for item in profile.slices
                     ))
                 group.intent = replace(group.intent, profit_target_price=target_price, protection_profile=profile)
+                if multiplier is not None:
+                    group.intent = replace(group.intent, metadata={**group.intent.metadata,
+                        'momentum_target':{**momentum, 'multiplier':multiplier}})
+                group.updated_at = intent.event_time
                 touched[group.group_id] = group
         if not touched:
             raise ValueError("Profit-target replacement changed no live order")
@@ -1855,7 +1892,7 @@ class OrderManagementEngine:
                 {
                     "event": "profit_target_replaced",
                     "replacement_intent_id": intent.intent_id,
-                    "target_price": target_price,
+                    "target_price": group.intent.profit_target_price,
                 },
             )
             if self.state_callback is not None:
@@ -1871,6 +1908,7 @@ class OrderManagementEngine:
                 "quantity": intent.quantity,
                 "target_price": target_price,
                 "source_group_ids": sorted(touched),
+                "targets_by_group": {key: group.intent.profit_target_price for key, group in touched.items()},
                 "broker_response": responses,
             },
         )
@@ -2604,6 +2642,11 @@ class OrderManagementEngine:
                                   price=(float(request.price) + desired - float(request.auxPrice or 0)
                                          if request.orderType == "STOP_LIMIT" and request.price is not None
                                          else request.price))
+            if group.intent.metadata.get('momentum_target'):
+                reason = intent.metadata.get('stop_exit_reason', 'three_resistance_step_stop')
+                replacement = replace(replacement, raw={**replacement.raw,
+                    'canonical_metadata':{**replacement.raw.get('canonical_metadata', {}),
+                        'exit_reason':reason, 'stop_exit_reason':reason}})
             async with self._command_lane(account_id):
                 self._record_protection(group, replacement, phase="requested", broker_order_id=str(order.orderId), event_time=intent.event_time)
                 response = await self.broker.modify_order(account_id, str(order.orderId), replacement)
@@ -2620,6 +2663,9 @@ class OrderManagementEngine:
                 ))
             group.intent = replace(group.intent, invalidation_price=desired, protection_profile=profile,
                                    metadata={**group.intent.metadata, "confirmed_support_stop": desired})
+            if group.intent.metadata.get('momentum_target'):
+                group.intent = replace(group.intent, metadata={**group.intent.metadata,
+                    'momentum_stop_advanced':True, 'stop_exit_reason':reason})
             group.updated_at = intent.event_time
             self._transition(group, group.state, {"event": "support_stop_replaced", "stop": desired})
             self._record("broker", "protective_stop_replaced", str(order.orderId), account_id,
@@ -2793,6 +2839,8 @@ class OrderManagementEngine:
         if fill_role == 'entry' and float(order.filled_quantity) > 0:
             await self._reconcile_r1_entry_stop(group, order.broker_order_id,
                 float(order.filled_quantity), float(order.average_fill_price))
+            await self._reconcile_momentum_entry(group, order.broker_order_id,
+                float(order.filled_quantity), float(order.average_fill_price))
         group.broker_order_state_fingerprints[order.broker_order_id] = fingerprint
         next_state = _canonical_management_state(order)
         if next_state in TERMINAL_MANAGEMENT_STATES:
@@ -2872,6 +2920,70 @@ class OrderManagementEngine:
                 if self.state_callback is not None:
                     await self.state_callback(group.snapshot(self.policy.version))
         return snapshot
+
+    async def _reconcile_momentum_entry(self, group, order_id, quantity, average):
+        """Reconcile this purchase's target to cumulative broker fill cost.
+
+        Persist desired prices before amendments so repair and restart use the
+        same authority. Other purchases retain their own fill price and target.
+        """
+        spec = group.intent.metadata.get('momentum_target')
+        if not spec or group.intent.action not in {'enter_long', 'add_long'}:
+            return
+        from .early_squeeze_momentum import target_price
+        if not math.isfinite(average) or average <= 0:
+            raise ValueError('Momentum target requires the actual broker fill average')
+        costs = dict(group.intent.metadata.get('momentum_fill_costs', {}))
+        if quantity < costs.get(order_id, {}).get('quantity', 0):
+            return
+        costs[order_id] = dict(quantity=quantity, notional=quantity*average)
+        total = sum(c['quantity'] for c in costs.values())
+        average = sum(c['notional'] for c in costs.values())/total
+        target = target_price(average, spec['average_gap'], spec['multiplier'], spec['tick_size'])
+        stop = group.intent.invalidation_price
+        selection = group.intent.metadata.get('momentum_initial_stop') or {}
+        if selection.get('reason') == 'one_percent_entry_stop' and not group.intent.metadata.get('momentum_stop_advanced'):
+            stop = round(math.floor(.99*average/spec['tick_size']+1e-9)*spec['tick_size'], 10)
+        profile = group.intent.resolved_protection_profile()
+        if profile is None:
+            raise ValueError('Momentum fill lacks its mandatory protection profile')
+        profile = replace(profile, slices=tuple(replace(s, profit_target_price=target,
+            stop=replace(s.stop, price=stop)) for s in profile.slices))
+        group.intent = replace(group.intent, profit_target_price=target, invalidation_price=stop,
+            protection_profile=profile, metadata={**group.intent.metadata,
+                'momentum_fill_costs':costs, 'momentum_fill_average':average, 'active_stop':stop})
+        self._transition(group, group.state, {'event':'momentum_actual_fill_protection',
+            'average_fill_price':average, 'filled_quantity':total, 'target_price':target, 'stop_price':stop})
+        for live in await self.broker.live_orders():
+            broker_id = str(live.orderId)
+            role = group.broker_order_roles.get(broker_id)
+            if role not in {'profit_target', 'protective_stop'} or live.order_status not in OPEN_ORDER_STATUSES:
+                continue
+            index = group.broker_order_request_indexes.get(broker_id)
+            if index is None:
+                raise RuntimeError('Momentum protection lacks its registered amendment request')
+            request = group.orders[index]
+            reason = (f"momentum_target_{spec['multiplier']}x" if role == 'profit_target'
+                else group.intent.metadata.get('stop_exit_reason', 'protective_stop'))
+            replacement = replace(request,
+                quantity=float(live.filledQuantity)+float(live.remainingQuantity),
+                price=target if role == 'profit_target' else
+                    (float(request.price)+stop-float(request.auxPrice) if request.orderType == 'STOP_LIMIT' and request.price is not None else request.price),
+                auxPrice=stop if role == 'protective_stop' else request.auxPrice,
+                raw={**request.raw, 'canonical_metadata':{**request.raw.get('canonical_metadata', {}),
+                    'exit_reason':reason, 'momentum_target':dict(spec), 'momentum_fill_average':average}})
+            # Metadata is also amended so executions carry the effective cause.
+            if replacement != request:
+                async with self._command_lane(group.account_id):
+                    self._record_protection(group, replacement, phase='requested', broker_order_id=broker_id)
+                    response = await self.broker.modify_order(group.account_id, broker_id, replacement)
+                if _warning_response(response):
+                    async with self._warning_lane:
+                        response = await self._resolve_warning_chain_locked(group, response)
+                _require_modify_acknowledgement(response)
+                self._record_protection(group, replacement, phase='effective', broker_order_id=broker_id)
+            group.orders[index] = replacement
+        self._transition(group, group.state, {'event':'momentum_actual_fill_protection_reconciled', 'target_price':target})
 
     async def _reconcile_r1_entry_stop(self, group, order_id, quantity, average):
         """Rebase opted-in R1 or tight-reentry stops to actual cumulative fill cost.
@@ -3254,7 +3366,10 @@ class OrderManagementEngine:
                     outsideRTH=group.orders[0].outsideRTH,
                     auxPrice=stop_price,
                     listingExchange=group.orders[0].listingExchange,
-                    raw=_protective_repair_raw(group.orders[0].raw),
+                    raw=_protective_repair_raw({**group.orders[0].raw,
+                        'canonical_metadata': {**dict(group.orders[0].raw.get('canonical_metadata') or {}),
+                            **({key: group.intent.metadata[key] for key in ('momentum_target', 'stop_exit_reason')
+                                if key in group.intent.metadata} if group.intent.metadata.get('momentum_target') else {})}}),
                 )
             if repair is not None:
                 target_quantity = missing
@@ -3337,6 +3452,10 @@ class OrderManagementEngine:
                             ),
                             "execution_role": "profit_target",
                             "reason": "restore_position_profit_target",
+                            **({'exit_reason':f"momentum_target_{group.intent.metadata['momentum_target']['multiplier']}x",
+                                'momentum_target':group.intent.metadata['momentum_target'],
+                                'momentum_fill_average':group.intent.metadata.get('momentum_fill_average')}
+                               if group.intent.metadata.get('momentum_target') else {}),
                         },
                     }
                     repairs.insert(

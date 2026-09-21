@@ -147,6 +147,21 @@ class PortfolioCausationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
+    async def test_momentum_cash_thirds_share_current_unreserved_account_cash(self):
+        policy = PortfolioPolicy(maximum_position_fraction=1., maximum_ticker_fraction=1.,
+            maximum_planned_risk_fraction=.5, maximum_open_risk_fraction=.5, entry_fee_buffer_bps=0.)
+        engine = self.engine([PortfolioAccountProfile('cash', 'C1', 'replay', 'simulated', policy)])
+        engine.synchronize_snapshot('C1', summary=summary('C1', equity=9000, available=9000),
+            ledger=ledger('C1', cash=9000), positions=[])
+        for ticker, expected in [('AAPL', 300.), ('MSFT', 200.), ('TEST', 133.)]:
+            request = replace(intent('momentum-'+ticker, ticker=ticker, price=10, invalidation=9),
+                capital_request=CapitalRequest(mode='mandate_fraction', value=1/3),
+                metadata={'assignment_id':'assignment-'+ticker, 'unreserved_cash_slice':True,
+                    'cash_fraction_of_unreserved':True})
+            decision, approved = await engine.approve(request, account_id='C1')
+            self.assertIsNotNone(approved, decision)
+            self.assertAlmostEqual(approved.quantity, expected, places=6)
+
     async def test_unreserved_slices_leave_cash_for_other_positions_and_clip_adds(self):
         policy = PortfolioPolicy(maximum_position_fraction=1., maximum_ticker_fraction=1.,
             maximum_planned_risk_fraction=.5, maximum_open_risk_fraction=.5, entry_fee_buffer_bps=0.)

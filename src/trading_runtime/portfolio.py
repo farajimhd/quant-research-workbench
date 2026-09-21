@@ -1450,6 +1450,12 @@ class PortfolioManagementEngine:
             if request.mode == "fixed_notional":
                 requested = request.value / price
             elif request.mode == "mandate_fraction":
+                if intent.metadata.get('cash_fraction_of_unreserved'):
+                    reserved = sum(r.reserved_notional for r in self.reservations.values()
+                        if r.account_id == state.profile.account_id and r.status not in {'released', 'filled', 'cancelled', 'rejected', 'policy_blocked'})
+                    policy = self._policy(state)
+                    broker_cash_capacity = max(0., broker_cash_capacity * policy.maximum_buying_power_utilization
+                        - policy.minimum_cash_reserve - reserved)
                 requested = broker_cash_capacity * request.value / price
             elif request.mode == "risk_fraction":
                 risk_per_share = _risk_per_share(intent, max(float(intent.quantity), 1.0))

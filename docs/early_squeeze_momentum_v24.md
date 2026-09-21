@@ -1,88 +1,96 @@
-# Early Squeeze momentum v24 — implementation in progress
+# Early Squeeze momentum v24
 
-This is a separate, incomplete candidate. It is **not registered with the
-executor, saved as a test candidate, published, or activated**. The existing
-published strategy is unchanged. No replay or profitability acceptance has
-been performed for v24.
+Separate research candidate: `early-squeeze-momentum-v24`. The published
+strategy is unchanged. This is implementation validation, not profitability
+or live-release acceptance.
 
-## Confirmed requirements
+## Executable strategy contract
 
-- Early Squeeze activates observation for the full New York session; purchases
-  are restricted to 04:00–20:00.
-- Use fresh causal V7 geometry and event-time confirmed local pivots. Never
-  consume retrospective chart annotations.
-- Initial-entry BOS breaks the last confirmed swing high. Its gate can stay
-  open awaiting price above VWAP. Completed bullish 1s MACD, forming bullish
-  1s MACD, and completed bullish 100ms MACD must also pass at purchase time.
-- An addition requires a completed green 1s candle opening at/below and closing
-  above a resistance midpoint, followed by the first actual trade in the
-  immediately following second above that midpoint. Identity and boundaries
-  must remain unchanged. Empty following seconds expire confirmation.
-- At most one filled addition per accepted resistance per completed 1s MACD
-  episode. A rejected order must not consume a filled-add entitlement.
-- Initial stop: most recent confirmed low formed within 10 seconds and inside
-  a causal V7 support band; otherwise a qualifying support below VWAP; otherwise
-  1% below entry. The fallback support distance reference remains unresolved.
-- Stop advances one resistance after every three broken resistances, below
-  that level's lower boundary, and never moves down.
-- Freeze the average resistance gap at Early Squeeze. Each tranche uses its
-  actual fill price plus five times that frozen gap. Two rapid triples can
-  upgrade the multiplier to eight and then ten; slow crossings do not upgrade.
-- CHOCH is not an exit rule. Neither MACD nor VWAP becoming bearish/broken has
-  been approved as a position exit in this description.
-- Early entries are exempt from the resistance-immediately-below-HOD gate.
-  The boundary between early entries and later entries is not yet defined.
-- Presentation must use the reason recorded for each actual sell, rather than
-  substituting the final episode reason or inferring a reason from chart prices.
+- Early Squeeze activates the strategy for the New York session. Buy only
+  during 04:00 <= time < 20:00; cancel acquisitions and request full liquidation
+  at 20:00. Replay emits the boundary even without an exact-time trade. A sell
+  still needs actual executable market data; the engine never invents a fill.
+- Structural decisions require causal V7 identity, matching seed/input policy,
+  no future inputs, and a snapshot at most one second old. Swing pivots come
+  only from the shared detector after their confirmation time.
+- Initial-entry BOS crosses the latest confirmed swing high. The BOS gate
+  stays open while awaiting VWAP and the other entry filters. An arbitrary
+  accepted V7 resistance is not a BOS.
+- At every purchase, price must exceed completed 100ms VWAP; completed 1s,
+  forming 1s, and completed 100ms MACD must all have line > signal. Completed
+  MACD/VWAP evidence retains its original clock. Quotes must also be fresh.
+- Early mode ends permanently for the session when the session high reaches
+  120% of the first eligible trade at/after 04:00. Thereafter, purchases also
+  require a trade crossing the nearest resistance midpoint strictly below the
+  prior causal HOD. That gate clears when its geometry changes/disappears or
+  price returns to/below its midpoint. Early entries are exempt.
+- Additions require a completed green 1s candle with open <= midpoint < close,
+  followed by the first actual trade of the immediately following second above
+  the midpoint, with identical level ID/lower/upper boundaries. Empty seconds
+  expire confirmation; a later green reclaim can create a new confirmation.
+- Each purchase requests one third of currently unreserved available mandate
+  cash, shared across tickers. Existing Portfolio limits, fees and executable
+  share rounding still apply. Maximum three filled purchases per position;
+  pending purchases reserve a slot, rejected/unfilled terminal requests release
+  it. One accepted resistance funds at most one filled addition per completed
+  1s bullish MACD episode. Partial fills count once.
+- Initial stop: one tick below the latest confirmed swing low formed within
+  ten seconds and inside a current V7 support band. Otherwise use one tick
+  below the first support entirely below VWAP if its lower band is within 1%
+  below entry. Otherwise use 1% below entry, rounded down to a tick and rebased
+  to actual cumulative entry fill cost.
+- Every three distinct accepted resistances after entry earn one upward stop
+  step, to one tick below the next resistance lower band above the current
+  stop anchor. No between-band trailing or downward steps.
+- Freeze average consecutive overhead resistance midpoint gaps at Early
+  Squeeze, through 4x activation price (+300%). Exclude activation-to-first
+  distance. Fewer than two eligible levels means no available target and no
+  purchase; never use a later snapshot to invent the frozen average.
+- Each purchase has its own actual average fill price + 5x frozen gap target,
+  rounded to the tick. Three distinct accepted resistances in strictly less
+  than three seconds upgrade all open targets to 8x; three new such resistances
+  upgrade to 10x, then no further upgrades. Slow crossings do not upgrade.
+  Triples do not overlap. Later additions inherit the current multiplier.
+- A tranche target fill leaves the other tranches under management. Stops and
+  the session boundary liquidate the remainder. CHOCH, chop, bearish MACD and
+  loss of VWAP are not strategy exits.
 
-## Decisions still required before runnable integration
+## Execution and presentation
 
-1. What event ends the early-entry exemption and activates the below-HOD gate?
-   Also settle this gate's confirmation and reset behavior.
-2. Is each purchase one-third of currently available mandate cash, or a fixed
-   initial allowance divided by three, capped by available cash? Is three the
-   maximum total count of initial entry plus additions?
-3. At 20:00, flatten or stop new purchases only?
-4. Is the fallback support within 1% of price below VWAP or below entry?
+The normal StrategyEngine, Portfolio, OMS and replay adapters execute v24.
+Actual fill reconciliation and target amendments retain each tranche's own
+cost basis, including partial fills and repaired protection. Purchase slots
+and resistance entitlements are owned by fill callbacks.
 
-The draft mechanics use these explicitly disclosed interpretations, which
-are not a substitute for full strategy approval: one-second maximum V7 age;
-the existing structural detector's event-time pivot confirmation; average
-consecutive resistance midpoint gaps above activation price through four
-times activation price, excluding activation-to-first-resistance distance;
-disjoint rapid triples of distinct accepted levels. Fewer than two eligible
-resistances yields an unavailable average, not an invented target.
+Every sell carries its recorded cause: supported swing low, below-VWAP support,
+1% entry stop, three-resistance stop step, 5x/8x/10x target, session flatten,
+or an explicit operational/manual cause. The chart uses that execution's
+reason, not the final position reason. Missing reasons remain visibly unknown.
 
-## Implemented and reviewed so far
+`src/backend/early_squeeze_momentum_candidate.py` builds/saves a separate test
+candidate only after the running backend advertises its executor. It does not
+publish or enable live trading.
 
-`src/trading_runtime/early_squeeze_momentum.py` contains isolated mechanics:
-freshness, frozen gap calculation, supported-low selection, initial-stop
-selection, candle/next-second resistance acceptance, confirmed-high BOS,
-distinct fast triples, resistance-step stops, and fill-relative target math.
-It has no evaluator and cannot submit an order.
+## Validation
 
-`chartPresentation.tsx` now includes the execution's own recorded reason on
-filled-exit labels. Unknown reasons stay visibly unavailable. Separate labels
-exist for supported-low, below-VWAP-support, 1% entry, resistance-step stop,
-and 5x/8x/10x frozen-gap targets. These new reason codes are presentation-ready;
-v24 broker orders do not yet produce them.
+2026-09-21: 150 focused tests and two subtests passed. A broader runtime/replay
+run passed 274 tests and ten subtests, with the three baseline failures below.
 
-The existing OMS replaces every position target with a common price and the
-existing strategy callback may liquidate the remaining position after a target
-fill. Runnable v24 still needs opt-in per-tranche fill reconciliation, target
-amendment, remainder handling, fill-owned additions, candidate construction,
-causal runtime wiring, and end-to-end validation. Do not route it through v23:
-v23 also has a chop exit and different stop/target rules.
+Focused tests cover causal pivots and snapshot age, BOS/VWAP ordering, MACD
+rechecks, immediate-second addition expiry and moved geometry, the 20% latch,
+three-purchase accounting, shared cash reservations, stop steps, frozen targets,
+partial fills, tranche-specific amendments, repaired exit reasons, target
+remainder handling, candidate compilation, and the replay cutoff timer.
+A synthetic real Strategy/Portfolio/OMS/simulated-broker round trip verifies
+entry, fill-owned accounting, broker-effective protection and the recorded stop
+execution reason.
 
-## Validation evidence (2026-09-21)
+The broader replay suite has three baseline failures reproduced without v24
+changes: the old debug round-trip fixture lacks current structural evidence,
+a saved-review error text expectation is stale, and a V6 fixture violates the
+existing V7-only requirement. These are not v24 validation passes.
 
-- 16 focused mechanics tests and 14 existing v22/v23 regression tests passed.
-- Production lifecycle projection/ChartPanel browser test passed, including
-  different target and stop reasons in one lifecycle and missing-reason cases.
-- Managed frontend TypeScript/Vite build passed.
-- Managed journal UI review captured 1/1 scenarios with zero objective issues.
-- Screenshots and manifests are under
-  `D:/TradingML/runtimes/quant-research-workbench/ui-reviews/momentum-exits-20260921`
-  and `momentum-journal-20260921`.
-
-These checks validate helpers and presentation, not an executable strategy.
+Earlier production lifecycle/ChartPanel browser checks, managed frontend build,
+and journal visual review passed for the exit presentation. Artifacts are under
+`D:/TradingML/runtimes/quant-research-workbench/ui-reviews/momentum-exits-20260921`
+and `momentum-journal-20260921`. No profitability acceptance is claimed.

@@ -59,11 +59,11 @@ class IbkrStrategyOrderPlanner:
         if intent.action == "replace_profit_target":
             target = float(intent.profit_target_price or 0)
             short_position = position_side == "short"
-            if target <= 0 or (
+            if target <= 0 or (not intent.metadata.get('momentum_target_multiplier') and (
                 target >= intent.reference_price
                 if short_position
                 else target <= intent.reference_price
-            ):
+            )):
                 raise ValueError("Replacement profit target is on the wrong side of the market")
             return StrategyOrderPlan(
                 orders=(
@@ -310,7 +310,9 @@ class RuntimeIbkrStrategyOrderPlanner:
                         # the order.
                         "decision_event_time": intent.event_time.isoformat(),
                         "execution_role": execution_role,
-                        "reason": _execution_reason(execution_role, intent.reason),
+                        "reason": _execution_reason(execution_role, intent.reason, intent.metadata),
+                        **({'exit_reason':_execution_reason(execution_role, intent.reason, intent.metadata)}
+                           if intent.metadata.get('momentum_target') and execution_role != 'entry' else {}),
                         "signal_price": intent.reference_price,
                     },
                 },
@@ -348,7 +350,13 @@ def _planned_execution_role(order: OrderRequest, intent_action: str) -> str:
     return "protective_exit"
 
 
-def _execution_reason(execution_role: str, intent_reason: str) -> str:
+def _execution_reason(execution_role: str, intent_reason: str, metadata=None) -> str:
+    metadata = metadata or {}
+    if metadata.get('momentum_target'):
+        if execution_role == 'profit_target':
+            return f"momentum_target_{metadata['momentum_target']['multiplier']}x"
+        if execution_role == 'protective_stop':
+            return metadata.get('stop_exit_reason', 'protective_stop')
     return {
         "profit_target": "structural_profit_target_filled",
         "protective_stop": "protective_stop_filled",

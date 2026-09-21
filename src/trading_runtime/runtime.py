@@ -1252,8 +1252,9 @@ class TradingRuntime:
     async def _on_order_group_state(self, snapshot) -> None:
         assignment = self._assignment_for_snapshot(snapshot)
         midpoint_entry_closed = bool(assignment is not None
-            and assignment.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-midpoint-execution-v21', 'early-squeeze-consistent-1s-resistance-v22', 'early-squeeze-structural-1s-resistance-v23')
-            and snapshot.action == 'add_long' and snapshot.entry_submission_closed)
+            and assignment.parameters.get('early_squeeze_breakout_contract') in ('early-squeeze-r1-price-midpoint-execution-v21', 'early-squeeze-consistent-1s-resistance-v22', 'early-squeeze-structural-1s-resistance-v23', 'early-squeeze-momentum-v24')
+            and (snapshot.action == 'add_long' or assignment.parameters.get('early_squeeze_breakout_contract') == 'early-squeeze-momentum-v24'
+                 and snapshot.action == 'enter_long') and snapshot.entry_submission_closed)
         terminal_state = snapshot.state in {
             OrderManagementState.CANCELLED,
             OrderManagementState.REJECTED,
