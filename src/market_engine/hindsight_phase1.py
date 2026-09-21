@@ -42,7 +42,8 @@ def opportunities(day, records, quotes, targets):
     left,right=bounds(day)
     # Exactly one decision per second, including the terminal unavailable row.
     grid=pl.DataFrame({'time_us':pl.int_range(left,right+1,1_000_000,eager=True)})
-    q=pl.DataFrame(quotes,schema={'time_us':pl.Int64,'quote_us':pl.Int64,'ask':pl.Float64,'bid':pl.Float64,'ask_size':pl.Float64,'bid_size':pl.Float64})
+    schema={'time_us':pl.Int64,'quote_us':pl.Int64,'ask':pl.Float64,'bid':pl.Float64,'ask_size':pl.Float64,'bid_size':pl.Float64}
+    q=quotes.select(list(schema)).cast(schema) if isinstance(quotes,pl.DataFrame) else pl.DataFrame(quotes,schema=schema)
     q=q.with_columns(((pl.col('quote_us')>0)&((pl.col('time_us')-pl.col('quote_us')).is_between(0,1_000_000))&
                      (pl.col('bid')>0)&(pl.col('ask')>=pl.col('bid'))&(pl.col('bid_size')>0)&(pl.col('ask_size')>0)&pl.all_horizontal(pl.col('bid','ask','bid_size','ask_size').is_finite())).fill_null(False).alias('quote_valid'))
     grid=grid.join(q,on='time_us',how='left',validate='1:1')

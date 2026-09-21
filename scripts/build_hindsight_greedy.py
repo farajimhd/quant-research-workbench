@@ -6,6 +6,7 @@ example: reproduce the user's B/D example, without market services.
 """
 import os
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+os.environ.setdefault("POLARS_MAX_THREADS", "2")
 import sys
 sys.dont_write_bytecode = True
 from pathlib import Path
@@ -28,6 +29,7 @@ from src.market_engine.hindsight_phase1 import bounds, digest
 from src.market_engine.hindsight_greedy import VERSION, MODES, Position, ActionTable, coefficients
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
+from src.market_engine.hindsight_batch import ordered_jobs, worker_budget
 
 STOP = False
 
@@ -88,6 +90,22 @@ def merge_summary(previous, current):
     )
 
 
+def summarize_listing(frame, mode):
+    """One sorted ticker: direct columns avoid group-by and join per mode."""
+    result=None
+    for side in MODES[mode]:
+        part=frame.filter(pl.col('side')==side)
+        current=part.select('time_us',
+            pl.when(pl.col('can_open')).then(pl.col('capital_per_share')).otherwise(0.).alias('max_new_price'),
+            pl.col('can_open').cast(pl.UInt64).alias('priced_candidates'),
+            pl.col('value_available').cast(pl.UInt64).alias('valued_candidates'),
+            pl.col('open_value_per_dollar').alias('best_score'),
+            pl.when(pl.col('open_value_per_dollar').is_not_null()).then(pl.col('ticker')+pl.lit(':'+side)).alias('best_key'),
+            pl.when(pl.col('open_value_per_dollar').is_not_null()).then(pl.col('capital_per_share')).alias('best_capital'))
+        result=merge_summary(result,current)
+    return result
+
+
 def flat_policy(summary):
     # A known winner is not a global label if another eligible value is missing.
     complete = pl.col("priced_candidates") == pl.col("valued_candidates")
@@ -120,6 +138,46 @@ def phase1_plan(root):
     return plan
 
 
+def compile_listing(listing, source, root, plan):
+    started=monotonic()
+    directory=digest(listing)[:20]
+    incoming=source/"listings"/directory
+    output=root/"listings"/directory
+    output.mkdir(parents=True,exist_ok=True)
+    ready = read(incoming / "ready.json")
+    if ready["plan_hash"] != plan["phase1_plan_hash"] or ready["listing"] != listing:
+        raise ValueError("Phase 1 listing provenance mismatch")
+    if ready["rows"] != 57601 or "opportunities.parquet" not in ready["files"]:
+        raise ValueError("Phase 1 listing is missing required rows or file")
+    verify_files(incoming, ready["files"])
+    pin = file_hash(incoming / "ready.json")
+    if (output / "ready.json").exists():
+        published = read(output / "ready.json")
+        if published["source_ready_hash"] != pin or published["plan_hash"] != plan["plan_hash"]:
+            raise ValueError("Checkpoint input/plan changed")
+        verify_files(output, published["files"])
+        status = "reused"
+    else:
+        frame = pl.read_parquet(incoming / "opportunities.parquet")
+        left, right = bounds(date.fromisoformat(plan["date"]))
+        if (frame.height != 57601 or not frame["time_us"].equals(pl.Series("time_us", range(left, right+1, 1_000_000), dtype=pl.Int64))
+            or frame["ticker"].unique().to_list() != [listing["ticker"]]
+            or frame["listing_id"].unique().to_list() != [listing["listing_id"]]):
+            raise ValueError("Phase 1 grid or identity mismatch")
+        values = coefficients(frame, plan["gamma_per_second"], plan["cost_per_share_per_transaction"])
+        parquet(output / "coefficients.parquet", values)
+        for mode in MODES:
+            parquet(output / f"{mode}.parquet", summarize_listing(values, mode))
+        files = {name: file_hash(output / name) for name in
+                 ("coefficients.parquet", "long.parquet", "short.parquet", "long_short.parquet")}
+        if file_hash(incoming / "ready.json") != pin:
+            raise ValueError("Phase 1 changed during compilation")
+        write(output / "ready.json", dict(plan_hash=plan["plan_hash"], source_ready_hash=pin,
+                                           files=files, rows=values.height))
+        status = "completed"
+    return dict(ticker=listing["ticker"],status=status,directory=directory,elapsed_seconds=monotonic()-started)
+
+
 def run_build(args, console):
     global STOP
     STOP = False
@@ -139,13 +197,19 @@ def run_build(args, console):
                 semantics="Local greedy values; no future reallocations; exact size coefficients",
                 polars_version=pl.__version__,
                 code_hashes={p: sha256((REPO / p).read_text(encoding="utf-8").replace("\r\n", "\n").encode()).hexdigest()
-                             for p in ("scripts/build_hindsight_greedy.py", "src/market_engine/hindsight_greedy.py")})
+                             for p in ("scripts/build_hindsight_greedy.py", "src/market_engine/hindsight_greedy.py", "src/market_engine/hindsight_batch.py")})
     plan["plan_hash"] = digest(plan)
     root = runtime / "hindsight-greedy" / plan["date"] / plan["plan_hash"][:16]
     root.mkdir(parents=True, exist_ok=True)
+    if getattr(args,'result_file',None):
+        result_file=args.result_file.resolve()
+        if not result_file.is_relative_to(runtime.resolve()):raise ValueError('result-file must be under runtime root')
+        write(result_file,dict(root=str(root),plan_hash=plan['plan_hash']),immutable=False)
     console.print(f"Greedy labels | {plan['date']} | {len(plan['selected']):,} listings | {plan['scope']}")
     console.print(f"gamma={args.gamma}/second | fractional sizes | long, short, long+short")
     console.print("Output: " + str(root), soft_wrap=True)
+    workers=worker_budget(getattr(args,"workers",None))
+    console.print(f"Workers: {workers}; bounded compilation, deterministic market reduction")
     started = monotonic()
     previous_handler = signal.signal(signal.SIGINT, lambda *_: request_stop())
     try:
@@ -156,58 +220,22 @@ def run_build(args, console):
             summaries = {mode: None for mode in MODES}
             results = []
             last_log = started
-            for index, listing in enumerate(plan["selected"]):
-                if STOP or (root / "STOP").exists():
-                    break
-                directory = digest(listing)[:20]
-                incoming = source / "listings" / directory
-                output = root / "listings" / directory
-                output.mkdir(parents=True, exist_ok=True)
-                write(root / "progress.json", dict(counts=counts, active=1,
-                    current_listing=listing["ticker"], stage="verify / compile / aggregate",
-                    queued=len(plan["selected"])-index-1, retries=0), immutable=False)
-                try:
-                    ready = read(incoming / "ready.json")
-                    if ready["plan_hash"] != plan["phase1_plan_hash"] or ready["listing"] != listing:
-                        raise ValueError("Phase 1 listing provenance mismatch")
-                    if ready["rows"] != 57601 or "opportunities.parquet" not in ready["files"]:
-                        raise ValueError("Phase 1 listing is missing required rows or file")
-                    verify_files(incoming, ready["files"])
-                    pin = file_hash(incoming / "ready.json")
-                    if (output / "ready.json").exists():
-                        published = read(output / "ready.json")
-                        if published["source_ready_hash"] != pin or published["plan_hash"] != plan["plan_hash"]:
-                            raise ValueError("Checkpoint input/plan changed")
-                        verify_files(output, published["files"])
-                        status = "reused"
-                    else:
-                        frame = pl.read_parquet(incoming / "opportunities.parquet")
-                        left, right = bounds(date.fromisoformat(plan["date"]))
-                        if (frame.height != 57601 or frame["time_us"].to_list() != list(range(left, right+1, 1_000_000))
-                            or frame["ticker"].unique().to_list() != [listing["ticker"]]
-                            or frame["listing_id"].unique().to_list() != [listing["listing_id"]]):
-                            raise ValueError("Phase 1 grid or identity mismatch")
-                        values = coefficients(frame, args.gamma, args.cost_per_share)
-                        parquet(output / "coefficients.parquet", values)
-                        for mode in MODES:
-                            parquet(output / f"{mode}.parquet", summarize(values, mode))
-                        files = {name: file_hash(output / name) for name in
-                                 ("coefficients.parquet", "long.parquet", "short.parquet", "long_short.parquet")}
-                        if file_hash(incoming / "ready.json") != pin:
-                            raise ValueError("Phase 1 changed during compilation")
-                        write(output / "ready.json", dict(plan_hash=plan["plan_hash"], source_ready_hash=pin,
-                                                           files=files, rows=values.height))
-                        status = "completed"
-                    for mode in MODES:
-                        summaries[mode] = merge_summary(summaries[mode], pl.read_parquet(output / f"{mode}.parquet"))
-                    counts[status] += 1
-                    results.append(dict(ticker=listing["ticker"], status=status, directory=directory))
-                except Exception as exc:
+            def heartbeat(submitted,active,waiting):
+                write(root/'progress.json',dict(counts=counts,active=active,awaiting_reduction=waiting,
+                    queued=len(plan['selected'])-submitted,retries=0),immutable=False)
+            jobs=ordered_jobs(plan["selected"],lambda listing:compile_listing(listing,source,root,plan),workers,
+                              lambda:STOP or (root/"STOP").exists(),heartbeat)
+            for index, (listing,result) in enumerate(jobs):
+                if isinstance(result, Exception):
                     counts["failed"] += 1
-                    results.append(dict(ticker=listing["ticker"], status="failed", error=str(exc)))
-                    console.print(f"Failed {listing['ticker']}: {str(exc)[:200]}", markup=False)
-                write(root / "progress.json", dict(counts=counts, active=0, queued=len(plan["selected"])-index-1,
-                                                     last_result=results[-1], retries=0), immutable=False)
+                    results.append(dict(ticker=listing["ticker"],status="failed",error=str(result)))
+                    console.print(f"Failed {listing['ticker']}: {str(result)[:200]}",markup=False)
+                else:
+                    output=root/"listings"/result["directory"]
+                    for mode in MODES:
+                        summaries[mode]=merge_summary(summaries[mode],pl.read_parquet(output/f"{mode}.parquet"))
+                    counts[result["status"]]+=1
+                    results.append(result)
                 if monotonic()-last_log > 5 or index+1 == len(plan["selected"]):
                     console.print(f"Completed {counts['completed']} | reused {counts['reused']} | failed {counts['failed']} | queued {len(plan['selected'])-index-1} | {monotonic()-started:.2f}s")
                     last_log = monotonic()
@@ -320,6 +348,8 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     build = commands.add_parser("build", help="Compile a completed Phase 1 dataset; rerun to resume")
     build.add_argument("--phase1", required=True, type=Path)
+    build.add_argument("--workers",type=int,default=None)
+    build.add_argument('--result-file',type=Path)
     build.add_argument("--gamma", type=float, default=.99, help="Discount per second, default 0.99")
     build.add_argument("--cost-per-share", type=float, default=0, help="Per transaction, included in prices; default 0")
     evaluate = commands.add_parser("evaluate", help="Score explicit joint actions from a state/request JSON")

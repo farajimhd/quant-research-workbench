@@ -1,5 +1,10 @@
 # Greedy fractional action-value labels
 
+For both phases across multiple dates, see [the dataset campaign](build_hindsight_dataset.md).
+The standalone `build` also accepts `--workers`; compilation is bounded and
+parallel, while market reduction remains deterministic. Per-listing summaries
+use direct column comparisons on their aligned grids.
+
 This is the first **local greedy** training-label validator. It reads a completed
 Phase 1 dataset offline. It does not run backward dynamic programming, simulate
 future reallocations, fit a model, or place orders. Existing Phase 1 is unchanged.

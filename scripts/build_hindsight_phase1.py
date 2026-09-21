@@ -6,6 +6,7 @@ No portfolio selection, sizing, costs, spread cap or activity gate is applied.
 """
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
+os.environ.setdefault('POLARS_MAX_THREADS','2')
 import sys
 sys.dont_write_bytecode=True
 from pathlib import Path
@@ -27,16 +28,20 @@ from research.mlops.clickhouse import discover_clickhouse_env_files
 from src.runtime_paths import runtime_root
 from src.market_engine.level_book_store import read, write
 from src.market_engine.hindsight_phase1 import VERSION, NY, digest, opportunities, targets_from_extrema
-from src.market_engine.hindsight_phase1_source import client, query, metadata, RULE_SQL, universe_sql, validate_universe, extrema_sql, quotes_sql
+from src.market_engine.hindsight_phase1_source import client, query, quote_frame, metadata, RULE_SQL, universe_sql, validate_universe, extrema_sql, quotes_sql
 from src.backend.hindsight_service import load_macd_intervals
 from src.backend.qmd_gateway_client import qmd_history_base_url
+from src.market_engine.hindsight_batch import worker_budget
 
-TRACKED=('scripts/build_hindsight_phase1.py','src/market_engine/hindsight_phase1.py','src/market_engine/hindsight_phase1_source.py','src/market_engine/hindsight.py','src/backend/hindsight_service.py')
+TRACKED=('scripts/build_hindsight_phase1.py','src/market_engine/hindsight_phase1.py','src/market_engine/hindsight_phase1_source.py','src/market_engine/hindsight_batch.py','src/market_engine/hindsight.py','src/backend/hindsight_service.py')
 STOP=threading.Event()
 
 
 def file_hash(path):
-    with path.open('rb') as f:return sha256(f.read()).hexdigest()
+    result=sha256()
+    with path.open('rb') as f:
+        for block in iter(lambda:f.read(1024*1024),b''):result.update(block)
+    return result.hexdigest()
 
 
 @contextmanager
@@ -68,11 +73,28 @@ def cached_json(path,producer):
     return value
 
 
+def cached_parquet(path,producer):
+    import polars as pl
+    receipt=path.with_name(path.name+'.sha256.json')
+    if receipt.exists():
+        if not path.exists() or file_hash(path)!=read(receipt)['sha256']:raise ValueError('Input checkpoint integrity failure: '+str(path))
+        return pl.read_parquet(path)
+    value=producer();temp=path.with_suffix('.parquet.tmp')
+    value.write_parquet(temp,compression='zstd');temp.replace(path)
+    write(receipt,dict(sha256=file_hash(path)))
+    return value
+
+
 def run_listing(row,day,root,plan,lookback,threads,publish):
     ticker=row['ticker'];folder=root/'listings'/digest(row)[:20];folder.mkdir(parents=True,exist_ok=True)
-    c=client(threads)
+    c=client(threads);timings={};last=monotonic();started=last
+    def stage(message):
+        nonlocal last
+        now=monotonic()
+        if timings:timings[next(reversed(timings))]=now-last
+        timings[message]=0;last=now;publish(ticker,message)
     try:
-        publish(ticker,'coverage')
+        stage('coverage')
         before=metadata(c,day,ticker)
         if (folder/'source.json').exists() and read(folder/'source.json')!=before:raise ValueError('Source changed; create a new --run-name')
         write(folder/'source.json',before)
@@ -80,22 +102,23 @@ def run_listing(row,day,root,plan,lookback,threads,publish):
             ready=read(folder/'ready.json');verified(folder,ready)
             if ready['plan_hash']!=plan['plan_hash']:raise ValueError('Checkpoint plan mismatch')
             return dict(ticker=ticker,status='reused',rows=ready['rows'],directory=folder.name)
-        publish(ticker,'MACD aggregate coverage')
+        stage('MACD aggregate coverage')
         macd=folder/'macd.json.gz'
         def prepare_macd():
             start=datetime.combine(day,time(4),NY);end=datetime.combine(day,time(20),NY)
-            intervals,provenance=load_macd_intervals(ticker,start,end,lambda **kw:publish(ticker,'MACD '+kw.get('through','')),monotonic()+600)
+            intervals,provenance=load_macd_intervals(ticker,start,end,lambda **kw:publish(ticker,'MACD '+kw.get('through','')),monotonic()+600,
+                window_hours=plan.get('macd_window_hours',1),workers=plan.get('macd_readers',1))
             return dict(intervals=intervals,provenance=provenance)
         cached=cached_json(macd,prepare_macd)
-        publish(ticker,'ClickHouse trade extrema')
+        stage('ClickHouse trade extrema')
         extrema=folder/'extrema.json.gz'
         records=cached_json(extrema,lambda:query(c,extrema_sql(day,ticker,before,plan['rules'])))
         targets=targets_from_extrema(records,cached['intervals'],lookback)
         write(folder/'targets.json',targets)
-        publish(ticker,'ClickHouse quote samples')
-        quotes=folder/'quotes.json.gz'
-        samples=cached_json(quotes,lambda:query(c,quotes_sql(day,ticker,before,targets['positions'])))
-        publish(ticker,'vectorized values / Parquet')
+        stage('ClickHouse quote samples')
+        quotes=folder/'quotes.parquet'
+        samples=cached_parquet(quotes,lambda:quote_frame(c,quotes_sql(day,ticker,before,targets['positions'])))
+        stage('vectorized values / Parquet')
         values=opportunities(day,records,samples,targets['positions'])
         import polars as pl
         values=values.with_columns(pl.lit(ticker).alias('ticker'),pl.lit(row['listing_id']).alias('listing_id'))
@@ -103,11 +126,12 @@ def run_listing(row,day,root,plan,lookback,threads,publish):
         values.write_parquet(temporary,compression='zstd',statistics=True)
         if metadata(c,day,ticker)!=before or query(c,RULE_SQL)!=plan['rules']:raise ValueError('Source or condition rules changed during extraction; no completion published')
         temporary.replace(folder/'opportunities.parquet')
-        files={name:file_hash(folder/name) for name in ('source.json','macd.json.gz','extrema.json.gz','quotes.json.gz','targets.json','opportunities.parquet')}
+        files={name:file_hash(folder/name) for name in ('source.json','macd.json.gz','extrema.json.gz','quotes.parquet','targets.json','opportunities.parquet')}
+        timings[next(reversed(timings))]=monotonic()-last
         ready=dict(plan_hash=plan['plan_hash'],ticker=ticker,listing=row,rows=values.height,files=files,
-                   target_count=len(targets['positions']),completed_at=datetime.now(timezone.utc).isoformat())
+                   target_count=len(targets['positions']),timings=timings,elapsed_seconds=monotonic()-started,completed_at=datetime.now(timezone.utc).isoformat())
         write(folder/'ready.json',ready)
-        return dict(ticker=ticker,status='completed',rows=values.height,directory=folder.name)
+        return dict(ticker=ticker,status='completed',rows=values.height,directory=folder.name,timings=timings,elapsed_seconds=monotonic()-started)
     finally:c.close()
 
 
@@ -124,12 +148,15 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__,formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--date',required=True,type=date.fromisoformat,help='Completed trading date (New York)')
     parser.add_argument('--tickers',nargs='+',help='Explicit canary subset of the dated tradable universe')
-    parser.add_argument('--workers',type=int,choices=range(1,5),default=2)
+    parser.add_argument('--workers',type=int,choices=range(1,17),default=2)
+    parser.add_argument('--macd-window-hours',type=int,choices=(1,2,4,8),default=1)
+    parser.add_argument('--macd-readers',type=int,choices=range(1,5),default=2)
     parser.add_argument('--query-threads',type=int,choices=range(1,5),default=2)
     parser.add_argument('--lookback-seconds',type=int,choices=range(0,31),default=2,help='Base hindsight whole-second swing lookback')
     parser.add_argument('--run-name',default='default',help='New name required after changing pinned source/configuration')
     parser.add_argument('--plan-only',action='store_true',help='Freeze listing plan without calculating opportunities')
     args=parser.parse_args(argv);console=Console();STOP.clear()
+    worker_budget(args.workers,threads=max(args.query_threads,args.macd_readers))
     if not args.run_name.replace('-','').replace('_','').isalnum():parser.error('run-name must contain letters, numbers, hyphens or underscores')
     if datetime.combine(args.date,time(20),NY)>datetime.now(timezone.utc):parser.error('Select a completed 04:00-20:00 New York session')
     runtime=runtime_root()
@@ -151,6 +178,8 @@ def main(argv=None):
     plan=dict(version=VERSION,date=str(args.date),session='04:00-20:00 America/New_York',universe=universe,
               selected=selected_rows,scope='full_tradable_universe' if args.tickers is None else 'explicit_canary',
               lookback_seconds=args.lookback_seconds,rules=rules,qmd_source_fingerprint=runtime_hash,
+              macd_window_hours=args.macd_window_hours,macd_readers=args.macd_readers,
+              transport='columnar-quotes-v2',
               code_hashes={p:sha256((REPO/p).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest() for p in TRACKED},
               polars_version=__import__('polars').__version__,
               filters='Dated is_tradable=1 only. No spread, volume, price, cost or capital selection.',
@@ -161,6 +190,9 @@ def main(argv=None):
     console.print(f'{args.date} | {len(selected_rows):,}/{len(universe):,} tradable listings | {args.workers} workers')
     console.print('Artifacts: '+str(root),soft_wrap=True)
     with exclusive(root/'run.lock'):
+        if (root/'plan.json').exists() and read(root/'plan.json')!=plan:
+            old=read(root/'plan.json');changed=[k for k in plan if k!='plan_hash' and old.get(k)!=plan[k]]
+            raise ValueError('Saved plan differs in '+', '.join(changed)+'; preserve it and use a new --run-name, or the multi-day campaign launcher.')
         write(root/'plan.json',plan)
         if args.plan_only:
             console.print('Plan saved. No opportunities calculated.');return 0
@@ -189,14 +221,14 @@ def main(argv=None):
                         results.append(result);counts[result['status']]+=1
                         with lock:active.pop(row['ticker'],None)
                         with lock:snapshot=dict(active)
-                        write(root/'progress.json',dict(counts=counts,results=results,active=snapshot),immutable=False)
+                        write(root/'progress.json',dict(counts=counts,last_result=result,active=snapshot),immutable=False)
                         submit()
                     with lock:table=progress_table(counts,dict(active),len(selected_rows),monotonic()-started)
                     if STOP.is_set() or (root/'STOP').exists():table.caption='Stop requested: finishing active listings; no new listings will start.'
                     if console.is_terminal:live.update(table,refresh=True)
                     if monotonic()-last_log>=10:
                         with lock:snapshot=dict(active)
-                        write(root/'progress.json',dict(counts=counts,results=results,active=snapshot,updated_at=datetime.now(timezone.utc).isoformat()),immutable=False)
+                        write(root/'progress.json',dict(counts=counts,active=snapshot,updated_at=datetime.now(timezone.utc).isoformat()),immutable=False)
                         if not console.is_terminal:console.print(table)
                         last_log=monotonic()
             complete=len(results)==len(selected_rows) and counts['failed']==0

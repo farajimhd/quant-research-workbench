@@ -1,5 +1,9 @@
 # Phase 1: one trading session
 
+For concurrent multi-day extraction followed by greedy Phase 2, use
+[the dataset campaign](build_hindsight_dataset.md). It versions plans automatically,
+provides a shared worker budget and records benchmark timing/memory.
+
 Run from the repository with its Python environment:
 
 ```powershell
@@ -28,7 +32,7 @@ The machine's configured runtime root contains:
 - `plan.json`: immutable dated listing population, scope, condition rules, code hashes, QMD fingerprint, library version and parameters.
 - `listings/<identity-hash>/opportunities.parquet`: one row per decision second (57,601 per listing), ticker/listing identity, bid/ask/depth/freshness, trade count and eligible volume, rolling 10-second activity, spread, per-direction target IDs/timestamps/quote values, gross P&L, hold time, availability time and explicit missing-data status.
 - `targets.json`: exact base MACD targets and rejection counts, including moves below the chart's visual display filter.
-- `source.json`, `macd.json.gz`, `extrema.json.gz`, `quotes.json.gz`: pinned provenance and reusable calculation inputs. Intermediate inputs carry SHA-256 receipts.
+- `source.json`, `macd.json.gz`, `extrema.json.gz`, `quotes.parquet`: pinned provenance and reusable calculation inputs. Intermediate inputs carry SHA-256 receipts. Legacy datasets retain their original JSON quote checkpoints.
 - `ready.json`: per-listing atomic completion and file hashes. Only published after source revalidation and complete Parquet writing.
 - `progress.json` and `summary.json`: completed/reused/active/failed counts and individual failure reasons.
 - `complete.json`: published only when every selected listing succeeded or was verified reusable. Phase 2 must validate its plan hash and each listing's ready/file hashes, and inspect whether scope is full-market or canary.

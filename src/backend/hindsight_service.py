@@ -34,26 +34,29 @@ class HindsightRequest(BaseModel):
     lookback_seconds: float = Field(default=2, ge=0, le=30, allow_inf_nan=False)
 
 
-def load_macd_intervals(ticker: str, start: datetime, end: datetime, progress, deadline: float) -> tuple[list, list]:
+def load_macd_intervals(ticker: str, start: datetime, end: datetime, progress, deadline: float,
+                        *, window_hours: int = 1, workers: int = 4) -> tuple[list, list]:
+    if window_hours not in (1, 2, 4, 8) or not 1 <= workers <= 4:
+        raise ValueError("MACD pages must be 1/2/4/8 hours with 1..4 readers")
     intervals: list[tuple[float, float, str]] = []
     provenance = []
     cursor = start
     windows = []
     while cursor < end:
         windows.append(cursor)
-        cursor = min(cursor + timedelta(hours=1), end)
+        cursor = min(cursor + timedelta(hours=window_hours), end)
 
     def read_window(cursor):
         if monotonic() >= deadline:
             raise RuntimeError("MACD intervals exceeded the research time budget; no partial result published")
-        chunk_end = min(cursor + timedelta(hours=1), end)
+        chunk_end = min(cursor + timedelta(hours=window_hours), end)
         payload = qmd_product_request(QmdProductRequest(
             "chart", authority="history", mode="backtest", ticker=ticker, timeframe="1s",
             start=cursor.isoformat(), end=chunk_end.isoformat(), as_of=chunk_end.isoformat(),
             indicator_columns=("bar_start", "bar_end", "macd_line", "macd_signal"),
             stage="bars", include_structure=False, include_market_signals=False,
             limit=50_000, timeout_seconds=min(90, max(1, deadline - monotonic())))).payload
-        # One hour cannot exceed 3600 distinct 1s bars. Never accept truncation
+        # Eight hours cannot exceed 28,800 distinct 1s bars. Never accept truncation
         # or an incomplete indicator authority, even if quote reading succeeded.
         evidence = payload.get("indicator_provenance") or {}
         if payload.get("has_more") or not payload.get("indicators_available") or evidence.get("complete") is not True:
@@ -65,7 +68,7 @@ def load_macd_intervals(ticker: str, start: datetime, end: datetime, progress, d
     open_direction = None
     # Independent bounded pages; consume chronologically so MACD state crosses
     # hour boundaries and seconds without trades without artificial closures.
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="hindsight-macd") as readers:
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="hindsight-macd") as readers:
         for cursor, chunk_end, payload, evidence in readers.map(read_window, windows):
             provenance.append(evidence)
             rows = sorted(payload.get("indicators", []), key=lambda row: row["bar_end"])

@@ -1,5 +1,7 @@
 """Read-only, ordinal-pruned canonical SQL for compact Phase 1 inputs."""
 import json
+from io import StringIO
+import polars as pl
 from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_url, default_clickhouse_user, default_clickhouse_password
 from src.backend.swing_book_indexed_source import ordinal_bounds
 from src.market_engine.hindsight_phase1 import bounds
@@ -19,6 +21,13 @@ def client(threads=2):
 
 def query(c, sql):
     return [json.loads(line) for line in c.execute(sql+' FORMAT JSONEachRow').splitlines() if line]
+
+
+def quote_frame(c, sql):
+    """Native columnar parsing, without 60,000 Python row dictionaries."""
+    return pl.read_csv(StringIO(c.execute(sql+' FORMAT CSVWithNames')), null_values='\\N',
+        schema_overrides={'time_us':pl.Int64,'quote_us':pl.Int64,'ask':pl.Float64,
+                          'bid':pl.Float64,'ask_size':pl.Float64,'bid_size':pl.Float64})
 
 
 def universe_sql(day):
