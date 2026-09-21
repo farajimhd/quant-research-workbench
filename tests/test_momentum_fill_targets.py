@@ -13,7 +13,8 @@ from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES
 
 
 @pytest.mark.parametrize('canonical', [False, True])
-def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_path, canonical):
+@pytest.mark.parametrize('signal_reference', [9.92, 10.4])
+def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_path, canonical, signal_reference):
     async def run():
         broker = SimulatedBrokerAdapter(['DU1'], mode=TradingMode.BACKTEST)
         manager, journal = await helpers.OrderManagementPolicyTests()._manager(
@@ -25,7 +26,7 @@ def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_pa
         try:
             for n, fills in enumerate([[(10.0, 40.), (10.1, 60.)], [(10.3, 100.)]]):
                 request = helpers.intent(action='enter_long' if n == 0 else 'add_long', quantity=100.)
-                request = replace(request, intent_id=f'momentum-{n}', reference_price=10.4,
+                request = replace(request, intent_id=f'momentum-{n}', reference_price=signal_reference,
                     invalidation_price=9.9, profit_target_price=11.4,
                     protection_profile=ProtectionProfile('momentum-test', 1, slices=(ProtectionSlice(
                         'all', 1., StopRule(StopRuleType.FIXED_PRICE, price=9.9), profit_target_price=11.4),)),
@@ -47,6 +48,7 @@ def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_pa
                 groups.append(group)
             assert [g.intent.profit_target_price for g in groups] == pytest.approx([11.06, 11.3])
             assert groups[0].intent.invalidation_price == pytest.approx(9.95)
+            assert groups[0].intent.reference_price == signal_reference
             amendment = replace(helpers.intent(action='replace_profit_target', quantity=200.),
                 reference_price=13., profit_target_price=11.78,
                 metadata={'momentum_target_multiplier': 8})

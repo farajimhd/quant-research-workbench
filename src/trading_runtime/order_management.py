@@ -3281,9 +3281,12 @@ class OrderManagementEngine:
             # A broker-confirmed trailing stop may be above the entry price.
             # Repair its quantity at that exact price; do not revalidate it as
             # a new entry stop or silently loosen it back below entry.
+            # Momentum's 1% fallback is rebased to actual cumulative fill cost.
+            # That valid stop can exceed the original signal/limit reference
+            # after acquisition repricing; validate against the same fill basis.
             stops = [confirmed_stop] if confirmed_stop > 0 else [
                 item.stop.resolve(
-                    reference_price=float(group.intent.reference_price),
+                    reference_price=float(group.intent.metadata.get('momentum_fill_average') or group.intent.reference_price),
                     side=position_side,
                     quantity=max(required, 1e-9) * item.quantity_fraction,
                     volatility=volatility,
