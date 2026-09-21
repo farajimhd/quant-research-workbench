@@ -2747,6 +2747,7 @@ class LongMomentumStrategyEngine:
             raise ValueError(f"Unsupported Long Momentum Strategy revision: {revision}")
         self.revision = revision
         self._historical_parameters_cache = None
+        self._momentum_parameters_cache = []
 
     def evaluate(self, assignment: StrategyAssignment, observation: StrategyObservation) -> StrategyEngineResult:
         if assignment.parameters.get('hindsight_long_contract'):
@@ -2812,6 +2813,20 @@ class LongMomentumStrategyEngine:
                 resolved = resolve_long_momentum_parameters(deepcopy(source), revision=self.revision)
                 cached = self._historical_parameters_cache = (source, resolved)
             parameters = cached[1]
+        elif assignment.parameters.get('early_squeeze_breakout_contract') == 'early-squeeze-momentum-v24':
+            # Settings are shared by many tickers. Keep a small value-based LRU,
+            # with detached keys so nested in-place edits still invalidate it.
+            cache = self._momentum_parameters_cache
+            match = next((i for i, (source, _) in enumerate(cache)
+                if source == assignment.parameters), None)
+            if match is None:
+                source = deepcopy(assignment.parameters)
+                parameters = resolve_long_momentum_parameters(deepcopy(source), revision=self.revision)
+                cache.insert(0, (source, parameters))
+                del cache[8:]
+            else:
+                source, parameters = cache.pop(match)
+                cache.insert(0, (source, parameters))
         else:
             parameters = resolve_long_momentum_parameters(
                 assignment.parameters,

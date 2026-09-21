@@ -43,3 +43,18 @@ episode and above-midpoint price remain valid; all purchase gates are rechecked.
 Exit evidence distinguishes age recovery, grace expiration, unavailable green
 bracket, age resistance stop/target and larger-gap cash reallocation. Validation
 uses synthetic Strategy/Portfolio/OMS tests; no historical backtest was run.
+
+## Evaluation performance
+
+The momentum executor caches up to eight distinct resolved configurations using
+detached value keys, so nested settings changes invalidate cached settings.
+Frozen activation-gap evidence and published resistance geometry use the shared
+immutable-evidence containers. Mutable episode, acceptance and purchase state
+still receives independent copies. JSON checkpoint restores are sealed again
+at the next publication; checkpoint values and strategy decisions are unchanged.
+
+A synthetic held-position fixture with 200 retained resistance levels took
+0.927 seconds for 500 evaluations before this change and 0.113 seconds after
+warmup with immutable evidence (about 8.2x for this workload). This is an evaluator
+microbenchmark, not a measured full-session speedup. Journal durability,
+event ordering, eligibility checks and broker execution remain unchanged.

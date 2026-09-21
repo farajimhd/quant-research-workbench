@@ -11,6 +11,7 @@ from . import early_squeeze_consistent as C, early_squeeze_price as P
 from . import vwap_resistance_ladder as V, historical_hod as H, early_squeeze_breakout as E
 from .early_squeeze_fast import below, levels
 from .signals import CapitalRequest
+from ..market_engine.immutable_evidence import freeze
 
 CONTRACT = 'early-squeeze-momentum-v24'
 
@@ -35,8 +36,25 @@ def freeze_gap(rows, price, now):
         if P.eligible(r) and price < P.midpoint(r) <= 4*price),
         key=lambda r: (P.midpoint(r), r['unified_level_id']))
     gaps = [P.midpoint(b)-P.midpoint(a) for a, b in zip(selected, selected[1:])]
-    return dict(frozen_at=now, reference_price=price, ceiling=4*price,
-        levels=selected, gaps=gaps, average=sum(gaps)/len(gaps) if gaps else None)
+    return freeze(dict(frozen_at=now, reference_price=price, ceiling=4*price,
+        levels=selected, gaps=gaps, average=sum(gaps)/len(gaps) if gaps else None))
+
+
+def seal_retained_evidence(state):
+    """Share published geometry; mutable acceptance/episode state stays private.
+
+    Seal again after JSON checkpoint restore. Catalog containers stay mutable:
+    the observer replaces level values, never edits their published geometry.
+    """
+    d = state.get('squeeze_breakout', {})
+    if 'frozen_gap' in d:
+        d['frozen_gap'] = freeze(d['frozen_gap'])
+    book = d.get('resistance_1s', {})
+    if 'levels' in book:
+        book['levels'] = freeze(book['levels'])
+    catalog = book.get('catalog', {})
+    for key, level in catalog.items():
+        catalog[key] = freeze(level)
 
 
 def confirmed_pivots(row, now, side):
@@ -314,6 +332,7 @@ def evaluate(host, a, o, p, old_state):
     session_policy = {**DEFAULTS, **(full_session or {})}
 
     def emit(action, reason, status=None, **kw):
+        seal_retained_evidence(state)
         metadata = dict(evidence, **kw.pop('metadata', {}))
         if action == 'exit':
             reason = state.get('last_exit_reason') if state.get('entry_acquisition_exit_latched') else reason
