@@ -63,7 +63,7 @@ def supported_swing(row, rows, now):
     supports = [r for r in rows.values() if r.get('role') == 'support'
         or not r.get('role') and r.get('side') in (1, 'support')]
     for pivot in reversed(confirmed_pivots(row, now, 'low')):
-        if not 0 <= now-pivot['pivot_at'] <= 10:
+        if not 0 <= now-pivot['pivot_at'] <= 30:
             continue
         bands = [r for r in supports if r['lower'] <= pivot['price'] <= r['upper']]
         if bands:
@@ -184,7 +184,7 @@ def observe_session(saved, at, price):
     if at.timestamp() < d.get('observed_at', 0):
         return d
     d.update(high=max(d['high'], price), observed_at=at.timestamp())
-    d['late'] = bool(d.get('late') or d['high'] >= 1.2*d['open'])
+    d['late'] = bool(d.get('late') or d['high'] >= 1.3*d['open'])
     return d
 
 

@@ -52,7 +52,9 @@ def test_swing_age_is_pivot_age_and_future_confirmation_is_rejected():
     low = pivot(9.9, 91, 95)
     result = M.supported_swing(detector(100, low), rows, 100)
     assert result['pivot'] == low
-    assert M.supported_swing(detector(100, pivot(9.9, 89, 99)), rows, 100) is None
+    assert M.supported_swing(detector(100, pivot(9.9, 89, 99)), rows, 100) is not None
+    assert M.supported_swing(detector(100, pivot(9.9, 70, 99)), rows, 100) is not None
+    assert M.supported_swing(detector(100, pivot(9.9, 69.999999, 99)), rows, 100) is None
     assert M.supported_swing(detector(100, pivot(9.9, 99, 101)), rows, 100) is None
     assert M.supported_swing(detector(101, low), rows, 100) is None
     assert M.supported_swing(detector(100, pivot(9.7, 91, 95)), rows, 100) is None
@@ -190,17 +192,18 @@ def test_bos_waits_for_vwap_and_rechecks_macd_at_actual_purchase():
     assert any(i.action == 'enter_long' for i in result.evaluation.intents)
 
 
-def test_late_gate_starts_at_twenty_percent_and_latches():
+def test_late_gate_starts_at_thirty_percent_and_latches():
     from datetime import datetime
     at = datetime(2026, 9, 21, 4, tzinfo=M.H.NY)
     d = M.observe_session({}, at, 10.)
-    assert not M.observe_session(d, at, 11.99)['late']
-    d = M.observe_session(d, at, 12.)
+    assert not M.observe_session(d, at, 12.)['late']
+    assert not M.observe_session(d, at, 12.999999)['late']
+    d = M.observe_session(d, at, 13.)
     assert d['late'] and M.observe_session(d, at, 10.)['late']
     h, a, t, _, _ = momentum_fixture()
     o = t(16.02, 10.44)
     market = deepcopy(o.structural_detector_state)
-    market['momentum_session'].update(late=True, open=8.5, high=10.6, prior_high=10.6)
+    market['momentum_session'].update(late=True, open=8., high=10.6, prior_high=10.6)
     result = h.evaluate(a, replace(o, structural_detector_state=market))
     assert not result.evaluation.intents
     assert result.evaluation.signals[0].reason == 'late_mode_below_hod_resistance_required'

@@ -20,7 +20,7 @@ or live-release acceptance.
   forming 1s, and completed 100ms MACD must all have line > signal. Completed
   MACD/VWAP evidence retains its original clock. Quotes must also be fresh.
 - Early mode ends permanently for the session when the session high reaches
-  120% of the first eligible trade at/after 04:00. Thereafter, purchases also
+  130% of the first eligible trade at/after 04:00. Thereafter, purchases also
   require a trade crossing the nearest resistance midpoint strictly below the
   prior causal HOD. That gate clears when its geometry changes/disappears or
   price returns to/below its midpoint. Early entries are exempt.
@@ -35,7 +35,7 @@ or live-release acceptance.
   it. One accepted resistance funds at most one filled addition per completed
   1s bullish MACD episode. Partial fills count once.
 - Initial stop: one tick below the latest confirmed swing low formed within
-  ten seconds and inside a current V7 support band. Otherwise use one tick
+  thirty seconds and inside a current V7 support band. Otherwise use one tick
   below the first support entirely below VWAP if its lower band is within 1%
   below entry. Otherwise use 5% below entry, rounded down to a tick and rebased
   to actual cumulative entry fill cost.
@@ -79,6 +79,14 @@ publish or enable live trading.
 
 ## Validation
 
+Latest changes: 71 focused tests passed, including 30%/30-second boundaries,
+same-candle re-entry blocking, and partial-target liquidation through the real
+Strategy/Portfolio/OMS path. The exit-label browser test passed. Before the
+30%/30-second and re-entry changes, the full JUNS August 21 target-fix rerun
+completed 109,805 events and liquidated the 951-share position within 59.469 ms
+of its first target fill. That full rerun does not validate the later entry
+and stop-window changes.
+
 The 5% fallback is an explicit candidate parameter. Older saved candidates
 without that parameter retain their original 1% fallback. Protection repair
 validates percentage stops against actual cumulative fill cost, preserving the
@@ -89,7 +97,7 @@ false stop/reference error.
 run passed 274 tests and ten subtests, with the three baseline failures below.
 
 Focused tests cover causal pivots and snapshot age, BOS/VWAP ordering, MACD
-rechecks, immediate-second addition expiry and moved geometry, the 20% latch,
+rechecks, immediate-second addition expiry and moved geometry, the 30% latch,
 three-purchase accounting, shared cash reservations, stop steps, frozen targets,
 partial fills, tranche-specific amendments, repaired exit reasons, target
 remainder handling, candidate compilation, and the replay cutoff timer.

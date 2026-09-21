@@ -2,21 +2,22 @@
 from . import early_squeeze_breakout_candidate as base
 from src.trading_runtime.early_squeeze_momentum import CONTRACT
 
-LABEL = 'Early Squeeze / causal BOS momentum v24 / 5% fallback stop'
+LABEL = 'Early Squeeze / causal BOS momentum v24 / 30% session rise / 30s swing stop'
 DESCRIPTION = (
     'Early Squeeze activates the session. Initial entries require causal confirmed-high BOS, '
     'price above VWAP and bullish completed/forming 1s plus completed 100ms MACD. '
-    'At +20% from the first eligible 04:00+ trade, late mode latches and requires breaking '
+    'At +30% from the first eligible 04:00+ trade, late mode latches and requires breaking '
     'the nearest resistance midpoint below prior HOD. Up to three filled purchases per '
     'position, each requesting one third of currently unreserved cash. Adds require a green '
     '1s midpoint crossing and the first trade in the immediately following second above '
     'unchanged geometry; one filled add per resistance per MACD episode. Stop below the '
-    'latest confirmed V7-supported low formed within ten seconds, else support below VWAP '
+    'latest confirmed V7-supported low formed within thirty seconds, else support below VWAP '
     'within 1% of entry, else 5% below actual entry. Every three distinct accepted '
     'resistances advance the stop one resistance, below its lower band. Freeze average '
     'consecutive resistance gaps at activation through +300%. Each purchase has its own '
     'fill-price plus 5x gap target; disjoint fast triples within less than three seconds '
-    'upgrade all open targets to 8x then 10x. No CHOCH/chop/MACD/VWAP exit. Stop buying '
+    'upgrade all open targets to 8x then 10x. First target fill liquidates the whole remainder; '
+    'no reentry within that same 1s candle. No CHOCH/chop/MACD/VWAP exit. Stop buying '
     'and flatten at 20:00 New York. Research candidate; no profitability acceptance.'
 )
 
