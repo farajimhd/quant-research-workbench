@@ -61,6 +61,8 @@ def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path
                 await quote(trade(17.3).observed_at, add_observation.bid, add_observation.ask)
                 additions = [g for g in runtime.order_manager._groups.values() if g.intent.action == 'add_long']
                 assert len(additions) == 1 and additions[0].filled_quantity > 0
+                if session_progression:
+                    assert additions[0].intent.profit_target_price == group.intent.profit_target_price
                 assert controller._strategy.assignments()[0].state['squeeze_breakout']['last_entry_fill_at'] == first_entry_at
                 assert sum(p.position for p in await runtime.broker.positions(assigned.account_id)) > held
             stop = group.intent.invalidation_price

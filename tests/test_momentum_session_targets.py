@@ -98,3 +98,22 @@ def test_exact_thirty_percent_does_not_use_special_reentry():
     entry = next(i for i in result.evaluation.intents if i.action=='enter_long')
     assert entry.metadata['momentum_target']['multiplier']==8
     assert not result.state['squeeze_entry']['recent_reentry']
+
+
+def test_trailing_stop_does_not_promote_catalogued_support(monkeypatch):
+    from tests.test_early_squeeze_momentum import level
+    h, a, t, _, _ = momentum_fixture()
+    a = replace(a, parameters={**a.parameters, 'momentum_session_progression': True})
+    a = advance(a, h.evaluate(a, t(16.02,10.44)))
+    a = replace(a, status=S.AssignmentStatus.MANAGING)
+    a.state['squeeze_entry'].update(broken_levels=['a','b','c'], stop=9.8, stop_anchor_lower=9.8)
+    a.state['active_stop'] = 9.8
+    rows = {'gray':level('gray',10.,10.02,'support'), 'red':level('red',10.2,10.22)}
+    a.state['squeeze_breakout']['resistance_1s']['catalog']['gray'] = rows['gray']
+    monkeypatch.setattr(M, 'levels', lambda *args: rows)
+    monkeypatch.setattr(M, 'fresh_structure', lambda *args: True)
+    monkeypatch.setattr(M, 'observe_resistances', lambda *args: ([],False,False))
+    result = h.evaluate(a,t(16.04,10.44,100))
+    stop = next(i for i in result.evaluation.intents if i.action=='replace_protective_stop')
+    assert stop.invalidation_price == 10.19
+    assert result.state['squeeze_entry']['stop_selection']['levels'][0]['unified_level_id']=='red'

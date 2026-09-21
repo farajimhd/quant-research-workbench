@@ -368,7 +368,7 @@ def evaluate(host, a, o, p, old_state):
             # Keep accepted resistance identity even after it becomes support.
             catalog = {k:dict(r, role='resistance') for k, r in rows.items()
                 if k in d.get('resistance_1s', {}).get('catalog', {}) or P.eligible(r)}
-            step = next_stop(active, catalog, tick)
+            step = next_stop(active, rows if session_progression else catalog, tick)
             if stop < step['price'] < min(o.price, o.bid):
                 old_selection = deepcopy(active.get('stop_selection'))
                 old_steps = active.get('stop_steps', 0)
@@ -384,7 +384,7 @@ def evaluate(host, a, o, p, old_state):
                         momentum_previous_stop_anchor=old_anchor, stop_exit_reason='three_resistance_step_stop')))
         desired_multiplier = active.get('target_multiplier', 5)
         if quote and desired_multiplier > active.get('submitted_multiplier', 5):
-            indicative = target_price(o.average_price or active['entry_price'], active['average_gap'], desired_multiplier, tick)
+            indicative = target_price(active.get('target_entry_basis') or o.average_price or active['entry_price'], active['average_gap'], desired_multiplier, tick)
             state['structural_profit_targets'] = [indicative]
             results.append(emit('replace_profit_target', 'momentum_target_upgrade', Status.MANAGING,
                 quantity=o.position_quantity, profit_target_price=indicative, metadata=dict(
@@ -471,7 +471,7 @@ def evaluate(host, a, o, p, old_state):
             target_multiplier=initial_multiplier, submitted_multiplier=initial_multiplier, broken_levels=[],
             target_session_step=len(progress.get('broken_levels', []))//3, recent_reentry=recent_reentry)
     multiplier = active['target_multiplier']
-    target = target_price(o.ask, gap, multiplier, tick)
+    target = target_price(active.get('target_entry_basis', o.ask) if session_progression else o.ask, gap, multiplier, tick)
     if not 0 < stop < min(o.price, o.bid) <= o.ask < target:
         return emit('wait', 'unrepresentable_stop_or_target')
     if not held:
@@ -487,6 +487,7 @@ def evaluate(host, a, o, p, old_state):
             unreserved_cash_slice=True, cash_fraction_of_unreserved=True,
             squeeze_add_levels=[addition['level']['unified_level_id']] if addition else [],
             resistance_confirmation=deepcopy(addition), stop_exit_reason=active['stop_reason'],
-            momentum_target=dict(average_gap=gap, multiplier=multiplier, tick_size=tick),
+            momentum_target=dict(average_gap=gap, multiplier=multiplier, tick_size=tick,
+                **(dict(shared_entry_basis=True, entry_basis=active.get('target_entry_basis')) if session_progression else {})),
             momentum_initial_stop=deepcopy(active['stop_selection']) if not held else None,
             protective_stop_selection=deepcopy(active['stop_selection']), vwap_gate=dict(value=vwap, observed_at=source.get('observed_at')) if not held else None))

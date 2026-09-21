@@ -1829,7 +1829,7 @@ class OrderManagementEngine:
                     raise ValueError('Momentum target amendment requires tranche target authority')
                 # An unfilled acquisition retains a provisional target; its first
                 # fill will rebase using the upgraded multiplier.
-                basis = group.intent.metadata.get('momentum_fill_average') or group.intent.reference_price
+                basis = momentum.get('entry_basis') or group.intent.metadata.get('momentum_fill_average') or group.intent.reference_price
                 momentum_prices[group.group_id] = momentum_price(basis,
                     momentum['average_gap'], multiplier, momentum['tick_size'])
         async with self._command_lane(account_id):
@@ -2925,7 +2925,8 @@ class OrderManagementEngine:
         """Reconcile this purchase's target to cumulative broker fill cost.
 
         Persist desired prices before amendments so repair and restart use the
-        same authority. Other purchases retain their own fill price and target.
+        same authority. Shared-entry targets retain their fixed initial fill basis;
+        legacy purchases retain their own fill price and target.
         """
         spec = group.intent.metadata.get('momentum_target')
         if not spec or group.intent.action not in {'enter_long', 'add_long'}:
@@ -2939,7 +2940,15 @@ class OrderManagementEngine:
         costs[order_id] = dict(quantity=quantity, notional=quantity*average)
         total = sum(c['quantity'] for c in costs.values())
         average = sum(c['notional'] for c in costs.values())/total
-        target = target_price(average, spec['average_gap'], spec['multiplier'], spec['tick_size'])
+        if spec.get('shared_entry_basis'):
+            if not spec.get('entry_basis'):
+                if group.intent.action != 'enter_long':
+                    raise ValueError('Shared addition target requires initial entry fill basis')
+                spec = {**spec, 'entry_basis': average}
+            basis = spec['entry_basis']
+        else:
+            basis = average
+        target = target_price(basis, spec['average_gap'], spec['multiplier'], spec['tick_size'])
         stop = group.intent.invalidation_price
         selection = group.intent.metadata.get('momentum_initial_stop') or {}
         if selection.get('reason') in {'one_percent_entry_stop', 'five_percent_entry_stop'} and not group.intent.metadata.get('momentum_stop_advanced'):
@@ -2952,7 +2961,7 @@ class OrderManagementEngine:
             stop=replace(s.stop, price=stop)) for s in profile.slices))
         group.intent = replace(group.intent, profit_target_price=target, invalidation_price=stop,
             protection_profile=profile, metadata={**group.intent.metadata,
-                'momentum_fill_costs':costs, 'momentum_fill_average':average, 'active_stop':stop})
+                'momentum_target':spec, 'momentum_fill_costs':costs, 'momentum_fill_average':average, 'active_stop':stop})
         self._transition(group, group.state, {'event':'momentum_actual_fill_protection',
             'average_fill_price':average, 'filled_quantity':total, 'target_price':target, 'stop_price':stop})
         for live in await self.broker.live_orders():

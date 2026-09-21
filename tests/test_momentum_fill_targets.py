@@ -12,11 +12,12 @@ from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
 from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES
 
 
+@pytest.mark.parametrize('shared', [False, True])
 @pytest.mark.parametrize('amend_multiplier', [8, 12, 14])
 @pytest.mark.parametrize('canonical', [False, True])
 @pytest.mark.parametrize('signal_reference', [9.92, 10.4])
 @pytest.mark.parametrize('fallback_percent', [1, 5])
-def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_path, canonical, signal_reference, fallback_percent, amend_multiplier):
+def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_path, canonical, signal_reference, fallback_percent, amend_multiplier, shared):
     async def run():
         broker = SimulatedBrokerAdapter(['DU1'], mode=TradingMode.BACKTEST)
         manager, journal = await helpers.OrderManagementPolicyTests()._manager(
@@ -33,7 +34,7 @@ def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_pa
                     invalidation_price=9.9, profit_target_price=11.4,
                     protection_profile=ProtectionProfile('momentum-test', 1, slices=(ProtectionSlice(
                         'all', 1., StopRule(StopRuleType.FIXED_PRICE, price=9.9), profit_target_price=11.4),)),
-                    metadata={**request.metadata, 'momentum_target': dict(average_gap=.2, multiplier=5, tick_size=.01),
+                    metadata={**request.metadata, 'momentum_target': dict(average_gap=.2, multiplier=5, tick_size=.01, **(dict(shared_entry_basis=True, entry_basis=10. if n else None) if shared else {})),
                         'momentum_initial_stop': {'reason':stop_reason} if n == 0 else None,
                         'stop_exit_reason':stop_reason, 'mandatory_broker_target': True})
                 snapshot = await manager.submit_intent(helpers.portfolio_approved(journal, request), account_id='DU1', event=None)
@@ -49,14 +50,14 @@ def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_pa
                         await manager.on_order_update(order)
                     await manager.on_order_update(order)
                 groups.append(group)
-            assert [g.intent.profit_target_price for g in groups] == pytest.approx([11.06, 11.3])
+            assert [g.intent.profit_target_price for g in groups] == pytest.approx([11., 11.] if shared else [11.06, 11.3])
             assert groups[0].intent.invalidation_price == pytest.approx(9.55 if fallback_percent == 5 else 9.95)
             assert groups[0].intent.reference_price == signal_reference
             amendment = replace(helpers.intent(action='replace_profit_target', quantity=200.),
                 reference_price=13., profit_target_price=11.78,
                 metadata={'momentum_target_multiplier': amend_multiplier})
             await manager.submit_intent(helpers.portfolio_approved(journal, amendment), account_id='DU1', event=None)
-            assert [g.intent.profit_target_price for g in groups] == pytest.approx([10.06+.2*amend_multiplier, 10.3+.2*amend_multiplier])
+            assert [g.intent.profit_target_price for g in groups] == pytest.approx([10.+.2*amend_multiplier]*2 if shared else [10.06+.2*amend_multiplier, 10.3+.2*amend_multiplier])
             for group in groups:
                 targets = [o for o in await broker.live_orders() if group.broker_order_roles.get(str(o.orderId)) == 'profit_target'
                     and o.order_status in OPEN_ORDER_STATUSES]

@@ -6543,6 +6543,8 @@ class AssignedLongMomentumStrategy:
                         active = deepcopy(state['squeeze_entry'])
                         if momentum and 'first_fill_at' not in active:
                             state.setdefault('squeeze_breakout', {})['last_entry_fill_at'] = snapshot.updated_at.timestamp()
+                        if momentum and assignment.parameters.get('momentum_session_progression'):
+                            active.setdefault('target_entry_basis', snapshot.momentum_fill_average)
                         active.setdefault('first_fill_at', snapshot.updated_at.timestamp())
                         state['squeeze_entry'] = active
                         state.setdefault('squeeze_breakout', {}).pop('recovery', None)

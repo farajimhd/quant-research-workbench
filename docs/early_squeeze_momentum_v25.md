@@ -12,10 +12,10 @@ activation, each distinct causally confirmed resistance counts once per ticker
 and New York session, including confirmations while flat. Every three new
 levels advance 5x -> 8x -> 10x -> 12x -> 13x -> 14x -> ... with no speed limit.
 Partial groups and the multiplier persist across exits and checkpoint restore;
-a new session resets them. Each tranche retains its own actual fill-price basis.
+a new session resets them. All purchases share the first actual entry fill as their fixed target basis. Additions and later partial fills do not move that basis.
 
 The target counter and each position's stop counter are independent. Stops keep
-the existing three-break, one-resistance-step rule below the lower band. A new
+the three-break, one-resistance-step rule below the lower band, selecting only current causal resistance levels; catalogued levels now marked support are excluded. A new
 position resets its stop counter; it does not reset session target progress.
 
 ## Qualifying recent re-entry
