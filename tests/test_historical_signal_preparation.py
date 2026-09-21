@@ -19,7 +19,7 @@ class SignalPreparationTests(IsolatedAsyncioTestCase):
     async def test_configured_reconstruction_reuses_certified_frozen_population(self):
         stream = dict(signal_stream_id='early', occurrence_source='qmd_squeeze_episode')
         config = dict(signal_activation=dict(rule_sets=[], column_catalog=[]))
-        with patch.object(service.asyncio, 'create_subprocess_exec', side_effect=self.fake_producer) as producer:
+        with patch.object(service.subprocess, 'Popen', side_effect=self.fake_producer) as producer:
             first = await service.reconstruct_configured_signal_occurrences(stream, configuration=config,
                 start=self.start, end=self.end)
             self.population.side_effect = AssertionError('Cached certification must not query reference data')
@@ -91,16 +91,19 @@ class SignalPreparationTests(IsolatedAsyncioTestCase):
             maximum_price_exclusive=20.0, timing_policy="canonical_sip", activation="first_qualifying_signal_through_session_end")
         service._save(directory / "manifest.json", manifest)
 
-    async def fake_producer(self, binary, request, output, **kwargs):
+    def fake_producer(self, args, **kwargs):
+        binary, request, output = args
         self.write_artifact(Path(output), Path(request))
         class Process:
             returncode = 0
-            async def wait(self):
+            def poll(self):
+                return self.returncode
+            def wait(self, timeout=None):
                 return 0
         return Process()
 
     async def test_original_session_reuses_exact_pin_without_population_or_producer(self):
-        with patch.object(service.asyncio, "create_subprocess_exec") as producer:
+        with patch.object(service.subprocess, "Popen") as producer:
             result = await service.prepared_signal_occurrences(self.stream, start=self.start, end=self.end)
         producer.assert_not_called()
         self.population.assert_not_called()
@@ -108,7 +111,7 @@ class SignalPreparationTests(IsolatedAsyncioTestCase):
         self.assertEqual(self.stream, self.original)
 
     async def test_new_dates_generate_distinct_certified_requests_and_reuse(self):
-        with patch.object(service.asyncio, "create_subprocess_exec", side_effect=self.fake_producer) as producer:
+        with patch.object(service.subprocess, "Popen", side_effect=self.fake_producer) as producer:
             for offset in (-2, 3):
                 start, end = self.start + timedelta(days=offset), self.end + timedelta(days=offset)
                 check = service.signal_coverage_check([self.stream], start=start, end=end)
@@ -128,14 +131,14 @@ class SignalPreparationTests(IsolatedAsyncioTestCase):
 
     async def test_concurrent_callers_share_one_producer(self):
         start, end = self.start + timedelta(days=3), self.end + timedelta(days=3)
-        with patch.object(service.asyncio, "create_subprocess_exec", side_effect=self.fake_producer) as producer:
+        with patch.object(service.subprocess, "Popen", side_effect=self.fake_producer) as producer:
             results = await asyncio.gather(*(service.prepared_signal_occurrences(self.stream, start=start, end=end) for _ in range(2)))
         self.assertEqual(producer.call_count, 1)
         self.assertEqual(results[0], results[1])
 
     async def test_corrupt_pin_and_recipe_fail_closed(self):
         start, end = self.start + timedelta(days=3), self.end + timedelta(days=3)
-        with patch.object(service.asyncio, "create_subprocess_exec", side_effect=self.fake_producer):
+        with patch.object(service.subprocess, "Popen", side_effect=self.fake_producer):
             await service.prepared_signal_occurrences(self.stream, start=start, end=end)
         manifest = next((self.root / "trading/signal-preparation").rglob("manifest.json"))
         manifest.write_bytes(manifest.read_bytes() + b" ")
@@ -153,7 +156,7 @@ class SignalPreparationTests(IsolatedAsyncioTestCase):
         self.assertFalse((self.root / "trading").exists())
 
     async def test_multiple_sessions_keep_both_occurrences_for_same_ticker(self):
-        with patch.object(service.asyncio, "create_subprocess_exec", side_effect=self.fake_producer):
+        with patch.object(service.subprocess, "Popen", side_effect=self.fake_producer):
             result = await service.prepared_signal_occurrences(self.stream, start=self.start - timedelta(days=2),
                                                                end=self.end - timedelta(days=1))
         self.assertEqual(len(result["occurrences"]), 2)
@@ -162,22 +165,21 @@ class SignalPreparationTests(IsolatedAsyncioTestCase):
 
     async def test_stop_terminates_producer_and_never_publishes_partial_artifact(self):
         start, end = self.start + timedelta(days=3), self.end + timedelta(days=3)
-        process_done = asyncio.Event()
         class Process:
             returncode = None
             terminated = False
-            async def wait(self):
-                await process_done.wait()
-                return -1
+            def poll(self):
+                return self.returncode
+            def wait(self, timeout=None):
+                return self.returncode
             def terminate(self):
                 self.terminated = True
                 self.returncode = -1
-                process_done.set()
         process = Process()
-        async def launch(*args, **kwargs):
+        def launch(*args, **kwargs):
             return process
         checks = iter([False, True])
-        with patch.object(service.asyncio, "create_subprocess_exec", side_effect=launch):
+        with patch.object(service.subprocess, "Popen", side_effect=launch):
             with self.assertRaises(asyncio.CancelledError):
                 await service.prepared_signal_occurrences(self.stream, start=start, end=end, stopped=lambda: next(checks))
         self.assertTrue(process.terminated)
@@ -195,7 +197,7 @@ class SignalPreparationTests(IsolatedAsyncioTestCase):
         controller.run_dir.mkdir(parents=True, exist_ok=True)
         controller._journal = TradingJournal(controller.run_dir / "journal.sqlite3")
         try:
-            with patch.object(service.asyncio, "create_subprocess_exec", side_effect=self.fake_producer) as producer:
+            with patch.object(service.subprocess, "Popen", side_effect=self.fake_producer) as producer:
                 events = await controller._load_source_native_signal_events()
                 repeated = await controller._load_source_native_signal_events()
             self.assertEqual(producer.call_count, 1)
@@ -245,7 +247,26 @@ class SignalPreparationTests(IsolatedAsyncioTestCase):
         service._freeze_request(plan)
         self.assertEqual(original, request.read_bytes())
         request.write_bytes(original + b" ")
-        with patch.object(service.asyncio, "create_subprocess_exec") as producer:
+        with patch.object(service.subprocess, "Popen") as producer:
             with self.assertRaisesRegex(ValueError, "request changed"):
                 await service.prepared_signal_occurrences(self.stream, start=start, end=end)
             producer.assert_not_called()
+
+
+def test_signal_process_runs_on_selector_loop(tmp_path):
+    import sys
+    async def run():
+        with (tmp_path / 'child.log').open('wb') as log:
+            async with service.preparation_process(sys.executable, '-c', 'print("selector-ok")',
+                    stdout=log, stderr=log,
+                    **({'creationflags': 0x08000000} if os.name == 'nt' else {})) as process:
+                while process.poll() is None:
+                    await asyncio.sleep(.01)
+                assert process.returncode == 0
+        assert (tmp_path / 'child.log').read_text().strip() == 'selector-ok'
+    loop = asyncio.SelectorEventLoop()
+    try:
+        loop.run_until_complete(run())
+        loop.run_until_complete(loop.shutdown_default_executor())
+    finally:
+        loop.close()

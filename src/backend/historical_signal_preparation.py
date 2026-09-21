@@ -14,6 +14,7 @@ import json
 import os
 import re
 import subprocess
+from .filtered_v7_preparation import preparation_process
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -250,24 +251,18 @@ async def _produce(plan: dict[str, Any], *, progress: Callable, stopped: Callabl
         _load_repository_env()
         env.update({k: v for k, v in os.environ.items() if k not in env})
         with (directory / "producer.log").open("ab") as log:
-            process = await asyncio.create_subprocess_exec(str(plan["binary"]), str(request_path),
-                str(manifest_path.parent), env=env, stdout=log, stderr=log,
-                **({"creationflags": 0x08000000} if os.name == "nt" else {}))
-            waiter = asyncio.create_task(process.wait())
-            try:
-                while not waiter.done():
+            async with preparation_process(str(plan["binary"]), str(request_path),
+                    str(manifest_path.parent), env=env, stdout=log, stderr=log,
+                    **({"creationflags": 0x08000000} if os.name == "nt" else {})) as process:
+                while process.poll() is None:
                     if stopped():
                         raise asyncio.CancelledError("Signal preparation stopped")
                     status_path = manifest_path.parent / "status.json"
                     status = json.loads(status_path.read_bytes()) if status_path.exists() else {}
                     progress({**status, "session": plan["day"].isoformat(), "stage": "signal_preparation"})
-                    await asyncio.wait({waiter}, timeout=0.5)
-                if waiter.result() != 0:
+                    await asyncio.sleep(0.5)
+                if process.returncode != 0:
                     raise RuntimeError(f"Canonical signal preparation failed for {plan['day']}; see {directory / 'producer.log'}")
-            finally:
-                if process.returncode is None:
-                    process.terminate()
-                await asyncio.shield(waiter)
     resolved = {**plan["stream"], "historical_occurrence_artifact":
                 dict(manifest_path=str(manifest_path), manifest_sha256=_hash(manifest_path))}
     _, manifest = certified_signal_manifest(resolved)
