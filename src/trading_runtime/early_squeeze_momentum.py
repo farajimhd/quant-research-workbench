@@ -356,6 +356,9 @@ def evaluate(host, a, o, p, old_state):
         return emit('wait', 'outside_trading_session')
     if 'activated_at' not in d:
         return emit('wait', 'waiting_for_early_squeeze')
+    if not held and now < d.get('target_reentry_not_before', 0):
+        return emit('wait', 'target_hit_same_1s_candle', metadata=dict(
+            reentry_not_before=d['target_reentry_not_before']))
     if not trade or not fresh:
         return emit('hold' if held else 'wait', 'fresh_causal_trade_and_v7_required')
     if not session_valid:

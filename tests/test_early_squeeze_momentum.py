@@ -322,6 +322,10 @@ def test_partial_exit_liquidates_remainder_and_preserves_first_cause(role, reaso
     assert current.status == S.AssignmentStatus.EXIT_PENDING
     assert current.state['entry_acquisition_exit_latched']
     assert current.state['last_exit_reason'] == reason
+    if role == 'profit_target':
+        assert current.state['squeeze_breakout']['target_reentry_not_before'] == int(t(16.03).observed_at.timestamp()) + 1
+    else:
+        assert 'target_reentry_not_before' not in current.state['squeeze_breakout']
     result = h.evaluate(current, t(16.04, 10.45, 90.))
     exit_intent, = result.evaluation.intents
     assert exit_intent.action == 'exit'
@@ -351,3 +355,21 @@ def test_candidate_compiles_separate_contract_and_session_behavior(monkeypatch):
     compiled_profile = next(p for p in compiled['strategy']['profiles'] if p['profile_id'] == M.CONTRACT)
     assert S.resolve_long_momentum_parameters(compiled_profile['parameters'])['early_squeeze_breakout_contract'] == M.CONTRACT
     assert S.resolve_long_momentum_parameters(compiled_profile['parameters'])['momentum_fallback_stop_percent'] == 5
+
+
+def test_target_reentry_waits_until_next_second_and_keeps_normal_gates():
+    h, a, t, _, _ = momentum_fixture()
+    until = int(t(16.02).observed_at.timestamp()) + 1
+    a.state['squeeze_breakout']['target_reentry_not_before'] = until
+    # Includes a fresh trade immediately before the next candle boundary.
+    for second in (16.02, 16.999999):
+        result = h.evaluate(a, t(second, 10.44))
+        assert result.evaluation.signals[0].reason == 'target_hit_same_1s_candle'
+        assert not result.evaluation.intents
+    baseline = replace(a, state=deepcopy(a.state))
+    baseline.state['squeeze_breakout'].pop('target_reentry_not_before')
+    for second in (17., 17.01):
+        result = h.evaluate(a, t(second, 10.44))
+        normal = h.evaluate(baseline, t(second, 10.44))
+        assert result.evaluation.signals[0].reason == normal.evaluation.signals[0].reason
+        assert result.evaluation.signals[0].reason != 'target_hit_same_1s_candle'

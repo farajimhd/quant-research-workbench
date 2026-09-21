@@ -71,6 +71,12 @@ def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path
                 await quote(trade(16.5).observed_at, stop-.02, stop-.01)
             positions = await runtime.broker.positions(assigned.account_id)
             assert not any(p.position for p in positions)
+            if exit_kind == 'partial_target':
+                await runtime.process_account_strategy_observation(trade(16.7, 10.44), assigned.account_id)
+                decisions = [r.payload for r in controller._journal.records(controller.run_id)
+                    if r.category == 'strategy_decision']
+                assert decisions[-1]['reason'] == 'target_hit_same_1s_candle'
+                assert not any(p.position for p in await runtime.broker.positions(assigned.account_id))
             executions = await runtime.broker.trades()
             assert len(executions) >= 2
             sells = [e for e in executions if str(e.side).upper() in {'SELL', 'SLD', 'S'}]

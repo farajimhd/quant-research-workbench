@@ -6599,6 +6599,10 @@ class AssignedLongMomentumStrategy:
                     # The first target execution commits the whole position to
                     # liquidation, including other tranches and pending buys.
                     state.setdefault('last_exit_reason', str(getattr(snapshot, 'fill_exit_reason', '') or 'profit_target'))
+                    breakout = state.setdefault('squeeze_breakout', {})
+                    breakout['target_reentry_not_before'] = max(
+                        breakout.get('target_reentry_not_before', 0),
+                        floor(snapshot.updated_at.timestamp()) + 1)
                 if momentum and incremental_fill > 0 and fill_role in {'protective_stop', 'trailing_stop', 'protective_exit'}:
                     state.setdefault('last_exit_reason', str(getattr(snapshot, 'fill_exit_reason', '') or
                         (state.get('squeeze_entry') or {}).get('stop_reason') or fill_role))

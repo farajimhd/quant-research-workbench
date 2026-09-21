@@ -57,6 +57,9 @@ or live-release acceptance.
   target's recorded exit reason. Stops and the session boundary also liquidate
   the remainder. CHOCH, chop, bearish MACD and
   loss of VWAP are not strategy exits.
+- After a target fill, re-entry is blocked through the remainder of that
+  1-second candle. The next second restores eligibility, subject to every
+  normal entry gate. The restriction persists across position closure.
 
 ## Execution and presentation
 
