@@ -6595,6 +6595,10 @@ class AssignedLongMomentumStrategy:
                 status = AssignmentStatus.MANAGING
             elif action in {"exit", "take_profit", "cover"}:
                 fill_role = str(getattr(snapshot, "fill_role", "") or "")
+                if momentum and incremental_fill > 0 and fill_role == 'profit_target':
+                    # The first target execution commits the whole position to
+                    # liquidation, including other tranches and pending buys.
+                    state.setdefault('last_exit_reason', str(getattr(snapshot, 'fill_exit_reason', '') or 'profit_target'))
                 if momentum and incremental_fill > 0 and fill_role in {'protective_stop', 'trailing_stop', 'protective_exit'}:
                     state.setdefault('last_exit_reason', str(getattr(snapshot, 'fill_exit_reason', '') or
                         (state.get('squeeze_entry') or {}).get('stop_reason') or fill_role))
@@ -6627,7 +6631,7 @@ class AssignedLongMomentumStrategy:
                     if level:
                         state["stopped_level_recovery"] = dict(level)
                 target_preserves_remainder = (v5_breakout.episode(assignment.parameters)
-                    or bool(swing_gap.runner_policy(assignment.parameters)) or momentum)
+                    or bool(swing_gap.runner_policy(assignment.parameters))) and not momentum
                 planned_target_reduction = (fill_role == 'profit_target' and target_preserves_remainder
                     and aggregate_position_quantity is not None and abs(float(aggregate_position_quantity)) > 1e-9)
                 if (incremental_fill > 0 and target_preserves_remainder
@@ -6702,7 +6706,7 @@ class AssignedLongMomentumStrategy:
                     # sell while the first exit and its fallback remain open.
                     status = (
                         AssignmentStatus.MANAGING
-                        if fill_role == "profit_target"
+                        if fill_role == "profit_target" and not momentum
                         else AssignmentStatus.EXIT_PENDING
                     )
                 elif assignment.status in {

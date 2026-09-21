@@ -300,7 +300,7 @@ def _compact_historical_broker_projection(payload: dict[str, Any]) -> None:
                 "source_event_time", "broker_order_id", "client_order_id",
                 "exchange", "commission", "commission_currency",
                 "commission_status", "net_amount", "strategy_id",
-                "strategy_revision", "run_id",
+                "strategy_revision", "run_id", "exit_reason",
             )
             if execution.get(key) not in (None, "")
         }

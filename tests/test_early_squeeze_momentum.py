@@ -304,7 +304,9 @@ def test_replay_freezes_activation_snapshot_once_even_before_requested_start(tmp
     assert frozen == run._candle_detector_states[assignment.ticker]['structural_recovery']['momentum_activation']
 
 
-def test_partial_target_keeps_other_tranches_but_stop_liquidates_remainder():
+@pytest.mark.parametrize('role,reason', [('profit_target', 'momentum_target_10x'),
+    ('protective_stop', 'three_resistance_step_stop')])
+def test_partial_exit_liquidates_remainder_and_preserves_first_cause(role, reason):
     import asyncio
     from types import SimpleNamespace
     h, a, t, _, _ = momentum_fixture()
@@ -312,18 +314,25 @@ def test_partial_target_keeps_other_tranches_but_stop_liquidates_remainder():
     a = replace(a, status=S.AssignmentStatus.MANAGING)
     a.state['squeeze_entry']['first_fill_at'] = t(16.02).observed_at.timestamp()
     adapter = S.AssignedLongMomentumStrategy([a], revision=47)
-    for role, expected in [('profit_target', S.AssignmentStatus.MANAGING), ('protective_stop', S.AssignmentStatus.EXIT_PENDING)]:
-        asyncio.run(adapter.on_order_group_update(SimpleNamespace(assignment_id=a.assignment_id,
-            action='exit', fill_role=role, fill_incremental_quantity=10., state='partially_filled',
-            updated_at=t(16.03).observed_at), aggregate_position_quantity=90.))
-        current = adapter.assignments()[0]
-        assert current.status == expected
-        assert bool(current.state.get('entry_acquisition_exit_latched')) == (role == 'protective_stop')
-        if role == 'protective_stop':
-            assert current.state['last_exit_reason'] == a.state['squeeze_entry']['stop_reason']
-        if role == 'profit_target':
-            assert not current.state.get('profit_target_liquidation_required')
-            assert not any(i.action == 'exit' for i in h.evaluate(current, t(16.04, 10.45, 90.)).evaluation.intents)
+    snapshot = SimpleNamespace(assignment_id=a.assignment_id, action='exit', fill_role=role,
+        fill_exit_reason=reason, fill_incremental_quantity=10., state='partially_filled',
+        updated_at=t(16.03).observed_at)
+    asyncio.run(adapter.on_order_group_update(snapshot, aggregate_position_quantity=90.))
+    current = adapter.assignments()[0]
+    assert current.status == S.AssignmentStatus.EXIT_PENDING
+    assert current.state['entry_acquisition_exit_latched']
+    assert current.state['last_exit_reason'] == reason
+    result = h.evaluate(current, t(16.04, 10.45, 90.))
+    exit_intent, = result.evaluation.intents
+    assert exit_intent.action == 'exit'
+    assert exit_intent.quantity == 90
+    assert exit_intent.metadata['exit_reason'] == reason
+    assert exit_intent.metadata['cancel_entry_acquisition']
+    # A later stop execution cannot overwrite the initiating target cause.
+    snapshot.fill_role = 'protective_stop'
+    snapshot.fill_exit_reason = 'five_percent_entry_stop'
+    asyncio.run(adapter.on_order_group_update(snapshot, aggregate_position_quantity=80.))
+    assert adapter.assignments()[0].state['last_exit_reason'] == reason
 
 
 def test_candidate_compiles_separate_contract_and_session_behavior(monkeypatch):

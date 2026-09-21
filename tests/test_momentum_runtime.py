@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from dataclasses import replace
 from datetime import time
 
@@ -8,7 +9,8 @@ from src.backend.replay_run_service import ReplayRunController, ReplayRunDefinit
 from src.trading_runtime.journal import TradingJournal
 
 
-def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path):
+@pytest.mark.parametrize('exit_kind', ['stop', 'partial_target'])
+def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path, exit_kind):
     async def run():
         _, prepared, trade, _, _ = momentum_fixture()
         configuration = approved_configuration(assignments=[dict(
@@ -43,17 +45,37 @@ def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path
             assert group.intent.profit_target_price > group.intent.metadata['momentum_fill_average']
             assert controller._strategy.assignments()[0].state['squeeze_breakout']['momentum_requests'][group.intent.intent_id]['filled']
             stop = group.intent.invalidation_price
-            event = _debug_market_events((dict(kind='trade', ticker=assigned.ticker, ts=trade(16.4).observed_at.isoformat(),
-                price=stop-.01, size=10000),))[0]
-            await runtime.process_event(event, evaluate_strategy=False)
-            await quote(trade(16.5).observed_at, stop-.02, stop-.01)
+            expected_reason = group.intent.metadata['stop_exit_reason']
+            if exit_kind == 'partial_target':
+                target = group.intent.profit_target_price
+                event = _debug_market_events((dict(kind='quote', ticker=assigned.ticker,
+                    ts=trade(16.4).observed_at.isoformat(), bid_price=target, ask_price=target+.02,
+                    bid_size=1, ask_size=1),))[0]
+                await runtime.process_event(event, evaluate_strategy=False)
+                held = sum(p.position for p in await runtime.broker.positions(assigned.account_id))
+                assert 0 < held < group.filled_quantity
+                current = controller._strategy.assignments()[0]
+                assert current.state['entry_acquisition_exit_latched']
+                expected_reason = 'momentum_target_5x'
+                assert current.state['last_exit_reason'] == expected_reason
+                # Price retreats below the target. The engine must still sell
+                # all remaining shares through Portfolio and OMS, not wait.
+                await quote(trade(16.5).observed_at, target-.10, target-.08)
+                await runtime.process_account_strategy_observation(
+                    replace(trade(16.5, target-.09, held), bid=target-.10, ask=target-.08), assigned.account_id)
+                await quote(trade(16.6).observed_at, target-.10, target-.08)
+            else:
+                event = _debug_market_events((dict(kind='trade', ticker=assigned.ticker, ts=trade(16.4).observed_at.isoformat(),
+                    price=stop-.01, size=10000),))[0]
+                await runtime.process_event(event, evaluate_strategy=False)
+                await quote(trade(16.5).observed_at, stop-.02, stop-.01)
             positions = await runtime.broker.positions(assigned.account_id)
             assert not any(p.position for p in positions)
             executions = await runtime.broker.trades()
             assert len(executions) >= 2
             sells = [e for e in executions if str(e.side).upper() in {'SELL', 'SLD', 'S'}]
             assert sells
-            assert all(e.raw['canonical_metadata'].get('exit_reason') == group.intent.metadata['stop_exit_reason'] for e in sells)
+            assert all(e.raw['canonical_metadata'].get('exit_reason') == expected_reason for e in sells)
         finally:
             if controller._runtime:
                 await controller._runtime.finish()

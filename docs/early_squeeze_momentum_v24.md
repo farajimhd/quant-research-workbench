@@ -51,8 +51,11 @@ or live-release acceptance.
   than three seconds upgrade all open targets to 8x; three new such resistances
   upgrade to 10x, then no further upgrades. Slow crossings do not upgrade.
   Triples do not overlap. Later additions inherit the current multiplier.
-- A tranche target fill leaves the other tranches under management. Stops and
-  the session boundary liquidate the remainder. CHOCH, chop, bearish MACD and
+- The first target fill, including a partial fill, immediately commits the
+  entire remaining position to urgent liquidation and cancels pending buys.
+  Completion uses available executable liquidity, retaining the triggering
+  target's recorded exit reason. Stops and the session boundary also liquidate
+  the remainder. CHOCH, chop, bearish MACD and
   loss of VWAP are not strategy exits.
 
 ## Execution and presentation

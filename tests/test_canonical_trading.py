@@ -880,5 +880,16 @@ class CanonicalBacktestTests(unittest.TestCase):
             self.assertEqual(state["performance_snapshot"]["available_cash_basis"], "total_cash")
 
 
+def test_compact_historical_projection_retains_each_execution_exit_reason():
+    from src.backend.canonical_trading_service import _compact_historical_broker_projection
+    rows = [dict(execution_id=str(i), side='SELL', quantity=10, price=10,
+        exit_reason=reason, raw={'canonical_metadata': {'large_evidence': [1]*1000}})
+        for i, reason in enumerate(['momentum_target_10x', 'three_resistance_step_stop', ''])]
+    payload = {'executions': rows}
+    _compact_historical_broker_projection(payload)
+    assert [r.get('exit_reason', '') for r in rows] == ['momentum_target_10x', 'three_resistance_step_stop', '']
+    assert all(r['raw'] == {} for r in rows)
+
+
 if __name__ == "__main__":
     unittest.main()
