@@ -32,12 +32,29 @@ def test_exit_reasons_at_issue_time_and_causal_cutoff():
               const missing=project({...trading,strategy_chart_activity:[{...activity[0],reason:''}]},'TEST')[0].exitIntents[0];
               if(!missing.label.includes('Reason unavailable')||missing.label.includes('later_fill'))throw Error('Future filled reason substituted');
               if(shortExitReason('protective_swing_failed')!=='Swing low failed')throw Error('Swing reason');
+              const fillRows=[
+                {execution_id:'buy',broker_order_id:'buy',side:'BUY',quantity:100,price:4.79,source_event_time:iso(17)},
+                {execution_id:'target',broker_order_id:'target',side:'SELL',quantity:40,price:4.89,source_event_time:iso(20),exit_reason:'momentum_target_8x'},
+                {execution_id:'stop',broker_order_id:'stop',side:'SELL',quantity:60,price:4.82,source_event_time:iso(23),exit_reason:'three_resistance_step_stop'},
+              ];
+              const fillTrading={...trading,position_lifecycles:[{...positions[2],execution_ids:fillRows.map(r=>r.execution_id)}],
+                executions:fillRows,orders:fillRows.map(r=>({broker_order_id:r.broker_order_id,status:'filled',total_quantity:r.quantity,filled_quantity:r.quantity}))};
+              const filled=project(fillTrading,'TEST')[0];
+              if(!filled.exitFills[0].label.includes('Target filled · 8× frozen gap'))throw Error('Per-tranche target cause missing');
+              if(!filled.exitFills[1].label.includes('Three-resistance trailing stop hit'))throw Error('Stop cause missing');
+              const unknown=project({...fillTrading,executions:fillRows.map(r=>({...r,exit_reason:''}))},'TEST')[0];
+              if(!unknown.exitFills.every(r=>r.label.includes('Reason unavailable')))throw Error('Exit cause invented');
+              const amended=project({...fillTrading,executions:fillRows.map(r=>r.execution_id==='stop'
+                ? {...r,broker_order_id:'target',exit_reason:'momentum_target_10x'} : r)},'TEST')[0];
+              if(amended.exitFills.length!==2||!amended.exitFills[1].label.includes('10× frozen gap'))throw Error('Amended target causes merged');
+              trades[2]=filled;
               const candles=Array.from({length:24},(_,i)=>({time:base+i,endTime:base+i+1,open:4.65+i*.003,close:4.65+(i+1)*.003,high:4.67+(i+1)*.003,low:4.64+i*.003}));
               window.__exitTexts=[];
               const fillText=CanvasRenderingContext2D.prototype.fillText;
               CanvasRenderingContext2D.prototype.fillText=function(text,...args){window.__exitTexts.push(String(text));return fillText.call(this,text,...args)};
               document.getElementById('root').style.display='none';
               const node=document.createElement('div');document.body.appendChild(node);
+              node.style.cssText='zoom:var(--app-zoom);width:calc(100vw / var(--app-zoom));height:calc(100vh / var(--app-zoom))';
               (dom.default??dom).createRoot(node).render(React.createElement(ChartPanel,{ticker:'TEST',timeframe:'1s',timeframes:['1s'],baseHeight:650,
                 settingsStorageKey:'exit-reason-review',visibleColumns:[],featureOptions:[],indicatorOptions:[],displayItemOptions:[],
                 payload:{candles,volume:[],overlay_series:[],oscillator_series:[],markers:[],regions:[],trade_annotations:trades}}));
@@ -46,9 +63,13 @@ def test_exit_reasons_at_issue_time_and_causal_cutoff():
             for theme,scale,width in [('light',1,1500),('dark',.8,1000),('light',1.25,1000)]:
                 page.set_viewport_size({'width':width,'height':950})
                 page.evaluate("""async([theme,s])=>{const d=document.documentElement;(await import('/src/app/theme.ts')).applyThemeDefinition(d,theme);d.style.setProperty('--app-zoom',s);d.style.setProperty('--app-zoom-inverse',1/s);d.style.setProperty('--app-zoomed-viewport-height',`${100/s}vh`);d.style.setProperty('--app-zoomed-viewport-width',`${100/s}vw`)}""",[theme,scale])
+                # The standalone fixture has no app shell to constrain toolbar
+                # scrolling. Invoke the real reset handler without moving it.
+                page.get_by_role('button', name='Reset view', exact=True).evaluate('(button) => button.click()')
                 page.wait_for_timeout(500)
                 page.screenshot(path=str(output/f'exits-{theme}-{scale}.png'))
             texts=page.evaluate('window.__exitTexts')
-            assert all(any(reason in text for text in texts) for reason in ['Failed retest','MACD ended','Stop hit'])
+            assert all(any(reason in text for text in texts) for reason in ['Failed retest','MACD ended','Stop hit',
+                'Target filled', 'Three-resistance trailing stop hit'])
             assert not errors
         finally:browser.close()

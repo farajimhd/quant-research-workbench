@@ -587,18 +587,21 @@ export function positionLifecycleAnnotations(trading: CanonicalTradingPreview | 
         ? `${formatQuantity(action.quantity)}/${formatQuantity(action.totalQuantity)}`
         : formatQuantity(action.quantity);
       const statusText = partial ? "Partial" : "Filled";
+      const exitReason = fillSide === "exit" ? shortExitReason(action.exitReason
+        || (["profit_target", "protective_stop", "trailing_stop", "protective_exit"].includes(action.executionRole) ? action.executionRole : "")) : "";
       const priceTone = fillSide === "entry"
         ? side === "SHORT" ? "priceShort" as const : "priceLong" as const
         : side === "SHORT" ? "exitPriceShort" as const : "exitPriceLong" as const;
       const pnlText = realizedPnl === undefined ? "" : signedMoneyShort(realizedPnl);
       return {
         kind: fillSide === "entry" ? "entry_fill" as const : "exit_fill" as const,
-        label: `${quantityText} ${statusText} @ ${compactPrice(action.price)}${pnlText ? ` · ${pnlText}` : ""}`,
+        label: `${quantityText} ${statusText} @ ${compactPrice(action.price)}${exitReason ? ` · ${exitReason}` : ""}${pnlText ? ` · ${pnlText}` : ""}`,
         labelParts: [
           { text: quantityText, tone: "size" as const },
           { text: statusText, tone: "reason" as const },
           { text: "@", tone: "separator" as const },
           { text: compactPrice(action.price), tone: priceTone },
+          ...(exitReason ? [{ text: "·", tone: "separator" as const }, { text: exitReason, tone: "reason" as const }] : []),
           ...(pnlText ? [{ text: "·", tone: "separator" as const }, { text: pnlText, tone: realizedPnl! >= 0 ? "pnlWin" as const : "pnlLoss" as const }] : []),
         ],
         orderId: action.orderId,
@@ -755,7 +758,7 @@ function positionExitLabel(exitReason: string, fallbackKind: string): string {
 }
 
 type PositionExecutionRole = "entry" | "managed_exit" | "profit_target" | "protective_stop" | "trailing_stop" | "protective_exit" | "";
-type PositionExecutionAction = { completion: "filled" | "partial" | "unknown"; executionRole: PositionExecutionRole; firstTime: number; orderId: string; price: number; quantity: number; side: "BUY" | "SELL"; time: number; totalQuantity?: number };
+type PositionExecutionAction = { completion: "filled" | "partial" | "unknown"; executionRole: PositionExecutionRole; exitReason: string; firstTime: number; orderId: string; price: number; quantity: number; side: "BUY" | "SELL"; time: number; totalQuantity?: number };
 
 function positionExecutionActions(executions: PreviewRow[], positionSide: string, ordersById: Map<string, PreviewRow>): PositionExecutionAction[] {
   type Aggregate = PositionExecutionAction & { notional: number };
@@ -771,9 +774,14 @@ function positionExecutionActions(executions: PreviewRow[], positionSide: string
     const persistedRole = String(nestedValue(row, "raw", "canonical_metadata", "execution_role") || "") as PositionExecutionRole;
     const executionRole: PositionExecutionRole = persistedRole || (clientOrderId.includes("-entry") ? "entry" : "");
     const orderId = String(row.broker_order_id || clientOrderId || row.execution_id || `fill:${index}`);
-    const key = `${orderId}:${side}`;
     const order = ordersById.get(orderId) ?? ordersById.get(clientOrderId);
     const orderRoleValue = String(nestedValue(order ?? {}, "raw", "canonical_metadata", "execution_role") || "") as PositionExecutionRole;
+    // Each sell owns its recorded cause. Never borrow the final episode reason
+    // for an earlier target fill or infer a condition from the chart geometry.
+    const exitReason = String(row.exit_reason || nestedValue(row, "raw", "canonical_metadata", "exit_reason") || "");
+    // A partially filled target can be amended from 5x to 8x under the same
+    // broker order ID. Keep the causes of those fills separate as well.
+    const key = `${orderId}:${side}:${exitReason}`;
     const totalQuantity = positiveNumber(order?.total_quantity);
     const orderStatus = String(order?.lifecycle_state ?? order?.status ?? "").toLowerCase();
     const terminal = Boolean(order?.terminal) || ["filled", "cancelled", "rejected", "expired", "inactive"].includes(orderStatus);
@@ -781,7 +789,7 @@ function positionExecutionActions(executions: PreviewRow[], positionSide: string
     const completion = orderStatus === "filled" || (totalQuantity !== undefined && filledQuantity !== undefined && filledQuantity >= totalQuantity)
       ? "filled" as const
       : terminal ? "partial" as const : "unknown" as const;
-    const current = byOrderAndSide.get(key) ?? { completion, executionRole: orderRoleValue || executionRole, firstTime: time, orderId, time, totalQuantity, notional: 0, price: 0, quantity: 0, side };
+    const current = byOrderAndSide.get(key) ?? { completion, executionRole: orderRoleValue || executionRole, exitReason, firstTime: time, orderId, time, totalQuantity, notional: 0, price: 0, quantity: 0, side };
     current.firstTime = Math.min(current.firstTime, time);
     current.time = Math.max(current.time, time);
     current.notional += quantity * price;
@@ -797,6 +805,13 @@ function positionExecutionActions(executions: PreviewRow[], positionSide: string
 
 export function shortExitReason(reason: string): string {
   const labels: Record<string, string> = {
+    supported_swing_low_stop: "Supported swing low stop hit",
+    below_vwap_support_stop: "Support below VWAP stop hit",
+    one_percent_entry_stop: "1% entry stop hit",
+    three_resistance_step_stop: "Three-resistance trailing stop hit",
+    momentum_target_5x: "Target filled · 5× frozen gap",
+    momentum_target_8x: "Target filled · 8× frozen gap",
+    momentum_target_10x: "Target filled · 10× frozen gap",
     protective_stop: "Stop hit", trailing_stop: "Trailing stop",
     macd_episode_ended: "MACD ended", session_flatten: "Session end",
     luld_buffer_reached: "LULD buffer", manual_exit: "Manual exit",
