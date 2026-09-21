@@ -19,6 +19,7 @@ def test_exit_reasons_at_issue_time_and_causal_cutoff():
               const {ChartPanel}=await import('/src/app/components/ChartPanel.tsx');
               const {positionLifecycleAnnotations:project,shortExitReason}=await import('/src/features/canvas/chartPresentation.tsx');
               const base=1787301300, iso=i=>new Date((base+i)*1000).toISOString();
+              if(shortExitReason('five_percent_entry_stop')!=='5% entry stop hit')throw Error('5% fallback exit label');
               const reasons=['red_close_below_attempt_open','macd_episode_ended','protective_stop'];
               const positions=reasons.map((_,i)=>({position_id:`p${i}`,instrument:{symbol:'TEST'},status:'closed',side:'LONG',
                 opened_at:iso(i*8+1),closed_at:iso(i*8+7),entry_price:4.65+i*.07,exit_price:4.68+i*.07,exit_reason:'later_fill_reason',quantity:100,realized_pnl:3}));
@@ -47,7 +48,8 @@ def test_exit_reasons_at_issue_time_and_causal_cutoff():
               const amended=project({...fillTrading,executions:fillRows.map(r=>r.execution_id==='stop'
                 ? {...r,broker_order_id:'target',exit_reason:'momentum_target_10x'} : r)},'TEST')[0];
               if(amended.exitFills.length!==2||!amended.exitFills[1].label.includes('10× frozen gap'))throw Error('Amended target causes merged');
-              trades[2]=filled;
+              trades[2]=project({...fillTrading,executions:fillRows.map(r=>r.execution_id==='stop'
+                ? {...r,exit_reason:'five_percent_entry_stop'} : r)},'TEST')[0];
               const candles=Array.from({length:24},(_,i)=>({time:base+i,endTime:base+i+1,open:4.65+i*.003,close:4.65+(i+1)*.003,high:4.67+(i+1)*.003,low:4.64+i*.003}));
               window.__exitTexts=[];
               const fillText=CanvasRenderingContext2D.prototype.fillText;
@@ -70,6 +72,6 @@ def test_exit_reasons_at_issue_time_and_causal_cutoff():
                 page.screenshot(path=str(output/f'exits-{theme}-{scale}.png'))
             texts=page.evaluate('window.__exitTexts')
             assert all(any(reason in text for text in texts) for reason in ['Failed retest','MACD ended','Stop hit',
-                'Target filled', 'Three-resistance trailing stop hit'])
+                'Target filled', '5% entry stop hit'])
             assert not errors
         finally:browser.close()

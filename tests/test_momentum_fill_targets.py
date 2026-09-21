@@ -14,7 +14,8 @@ from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES
 
 @pytest.mark.parametrize('canonical', [False, True])
 @pytest.mark.parametrize('signal_reference', [9.92, 10.4])
-def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_path, canonical, signal_reference):
+@pytest.mark.parametrize('fallback_percent', [1, 5])
+def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_path, canonical, signal_reference, fallback_percent):
     async def run():
         broker = SimulatedBrokerAdapter(['DU1'], mode=TradingMode.BACKTEST)
         manager, journal = await helpers.OrderManagementPolicyTests()._manager(
@@ -23,6 +24,7 @@ def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_pa
             strategy_id='strategy-1', strategy_revision=1)
         manager.planner = lambda intent, account, event: planner.plan(intent=intent, account_id=account, event=event)
         groups = []
+        stop_reason = 'five_percent_entry_stop' if fallback_percent == 5 else 'one_percent_entry_stop'
         try:
             for n, fills in enumerate([[(10.0, 40.), (10.1, 60.)], [(10.3, 100.)]]):
                 request = helpers.intent(action='enter_long' if n == 0 else 'add_long', quantity=100.)
@@ -31,8 +33,8 @@ def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_pa
                     protection_profile=ProtectionProfile('momentum-test', 1, slices=(ProtectionSlice(
                         'all', 1., StopRule(StopRuleType.FIXED_PRICE, price=9.9), profit_target_price=11.4),)),
                     metadata={**request.metadata, 'momentum_target': dict(average_gap=.2, multiplier=5, tick_size=.01),
-                        'momentum_initial_stop': {'reason':'one_percent_entry_stop'} if n == 0 else None,
-                        'stop_exit_reason':'one_percent_entry_stop', 'mandatory_broker_target': True})
+                        'momentum_initial_stop': {'reason':stop_reason} if n == 0 else None,
+                        'stop_exit_reason':stop_reason, 'mandatory_broker_target': True})
                 snapshot = await manager.submit_intent(helpers.portfolio_approved(journal, request), account_id='DU1', event=None)
                 group = manager._groups[snapshot.group_id]
                 root = next(k for k, v in group.broker_order_roles.items() if v == 'entry')
@@ -47,7 +49,7 @@ def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_pa
                     await manager.on_order_update(order)
                 groups.append(group)
             assert [g.intent.profit_target_price for g in groups] == pytest.approx([11.06, 11.3])
-            assert groups[0].intent.invalidation_price == pytest.approx(9.95)
+            assert groups[0].intent.invalidation_price == pytest.approx(9.55 if fallback_percent == 5 else 9.95)
             assert groups[0].intent.reference_price == signal_reference
             amendment = replace(helpers.intent(action='replace_profit_target', quantity=200.),
                 reference_price=13., profit_target_price=11.78,
@@ -66,7 +68,7 @@ def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_pa
                 await broker.cancel_order('DU1', str(stop.orderId))
                 await manager.reconcile_protection(group)
                 repairs = [r for r in group.orders if r.orderType == 'STP']
-                assert repairs[-1].raw['canonical_metadata']['exit_reason'] == 'one_percent_entry_stop'
+                assert repairs[-1].raw['canonical_metadata']['exit_reason'] == stop_reason
                 assert group.intent.metadata['momentum_target']['multiplier'] == 8
         finally:
             await manager.close()

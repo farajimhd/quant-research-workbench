@@ -808,6 +808,7 @@ export function shortExitReason(reason: string): string {
     supported_swing_low_stop: "Supported swing low stop hit",
     below_vwap_support_stop: "Support below VWAP stop hit",
     one_percent_entry_stop: "1% entry stop hit",
+    five_percent_entry_stop: "5% entry stop hit",
     three_resistance_step_stop: "Three-resistance trailing stop hit",
     momentum_target_5x: "Target filled · 5× frozen gap",
     momentum_target_8x: "Target filled · 8× frozen gap",

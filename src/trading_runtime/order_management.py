@@ -2942,8 +2942,9 @@ class OrderManagementEngine:
         target = target_price(average, spec['average_gap'], spec['multiplier'], spec['tick_size'])
         stop = group.intent.invalidation_price
         selection = group.intent.metadata.get('momentum_initial_stop') or {}
-        if selection.get('reason') == 'one_percent_entry_stop' and not group.intent.metadata.get('momentum_stop_advanced'):
-            stop = round(math.floor(.99*average/spec['tick_size']+1e-9)*spec['tick_size'], 10)
+        if selection.get('reason') in {'one_percent_entry_stop', 'five_percent_entry_stop'} and not group.intent.metadata.get('momentum_stop_advanced'):
+            percent = 5 if selection['reason'] == 'five_percent_entry_stop' else 1
+            stop = round(math.floor((1-percent/100)*average/spec['tick_size']+1e-9)*spec['tick_size'], 10)
         profile = group.intent.resolved_protection_profile()
         if profile is None:
             raise ValueError('Momentum fill lacks its mandatory protection profile')
@@ -3281,7 +3282,7 @@ class OrderManagementEngine:
             # A broker-confirmed trailing stop may be above the entry price.
             # Repair its quantity at that exact price; do not revalidate it as
             # a new entry stop or silently loosen it back below entry.
-            # Momentum's 1% fallback is rebased to actual cumulative fill cost.
+            # Momentum's percentage fallback is rebased to actual fill cost.
             # That valid stop can exceed the original signal/limit reference
             # after acquisition repricing; validate against the same fill basis.
             stops = [confirmed_stop] if confirmed_stop > 0 else [

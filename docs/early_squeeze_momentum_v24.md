@@ -37,7 +37,7 @@ or live-release acceptance.
 - Initial stop: one tick below the latest confirmed swing low formed within
   ten seconds and inside a current V7 support band. Otherwise use one tick
   below the first support entirely below VWAP if its lower band is within 1%
-  below entry. Otherwise use 1% below entry, rounded down to a tick and rebased
+  below entry. Otherwise use 5% below entry, rounded down to a tick and rebased
   to actual cumulative entry fill cost.
 - Every three distinct accepted resistances after entry earn one upward stop
   step, to one tick below the next resistance lower band above the current
@@ -63,7 +63,7 @@ cost basis, including partial fills and repaired protection. Purchase slots
 and resistance entitlements are owned by fill callbacks.
 
 Every sell carries its recorded cause: supported swing low, below-VWAP support,
-1% entry stop, three-resistance stop step, 5x/8x/10x target, session flatten,
+5% entry stop, three-resistance stop step, 5x/8x/10x target, session flatten,
 or an explicit operational/manual cause. The chart uses that execution's
 reason, not the final position reason. Missing reasons remain visibly unknown.
 
@@ -72,6 +72,12 @@ candidate only after the running backend advertises its executor. It does not
 publish or enable live trading.
 
 ## Validation
+
+The 5% fallback is an explicit candidate parameter. Older saved candidates
+without that parameter retain their original 1% fallback. Protection repair
+validates percentage stops against actual cumulative fill cost, preserving the
+original signal price separately; repriced partial fills cannot trigger a
+false stop/reference error.
 
 2026-09-21: 150 focused tests and two subtests passed. A broader runtime/replay
 run passed 274 tests and ten subtests, with the three baseline failures below.

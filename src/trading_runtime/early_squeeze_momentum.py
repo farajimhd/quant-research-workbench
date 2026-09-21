@@ -72,7 +72,9 @@ def supported_swing(row, rows, now):
     return None
 
 
-def initial_stop(row, rows, now, price, vwap, tick, *, distance_reference):
+def initial_stop(row, rows, now, price, vwap, tick, *, distance_reference, fallback_percent=1):
+    if fallback_percent not in (1, 5):
+        raise ValueError('Momentum fallback stop must be 1% or 5%')
     if distance_reference not in ('vwap', 'entry'):
         raise ValueError('Support distance reference must be explicitly selected')
     swing = supported_swing(row, rows, now)
@@ -86,8 +88,9 @@ def initial_stop(row, rows, now, price, vwap, tick, *, distance_reference):
     if supports and 0 <= reference-supports[0]['lower'] <= .01*price:
         return dict(price=below(supports[0]['lower'], tick), reason='below_vwap_support_stop',
             level=deepcopy(supports[0]), reference=reference, maximum_distance=.01*price)
-    return dict(price=round(floor(.99*price/tick+1e-9)*tick, 10),
-        reason='one_percent_entry_stop', entry_reference=price)
+    return dict(price=round(floor((1-fallback_percent/100)*price/tick+1e-9)*tick, 10),
+        reason='five_percent_entry_stop' if fallback_percent == 5 else 'one_percent_entry_stop',
+        fallback_percent=fallback_percent, entry_reference=price)
 
 
 def observe_resistances(state, observation, rows, fresh, trade):
@@ -394,7 +397,8 @@ def evaluate(host, a, o, p, old_state):
             return emit('hold', 'waiting_for_fresh_resistance_addition', Status.MANAGING)
         stop = state['active_stop']
     else:
-        selection = initial_stop(market.get('row', {}), rows, now, o.ask, vwap, tick, distance_reference='entry')
+        selection = initial_stop(market.get('row', {}), rows, now, o.ask, vwap, tick, distance_reference='entry',
+            fallback_percent=p.get('momentum_fallback_stop_percent', 1))
         stop = selection['price']
         active = dict(requested_at=now, entry_price=o.ask, average_gap=gap, stop=stop,
             stop_reason=selection['reason'], stop_selection=selection, stop_steps=0,

@@ -138,7 +138,8 @@ def test_addition_acceptance_is_same_candle_cross_and_immediate_next_second(kind
 
 def momentum_fixture():
     h, a, trade, one, tenth = dual_macd_fixture()
-    a = replace(a, parameters={**a.parameters, 'early_squeeze_breakout_contract':M.CONTRACT})
+    a = replace(a, parameters={**a.parameters, 'early_squeeze_breakout_contract':M.CONTRACT,
+        'momentum_fallback_stop_percent':5})
     origin_time = trade().observed_at
     origin = origin_time.timestamp()
     def wrap(o):
@@ -340,3 +341,4 @@ def test_candidate_compiles_separate_contract_and_session_behavior(monkeypatch):
         configuration=payload, run_plan_id=plan, strategy_profile_id=M.CONTRACT)
     compiled_profile = next(p for p in compiled['strategy']['profiles'] if p['profile_id'] == M.CONTRACT)
     assert S.resolve_long_momentum_parameters(compiled_profile['parameters'])['early_squeeze_breakout_contract'] == M.CONTRACT
+    assert S.resolve_long_momentum_parameters(compiled_profile['parameters'])['momentum_fallback_stop_percent'] == 5
