@@ -235,6 +235,7 @@ class OrderGroupSnapshot:
     r1_actual_entry_average: float | None = None
     r1_stop_error: str = ""
     momentum_fill_average: float | None = None
+    momentum_entry_basis: float | None = None
     momentum_stop: float | None = None
     tight_reentry_stop: float | None = None
     high_water_price: float = 0.0
@@ -316,6 +317,7 @@ class _ManagedOrderGroup:
             r1_initial_stop=(self.intent.invalidation_price if self.intent.metadata.get('r1_stop_bounds') else None),
             r1_actual_entry_average=self.intent.metadata.get('r1_actual_entry_average'),
             momentum_fill_average=self.intent.metadata.get('momentum_fill_average'),
+            momentum_entry_basis=(self.intent.metadata.get('momentum_target') or {}).get('entry_basis'),
             momentum_stop=self.intent.invalidation_price if self.intent.metadata.get('momentum_target') else None,
             r1_stop_error=str(self.intent.metadata.get('r1_stop_error') or ''),
             tight_reentry_stop=(self.intent.invalidation_price if self.intent.metadata.get('tight_reentry_stop') else None),
@@ -1851,6 +1853,7 @@ class OrderManagementEngine:
                             ),
                             "replacement_intent_id": intent.intent_id,
                             "target_price": target_price,
+                            **({'exit_reason': intent.metadata['exit_reason']} if intent.metadata.get('momentum_absolute_target') else {}),
                             **({'exit_reason':f'momentum_target_{multiplier}x',
                                 'momentum_target':{**momentum, 'multiplier':multiplier},
                                 'momentum_fill_average':group.intent.metadata.get('momentum_fill_average')}
@@ -1881,6 +1884,10 @@ class OrderManagementEngine:
                 if multiplier is not None:
                     group.intent = replace(group.intent, metadata={**group.intent.metadata,
                         'momentum_target':{**momentum, 'multiplier':multiplier}})
+                if intent.metadata.get('momentum_absolute_target') and momentum:
+                    group.intent = replace(group.intent, metadata={**group.intent.metadata,
+                        'momentum_target': {**momentum, 'absolute_target': target_price,
+                            'exit_reason': intent.metadata['exit_reason']}})
                 group.updated_at = intent.event_time
                 touched[group.group_id] = group
         if not touched:
@@ -2948,7 +2955,7 @@ class OrderManagementEngine:
             basis = spec['entry_basis']
         else:
             basis = average
-        target = target_price(basis, spec['average_gap'], spec['multiplier'], spec['tick_size'])
+        target = spec.get('absolute_target') or target_price(basis, spec['average_gap'], spec['multiplier'], spec['tick_size'])
         stop = group.intent.invalidation_price
         selection = group.intent.metadata.get('momentum_initial_stop') or {}
         if selection.get('reason') in {'one_percent_entry_stop', 'five_percent_entry_stop'} and not group.intent.metadata.get('momentum_stop_advanced'):
@@ -2973,7 +2980,7 @@ class OrderManagementEngine:
             if index is None:
                 raise RuntimeError('Momentum protection lacks its registered amendment request')
             request = group.orders[index]
-            reason = (f"momentum_target_{spec['multiplier']}x" if role == 'profit_target'
+            reason = (spec.get('exit_reason', f"momentum_target_{spec['multiplier']}x") if role == 'profit_target'
                 else group.intent.metadata.get('stop_exit_reason', 'protective_stop'))
             replacement = replace(request,
                 quantity=float(live.filledQuantity)+float(live.remainingQuantity),
@@ -3465,7 +3472,7 @@ class OrderManagementEngine:
                             ),
                             "execution_role": "profit_target",
                             "reason": "restore_position_profit_target",
-                            **({'exit_reason':f"momentum_target_{group.intent.metadata['momentum_target']['multiplier']}x",
+                            **({'exit_reason':group.intent.metadata['momentum_target'].get('exit_reason', f"momentum_target_{group.intent.metadata['momentum_target']['multiplier']}x"),
                                 'momentum_target':group.intent.metadata['momentum_target'],
                                 'momentum_fill_average':group.intent.metadata.get('momentum_fill_average')}
                                if group.intent.metadata.get('momentum_target') else {}),

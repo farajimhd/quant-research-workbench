@@ -484,6 +484,7 @@ class TradingRuntime:
                 self.order_manager.working_exit_quantity(observation.ticker, account_id)
                 if self.order_manager is not None else 0.0
             ))
+            account_observation = self._with_momentum_net(account_observation, account_id)
             account_observation = self._with_completed_trade_outcome(account_observation, account_id)
             evaluation = normalize_strategy_evaluation(await handler(account_observation, account_id))
             self._record_strategy_signals(evaluation, account_id)
@@ -509,6 +510,7 @@ class TradingRuntime:
             self.order_manager.working_exit_quantity(observation.ticker, account_id)
             if self.order_manager is not None else 0.0
         ))
+        observation = self._with_momentum_net(observation, account_id)
         observation = self._with_completed_trade_outcome(observation, account_id)
         evaluation = normalize_strategy_evaluation(await handler(observation, account_id))
         self._record_strategy_signals(evaluation, account_id)
@@ -518,6 +520,80 @@ class TradingRuntime:
             account_id=account_id,
             ticker=observation.ticker,
         )
+
+    def _momentum_net(self, assignment, quantity, bid, at):
+        from .momentum_session_policy import DEFAULTS, net_position
+        active = assignment.state.get('squeeze_entry', {})
+        if self._canonical_session is None or not active.get('first_fill_at'):
+            return dict(status='unavailable')
+        policy = {**DEFAULTS, **assignment.parameters.get('momentum_full_session', {})}
+        broker_costs = getattr(self.broker, 'config', None)
+        if broker_costs is not None and hasattr(broker_costs, 'commission_per_share'):
+            policy.update(exit_commission_per_share=broker_costs.commission_per_share,
+                exit_minimum_commission=broker_costs.minimum_commission)
+        return net_position(self._canonical_session.projector.executions.values(),
+            account_id=assignment.account_id, conid=assignment.conid, run_id=self.run_id,
+            first_fill_at=active['first_fill_at'], now=at.timestamp(), quantity=quantity, bid=bid, policy=policy)
+
+    def _with_momentum_net(self, observation, account_id):
+        by_ticker = getattr(self.strategy, 'assignments_for_ticker', None)
+        assignments = by_ticker(observation.ticker) if by_ticker else getattr(self.strategy, 'assignments', lambda: [])()
+        matches = [a for a in assignments
+            if a.account_id == account_id and a.ticker == observation.ticker
+            and a.parameters.get('momentum_full_session')]
+        net = {}
+        if len(matches) == 1 and observation.position_quantity > 0:
+            a = matches[0]
+            first = a.state.get('squeeze_entry', {}).get('first_fill_at')
+            threshold = a.parameters['momentum_full_session'].get('age_seconds', 300)
+            if first is not None and observation.observed_at.timestamp()-first >= threshold:
+                net = self._momentum_net(a, observation.position_quantity, observation.bid, observation.observed_at)
+        return replace(observation, momentum_position_net=net)
+
+    async def _fund_momentum_request(self, intent, account_id, decision):
+        from .momentum_session_policy import funding_rank, cash_shortfall
+        if not intent.metadata.get('momentum_full_session') or intent.action not in ENTRY_ACTIONS:
+            return False
+        if not cash_shortfall(decision.reasons):
+            return False
+        assignments = [a for a in self.strategy.assignments() if a.account_id == account_id
+            and a.parameters.get('momentum_full_session') and a.ticker != intent.ticker]
+        # Serialize cash release: never liquidate another victim while one is pending.
+        if any(self.order_manager.working_exit_quantity(a.ticker, account_id) > 0 for a in assignments):
+            return True
+        positions = {int(p.conid): p for p in await self.broker.positions(account_id)}
+        candidates = []
+        for a in assignments:
+            position = positions.get(a.conid)
+            active = a.state.get('squeeze_entry', {})
+            quote = self.execution_market_data.snapshot(a.ticker)
+            if (position is None or position.position <= 0 or not active.get('first_fill_at')
+                    or not a.permissions.exit or quote is None
+                    or not 0 <= (intent.event_time-quote.observed_at).total_seconds() <= 1
+                    or self.order_manager.working_exit_quantity(a.ticker, account_id) > 0):
+                continue
+            net = self._momentum_net(a, float(position.position), quote.bid, intent.event_time)
+            if net.get('status') != 'verified':
+                continue
+            candidates.append(dict(assignment=a, ticker=a.ticker, quantity=float(position.position),
+                bid=quote.bid, net_pnl=net['net_pnl'],
+                age=intent.event_time.timestamp()-active['first_fill_at'], gap=active['average_gap']))
+        ranked = funding_rank(candidates, intent.metadata['momentum_target']['average_gap'])
+        if not ranked:
+            return False
+        victim = ranked[0]
+        a = victim['assignment']
+        exit_intent = replace(intent, intent_id=str(uuid4()), ticker=a.ticker, action='exit',
+            quantity=victim['quantity'], capital_request=None, reference_price=victim['bid'],
+            invalidation_price=None, profit_target_price=None, protection_profile=None,
+            reason='larger_gap_cash_reallocation',
+            metadata=dict(assignment_id=a.assignment_id, exit_reason='larger_gap_cash_reallocation',
+                reason_code='larger_gap_cash_reallocation', cancel_entry_acquisition=True,
+                position_fraction=1., reentry_after_fill=True,
+                requesting_ticker=intent.ticker, requested_gap=intent.metadata['momentum_target']['average_gap'],
+                displaced_gap=victim['gap'], position_age_seconds=victim['age'], net_pnl=victim['net_pnl']))
+        await self._execute_intents(StrategyEvaluation(intents=(exit_intent,)), account_id, None)
+        return True
 
     def _with_completed_trade_outcome(self, observation, account_id):
         # Only derive at a filled-to-flat recovery boundary. The strategy's
@@ -555,7 +631,7 @@ class TradingRuntime:
         quote_at = observation.observed_at
         assignments_for_ticker = getattr(self.strategy, 'assignments_for_ticker', None)
         if assignments_for_ticker and any(
-            a.parameters.get('hindsight_long_contract')
+            (a.parameters.get('hindsight_long_contract') or a.parameters.get('momentum_full_session'))
             for a in assignments_for_ticker(observation.ticker)
         ):
             record = observation.source_values.get('market.spread_bps')
@@ -709,6 +785,11 @@ class TradingRuntime:
                 await self._refresh_portfolio_from_broker()
             decision, approved_intent = await self.portfolio.approve(intent, account_id=account_id)
             if approved_intent is None:
+                await self._fund_momentum_request(intent, account_id, decision)
+                from .momentum_session_policy import cash_shortfall
+                if (intent.metadata.get('momentum_full_session') and intent.action in ENTRY_ACTIONS
+                        and cash_shortfall(decision.reasons)):
+                    intent = replace(intent, metadata={**intent.metadata, 'momentum_capital_retry': True})
                 if "entry_request_already_allocated" not in decision.reasons:
                     await self._record_intent_rejection(intent, account_id, decision)
                 results.append({"decision": decision.payload(), "order_group": None})

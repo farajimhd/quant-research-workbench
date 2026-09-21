@@ -359,6 +359,7 @@ def test_candidate_compiles_separate_contract_and_session_behavior(monkeypatch):
     assert S.resolve_long_momentum_parameters(compiled_profile['parameters'])['early_squeeze_breakout_contract'] == M.CONTRACT
     assert S.resolve_long_momentum_parameters(compiled_profile['parameters'])['momentum_fallback_stop_percent'] == 5
     assert S.resolve_long_momentum_parameters(compiled_profile['parameters'])['momentum_session_progression'] is True
+    assert S.resolve_long_momentum_parameters(compiled_profile['parameters'])['momentum_full_session']['maximum_spread_bps'] == 250
 
 
 def test_target_reentry_waits_until_next_second_and_keeps_normal_gates():

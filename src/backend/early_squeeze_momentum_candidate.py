@@ -2,7 +2,7 @@
 from . import early_squeeze_breakout_candidate as base
 from src.trading_runtime.early_squeeze_momentum import CONTRACT
 
-LABEL = 'Early Squeeze / session targets v25 / rapid reentry 2x'
+LABEL = 'Early Squeeze / full session v26 / liquidity age and gap priority'
 DESCRIPTION = (
     'Early Squeeze activates the session. Initial entries require causal confirmed-high BOS, '
     'price above VWAP and bullish completed/forming 1s plus completed 100ms MACD. '
@@ -21,7 +21,11 @@ DESCRIPTION = (
     '+30% within 30s of the last entry fill starts at 2x with stop below the nearest '
     'resistance below price, then inherits the session multiplier on the next advancement. First target fill liquidates the whole remainder; '
     'no reentry within that same 1s candle. No CHOCH/chop/MACD/VWAP exit. Stop buying '
-    'and flatten at 20:00 New York. Research candidate; no profitability acceptance.'
+    'and flatten at 20:00 New York. Purchases recheck 250bps spread, 25k session shares, '
+    '$100k session dollars, 1 trade/s over 10s and 0.5 over 60s after activation. '
+    'At five minutes protect green positions with resistance exits; red positions get one '
+    'minute to recover before exit. Cash release prefers older green smaller-gap positions; '
+    'red positions can fund only after six minutes. Research candidate; no profitability acceptance.'
 )
 
 
@@ -35,6 +39,8 @@ def build(configuration, baseline):
     profile['parameters']['reentry']['after_protective_exit'] = True
     profile['parameters']['momentum_fallback_stop_percent'] = 5
     profile['parameters']['momentum_session_progression'] = True
+    from src.trading_runtime.momentum_session_policy import DEFAULTS
+    profile['parameters']['momentum_full_session'] = dict(DEFAULTS)
     return payload, canvas, plan_id
 
 

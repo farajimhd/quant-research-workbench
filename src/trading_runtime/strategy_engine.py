@@ -327,6 +327,7 @@ class StrategyObservation:
     pending_exit_quantity: float = 0.0
     average_price: float = 0.0
     completed_trade_outcome: dict[str, Any] | None = None
+    momentum_position_net: dict[str, Any] = field(default_factory=dict)
     previous_close: float | None = None
     previous_high: float | None = None
     swing_high: float | None = None
@@ -6160,6 +6161,10 @@ class AssignedLongMomentumStrategy:
                 from .early_squeeze_momentum import purchase_update
                 state = deepcopy(state)
                 purchase_update(state, intent.intent_id, terminal=True)
+                if intent.metadata.get('momentum_capital_retry') and intent.action == 'add_long':
+                    state.setdefault('squeeze_breakout', {})['capital_add'] = dict(
+                        confirmation=deepcopy(intent.metadata['resistance_confirmation']),
+                        episode_id=intent.metadata['macd_1s_episode']['episode_id'])
             if intent.action == "add_long" and intent.metadata.get("squeeze_add_levels"):
                 from .early_squeeze_price import MIDPOINT_EXECUTION_CONTRACT, update_midpoint_add
                 if assignment.parameters.get('early_squeeze_breakout_contract') in (MIDPOINT_EXECUTION_CONTRACT, 'early-squeeze-consistent-1s-resistance-v22', 'early-squeeze-structural-1s-resistance-v23', 'early-squeeze-momentum-v24'):
@@ -6193,6 +6198,8 @@ class AssignedLongMomentumStrategy:
                 self._assignments[key] = replace(assignment, state=state, updated_at=event_time)
                 return
             if str(intent.action) == "replace_profit_target":
+                if intent.metadata.get('momentum_absolute_target'):
+                    state['squeeze_entry']['age_target_submitted'] = False
                 if 'momentum_previous_multiplier' in intent.metadata:
                     state['squeeze_entry']['submitted_multiplier'] = intent.metadata['momentum_previous_multiplier']
                 if 'squeeze_previous_target_moves' in intent.metadata:
@@ -6329,6 +6336,8 @@ class AssignedLongMomentumStrategy:
                 state = dict(assignment.state)
                 state.pop("pending_capital_request", None)
                 state.pop("pending_capital_reasons", None)
+                if intent.metadata.get('momentum_full_session'):
+                    state.setdefault('squeeze_breakout', {}).pop('capital_add', None)
                 if intent.metadata.get('unreserved_cash_slice'):
                     entry_key = 'squeeze_entry' if assignment.parameters.get('early_squeeze_breakout_contract') else 'vwap_ladder_entry'
                     state[entry_key] = dict(state[entry_key],
@@ -6544,7 +6553,7 @@ class AssignedLongMomentumStrategy:
                         if momentum and 'first_fill_at' not in active:
                             state.setdefault('squeeze_breakout', {})['last_entry_fill_at'] = snapshot.updated_at.timestamp()
                         if momentum and assignment.parameters.get('momentum_session_progression'):
-                            active.setdefault('target_entry_basis', snapshot.momentum_fill_average)
+                            active.setdefault('target_entry_basis', getattr(snapshot, 'momentum_entry_basis', None) or snapshot.momentum_fill_average)
                         active.setdefault('first_fill_at', snapshot.updated_at.timestamp())
                         state['squeeze_entry'] = active
                         state.setdefault('squeeze_breakout', {}).pop('recovery', None)

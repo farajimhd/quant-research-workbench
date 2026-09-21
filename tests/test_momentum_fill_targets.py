@@ -13,7 +13,7 @@ from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES
 
 
 @pytest.mark.parametrize('shared', [False, True])
-@pytest.mark.parametrize('amend_multiplier', [8, 12, 14])
+@pytest.mark.parametrize('amend_multiplier', [8, 12, 14, 'aged'])
 @pytest.mark.parametrize('canonical', [False, True])
 @pytest.mark.parametrize('signal_reference', [9.92, 10.4])
 @pytest.mark.parametrize('fallback_percent', [1, 5])
@@ -54,24 +54,33 @@ def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_pa
             assert groups[0].intent.invalidation_price == pytest.approx(9.55 if fallback_percent == 5 else 9.95)
             assert groups[0].intent.reference_price == signal_reference
             amendment = replace(helpers.intent(action='replace_profit_target', quantity=200.),
-                reference_price=13., profit_target_price=11.78,
-                metadata={'momentum_target_multiplier': amend_multiplier})
+                reference_price=10.5 if amend_multiplier == 'aged' else 13.,
+                profit_target_price=11.78,
+                metadata=({'momentum_absolute_target':11.78, 'exit_reason':'aged_green_resistance_target'}
+                    if amend_multiplier == 'aged' else {'momentum_target_multiplier': amend_multiplier}))
             await manager.submit_intent(helpers.portfolio_approved(journal, amendment), account_id='DU1', event=None)
-            assert [g.intent.profit_target_price for g in groups] == pytest.approx([10.+.2*amend_multiplier]*2 if shared else [10.06+.2*amend_multiplier, 10.3+.2*amend_multiplier])
+            assert [g.intent.profit_target_price for g in groups] == pytest.approx([11.78]*2 if amend_multiplier == 'aged' else ([10.+.2*amend_multiplier]*2 if shared else [10.06+.2*amend_multiplier, 10.3+.2*amend_multiplier]))
             for group in groups:
                 targets = [o for o in await broker.live_orders() if group.broker_order_roles.get(str(o.orderId)) == 'profit_target'
                     and o.order_status in OPEN_ORDER_STATUSES]
                 assert targets
                 for target in targets:
                     request = group.orders[group.broker_order_request_indexes[str(target.orderId)]]
-                    assert request.raw['canonical_metadata']['exit_reason'] == f'momentum_target_{amend_multiplier}x'
+                    assert request.raw['canonical_metadata']['exit_reason'] == ('aged_green_resistance_target' if amend_multiplier == 'aged' else f'momentum_target_{amend_multiplier}x')
                 stop = next(o for o in await broker.live_orders() if group.broker_order_roles.get(str(o.orderId)) == 'protective_stop'
                     and o.order_status in OPEN_ORDER_STATUSES)
                 await broker.cancel_order('DU1', str(stop.orderId))
                 await manager.reconcile_protection(group)
                 repairs = [r for r in group.orders if r.orderType == 'STP']
                 assert repairs[-1].raw['canonical_metadata']['exit_reason'] == stop_reason
-                assert group.intent.metadata['momentum_target']['multiplier'] == amend_multiplier
+                if amend_multiplier == 'aged':
+                    assert group.intent.metadata['momentum_target']['absolute_target'] == 11.78
+                    root = next(k for k,v in group.broker_order_roles.items() if v == 'entry')
+                    order = next(o for o in await broker.live_orders() if str(o.orderId)==root)
+                    await manager.on_order_update(order)
+                    assert group.intent.profit_target_price == 11.78
+                else:
+                    assert group.intent.metadata['momentum_target']['multiplier'] == amend_multiplier
         finally:
             await manager.close()
             journal.close()

@@ -9,12 +9,15 @@ from src.backend.replay_run_service import ReplayRunController, ReplayRunDefinit
 from src.trading_runtime.journal import TradingJournal
 
 
-@pytest.mark.parametrize('session_progression', [False, True])
-@pytest.mark.parametrize('exit_kind', ['stop', 'partial_target'])
+@pytest.mark.parametrize('session_progression,exit_kind',
+    [(mode, kind) for mode in (False, True, 'full') for kind in ('stop','partial_target')]
+    + [('full','aged_red'),('full','aged_green'),('full','funding')])
 def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path, exit_kind, session_progression):
     async def run():
         _, prepared, trade, one, fast = momentum_fixture()
-        prepared = replace(prepared, parameters={**prepared.parameters, 'momentum_session_progression': session_progression})
+        from src.trading_runtime.momentum_session_policy import DEFAULTS
+        prepared = replace(prepared, parameters={**prepared.parameters, 'momentum_session_progression': bool(session_progression),
+            **({'momentum_full_session': DEFAULTS} if session_progression == 'full' else {})})
         configuration = approved_configuration(assignments=[dict(
             assignment_id=prepared.assignment_id, account_key='primary', ticker=prepared.ticker,
             conid=prepared.conid, status='watching', parameters=prepared.parameters,
@@ -48,6 +51,10 @@ def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path
             assert controller._strategy.assignments()[0].state['squeeze_breakout']['momentum_requests'][group.intent.intent_id]['filled']
             first_entry_at = controller._strategy.assignments()[0].state['squeeze_breakout']['last_entry_fill_at']
             assert first_entry_at == controller._strategy.assignments()[0].state['squeeze_entry']['first_fill_at']
+            if session_progression == 'full':
+                marked = runtime._momentum_net(controller._strategy.assignments()[0],
+                    sum(p.position for p in positions), trade(16.3).bid, trade(16.3).observed_at)
+                assert marked['status'] == 'verified', marked
             if exit_kind == 'partial_target':
                 held = sum(p.position for p in positions)
                 await runtime.process_account_strategy_observation(
@@ -86,6 +93,28 @@ def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path
                 await runtime.process_account_strategy_observation(
                     replace(trade(18.5, target-.09, held), bid=target-.10, ask=target-.08), assigned.account_id)
                 await quote(trade(18.6).observed_at, target-.10, target-.08)
+            elif exit_kind == 'funding':
+                from types import SimpleNamespace
+                await quote(trade(18.4).observed_at,10.50,10.52)
+                request = replace(group.intent,ticker='NEW',event_time=trade(18.4).observed_at,
+                    metadata={**group.intent.metadata,'momentum_target':dict(average_gap=100)})
+                assert await runtime._fund_momentum_request(request,assigned.account_id,
+                    SimpleNamespace(reasons=['limited_by_available_funds']))
+                await quote(trade(18.5).observed_at,10.50,10.52)
+                expected_reason = 'larger_gap_cash_reallocation'
+            elif exit_kind in ('aged_red','aged_green'):
+
+                held = sum(p.position for p in positions)
+                mark = 10.50 if exit_kind == 'aged_green' else 10.43
+                await quote(trade(316.4).observed_at,mark-.01,mark+.01)
+                await runtime.process_account_strategy_observation(trade(316.4,mark,held),assigned.account_id)
+                if exit_kind == 'aged_red':
+                    assert not controller._strategy.assignments()[0].state.get('entry_acquisition_exit_latched')
+                    await quote(trade(376.4).observed_at,mark-.01,mark+.01)
+                    await runtime.process_account_strategy_observation(trade(376.4,mark,held),assigned.account_id)
+                expected_reason = ('aged_red_grace_expired' if exit_kind == 'aged_red'
+                    else 'aged_green_no_valid_resistance_bracket')
+                await quote(trade(376.5).observed_at,mark-.01,mark+.01)
             else:
                 event = _debug_market_events((dict(kind='trade', ticker=assigned.ticker, ts=trade(18.4).observed_at.isoformat(),
                     price=stop-.01, size=10000),))[0]

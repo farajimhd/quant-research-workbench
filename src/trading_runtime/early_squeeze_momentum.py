@@ -309,6 +309,9 @@ def evaluate(host, a, o, p, old_state):
         macd_1s_episode=deepcopy(episode), macd_100ms_gate=deepcopy(fast), forming_macd_1s=preview,
         bid=o.bid, ask=o.ask, reference_price=o.price)
     management_results = []
+    from .momentum_session_policy import DEFAULTS, aged_action, purchase_gate
+    full_session = p.get('momentum_full_session')
+    session_policy = {**DEFAULTS, **(full_session or {})}
 
     def emit(action, reason, status=None, **kw):
         metadata = dict(evidence, **kw.pop('metadata', {}))
@@ -351,6 +354,30 @@ def evaluate(host, a, o, p, old_state):
                     protective_stop_selection=deepcopy(active.get('stop_selection'))))
         if not active:
             return emit('hold', 'position_entry_state_unavailable', Status.MANAGING)
+        if full_session and quote and active.get('first_fill_at') is not None:
+            aging = aged_action(active, rows if fresh else {}, now=now, bid=o.bid, tick=tick,
+                net=o.momentum_position_net, policy=session_policy, target_floor=max(o.price,o.ask))
+            if aging:
+                if aging['action'] == 'exit':
+                    return emit('exit', aging['reason'], Status.EXIT_PENDING, quantity=o.position_quantity,
+                        metadata=dict(position_net=o.momentum_position_net))
+                if aging['action'] == 'hold':
+                    return emit('hold', aging['reason'], Status.MANAGING)
+                if aging['stop'] > stop:
+                    state['active_stop'] = aging['stop']
+                    active.update(stop=aging['stop'], stop_reason='aged_green_resistance_stop')
+                    management_results.append(emit('replace_protective_stop', 'aged_green_resistance_stop',
+                        Status.MANAGING, quantity=o.position_quantity, invalidation_price=aging['stop'],
+                        metadata=dict(previous_stop=stop, stop_exit_reason='aged_green_resistance_stop')))
+                if not active.get('age_target_submitted'):
+                    previous = (state.get('structural_profit_targets') or [0])[0]
+                    state['structural_profit_targets'] = [aging['target']]
+                    management_results.append(emit('replace_profit_target', 'aged_green_resistance_target',
+                        Status.MANAGING, quantity=o.position_quantity, profit_target_price=aging['target'],
+                        metadata=dict(momentum_absolute_target=aging['target'],
+                            previous_profit_target=previous, exit_reason='aged_green_resistance_target')))
+                    active['age_target_submitted'] = True
+                return emit('hold', 'aged_green_resistance_bracket', Status.MANAGING)
         results = []
         active['stop'] = stop
         if session_progression:
@@ -440,6 +467,11 @@ def evaluate(host, a, o, p, old_state):
             return emit('wait', 'fresh_price_above_vwap_required')
     if not quote:
         return emit('wait', 'fresh_quote_required')
+    if full_session:
+        admission = purchase_gate(o, session_policy)
+        if not admission['passed']:
+            return emit('hold' if held else 'wait', 'post_squeeze_liquidity_gate',
+                metadata=dict(liquidity_gate=admission))
     gap = (d.get('frozen_gap') or {}).get('average')
     if not C.finite(gap) or gap <= 0:
         return emit('wait', 'activation_resistance_gap_unavailable')
@@ -450,6 +482,17 @@ def evaluate(host, a, o, p, old_state):
             return emit('hold', 'three_purchase_limit_or_add_permission', Status.MANAGING)
         addition = next((ev for ev in events if P.midpoint_add_available(d,
             ev['level']['unified_level_id'], episode['episode_id'])), None)
+        retry = d.get('capital_add')
+        if not addition and full_session and retry:
+            prior = retry['confirmation']
+            row = rows.get(prior['level']['unified_level_id'])
+            if (row and retry['episode_id'] == episode['episode_id']
+                    and all(row[k] == prior['level'][k] for k in ('lower', 'upper'))
+                    and o.price > P.midpoint(row)
+                    and P.midpoint_add_available(d, row['unified_level_id'], episode['episode_id'])):
+                addition = prior
+            else:
+                d.pop('capital_add', None)
         if not addition:
             return emit('hold', 'waiting_for_fresh_resistance_addition', Status.MANAGING)
         stop = state['active_stop']
@@ -484,6 +527,7 @@ def evaluate(host, a, o, p, old_state):
     return emit('add_long' if held else 'enter_long', 'accepted_resistance_addition' if held else 'bos_vwap_momentum_entry',
         Status.MANAGING if held else Status.ENTRY_PENDING, invalidation_price=stop, profit_target_price=target,
         capital_request=CapitalRequest(mode='mandate_fraction', value=1/3), metadata=dict(
+            momentum_full_session=bool(full_session),
             unreserved_cash_slice=True, cash_fraction_of_unreserved=True,
             squeeze_add_levels=[addition['level']['unified_level_id']] if addition else [],
             resistance_confirmation=deepcopy(addition), stop_exit_reason=active['stop_reason'],
