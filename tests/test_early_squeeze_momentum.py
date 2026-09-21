@@ -376,3 +376,35 @@ def test_target_reentry_waits_until_next_second_and_keeps_normal_gates():
         normal = h.evaluate(baseline, t(second, 10.44))
         assert result.evaluation.signals[0].reason == normal.evaluation.signals[0].reason
         assert result.evaluation.signals[0].reason != 'target_hit_same_1s_candle'
+
+
+@pytest.mark.parametrize('blocked', ['', '1s', '100ms', 'future'])
+def test_addition_uses_completed_episodes_without_entry_filters(monkeypatch, blocked):
+    h, a, t, one, fast = momentum_fixture()
+    entry = h.evaluate(a, t(16.02, 10.44))
+    a = replace(advance(a, entry), status=S.AssignmentStatus.MANAGING)
+    request = next(i for i in entry.evaluation.intents if i.action == 'enter_long')
+    M.purchase_update(a.state, request.intent_id, filled=True, terminal=True)
+    a = advance(a, h.evaluate(a, replace(one(17, 10.64, .3, .1), bar_open=10.4, position_quantity=100.)))
+    a = advance(a, h.evaluate(a, fast(17.005, 10.64, position=100.)))
+    o = t(17.25, 10.64, 100.)
+    d = a.state['squeeze_breakout']
+    for key in ('macd_1s', 'macd_100ms'):
+        d[key].update(open=True, line=.3, signal=.1, observed_at=o.observed_at.timestamp()-2)
+    if blocked in ('1s', '100ms'):
+        d['macd_'+blocked].update(open=False, line=.05)
+    if blocked == 'future':
+        d['macd_100ms']['observed_at'] = o.observed_at.timestamp()+.1
+    market = deepcopy(o.structural_detector_state)
+    market['momentum_session'].update(late=True, high=100, prior_high=100)
+    market.pop('price_vwap_evidence', None)
+    sources = {k:v for k,v in o.source_values.items() if 'vwap' not in k}
+    monkeypatch.setattr(M.P, 'forming_macd_1s', lambda *args, **kwargs: dict(line=-1, signal=1))
+    result = h.evaluate(a, replace(o, source_values=sources, structural_detector_state=market))
+    adds = [i for i in result.evaluation.intents if i.action == 'add_long']
+    assert bool(adds) == (not blocked)
+    if adds:
+        assert adds[0].metadata['vwap_gate'] is None
+        assert adds[0].metadata['resistance_confirmation']
+    else:
+        assert result.evaluation.signals[0].reason.endswith('_macd_required_for_add')

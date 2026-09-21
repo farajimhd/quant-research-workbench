@@ -12,7 +12,7 @@ from src.trading_runtime.journal import TradingJournal
 @pytest.mark.parametrize('exit_kind', ['stop', 'partial_target'])
 def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path, exit_kind):
     async def run():
-        _, prepared, trade, _, _ = momentum_fixture()
+        _, prepared, trade, one, fast = momentum_fixture()
         configuration = approved_configuration(assignments=[dict(
             assignment_id=prepared.assignment_id, account_key='primary', ticker=prepared.ticker,
             conid=prepared.conid, status='watching', parameters=prepared.parameters,
@@ -44,35 +44,50 @@ def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path
             group = next(g for g in runtime.order_manager._groups.values() if g.intent.action == 'enter_long')
             assert group.intent.profit_target_price > group.intent.metadata['momentum_fill_average']
             assert controller._strategy.assignments()[0].state['squeeze_breakout']['momentum_requests'][group.intent.intent_id]['filled']
+            if exit_kind == 'partial_target':
+                held = sum(p.position for p in positions)
+                await runtime.process_account_strategy_observation(
+                    replace(one(17, 10.64, .3, .1), bar_open=10.4, position_quantity=held), assigned.account_id)
+                await runtime.process_account_strategy_observation(fast(17.005, 10.64, position=held), assigned.account_id)
+                # First following-second print arrives 245 ms after completed
+                # 100 ms MACD. Its bullish episode must still permit the add.
+                add_observation = trade(17.25, 10.64, held)
+                await quote(add_observation.observed_at, add_observation.bid, add_observation.ask)
+                await runtime.process_account_strategy_observation(add_observation, assigned.account_id)
+                await quote(trade(17.3).observed_at, add_observation.bid, add_observation.ask)
+                additions = [g for g in runtime.order_manager._groups.values() if g.intent.action == 'add_long']
+                assert len(additions) == 1 and additions[0].filled_quantity > 0
+                assert sum(p.position for p in await runtime.broker.positions(assigned.account_id)) > held
             stop = group.intent.invalidation_price
             expected_reason = group.intent.metadata['stop_exit_reason']
             if exit_kind == 'partial_target':
                 target = group.intent.profit_target_price
+                acquired = sum(p.position for p in await runtime.broker.positions(assigned.account_id))
                 event = _debug_market_events((dict(kind='quote', ticker=assigned.ticker,
-                    ts=trade(16.4).observed_at.isoformat(), bid_price=target, ask_price=target+.02,
+                    ts=trade(18.4).observed_at.isoformat(), bid_price=target, ask_price=target+.02,
                     bid_size=1, ask_size=1),))[0]
                 await runtime.process_event(event, evaluate_strategy=False)
                 held = sum(p.position for p in await runtime.broker.positions(assigned.account_id))
-                assert 0 < held < group.filled_quantity
+                assert 0 < held < acquired
                 current = controller._strategy.assignments()[0]
                 assert current.state['entry_acquisition_exit_latched']
                 expected_reason = 'momentum_target_5x'
                 assert current.state['last_exit_reason'] == expected_reason
                 # Price retreats below the target. The engine must still sell
                 # all remaining shares through Portfolio and OMS, not wait.
-                await quote(trade(16.5).observed_at, target-.10, target-.08)
+                await quote(trade(18.5).observed_at, target-.10, target-.08)
                 await runtime.process_account_strategy_observation(
-                    replace(trade(16.5, target-.09, held), bid=target-.10, ask=target-.08), assigned.account_id)
-                await quote(trade(16.6).observed_at, target-.10, target-.08)
+                    replace(trade(18.5, target-.09, held), bid=target-.10, ask=target-.08), assigned.account_id)
+                await quote(trade(18.6).observed_at, target-.10, target-.08)
             else:
-                event = _debug_market_events((dict(kind='trade', ticker=assigned.ticker, ts=trade(16.4).observed_at.isoformat(),
+                event = _debug_market_events((dict(kind='trade', ticker=assigned.ticker, ts=trade(18.4).observed_at.isoformat(),
                     price=stop-.01, size=10000),))[0]
                 await runtime.process_event(event, evaluate_strategy=False)
-                await quote(trade(16.5).observed_at, stop-.02, stop-.01)
+                await quote(trade(18.5).observed_at, stop-.02, stop-.01)
             positions = await runtime.broker.positions(assigned.account_id)
             assert not any(p.position for p in positions)
             if exit_kind == 'partial_target':
-                await runtime.process_account_strategy_observation(trade(16.7, 10.44), assigned.account_id)
+                await runtime.process_account_strategy_observation(trade(18.7, 10.44), assigned.account_id)
                 decisions = [r.payload for r in controller._journal.records(controller.run_id)
                     if r.category == 'strategy_decision']
                 assert decisions[-1]['reason'] == 'target_hit_same_1s_candle'

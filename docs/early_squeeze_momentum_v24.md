@@ -16,18 +16,22 @@ or live-release acceptance.
 - Initial-entry BOS crosses the latest confirmed swing high. The BOS gate
   stays open while awaiting VWAP and the other entry filters. An arbitrary
   accepted V7 resistance is not a BOS.
-- At every purchase, price must exceed completed 100ms VWAP; completed 1s,
+- At initial entry, price must exceed completed 100ms VWAP; completed 1s,
   forming 1s, and completed 100ms MACD must all have line > signal. Completed
   MACD/VWAP evidence retains its original clock. Quotes must also be fresh.
 - Early mode ends permanently for the session when the session high reaches
-  130% of the first eligible trade at/after 04:00. Thereafter, purchases also
-  require a trade crossing the nearest resistance midpoint strictly below the
+  130% of the first eligible trade at/after 04:00. Thereafter, initial entries
+  also require a trade crossing the nearest resistance midpoint strictly below the
   prior causal HOD. That gate clears when its geometry changes/disappears or
   price returns to/below its midpoint. Early entries are exempt.
 - Additions require a completed green 1s candle with open <= midpoint < close,
   followed by the first actual trade of the immediately following second above
   the midpoint, with identical level ID/lower/upper boundaries. Empty seconds
   expire confirmation; a later green reclaim can create a new confirmation.
+  With a position open, additions require the latest completed 1s and 100ms
+  MACD episodes to be bullish. No forming MACD, VWAP, BOS, or below-HOD entry
+  filter is reapplied; completed bullish episodes do not expire solely from
+  elapsed time. Causal V7 confirmation and executable quotes remain required.
 - Each purchase requests one third of currently unreserved available mandate
   cash, shared across tickers. Existing Portfolio limits, fees and executable
   share rounding still apply. Maximum three filled purchases per position;
@@ -78,6 +82,10 @@ candidate only after the running backend advertises its executor. It does not
 publish or enable live trading.
 
 ## Validation
+
+Addition-gate clarification: 42 focused tests passed, including a real
+Strategy/Portfolio/OMS addition fill with a 245 ms old bullish completed MACD
+reading, bearish/future MACD rejection, and target liquidation of both tranches.
 
 Latest changes: 71 focused tests passed, including 30%/30-second boundaries,
 same-candle re-entry blocking, and partial-target liquidation through the real

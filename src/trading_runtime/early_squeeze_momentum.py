@@ -361,9 +361,9 @@ def evaluate(host, a, o, p, old_state):
             reentry_not_before=d['target_reentry_not_before']))
     if not trade or not fresh:
         return emit('hold' if held else 'wait', 'fresh_causal_trade_and_v7_required')
-    if not session_valid:
+    if not held and not session_valid:
         return emit('wait', 'session_open_context_unavailable')
-    if d.get('late_mode') and not d.get('hod_gate'):
+    if not held and d.get('late_mode') and not d.get('hod_gate'):
         return emit('wait', 'late_mode_below_hod_resistance_required')
     if not held and (a.status == Status.ENTRY_PENDING or state.get('pending_capital_request')):
         return emit('wait', 'entry_fill_pending')
@@ -372,18 +372,28 @@ def evaluate(host, a, o, p, old_state):
         return emit('wait', 'entry_permission_closed')
     if not held and not bos.get('open'):
         return emit('wait', 'waiting_for_confirmed_swing_high_bos')
-    if not (episode.get('open') and 0 <= now-episode.get('observed_at', 0) <= 1.
-            and preview and C.finite(preview.get('line'), preview.get('signal')) and preview['line'] > preview['signal']):
-        return emit('wait', 'fresh_bullish_completed_and_forming_1s_macd_required')
-    if not fast.get('open') or not 0 <= now-fast.get('observed_at', 0) <= .100001:
-        return emit('wait', 'fresh_bullish_completed_100ms_macd_required')
     source = o.source_values.get('indicator.vwap.execution_value@100ms', {})
     at, vwap = E.stamp(source.get('observed_at')), source.get('value')
-    prefix = market.get('price_vwap_evidence', {})
-    if (not at or not 0 <= now-at.timestamp() <= .100001 or not C.finite(vwap) or not 0 < vwap < o.price
-            or prefix.get('authority') != 'latest-completed-qmd-100ms'
-            or E.stamp(prefix.get('as_of')) != o.observed_at or prefix.get('source_observed_at') != source.get('observed_at')):
-        return emit('wait', 'fresh_price_above_vwap_required')
+    if held:
+        # Additions use the latest causal completed MACD episodes. Sparse
+        # trading does not expire an otherwise open episode.
+        for gate, reason in ((episode, 'bullish_completed_1s_macd_required_for_add'),
+                             (fast, 'bullish_completed_100ms_macd_required_for_add')):
+            if (not gate.get('open') or not 0 < gate.get('observed_at', 0) <= now
+                    or not C.finite(gate.get('line'), gate.get('signal'))
+                    or gate['line'] <= gate['signal']):
+                return emit('hold', reason, Status.MANAGING)
+    else:
+        if not (episode.get('open') and 0 <= now-episode.get('observed_at', 0) <= 1.
+                and preview and C.finite(preview.get('line'), preview.get('signal')) and preview['line'] > preview['signal']):
+            return emit('wait', 'fresh_bullish_completed_and_forming_1s_macd_required')
+        if not fast.get('open') or not 0 <= now-fast.get('observed_at', 0) <= .100001:
+            return emit('wait', 'fresh_bullish_completed_100ms_macd_required')
+        prefix = market.get('price_vwap_evidence', {})
+        if (not at or not 0 <= now-at.timestamp() <= .100001 or not C.finite(vwap) or not 0 < vwap < o.price
+                or prefix.get('authority') != 'latest-completed-qmd-100ms'
+                or E.stamp(prefix.get('as_of')) != o.observed_at or prefix.get('source_observed_at') != source.get('observed_at')):
+            return emit('wait', 'fresh_price_above_vwap_required')
     if not quote:
         return emit('wait', 'fresh_quote_required')
     gap = (d.get('frozen_gap') or {}).get('average')
@@ -426,4 +436,4 @@ def evaluate(host, a, o, p, old_state):
             resistance_confirmation=deepcopy(addition), stop_exit_reason=active['stop_reason'],
             momentum_target=dict(average_gap=gap, multiplier=multiplier, tick_size=tick),
             momentum_initial_stop=deepcopy(active['stop_selection']) if not held else None,
-            protective_stop_selection=deepcopy(active['stop_selection']), vwap_gate=dict(value=vwap, observed_at=source['observed_at'])))
+            protective_stop_selection=deepcopy(active['stop_selection']), vwap_gate=dict(value=vwap, observed_at=source.get('observed_at')) if not held else None))

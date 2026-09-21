@@ -2,7 +2,7 @@
 from . import early_squeeze_breakout_candidate as base
 from src.trading_runtime.early_squeeze_momentum import CONTRACT
 
-LABEL = 'Early Squeeze / causal BOS momentum v24 / 30% session rise / 30s swing stop'
+LABEL = 'Early Squeeze / causal BOS momentum v24 / 30% session / 30s swing / completed-MACD adds'
 DESCRIPTION = (
     'Early Squeeze activates the session. Initial entries require causal confirmed-high BOS, '
     'price above VWAP and bullish completed/forming 1s plus completed 100ms MACD. '
@@ -10,7 +10,8 @@ DESCRIPTION = (
     'the nearest resistance midpoint below prior HOD. Up to three filled purchases per '
     'position, each requesting one third of currently unreserved cash. Adds require a green '
     '1s midpoint crossing and the first trade in the immediately following second above '
-    'unchanged geometry; one filled add per resistance per MACD episode. Stop below the '
+    'unchanged geometry plus open completed 1s and 100ms MACD episodes, without entry '
+    'VWAP/HOD/forming-MACD gates or MACD age expiry; one filled add per resistance per MACD episode. Stop below the '
     'latest confirmed V7-supported low formed within thirty seconds, else support below VWAP '
     'within 1% of entry, else 5% below actual entry. Every three distinct accepted '
     'resistances advance the stop one resistance, below its lower band. Freeze average '
