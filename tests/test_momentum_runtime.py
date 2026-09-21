@@ -9,10 +9,12 @@ from src.backend.replay_run_service import ReplayRunController, ReplayRunDefinit
 from src.trading_runtime.journal import TradingJournal
 
 
+@pytest.mark.parametrize('session_progression', [False, True])
 @pytest.mark.parametrize('exit_kind', ['stop', 'partial_target'])
-def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path, exit_kind):
+def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path, exit_kind, session_progression):
     async def run():
         _, prepared, trade, one, fast = momentum_fixture()
+        prepared = replace(prepared, parameters={**prepared.parameters, 'momentum_session_progression': session_progression})
         configuration = approved_configuration(assignments=[dict(
             assignment_id=prepared.assignment_id, account_key='primary', ticker=prepared.ticker,
             conid=prepared.conid, status='watching', parameters=prepared.parameters,
@@ -44,6 +46,8 @@ def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path
             group = next(g for g in runtime.order_manager._groups.values() if g.intent.action == 'enter_long')
             assert group.intent.profit_target_price > group.intent.metadata['momentum_fill_average']
             assert controller._strategy.assignments()[0].state['squeeze_breakout']['momentum_requests'][group.intent.intent_id]['filled']
+            first_entry_at = controller._strategy.assignments()[0].state['squeeze_breakout']['last_entry_fill_at']
+            assert first_entry_at == controller._strategy.assignments()[0].state['squeeze_entry']['first_fill_at']
             if exit_kind == 'partial_target':
                 held = sum(p.position for p in positions)
                 await runtime.process_account_strategy_observation(
@@ -57,6 +61,7 @@ def test_engine_portfolio_oms_broker_roundtrip_and_recorded_stop_reason(tmp_path
                 await quote(trade(17.3).observed_at, add_observation.bid, add_observation.ask)
                 additions = [g for g in runtime.order_manager._groups.values() if g.intent.action == 'add_long']
                 assert len(additions) == 1 and additions[0].filled_quantity > 0
+                assert controller._strategy.assignments()[0].state['squeeze_breakout']['last_entry_fill_at'] == first_entry_at
                 assert sum(p.position for p in await runtime.broker.positions(assigned.account_id)) > held
             stop = group.intent.invalidation_price
             expected_reason = group.intent.metadata['stop_exit_reason']

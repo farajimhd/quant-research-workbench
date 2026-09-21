@@ -6541,6 +6541,8 @@ class AssignedLongMomentumStrategy:
                 if action == 'enter_long' and incremental_fill > 0:
                     if assignment.parameters.get('early_squeeze_breakout_contract'):
                         active = deepcopy(state['squeeze_entry'])
+                        if momentum and 'first_fill_at' not in active:
+                            state.setdefault('squeeze_breakout', {})['last_entry_fill_at'] = snapshot.updated_at.timestamp()
                         active.setdefault('first_fill_at', snapshot.updated_at.timestamp())
                         state['squeeze_entry'] = active
                         state.setdefault('squeeze_breakout', {}).pop('recovery', None)

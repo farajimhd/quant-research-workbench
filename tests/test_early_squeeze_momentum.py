@@ -358,6 +358,7 @@ def test_candidate_compiles_separate_contract_and_session_behavior(monkeypatch):
     compiled_profile = next(p for p in compiled['strategy']['profiles'] if p['profile_id'] == M.CONTRACT)
     assert S.resolve_long_momentum_parameters(compiled_profile['parameters'])['early_squeeze_breakout_contract'] == M.CONTRACT
     assert S.resolve_long_momentum_parameters(compiled_profile['parameters'])['momentum_fallback_stop_percent'] == 5
+    assert S.resolve_long_momentum_parameters(compiled_profile['parameters'])['momentum_session_progression'] is True
 
 
 def test_target_reentry_waits_until_next_second_and_keeps_normal_gates():

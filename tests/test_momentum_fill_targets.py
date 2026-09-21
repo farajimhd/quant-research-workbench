@@ -12,10 +12,11 @@ from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
 from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES
 
 
+@pytest.mark.parametrize('amend_multiplier', [8, 12, 14])
 @pytest.mark.parametrize('canonical', [False, True])
 @pytest.mark.parametrize('signal_reference', [9.92, 10.4])
 @pytest.mark.parametrize('fallback_percent', [1, 5])
-def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_path, canonical, signal_reference, fallback_percent):
+def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_path, canonical, signal_reference, fallback_percent, amend_multiplier):
     async def run():
         broker = SimulatedBrokerAdapter(['DU1'], mode=TradingMode.BACKTEST)
         manager, journal = await helpers.OrderManagementPolicyTests()._manager(
@@ -53,23 +54,23 @@ def test_actual_fill_targets_amendments_and_repair_keep_tranche_authority(tmp_pa
             assert groups[0].intent.reference_price == signal_reference
             amendment = replace(helpers.intent(action='replace_profit_target', quantity=200.),
                 reference_price=13., profit_target_price=11.78,
-                metadata={'momentum_target_multiplier': 8})
+                metadata={'momentum_target_multiplier': amend_multiplier})
             await manager.submit_intent(helpers.portfolio_approved(journal, amendment), account_id='DU1', event=None)
-            assert [g.intent.profit_target_price for g in groups] == pytest.approx([11.66, 11.9])
+            assert [g.intent.profit_target_price for g in groups] == pytest.approx([10.06+.2*amend_multiplier, 10.3+.2*amend_multiplier])
             for group in groups:
                 targets = [o for o in await broker.live_orders() if group.broker_order_roles.get(str(o.orderId)) == 'profit_target'
                     and o.order_status in OPEN_ORDER_STATUSES]
                 assert targets
                 for target in targets:
                     request = group.orders[group.broker_order_request_indexes[str(target.orderId)]]
-                    assert request.raw['canonical_metadata']['exit_reason'] == 'momentum_target_8x'
+                    assert request.raw['canonical_metadata']['exit_reason'] == f'momentum_target_{amend_multiplier}x'
                 stop = next(o for o in await broker.live_orders() if group.broker_order_roles.get(str(o.orderId)) == 'protective_stop'
                     and o.order_status in OPEN_ORDER_STATUSES)
                 await broker.cancel_order('DU1', str(stop.orderId))
                 await manager.reconcile_protection(group)
                 repairs = [r for r in group.orders if r.orderType == 'STP']
                 assert repairs[-1].raw['canonical_metadata']['exit_reason'] == stop_reason
-                assert group.intent.metadata['momentum_target']['multiplier'] == 8
+                assert group.intent.metadata['momentum_target']['multiplier'] == amend_multiplier
         finally:
             await manager.close()
             journal.close()

@@ -145,6 +145,35 @@ def record_breaks(active, events):
     return upgrades
 
 
+def record_session_breaks(progress, events):
+    """Count distinct causal levels once per session, including while flat."""
+    seen = progress.setdefault('broken_levels', [])
+    progress.setdefault('target_multiplier', 5)
+    upgrades = []
+    for event in events:
+        key = event['level']['unified_level_id']
+        if key in seen:
+            continue
+        seen.append(key)
+        if len(seen) % 3 == 0:
+            previous = progress['target_multiplier']
+            multiplier = {5: 8, 8: 10, 10: 12}.get(previous, previous+1)
+            progress['target_multiplier'] = multiplier
+            upgrades.append(dict(previous_multiplier=previous, multiplier=multiplier,
+                confirmed_level_ids=list(seen[-3:])))
+    return upgrades
+
+
+def recent_reentry_stop(rows, catalog, price, tick):
+    candidates = [r for key, r in rows.items() if (P.eligible(r) or key in catalog)
+        and P.midpoint(r) < price]
+    if not candidates:
+        return None
+    level = max(candidates, key=lambda r: (P.midpoint(r), r['unified_level_id']))
+    return dict(price=below(level['lower'], tick), reason='recent_reentry_resistance_stop',
+        level=deepcopy(level))
+
+
 def next_stop(active, rows, tick):
     """Every three distinct acceptances advance one resistance above the stop."""
     earned = len(active.get('broken_levels', []))//3
@@ -168,8 +197,9 @@ def next_stop(active, rows, tick):
 def target_price(fill_price, average_gap, multiplier, tick):
     if not C.finite(fill_price, average_gap, tick) or min(fill_price, average_gap, tick) <= 0:
         raise ValueError('Target needs a positive actual fill, frozen gap and tick')
-    if multiplier not in (5, 8, 10):
-        raise ValueError('Momentum target multiplier must be 5, 8 or 10')
+    if (not C.finite(multiplier) or multiplier != int(multiplier)
+            or multiplier not in (2, 5, 8, 10) and multiplier < 12):
+        raise ValueError('Invalid momentum target multiplier')
     return round(floor((fill_price+multiplier*average_gap)/tick+.5+1e-9)*tick, 10)
 
 
@@ -266,10 +296,14 @@ def evaluate(host, a, o, p, old_state):
             d['frozen_gap'] = deepcopy(saved.get('frozen_gap', {}))
         elif fresh and activated_at == o.observed_at:
             d['frozen_gap'] = freeze_gap(rows, o.price, now)
+    session_progression = bool(p.get('momentum_session_progression'))
+    progress = d.setdefault('session_targets', {}) if session_progression else {}
+    session_upgrades = record_session_breaks(progress, events) if session_progression and 'activated_at' in d else []
     active = state.get('squeeze_entry') or {}
     held = o.position_quantity > 0
     quote = V.fresh_quote(o)
     evidence = dict(contract=CONTRACT, frozen_gap=deepcopy(d.get('frozen_gap')), bos=bos,
+        session_targets=deepcopy(progress),
         late_mode=bool(d.get('late_mode')), hod_gate=deepcopy(d.get('hod_gate')),
         session_context=deepcopy(context), resistance_break_events=deepcopy(events),
         macd_1s_episode=deepcopy(episode), macd_100ms_gate=deepcopy(fast), forming_macd_1s=preview,
@@ -319,7 +353,17 @@ def evaluate(host, a, o, p, old_state):
             return emit('hold', 'position_entry_state_unavailable', Status.MANAGING)
         results = []
         active['stop'] = stop
-        upgrades = record_breaks(active, events)
+        if session_progression:
+            seen = active.setdefault('broken_levels', [])
+            for event in events:
+                key = event['level']['unified_level_id']
+                if key not in seen:
+                    seen.append(key)
+            if len(progress.get('broken_levels', []))//3 > active.get('target_session_step', 0):
+                active['target_multiplier'] = max(active['target_multiplier'], progress['target_multiplier'])
+            upgrades = session_upgrades
+        else:
+            upgrades = record_breaks(active, events)
         if fresh and quote:
             # Keep accepted resistance identity even after it becomes support.
             catalog = {k:dict(r, role='resistance') for k, r in rows.items()
@@ -410,13 +454,22 @@ def evaluate(host, a, o, p, old_state):
             return emit('hold', 'waiting_for_fresh_resistance_addition', Status.MANAGING)
         stop = state['active_stop']
     else:
-        selection = initial_stop(market.get('row', {}), rows, now, o.ask, vwap, tick, distance_reference='entry',
-            fallback_percent=p.get('momentum_fallback_stop_percent', 1))
+        recent_reentry = bool(session_progression and session_valid
+            and o.price > 1.3*context['open'] and d.get('last_entry_fill_at') is not None
+            and 0 <= now-d['last_entry_fill_at'] <= 30)
+        selection = (recent_reentry_stop(rows, d.get('resistance_1s', {}).get('catalog', {}), o.price, tick)
+            if recent_reentry else initial_stop(market.get('row', {}), rows, now, o.ask, vwap, tick,
+                distance_reference='entry', fallback_percent=p.get('momentum_fallback_stop_percent', 1)))
+        if selection is None:
+            return emit('wait', 'recent_reentry_resistance_stop_unavailable')
+        initial_multiplier = 2 if recent_reentry else progress.get('target_multiplier', 5)
+
         stop = selection['price']
         active = dict(requested_at=now, entry_price=o.ask, average_gap=gap, stop=stop,
             stop_reason=selection['reason'], stop_selection=selection, stop_steps=0,
             stop_anchor_lower=(selection.get('level') or {}).get('lower', stop),
-            target_multiplier=5, submitted_multiplier=5, broken_levels=[])
+            target_multiplier=initial_multiplier, submitted_multiplier=initial_multiplier, broken_levels=[],
+            target_session_step=len(progress.get('broken_levels', []))//3, recent_reentry=recent_reentry)
     multiplier = active['target_multiplier']
     target = target_price(o.ask, gap, multiplier, tick)
     if not 0 < stop < min(o.price, o.bid) <= o.ask < target:

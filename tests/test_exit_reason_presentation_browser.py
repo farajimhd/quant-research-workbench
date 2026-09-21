@@ -19,6 +19,8 @@ def test_exit_reasons_at_issue_time_and_causal_cutoff():
               const {ChartPanel}=await import('/src/app/components/ChartPanel.tsx');
               const {positionLifecycleAnnotations:project,shortExitReason}=await import('/src/features/canvas/chartPresentation.tsx');
               const base=1787301300, iso=i=>new Date((base+i)*1000).toISOString();
+              if(shortExitReason('momentum_target_13x')!=='Target filled · 13× frozen gap')throw Error('Session target multiplier');
+              if(shortExitReason('momentum_target_2x')!=='Target filled · 2× frozen gap')throw Error('Reentry target multiplier');
               if(shortExitReason('five_percent_entry_stop')!=='5% entry stop hit')throw Error('5% fallback exit label');
               const reasons=['red_close_below_attempt_open','macd_episode_ended','protective_stop'];
               const positions=reasons.map((_,i)=>({position_id:`p${i}`,instrument:{symbol:'TEST'},status:'closed',side:'LONG',
@@ -35,13 +37,13 @@ def test_exit_reasons_at_issue_time_and_causal_cutoff():
               if(shortExitReason('protective_swing_failed')!=='Swing low failed')throw Error('Swing reason');
               const fillRows=[
                 {execution_id:'buy',broker_order_id:'buy',side:'BUY',quantity:100,price:4.79,source_event_time:iso(17)},
-                {execution_id:'target',broker_order_id:'target',side:'SELL',quantity:40,price:4.89,source_event_time:iso(20),exit_reason:'momentum_target_8x'},
+                {execution_id:'target',broker_order_id:'target',side:'SELL',quantity:40,price:4.89,source_event_time:iso(20),exit_reason:'momentum_target_13x'},
                 {execution_id:'stop',broker_order_id:'stop',side:'SELL',quantity:60,price:4.82,source_event_time:iso(23),exit_reason:'three_resistance_step_stop'},
               ];
               const fillTrading={...trading,position_lifecycles:[{...positions[2],execution_ids:fillRows.map(r=>r.execution_id)}],
                 executions:fillRows,orders:fillRows.map(r=>({broker_order_id:r.broker_order_id,status:'filled',total_quantity:r.quantity,filled_quantity:r.quantity}))};
               const filled=project(fillTrading,'TEST')[0];
-              if(!filled.exitFills[0].label.includes('Target filled · 8× frozen gap'))throw Error('Per-tranche target cause missing');
+              if(!filled.exitFills[0].label.includes('Target filled · 13× frozen gap'))throw Error('Per-tranche target cause missing');
               if(!filled.exitFills[1].label.includes('Three-resistance trailing stop hit'))throw Error('Stop cause missing');
               const unknown=project({...fillTrading,executions:fillRows.map(r=>({...r,exit_reason:''}))},'TEST')[0];
               if(!unknown.exitFills.every(r=>r.label.includes('Reason unavailable')))throw Error('Exit cause invented');

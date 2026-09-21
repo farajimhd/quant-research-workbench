@@ -805,6 +805,7 @@ function positionExecutionActions(executions: PreviewRow[], positionSide: string
 
 export function shortExitReason(reason: string): string {
   const labels: Record<string, string> = {
+    recent_reentry_resistance_stop: "Re-entry resistance stop hit",
     supported_swing_low_stop: "Supported swing low stop hit",
     below_vwap_support_stop: "Support below VWAP stop hit",
     one_percent_entry_stop: "1% entry stop hit",
@@ -823,6 +824,8 @@ export function shortExitReason(reason: string): string {
     exit_pending: "Exit pending", profit_target: "Target reached",
   };
   const key = reason.trim().toLowerCase();
+  const target = /^momentum_target_(\d+)x$/.exec(key);
+  if (target) return `Target filled · ${target[1]}× frozen gap`;
   return labels[key] ?? (key ? key.replaceAll("_", " ") : "Reason unavailable");
 }
 

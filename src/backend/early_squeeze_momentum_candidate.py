@@ -2,7 +2,7 @@
 from . import early_squeeze_breakout_candidate as base
 from src.trading_runtime.early_squeeze_momentum import CONTRACT
 
-LABEL = 'Early Squeeze / causal BOS momentum v24 / 30% session / 30s swing / completed-MACD adds'
+LABEL = 'Early Squeeze / session targets v25 / rapid reentry 2x'
 DESCRIPTION = (
     'Early Squeeze activates the session. Initial entries require causal confirmed-high BOS, '
     'price above VWAP and bullish completed/forming 1s plus completed 100ms MACD. '
@@ -16,8 +16,10 @@ DESCRIPTION = (
     'within 1% of entry, else 5% below actual entry. Every three distinct accepted '
     'resistances advance the stop one resistance, below its lower band. Freeze average '
     'consecutive resistance gaps at activation through +300%. Each purchase has its own '
-    'fill-price plus 5x gap target; disjoint fast triples within less than three seconds '
-    'upgrade all open targets to 8x then 10x. First target fill liquidates the whole remainder; '
+    'fill-price plus session gap multiplier: 5x, 8x, 10x, 12x, then +1x per three distinct '
+    'confirmed breaks, without a speed limit, preserved across positions. Reentry above '
+    '+30% within 30s of the last entry fill starts at 2x with stop below the nearest '
+    'resistance below price, then inherits the session multiplier on the next advancement. First target fill liquidates the whole remainder; '
     'no reentry within that same 1s candle. No CHOCH/chop/MACD/VWAP exit. Stop buying '
     'and flatten at 20:00 New York. Research candidate; no profitability acceptance.'
 )
@@ -32,6 +34,7 @@ def build(configuration, baseline):
     profile['lifecycle']['trading_behavior'] = dict(behavior)
     profile['parameters']['reentry']['after_protective_exit'] = True
     profile['parameters']['momentum_fallback_stop_percent'] = 5
+    profile['parameters']['momentum_session_progression'] = True
     return payload, canvas, plan_id
 
 
