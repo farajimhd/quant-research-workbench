@@ -2056,7 +2056,8 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
                 "src.backend.replay_run_service._stream_historical_derived_frame_bundle",
                 side_effect=bundle,
             ) as bundled:
-                await controller._load_strategy_frames()
+                frames = await controller._load_strategy_frames()
+                await controller._align_strategy_350_signal_frames(frames)
 
         bundled.assert_awaited_once()
         self.assertEqual(bundled.call_args.kwargs["ticker"], "READY")

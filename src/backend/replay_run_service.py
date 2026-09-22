@@ -2610,6 +2610,7 @@ class ReplayRunController:
             self._preparation_stage = "strategy_frames"
             await self._publish(force=True)
             frame_source = await self._load_strategy_frames()
+            await self._align_strategy_350_signal_frames(frame_source)
             self._continuity_frame_source = frame_source if isinstance(frame_source, ReplayFrameSpool) else None
             if self.definition.prepare_frames_only:
                 if self._preparation_completed_units != self._preparation_total_units:
@@ -6409,6 +6410,39 @@ class ReplayRunController:
             )
         return tickers
 
+    async def _align_strategy_350_signal_frames(self, frames) -> None:
+        """Prevent an unprepared source-native signal from requesting a V7 cursor.
+
+        This runs after every frame path, including an existing run checkpoint
+        or a durable cache hit, and before signal/market playback begins.
+        """
+        if (self.definition.mode != RunMode.BACKTEST or self._strategy is None
+                or not any(assignment.parameters.get('momentum_successor') == 'strategy-349-v27'
+                           for assignment in self._strategy.assignments())):
+            return
+        completed_tickers = ({ticker for ticker, _ in await asyncio.to_thread(frames.completed_streams)}
+                             if isinstance(frames, ReplayFrameSpool) else set())
+        frame_tickers = completed_tickers & getattr(self, '_strategy_frame_requested_tickers', set())
+        excluded = sorted({event.ticker for event in self._historical_external_signal_events}
+                          - frame_tickers)
+        if not excluded:
+            return
+        self._historical_external_signal_events = [
+            event for event in self._historical_external_signal_events
+            if event.ticker in frame_tickers
+        ]
+        self._record_data_authority('strategy_350_signal_frame_admission', {
+            'authority': 'prepared_strategy_frame_population',
+            'excluded_tickers': excluded,
+            'excluded_count': len(excluded),
+            'reason': 'no_prepared_strategy_frames_after_admission',
+        })
+        logging.getLogger(__name__).warning(
+            'Backtest %s ignores source-native signals for %d tickers without '
+            'admitted strategy frames (first 10: %s)',
+            self.run_id, len(excluded), ', '.join(excluded[:10]),
+        )
+
     async def _load_strategy_frames(self) -> list[ReplayDerivedFrame] | ReplayFrameSpool:
         if self.definition.mode == RunMode.BACKTEST_DEBUG:
             self._strategy_frame_cache_status = "fixture"
@@ -6563,30 +6597,7 @@ class ReplayRunController:
                 "ignored_tickers": sorted(missing),
                 "ignored_reason": "certified_persisted_v18_level_book_unavailable",
             })
-            # A source-native occurrence can belong to a ticker removed by
-            # prior-close, quality, or level-book admission. Such a ticker has
-            # no prepared frames or V7 cursor and cannot evaluate the strategy.
-            # Keep source evidence upstream, but do not queue an activation
-            # that would attempt to read a non-existent cursor at event time.
-            frame_tickers = {ticker for ticker, _ in requests}
-            excluded_signals = sorted({event.ticker for event in self._historical_external_signal_events}
-                                      - frame_tickers)
-            if excluded_signals:
-                self._historical_external_signal_events = [
-                    event for event in self._historical_external_signal_events
-                    if event.ticker in frame_tickers
-                ]
-                self._record_data_authority("strategy_350_signal_frame_admission", {
-                    "authority": "prepared_strategy_frame_population",
-                    "excluded_tickers": excluded_signals,
-                    "excluded_count": len(excluded_signals),
-                    "reason": "no_prepared_strategy_frames_after_admission",
-                })
-                logging.getLogger(__name__).warning(
-                    'Backtest %s ignores source-native signals for %d tickers without '
-                    'admitted strategy frames (first 10: %s)',
-                    self.run_id, len(excluded_signals), ', '.join(excluded_signals[:10]),
-                )
+        self._strategy_frame_requested_tickers = {ticker for ticker, _ in requests}
         if not requests:
             self._strategy_frame_cache_status = "not_required"
             return []
