@@ -515,8 +515,18 @@ struct PersistedStructureEventRow {
 struct PersistedStructureCheckpointRow {
     authority_start: String,
     certification_json: String,
+    #[serde(alias = "session_date_text")]
     session_date: String,
     snapshot_json: String,
+    source_plan_hash: String,
+    source_revision_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PersistedStructureCheckpointKey {
+    algorithm_version: u16,
+    latest_built_at_ms: u64,
+    session_date_text: String,
     source_plan_hash: String,
     source_revision_token: String,
 }
@@ -3695,14 +3705,16 @@ impl HistoricalEventSource {
         if !available {
             return Ok(None);
         }
-        let sql = format!(
+        // Discover the latest complete key using only small metadata columns.
+        // Aggregating every historical snapshot_json while finding one row can
+        // exceed the per-query ClickHouse memory cap for dense tickers.
+        let key_sql = format!(
             r#"SELECT
-                formatDateTime(argMax(authority_start, built_at), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS authority_start,
-                toString(session_date) AS session_date,
+                toString(session_date) AS session_date_text,
+                algorithm_version,
                 source_plan_hash,
                 source_revision_token,
-                argMax(snapshot_json, built_at) AS snapshot_json,
-                argMax(certification_json, built_at) AS certification_json
+                toUnixTimestamp64Milli(max(built_at)) AS latest_built_at_ms
             FROM {table}
             PREWHERE checkpoint_set_id = {checkpoint_set_id}
               AND sym = {ticker}
@@ -3711,7 +3723,7 @@ impl HistoricalEventSource {
                 source_plan_hash, source_revision_token
             HAVING argMax(checkpoint_at, built_at) < parseDateTime64BestEffort({before}, 6, 'UTC')
               AND argMax(source_complete, built_at) = 1
-            ORDER BY session_date DESC, max(built_at) DESC
+            ORDER BY session_date DESC, latest_built_at_ms DESC
             LIMIT 1
             FORMAT JSONEachRow"#,
             ticker = sql_literal(&ticker),
@@ -3720,10 +3732,41 @@ impl HistoricalEventSource {
                                  else { GENERIC_STRUCTURE_ALGORITHM_VERSION.to_string() },
             before = sql_literal(&before.to_rfc3339()),
         );
-        let text = self.query(&sql).await?;
-        let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
+        let key_text = self.query(&key_sql).await?;
+        let Some(line) = key_text.lines().find(|line| !line.trim().is_empty()) else {
             return Ok(None);
         };
+        let key = serde_json::from_str::<PersistedStructureCheckpointKey>(line)
+            .map_err(|error| format!("invalid persisted structure checkpoint key: {error}"))?;
+        let sql = format!(
+            r#"SELECT
+                formatDateTime(argMax(authority_start, built_at), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS authority_start,
+                toString(source.session_date) AS session_date_text,
+                source_plan_hash,
+                source_revision_token,
+                argMax(snapshot_json, built_at) AS snapshot_json,
+                argMax(certification_json, built_at) AS certification_json
+            FROM {table} AS source
+            PREWHERE source.checkpoint_set_id = {checkpoint_set_id}
+              AND source.sym = {ticker}
+              AND source.session_date = toDate({session_date})
+              AND source.algorithm_version = {algorithm_version}
+            WHERE source.source_plan_hash = {source_plan_hash}
+              AND source.source_revision_token = {source_revision_token}
+              AND source.built_at <= fromUnixTimestamp64Milli({latest_built_at_ms})
+            GROUP BY source.session_date, source.source_plan_hash, source.source_revision_token
+            FORMAT JSONEachRow"#,
+            checkpoint_set_id = sql_literal(&self.config.structure_checkpoint_set_id),
+            ticker = sql_literal(&ticker),
+            session_date = sql_literal(&key.session_date_text),
+            algorithm_version = key.algorithm_version,
+            source_plan_hash = sql_literal(&key.source_plan_hash),
+            source_revision_token = sql_literal(&key.source_revision_token),
+            latest_built_at_ms = key.latest_built_at_ms,
+        );
+        let text = self.query(&sql).await?;
+        let line = text.lines().find(|line| !line.trim().is_empty())
+            .ok_or("persisted structure checkpoint disappeared after key lookup")?;
         let row = serde_json::from_str::<PersistedStructureCheckpointRow>(line)
             .map_err(|error| format!("invalid persisted structure checkpoint row: {error}"))?;
         if !source_revision_uses_historical_structure_policy_v1(&row.source_revision_token) {
@@ -3809,6 +3852,48 @@ impl HistoricalEventSource {
                 format!("{}:completed-session-extrema-v16-to-v17:{}", row.source_revision_token, stored_checkpoint_sha256)
             } else { row.source_revision_token },
         }))
+    }
+
+    pub async fn persisted_structure_checkpoint_tickers_before(
+        &self,
+        tickers: &[String],
+        before: DateTime<Utc>,
+    ) -> Result<Vec<String>, String> {
+        let mut available = Vec::new();
+        for chunk in tickers.chunks(128) {
+            let filter = chunk.iter()
+                .map(|ticker| normalize_ticker(ticker).map(|ticker| sql_literal(&ticker)))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(",");
+            let sql = format!(
+                r#"SELECT DISTINCT sym FROM (
+                    SELECT sym, session_date, source_plan_hash, source_revision_token
+                    FROM {table}
+                    PREWHERE checkpoint_set_id = {checkpoint_set_id}
+                      AND sym IN ({filter})
+                    WHERE algorithm_version = {version}
+                    GROUP BY sym, session_date, algorithm_version,
+                        source_plan_hash, source_revision_token
+                    HAVING argMax(checkpoint_at, built_at) < parseDateTime64BestEffort({before}, 6, 'UTC')
+                      AND argMax(source_complete, built_at) = 1
+                      AND position(source_revision_token, ':structure-input-v1:archive-sip-condition:') > 0
+                ) FORMAT TSVRaw"#,
+                table = format!("{}.{}", self.config.structure_database, self.config.structure_daily_checkpoint_table),
+                checkpoint_set_id = sql_literal(&self.config.structure_checkpoint_set_id),
+                version = GENERIC_STRUCTURE_ALGORITHM_VERSION,
+                before = sql_literal(&before.to_rfc3339()),
+            );
+            for ticker in self.query(&sql).await?.lines().filter(|line| !line.is_empty()) {
+                let ticker = normalize_ticker(ticker)?;
+                if !chunk.iter().any(|requested| requested == &ticker) {
+                    return Err("persisted structure availability returned an unrequested ticker".to_string());
+                }
+                available.push(ticker);
+            }
+        }
+        available.sort();
+        available.dedup();
+        Ok(available)
     }
 
     pub async fn structure_split_adjustments(

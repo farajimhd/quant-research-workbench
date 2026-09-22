@@ -37,7 +37,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use qmd_core::bars::is_supported_timeframe;
 use qmd_core::capability_catalog::{computation_capability_catalog, ComputationCapability};
 use qmd_core::compact_event::LiveCompactEvent;
@@ -1089,28 +1089,17 @@ async fn persisted_structure_books_available(
     }
     tickers.sort();
     tickers.dedup();
-    let source = state.source.clone();
-    let as_of = request.as_of;
-    let mut checks = futures_util::stream::iter(tickers.into_iter().map(|ticker| {
-        let source = source.clone();
-        async move {
-            let available = source.persisted_structure_checkpoint_before(&ticker, as_of).await?.is_some();
-            Ok::<_, String>((ticker, available))
-        }
-    })).buffer_unordered(4);
-    let mut available = Vec::new();
-    let mut missing = Vec::new();
-    while let Some(check) = checks.next().await {
-        let (ticker, found) = check.map_err(service_error)?;
-        if found { available.push(ticker); } else { missing.push(ticker); }
-    }
-    available.sort();
-    missing.sort();
+    let available = state.source
+        .persisted_structure_checkpoint_tickers_before(&tickers, request.as_of)
+        .await.map_err(service_error)?;
+    let missing = tickers.into_iter()
+        .filter(|ticker| available.binary_search(ticker).is_err())
+        .collect::<Vec<_>>();
     Ok(Json(json!({
-        "authority": "qmd_certified_persisted_structure_checkpoint",
+        "authority": "qmd_persisted_structure_checkpoint_coverage",
         "checkpoint_set_id": state.config.structure_checkpoint_set_id,
         "algorithm_version": qmd_core::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION,
-        "as_of": as_of,
+        "as_of": request.as_of,
         "available": available,
         "missing": missing,
     })))
