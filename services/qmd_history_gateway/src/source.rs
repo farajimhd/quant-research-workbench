@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, Mutex, OnceCell};
+use tokio::sync::{mpsc, Mutex, OnceCell, Semaphore};
 
 const LATEST_COVERAGE_CACHE_TTL: Duration = Duration::from_secs(30);
 const LATEST_COVERAGE_CACHE_MAX_ENTRIES: usize = 64;
@@ -368,6 +368,7 @@ pub struct HistoricalEventSource {
     event_hour_index: Arc<Mutex<Option<EventHourIndex>>>,
     structure_table_available: Arc<OnceCell<bool>>,
     structure_daily_checkpoint_table_available: Arc<OnceCell<bool>>,
+    checkpoint_payload_permit: Arc<Semaphore>,
     structure_condition_revision: String,
     trade_rules: TradeAggregationRules,
 }
@@ -630,6 +631,7 @@ impl HistoricalEventSource {
             event_hour_index: Arc::new(Mutex::new(None)),
             structure_table_available: Arc::new(OnceCell::new()),
             structure_daily_checkpoint_table_available: Arc::new(OnceCell::new()),
+            checkpoint_payload_permit: Arc::new(Semaphore::new(1)),
             structure_condition_revision,
             trade_rules: references.trade_aggregation_rules()?,
         };
@@ -3761,24 +3763,18 @@ impl HistoricalEventSource {
         };
         let key = serde_json::from_str::<PersistedStructureCheckpointKey>(line)
             .map_err(|error| format!("invalid persisted structure checkpoint key: {error}"))?;
-        let sql = format!(
-            r#"SELECT
-                formatDateTime(argMax(authority_start, built_at), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS authority_start,
-                toString(source.session_date) AS session_date_text,
-                source_plan_hash,
-                source_revision_token,
-                argMax(snapshot_json, built_at) AS snapshot_json,
-                argMax(certification_json, built_at) AS certification_json
-            FROM {table} AS source
-            PREWHERE source.checkpoint_set_id = {checkpoint_set_id}
-              AND source.sym = {ticker}
-              AND source.session_date = toDate({session_date})
-              AND source.algorithm_version = {algorithm_version}
-            WHERE source.source_plan_hash = {source_plan_hash}
-              AND source.source_revision_token = {source_revision_token}
-              AND source.built_at <= fromUnixTimestamp64Milli({latest_built_at_ms})
-            GROUP BY source.session_date, source.source_plan_hash, source.source_revision_token
-            FORMAT JSONEachRow"#,
+        // Dense persisted books can be hundreds of MiB on the wire and much
+        // larger while decoded. Only that payload stage is serialized; key
+        // discovery and event/bar preparation remain concurrent.
+        let payload_permit = self.checkpoint_payload_permit.acquire().await
+            .map_err(|error| format!("checkpoint payload gate closed: {error}"))?;
+        let exact_key = format!(
+            "FROM {table} AS source PREWHERE source.checkpoint_set_id = {checkpoint_set_id} \
+             AND source.sym = {ticker} AND source.session_date = toDate({session_date}) \
+             AND source.algorithm_version = {algorithm_version} \
+             WHERE source.source_plan_hash = {source_plan_hash} \
+             AND source.source_revision_token = {source_revision_token} \
+             AND source.built_at = fromUnixTimestamp64Milli({latest_built_at_ms})",
             checkpoint_set_id = sql_literal(&self.config.structure_checkpoint_set_id),
             ticker = sql_literal(&ticker),
             session_date = sql_literal(&key.session_date_text),
@@ -3786,6 +3782,33 @@ impl HistoricalEventSource {
             source_plan_hash = sql_literal(&key.source_plan_hash),
             source_revision_token = sql_literal(&key.source_revision_token),
             latest_built_at_ms = key.latest_built_at_ms,
+        );
+        let count_sql = format!("SELECT count() {exact_key} FORMAT TSV");
+        let exact_rows = self.query(&count_sql).await?.trim().parse::<u64>()
+            .map_err(|error| format!("invalid persisted structure checkpoint row count: {error}"))?;
+        if exact_rows != 1 {
+            return Err(format!(
+                "persisted structure checkpoint latest key has {exact_rows} rows for {ticker} on {} (expected exactly one)",
+                key.session_date_text
+            ));
+        }
+        // The key query chooses the latest certified version using only small
+        // columns. Aggregating snapshot_json here can allocate hundreds of MiB
+        // for one dense ticker; read the exact immutable row instead.
+        let sql = format!(
+            r#"SELECT
+                formatDateTime(authority_start, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS authority_start,
+                toString(source.session_date) AS session_date_text,
+                source_plan_hash,
+                source_revision_token,
+                snapshot_json,
+                certification_json
+            {exact_key}
+            LIMIT 1
+            SETTINGS max_threads = 1, max_block_size = 1,
+                preferred_block_size_bytes = 1048576,
+                output_format_parallel_formatting = 0
+            FORMAT JSONEachRow"#,
         );
         let text = self.query(&sql).await?;
         let line = text.lines().find(|line| !line.trim().is_empty())
@@ -3838,6 +3861,11 @@ impl HistoricalEventSource {
             &row.source_plan_hash,
             &row.source_revision_token,
         )?;
+        drop(stored_checkpoint_value);
+        drop(decoded_checkpoint_value);
+        drop(stored_certification_value);
+        drop(decoded_certification_value);
+        drop(payload_permit);
         // Validate the original immutable certificate before projecting the
         // narrowly compatible closed-session seed into the successor engine.
         let migrated_extrema = checkpoint.algorithm_version == 16
