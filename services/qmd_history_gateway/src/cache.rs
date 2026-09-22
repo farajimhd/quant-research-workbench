@@ -2635,6 +2635,14 @@ impl HistoricalDerivedCache {
         {
             return Ok(Some(seed.checkpoint));
         }
+        // The persisted structural-event book is the certified bounded
+        // fallback already used by the point-in-time structure endpoint. Use
+        // the same authority for derived bundles before considering a raw
+        // multi-month SIP rebuild; otherwise a newly actionable ticker with no
+        // daily checkpoint can stall backtest preparation for minutes.
+        if let Some(seed) = persisted_structure_book_seed(&self.source, ticker, before).await? {
+            return Ok(Some(seed.checkpoint));
+        }
         // A missing or algorithm-incompatible persisted checkpoint must
         // rebuild the same complete horizon promised by the ticker level-book
         // contract. A shorter fallback silently deleted older levels exactly
