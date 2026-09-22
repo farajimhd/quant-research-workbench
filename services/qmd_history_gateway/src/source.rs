@@ -3091,6 +3091,29 @@ impl HistoricalEventSource {
         if self.requires_archive_execution_clock() {
             self.archive_execution_clock_revision(window, &plan).await?;
         }
+        if archive_session_coverage_eligible(window, &plan) {
+            let table = format!("{}.events_ordinal_continuity", self.config.clickhouse_database);
+            let start_date = window.start.with_timezone(&New_York).date_naive();
+            let end_date = (window.end - chrono::Duration::microseconds(1))
+                .with_timezone(&New_York)
+                .date_naive();
+            let sql = archive_session_coverage_sql(&table, start_date, end_date);
+            let response = self.query(&sql).await?;
+            let row = serde_json::from_str::<EventCoverageRow>(response.trim())
+                .map_err(|error| format!("invalid canonical session coverage response: {error}"))?;
+            return Ok(EventCoverage {
+                complete: plan.complete_for_history,
+                coverage_table: table.clone(),
+                end: window.end,
+                event_count: row.event_count,
+                first_sip_timestamp_us: row.first_sip_timestamp_us,
+                last_sip_timestamp_us: row.last_sip_timestamp_us,
+                source_plan_hash: plan.plan_hash,
+                source_tables: vec![table],
+                start: window.start,
+                ticker_count: row.ticker_count,
+            });
+        }
         let ticker_filter = ticker_filter(&window.tickers)?;
         let mut selects = Vec::new();
         let mut source_tables = Vec::new();
@@ -4219,6 +4242,49 @@ fn latest_coverage_summary_sql(table: &str, source_date: NaiveDate) -> String {
             FROM {table}
             WHERE source_date = toDate('{source_date}')
             GROUP BY ticker
+        )
+        WHERE canonical_event_count > 0
+        SETTINGS max_threads = {LATEST_COVERAGE_QUERY_MAX_THREADS},
+            max_memory_usage = {LATEST_COVERAGE_QUERY_MAX_MEMORY_BYTES},
+            max_execution_time = {LATEST_COVERAGE_QUERY_MAX_SECONDS}
+        FORMAT JSONEachRow"#
+    )
+}
+
+fn archive_session_coverage_eligible(window: &EventWindow, plan: &MarketSourcePlan) -> bool {
+    let start = window.start.with_timezone(&New_York);
+    let end = window.end.with_timezone(&New_York);
+    window.tickers.is_empty()
+        && start.hour() == 4
+        && start.minute() == 0
+        && start.second() == 0
+        && start.nanosecond() == 0
+        && end.hour() == 20
+        && end.minute() == 0
+        && end.second() == 0
+        && end.nanosecond() == 0
+        && plan.complete_for_history
+        && plan.segments.iter().any(|segment| segment.tier == MarketSourceTier::Archive)
+        && plan.segments.iter().all(|segment| {
+            matches!(segment.tier, MarketSourceTier::Archive | MarketSourceTier::ClosedMarket)
+        })
+}
+
+fn archive_session_coverage_sql(table: &str, start_date: NaiveDate, end_date: NaiveDate) -> String {
+    format!(
+        r#"SELECT
+            sum(canonical_event_count) AS event_count,
+            uniqExact(ticker) AS ticker_count,
+            if(event_count = 0, 0, minIf(canonical_first_sip, canonical_event_count > 0)) AS first_sip_timestamp_us,
+            if(event_count = 0, 0, maxIf(canonical_last_sip, canonical_event_count > 0)) AS last_sip_timestamp_us
+        FROM (
+            SELECT ticker,
+                argMax(event_count, tuple(build_step, updated_at)) AS canonical_event_count,
+                argMax(first_sip_timestamp_us, tuple(build_step, updated_at)) AS canonical_first_sip,
+                argMax(last_sip_timestamp_us, tuple(build_step, updated_at)) AS canonical_last_sip
+            FROM {table}
+            WHERE source_date >= toDate('{start_date}') AND source_date <= toDate('{end_date}')
+            GROUP BY source_date, ticker
         )
         WHERE canonical_event_count > 0
         SETTINGS max_threads = {LATEST_COVERAGE_QUERY_MAX_THREADS},
@@ -5584,7 +5650,8 @@ mod tests {
         assert!(!sql.contains("daily_session"));
     }
     use super::{
-        adaptive_structure_chunk_minutes, append_scheduled_gap_segments, archive_session_end_utc,
+        adaptive_structure_chunk_minutes, append_scheduled_gap_segments,
+        archive_session_coverage_sql, archive_session_end_utc,
         build_source_plan, completed_session_dates_between_sql, coverage_precedes, event_select,
         first_json_difference_path, indicator_warmup_ordinal_sessions_sql,
         latest_coverage_summary_sql, latest_coverage_target_date_sql, macro_bar_is_closed,
@@ -5980,6 +6047,21 @@ mod tests {
         assert!(summary.contains("GROUP BY ticker"));
         assert!(!summary.contains("GROUP BY ticker, source_date"));
         assert!(summary.contains("max_execution_time = 15"));
+    }
+
+    #[test]
+    fn archive_session_coverage_query_uses_bounded_canonical_continuity() {
+        let sql = archive_session_coverage_sql(
+            "market_sip_compact.events_ordinal_continuity",
+            NaiveDate::from_ymd_opt(2026, 8, 19).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
+        );
+        assert!(sql.contains("source_date >= toDate('2026-08-19')"));
+        assert!(sql.contains("source_date <= toDate('2026-08-21')"));
+        assert!(sql.contains("GROUP BY source_date, ticker"));
+        assert!(sql.contains("max_memory_usage = 536870912"));
+        assert!(sql.contains("max_execution_time = 15"));
+        assert!(!sql.contains("events_2026"));
     }
 
     #[test]

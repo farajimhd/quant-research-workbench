@@ -1291,6 +1291,11 @@ def historical_preflight(
                 )
                 if isinstance(payload, dict):
                     coverage = payload
+                    if not bool(coverage.get("complete")):
+                        data_error = (
+                            "QMD History did not confirm complete canonical authority "
+                            "for the selected session window."
+                        )
             if int(coverage.get("event_count") or 0) <= 0:
                 data_error = "No canonical market events were found in the resolved session window."
         except Exception as exc:

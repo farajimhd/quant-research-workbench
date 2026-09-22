@@ -392,6 +392,7 @@ class HistoricalTradingServiceTests(unittest.TestCase):
     ) -> None:
         gateway_get.side_effect = [
             {
+                "complete": True,
                 "event_count": 1_250_000,
                 "ticker_count": 4_200,
                 "first_sip_timestamp_us": 1_783_655_200_000_000,
