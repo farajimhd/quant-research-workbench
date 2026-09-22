@@ -47,9 +47,6 @@ def build(configuration, baseline):
     rule = next(r for r in payload['market_discovery']['rule_sets'] if r['rule_set_id'] == quality_id)
     rule['conditions'] = [c for c in rule['conditions'] if not (
         c['left_source_id'] == 'market.last_price' and c['comparator'] == 'greater_or_equal')]
-    rule['conditions'].append(dict(condition_id='prior-close-under-20', enabled=True,
-        left_source_id='market.previous_close', left_field_ref='data.market.previous_close@1:value',
-        comparator='less_than', right_source_id='', value=20.))
     return payload, canvas, plan_id
 
 

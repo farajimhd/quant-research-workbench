@@ -7,7 +7,10 @@ not profitability, holdout, or live-release acceptance.
 ## Session admission and purchases
 
 - The completed prior regular-session close must be strictly below `$20`.
-  Today's price is never subjected to that ceiling.
+  Today's price is never subjected to that ceiling. This gate runs fail-closed
+  in the strategy executor using the causal replay/live observation. It is not
+  a Watchlist condition because the historical Watchlist interval provider
+  does not own prior-session-close materialization.
 - Early Squeeze and the live `$1` threshold are independent. Early Squeeze is
   retained for the session even if it occurs below `$1`; the ticker remains
   watched, but no entry or addition is allowed while the current trade is below
@@ -86,3 +89,12 @@ adaptive range inputs, required/capped distance and reentry-high decision.
 Protection changes retain their exact source and previous effective stop.
 Strategy 349 is not accepted for profitability or live use without separate
 cost-aware full-session and holdout evidence.
+
+## Historical initialization correction
+
+Saved candidate revision 349 incorrectly also placed `market.previous_close`
+in its Watchlist rule. Historical initialization rejects that unsupported
+external interval source before strategy execution. Candidate revision 350
+removes only the duplicate Watchlist condition; the executor's fail-closed
+prior-close gate and every trading rule above are unchanged. Revision 349 is
+retained as failed evidence and should not be run.

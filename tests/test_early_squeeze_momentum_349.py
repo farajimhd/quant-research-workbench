@@ -100,7 +100,24 @@ def test_strategy_349_candidate_is_separate_and_requests_all_macd_timeframes():
     rule = next(r for r in payload['market_discovery']['rule_sets']
         if r['rule_set_id'] == M.CONTRACT+'-tradability')
     assert plan['name'] == candidate.LABEL
-    assert any(c['left_source_id'] == 'market.previous_close' and c['value'] == 20 for c in rule['conditions'])
+    assert not any(c['left_source_id'] == 'market.previous_close' for c in rule['conditions'])
+    assert not any(c['left_source_id'] == 'market.last_price' and c['comparator'] == 'greater_or_equal'
+        for c in rule['conditions'])
+
+
+def test_strategy_350_historical_watchlist_plan_needs_no_previous_close_interval():
+    from datetime import datetime, timezone
+    from src.backend import early_squeeze_momentum_350_candidate as candidate
+    from src.backend.historical_watchlist_plan import compile_historical_watchlist_plan
+    from src.backend.trading_configuration_service import configuration_base
+    base = configuration_base()
+    payload, _, plan_id = candidate.build(base, baseline(base))
+    plan = next(p for p in payload['run_plans']['plans'] if p['run_plan_id'] == plan_id)
+    compiled = compile_historical_watchlist_plan(payload, plan['watchlist_ids'][0],
+        start=datetime(2026, 8, 21, 8, tzinfo=timezone.utc),
+        end=datetime(2026, 8, 21, 9, tzinfo=timezone.utc))
+    assert 'market.previous_close' not in compiled['qmd_sources']
+    assert all(row['field_id'] != 'market.previous_close' for row in compiled['external_features'])
 
 
 def test_real_engine_successor_entry_uses_supported_bos_multi_macd_and_adaptive_stop():
