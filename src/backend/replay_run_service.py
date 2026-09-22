@@ -9832,6 +9832,7 @@ def _retryable_historical_stream_error(error: Exception) -> bool:
     return isinstance(error, RuntimeError) and (
         "historical cache byte limit exceeded" in detail
         or "qmd derived stream closed early" in detail
+        or "qmd derived bundle closed early" in detail
     )
 
 
