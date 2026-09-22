@@ -3692,19 +3692,21 @@ impl HistoricalEventSource {
         }
         let sql = format!(
             r#"SELECT
-                formatDateTime(authority_start, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS authority_start,
+                formatDateTime(argMax(authority_start, built_at), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS authority_start,
                 toString(session_date) AS session_date,
                 source_plan_hash,
                 source_revision_token,
-                snapshot_json,
-                certification_json
-            FROM {table} FINAL
-            WHERE checkpoint_set_id = {checkpoint_set_id}
+                argMax(snapshot_json, built_at) AS snapshot_json,
+                argMax(certification_json, built_at) AS certification_json
+            FROM {table}
+            PREWHERE checkpoint_set_id = {checkpoint_set_id}
               AND sym = {ticker}
-              AND algorithm_version IN ({algorithm_versions})
-              AND checkpoint_at < parseDateTime64BestEffort({before}, 6, 'UTC')
-              AND source_complete = 1
-            ORDER BY session_date DESC, built_at DESC
+            WHERE algorithm_version IN ({algorithm_versions})
+            GROUP BY checkpoint_set_id, sym, session_date, algorithm_version,
+                source_plan_hash, source_revision_token
+            HAVING argMax(checkpoint_at, built_at) < parseDateTime64BestEffort({before}, 6, 'UTC')
+              AND argMax(source_complete, built_at) = 1
+            ORDER BY session_date DESC, max(built_at) DESC
             LIMIT 1
             FORMAT JSONEachRow"#,
             ticker = sql_literal(&ticker),
