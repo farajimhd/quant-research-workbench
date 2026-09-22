@@ -488,7 +488,6 @@ struct EntryState {
     structure_projection: Vec<Value>,
     structure_events: Vec<GenericStructureEvent>,
     frames: Vec<DerivedUpdate>,
-    last_bar_end: Option<DateTime<Utc>>,
     last_bar_start_by_timeframe: HashMap<String, DateTime<Utc>>,
     products: Option<MarketProductEngine>,
 }
@@ -3110,12 +3109,6 @@ impl CacheEntry {
             state.last_bar_start_by_timeframe.get(&bar.timeframe).copied(),
             bar.bar_start,
         )?;
-        if state.last_bar_end.is_some_and(|previous| bar.bar_end < previous) {
-            return Err(format!(
-                "historical bundled bars must have nondecreasing close time: previous={} next={}",
-                state.last_bar_end.expect("checked historical bar end"), bar.bar_end,
-            ));
-        }
         let update_count = state.bars.len().saturating_add(1);
         let snapshot_id = Arc::as_ptr(&bar.qmd_structure) as usize;
         let snapshot_bytes = if state.structure_snapshot_ids.contains(&snapshot_id) { 0 }
@@ -3141,7 +3134,6 @@ impl CacheEntry {
             .store(frame_bytes as u64, Ordering::Release);
         state.structure_snapshot_ids.insert(snapshot_id);
         state.structure_snapshot_bytes = state.structure_snapshot_bytes.saturating_add(snapshot_bytes);
-        state.last_bar_end = Some(bar.bar_end);
         state.last_bar_start_by_timeframe.insert(bar.timeframe.clone(), bar.bar_start);
         let sequence = state.bars.len() as u64 + 1;
         let update = BarUpdate { bar, sequence };
