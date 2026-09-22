@@ -5,7 +5,7 @@ This module never consumes chart annotations or retrospective extrema.
 """
 from copy import deepcopy
 from dataclasses import replace
-from math import floor
+from math import ceil, floor, isfinite
 
 from . import early_squeeze_consistent as C, early_squeeze_price as P
 from . import vwap_resistance_ladder as V, historical_hod as H, early_squeeze_breakout as E
@@ -14,6 +14,94 @@ from .signals import CapitalRequest
 from ..market_engine.immutable_evidence import freeze
 
 CONTRACT = 'early-squeeze-momentum-v24'
+SUCCESSOR = 'strategy-349-v27'
+
+
+def successor(p):
+    return p.get('momentum_successor') == SUCCESSOR
+
+
+def observe_noise(state, observation):
+    """Build causal rolling 2s/5s ranges from completed one-second bars."""
+    if observation.source_timeframe != '1s' or 'bar_close' not in observation.evaluation_events:
+        return
+    values = (observation.bar_high, observation.bar_low, observation.price)
+    if not all(type(v) in (int, float) and isfinite(v) and v > 0 for v in values):
+        return
+    now = observation.observed_at.timestamp()
+    history = state.setdefault('successor_noise', {})
+    bars = history.setdefault('bars', [])
+    if bars and now <= bars[-1]['at']:
+        return
+    bars.append(dict(at=now, high=observation.bar_high, low=observation.bar_low,
+        close=observation.price))
+    del bars[:-5]
+    if len(bars) >= 5:
+        ranges = history.setdefault('ranges_5s', [])
+        ranges.append(max(row['high'] for row in bars)-min(row['low'] for row in bars))
+        # A full extended session contains fewer than 58k one-second windows.
+        del ranges[:-60_000]
+
+
+def adaptive_initial_distance(state, entry_price):
+    """Return the approved causal noise distance and its auditable evidence."""
+    history = state.get('successor_noise', {})
+    bars = history.get('bars', [])
+    short = (max(row['high'] for row in bars[-2:])-min(row['low'] for row in bars[-2:])
+        if len(bars) >= 2 else 0.)
+    ranges = sorted(v for v in history.get('ranges_5s', [])
+        if type(v) in (int, float) and isfinite(v) and v >= 0)
+    percentile = 0.
+    if len(ranges) >= 6:
+        percentile = ranges[min(len(ranges)-1, max(0, int(.9*len(ranges)+.999999)-1))]
+    distance = max(.10, 1.5*short, 1.25*percentile)
+    maximum = max(.10, .05*entry_price)
+    return dict(distance=distance, maximum=maximum, short_range_2s=short,
+        session_range_5s_p90=percentile, session_range_sample_count=len(ranges),
+        short_multiplier=1.5, session_multiplier=1.25)
+
+
+def forming_macd(observation, state, timeframe, trade):
+    """Preview one MACD timeframe from completed bars without compounding trades."""
+    seconds = {'1s':1., '5s':5., '10s':10., '30s':30.}[timeframe]
+    now = observation.observed_at.timestamp()
+    key = 'successor_completed_macd_'+timeframe
+    base = state.get(key, {})
+    if observation.source_timeframe == timeframe and 'bar_close' in observation.evaluation_events:
+        current = dict(at=now, line=observation.macd_line, signal=observation.macd_signal)
+        values = (base.get('line'), observation.macd_line, observation.macd_signal, observation.price)
+        if now > base.get('at', 0) and all(type(v) in (int, float) and isfinite(v) for v in values):
+            fast_alpha, slow_alpha = 2/13, 2/27
+            previous_slow = observation.price-(observation.macd_line-(1-fast_alpha)*base['line'])/(fast_alpha-slow_alpha)
+            current['slow'] = slow_alpha*observation.price+(1-slow_alpha)*previous_slow
+        if now > base.get('at', 0):
+            state[key] = current
+        return current
+    if (not trade or not 0 <= now-base.get('at', 0) < seconds+1e-6 or 'slow' not in base):
+        return {}
+    line = 2/13*observation.price+11/13*(base['slow']+base['line'])-(2/27*observation.price+25/27*base['slow'])
+    return dict(at=now, base_at=base['at'], line=line,
+        signal=.2*line+.8*base['signal'], timeframe=timeframe, kind='forming')
+
+
+def supported_bos(row, rows, bos, now):
+    """Require the broken local high to have a causal supported/reclaimed base."""
+    broken = bos.get('broken_pivot') or {}
+    if not broken:
+        return None
+    lows = [p for p in confirmed_pivots(row, now, 'low')
+        if p['pivot_at'] < broken.get('pivot_at', 0)]
+    for pivot in reversed(lows):
+        bands = [r for r in rows.values() if r['lower'] <= pivot['price'] <= r['upper']
+            and (r.get('role') == 'support' or r.get('side') in (1, 'support'))]
+        if bands:
+            return dict(kind='support', pivot=deepcopy(pivot),
+                level=deepcopy(min(bands, key=lambda r: (r['upper']-r['lower'], r['unified_level_id']))))
+    reclaimed = [r for r in rows.values() if P.eligible(r) and P.midpoint(r) < broken.get('price', 0)]
+    if reclaimed:
+        return dict(kind='reclaimed_resistance',
+            level=deepcopy(max(reclaimed, key=lambda r: (P.midpoint(r), r['unified_level_id']))))
+    return None
 
 
 def fresh_structure(rows, evidence, now, maximum_age=1.):
@@ -256,6 +344,12 @@ def purchase_update(state, intent_id, *, filled=False, terminal=False, stop=None
     if request:
         request['filled'] = request.get('filled', False) or filled
         request['terminal'] = request.get('terminal', False) or terminal
+        active = state.get('squeeze_entry') or {}
+        if filled and active.get('successor'):
+            used = active.setdefault('successor_added_levels', [])
+            for key in request.get('keys', []):
+                if key not in used:
+                    used.append(key)
     if stop and state.get('squeeze_entry') and not state['squeeze_entry'].get('stop_steps'):
         state['active_stop'] = state['squeeze_entry']['stop'] = stop
 
@@ -278,7 +372,10 @@ def evaluate(host, a, o, p, old_state):
         and E.stamp(sample.get('observed_at')) == o.observed_at and sample.get('value') == o.price
         and not any(s.startswith('quote:') for s in o.source_signal_ids))
     events, closed, _ = observe_resistances(d, o, rows, fresh, trade)
+    observe_noise(d, o)
     preview = P.forming_macd_1s(o, d, trade, sparse=True)
+    successor_macd = ({timeframe: forming_macd(o, d, timeframe, trade)
+        for timeframe in ('1s', '5s', '10s', '30s')} if successor(p) else {})
     episode = d.setdefault('macd_1s', {})
     if closed:
         bullish = C.finite(o.macd_line, o.macd_signal) and o.macd_line > o.macd_signal
@@ -296,7 +393,8 @@ def evaluate(host, a, o, p, old_state):
     session_valid = (context.get('complete') is True and context.get('session') == session and C.finite(context.get('open'), context.get('observed_at'))
         and context['open'] > 0 and context['observed_at'] <= now)
     if session_valid:
-        d['late_mode'] = bool(d.get('late_mode') or context.get('late'))
+        d['late_mode'] = bool(d.get('late_mode') or context.get('high', 0) >=
+            (1.15 if successor(p) else 1.3)*context['open'])
     # Select below the prior HOD; a trade cannot create its own HOD reference.
     previous_high = d.get('prior_hod')
     if trade and session_valid:
@@ -333,11 +431,14 @@ def evaluate(host, a, o, p, old_state):
     active = state.get('squeeze_entry') or {}
     held = o.position_quantity > 0
     quote = V.fresh_quote(o)
-    evidence = dict(contract=CONTRACT, frozen_gap=deepcopy(d.get('frozen_gap')), bos=bos,
+    bos_base = supported_bos(market.get('row', {}), rows, bos, now) if successor(p) and fresh else None
+    evidence = dict(contract=CONTRACT, successor=p.get('momentum_successor'),
+        frozen_gap=deepcopy(d.get('frozen_gap')), bos=bos, bos_support=deepcopy(bos_base),
         session_targets=deepcopy(progress),
         late_mode=bool(d.get('late_mode')), hod_gate=deepcopy(d.get('hod_gate')),
         session_context=deepcopy(context), resistance_break_events=deepcopy(events),
         macd_1s_episode=deepcopy(episode), macd_100ms_gate=deepcopy(fast), forming_macd_1s=preview,
+        forming_macd=deepcopy(successor_macd),
         bid=o.bid, ask=o.ask, reference_price=o.price)
     management_results = []
     from .momentum_session_policy import DEFAULTS, aged_action, purchase_gate
@@ -371,6 +472,8 @@ def evaluate(host, a, o, p, old_state):
         return result
 
     if held:
+        if successor(p) and trade and active:
+            active['successor_position_high'] = max(active.get('successor_position_high', o.price), o.price)
         if state.get('entry_acquisition_exit_latched') or a.status == Status.EXIT_PENDING or o.pending_exit_quantity:
             remaining = max(0., o.position_quantity-o.pending_exit_quantity)
             return emit('exit', state.get('last_exit_reason') or 'position_liquidation', Status.EXIT_PENDING,
@@ -388,7 +491,8 @@ def evaluate(host, a, o, p, old_state):
             return emit('hold', 'position_entry_state_unavailable', Status.MANAGING)
         if full_session and quote and active.get('first_fill_at') is not None:
             aging = aged_action(active, rows if fresh else {}, now=now, bid=o.bid, tick=tick,
-                net=o.momentum_position_net, policy=session_policy, target_floor=max(o.price,o.ask))
+                net=o.momentum_position_net, policy=session_policy, target_floor=max(o.price,o.ask),
+                recover_with_bracket=successor(p))
             if aging:
                 if aging['action'] == 'exit':
                     return emit('exit', aging['reason'], Status.EXIT_PENDING, quantity=o.position_quantity,
@@ -412,6 +516,9 @@ def evaluate(host, a, o, p, old_state):
                 return emit('hold', 'aged_green_resistance_bracket', Status.MANAGING)
         results = []
         active['stop'] = stop
+        successor_previous = dict(stop=stop, steps=active.get('stop_steps', 0),
+            selection=deepcopy(active.get('stop_selection')), reason=active.get('stop_reason'),
+            anchor=active.get('stop_anchor_lower', stop))
         if session_progression:
             seen = active.setdefault('broken_levels', [])
             for event in events:
@@ -436,11 +543,48 @@ def evaluate(host, a, o, p, old_state):
                     stop_anchor_lower=step['levels'][-1]['lower'], stop_reason='three_resistance_step_stop',
                     stop_selection=deepcopy(step))
                 state['active_stop'] = step['price']
-                results.append(emit('replace_protective_stop', 'three_resistance_step_stop', Status.MANAGING,
-                    quantity=o.position_quantity, invalidation_price=step['price'], metadata=dict(
-                        previous_stop=stop, momentum_previous_stop_steps=old_steps,
-                        momentum_previous_stop_selection=old_selection, momentum_previous_stop_reason=old_reason,
-                        momentum_previous_stop_anchor=old_anchor, stop_exit_reason='three_resistance_step_stop')))
+                if not successor(p):
+                    results.append(emit('replace_protective_stop', 'three_resistance_step_stop', Status.MANAGING,
+                        quantity=o.position_quantity, invalidation_price=step['price'], metadata=dict(
+                            previous_stop=stop, momentum_previous_stop_steps=old_steps,
+                            momentum_previous_stop_selection=old_selection, momentum_previous_stop_reason=old_reason,
+                            momentum_previous_stop_anchor=old_anchor, stop_exit_reason='three_resistance_step_stop')))
+                stop = step['price']
+                if successor(p) and active.get('successor_trail_started_at') is not None:
+                    active['successor_trail_distance'] = max(0., o.price-stop)
+                    active['successor_trail_peak'] = o.price
+        if successor(p) and quote and active.get('first_fill_at') is not None:
+            age = now-active['first_fill_at']
+            previous = successor_previous['stop']
+            candidate, reason = stop, active.get('stop_reason')
+            if age >= 5:
+                if active.get('successor_trail_started_at') is None:
+                    active.update(successor_trail_started_at=now,
+                        successor_trail_distance=max(0., o.price-stop), successor_trail_peak=o.price)
+                if trade:
+                    active['successor_trail_peak'] = max(active.get('successor_trail_peak', o.price), o.price)
+                trailing = active['successor_trail_peak']-active['successor_trail_distance']
+                if candidate < trailing < min(o.price, o.bid):
+                    candidate, reason = trailing, 'five_second_price_trailing_stop'
+            vwap_source = o.source_values.get('indicator.vwap.execution_value@100ms', {})
+            vwap_value = vwap_source.get('value')
+            if age >= 10 and C.finite(vwap_value) and vwap_value > candidate:
+                if vwap_value >= min(o.price, o.bid):
+                    return emit('exit', 'ten_second_vwap_floor_breached', Status.EXIT_PENDING,
+                        quantity=o.position_quantity, metadata=dict(vwap_floor=vwap_value))
+                candidate, reason = vwap_value, 'ten_second_vwap_floor'
+            candidate = round(floor(candidate/tick+1e-9)*tick, 10)
+            if candidate > previous:
+                active.update(stop=candidate, stop_reason=reason,
+                    stop_selection=(active.get('stop_selection') if reason == 'three_resistance_step_stop'
+                        else dict(price=candidate, reason=reason)))
+                state['active_stop'] = candidate
+                results.append(emit('replace_protective_stop', reason, Status.MANAGING,
+                    quantity=o.position_quantity, invalidation_price=candidate, metadata=dict(
+                        previous_stop=previous, momentum_previous_stop_steps=successor_previous['steps'],
+                        momentum_previous_stop_selection=successor_previous['selection'],
+                        momentum_previous_stop_reason=successor_previous['reason'],
+                        momentum_previous_stop_anchor=successor_previous['anchor'], stop_exit_reason=reason)))
         desired_multiplier = active.get('target_multiplier', 5)
         if quote and desired_multiplier > active.get('submitted_multiplier', 5):
             indicative = target_price(active.get('target_entry_basis') or o.average_price or active['entry_price'], active['average_gap'], desired_multiplier, tick)
@@ -466,6 +610,14 @@ def evaluate(host, a, o, p, old_state):
         return emit('hold' if held else 'wait', 'fresh_causal_trade_and_v7_required')
     if not held and not session_valid:
         return emit('wait', 'session_open_context_unavailable')
+    if successor(p) and (not C.finite(o.previous_close) or not 0 < o.previous_close < 20):
+        return emit('hold' if held else 'wait', 'prior_regular_close_below_20_required')
+    if successor(p) and o.price < 1:
+        return emit('hold' if held else 'wait', 'current_price_at_least_1_required')
+    if (successor(p) and not held and d.get('late_mode') and (not session_valid
+            or not .7*context.get('prior_high', context.get('high', 0)) <= o.price
+            < context.get('prior_high', context.get('high', 0)))):
+        return emit('wait', 'late_mode_hod_30_percent_zone_required')
     if not held and d.get('late_mode') and not d.get('hod_gate'):
         return emit('wait', 'late_mode_below_hod_resistance_required')
     if not held and (a.status == Status.ENTRY_PENDING or state.get('pending_capital_request')):
@@ -475,9 +627,24 @@ def evaluate(host, a, o, p, old_state):
         return emit('wait', 'entry_permission_closed')
     if not held and not bos.get('open'):
         return emit('wait', 'waiting_for_confirmed_swing_high_bos')
+    if not held and successor(p) and not bos_base:
+        return emit('wait', 'supported_local_structure_bos_required')
     source = o.source_values.get('indicator.vwap.execution_value@100ms', {})
     at, vwap = E.stamp(source.get('observed_at')), source.get('value')
-    if held:
+    if successor(p):
+        failed = [timeframe for timeframe, gate in successor_macd.items()
+            if not C.finite(gate.get('line'), gate.get('signal')) or gate['line'] <= gate['signal']]
+        if failed:
+            return emit('hold' if held else 'wait', 'forming_multi_timeframe_macd_required',
+                metadata=dict(failed_forming_macd_timeframes=failed))
+        if not held:
+            prefix = market.get('price_vwap_evidence', {})
+            if (not at or not 0 <= now-at.timestamp() <= .100001 or not C.finite(vwap)
+                    or not 0 < vwap < o.price or prefix.get('authority') != 'latest-completed-qmd-100ms'
+                    or E.stamp(prefix.get('as_of')) != o.observed_at
+                    or prefix.get('source_observed_at') != source.get('observed_at')):
+                return emit('wait', 'fresh_price_above_vwap_required')
+    elif held:
         # Additions use the latest causal completed MACD episodes. Sparse
         # trading does not expire an otherwise open episode.
         for gate, reason in ((episode, 'bullish_completed_1s_macd_required_for_add'),
@@ -513,7 +680,8 @@ def evaluate(host, a, o, p, old_state):
         if not a.permissions.add or sum(r['filled'] or not r['terminal'] for r in requests) >= 3:
             return emit('hold', 'three_purchase_limit_or_add_permission', Status.MANAGING)
         addition = next((ev for ev in events if P.midpoint_add_available(d,
-            ev['level']['unified_level_id'], episode['episode_id'])), None)
+            ev['level']['unified_level_id'], episode['episode_id']) and (not successor(p)
+            or ev['level']['unified_level_id'] not in active.get('successor_added_levels', []))), None)
         retry = d.get('capital_add')
         if not addition and full_session and retry:
             prior = retry['confirmation']
@@ -530,7 +698,7 @@ def evaluate(host, a, o, p, old_state):
         stop = state['active_stop']
     else:
         recent_reentry = bool(session_progression and session_valid
-            and o.price > 1.3*context['open'] and d.get('last_entry_fill_at') is not None
+            and o.price > (1.15 if successor(p) else 1.3)*context['open'] and d.get('last_entry_fill_at') is not None
             and 0 <= now-d['last_entry_fill_at'] <= 30)
         selection = (recent_reentry_stop(rows, d.get('resistance_1s', {}).get('catalog', {}), o.price, tick)
             if recent_reentry else initial_stop(market.get('row', {}), rows, now, o.ask, vwap, tick,
@@ -540,11 +708,39 @@ def evaluate(host, a, o, p, old_state):
         initial_multiplier = 2 if recent_reentry else progress.get('target_multiplier', 5)
 
         stop = selection['price']
+        adaptive = None
+        if successor(p):
+            adaptive = adaptive_initial_distance(d, o.ask)
+            structural_distance = (0. if selection.get('reason') in
+                ('one_percent_entry_stop', 'five_percent_entry_stop') else o.ask-stop)
+            required = max(structural_distance, adaptive['distance'])
+            if required > adaptive['maximum']+1e-9:
+                return emit('wait', 'adaptive_initial_stop_exceeds_five_percent_cap',
+                    metadata=dict(adaptive_initial_stop=adaptive,
+                        structural_stop=deepcopy(selection), required_distance=required))
+            stop = round(ceil((o.ask-required)/tick-1e-9)*tick, 10)
+            selection = dict(selection, price=stop, adaptive=adaptive,
+                structural_price=selection['price'])
+            previous_position = d.get('successor_last_position', {})
+            same_resistance = bool(previous_position and bos_base and
+                previous_position.get('entry_resistance_id') == bos_base['level']['unified_level_id'])
+            rapid = bool(previous_position and 0 <= now-previous_position.get('closed_at', -1e30) < 10)
+            if rapid or same_resistance:
+                high = previous_position.get('resistance_high')
+                prior = d.get('successor_reentry_last_trade')
+                d['successor_reentry_last_trade'] = o.price
+                if not C.finite(high, prior) or not prior <= high < o.price:
+                    return emit('wait', 'reentry_requires_prior_resistance_high_break', metadata=dict(
+                        prior_resistance_high=high, prior_trade=prior,
+                        rapid_reentry=rapid, same_resistance=same_resistance))
         active = dict(requested_at=now, entry_price=o.ask, average_gap=gap, stop=stop,
             stop_reason=selection['reason'], stop_selection=selection, stop_steps=0,
             stop_anchor_lower=(selection.get('level') or {}).get('lower', stop),
             target_multiplier=initial_multiplier, submitted_multiplier=initial_multiplier, broken_levels=[],
-            target_session_step=len(progress.get('broken_levels', []))//3, recent_reentry=recent_reentry)
+            target_session_step=len(progress.get('broken_levels', []))//3, recent_reentry=recent_reentry,
+            successor=successor(p), successor_position_high=o.price,
+            successor_entry_resistance_id=(bos_base or {}).get('level', {}).get('unified_level_id'),
+            successor_adaptive_stop=adaptive)
     multiplier = active['target_multiplier']
     target = target_price(active.get('target_entry_basis', o.ask) if session_progression else o.ask, gap, multiplier, tick)
     if not 0 < stop < min(o.price, o.bid) <= o.ask < target:

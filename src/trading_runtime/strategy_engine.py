@@ -225,6 +225,8 @@ def supported_custom_execution_contracts() -> tuple[str, ...]:
 def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
     """Return every derived-data timeframe referenced by active lifecycle rules."""
 
+    if parameters.get('momentum_successor') == 'strategy-349-v27':
+        return {'100ms', '1s', '5s', '10s', '30s'}
     if parameters.get('early_squeeze_breakout_contract'):
         return {'100ms', '1s'}
     if parameters.get('hindsight_long_contract'):

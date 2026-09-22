@@ -56,14 +56,15 @@ def net_position(executions, *, account_id, conid, run_id, first_fill_at, now,
         estimated_exit_fee=exit_fee, observed_at=now, authority='canonical_executions_and_executable_bid')
 
 
-def aged_action(active, rows, *, now, bid, tick, net, policy, target_floor=None):
+def aged_action(active, rows, *, now, bid, tick, net, policy, target_floor=None,
+                 recover_with_bracket=False):
     first = active.get('first_fill_at')
     if first is None or now-first < policy['age_seconds']:
         return None
     age = now-first
     # The deadline is absolute, including sparse observations and missing fee evidence.
     green = net.get('status') == 'verified' and net['net_pnl'] > 0
-    if active.get('age_mode') == 'red' or not green:
+    if active.get('age_mode') == 'red' and not recover_with_bracket or not green:
         active['age_mode'] = 'red'
         if green:
             return dict(action='exit', reason='aged_red_recovered_green')

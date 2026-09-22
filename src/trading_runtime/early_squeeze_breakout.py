@@ -63,7 +63,15 @@ def below(anchor, bid, tick):
 def record_exit(state, at, role, remaining, *, contract=CONTRACT):
     """Only actual exit fills can authorize stop-out recovery."""
     if contract in (CONSISTENT_PRICE_CONTRACT, STRUCTURAL_PRICE_CONTRACT, MOMENTUM_CONTRACT):
-        if (state.get('squeeze_entry') or {}).get('first_fill_at') and remaining is not None and abs(remaining) <= 1e-9:
+        active = state.get('squeeze_entry') or {}
+        if (active.get('successor') and active.get('first_fill_at') and remaining is not None
+                and abs(remaining) <= 1e-9):
+            state.setdefault('squeeze_breakout', {})['successor_last_position'] = dict(
+                closed_at=at.timestamp(),
+                entry_resistance_id=active.get('successor_entry_resistance_id'),
+                resistance_high=active.get('successor_position_high'))
+            state['squeeze_breakout'].pop('successor_reentry_last_trade', None)
+        if active.get('first_fill_at') and remaining is not None and abs(remaining) <= 1e-9:
             state.pop('squeeze_entry', None)
         return
     active = state.get('squeeze_entry') or {}
