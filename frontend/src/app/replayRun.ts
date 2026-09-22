@@ -88,6 +88,14 @@ export type CanvasReplayRun = {
   updated_at: string;
   warmup_events?: number;
   processed_events?: number;
+  execution_scope?: {
+    event_count_scope: "admitted_tickers";
+    configured_ticker_count: number | null;
+    admitted_ticker_count: number | null;
+    excluded_v7_coverage_count: number;
+    excluded_prior_close_count: number;
+    excluded_persisted_book_count: number;
+  };
 };
 
 const REPLAY_UI_UPDATE_MS = 500;

@@ -2009,6 +2009,36 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bundled.call_args.kwargs["ticker"], "LOW")
         self.assertEqual(controller._prior_close_excluded_tickers, {"HIGH"})
         self.assertEqual(controller._preparation_total_units, 2)
+        self.assertEqual(
+            controller._strategy_350_prior_close("LOW", definition.session_start),
+            19.99,
+        )
+        scope = controller.snapshot(include_details=False)["execution_scope"]
+        self.assertEqual(scope["event_count_scope"], "admitted_tickers")
+        self.assertEqual(scope["admitted_ticker_count"], 1)
+        self.assertEqual(scope["excluded_prior_close_count"], 1)
+
+    def test_strategy_350_prior_close_uses_certified_preflight_only(self):
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 19), start_time=time(4), end_time=time(4, 5),
+            configuration_revision=approved_configuration(), mode=RunMode.BACKTEST,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            key = "CDE:2026-08-19"
+            controller._luld_previous_closes[key] = {
+                "price": 14.8, "available_at": definition.session_start.isoformat(),
+                "source": "qmd_history_daily_session_bars",
+            }
+            self.assertEqual(controller._strategy_350_prior_close("CDE", definition.session_start), 14.8)
+            controller._luld_previous_closes[key]["available_at"] = (
+                definition.session_start + timedelta(seconds=1)).isoformat()
+            with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                controller._strategy_350_prior_close("CDE", definition.session_start)
+            controller._luld_previous_closes[key]["available_at"] = definition.session_start.isoformat()
+            controller._luld_previous_closes[key]["source"] = "uncertified"
+            with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                controller._strategy_350_prior_close("CDE", definition.session_start)
 
     async def test_strategy_350_ignores_missing_persisted_level_book_before_frames(self):
         configuration = approved_configuration()

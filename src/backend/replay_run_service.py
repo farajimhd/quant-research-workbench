@@ -1776,6 +1776,15 @@ class ReplayRunController:
             "speed": self.speed,
             "transport_mode": self._transport_mode(),
             "processed_events": self.processed_events,
+            "execution_scope": {
+                "event_count_scope": "admitted_tickers",
+                "configured_ticker_count": self._v7_coverage_report.get('requested_ticker_count'),
+                "admitted_ticker_count": (len(self._strategy_frame_requested_tickers)
+                                          if hasattr(self, '_strategy_frame_requested_tickers') else None),
+                "excluded_v7_coverage_count": len(self._v7_excluded_tickers),
+                "excluded_prior_close_count": len(getattr(self, '_prior_close_excluded_tickers', ())),
+                "excluded_persisted_book_count": len(getattr(self, '_missing_level_book_tickers', ())),
+            },
             "warmup_events": self.warmup_events,
             "checkpoint": checkpoint,
             "navigation_action": deepcopy(self._last_navigation_action),
@@ -3875,6 +3884,10 @@ class ReplayRunController:
         previous_close = _optional_positive(indicator.get('previous_close') or indicator.get('prev_close'))
         parameters = self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {})
         if (self.definition.mode == RunMode.BACKTEST
+                and parameters.get('momentum_successor') == 'strategy-349-v27'):
+            previous_close = self._strategy_350_prior_close(frame.ticker, frame.as_of)
+        if (self.definition.mode == RunMode.BACKTEST
+                and parameters.get('momentum_successor') != 'strategy-349-v27'
                 and parameters.get('historical_hod', {}).get('regular_luld_enabled')
                 and _backtest_luld_reference(indicator, frame.as_of, bar)):
             from src.backend.backtest_luld_reference import previous_regular_close
@@ -6410,6 +6423,17 @@ class ReplayRunController:
             )
         return tickers
 
+    def _strategy_350_prior_close(self, ticker: str, as_of: datetime) -> float:
+        session = as_of.astimezone(NEW_YORK).date()
+        prior = self._luld_previous_closes.get(f'{ticker}:{session}')
+        if (not prior or prior.get('source') != 'qmd_history_daily_session_bars'
+                or _aware_datetime(prior.get('available_at')) > as_of):
+            raise RuntimeError(f'Certified prior regular close unavailable at Strategy 350 observation for {ticker}')
+        price = _optional_positive(prior.get('price'))
+        if price is None:
+            raise RuntimeError(f'Certified prior regular close invalid for {ticker}')
+        return price
+
     async def _align_strategy_350_signal_frames(self, frames) -> None:
         """Prevent an unprepared source-native signal from requesting a V7 cursor.
 
@@ -6508,6 +6532,15 @@ class ReplayRunController:
                 },
                 timeout=180,
             )
+            returned = [_ticker(row.get('ticker')) for row in payload.get('rows') or []]
+            if (payload.get('authority') != 'qmd_history_daily_session_bars'
+                    or _aware_datetime(payload.get('as_of')) > self.definition.session_start
+                    or len(returned) != len(prior_close_maxima)
+                    or set(returned) != set(prior_close_maxima)
+                    or any(not math.isfinite(float(row.get('previous_close') or 0))
+                           or float(row.get('previous_close') or 0) <= 0
+                           for row in payload.get('rows') or [])):
+                raise RuntimeError('QMD prior regular close response is incomplete or invalid')
             previous_closes = {
                 _ticker(row.get("ticker")): float(row.get("previous_close") or 0)
                 for row in payload.get("rows") or []

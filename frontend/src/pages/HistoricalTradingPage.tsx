@@ -475,7 +475,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       : run.progress;
     const progressPercent = Math.round(Math.max(0, Math.min(1, phaseProgress || 0)) * 100);
     const progressLabel = warming ? "Backtest warm-up" : "Backtest";
-    const runScope = run.tickers?.length ? run.tickers.join(", ") : "Configured strategy universe";
+    const runScope = run.execution_scope?.admitted_ticker_count != null
+      ? `${run.execution_scope.admitted_ticker_count.toLocaleString()} admitted`
+      : run.tickers?.length ? `${run.tickers.length.toLocaleString()} configured` : "scope unknown";
     const selectedPlanMatchesRun = run.configuration_revision_id === candidateId && selectedPlan?.run_plan_id === runPlanId;
     const strategyName = activeRunIdentity?.strategy_name || activeRunIdentity?.strategy_id || (selectedPlanMatchesRun ? selectedPlan?.name : "") || "Strategy unavailable";
     const strategyRevision = activeRunIdentity?.strategy_revision || (selectedPlanMatchesRun ? selectedPlan?.strategy_revision : 0);
@@ -494,12 +496,15 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           <span>{run.preparation_stage === "strategy_frames" ? "Strategy streams" : run.preparation_stage?.replaceAll("_", " ") || "Preparing"}</span>
           <span>{progressKnown && preparation ? `${preparation.completed.toLocaleString()} / ${preparation.total.toLocaleString()} ${preparationVerb}` : "Waiting for preparation totals"}</span>
           {run.preparation_stage === "level_book_working_set" && preparation?.v7_reuse ? <span>{preparation.v7_reuse.bars.toLocaleString()} bar sets reused · {preparation.v7_reuse.seeds.toLocaleString()} opening books reused</span> : null}
-        </> : <><span>{new Intl.NumberFormat("en-US").format(run.processed_events || 0)} exact events</span><span>Through {formatReplayTime(run.current_time)} ET</span><span>{runScope}</span></>}</span></div>
+        </> : <><span title="Canonical market events processed for admitted tickers only">{new Intl.NumberFormat("en-US").format(run.processed_events || 0)} events · {runScope}</span><span title={`Through ${formatReplayTime(run.current_time)} ET`}>{formatReplayTime(run.current_time).slice(0, 5)} ET</span></>}</span></div>
         {detailsOpen ? <Modal title="Backtest preparation" onClose={() => setDetailsOpen(false)} closeOnBackdrop className="backtest-preparation-modal">
           <div className="backtest-preparation-content">
             <dl><div><dt>Stage</dt><dd>{work?.phase.replaceAll('_', ' ') || run.preparation_stage?.replaceAll('_', ' ') || run.status}</dd></div>
               <div><dt>Prepared streams</dt><dd>{run.preparation_progress?.completed.toLocaleString() ?? '—'} / {run.preparation_progress?.total.toLocaleString() ?? '—'}</dd></div>
-              <div><dt>Eligible tickers</dt><dd>{run.level_book_coverage?.eligible_ticker_count.toLocaleString() ?? '—'}</dd></div></dl>
+              <div><dt>V7 coverage eligible</dt><dd>{run.level_book_coverage?.eligible_ticker_count.toLocaleString() ?? '—'}</dd></div>
+              <div><dt>Execution tickers</dt><dd>{run.execution_scope?.admitted_ticker_count?.toLocaleString() ?? '—'}</dd></div>
+              <div><dt>Prior close excluded</dt><dd>{run.execution_scope?.excluded_prior_close_count?.toLocaleString() ?? '—'}</dd></div>
+              <div><dt>Persisted book unavailable</dt><dd>{run.execution_scope?.excluded_persisted_book_count?.toLocaleString() ?? '—'}</dd></div></dl>
             {waiting ? <p role="status">{work?.dependencies?.map(item => `${item.path}: attempt ${item.attempt}/${item.max_attempts}. ${item.error}`).join("; ")}</p> : null}
             {preparation?.filtered_v7 ? <FilteredV7Preparation progress={preparation.filtered_v7} /> : null}
             <h3>Excluded tickers · {run.level_book_coverage?.excluded_ticker_count ?? 0}</h3>
