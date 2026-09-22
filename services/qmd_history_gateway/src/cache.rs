@@ -488,6 +488,8 @@ struct EntryState {
     structure_projection: Vec<Value>,
     structure_events: Vec<GenericStructureEvent>,
     frames: Vec<DerivedUpdate>,
+    last_bar_end: Option<DateTime<Utc>>,
+    last_bar_start_by_timeframe: HashMap<String, DateTime<Utc>>,
     products: Option<MarketProductEngine>,
 }
 
@@ -3105,9 +3107,15 @@ impl CacheEntry {
         let mut state = self.state.lock().await;
         if let Some(error) = &state.error { return Err(error.clone()); }
         ensure_monotonic_bar_start(
-            state.bars.last().map(|update| update.bar.bar_start),
+            state.last_bar_start_by_timeframe.get(&bar.timeframe).copied(),
             bar.bar_start,
         )?;
+        if state.last_bar_end.is_some_and(|previous| bar.bar_end < previous) {
+            return Err(format!(
+                "historical bundled bars must have nondecreasing close time: previous={} next={}",
+                state.last_bar_end.expect("checked historical bar end"), bar.bar_end,
+            ));
+        }
         let update_count = state.bars.len().saturating_add(1);
         let snapshot_id = Arc::as_ptr(&bar.qmd_structure) as usize;
         let snapshot_bytes = if state.structure_snapshot_ids.contains(&snapshot_id) { 0 }
@@ -3133,6 +3141,8 @@ impl CacheEntry {
             .store(frame_bytes as u64, Ordering::Release);
         state.structure_snapshot_ids.insert(snapshot_id);
         state.structure_snapshot_bytes = state.structure_snapshot_bytes.saturating_add(snapshot_bytes);
+        state.last_bar_end = Some(bar.bar_end);
+        state.last_bar_start_by_timeframe.insert(bar.timeframe.clone(), bar.bar_start);
         let sequence = state.bars.len() as u64 + 1;
         let update = BarUpdate { bar, sequence };
         state.bars.push(update.clone());
@@ -5417,6 +5427,13 @@ mod tests {
         bar.qmd_structure = Arc::new(book);
         let entry = make_entry();
         entry.push_bar(bar.clone()).await.unwrap();
+        // A bundle may close a wider candle after a narrower candle whose
+        // start is later. Global close time remains causal while monotonicity
+        // is enforced independently inside each timeframe.
+        let mut wider = bar.clone();
+        wider.timeframe = "5s".into();
+        wider.bar_start -= Duration::seconds(4);
+        entry.push_bar(wider).await.unwrap();
         let mut second = bar.clone(); second.bar_start += Duration::seconds(1); second.bar_end += Duration::seconds(1);
         entry.push_bar(second).await.unwrap();
         assert_eq!(entry.state.lock().await.structure_snapshot_bytes, dynamic);
@@ -5428,7 +5445,7 @@ mod tests {
         let mut rejected = bar.clone(); rejected.bar_start += Duration::seconds(2); rejected.bar_end += Duration::seconds(2);
         rejected.qmd_structure = Arc::new(huge);
         assert!(entry.push_bar(rejected).await.is_err());
-        assert_eq!(entry.state.lock().await.bars.len(), 2);
+        assert_eq!(entry.state.lock().await.bars.len(), 3);
         { let mut state = entry.state.lock().await; entry.clear_failed_state(&mut state, "budget rejected".into()); }
         assert_eq!(allocated.load(Ordering::Acquire), 0);
         assert!(entry.state.lock().await.bars.is_empty());
