@@ -2040,7 +2040,7 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "unavailable"):
                 controller._strategy_350_prior_close("CDE", definition.session_start)
 
-    async def test_strategy_350_ignores_missing_persisted_level_book_before_frames(self):
+    async def test_strategy_350_uses_selected_v7_coverage_before_frames(self):
         configuration = approved_configuration()
         configuration["payload"]["signal_activation"] = {
             "signal_streams": [{"enabled": True, "occurrence_source": "qmd_squeeze_episode"}]
@@ -2059,6 +2059,7 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
             ]
             controller._strategy_registration = MagicMock()
             controller._strategy_registration.timeframe_resolver.return_value = {"1s", "5s"}
+            controller._v7_excluded_tickers = {"MISSING"}
             controller._historical_external_signal_events = [
                 MagicMock(ticker="READY"), MagicMock(ticker="MISSING"),
                 MagicMock(ticker="AAOI"),
@@ -2070,13 +2071,8 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
 
             with patch(
                 "src.backend.qmd_gateway_client.qmd_history_post_json",
-                return_value={
-                    "authority": "qmd_certified_persisted_structure_checkpoint",
-                    "checkpoint_set_id": "v18-test", "algorithm_version": 18,
-                    "as_of": definition.session_start.isoformat(),
-                    "available": ["READY"], "missing": ["MISSING"],
-                },
-            ), patch(
+                side_effect=AssertionError("v18 is not the selected book"),
+            ) as v18, patch(
                 "src.backend.replay_run_service.qmd_historical_source_revision",
                 return_value={
                     "token": "source", "source_plan_hash": "plan",
@@ -2092,23 +2088,20 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
         bundled.assert_awaited_once()
         self.assertEqual(bundled.call_args.kwargs["ticker"], "READY")
         self.assertTrue(bundled.call_args.kwargs["scalar_only"])
-        self.assertEqual(controller._missing_level_book_tickers, {"MISSING"})
+        v18.assert_not_called()
+        self.assertEqual(controller._missing_level_book_tickers, set())
         self.assertEqual(controller._preparation_total_units, 2)
         self.assertEqual(controller._preparation_completed_units, 2)
-        self.assertEqual(
-            controller._data_authority["strategy_350_level_book_admission"]["ignored_tickers"],
-            ["MISSING"],
-        )
         self.assertEqual(
             [event.ticker for event in controller._historical_external_signal_events],
             ["READY"],
         )
         self.assertEqual(
             controller._data_authority["strategy_350_signal_frame_admission"]["excluded_tickers"],
-            ["AAOI"],
+            ["AAOI", "MISSING"],
         )
 
-    async def test_strategy_350_all_missing_books_skips_frame_fetch(self):
+    async def test_strategy_350_all_missing_v7_books_skips_frame_fetch(self):
         configuration = approved_configuration()
         definition = ReplayRunDefinition(
             session_date=date(2026, 8, 19), start_time=time(4), end_time=time(4, 5),
@@ -2122,15 +2115,11 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
             ]
             controller._strategy_registration = MagicMock()
             controller._strategy_registration.timeframe_resolver.return_value = {"100ms", "1s"}
+            controller._v7_excluded_tickers = {"ABCL"}
             with patch(
                 "src.backend.qmd_gateway_client.qmd_history_post_json",
-                return_value={
-                    "authority": "qmd_certified_persisted_structure_checkpoint",
-                    "checkpoint_set_id": "v18-test", "algorithm_version": 18,
-                    "as_of": definition.session_start.isoformat(),
-                    "available": [], "missing": ["ABCL"],
-                },
-            ), patch(
+                side_effect=AssertionError("v18 is not the selected book"),
+            ) as v18, patch(
                 "src.backend.replay_run_service.qmd_historical_source_revision"
             ) as revision, patch(
                 "src.backend.replay_run_service._stream_historical_derived_frame_bundle",
@@ -2139,7 +2128,8 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await controller._load_strategy_frames(), [])
             revision.assert_not_called()
             bundled.assert_not_awaited()
-            self.assertEqual(controller._missing_level_book_tickers, {"ABCL"})
+            v18.assert_not_called()
+            self.assertEqual(controller._missing_level_book_tickers, set())
 
     async def test_structural_frames_use_completed_bars_and_not_legacy_structure_or_scanner(self):
         configuration = approved_configuration()

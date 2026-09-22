@@ -2982,7 +2982,7 @@ class ReplayRunController:
                 await self._publish(force=True)
             async def details(value):
                 self._filtered_v7_progress = value
-            await prepare(names, days, progress, publish_details=details)
+            await prepare(names, days, progress, publish_details=details, verify_only=True)
         self._preparation_stage = 'level_book_coverage'
         self._preparation_completed_units = 0
         self._preparation_total_units = len(names) * len(days)
@@ -3007,9 +3007,8 @@ class ReplayRunController:
                     if (parameters.get('vwap_ladder_contract') or parameters.get('early_squeeze_breakout_contract')) and row['eligible']:
                         from src.market_engine.derived_trade_policy import POLICY
                         if row.get('input_policy') != POLICY:
-                            raise ValueError(f"Filtered V7 history unavailable for {row['ticker']} on {day}: "
-                                "rebuild the preceding V7 history with the 04:05 ET policy and restart QMD History; "
-                                "this is a data preparation failure, not a zero-trade strategy result")
+                            row = dict(row, eligible=False,
+                                reason='certified_filtered_v7_history_not_precomputed')
                     evidence = dict(row, session=str(day))
                     report['verified' if row['eligible'] else 'excluded'].append(evidence)
                     if not row['eligible']:
@@ -6575,6 +6574,7 @@ class ReplayRunController:
         requests = {
             (assignment.ticker, timeframe)
             for assignment in assignments
+            if assignment.ticker not in self._v7_excluded_tickers
             if assignment.ticker not in self._prior_close_excluded_tickers
             if not source_native_signal_tickers
             or assignment.ticker in source_native_signal_tickers
@@ -6585,51 +6585,15 @@ class ReplayRunController:
                 assignment.parameters
             )
         }
+        # V7 is the selected execution book. Its certified preflight above is
+        # the sole book admission authority; a separate v18 checkpoint set is
+        # unrelated and would discard otherwise valid V7 candidates.
         self._missing_level_book_tickers = set()
         strategy_350_tickers = {
             assignment.ticker for assignment in assignments
             if assignment.parameters.get("momentum_successor") == "strategy-349-v27"
-            and any(ticker == assignment.ticker for ticker, _ in requests)
+            and assignment.ticker not in self._v7_excluded_tickers
         }
-        if strategy_350_tickers and self.definition.mode == RunMode.BACKTEST:
-            from .qmd_gateway_client import qmd_history_post_json
-
-            availability = await asyncio.to_thread(
-                qmd_history_post_json,
-                "/availability/persisted-structure-books",
-                {
-                    "as_of": self.definition.session_start.isoformat(),
-                    "tickers": sorted(strategy_350_tickers),
-                },
-                timeout=180,
-            )
-            available = set(availability.get("available") or ())
-            missing = set(availability.get("missing") or ())
-            if available | missing != strategy_350_tickers or available & missing:
-                raise RuntimeError("QMD persisted level-book availability is incomplete")
-            if int(availability.get("algorithm_version") or 0) != 18:
-                raise RuntimeError("QMD persisted level-book algorithm version changed")
-            self._missing_level_book_tickers = missing
-            if missing:
-                logging.getLogger(__name__).warning(
-                    'Backtest %s ignores %d tickers without a certified persisted v18 level book '
-                    '(first 10: %s); full list is in strategy_350_level_book_admission',
-                    self.run_id, len(missing), ', '.join(sorted(missing)[:10]),
-                )
-            requests = {request for request in requests if request[0] not in missing}
-            self._historical_external_signal_events = [
-                event for event in self._historical_external_signal_events
-                if event.ticker not in missing
-            ]
-            self._record_data_authority("strategy_350_level_book_admission", {
-                "authority": availability.get("authority"),
-                "checkpoint_set_id": availability.get("checkpoint_set_id"),
-                "algorithm_version": 18,
-                "as_of": availability.get("as_of"),
-                "available_tickers": sorted(available),
-                "ignored_tickers": sorted(missing),
-                "ignored_reason": "certified_persisted_v18_level_book_unavailable",
-            })
         self._strategy_frame_requested_tickers = {ticker for ticker, _ in requests}
         if not requests:
             self._strategy_frame_cache_status = "not_required"

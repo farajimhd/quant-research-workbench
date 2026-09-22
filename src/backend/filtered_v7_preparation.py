@@ -52,8 +52,9 @@ async def preparation_process(*args, **kwargs):
             raise
 
 
-async def prepare(tickers, days, publish, *, publish_details=None, workers=None):
-    """Bounded ticker concurrency; each child keeps causal sessions sequential."""
+async def prepare(tickers, days, publish, *, publish_details=None, workers=None,
+                  verify_only=False):
+    """Verify selected histories; optional campaign mode may build successors."""
     import time
     from datetime import datetime, timezone
     from copy import deepcopy
@@ -113,7 +114,11 @@ async def prepare(tickers, days, publish, *, publish_details=None, workers=None)
             slot.clear();slot.update(slot=slot_id,ticker=ticker,state='checking',updated_at=datetime.now(timezone.utc).isoformat())
             try:
                 needs,eligible=await asyncio.to_thread(inspect,ticker)
-                if needs:
+                if needs and verify_only:
+                    # Backtest preparation never creates a new level-book
+                    # history. Coverage preflight excludes this ticker below.
+                    state['unavailable']+=1
+                elif needs:
                     candidates=await asyncio.to_thread(catalog.sources,ticker)
                     parent=next((p for _,p,_ in reversed(candidates) if p.get('input_policy') != POLICY),None)
                     if parent is None:

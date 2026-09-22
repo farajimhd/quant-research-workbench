@@ -82,6 +82,31 @@ def test_preparation_reuses_filtered_history_without_spawning(tmp_path,monkeypat
     assert progress[-1][:2]==(1,1)
 
 
+def test_backtest_verifies_unfiltered_history_without_building(tmp_path,monkeypatch):
+    import asyncio
+    from src.backend.filtered_v7_preparation import prepare
+    target,_=prepared(tmp_path,monkeypatch)
+    path=target/'books'/'2026-08-20.json.gz'
+    book=read(path);book.pop('input_policy',None)
+    book['checkpoint_hash']=digest({k:v for k,v in book.items() if k!='checkpoint_hash'})
+    write(path,book,immutable=False)
+    path=target/'receipts'/'2026-08-20.json'
+    receipt=read(path);receipt['checkpoint_hash']=book['checkpoint_hash']
+    write(path,receipt,immutable=False)
+    catalog=V.Catalog(tmp_path)
+    monkeypatch.setattr(V,'Catalog',lambda:catalog)
+    monkeypatch.setattr('src.backend.filtered_v7_preparation.subprocess.Popen',
+        lambda *args,**kwargs: (_ for _ in ()).throw(AssertionError('no backtest builder')))
+    snapshots=[]
+    async def report(*args):pass
+    async def details(value):snapshots.append(value)
+    asyncio.run(prepare(['TEST'],['2026-08-21'],report,
+        publish_details=details,verify_only=True))
+    assert snapshots[-1]['built']==0
+    assert snapshots[-1]['unavailable']==1
+    assert catalog.select('TEST','2026-08-21')[0].get('input_policy')!=V.POLICY
+
+
 @pytest.mark.parametrize('outcome', ['complete', 'failed', 'cancelled'])
 def test_preparation_builds_unfiltered_ticker_then_reuses_publication(tmp_path,monkeypatch,outcome):
     import asyncio
