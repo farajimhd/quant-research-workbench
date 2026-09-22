@@ -45,9 +45,16 @@ def certified_causal_bar_authority(row):
     token = row.get('revision_token', '')
     source_policy = (':structure-input-v1:archive-sip-condition:recent-participant-aware:' in token
         or ':execution-clock-v1:' in token)
+    revision = row.get('calculation_revision')
+    # Early scalar-bundle metadata carried the QMD engine version but omitted
+    # its paired calculation revision. Keep those immutable prepared caches
+    # usable only for the one certified v35/v59 pairing; new bundles publish
+    # the revision explicitly.
+    if not revision and row.get('authority') == 'qmd_history_derived_bundle' and row.get('engine_version') == 'qmd-derived-v35':
+        revision = 'qmd-derived-v59-0405-et'
     return (row.get('authority') in ('qmd_history_prepared_closed_bars',
                                     'qmd_history_derived', 'qmd_history_derived_bundle')
-        and row.get('calculation_revision') in ('qmd-derived-v58', 'qmd-derived-v59-0405-et')
+        and revision in ('qmd-derived-v58', 'qmd-derived-v59-0405-et')
         and row.get('complete_for_history') is True
         and bool(row.get('source_plan_hash'))
         and source_policy)

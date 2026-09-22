@@ -105,6 +105,27 @@ def test_scalar_bundle_execution_clock_is_certified(tmp_path):
         service.close()
 
 
+@pytest.mark.parametrize('engine,accepted', [('qmd-derived-v35', True), ('unknown-engine', False)])
+def test_existing_scalar_bundle_without_revision_uses_exact_engine_pair(tmp_path, engine, accepted):
+    service, source = make(tmp_path)
+    path = tmp_path / 'cached-scalar.sqlite3'
+    fixture(path, source.bars, authority_name='qmd_history_derived_bundle')
+    with sqlite3.connect(path) as db:
+        db.execute('UPDATE strategy_frame_streams SET authority_json=json_set('
+                   'json_remove(authority_json, ?), ?, ?)',
+                   ('$.calculation_revision', '$.engine_version', engine))
+    stream = PreparedStream(service, path, '2026-08-21', 'fixture')
+    try:
+        if accepted:
+            assert stream.prepare(['TEST'])[0]['bars'] == len(source.bars)
+        else:
+            with pytest.raises(ValueError, match='source-clock'):
+                stream.prepare(['TEST'])
+    finally:
+        stream.close()
+        service.close()
+
+
 @pytest.mark.parametrize('field,value', [
     ('source_plan_hash', ''),
     ('complete_for_history', False),

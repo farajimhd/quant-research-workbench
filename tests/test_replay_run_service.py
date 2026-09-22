@@ -4608,6 +4608,7 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
         payload = {
             "cache": {
                 "engine_version": "qmd-derived-v28",
+                "calculation_revision": "qmd-derived-v59-0405-et",
                 "event_count": 42,
                 "source_revision": {
                     "token": "revision-7",
@@ -4621,6 +4622,7 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(authority["revision_token"], "revision-7")
         self.assertEqual(authority["source_plan_hash"], "plan-7")
         self.assertEqual(authority["engine_version"], "qmd-derived-v28")
+        self.assertEqual(authority["calculation_revision"], "qmd-derived-v59-0405-et")
         self.assertEqual(authority["event_count"], 42)
         self.assertTrue(authority["complete_for_history"])
 

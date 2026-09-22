@@ -6543,6 +6543,12 @@ class ReplayRunController:
             if int(availability.get("algorithm_version") or 0) != 18:
                 raise RuntimeError("QMD persisted level-book algorithm version changed")
             self._missing_level_book_tickers = missing
+            if missing:
+                logging.getLogger(__name__).warning(
+                    'Backtest %s ignores %d tickers without a certified persisted v18 level book '
+                    '(first 10: %s); full list is in strategy_350_level_book_admission',
+                    self.run_id, len(missing), ', '.join(sorted(missing)[:10]),
+                )
             requests = {request for request in requests if request[0] not in missing}
             self._historical_external_signal_events = [
                 event for event in self._historical_external_signal_events
@@ -10313,6 +10319,7 @@ def _qmd_payload_authority(
         "complete_for_history": bool(revision.get("complete_for_history", False)),
         "source_tiers": list(revision.get("source_tiers") or ()),
         "engine_version": str(cache.get("engine_version") or payload.get("engine_version") or ""),
+        "calculation_revision": str(cache.get("calculation_revision") or payload.get("calculation_revision") or ""),
         "event_count": int(cache.get("event_count") or payload.get("event_count") or 0),
     }
     if isinstance(payload.get("indicator_columns"), list):
