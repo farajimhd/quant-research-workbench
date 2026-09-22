@@ -7,7 +7,7 @@ from src.trading_runtime.session_relative_volume import SessionVolumeTracker
 from src.backend.session_relative_volume import BaselineStore
 from src.backend.prepared_frame_reuse import (
     frame_identity, register_identity, compatible_artifacts, revalidate,
-    copy_completed_stream, joined_thread,
+    copy_completed_streams, joined_thread,
 )
 from src.trading_runtime.estimated_luld import reference_from_indicator as _backtest_luld_reference
 
@@ -737,6 +737,24 @@ class ReplayFrameSpool:
         finally:
             connection.close()
 
+    def delete_streams(self, ticker: str, timeframes: Iterable[str]) -> None:
+        values = sorted(set(timeframes))
+        if not values:
+            return
+        connection = sqlite3.connect(self.path)
+        try:
+            with connection:
+                connection.executemany(
+                    "DELETE FROM strategy_frames WHERE ticker = ? AND timeframe = ?",
+                    [(_ticker(ticker), timeframe) for timeframe in values],
+                )
+                connection.executemany(
+                    "DELETE FROM strategy_frame_streams WHERE ticker = ? AND timeframe = ?",
+                    [(_ticker(ticker), timeframe) for timeframe in values],
+                )
+        finally:
+            connection.close()
+
     def mark_stream_complete(
         self,
         ticker: str,
@@ -758,6 +776,26 @@ class ReplayFrameSpool:
                         datetime.now(UTC).isoformat(),
                         json.dumps(authority or {}, separators=(",", ":"), sort_keys=True),
                     ),
+                )
+        finally:
+            connection.close()
+
+    def mark_streams_complete(
+        self, ticker: str, authorities: Mapping[str, dict[str, Any]],
+    ) -> None:
+        completed_at = datetime.now(UTC).isoformat()
+        connection = sqlite3.connect(self.path)
+        try:
+            with connection:
+                connection.executemany(
+                    """
+                    INSERT OR REPLACE INTO strategy_frame_streams (
+                        ticker, timeframe, completed_at, authority_json
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    [(_ticker(ticker), timeframe, completed_at,
+                      json.dumps(authority or {}, separators=(",", ":"), sort_keys=True))
+                     for timeframe, authority in sorted(authorities.items())],
                 )
         finally:
             connection.close()
@@ -933,6 +971,25 @@ _STRATEGY_INDICATOR_FIELDS = frozenset(
         "timeframe",
         "execution_vwap",
         "price_vs_execution_vwap_pct",
+    }
+)
+_MOMENTUM_SUCCESSOR_INDICATOR_FIELDS = frozenset(
+    {
+        "atr_14",
+        "bar_end",
+        "bar_start",
+        "close",
+        "execution_vwap",
+        "macd_histogram",
+        "macd_line",
+        "macd_signal",
+        "prev_close",
+        "previous_close",
+        "price_vs_execution_vwap_pct",
+        "qmd_structure_luld_lower",
+        "qmd_structure_luld_upper",
+        "sym",
+        "timeframe",
     }
 )
 # Structural fields are stateful: a prepared row can contain either a full
@@ -2562,10 +2619,25 @@ class ReplayRunController:
                     'status': 'completed', 'completed_streams': self._preparation_completed_units,
                     'total_streams': self._preparation_total_units,
                     'cache_status': self._strategy_frame_cache_status,
-                    'cache_path': str(frame_source.path),
+                    'cache_path': str(frame_source.path) if isinstance(frame_source, ReplayFrameSpool) else '',
                     'execution_started': False,
                 })
                 await self._finish('stopped')
+                return
+            assignments = list(self._strategy.assignments()) if self._strategy else []
+            if assignments and all(
+                assignment.ticker in getattr(self, '_prior_close_excluded_tickers', set())
+                for assignment in assignments
+            ):
+                self._runtime_inputs_ready = True
+                self._preparation_stage = 'ready'
+                self.current_time = self.definition.session_end
+                self._record_data_authority('strategy_prior_close_pruning_terminal', {
+                    'status': 'certified_empty_execution_population',
+                    'excluded_ticker_count': len(self._prior_close_excluded_tickers),
+                    'execution_started': False,
+                })
+                await self._finish('completed')
                 return
             await self._prepare_session_relative_volume()
             await self._prepare_v7_stream(frame_source)
@@ -6317,6 +6389,11 @@ class ReplayRunController:
                 if ticker in explicit or ticker in assigned and ticker in source_native_signal_tickers
             )
         tickers = tuple(ticker for ticker in tickers if ticker not in self._v7_excluded_tickers)
+        tickers = tuple(
+            ticker
+            for ticker in tickers
+            if ticker not in getattr(self, "_prior_close_excluded_tickers", set())
+        )
         if not tickers:
             raise ValueError(
                 "Historical run requires at least one explicit symbol, strategy assignment, or configured universe member"
@@ -6358,9 +6435,71 @@ class ReplayRunController:
         # Both paths already own their causal signal stream. Structural
         # recovery gets structure exclusively from the selected V6 book.
         prepared_activation = source_native_only or structural_recovery
+        assignments = list(self._strategy.assignments())
+        prior_close_maxima = {
+            assignment.ticker: float(
+                (assignment.parameters.get("momentum_price_policy") or {}).get(
+                    "prior_close_maximum"
+                )
+                or 0
+            )
+            for assignment in assignments
+            if float(
+                (assignment.parameters.get("momentum_price_policy") or {}).get(
+                    "prior_close_maximum"
+                )
+                or 0
+            )
+            > 0
+        }
+        self._prior_close_excluded_tickers = set()
+        if source_native_only and prior_close_maxima:
+            from .qmd_gateway_client import qmd_history_post_json
+
+            payload = await asyncio.to_thread(
+                qmd_history_post_json,
+                "/features/previous-session-closes",
+                {
+                    "as_of": self.definition.session_start.isoformat(),
+                    "tickers": sorted(prior_close_maxima),
+                },
+                timeout=180,
+            )
+            previous_closes = {
+                _ticker(row.get("ticker")): float(row.get("previous_close") or 0)
+                for row in payload.get("rows") or []
+            }
+            session = self.definition.session_start.astimezone(NEW_YORK).date()
+            for ticker, price in previous_closes.items():
+                self._luld_previous_closes[f"{ticker}:{session}"] = {
+                    "price": price,
+                    "available_at": payload.get("as_of"),
+                    "source": payload.get("authority"),
+                }
+            self._prior_close_excluded_tickers = {
+                ticker
+                for ticker, maximum in prior_close_maxima.items()
+                if previous_closes.get(ticker, 0) >= maximum
+            }
+            self._record_data_authority(
+                "strategy_prior_close_pruning",
+                {
+                    "authority": payload.get("authority"),
+                    "as_of": payload.get("as_of"),
+                    "calculation_revision": payload.get("calculation_revision"),
+                    "corporate_action_revision": payload.get(
+                        "corporate_action_revision"
+                    ),
+                    "requested_count": len(prior_close_maxima),
+                    "resolved_count": len(previous_closes),
+                    "excluded_count": len(self._prior_close_excluded_tickers),
+                    "rule": "previous_close < prior_close_maximum",
+                },
+            )
         requests = {
             (assignment.ticker, timeframe)
-            for assignment in self._strategy.assignments()
+            for assignment in assignments
+            if assignment.ticker not in self._prior_close_excluded_tickers
             if not source_native_signal_tickers
             or assignment.ticker in source_native_signal_tickers
             if not source_native_only
@@ -6400,8 +6539,18 @@ class ReplayRunController:
                 self._preparation_completed_units = len(ordered_requests)
                 self._strategy_frame_cache_status = "run_checkpoint"
                 return spool
+        indicator_field_contract = (
+            _MOMENTUM_SUCCESSOR_INDICATOR_FIELDS
+            if assignments
+            and all(
+                assignment.parameters.get("momentum_successor")
+                == "strategy-349-v27"
+                for assignment in assignments
+            )
+            else _STRATEGY_INDICATOR_FIELDS
+        )
         indicator_columns = (
-            tuple(sorted(field for field in _STRATEGY_INDICATOR_FIELDS
+            tuple(sorted(field for field in indicator_field_contract
                          if field != "official_luld_band" and (field in {"qmd_structure_luld_upper", "qmd_structure_luld_lower"} or not structural_recovery or not field.startswith(("qmd_structure_", "structure_", "flow_structure_")))))
             if prepared_activation
             else None
@@ -6524,22 +6673,18 @@ class ReplayRunController:
                     if not valid:
                         continue
                     self._strategy_frame_cache_status = "reusing"
-                    for ticker, timeframe in sorted(usable):
-                        if self._stop_requested:
-                            raise asyncio.CancelledError("Prepared stream reuse stopped")
-                        authority = await joined_thread(
-                            copy_completed_stream, build_path, donor_path, ticker, timeframe,
-                            end=evaluation_end,
-                        )
-                        if authority is None:
-                            continue
-                        completed_requests.add((ticker, timeframe))
-                        reused_requests.add((ticker, timeframe))
+                    if self._stop_requested:
+                        raise asyncio.CancelledError("Prepared stream reuse stopped")
+                    copied = await joined_thread(copy_completed_streams, build_path,
+                        donor_path, usable, end=evaluation_end)
+                    for request, authority in copied.items():
+                        completed_requests.add(request)
+                        reused_requests.add(request)
                         if authority:
-                            self._record_data_authority(f"derived:{ticker}:{timeframe}", authority)
-                        self._preparation_completed_units = len(completed_requests)
-                        self.updated_at = datetime.now(UTC)
-                        await self._publish(force=True)
+                            self._record_data_authority(f"derived:{request[0]}:{request[1]}", authority)
+                    self._preparation_completed_units = len(completed_requests)
+                    self.updated_at = datetime.now(UTC)
+                    await self._publish()
                     self._record_data_authority(f"prepared_frame_reuse:{donor_path.stem}", {
                         "original_identity": donor_identity,
                         "requested_start": identity["start"], "requested_end": identity["end"],
@@ -6568,91 +6713,70 @@ class ReplayRunController:
                     except asyncio.QueueEmpty:
                         return
                     try:
-                        for timeframe in timeframes:
-                            authority: dict[str, Any] = {}
+                        authorities: dict[str, dict[str, Any]] = {timeframe:{} for timeframe in timeframes}
 
-                            def record_authority(
-                                key: str, evidence: dict[str, Any]
-                            ) -> None:
-                                self._record_data_authority(key, evidence)
+                        def record_authority(key: str, evidence: dict[str, Any]) -> None:
+                            self._record_data_authority(key, evidence)
+                            for timeframe in timeframes:
                                 if key == f"derived:{ticker}:{timeframe}":
-                                    authority.update(deepcopy(evidence))
+                                    authorities[timeframe].update(deepcopy(evidence))
 
-                            if self.definition.historical_frame_cache is None:
-                                # A prior process may have stopped after
-                                # appending a partial stream but before its
-                                # completion marker. Resume only certified
-                                # streams and restart this one cleanly.
-                                async with writer_lock:
-                                    await asyncio.to_thread(
-                                        spool.delete_stream,
-                                        ticker,
-                                        timeframe,
-                                    )
+                        async def persist(batch: list[ReplayDerivedFrame]) -> None:
+                            async with writer_lock:
+                                await asyncio.to_thread(spool.append, batch)
 
-                                async def persist(batch: list[ReplayDerivedFrame]) -> None:
+                        if self.definition.historical_frame_cache is None:
+                            async with writer_lock:
+                                await asyncio.to_thread(spool.delete_streams, ticker, timeframes)
+                            for attempt in range(8):
+                                try:
+                                    if len(timeframes) > 1:
+                                        await _stream_historical_derived_frame_bundle(
+                                            ticker=ticker, timeframes=timeframes,
+                                            start=self.definition.session_start, end=evaluation_end,
+                                            frame_sink=persist, authority_sink=record_authority,
+                                            indicator_columns=indicator_columns,
+                                        )
+                                    else:
+                                        for timeframe in timeframes:
+                                            if structural_recovery or (source_native_only and self._strategy_quality_prune_ready):
+                                                await _stream_historical_bar_derived_frames(
+                                                    ticker=ticker, timeframe=timeframe,
+                                                    start=self.definition.session_start, end=evaluation_end,
+                                                    frame_sink=persist, authority_sink=record_authority,
+                                                    indicator_columns=indicator_columns or (),
+                                                )
+                                            else:
+                                                await _stream_historical_derived_frames(
+                                                    ticker=ticker, timeframe=timeframe,
+                                                    start=self.definition.session_start, end=evaluation_end,
+                                                    frame_sink=persist, authority_sink=record_authority,
+                                                    indicator_columns=indicator_columns,
+                                                )
+                                    break
+                                except Exception as exc:
+                                    if not _retryable_historical_stream_error(exc):
+                                        raise
                                     async with writer_lock:
-                                        await asyncio.to_thread(spool.append, batch)
-
-                                for attempt in range(8):
-                                    try:
-                                        if structural_recovery or (
-                                            source_native_only
-                                            and self._strategy_quality_prune_ready
-                                        ):
-                                            await _stream_historical_bar_derived_frames(
-                                                ticker=ticker,
-                                                timeframe=timeframe,
-                                                start=self.definition.session_start,
-                                                end=evaluation_end,
-                                                frame_sink=persist,
-                                                authority_sink=record_authority,
-                                                indicator_columns=indicator_columns or (),
-                                            )
-                                        else:
-                                            await _stream_historical_derived_frames(
-                                                ticker=ticker,
-                                                timeframe=timeframe,
-                                                start=self.definition.session_start,
-                                                end=evaluation_end,
-                                                frame_sink=persist,
-                                                authority_sink=record_authority,
-                                                indicator_columns=indicator_columns,
-                                            )
-                                        break
-                                    except Exception as exc:
-                                        if not _retryable_historical_stream_error(exc):
-                                            raise
-                                        async with writer_lock:
-                                            await asyncio.to_thread(
-                                                spool.delete_stream,
-                                                ticker,
-                                                timeframe,
-                                            )
-                                        if attempt == 7:
-                                            raise
-                                        await asyncio.sleep(min(10.0, 0.5 * (2**attempt)))
-                            else:
+                                        await asyncio.to_thread(spool.delete_streams, ticker, timeframes)
+                                    if attempt == 7:
+                                        raise
+                                    await asyncio.sleep(min(10.0, 0.5 * (2**attempt)))
+                        else:
+                            for timeframe in timeframes:
                                 frames = await _historical_derived_frames(
-                                    ticker=ticker,
-                                    timeframe=timeframe,
-                                    start=self.definition.session_start,
-                                    end=evaluation_end,
+                                    ticker=ticker, timeframe=timeframe,
+                                    start=self.definition.session_start, end=evaluation_end,
                                     authority_sink=record_authority,
                                     frame_cache=self.definition.historical_frame_cache,
                                 )
-                                async with writer_lock:
-                                    await asyncio.to_thread(spool.append, frames)
-                            async with writer_lock:
-                                await asyncio.to_thread(
-                                    spool.mark_stream_complete,
-                                    ticker,
-                                    timeframe,
-                                    authority,
-                                )
-                            self._preparation_completed_units += 1
-                            self.updated_at = datetime.now(UTC)
-                            await self._publish(force=True)
+                                await persist(frames)
+                        async with writer_lock:
+                            await asyncio.to_thread(spool.mark_streams_complete,
+                                ticker, authorities)
+                        self._preparation_completed_units += len(timeframes)
+                        self.updated_at = datetime.now(UTC)
+                        await self._publish()
                     finally:
                         request_queue.task_done()
 
@@ -9847,6 +9971,82 @@ async def _stream_historical_derived_frames(
     authority = _qmd_payload_authority(metadata, authority="qmd_history_derived")
     if authority_sink is not None:
         authority_sink(f"derived:{_ticker(ticker)}:{timeframe}", authority)
+
+
+async def _stream_historical_derived_frame_bundle(
+    *,
+    ticker: str,
+    timeframes: tuple[str, ...],
+    start: datetime,
+    end: datetime,
+    frame_sink: Callable[[list[ReplayDerivedFrame]], Awaitable[None]],
+    authority_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    batch_size: int = 4_000,
+    indicator_columns: tuple[str, ...] | None = None,
+) -> None:
+    """Build every requested timeframe in one QMD event traversal."""
+    seconds = {"100ms": .1, "1s": 1., "5s": 5., "10s": 10., "30s": 30.,
+        "1m": 60., "5m": 300., "1h": 3600.}
+    ordered = tuple(sorted(set(timeframes), key=lambda value: seconds.get(value, float("inf"))))
+    if not ordered:
+        raise ValueError("Historical derived frame bundle requires timeframes")
+    url = qmd_history_websocket_url(
+        f"/stream/derived/{urllib.parse.quote(ticker)}",
+        {
+            "start": start.isoformat(), "end": end.isoformat(),
+            "timeframes": ",".join(ordered), "emit": "frames",
+            "frame_batch_size": 256, "as_of": end.isoformat(),
+            "updates_per_second": 0, "retain_cache": "false",
+            **({"indicator_columns": ",".join(indicator_columns)} if indicator_columns else {}),
+        },
+    )
+    metadata: dict[str, Any] | None = None
+    batch: list[ReplayDerivedFrame] = []
+    received = 0
+    counts = {timeframe: 0 for timeframe in ordered}
+    async with websockets.connect(url, ping_interval=20, ping_timeout=300,
+            max_queue=4, max_size=64 * 1024 * 1024) as socket:
+        try:
+            async for message in socket:
+                payload = json.loads(message.decode("utf-8") if isinstance(message, bytes) else message)
+                if payload.get("error"):
+                    raise RuntimeError(f"QMD derived bundle failed for {ticker}: {payload['error']}")
+                if payload.get("type") == "metadata":
+                    metadata = payload
+                    continue
+                rows = list(payload.get("frames") or []) if payload.get("type") == "frames_batch" else [payload]
+                for row in rows:
+                    received += 1
+                    frame = _replay_derived_frame_from_payload(row, ticker=ticker,
+                        timeframe=str((row.get("bar") or {}).get("timeframe") or ""),
+                        fallback_sequence=received)
+                    if frame.timeframe not in counts:
+                        raise RuntimeError(f"QMD derived bundle returned unrequested timeframe {frame.timeframe}")
+                    counts[frame.timeframe] += 1
+                    batch.append(frame)
+                if len(batch) >= batch_size:
+                    await frame_sink(batch)
+                    batch = []
+        except ConnectionClosedError as exc:
+            expected = int((metadata or {}).get("frame_count") or -1)
+            if metadata is None or received != expected:
+                raise RuntimeError(
+                    f"QMD derived bundle closed early for {ticker}: received_frames={received} "
+                    f"expected_frames={expected}; transport={exc}"
+                ) from exc
+    if batch:
+        await frame_sink(batch)
+    if metadata is None:
+        raise RuntimeError(f"QMD derived bundle omitted authority metadata for {ticker}")
+    expected = int(metadata.get("frame_count") or 0)
+    if received != expected:
+        raise RuntimeError(f"QMD derived bundle returned {received} of {expected} frames for {ticker}")
+    authority = _qmd_payload_authority(metadata, authority="qmd_history_derived_bundle")
+    authority.update(timeframes=list(ordered), frame_counts=counts, single_event_traversal=True)
+    if authority_sink is not None:
+        for timeframe in ordered:
+            authority_sink(f"derived:{_ticker(ticker)}:{timeframe}",
+                {**authority, "timeframe": timeframe, "frame_count": counts[timeframe]})
 
 
 async def _historical_derived_frames(

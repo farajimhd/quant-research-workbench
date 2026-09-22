@@ -168,3 +168,39 @@ def copy_completed_stream(target: Path, source: Path, ticker: str, timeframe: st
         return json.loads(row[1])
     finally:
         connection.close()
+
+
+def copy_completed_streams(target: Path, source: Path, streams, *, end: datetime):
+    """Copy a certified stream set with one attach and one transaction."""
+    requested = sorted({(str(ticker), str(timeframe)) for ticker, timeframe in streams})
+    if not requested:
+        return {}
+    connection = sqlite3.connect(target.resolve().as_uri(), uri=True)
+    copied = {}
+    try:
+        connection.execute("PRAGMA cache_size=-32768")
+        connection.execute("ATTACH DATABASE ? AS donor", (source.as_uri() + "?mode=ro",))
+        with connection:
+            for ticker, timeframe in requested:
+                row = connection.execute(
+                    "SELECT completed_at, authority_json FROM donor.strategy_frame_streams "
+                    "WHERE ticker=? AND timeframe=?", (ticker, timeframe),
+                ).fetchone()
+                if row is None:
+                    continue
+                connection.execute("DELETE FROM strategy_frames WHERE ticker=? AND timeframe=?",
+                    (ticker, timeframe))
+                connection.execute(
+                    "INSERT INTO strategy_frames SELECT * FROM donor.strategy_frames "
+                    "WHERE ticker=? AND timeframe=? AND as_of_us<=?",
+                    (ticker, timeframe, int(end.timestamp() * 1_000_000)),
+                )
+                connection.execute(
+                    "INSERT OR REPLACE INTO strategy_frame_streams"
+                    "(ticker,timeframe,completed_at,authority_json) VALUES(?,?,?,?)",
+                    (ticker, timeframe, *row),
+                )
+                copied[(ticker, timeframe)] = json.loads(row[1])
+        return copied
+    finally:
+        connection.close()

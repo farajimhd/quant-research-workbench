@@ -63,6 +63,7 @@ enum CacheProfile {
     Bars(String),
     CausalBars(String),
     Derived(String),
+    DerivedBundle(Vec<String>),
     Structure(String),
     Products,
 }
@@ -73,6 +74,7 @@ impl CacheProfile {
             Self::Bars(timeframe) => format!("bars:{timeframe}"),
             Self::CausalBars(timeframe) => format!("causal-bars-v7:{timeframe}"),
             Self::Derived(timeframe) => format!("derived:{timeframe}"),
+            Self::DerivedBundle(timeframes) => format!("derived-bundle:{}", timeframes.join(",")),
             Self::Structure(timeframe) => format!("structure:{timeframe}"),
             Self::Products => "products".to_string(),
         }
@@ -1471,6 +1473,20 @@ impl HistoricalDerivedCache {
             .await
     }
 
+    pub async fn acquire_derived_bundle(
+        &self,
+        window: EventWindow,
+        ticker: String,
+        mut timeframes: Vec<String>,
+    ) -> Result<CacheLease, String> {
+        timeframes.sort_by_key(|value| parse_resolution_us(value).unwrap_or(u64::MAX));
+        timeframes.dedup();
+        if timeframes.is_empty() {
+            return Err("derived bundle requires at least one timeframe".to_string());
+        }
+        self.acquire(window, ticker, CacheProfile::DerivedBundle(timeframes)).await
+    }
+
     pub async fn causal_seconds(&self, window: EventWindow, ticker: String) -> Result<(Vec<BarRow>, SourceRevision), String> {
         let end = window.end;
         let start = window.start;
@@ -2114,8 +2130,14 @@ impl HistoricalDerivedCache {
             | CacheProfile::CausalBars(timeframe)
             | CacheProfile::Derived(timeframe)
             | CacheProfile::Structure(timeframe) => Some(timeframe.clone()),
-            CacheProfile::Products => None,
+            CacheProfile::DerivedBundle(_) | CacheProfile::Products => None,
         };
+        let requested_timeframes = match &profile {
+            CacheProfile::DerivedBundle(timeframes) => timeframes.clone(),
+            CacheProfile::Derived(timeframe) => vec![timeframe.clone()],
+            _ => requested_timeframe.iter().cloned().collect(),
+        };
+        let derived_profile = matches!(&profile, CacheProfile::Derived(_) | CacheProfile::DerivedBundle(_));
         let structure_only = matches!(&profile, CacheProfile::Structure(_));
         // Only a cold inherited-history rebuild uses the declared SIP
         // approximation. Post-checkpoint chart advancement must use the same
@@ -2129,6 +2151,13 @@ impl HistoricalDerivedCache {
                 vec![timeframe.clone()]
             }
             (_, Some(timeframe)) => vec!["100ms".to_string(), timeframe.clone()],
+            (CacheProfile::DerivedBundle(timeframes), None) => {
+                let mut values = vec!["100ms".to_string()];
+                values.extend(timeframes.iter().cloned());
+                values.sort_by_key(|value| parse_resolution_us(value).unwrap_or(u64::MAX));
+                values.dedup();
+                values
+            }
             (_, None) => Vec::new(),
         };
         let bars = if bars_only || structure_only || matches!(&profile, CacheProfile::CausalBars(_)) {
@@ -2149,26 +2178,23 @@ impl HistoricalDerivedCache {
                 // This private builder consumes every emitted row directly.
                 // Only five prior closes are read by BarStore scalar features;
                 // complete requested history remains owned by CacheEntry.
-                if matches!(&profile, CacheProfile::Derived(_)) { 5 } else { self.config.cache_max_bars_per_entry },
+                if derived_profile { 5 } else { self.config.cache_max_bars_per_entry },
                 1,
                 self.source.trade_aggregation_rules(),
             )
         };
-        let indicator_page_warmup = if matches!(&profile, CacheProfile::Derived(_)) {
-            self.indicator_page_warmup(
-                &window,
-                &ticker,
-                requested_timeframe.as_deref().unwrap_or("1s"),
-                source_revision.live_continuation_sequence,
-            )
-            .await?
-        } else {
-            IndicatorPageWarmup::default()
-        };
+        let mut indicator_page_warmups = HashMap::<String, IndicatorPageWarmup>::new();
+        if derived_profile {
+            for timeframe in &requested_timeframes {
+                indicator_page_warmups.insert(timeframe.clone(), self.indicator_page_warmup(
+                    &window, &ticker, timeframe, source_revision.live_continuation_sequence,
+                ).await?);
+            }
+        }
         let mut structure_engine = structure_only.then(|| GenericStructureEngine::new(&ticker));
         if matches!(
             &profile,
-            CacheProfile::Derived(_) | CacheProfile::Structure(_)
+            CacheProfile::Derived(_) | CacheProfile::DerivedBundle(_) | CacheProfile::Structure(_)
         ) {
             let checkpoint = match structure_seed {
                 Some(seed) => Some(seed.checkpoint),
@@ -2191,7 +2217,7 @@ impl HistoricalDerivedCache {
             .transpose()?;
         let shard = bars.shard(0);
         let trade_rules = self.source.trade_aggregation_rules();
-        let structure_references = if matches!(&profile, CacheProfile::Derived(_)) {
+        let structure_references = if derived_profile {
             self.source
                 .market_structure_reference_levels(&ticker, window.start)
                 .await
@@ -2204,20 +2230,22 @@ impl HistoricalDerivedCache {
         } else {
             MarketStructureReferenceLevels::default()
         };
-        let indicator_queue_budget = matches!(&profile, CacheProfile::Derived(_)).then(|| {
+        let indicator_queue_budget = derived_profile.then(|| {
             IndicatorQueueBudget::new(self.config.cache_max_bytes, self.config.cache_max_concurrent_builds)
         });
-        let mut indicator_worker = if matches!(&profile, CacheProfile::Derived(_)) {
+        let mut indicator_worker = if derived_profile {
             let (sender, mut receiver) = mpsc::channel::<QueuedIndicatorWork>(
                 self.config.cache_update_capacity.clamp(16, 100_000),
             );
             let worker_entry = entry.clone();
             let worker_rules = trade_rules.clone();
             let worker_structure_references = structure_references;
-            let worker_session_vwap_seed = indicator_page_warmup.session_vwap_seed;
+            let worker_session_vwap_seed = indicator_page_warmups.values().next()
+                .map(|warmup| warmup.session_vwap_seed.clone()).unwrap_or_default();
             let worker_page_start = window.start;
-            let worker_requested_timeframe = requested_timeframe.clone();
-            let worker_indicator_ema_warmup_closes = indicator_page_warmup.ema_closes;
+            let worker_indicator_ema_warmups = indicator_page_warmups.into_iter()
+                .map(|(timeframe, warmup)| (timeframe, warmup.ema_closes))
+                .collect::<HashMap<_, _>>();
             let handle = tokio::spawn(async move {
                 let mut calculators = HashMap::<String, BarIndicatorCalculator>::new();
                 let mut microstructure = MicrostructureIntervalWindow::default();
@@ -2239,11 +2267,9 @@ impl HistoricalDerivedCache {
                             let calculator =
                                 calculators.entry(bar.timeframe.clone()).or_insert_with(|| {
                                     let mut calculator = BarIndicatorCalculator::new();
-                                    if worker_requested_timeframe.as_deref().is_some_and(
-                                        |timeframe| bar.timeframe.eq_ignore_ascii_case(timeframe),
-                                    ) {
+                                    if let Some(closes) = worker_indicator_ema_warmups.get(&bar.timeframe) {
                                         calculator.seed_ema_close_history(
-                                            worker_indicator_ema_warmup_closes.iter().copied(),
+                                            closes.iter().copied(),
                                         );
                                     }
                                     calculator
@@ -2317,11 +2343,9 @@ impl HistoricalDerivedCache {
                             let calculator =
                                 calculators.entry(bar.timeframe.clone()).or_insert_with(|| {
                                     let mut calculator = BarIndicatorCalculator::new();
-                                    if worker_requested_timeframe.as_deref().is_some_and(
-                                        |timeframe| bar.timeframe.eq_ignore_ascii_case(timeframe),
-                                    ) {
+                                    if let Some(closes) = worker_indicator_ema_warmups.get(&bar.timeframe) {
                                         calculator.seed_ema_close_history(
-                                            worker_indicator_ema_warmup_closes.iter().copied(),
+                                            closes.iter().copied(),
                                         );
                                     }
                                     calculator
@@ -2446,7 +2470,7 @@ impl HistoricalDerivedCache {
                             continue;
                         }
                         let sequence = if valid_price
-                            && requested_timeframe.as_ref().is_some_and(|timeframe| {
+                            && requested_timeframes.iter().any(|timeframe| {
                                 bar.timeframe.eq_ignore_ascii_case(timeframe)
                             }) {
                             Some(entry.push_bar(bar.clone()).await?)
@@ -2543,9 +2567,9 @@ impl HistoricalDerivedCache {
                 continue;
             }
             let sequence = if valid_price
-                && requested_timeframe
-                    .as_ref()
-                    .is_some_and(|timeframe| bar.timeframe.eq_ignore_ascii_case(timeframe))
+                && requested_timeframes
+                    .iter()
+                    .any(|timeframe| bar.timeframe.eq_ignore_ascii_case(timeframe))
             {
                 Some(entry.push_bar(bar.clone()).await?)
             } else {
@@ -4071,7 +4095,7 @@ fn revision_window(
         window.start
     } else if matches!(profile, CacheProfile::Structure(_)) {
         structure_rebuild_start(window.start, structure_rebuild_days)?
-    } else if matches!(profile, CacheProfile::Bars(_) | CacheProfile::Derived(_)) {
+    } else if matches!(profile, CacheProfile::Bars(_) | CacheProfile::Derived(_) | CacheProfile::DerivedBundle(_)) {
         indicator_warmup_start(window.start)?
     } else {
         window.start
@@ -4185,6 +4209,7 @@ fn historical_requirement(
             | CacheProfile::CausalBars(timeframe)
             | CacheProfile::Derived(timeframe)
             | CacheProfile::Structure(timeframe) => Some(timeframe.clone()),
+            CacheProfile::DerivedBundle(timeframes) => Some(timeframes.join(",")),
             CacheProfile::Products => None,
         },
         parameter_hash: stable_hash_hex(&parameter_contract),

@@ -91,6 +91,12 @@ struct IndicatorWarmupRequest {
     timeframe: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct PreviousSessionCloseRequest {
+    as_of: DateTime<Utc>,
+    tickers: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct TradableUniverseResponse {
     as_of: String,
@@ -203,6 +209,7 @@ struct DerivedStreamQuery {
     retain_cache: Option<bool>,
     start: String,
     timeframe: Option<String>,
+    timeframes: Option<String>,
     updates_per_second: Option<f64>,
 }
 
@@ -284,6 +291,7 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/scanner-market", get(scanner_market_snapshot))
         .route("/features/session-relative-volume-baseline", post(relative_volume_baseline))
         .route("/features/session-volume-profile", post(session_volume_profile))
+        .route("/features/previous-session-closes", post(previous_session_closes))
         .route("/snapshot/scanner-derived", get(scanner_derived_snapshot))
         .route(
             "/estimate/generic-structure-event-counts",
@@ -446,6 +454,33 @@ async fn scanner_market_snapshot(
         .await
         .map(Json)
         .map_err(service_error)
+}
+
+async fn previous_session_closes(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<PreviousSessionCloseRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if request.tickers.is_empty() || request.tickers.len() > 25_000 {
+        return Err(bad_request("previous-session close population must contain 1..25000 tickers"));
+    }
+    let requested = request.tickers.into_iter()
+        .map(|ticker| normalize_ticker(&ticker))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let references = state.source.market_structure_reference_levels_all(request.as_of)
+        .await.map_err(service_error)?;
+    let rows = requested.iter().filter_map(|ticker| references.get(ticker).and_then(|levels| {
+        (levels.previous_session_close.is_finite() && levels.previous_session_close > 0.0)
+            .then(|| json!({"ticker": ticker, "previous_close": levels.previous_session_close}))
+    })).collect::<Vec<_>>();
+    Ok(Json(json!({
+        "as_of": request.as_of,
+        "authority": "qmd_history_daily_session_bars",
+        "calculation_revision": HISTORICAL_CALCULATION_REVISION,
+        "corporate_action_revision": HISTORICAL_CORPORATE_ACTION_REVISION,
+        "requested_count": requested.len(),
+        "resolved_count": rows.len(),
+        "rows": rows,
+    })))
 }
 
 async fn materialize_generic_structure_checkpoint(
@@ -1968,8 +2003,16 @@ async fn derived_stream(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ApiError> {
     let window = window(&query.start, &query.end, vec![ticker.clone()])?;
-    let timeframe = query.timeframe.unwrap_or_else(|| "1m".to_string());
-    validate_timeframe(&timeframe)?;
+    let mut timeframes = query.timeframes.as_deref().map(|value| {
+        value.split(',').map(str::trim).filter(|value| !value.is_empty())
+            .map(str::to_string).collect::<Vec<_>>()
+    }).unwrap_or_else(|| vec![query.timeframe.unwrap_or_else(|| "1m".to_string())]);
+    timeframes.sort();
+    timeframes.dedup();
+    if timeframes.is_empty() {
+        return Err(bad_request("timeframes must contain at least one timeframe"));
+    }
+    for timeframe in &timeframes { validate_timeframe(timeframe)?; }
     let emit = query.emit.unwrap_or_else(|| "updates".to_string());
     if !matches!(
         emit.as_str(),
@@ -2009,7 +2052,7 @@ async fn derived_stream(
             cache,
             window,
             ticker,
-            timeframe,
+            timeframes,
             emit,
             frame_batch_size,
             indicator_columns,
@@ -2226,7 +2269,7 @@ async fn stream_derived(
     cache: HistoricalDerivedCache,
     window: EventWindow,
     ticker: String,
-    timeframe: String,
+    timeframes: Vec<String>,
     emit: String,
     frame_batch_size: usize,
     indicator_columns: Option<BTreeSet<String>>,
@@ -2236,10 +2279,11 @@ async fn stream_derived(
     updates_per_second: f64,
     retain_cache: bool,
 ) {
-    let lease = match cache
-        .acquire_derived(window, ticker.clone(), timeframe.clone())
-        .await
-    {
+    let lease = match if timeframes.len() == 1 {
+        cache.acquire_derived(window, ticker.clone(), timeframes[0].clone()).await
+    } else {
+        cache.acquire_derived_bundle(window, ticker.clone(), timeframes.clone()).await
+    } {
         Ok(lease) => lease,
         Err(error) => {
             send_stream_error(&mut socket, error).await;
@@ -2267,7 +2311,7 @@ async fn stream_derived(
             .filter(|frame| {
                 frame.as_of <= as_of
                     && frame.bar.is_closed
-                    && frame.bar.timeframe.eq_ignore_ascii_case(&timeframe)
+                    && timeframes.iter().any(|timeframe| frame.bar.timeframe.eq_ignore_ascii_case(timeframe))
             })
             .collect::<Vec<_>>();
         let metadata = DerivedFramesMetadata {
@@ -2286,7 +2330,8 @@ async fn stream_derived(
                 .map(|columns| columns.iter().cloned().collect())
                 .unwrap_or_default(),
             ticker: ticker.clone(),
-            timeframe: timeframe.clone(),
+            timeframe: if timeframes.len() == 1 { timeframes[0].clone() } else { "bundle".to_string() },
+            timeframes: timeframes.clone(),
             update_type: "metadata",
         };
         if send_json(&mut socket, &metadata).await.is_err() {
@@ -2361,7 +2406,7 @@ async fn stream_derived(
         let visible = frames
             .iter()
             .filter(|frame| {
-                frame.as_of <= as_of && frame.bar.timeframe.eq_ignore_ascii_case(&timeframe)
+                frame.as_of <= as_of && timeframes.iter().any(|timeframe| frame.bar.timeframe.eq_ignore_ascii_case(timeframe))
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -2382,7 +2427,7 @@ async fn stream_derived(
                 .collect(),
             next_sequence: visible.last().map_or(0, |frame| frame.sequence),
             ticker: ticker.clone(),
-            timeframe: timeframe.clone(),
+            timeframe: if timeframes.len() == 1 { timeframes[0].clone() } else { "bundle".to_string() },
             update_type: "full",
         };
         if send_json(&mut socket, &full).await.is_err() {
@@ -2418,7 +2463,7 @@ async fn stream_derived(
             if frame.sequence <= last_sequence {
                 continue;
             }
-            if frame.bar.timeframe.eq_ignore_ascii_case(&timeframe) {
+            if timeframes.iter().any(|timeframe| frame.bar.timeframe.eq_ignore_ascii_case(timeframe)) {
                 if send_json(&mut socket, frame).await.is_err() {
                     return;
                 }
@@ -2437,7 +2482,7 @@ async fn stream_derived(
         }
         match receiver.recv().await {
             Ok(frame) if frame.sequence > last_sequence => {
-                if frame.bar.timeframe.eq_ignore_ascii_case(&timeframe) {
+                if timeframes.iter().any(|timeframe| frame.bar.timeframe.eq_ignore_ascii_case(timeframe)) {
                     if send_json(&mut socket, &frame).await.is_err() {
                         return;
                     }
@@ -2481,6 +2526,7 @@ struct DerivedFramesMetadata {
     indicator_columns: Vec<String>,
     ticker: String,
     timeframe: String,
+    timeframes: Vec<String>,
     #[serde(rename = "type")]
     update_type: &'static str,
 }

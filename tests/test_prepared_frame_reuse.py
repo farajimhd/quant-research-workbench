@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 
 from src.backend.prepared_frame_reuse import (
     frame_identity, identity_name, register_identity, compatible_artifacts,
-    revalidate, copy_completed_stream, joined_thread, register_legacy_identity,
+    revalidate, copy_completed_stream, copy_completed_streams, joined_thread,
+    register_legacy_identity,
 )
 from src.backend.replay_run_service import ReplayFrameSpool, ReplayDerivedFrame, ReplayRunController, ReplayRunDefinition
 from test_replay_run_service import approved_configuration
@@ -108,6 +109,34 @@ def test_copy_only_completed_streams_preserves_exact_json_and_empty_completion(t
     with sqlite3.connect(source.path) as a, sqlite3.connect(target.path) as b:
         assert a.execute('select bar_json,indicator_json from strategy_frames').fetchall() == b.execute(
             'select bar_json,indicator_json from strategy_frames').fetchall()
+
+
+def test_copy_completed_streams_reuses_bundle_in_one_transaction(tmp_path):
+    source = ReplayFrameSpool(tmp_path / 'source.sqlite3')
+    target = ReplayFrameSpool(tmp_path / 'target.sqlite3')
+    end = datetime(2026, 8, 10, 10, tzinfo=UTC)
+    source.append([
+        ReplayDerivedFrame(end, {'close': 10.0}, {'macd_line': 1.0}, 1, 'AAA', '1s'),
+        ReplayDerivedFrame(end, {'close': 11.0}, {'macd_line': 2.0}, 2, 'AAA', '5s'),
+        ReplayDerivedFrame(end, {'close': 12.0}, {'macd_line': 3.0}, 3, 'BBB', '1s'),
+    ])
+    source.mark_streams_complete('AAA', {
+        '1s': {'token': 'bundle', 'timeframe': '1s'},
+        '5s': {'token': 'bundle', 'timeframe': '5s'},
+    })
+
+    copied = copy_completed_streams(target.path, source.path, {
+        ('AAA', '1s'), ('AAA', '5s'), ('BBB', '1s'),
+    }, end=end)
+
+    assert copied == {
+        ('AAA', '1s'): {'token': 'bundle', 'timeframe': '1s'},
+        ('AAA', '5s'): {'token': 'bundle', 'timeframe': '5s'},
+    }
+    assert target.completed_streams() == {('AAA', '1s'), ('AAA', '5s')}
+    assert [(frame.ticker, frame.timeframe) for frame in target] == [
+        ('AAA', '1s'), ('AAA', '5s'),
+    ]
 
 
 def test_cancelled_copy_keeps_lock_until_worker_exits():

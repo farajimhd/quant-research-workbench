@@ -1899,6 +1899,116 @@ class CompletedBacktestSelectionTests(unittest.TestCase):
 
 
 class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_multi_timeframe_preparation_uses_one_bundle_per_ticker(self):
+        configuration = approved_configuration()
+        configuration["payload"]["signal_activation"] = {
+            "signal_streams": [{
+                "signal_stream_id": "price-squeeze-early",
+                "enabled": True,
+                "occurrence_source": "qmd_squeeze_episode",
+            }]
+        }
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 10), start_time=time(4), end_time=time(4, 5),
+            tickers=("ABCD",), configuration_revision=configuration,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            controller._strategy = MagicMock()
+            controller._strategy.assignments.return_value = [MagicMock(ticker="ABCD", parameters={})]
+            controller._strategy_registration = MagicMock()
+            controller._strategy_registration.timeframe_resolver.return_value = {"1s", "5s", "10s", "30s"}
+
+            async def bundle(**kwargs):
+                for sequence, timeframe in enumerate(kwargs["timeframes"], 1):
+                    await kwargs["frame_sink"]([ReplayDerivedFrame(
+                        definition.session_start, {"close": 10.0}, {}, sequence,
+                        "ABCD", timeframe,
+                    )])
+                    kwargs["authority_sink"](f"derived:ABCD:{timeframe}", {
+                        "authority": "qmd_history_derived_bundle", "timeframe": timeframe,
+                    })
+
+            with patch("src.backend.replay_run_service.qmd_historical_source_revision", return_value={
+                "token": "bundle-source", "source_plan_hash": "bundle-plan",
+                "complete_for_history": True, "request_complete": True,
+            }), patch(
+                "src.backend.replay_run_service._stream_historical_derived_frame_bundle",
+                side_effect=bundle,
+            ) as bundled, patch(
+                "src.backend.replay_run_service._stream_historical_derived_frames",
+                new_callable=AsyncMock,
+            ) as scalar:
+                frames = list(await controller._load_strategy_frames())
+
+        bundled.assert_awaited_once()
+        scalar.assert_not_awaited()
+        self.assertEqual(set(bundled.call_args.kwargs["timeframes"]), {"1s", "5s", "10s", "30s"})
+        self.assertEqual({frame.timeframe for frame in frames}, {"1s", "5s", "10s", "30s"})
+        self.assertEqual(controller._preparation_completed_units, 4)
+
+    async def test_prior_close_gate_prunes_before_intraday_bundle_build(self):
+        configuration = approved_configuration()
+        configuration["payload"]["signal_activation"] = {
+            "signal_streams": [{
+                "enabled": True,
+                "occurrence_source": "qmd_squeeze_episode",
+            }]
+        }
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 10), start_time=time(4), end_time=time(4, 5),
+            configuration_revision=configuration,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            controller._strategy = MagicMock()
+            controller._strategy.assignments.return_value = [
+                MagicMock(ticker="LOW", parameters={
+                    "momentum_price_policy": {"prior_close_maximum": 20.0},
+                }),
+                MagicMock(ticker="HIGH", parameters={
+                    "momentum_price_policy": {"prior_close_maximum": 20.0},
+                }),
+            ]
+            controller._strategy_registration = MagicMock()
+            controller._strategy_registration.timeframe_resolver.return_value = {"1s", "5s"}
+            controller._historical_external_signal_events = [
+                MagicMock(ticker="LOW"), MagicMock(ticker="HIGH"),
+            ]
+
+            async def bundle(**kwargs):
+                for timeframe in kwargs["timeframes"]:
+                    kwargs["authority_sink"](f"derived:{kwargs['ticker']}:{timeframe}", {})
+
+            close_payload = {
+                "authority": "qmd_history_daily_session_bars",
+                "as_of": definition.session_start.isoformat(),
+                "rows": [
+                    {"ticker": "LOW", "previous_close": 19.99},
+                    {"ticker": "HIGH", "previous_close": 20.00},
+                ],
+            }
+            with patch(
+                "src.backend.qmd_gateway_client.qmd_history_post_json",
+                return_value=close_payload,
+            ) as closes, patch(
+                "src.backend.replay_run_service.qmd_historical_source_revision",
+                return_value={
+                    "token": "source", "source_plan_hash": "plan",
+                    "complete_for_history": True, "request_complete": True,
+                },
+            ), patch(
+                "src.backend.replay_run_service._stream_historical_derived_frame_bundle",
+                side_effect=bundle,
+            ) as bundled:
+                await controller._load_strategy_frames()
+
+        closes.assert_called_once()
+        bundled.assert_awaited_once()
+        self.assertEqual(bundled.call_args.kwargs["ticker"], "LOW")
+        self.assertEqual(controller._prior_close_excluded_tickers, {"HIGH"})
+        self.assertEqual(controller._preparation_total_units, 2)
+
     async def test_structural_frames_use_completed_bars_and_not_legacy_structure_or_scanner(self):
         configuration = approved_configuration()
         configuration["payload"]["strategy"]["parameters"]["structural_recovery_contract"] = True

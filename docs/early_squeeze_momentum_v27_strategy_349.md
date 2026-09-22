@@ -98,3 +98,8 @@ external interval source before strategy execution. Candidate revision 350
 removes only the duplicate Watchlist condition; the executor's fail-closed
 prior-close gate and every trading rule above are unchanged. Revision 349 is
 retained as failed evidence and should not be run.
+
+For Candidate 350 backtests, the prior-close gate is resolved from QMD's
+completed daily-session authority in one batch before intraday work. The gate
+is still enforced by the executor. Its forming MACD streams are prepared per
+ticker in the [strategy-frame computational funnel](backtest_strategy_frame_funnel.md).
