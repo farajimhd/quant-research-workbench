@@ -651,6 +651,7 @@ struct QueuedIndicatorWork {
 struct IndicatorQueueBudget {
     semaphore: Arc<Semaphore>,
     bytes: usize,
+    max_packet_bytes: usize,
 }
 
 impl IndicatorQueueBudget {
@@ -658,15 +659,23 @@ impl IndicatorQueueBudget {
         let bytes = (cache_bytes / concurrent_builds.max(1))
             .min(u32::MAX as usize)
             .min(Semaphore::MAX_PERMITS);
-        Self { semaphore: Arc::new(Semaphore::new(bytes)), bytes }
+        Self {
+            semaphore: Arc::new(Semaphore::new(bytes)),
+            bytes,
+            max_packet_bytes: cache_bytes,
+        }
     }
 
     async fn reserve(&self, work: IndicatorWork) -> Result<QueuedIndicatorWork, String> {
         let bytes = work.retained_bytes();
-        if bytes > self.bytes {
-            return Err(format!("historical indicator packet requires {bytes} bytes, exceeding queue budget {}", self.bytes));
+        if bytes > self.max_packet_bytes {
+            return Err(format!("historical indicator packet requires {bytes} bytes, exceeding cache packet limit {}", self.max_packet_bytes));
         }
-        let permit = self.semaphore.clone().acquire_many_owned(bytes as u32).await
+        // A packet may contain one shared structural book larger than this
+        // build's queue share. Occupy the entire queue until the worker has
+        // consumed it; never admit a second packet alongside it.
+        let reserved = bytes.min(self.bytes);
+        let permit = self.semaphore.clone().acquire_many_owned(reserved as u32).await
             .map_err(|_| "historical indicator queue budget closed".to_string())?;
         Ok(QueuedIndicatorWork { work, _permit: permit })
     }
@@ -4383,6 +4392,27 @@ mod tests {
         // A failed send must also release its reservation immediately.
         assert!(sender.send(budget.reserve(packet()).await.unwrap()).await.is_err());
         assert_eq!(budget.semaphore.available_permits(), budget.bytes);
+    }
+
+    #[tokio::test]
+    async fn oversized_indicator_packet_runs_exclusively_within_cache_ceiling() {
+        use super::{IndicatorQueueBudget, IndicatorWork};
+        let packet = || IndicatorWork::Finalize {
+            bars: Vec::with_capacity(4),
+        };
+        let bytes = packet().retained_bytes();
+        let budget = IndicatorQueueBudget::new(bytes, 4);
+        assert!(bytes > budget.bytes);
+        let first = budget.reserve(packet()).await.unwrap();
+        assert_eq!(budget.semaphore.available_permits(), 0);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10),
+            budget.reserve(packet())).await.is_err());
+        drop(first);
+        let second = budget.reserve(packet()).await.unwrap();
+        drop(second);
+        assert_eq!(budget.semaphore.available_permits(), budget.bytes);
+        let over_limit = IndicatorQueueBudget::new(bytes - 1, 4);
+        assert!(over_limit.reserve(packet()).await.is_err());
     }
 
     #[tokio::test]
