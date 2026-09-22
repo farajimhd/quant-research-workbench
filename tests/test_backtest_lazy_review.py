@@ -39,6 +39,8 @@ def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_
             source._journal.append(run_id=source.run_id, category='strategy_decision', entity_type='signal', entity_id=str(n),
                 event_time=at, payload={'ticker': 'AAPL', 'action': 'wait', 'reason': str(n)})
         source._session_relative_volume_store.identities['AAPL'] = 'sha256:pinned-rvol-baseline'
+        if status == 'failed':
+            source._incomplete_processing_unit = dict(kind='external_signal', ticker='AAPL', at=at.isoformat())
         source._save_restart_checkpoint(source.current_time)
         source._write_approved_configuration()
         source._write_manifest()
@@ -60,6 +62,9 @@ def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_
             assert await service.review_saved(source.run_id) is review
             assert review.status == status
             assert review.review_only and review.snapshot()['review_only']
+            if status == 'failed':
+                assert not review.snapshot()['checkpoint']['resume_supported']
+                assert 'processing event' in review.snapshot()['review_warning']
             assert str(review.definition.session_date) == '2026-07-28'
             assert review.session_relative_volume_artifacts == {'AAPL': 'sha256:pinned-rvol-baseline'}
             assert not hasattr(review, '_session_relative_volume_store')
@@ -93,6 +98,21 @@ def test_review_financial_parity_and_fenced_pages_without_execution_restore(tmp_
             finally:
                 review._journal.close()
         assert (source.run_dir / 'journal.sqlite3').read_bytes() == original
+        if status == 'failed':
+            with pytest.raises(ValueError, match='no complete restart-safe checkpoint'):
+                await service.resume(source.run_id)
+            import sqlite3
+            with sqlite3.connect(source.run_dir / 'journal.sqlite3') as connection:
+                connection.execute('DELETE FROM checkpoints')
+            from src.backend.backtest_review import SavedBacktestReview
+            empty = SavedBacktestReview(source.run_dir)
+            try:
+                payload = await empty.canvas_payload('AAPL', include_chart=False)
+                assert not payload['trading']['complete']
+                assert 'financial results are unavailable' in payload['errors']['review']
+                assert not empty.snapshot()['checkpoint']['resume_supported']
+            finally:
+                empty._journal.close()
         if status == 'paused':
             # A resident execution still uses play, while a saved read-only view
             # can be replaced at capacity by an explicitly requested resume.

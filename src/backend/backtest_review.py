@@ -57,17 +57,23 @@ class SavedBacktestReview:
                 FROM checkpoints WHERE run_id = ?""", (self.run_id,))
             version, complete, identity, broker, rvol_artifacts = json.loads(row['projection']) if row else (None, None, None, None, None)
             from src.backend.replay_run_service import RESTART_CHECKPOINT_SCHEMA_VERSION
-            if version != RESTART_CHECKPOINT_SCHEMA_VERSION or not complete or not isinstance(broker, dict):
+            failed = self.status == 'failed'
+            missing_financial_state = failed and row is None
+            if not missing_financial_state and (version != RESTART_CHECKPOINT_SCHEMA_VERSION or not isinstance(broker, dict) or (not complete and not failed)):
                 raise ValueError('Saved Backtest has no complete restart checkpoint. Its saved progress cannot safely restore the run; start a new Backtest.')
             expected = dict(run_id=self.run_id, mode='backtest',
                 configuration_revision_id=self._run['configuration_revision_id'],
                 configuration_content_hash=self._run['configuration_content_hash'])
-            if any(identity.get(key) != value for key, value in expected.items()):
+            if not missing_financial_state and any(identity.get(key) != value for key, value in expected.items()):
                 raise ValueError('Historical review checkpoint identity changed')
-            self._broker_state = self._journal._hydrate(broker)
+            self._broker_state = None if missing_financial_state else self._journal._hydrate(broker)
             self.session_relative_volume_artifacts = dict(rvol_artifacts or {})
-            if list(identity.get('account_ids') or []) != self._broker_state['account_ids']:
+            if not missing_financial_state and list(identity.get('account_ids') or []) != self._broker_state['account_ids']:
                 raise ValueError('Historical review checkpoint account identity changed')
+            if not complete:
+                self._run['checkpoint'] = {**self._run.get('checkpoint', {}), 'resume_supported': False}
+                self._run['review_warning'] = ('No broker checkpoint was saved; financial results are unavailable.'
+                    if missing_financial_state else 'Saved broker results at failure; execution stopped inside a processing event. Resume is unavailable.')
             self.sequence = self._journal.latest_sequence(self.run_id)
         except BaseException:
             self._journal.close()
@@ -147,12 +153,18 @@ class SavedBacktestReview:
                 'decisions': [r for r in rows if r.get('event_type') == 'decision'],
                 'signals': [r for r in rows if r.get('event_type') == 'signal']}
         return dict(as_of=trading['as_of'], coverage={}, chart=dict(bars=[], indicators=[], symbol=symbol, timeframe='1m'),
-            errors={}, fills=[], journal=[], news=[], orders=[], portfolio=trading.get('portfolio', {}),
+            errors={'review': self._run['review_warning']} if self._run.get('review_warning') else {}, fills=[], journal=[], news=[], orders=[], portfolio=trading.get('portfolio', {}),
             preview_kind='backtest_run', scanner=[], scanner_meta={'status': 'run_clock', 'row_count': 0},
             sec=[], strategy=strategy, trading=trading,
             xbrl=[], run=self.snapshot())
 
     def _build_financial_view(self):
+        if self._broker_state is None:
+            return dict(as_of=self.current_time.isoformat(), complete=False,
+                warnings=[self._run['review_warning']], accounts=[], positions=[], orders=[], executions=[],
+                closed_trades=[], portfolio={}, presentation_as_of=self.current_time.isoformat(),
+                presentation_sequence=self.sequence, strategy_activity=[],
+                strategy_activity_page={'complete': False, 'next_offset': 0}, strategy_activity_deferred=True)
         from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
         from src.trading_runtime.canonical_session import CanonicalBrokerSession
         from src.trading_runtime.domain import TradingMode, BrokerProvider
