@@ -2462,7 +2462,13 @@ impl HistoricalEventSource {
             .header("X-ClickHouse-User", &self.config.clickhouse_user)
             .body(sql);
         if cfg!(feature = "structural-prominence-v18") {
-            request = request.query(&[("max_threads", "1"), ("max_memory_usage", "1073741824")]);
+            request = request.query(&[
+                ("max_threads", "1"),
+                ("max_memory_usage", "1073741824"),
+                ("max_block_size", "8192"),
+                ("preferred_block_size_bytes", "16777216"),
+                ("max_bytes_before_external_sort", "268435456"),
+            ]);
         }
         if !self.config.clickhouse_password.is_empty() {
             request = request.header("X-ClickHouse-Key", &self.config.clickhouse_password);
@@ -3794,7 +3800,13 @@ impl HistoricalEventSource {
             .header("X-ClickHouse-User", &self.config.clickhouse_user)
             .body(sql.to_string());
         if cfg!(feature = "structural-prominence-v18") {
-            request = request.query(&[("max_threads", "1"), ("max_memory_usage", "1073741824")]);
+            request = request.query(&[
+                ("max_threads", "1"),
+                ("max_memory_usage", "1073741824"),
+                ("max_block_size", "8192"),
+                ("preferred_block_size_bytes", "16777216"),
+                ("max_bytes_before_external_sort", "268435456"),
+            ]);
         }
         if !self.config.clickhouse_password.is_empty() {
             request = request.header("X-ClickHouse-Key", &self.config.clickhouse_password);
@@ -3825,7 +3837,13 @@ impl HistoricalEventSource {
             .header("X-ClickHouse-User", &self.config.clickhouse_user)
             .body(sql.to_string());
         if cfg!(feature = "structural-prominence-v18") {
-            request = request.query(&[("max_threads", "1"), ("max_memory_usage", "1073741824")]);
+            request = request.query(&[
+                ("max_threads", "1"),
+                ("max_memory_usage", "1073741824"),
+                ("max_block_size", "8192"),
+                ("preferred_block_size_bytes", "16777216"),
+                ("max_bytes_before_external_sort", "268435456"),
+            ]);
         }
         if !self.config.clickhouse_password.is_empty() {
             request = request.header("X-ClickHouse-Key", &self.config.clickhouse_password);
