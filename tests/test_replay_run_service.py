@@ -1944,6 +1944,7 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
         bundled.assert_awaited_once()
         scalar.assert_not_awaited()
         self.assertEqual(set(bundled.call_args.kwargs["timeframes"]), {"1s", "5s", "10s", "30s"})
+        self.assertFalse(bundled.call_args.kwargs["scalar_only"])
         self.assertEqual({frame.timeframe for frame in frames}, {"1s", "5s", "10s", "30s"})
         self.assertEqual(controller._preparation_completed_units, 4)
 
@@ -2058,6 +2059,7 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
 
         bundled.assert_awaited_once()
         self.assertEqual(bundled.call_args.kwargs["ticker"], "READY")
+        self.assertTrue(bundled.call_args.kwargs["scalar_only"])
         self.assertEqual(controller._missing_level_book_tickers, {"MISSING"})
         self.assertEqual(controller._preparation_total_units, 2)
         self.assertEqual(controller._preparation_completed_units, 2)

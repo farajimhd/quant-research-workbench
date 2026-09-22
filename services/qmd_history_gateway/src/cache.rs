@@ -64,6 +64,7 @@ enum CacheProfile {
     CausalBars(String),
     Derived(String),
     DerivedBundle(Vec<String>),
+    ScalarDerivedBundle(Vec<String>),
     Structure(String),
     Products,
 }
@@ -75,6 +76,7 @@ impl CacheProfile {
             Self::CausalBars(timeframe) => format!("causal-bars-v7:{timeframe}"),
             Self::Derived(timeframe) => format!("derived:{timeframe}"),
             Self::DerivedBundle(timeframes) => format!("derived-bundle:{}", timeframes.join(",")),
+            Self::ScalarDerivedBundle(timeframes) => format!("scalar-derived-bundle:{}", timeframes.join(",")),
             Self::Structure(timeframe) => format!("structure:{timeframe}"),
             Self::Products => "products".to_string(),
         }
@@ -1488,13 +1490,19 @@ impl HistoricalDerivedCache {
         window: EventWindow,
         ticker: String,
         mut timeframes: Vec<String>,
+        scalar_only: bool,
     ) -> Result<CacheLease, String> {
         timeframes.sort_by_key(|value| parse_resolution_us(value).unwrap_or(u64::MAX));
         timeframes.dedup();
         if timeframes.is_empty() {
             return Err("derived bundle requires at least one timeframe".to_string());
         }
-        self.acquire(window, ticker, CacheProfile::DerivedBundle(timeframes)).await
+        let profile = if scalar_only {
+            CacheProfile::ScalarDerivedBundle(timeframes)
+        } else {
+            CacheProfile::DerivedBundle(timeframes)
+        };
+        self.acquire(window, ticker, profile).await
     }
 
     pub async fn causal_seconds(&self, window: EventWindow, ticker: String) -> Result<(Vec<BarRow>, SourceRevision), String> {
@@ -2140,14 +2148,15 @@ impl HistoricalDerivedCache {
             | CacheProfile::CausalBars(timeframe)
             | CacheProfile::Derived(timeframe)
             | CacheProfile::Structure(timeframe) => Some(timeframe.clone()),
-            CacheProfile::DerivedBundle(_) | CacheProfile::Products => None,
+            CacheProfile::DerivedBundle(_) | CacheProfile::ScalarDerivedBundle(_) | CacheProfile::Products => None,
         };
         let requested_timeframes = match &profile {
-            CacheProfile::DerivedBundle(timeframes) => timeframes.clone(),
+            CacheProfile::DerivedBundle(timeframes) | CacheProfile::ScalarDerivedBundle(timeframes) => timeframes.clone(),
             CacheProfile::Derived(timeframe) => vec![timeframe.clone()],
             _ => requested_timeframe.iter().cloned().collect(),
         };
-        let derived_profile = matches!(&profile, CacheProfile::Derived(_) | CacheProfile::DerivedBundle(_));
+        let derived_profile = matches!(&profile, CacheProfile::Derived(_) | CacheProfile::DerivedBundle(_) | CacheProfile::ScalarDerivedBundle(_));
+        let scalar_bundle = matches!(&profile, CacheProfile::ScalarDerivedBundle(_));
         let structure_seed = if matches!(&profile, CacheProfile::DerivedBundle(_)) {
             let seed = self.source
                 .persisted_structure_checkpoint_before(&ticker, window.start)
@@ -2174,7 +2183,7 @@ impl HistoricalDerivedCache {
                 vec![timeframe.clone()]
             }
             (_, Some(timeframe)) => vec!["100ms".to_string(), timeframe.clone()],
-            (CacheProfile::DerivedBundle(timeframes), None) => {
+            (CacheProfile::DerivedBundle(timeframes) | CacheProfile::ScalarDerivedBundle(timeframes), None) => {
                 let mut values = vec!["100ms".to_string()];
                 values.extend(timeframes.iter().cloned());
                 values.sort_by_key(|value| parse_resolution_us(value).unwrap_or(u64::MAX));
@@ -2183,7 +2192,7 @@ impl HistoricalDerivedCache {
             }
             (_, None) => Vec::new(),
         };
-        let bars = if bars_only || structure_only || matches!(&profile, CacheProfile::CausalBars(_)) {
+        let bars = if bars_only || structure_only || scalar_bundle || matches!(&profile, CacheProfile::CausalBars(_)) {
             // A bars-stage request is the scalar closed-bar authority. Unified
             // Structural Levels are loaded through their checkpoint-backed
             // projection, so advancing the event-native level book here is
@@ -4119,7 +4128,7 @@ fn revision_window(
         window.start
     } else if matches!(profile, CacheProfile::Structure(_)) {
         structure_rebuild_start(window.start, structure_rebuild_days)?
-    } else if matches!(profile, CacheProfile::Bars(_) | CacheProfile::Derived(_) | CacheProfile::DerivedBundle(_)) {
+    } else if matches!(profile, CacheProfile::Bars(_) | CacheProfile::Derived(_) | CacheProfile::DerivedBundle(_) | CacheProfile::ScalarDerivedBundle(_)) {
         indicator_warmup_start(window.start)?
     } else {
         window.start
@@ -4233,7 +4242,7 @@ fn historical_requirement(
             | CacheProfile::CausalBars(timeframe)
             | CacheProfile::Derived(timeframe)
             | CacheProfile::Structure(timeframe) => Some(timeframe.clone()),
-            CacheProfile::DerivedBundle(timeframes) => Some(timeframes.join(",")),
+            CacheProfile::DerivedBundle(timeframes) | CacheProfile::ScalarDerivedBundle(timeframes) => Some(timeframes.join(",")),
             CacheProfile::Products => None,
         },
         parameter_hash: stable_hash_hex(&parameter_contract),
@@ -4840,11 +4849,16 @@ mod tests {
             &CacheProfile::Bars("1m".to_string()),
         );
         let products = cache_key(&window, "AAPL", &revision, &CacheProfile::Products);
+        let full_bundle = cache_key(&window, "AAPL", &revision,
+            &CacheProfile::DerivedBundle(vec!["1s".into(), "5s".into()]));
+        let scalar_bundle = cache_key(&window, "AAPL", &revision,
+            &CacheProfile::ScalarDerivedBundle(vec!["1s".into(), "5s".into()]));
 
         assert_ne!(one_minute, five_minute);
         assert_ne!(one_minute, one_minute_bars);
         assert_ne!(one_minute, products);
         assert_ne!(five_minute, products);
+        assert_ne!(full_bundle, scalar_bundle);
     }
 
     #[test]

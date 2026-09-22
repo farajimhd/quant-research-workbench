@@ -106,5 +106,8 @@ ticker in the [strategy-frame computational funnel](backtest_strategy_frame_funn
 Before Strategy 350 frame preparation, QMD checks each admitted ticker for a
 complete, persisted v18 structural checkpoint preceding the session start.
 Tickers without one are recorded as ignored and excluded from frame, signal,
-and market-event preparation. QMD validates each selected checkpoint's
-certificate before building frames. The backtest does not create a missing level book.
+and market-event preparation. The backtest does not create a missing level book.
+Strategy 350 requests scalar-only multi-timeframe derived bundles: price bars,
+MACD, execution VWAP, and LULD are computed from canonical events without
+advancing or caching another structural book for every bar. The separately
+prepared Level Book V7 stream supplies causal structural state during execution.

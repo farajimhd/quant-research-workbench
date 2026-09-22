@@ -213,6 +213,7 @@ struct DerivedStreamQuery {
     indicator_columns: Option<String>,
     max_updates: Option<u64>,
     retain_cache: Option<bool>,
+    scalar_only: Option<bool>,
     start: String,
     timeframe: Option<String>,
     timeframes: Option<String>,
@@ -2088,6 +2089,22 @@ async fn derived_stream(
         return Err(bad_request("frame_batch_size must be between 1 and 5000"));
     }
     let indicator_columns = parse_indicator_projection(query.indicator_columns.as_deref())?;
+    if query.scalar_only.unwrap_or(false)
+        && (timeframes.len() < 2
+            || indicator_columns.as_ref().is_none_or(|columns| {
+                columns.iter().any(|column| {
+                    (column.starts_with("qmd_structure_")
+                        && column != "qmd_structure_luld_upper"
+                        && column != "qmd_structure_luld_lower")
+                        || column.starts_with("structure_")
+                        || column.starts_with("flow_structure_")
+                })
+            }))
+    {
+        return Err(bad_request(
+            "scalar-only derived bundles require multiple timeframes and an indicator projection without structural-book fields",
+        ));
+    }
     let cache = state.cache.clone();
     Ok(websocket.on_upgrade(move |socket| {
         stream_derived(
@@ -2104,6 +2121,7 @@ async fn derived_stream(
             query.max_updates,
             updates_per_second,
             query.retain_cache.unwrap_or(true),
+            query.scalar_only.unwrap_or(false),
         )
     }))
 }
@@ -2321,11 +2339,12 @@ async fn stream_derived(
     max_updates: Option<u64>,
     updates_per_second: f64,
     retain_cache: bool,
+    scalar_only: bool,
 ) {
     let lease = match if timeframes.len() == 1 {
         cache.acquire_derived(window, ticker.clone(), timeframes[0].clone()).await
     } else {
-        cache.acquire_derived_bundle(window, ticker.clone(), timeframes.clone()).await
+        cache.acquire_derived_bundle(window, ticker.clone(), timeframes.clone(), scalar_only).await
     } {
         Ok(lease) => lease,
         Err(error) => {

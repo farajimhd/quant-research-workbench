@@ -6784,6 +6784,7 @@ class ReplayRunController:
                                             start=self.definition.session_start, end=evaluation_end,
                                             frame_sink=persist, authority_sink=record_authority,
                                             indicator_columns=indicator_columns,
+                                            scalar_only=ticker in strategy_350_tickers,
                                         )
                                     else:
                                         for timeframe in timeframes:
@@ -10031,6 +10032,7 @@ async def _stream_historical_derived_frame_bundle(
     authority_sink: Callable[[str, dict[str, Any]], None] | None = None,
     batch_size: int = 4_000,
     indicator_columns: tuple[str, ...] | None = None,
+    scalar_only: bool = False,
 ) -> None:
     """Build every requested timeframe in one QMD event traversal."""
     seconds = {"100ms": .1, "1s": 1., "5s": 5., "10s": 10., "30s": 30.,
@@ -10045,6 +10047,7 @@ async def _stream_historical_derived_frame_bundle(
             "timeframes": ",".join(ordered), "emit": "frames",
             "frame_batch_size": 256, "as_of": end.isoformat(),
             "updates_per_second": 0, "retain_cache": "false",
+            "scalar_only": "true" if scalar_only else "false",
             **({"indicator_columns": ",".join(indicator_columns)} if indicator_columns else {}),
         },
     )
