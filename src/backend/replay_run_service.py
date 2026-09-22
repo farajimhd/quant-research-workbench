@@ -6563,6 +6563,30 @@ class ReplayRunController:
                 "ignored_tickers": sorted(missing),
                 "ignored_reason": "certified_persisted_v18_level_book_unavailable",
             })
+            # A source-native occurrence can belong to a ticker removed by
+            # prior-close, quality, or level-book admission. Such a ticker has
+            # no prepared frames or V7 cursor and cannot evaluate the strategy.
+            # Keep source evidence upstream, but do not queue an activation
+            # that would attempt to read a non-existent cursor at event time.
+            frame_tickers = {ticker for ticker, _ in requests}
+            excluded_signals = sorted({event.ticker for event in self._historical_external_signal_events}
+                                      - frame_tickers)
+            if excluded_signals:
+                self._historical_external_signal_events = [
+                    event for event in self._historical_external_signal_events
+                    if event.ticker in frame_tickers
+                ]
+                self._record_data_authority("strategy_350_signal_frame_admission", {
+                    "authority": "prepared_strategy_frame_population",
+                    "excluded_tickers": excluded_signals,
+                    "excluded_count": len(excluded_signals),
+                    "reason": "no_prepared_strategy_frames_after_admission",
+                })
+                logging.getLogger(__name__).warning(
+                    'Backtest %s ignores source-native signals for %d tickers without '
+                    'admitted strategy frames (first 10: %s)',
+                    self.run_id, len(excluded_signals), ', '.join(excluded_signals[:10]),
+                )
         if not requests:
             self._strategy_frame_cache_status = "not_required"
             return []

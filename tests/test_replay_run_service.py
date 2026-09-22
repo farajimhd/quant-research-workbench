@@ -2030,7 +2030,8 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
             controller._strategy_registration = MagicMock()
             controller._strategy_registration.timeframe_resolver.return_value = {"1s", "5s"}
             controller._historical_external_signal_events = [
-                MagicMock(ticker="READY"), MagicMock(ticker="MISSING")
+                MagicMock(ticker="READY"), MagicMock(ticker="MISSING"),
+                MagicMock(ticker="AAOI"),
             ]
 
             async def bundle(**kwargs):
@@ -2066,6 +2067,14 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             controller._data_authority["strategy_350_level_book_admission"]["ignored_tickers"],
             ["MISSING"],
+        )
+        self.assertEqual(
+            [event.ticker for event in controller._historical_external_signal_events],
+            ["READY"],
+        )
+        self.assertEqual(
+            controller._data_authority["strategy_350_signal_frame_admission"]["excluded_tickers"],
+            ["AAOI"],
         )
 
     async def test_strategy_350_all_missing_books_skips_frame_fetch(self):
