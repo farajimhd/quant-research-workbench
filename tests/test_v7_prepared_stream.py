@@ -9,11 +9,15 @@ from src.market_engine.v7_snapshot_transport import Decoder
 from tests.test_v7_qmd import make, at
 
 
-def fixture(path, bars, *, contract=True):
+def fixture(path, bars, *, contract=True, authority_name='qmd_history_prepared_closed_bars', clock='sip'):
     db=sqlite3.connect(path)
     db.executescript('CREATE TABLE strategy_frame_streams(ticker,timeframe,authority_json); CREATE TABLE strategy_frames(ticker,timeframe,as_of_us,sequence,bar_json);')
-    authority=dict(authority='qmd_history_prepared_closed_bars',calculation_revision='qmd-derived-v58',
-        complete_for_history=True,revision_token='x:structure-input-v1:archive-sip-condition:recent-participant-aware:x' if contract else 'execution-clock-v1')
+    token = ('1:20:0:updated:Archive:1:2:split-sha256:abc:' + (
+        'structure-input-v1:archive-sip-condition:recent-participant-aware:abc'
+        if clock == 'sip' else 'execution-clock-v1:1:20:0:1:updated'))
+    authority=dict(authority=authority_name,calculation_revision='qmd-derived-v59-0405-et',
+        complete_for_history=True,source_plan_hash='frozen-plan',
+        revision_token=token if contract else 'uncertified-source')
     db.execute('INSERT INTO strategy_frame_streams VALUES (?,?,?)',('TEST','1s',json.dumps(authority)))
     db.executemany('INSERT INTO strategy_frames VALUES (?,?,?,?,?)',[
         ('TEST','1s',int(b['t']*1e6),i,json.dumps(dict(sym='TEST',timeframe='1s',bar_end=at(b['t']).isoformat(),**{k:v for k,v in b.items() if k!='t'})))
@@ -84,6 +88,44 @@ def test_incompatible_clock_is_rejected(tmp_path):
     try:
         with pytest.raises(ValueError,match='source-clock'):stream.prepare(['TEST'])
     finally:stream.close();service.close()
+
+
+def test_scalar_bundle_execution_clock_is_certified(tmp_path):
+    service, source = make(tmp_path)
+    path = tmp_path / 'scalar.sqlite3'
+    fixture(path, source.bars, authority_name='qmd_history_derived_bundle', clock='execution')
+    stream = PreparedStream(service, path, '2026-08-21', 'fixture')
+    try:
+        receipt = stream.prepare(['TEST'])
+        assert receipt[0]['bars'] == len(source.bars)
+        assert stream.states['TEST']['engine'].bars_processed == 0
+        assert not source.calls
+    finally:
+        stream.close()
+        service.close()
+
+
+@pytest.mark.parametrize('field,value', [
+    ('source_plan_hash', ''),
+    ('complete_for_history', False),
+    ('calculation_revision', 'unknown-revision'),
+    ('authority', 'unverified-bundle'),
+])
+def test_scalar_bundle_missing_authority_still_fails_closed(tmp_path, field, value):
+    service, source = make(tmp_path)
+    path = tmp_path / 'uncertified.sqlite3'
+    fixture(path, source.bars, authority_name='qmd_history_derived_bundle', clock='execution')
+    with sqlite3.connect(path) as db:
+        db.execute('UPDATE strategy_frame_streams SET authority_json=json_set(authority_json, ?, ?)',
+                   (f'$.{field}', value))
+    stream = PreparedStream(service, path, '2026-08-21', 'fixture')
+    try:
+        with pytest.raises(ValueError, match='source-clock'):
+            stream.prepare(['TEST'])
+        assert not stream.states
+    finally:
+        stream.close()
+        service.close()
 
 
 @pytest.mark.parametrize('changed', [False, True])

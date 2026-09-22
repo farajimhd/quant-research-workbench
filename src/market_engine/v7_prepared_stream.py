@@ -40,6 +40,19 @@ def source_clock_identity(token):
     return build, continuation, updated, policy
 
 
+def certified_causal_bar_authority(row):
+    """Accept only the QMD closed-bar profiles used by V7 causal seconds."""
+    token = row.get('revision_token', '')
+    source_policy = (':structure-input-v1:archive-sip-condition:recent-participant-aware:' in token
+        or ':execution-clock-v1:' in token)
+    return (row.get('authority') in ('qmd_history_prepared_closed_bars',
+                                    'qmd_history_derived', 'qmd_history_derived_bundle')
+        and row.get('calculation_revision') in ('qmd-derived-v58', 'qmd-derived-v59-0405-et')
+        and row.get('complete_for_history') is True
+        and bool(row.get('source_plan_hash'))
+        and source_policy)
+
+
 class PreparedStream:
     def __init__(self, service, path, day, catalog_hash, *, max_bytes=4 * 1024**3, required_end=None):
         from .v7_qmd import session_bounds, stamp
@@ -88,13 +101,7 @@ class PreparedStream:
             authority = json.loads(record[0])
             chunks = authority.get('chunks', [authority])
             if not authority.get('complete_for_history') or not chunks or any(
-                row.get('authority') != 'qmd_history_prepared_closed_bars'
-                # v59 applies the same pre-04:05 exclusion upstream that the
-                # V7 kernel applies to v58. Both retain the certified SIP clock.
-                or row.get('calculation_revision') not in ('qmd-derived-v58', 'qmd-derived-v59-0405-et')
-                or not row.get('complete_for_history')
-                or ':structure-input-v1:archive-sip-condition:recent-participant-aware:' not in row.get('revision_token', '')
-                for row in chunks
+                not certified_causal_bar_authority(row) for row in chunks
             ):
                 raise ValueError(f'{ticker}: prepared bars lack the certified V7 causal source-clock contract')
             if authority.get('start') and (stamp(authority['start']) > self.begin or stamp(authority['end']) < self.required_end):
