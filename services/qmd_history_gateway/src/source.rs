@@ -2641,6 +2641,77 @@ impl HistoricalEventSource {
         Ok((events, next))
     }
 
+    async fn fetch_single_ticker_ordinal_archive_page(
+        &self,
+        window: &EventWindow,
+        cursor: Option<&HistoricalCursor>,
+        limit: usize,
+        event_type_filter: Option<u8>,
+    ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
+        let ticker = normalize_ticker(&window.tickers[0])?;
+        let mut day = window.start.date_naive();
+        let last_day = (window.end - chrono::Duration::microseconds(1)).date_naive();
+        let mut selects = Vec::new();
+        while day <= last_day {
+            if let Some(range) = self
+                .canonical_session_ordinal_ranges(day, std::slice::from_ref(&ticker))
+                .await?
+                .into_iter()
+                .find(|range| range.ticker.eq_ignore_ascii_case(&ticker))
+            {
+                let first = cursor
+                    .filter(|value| value.ticker.eq_ignore_ascii_case(&ticker))
+                    .map_or(range.first_ordinal, |value| {
+                        range.first_ordinal.max(value.ordinal.saturating_add(1))
+                    });
+                if first < range.next_ordinal {
+                    let select = ordinal_event_select_filtered(
+                        &format!(
+                            "{}.{}{}",
+                            self.config.clickhouse_database,
+                            self.config.table_prefix,
+                            day.year()
+                        ),
+                        None,
+                        &ticker,
+                        first,
+                        range.next_ordinal,
+                        event_type_filter,
+                    );
+                    selects.push(format!(
+                        "SELECT * FROM ({select}) WHERE sip_timestamp_us >= {} AND sip_timestamp_us < {}",
+                        window.start.timestamp_micros(),
+                        window.end.timestamp_micros(),
+                    ));
+                }
+            }
+            day = day.succ_opt().ok_or("historical ordinal day overflow")?;
+        }
+        if selects.is_empty() {
+            return Ok((Vec::new(), None));
+        }
+        let sql = format!(
+            "SELECT * FROM ({}) ORDER BY ordinal ASC LIMIT {limit} FORMAT JSONEachRow",
+            selects.join(" UNION ALL "),
+        );
+        let events = self
+            .query(&sql)
+            .await?
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str::<HistoricalRow>(line).map_err(|error| error.to_string()))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(row_to_event)
+            .collect::<Vec<_>>();
+        let next = events.last().map(|event| HistoricalCursor {
+            ordinal: event.arrival_sequence,
+            sip_timestamp_us: event.sip_timestamp_us,
+            ticker: event.ticker.clone(),
+        });
+        Ok((events, next))
+    }
+
     async fn fetch_ordered(
         &self,
         window: &EventWindow,
@@ -2657,6 +2728,28 @@ impl HistoricalEventSource {
             self.archive_execution_clock_revision(window, &plan).await?;
         }
         let limit = limit.clamp(1, 100_000);
+        // Scalar strategy-frame builds should follow the archive's physical
+        // ticker/ordinal key. A timestamp-ordered scan reads an entire market
+        // partition to recover one symbol and can exceed ClickHouse's bounded
+        // query memory even for a tiny wall-clock window. The continuity table
+        // supplies certified exact ordinal bounds; SIP timestamps retain the
+        // requested causal sub-window.
+        if !descending
+            && !require_archive_execution_clock
+            && window.tickers.len() == 1
+            && plan.segments.iter().all(|segment| {
+                matches!(segment.tier, MarketSourceTier::Archive | MarketSourceTier::ClosedMarket)
+            })
+        {
+            return self
+                .fetch_single_ticker_ordinal_archive_page(
+                    window,
+                    cursor,
+                    limit,
+                    event_type_filter,
+                )
+                .await;
+        }
         // Large single-day archive populations benefit from a physical index.
         // Other source/clock/direction contracts retain their existing reader.
         if !descending && !require_archive_execution_clock && self.config.archive_clock_policy == "canonical_sip"
