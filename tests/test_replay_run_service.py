@@ -2009,6 +2009,96 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(controller._prior_close_excluded_tickers, {"HIGH"})
         self.assertEqual(controller._preparation_total_units, 2)
 
+    async def test_strategy_350_ignores_missing_persisted_level_book_before_frames(self):
+        configuration = approved_configuration()
+        configuration["payload"]["signal_activation"] = {
+            "signal_streams": [{"enabled": True, "occurrence_source": "qmd_squeeze_episode"}]
+        }
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 19), start_time=time(4), end_time=time(4, 5),
+            tickers=("READY", "MISSING"), configuration_revision=configuration,
+            mode=RunMode.BACKTEST,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            controller._strategy = MagicMock()
+            controller._strategy.assignments.return_value = [
+                MagicMock(ticker=ticker, parameters={"momentum_successor": "strategy-349-v27"})
+                for ticker in ("READY", "MISSING")
+            ]
+            controller._strategy_registration = MagicMock()
+            controller._strategy_registration.timeframe_resolver.return_value = {"1s", "5s"}
+            controller._historical_external_signal_events = [
+                MagicMock(ticker="READY"), MagicMock(ticker="MISSING")
+            ]
+
+            async def bundle(**kwargs):
+                for timeframe in kwargs["timeframes"]:
+                    kwargs["authority_sink"](f"derived:READY:{timeframe}", {})
+
+            with patch(
+                "src.backend.qmd_gateway_client.qmd_history_post_json",
+                return_value={
+                    "authority": "qmd_certified_persisted_structure_checkpoint",
+                    "checkpoint_set_id": "v18-test", "algorithm_version": 18,
+                    "as_of": definition.session_start.isoformat(),
+                    "available": ["READY"], "missing": ["MISSING"],
+                },
+            ), patch(
+                "src.backend.replay_run_service.qmd_historical_source_revision",
+                return_value={
+                    "token": "source", "source_plan_hash": "plan",
+                    "complete_for_history": True, "request_complete": True,
+                },
+            ), patch(
+                "src.backend.replay_run_service._stream_historical_derived_frame_bundle",
+                side_effect=bundle,
+            ) as bundled:
+                await controller._load_strategy_frames()
+
+        bundled.assert_awaited_once()
+        self.assertEqual(bundled.call_args.kwargs["ticker"], "READY")
+        self.assertEqual(controller._missing_level_book_tickers, {"MISSING"})
+        self.assertEqual(controller._preparation_total_units, 2)
+        self.assertEqual(controller._preparation_completed_units, 2)
+        self.assertEqual(
+            controller._data_authority["strategy_350_level_book_admission"]["ignored_tickers"],
+            ["MISSING"],
+        )
+
+    async def test_strategy_350_all_missing_books_skips_frame_fetch(self):
+        configuration = approved_configuration()
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 19), start_time=time(4), end_time=time(4, 5),
+            tickers=("ABCL",), configuration_revision=configuration, mode=RunMode.BACKTEST,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            controller._strategy = MagicMock()
+            controller._strategy.assignments.return_value = [
+                MagicMock(ticker="ABCL", parameters={"momentum_successor": "strategy-349-v27"})
+            ]
+            controller._strategy_registration = MagicMock()
+            controller._strategy_registration.timeframe_resolver.return_value = {"100ms", "1s"}
+            with patch(
+                "src.backend.qmd_gateway_client.qmd_history_post_json",
+                return_value={
+                    "authority": "qmd_certified_persisted_structure_checkpoint",
+                    "checkpoint_set_id": "v18-test", "algorithm_version": 18,
+                    "as_of": definition.session_start.isoformat(),
+                    "available": [], "missing": ["ABCL"],
+                },
+            ), patch(
+                "src.backend.replay_run_service.qmd_historical_source_revision"
+            ) as revision, patch(
+                "src.backend.replay_run_service._stream_historical_derived_frame_bundle",
+                new_callable=AsyncMock,
+            ) as bundled:
+                self.assertEqual(await controller._load_strategy_frames(), [])
+            revision.assert_not_called()
+            bundled.assert_not_awaited()
+            self.assertEqual(controller._missing_level_book_tickers, {"ABCL"})
+
     async def test_structural_frames_use_completed_bars_and_not_legacy_structure_or_scanner(self):
         configuration = approved_configuration()
         configuration["payload"]["strategy"]["parameters"]["structural_recovery_contract"] = True

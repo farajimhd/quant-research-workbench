@@ -37,7 +37,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use qmd_core::bars::is_supported_timeframe;
 use qmd_core::capability_catalog::{computation_capability_catalog, ComputationCapability};
 use qmd_core::compact_event::LiveCompactEvent;
@@ -89,6 +89,12 @@ struct IndicatorWarmupRequest {
     session_start: DateTime<Utc>,
     ticker: String,
     timeframe: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PersistedStructureAvailabilityRequest {
+    as_of: DateTime<Utc>,
+    tickers: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -314,6 +320,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/materialize/indicator-warmup",
             post(materialize_indicator_warmup),
+        )
+        .route(
+            "/availability/persisted-structure-books",
+            post(persisted_structure_books_available),
         )
         .route(
             "/materialize/generic-structure-snapshot",
@@ -1060,6 +1070,50 @@ async fn tradable_universe(
         source: "q_live.feature_tradable_universe_v1:is_tradable",
         tickers,
     }))
+}
+
+async fn persisted_structure_books_available(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<PersistedStructureAvailabilityRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if request.tickers.is_empty() || request.tickers.len() > 25_000 {
+        return Err(bad_request("persisted structure availability requires 1..25000 tickers".to_string()));
+    }
+    let mut tickers = request.tickers;
+    for ticker in &mut tickers {
+        *ticker = ticker.trim().to_ascii_uppercase();
+        if ticker.is_empty() || ticker.len() > 32 || !ticker.bytes().all(|byte|
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')) {
+            return Err(bad_request("invalid persisted structure availability ticker".to_string()));
+        }
+    }
+    tickers.sort();
+    tickers.dedup();
+    let source = state.source.clone();
+    let as_of = request.as_of;
+    let mut checks = futures_util::stream::iter(tickers.into_iter().map(|ticker| {
+        let source = source.clone();
+        async move {
+            let available = source.persisted_structure_checkpoint_before(&ticker, as_of).await?.is_some();
+            Ok::<_, String>((ticker, available))
+        }
+    })).buffer_unordered(4);
+    let mut available = Vec::new();
+    let mut missing = Vec::new();
+    while let Some(check) = checks.next().await {
+        let (ticker, found) = check.map_err(service_error)?;
+        if found { available.push(ticker); } else { missing.push(ticker); }
+    }
+    available.sort();
+    missing.sort();
+    Ok(Json(json!({
+        "authority": "qmd_certified_persisted_structure_checkpoint",
+        "checkpoint_set_id": state.config.structure_checkpoint_set_id,
+        "algorithm_version": qmd_core::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        "as_of": as_of,
+        "available": available,
+        "missing": missing,
+    })))
 }
 
 async fn materialize_indicator_warmup(

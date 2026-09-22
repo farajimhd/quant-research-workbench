@@ -2627,14 +2627,22 @@ class ReplayRunController:
             assignments = list(self._strategy.assignments()) if self._strategy else []
             if assignments and all(
                 assignment.ticker in getattr(self, '_prior_close_excluded_tickers', set())
+                or assignment.ticker in getattr(self, '_missing_level_book_tickers', set())
                 for assignment in assignments
             ):
                 self._runtime_inputs_ready = True
                 self._preparation_stage = 'ready'
                 self.current_time = self.definition.session_end
-                self._record_data_authority('strategy_prior_close_pruning_terminal', {
+                terminal_key = (
+                    'strategy_admission_pruning_terminal'
+                    if self._missing_level_book_tickers
+                    else 'strategy_prior_close_pruning_terminal'
+                )
+                self._record_data_authority(terminal_key, {
                     'status': 'certified_empty_execution_population',
                     'excluded_ticker_count': len(self._prior_close_excluded_tickers),
+                    **({'missing_level_book_count': len(self._missing_level_book_tickers)}
+                       if self._missing_level_book_tickers else {}),
                     'execution_started': False,
                 })
                 await self._finish('completed')
@@ -6393,6 +6401,7 @@ class ReplayRunController:
             ticker
             for ticker in tickers
             if ticker not in getattr(self, "_prior_close_excluded_tickers", set())
+            and ticker not in getattr(self, "_missing_level_book_tickers", set())
         )
         if not tickers:
             raise ValueError(
@@ -6509,6 +6518,45 @@ class ReplayRunController:
                 assignment.parameters
             )
         }
+        self._missing_level_book_tickers = set()
+        strategy_350_tickers = {
+            assignment.ticker for assignment in assignments
+            if assignment.parameters.get("momentum_successor") == "strategy-349-v27"
+            and any(ticker == assignment.ticker for ticker, _ in requests)
+        }
+        if strategy_350_tickers and self.definition.mode == RunMode.BACKTEST:
+            from .qmd_gateway_client import qmd_history_post_json
+
+            availability = await asyncio.to_thread(
+                qmd_history_post_json,
+                "/availability/persisted-structure-books",
+                {
+                    "as_of": self.definition.session_start.isoformat(),
+                    "tickers": sorted(strategy_350_tickers),
+                },
+                timeout=180,
+            )
+            available = set(availability.get("available") or ())
+            missing = set(availability.get("missing") or ())
+            if available | missing != strategy_350_tickers or available & missing:
+                raise RuntimeError("QMD persisted level-book availability is incomplete")
+            if int(availability.get("algorithm_version") or 0) != 18:
+                raise RuntimeError("QMD persisted level-book algorithm version changed")
+            self._missing_level_book_tickers = missing
+            requests = {request for request in requests if request[0] not in missing}
+            self._historical_external_signal_events = [
+                event for event in self._historical_external_signal_events
+                if event.ticker not in missing
+            ]
+            self._record_data_authority("strategy_350_level_book_admission", {
+                "authority": availability.get("authority"),
+                "checkpoint_set_id": availability.get("checkpoint_set_id"),
+                "algorithm_version": 18,
+                "as_of": availability.get("as_of"),
+                "available_tickers": sorted(available),
+                "ignored_tickers": sorted(missing),
+                "ignored_reason": "certified_persisted_v18_level_book_unavailable",
+            })
         if not requests:
             self._strategy_frame_cache_status = "not_required"
             return []

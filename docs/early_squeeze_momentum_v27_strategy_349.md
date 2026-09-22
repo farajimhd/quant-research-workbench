@@ -103,3 +103,7 @@ For Candidate 350 backtests, the prior-close gate is resolved from QMD's
 completed daily-session authority in one batch before intraday work. The gate
 is still enforced by the executor. Its forming MACD streams are prepared per
 ticker in the [strategy-frame computational funnel](backtest_strategy_frame_funnel.md).
+Before Strategy 350 frame preparation, QMD checks each admitted ticker for a
+certified, persisted v18 structural checkpoint preceding the session start.
+Tickers without one are recorded as ignored and excluded from frame, signal,
+and market-event preparation. The backtest does not create a missing level book.

@@ -2139,6 +2139,19 @@ impl HistoricalDerivedCache {
             _ => requested_timeframe.iter().cloned().collect(),
         };
         let derived_profile = matches!(&profile, CacheProfile::Derived(_) | CacheProfile::DerivedBundle(_));
+        let structure_seed = if matches!(&profile, CacheProfile::DerivedBundle(_)) {
+            let seed = self.source
+                .persisted_structure_checkpoint_before(&ticker, window.start)
+                .await?;
+            if seed.is_none() {
+                return Err(format!(
+                    "persisted v18 level book unavailable for {ticker}; ticker must be ignored"
+                ));
+            }
+            seed
+        } else {
+            structure_seed
+        };
         let structure_only = matches!(&profile, CacheProfile::Structure(_));
         // Only a cold inherited-history rebuild uses the declared SIP
         // approximation. Post-checkpoint chart advancement must use the same
@@ -2633,14 +2646,6 @@ impl HistoricalDerivedCache {
             .persisted_structure_checkpoint_before(ticker, before)
             .await?
         {
-            return Ok(Some(seed.checkpoint));
-        }
-        // The persisted structural-event book is the certified bounded
-        // fallback already used by the point-in-time structure endpoint. Use
-        // the same authority for derived bundles before considering a raw
-        // multi-month SIP rebuild; otherwise a newly actionable ticker with no
-        // daily checkpoint can stall backtest preparation for minutes.
-        if let Some(seed) = persisted_structure_book_seed(&self.source, ticker, before).await? {
             return Ok(Some(seed.checkpoint));
         }
         // A missing or algorithm-incompatible persisted checkpoint must
