@@ -2348,8 +2348,7 @@ impl HistoricalEventSource {
         // paged reader. A timestamp-ordered scan otherwise reads the whole
         // market partition for one symbol before ClickHouse can apply the
         // ticker filter, which is both slow and memory intensive.
-        if !require_archive_execution_clock
-            && window.tickers.len() == 1
+        if window.tickers.len() == 1
             && plan.segments.iter().all(|segment| {
                 matches!(segment.tier, MarketSourceTier::Archive | MarketSourceTier::ClosedMarket)
             })
@@ -2359,6 +2358,7 @@ impl HistoricalEventSource {
                     &window,
                     batch_size,
                     event_type_filter,
+                    require_archive_execution_clock,
                     sender,
                 )
                 .await;
@@ -2468,6 +2468,7 @@ impl HistoricalEventSource {
         window: &EventWindow,
         batch_size: usize,
         event_type_filter: Option<u8>,
+        require_archive_execution_clock: bool,
         sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
     ) -> Result<(), String> {
         let ticker = normalize_ticker(&window.tickers[0])?;
@@ -2491,7 +2492,11 @@ impl HistoricalEventSource {
                             self.config.table_prefix,
                             day.year()
                         ),
-                        None,
+                        require_archive_execution_clock.then_some(format!(
+                            "{}.{}",
+                            self.config.execution_clock_database,
+                            self.config.execution_clock_table,
+                        )).as_deref(),
                         &ticker,
                         range.first_ordinal,
                         range.next_ordinal,
