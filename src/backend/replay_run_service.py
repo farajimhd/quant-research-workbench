@@ -5179,20 +5179,34 @@ class ReplayRunController:
                     run_plan, event.occurrence,
                     eligible_tickers=self._historical_signal_eligible_tickers(run_plan),
                 ):
-                    self._signal_activated_tickers.add(event.ticker)
-                    self._strategy_engaged_tickers.add(event.ticker)
                     if configuration.get('strategy', {}).get('parameters', {}).get('early_squeeze_breakout_contract') == 'early-squeeze-momentum-v24':
                         from types import SimpleNamespace
-                        from src.trading_runtime.early_squeeze_momentum import freeze_gap, fresh_structure
+                        from src.trading_runtime.early_squeeze_momentum import freeze_gap, structure_rejection_reasons
                         from src.trading_runtime.early_squeeze_fast import levels
                         snapshot = await self._experimental_structure_snapshot(event.ticker, event.available_at, 'frame')
                         rows = levels(SimpleNamespace(observed_at=event.available_at, structural_support_levels=(),
                             structural_transition_levels=(), structural_resistance_levels=snapshot['unified_levels']))
-                        if not price or not fresh_structure(rows, snapshot, event.available_at.timestamp()):
-                            raise ValueError('Momentum activation requires its causal V7 snapshot and occurrence price')
+                        reasons = structure_rejection_reasons(rows, snapshot, event.available_at.timestamp())
+                        if not price:
+                            reasons.append('occurrence_price_missing_or_nonpositive')
+                        if reasons:
+                            if self._journal is None:
+                                raise RuntimeError('Activation rejection requires a durable journal')
+                            self._journal.append(run_id=self.run_id, category='strategy_decision', entity_type='signal',
+                                entity_id=str(uuid4()), event_time=event.available_at,
+                                payload=dict(ticker=event.ticker, action='wait', direction='neutral',
+                                    reason='momentum_activation_rejected: ' + ', '.join(reasons),
+                                    event_time=event.available_at.isoformat(), metadata=dict(
+                                        rejected_activation=True, rejection_reasons=reasons,
+                                        occurrence_price=event.occurrence.get('last_price'),
+                                        snapshot_as_of=snapshot.get('as_of'),
+                                        max_input_timestamp=snapshot.get('max_input_timestamp'), level_count=len(rows))))
+                            return is_new_for_run
                         market = self._candle_detector_states.setdefault(event.ticker, {}).setdefault('structural_recovery', {})
                         market['momentum_activation'] = dict(activated_at=event.available_at.timestamp(),
                             frozen_gap=freeze_gap(rows, price, event.available_at.timestamp()))
+                    self._signal_activated_tickers.add(event.ticker)
+                    self._strategy_engaged_tickers.add(event.ticker)
             elif event.occurrence.get("squeeze_expires_at"):
                 self._source_native_signal_episodes[event.ticker] = event
                 self._refresh_source_native_signal_activation(

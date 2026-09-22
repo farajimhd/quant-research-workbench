@@ -17,11 +17,24 @@ CONTRACT = 'early-squeeze-momentum-v24'
 
 
 def fresh_structure(rows, evidence, now, maximum_age=1.):
+    return not structure_rejection_reasons(rows, evidence, now, maximum_age)
+
+
+def structure_rejection_reasons(rows, evidence, now, maximum_age=1.):
     cutoff, last = evidence.get('as_of'), evidence.get('max_input_timestamp')
-    return bool(rows and C.finite(cutoff, last) and 0 < last <= cutoff <= now
-        and now-cutoff <= maximum_age
-        and all(r.get('input_policy') == V.POLICY and r.get('seed_input_policy') == V.POLICY
-                for r in rows.values()))
+    reasons = []
+    if not rows:
+        reasons.append('v7_levels_missing')
+    if not C.finite(cutoff, last):
+        reasons.append('v7_clock_missing_or_nonfinite')
+    else:
+        if not 0 < last <= cutoff <= now:
+            reasons.append('v7_clock_not_causal')
+        if now-cutoff > maximum_age:
+            reasons.append('v7_snapshot_stale')
+    if any(r.get('input_policy') != V.POLICY or r.get('seed_input_policy') != V.POLICY for r in rows.values()):
+        reasons.append('v7_input_policy_mismatch')
+    return reasons
 
 
 def freeze_gap(rows, price, now):

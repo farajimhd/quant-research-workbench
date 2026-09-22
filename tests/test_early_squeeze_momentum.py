@@ -275,7 +275,8 @@ def test_replay_cutoff_evaluates_without_inventing_market_event():
     assert run._evaluate_strategy_observation.call_count == 1
 
 
-def test_replay_freezes_activation_snapshot_once_even_before_requested_start(tmp_path):
+@pytest.mark.parametrize('invalid', ['price', 'empty', 'stale', 'future', 'policy'])
+def test_replay_freezes_activation_snapshot_once_even_before_requested_start(tmp_path, invalid):
     import asyncio
     from datetime import time
     from unittest.mock import AsyncMock
@@ -299,12 +300,43 @@ def test_replay_freezes_activation_snapshot_once_even_before_requested_start(tmp
         occurrence=dict(ticker=assignment.ticker, signal_stream_id='price-squeeze-early', last_price=observation.price,
             effective_at=observation.observed_at.isoformat()),
         source_values={M.E.SIGNAL:dict(value=True, observed_at=observation.observed_at.isoformat())})
+    from src.trading_runtime.journal import TradingJournal
+    run._journal = TradingJournal(tmp_path / 'rejections.sqlite3')
+    valid_snapshot = deepcopy(run._experimental_structure_snapshot.return_value)
+    bad_event = event
+    if invalid == 'price':
+        bad_event = replace(event, occurrence={**event.occurrence, 'last_price': None})
+        reason = 'occurrence_price_missing_or_nonpositive'
+    elif invalid == 'empty':
+        run._experimental_structure_snapshot.return_value['unified_levels'] = []
+        reason = 'v7_levels_missing'
+    elif invalid == 'stale':
+        run._experimental_structure_snapshot.return_value.update(as_of=observation.observed_at.timestamp()-2,
+            max_input_timestamp=observation.observed_at.timestamp()-2)
+        reason = 'v7_snapshot_stale'
+    elif invalid == 'future':
+        run._experimental_structure_snapshot.return_value['max_input_timestamp'] = observation.observed_at.timestamp()+1
+        reason = 'v7_clock_not_causal'
+    else:
+        run._experimental_structure_snapshot.return_value['unified_levels'] = [
+            dict(row, input_policy='invalid') for row in valid_snapshot['unified_levels']]
+        reason = 'v7_input_policy_mismatch'
+    asyncio.run(run._apply_external_signal_event(bad_event))
+    assert assignment.ticker not in run._signal_activated_tickers
+    assert assignment.ticker not in run._strategy_engaged_tickers
+    record = run._journal._fetchone("SELECT payload_json FROM journal WHERE category='strategy_decision'")
+    import json
+    assert reason in json.loads(record['payload_json'])['metadata']['rejection_reasons']
+    run._experimental_structure_snapshot.return_value = valid_snapshot
+    run._experimental_structure_snapshot.reset_mock()
     asyncio.run(run._apply_external_signal_event(event))
     frozen = deepcopy(run._candle_detector_states[assignment.ticker]['structural_recovery']['momentum_activation'])
     asyncio.run(run._apply_external_signal_event(replace(event, occurrence={**event.occurrence, 'last_price':99.})))
     assert run._experimental_structure_snapshot.await_count == 1
     assert frozen['frozen_gap']['average'] > 0
     assert frozen == run._candle_detector_states[assignment.ticker]['structural_recovery']['momentum_activation']
+    assert assignment.ticker in run._signal_activated_tickers
+    run._journal.close()
 
 
 @pytest.mark.parametrize('role,reason', [('profit_target', 'momentum_target_10x'),
