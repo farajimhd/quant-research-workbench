@@ -2350,7 +2350,12 @@ impl HistoricalEventSource {
         // ticker filter, which is both slow and memory intensive.
         if window.tickers.len() == 1
             && plan.segments.iter().all(|segment| {
-                matches!(segment.tier, MarketSourceTier::Archive | MarketSourceTier::ClosedMarket)
+                matches!(
+                    segment.tier,
+                    MarketSourceTier::Archive
+                        | MarketSourceTier::ClosedMarket
+                        | MarketSourceTier::Gap
+                )
             })
         {
             return self
