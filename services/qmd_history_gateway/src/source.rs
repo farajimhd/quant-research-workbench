@@ -2343,6 +2343,26 @@ impl HistoricalEventSource {
             self.archive_execution_clock_revision(&window, &plan)
                 .await?;
         }
+        // Scalar archive streams (notably the exact pre-entry indicator
+        // prefix) must follow the physical ticker/ordinal key just like the
+        // paged reader. A timestamp-ordered scan otherwise reads the whole
+        // market partition for one symbol before ClickHouse can apply the
+        // ticker filter, which is both slow and memory intensive.
+        if !require_archive_execution_clock
+            && window.tickers.len() == 1
+            && plan.segments.iter().all(|segment| {
+                matches!(segment.tier, MarketSourceTier::Archive | MarketSourceTier::ClosedMarket)
+            })
+        {
+            return self
+                .stream_single_ticker_ordinal_archive_window(
+                    &window,
+                    batch_size,
+                    event_type_filter,
+                    sender,
+                )
+                .await;
+        }
         let mut ticker_filter = ticker_filter(&window.tickers)?;
         if let Some(event_type) = event_type_filter.filter(|value| *value <= 1) {
             ticker_filter.push_str(&format!(
@@ -2439,6 +2459,53 @@ impl HistoricalEventSource {
                     .await
                     .map_err(|_| "historical stream consumer closed".to_string())?;
             }
+        }
+        Ok(())
+    }
+
+    async fn stream_single_ticker_ordinal_archive_window(
+        &self,
+        window: &EventWindow,
+        batch_size: usize,
+        event_type_filter: Option<u8>,
+        sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
+    ) -> Result<(), String> {
+        let ticker = normalize_ticker(&window.tickers[0])?;
+        let mut day = window.start.date_naive();
+        let last_day = (window.end - chrono::Duration::microseconds(1)).date_naive();
+        while day <= last_day {
+            if sender.is_closed() {
+                return Ok(());
+            }
+            if let Some(range) = self
+                .canonical_session_ordinal_ranges(day, std::slice::from_ref(&ticker))
+                .await?
+                .into_iter()
+                .find(|range| range.ticker.eq_ignore_ascii_case(&ticker))
+            {
+                if range.first_ordinal < range.next_ordinal {
+                    let select = ordinal_event_select_filtered(
+                        &format!(
+                            "{}.{}{}",
+                            self.config.clickhouse_database,
+                            self.config.table_prefix,
+                            day.year()
+                        ),
+                        None,
+                        &ticker,
+                        range.first_ordinal,
+                        range.next_ordinal,
+                        event_type_filter,
+                    );
+                    let sql = format!(
+                        "SELECT * FROM ({select}) WHERE sip_timestamp_us >= {} AND sip_timestamp_us < {} ORDER BY ordinal ASC FORMAT TabSeparated",
+                        window.start.timestamp_micros(),
+                        window.end.timestamp_micros(),
+                    );
+                    self.stream_query_rows(sql, batch_size, sender.clone()).await?;
+                }
+            }
+            day = day.succ_opt().ok_or("historical ordinal day overflow")?;
         }
         Ok(())
     }
