@@ -8,7 +8,7 @@ use std::time::Duration;
 mod boolean_products;
 pub use boolean_products::{
     boolean_publication_scope, prepare_boolean_product, prepare_calculated_boolean_product,
-    DenseBatch, Prepared as PreparedBooleanProduct,
+    prepare_strategy350_signal, DenseBatch, Prepared as PreparedBooleanProduct,
 };
 mod compact_bars;
 mod coverage_index;

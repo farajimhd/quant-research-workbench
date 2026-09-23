@@ -206,7 +206,7 @@ mod tests {
         assert!(deps.contains(&Dependency::Quotes));
         assert!(deps.contains(&Dependency::HistoricalLevelBook(LEVEL_BOOK.into())));
         assert!(deps.contains(&Dependency::Indicator("forming_macd_30s".into())));
-        assert_eq!(plan_candidates(vec![], &[], 100).unwrap().is_none(), true);
+        assert!(plan_candidates(vec![], &[], 100).unwrap().is_none());
     }
     #[test]
     fn missing_or_duplicate_ticker_authority_fails() {

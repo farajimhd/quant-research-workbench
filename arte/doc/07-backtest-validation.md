@@ -81,8 +81,27 @@ explicitly timed evaluation result per due boundary, binds it to a complete
 100 ms bar source, carries state across non-evaluation buckets, and hands the
 result to the sparse ClickHouse publication contract. An omitted or shifted
 evaluation fails. Unknown remains distinct from false. This is calculation
-output plumbing; Strategy 350 signal and Watchlist formulas are not yet ported,
-and the ClickHouse schema and connected publication have not been exercised.
+output plumbing. The first Strategy 350 historical signal formula is now ported:
+a non-empty completed 100 ms bar must rise at least the pinned basis-point
+threshold from the prior non-empty bar while trade count and share volume both
+increase. The first occurrence activates the session-watch state through the
+remainder of the certified session. The rule is computed with exact integer
+comparisons, and its source-algorithm hash is part of the calculation identity.
+This does not implement all live episode roles, Watchlist formulas, or connected
+ClickHouse publication. The new signal's historical occurrence time is the
+completed bar end; it is not represented as a live receipt timestamp. Source
+parity remains open because the existing live gateway stamps its occurrence
+from the last trade event inside the bar.
+
+The initial formula was inspected from the parent repository at ARTE port time.
+This is provenance only, not a runtime dependency: `services/qmd-gateway/src/signal_stream.rs`
+SHA-256 `bc268dd23900cd3ac255d92c5fd342ac6b630fb09344fe2ba34a79eabac838b8`
+(last source commit `e9943e6580c4b2aacc6b40ef74cdf497dfe46341`), and
+`src/backend/trading_configuration_service.py` SHA-256
+`aba08317de64470f3eafb17c8c9776a427078d6807433440fbc6fa76159289a9`
+(last source commit `e5dc302163d026df85093911b048193c4232d4ae`).
+ARTE runs from its own Rust source and a pinned formula configuration after
+extraction; it does not load either origin file.
 
 The first market-time tape borrows values from complete 100 ms columnar batches.
 It dispatches only nonempty buckets, sorts equal-time ticker events by instrument,

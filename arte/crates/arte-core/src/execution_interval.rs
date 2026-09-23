@@ -114,12 +114,9 @@ mod tests {
         assert!(ExecutionInterval::Fixed(100_000_000).validate().is_ok());
         assert!(ExecutionInterval::Fixed(150_000_000).validate().is_err());
         assert!(ExecutionInterval::Fixed(0).validate().is_err());
-        assert!(
-            ExecutionInterval::Fixed(100_000_000)
-                .due(100_000_000, None, None)
-                .unwrap()
-                == false
-        );
+        assert!(!ExecutionInterval::Fixed(100_000_000)
+            .due(100_000_000, None, None)
+            .unwrap());
         assert!(ExecutionInterval::Fixed(100_000_000)
             .due(100_000_000, Some(100_000_000), None)
             .unwrap());

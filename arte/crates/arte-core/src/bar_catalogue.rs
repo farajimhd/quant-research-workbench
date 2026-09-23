@@ -506,10 +506,11 @@ mod tests {
             &mut one.low,
             &mut one.close,
             &mut one.volume,
-        ] {
-            if let Some(v) = values {
-                v.resize(10, 0);
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            values.resize(10, 0);
         }
         one.trades.as_mut().unwrap().resize(10, 0);
         readback.observe(one.clone()).unwrap();
@@ -526,10 +527,11 @@ mod tests {
             &mut two.low,
             &mut two.close,
             &mut two.volume,
-        ] {
-            if let Some(v) = values {
-                v.resize(10, 0);
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            values.resize(10, 0);
         }
         two.trades.as_mut().unwrap().resize(10, 0);
         let mut first = two.clone();

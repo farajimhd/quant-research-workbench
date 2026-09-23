@@ -59,8 +59,12 @@ not applied, no database was opened, and connected writer/readback behavior is
 unverified. Historical signal/Watchlist algorithms remain unimplemented.
 The fixed-cadence Boolean producer now validates a complete vectorized result
 grid against its certified 100 ms bar source. It preserves unknown versus
-false and enters the sparse publication preparation path. This does not supply
-any Strategy 350 signal formula or prove connected ClickHouse publication.
+false and enters the sparse publication preparation path. The first Strategy
+350 Early Squeeze historical formula and first-occurrence session latch now
+feed that path. The formula uses exact close-ratio, trade-count, and volume
+comparisons against the prior non-empty 100 ms bar. It does not supply full live
+episode semantics, Watchlist formulas, a pinned effective Strategy 350
+configuration, source parity, or connected ClickHouse publication.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service

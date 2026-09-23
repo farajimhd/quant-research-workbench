@@ -163,6 +163,32 @@ pub fn prepare_calculated_boolean_product(
     )?;
     prepare_boolean_product(bar, request, dense, published_at_ns)
 }
+/// Prepare Strategy 350's first-occurrence session-watch signal from one
+/// certified full-session bar source. An occurrence is not a per-bar impulse
+/// membership test: activation stays true after the first qualifying impulse.
+pub fn prepare_strategy350_signal(
+    bar: &BarComplete,
+    request: Request,
+    config: arte_core::strategy350_signal::Config,
+    session_start_ns: u64,
+    published_at_ns: u64,
+) -> Result<(Prepared, Option<u64>)> {
+    if !matches!(
+        request.definition.kind,
+        arte_core::execution_interval::ExecutableKind::SignalStream
+    ) || request.definition.id != arte_core::strategy350_catalogue::SIGNAL
+        || request.definition.interval != ExecutionInterval::Fixed(BASE)
+        || request.definition.implementation_hash != config.hash()?
+    {
+        return Err(Error::Conflict(
+            "Strategy 350 signal definition differs".into(),
+        ));
+    }
+    let projection = arte_core::strategy350_signal::project(bar, config, session_start_ns)?;
+    let prepared =
+        prepare_calculated_boolean_product(bar, request, &projection.evaluations, published_at_ns)?;
+    Ok((prepared, projection.first_occurrence_end_ns))
+}
 pub fn boolean_publication_scope(request: &Request) -> Result<String> {
     arte_core::content_hash(&("arte.boolean-publication.v1", request.hash()?))
 }
@@ -668,7 +694,7 @@ mod tests {
             timeframe_ns: BASE,
             source_generation: "a".repeat(64),
             calculation_hash: "b".repeat(64),
-            columns: BTreeSet::from([Column::Close]),
+            columns: BTreeSet::from([Column::Close, Column::Volume, Column::Trades]),
             maximum_rows: 2,
         };
         let coverage = BarCoverage {
@@ -702,9 +728,9 @@ mod tests {
             high: None,
             low: None,
             close: Some(vec![1000, 1100]),
-            volume: None,
+            volume: Some(vec![100, 101]),
             notional: None,
-            trades: None,
+            trades: Some(vec![2, 3]),
         })
         .unwrap();
         read.finish().unwrap()
@@ -787,5 +813,45 @@ mod tests {
             known.coverage().transition_hash
         );
         assert!(prepare_calculated_boolean_product(&source, r, &[], 2_000_000_000).is_err());
+    }
+    #[test]
+    fn first_squeeze_occurrence_prepares_latched_session_signal() {
+        let source = bar();
+        let config = arte_core::strategy350_signal::Config {
+            minimum_move_bps: 5,
+            source_algorithm_hash: "a".repeat(64),
+        };
+        let mut request = request();
+        request.interval = source.request().interval;
+        request.source_bar_request_hash = source.request().hash().unwrap();
+        request.source_bar_coverage_hash = source.coverage_hash().into();
+        request.maximum_rows = 2;
+        request.definition.kind = ExecutableKind::SignalStream;
+        request.definition.id = arte_core::strategy350_catalogue::SIGNAL.into();
+        request.definition.interval = ExecutionInterval::Fixed(BASE);
+        request.definition.implementation_hash = config.hash().unwrap();
+        let (prepared, first) = prepare_strategy350_signal(
+            &source,
+            request.clone(),
+            config.clone(),
+            1_000_000_000,
+            2_000_000_000,
+        )
+        .unwrap();
+        assert_eq!(first, Some(1_200_000_000));
+        assert_eq!(prepared.transition_count(), 2);
+        assert!(prepare_strategy350_signal(
+            &source,
+            request.clone(),
+            config.clone(),
+            1_100_000_000,
+            2_000_000_000,
+        )
+        .is_err());
+        request.definition.interval = ExecutionInterval::Fixed(200_000_000);
+        assert!(
+            prepare_strategy350_signal(&source, request, config, 1_000_000_000, 2_000_000_000,)
+                .is_err()
+        );
     }
 }
