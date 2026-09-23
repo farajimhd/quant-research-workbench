@@ -13,6 +13,9 @@ port. Startup dependency definitions and plan nodes now carry explicit cadence;
 the plan identity pins it for signal streams, Watchlists, and other dependencies.
 Scheduler dispatch is not wired to this contract yet. A runnable system must
 reject any executable definition without its own validated interval.
+The completed-bar tape can now emit every 100 ms boundary or only aligned
+fixed-interval boundaries, including empty buckets. It refuses to represent
+event cadence using bars. This is backtest clock plumbing, not full evaluation.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service

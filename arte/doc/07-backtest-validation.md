@@ -57,6 +57,12 @@ It dispatches only nonempty buckets, sorts equal-time ticker events by instrumen
 and rejects overlapping products for one instrument. Empty buckets remain in
 the verified batch arrays for rolling calculations and clock progression. The
 tape alone does not evaluate Strategy 350 or simulate orders.
+The tape now has three explicit traversals: sparse nonempty candidate buckets,
+every completed 100 ms boundary, and completed aligned fixed-interval
+boundaries. Empty boundaries carry clock progress but no fabricated trade or
+price. An event-cadence computation cannot run from bars alone; it requires
+verified event input. The fixed-boundary traversal does not yet invoke scanner,
+signal, Watchlist, or strategy evaluators.
 
 Historical V7 construction may consume certified completed bars and publish
 versioned level books and next-session seeds. Live V7 consumes the streaming

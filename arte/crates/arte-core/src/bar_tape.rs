@@ -1,6 +1,7 @@
 //! Deterministic sparse decision traversal over pinned dense calculation bars.
 use crate::{
     bar_catalogue::{Batch, Complete},
+    execution_interval::ExecutionInterval,
     Error, Result,
 };
 use std::{
@@ -28,15 +29,39 @@ pub struct View<'a> {
     pub end_ns: u64,
     pub batch: &'a Batch,
     pub slot: usize,
+    pub present: bool,
 }
 pub struct Tape {
     products: Vec<Complete>,
     cursors: Vec<Cursor>,
     ready: BinaryHeap<Reverse<Head>>,
     last_end_ns: Option<u64>,
+    include_empty: bool,
+    fixed_interval_ns: Option<u64>,
 }
 impl Tape {
     pub fn new(products: Vec<Complete>) -> Result<Self> {
+        Self::with_mode(products, false, None)
+    }
+    /// Dense completed-bar clock for fixed-interval computations. Empty bars
+    /// carry time but never fabricate a trade, price, or market signal.
+    pub fn new_dense(products: Vec<Complete>) -> Result<Self> {
+        Self::with_mode(products, true, None)
+    }
+    /// Completed fixed-interval boundaries only. Event cadence cannot be
+    /// reconstructed from bars and must use the verified event tape instead.
+    pub fn new_fixed(products: Vec<Complete>, interval: ExecutionInterval) -> Result<Self> {
+        interval.validate()?;
+        let ExecutionInterval::Fixed(ns) = interval else {
+            return Err(Error::Invalid("event cadence requires event input".into()));
+        };
+        Self::with_mode(products, true, Some(ns))
+    }
+    fn with_mode(
+        products: Vec<Complete>,
+        include_empty: bool,
+        fixed_interval_ns: Option<u64>,
+    ) -> Result<Self> {
         if products.is_empty() || products.len() > 100_000 {
             return Err(Error::Invalid("bar tape product count".into()));
         }
@@ -65,6 +90,8 @@ impl Tape {
             cursors: vec![Cursor { batch: 0, slot: 0 }; count],
             ready: BinaryHeap::new(),
             last_end_ns: None,
+            include_empty,
+            fixed_interval_ns,
         };
         for product in 0..count {
             tape.push_next(product)?;
@@ -80,11 +107,17 @@ impl Tape {
             while cursor.slot < batch.count as usize {
                 let slot = cursor.slot;
                 cursor.slot += 1;
-                if batch.present[slot] {
+                if self.include_empty || batch.present[slot] {
                     let end_ns = batch
                         .first_start_ns
                         .checked_add((slot as u64 + 1) * request.timeframe_ns)
                         .ok_or_else(|| Error::Capacity("bar tape clock".into()))?;
+                    if self
+                        .fixed_interval_ns
+                        .is_some_and(|ns| !end_ns.is_multiple_of(ns))
+                    {
+                        continue;
+                    }
                     self.ready.push(Reverse(Head {
                         end_ns,
                         instrument: batch.instrument,
@@ -102,6 +135,18 @@ impl Tape {
     /// Market time and instrument break ties. The returned view borrows the
     /// original columnar batch; callers must finish it before advancing again.
     pub fn next_present(&mut self) -> Result<Option<View<'_>>> {
+        if self.include_empty {
+            return Err(Error::Conflict("dense tape requires next_boundary".into()));
+        }
+        self.next_view()
+    }
+    pub fn next_boundary(&mut self) -> Result<Option<View<'_>>> {
+        if !self.include_empty {
+            return Err(Error::Conflict("sparse tape requires next_present".into()));
+        }
+        self.next_view()
+    }
+    fn next_view(&mut self) -> Result<Option<View<'_>>> {
         let Some(Reverse(head)) = self.ready.pop() else {
             return Ok(None);
         };
@@ -125,6 +170,7 @@ impl Tape {
             end_ns: head.end_ns,
             batch,
             slot,
+            present: batch.present[slot],
         }))
     }
     pub fn is_done(&self) -> bool {
@@ -228,6 +274,40 @@ mod tests {
             product(10, vec![true, false, false]),
             product(10, vec![false, true, false])
         ])
+        .is_err());
+    }
+    #[test]
+    fn dense_tape_retains_empty_completed_boundaries_without_prices() {
+        let mut tape = Tape::new_dense(vec![product(20, vec![false, true, false])]).unwrap();
+        assert!(tape.next_present().is_err());
+        let mut seen = Vec::new();
+        while let Some(view) = tape.next_boundary().unwrap() {
+            seen.push((view.end_ns, view.present));
+        }
+        assert_eq!(
+            seen,
+            vec![
+                (1_100_000_000, false),
+                (1_200_000_000, true),
+                (1_300_000_000, false)
+            ]
+        );
+    }
+    #[test]
+    fn fixed_cadence_dispatches_completed_empty_boundary() {
+        let mut tape = Tape::new_fixed(
+            vec![product(10, vec![true, false, true])],
+            ExecutionInterval::Fixed(200_000_000),
+        )
+        .unwrap();
+        let boundary = tape.next_boundary().unwrap().unwrap();
+        assert_eq!(boundary.end_ns, 1_200_000_000);
+        assert!(!boundary.present);
+        assert!(tape.next_boundary().unwrap().is_none());
+        assert!(Tape::new_fixed(
+            vec![product(10, vec![true, false, true])],
+            ExecutionInterval::Events
+        )
         .is_err());
     }
 }
