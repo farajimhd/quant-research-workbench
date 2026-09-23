@@ -48,6 +48,16 @@ reuse an old proof. The playback controller exposes the cursor only through
 its decision view, after fill publication and boundary dispatch; it rejects
 runs without a Strategy 350 consumer. The full Strategy 350 evaluator and
 account fan-out are still not connected.
+The Strategy 350 four-timeframe forming-MACD purchase predicate now has one
+Rust state for 1s, 5s, 10s, and 30s completed bars. It uses the shared MACD
+EMA primitive. A selected trade previews all four from the last completed
+states without mutating them; missing, future, or stale frames block the gate.
+The rule declares event execution cadence. Offline tests cover the four-frame
+requirement, non-compounding previews, stale input, and invalid clocks. It is
+not yet wired to live/backtest completed-bar producers or the account evaluator.
+Numerical parity with the current Python/QMD MACD initialization is unproven;
+activation must remain blocked until that comparison and an effective
+configuration pin are complete.
 The plan can now test a run-pinned replay event against those ranges by SIP
 time with a half-open boundary. Strategy 350 account decisions bind the plan
 identity in historical mode and a sealed selected bucket in live mode.
