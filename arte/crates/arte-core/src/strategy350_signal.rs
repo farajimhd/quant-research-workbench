@@ -146,6 +146,18 @@ impl State {
     pub fn first_occurrence_end_ns(&self) -> Option<u64> {
         self.first_occurrence_end_ns
     }
+    pub fn scope_hash(&self) -> &str {
+        &self.scope_hash
+    }
+    pub fn next_bucket_ns(&self) -> u64 {
+        self.next_bucket_ns
+    }
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+    pub fn last_available_at_ns(&self) -> Option<u64> {
+        self.last_available_at_ns
+    }
     pub fn first_occurrence(&self) -> Option<Occurrence> {
         self.first_occurrence_end_ns
             .map(|event_time_ns| Occurrence {
@@ -285,6 +297,8 @@ impl State {
             || saved
                 .previous
                 .is_some_and(|p| p.close <= 0 || p.volume < 0 || p.trades == 0)
+            || (saved.next_bucket_ns == session_start_ns
+                && (saved.previous.is_some() || saved.first_occurrence_end_ns.is_some()))
             || saved.first_occurrence_end_ns.is_some_and(|at| {
                 at <= session_start_ns
                     || at > saved.next_bucket_ns

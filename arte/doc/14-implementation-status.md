@@ -70,9 +70,12 @@ The same Early Squeeze state now has separate historical and live modes. Live
 observation requires a genuine availability clock; historical projection never
 substitutes one. The bounded immutable checkpoint pins its source scope and
 formula at state creation, verifies its content hash, and rejects clock or
-geometry mismatch on restore. It is not yet published to ClickHouse or wired
-to the MDE live actor. Continuous empty-bucket advancement and feed coverage
-remain required for live use.
+geometry mismatch on restore. Migration 023 and a ClickHouse adapter now
+provide immutable scoped signal-checkpoint publication, exact readback, and
+latest-as-of restore. In-process unit tests cover ambiguous insert retry,
+causal latest selection, and conflicting slots. The migration was not applied
+and no database was opened. The MDE live actor, continuous empty-bucket
+advancement, and feed coverage remain required for live use.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service

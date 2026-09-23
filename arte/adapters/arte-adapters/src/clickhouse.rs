@@ -23,6 +23,7 @@ mod references;
 mod rejections;
 mod run_checkpoints;
 mod run_manifests;
+mod signal_checkpoints;
 mod startup;
 mod trade_policies;
 pub use execution_checkpoints::{execution_checkpoint_scope, ExecutionRecovery};
@@ -40,6 +41,7 @@ pub(crate) use run_checkpoints::tests::publication as checkpoint_publication_tes
 #[cfg(test)]
 pub(crate) use run_checkpoints::tests::roundtrip as checkpoint_roundtrip_test;
 pub use run_manifests::run_manifest_scope;
+pub use signal_checkpoints::{signal_checkpoint_scope, Recovery as SignalRecovery};
 pub use startup::backtest_startup_scope;
 #[cfg(test)]
 pub(crate) use startup::create_test as startup_session_test;
