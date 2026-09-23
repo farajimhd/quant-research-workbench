@@ -33,9 +33,13 @@ The publisher re-verifies the source certificate, requires acceptance and an
 ownership lease, compares each persisted page before making coverage visible,
 and verifies the final manifest readback. Three focused adapter unit tests pass.
 Connected writer/readback behavior and compression remain untested. The
-multi-ticker catalogue planner, reference-pinned precision supply, Strategy 350
-port, and runnable bar-based backtest remain
+multi-ticker catalogue executor, scanner/rule evaluator, reference-pinned
+precision supply, Strategy 350 port, and runnable bar-based backtest remain
 unimplemented. No throughput benchmark, database connection, or service test ran.
+The first typed Strategy 350 dependency planner now separates broad bar/signal
+screening from selected-candidate trade/quote refinement. It rejects missing
+product definitions and duplicate ticker scopes. Two focused unit tests pass.
+This does not evaluate scanner rules or port Strategy 350 trading behavior.
 No backward compatibility with obsolete strategy or storage formats is required.
 
 ## Indexed bootstrap and historical gap projection

@@ -59,6 +59,9 @@ pub enum Dependency {
     Reference,
     PreviousClose,
     OfficialLuld,
+    MarketSignal(String),
+    Watchlist(String),
+    HistoricalLevelBook(String),
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Requirements {

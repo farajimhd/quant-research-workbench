@@ -45,6 +45,13 @@ bounded event/quote refinement supplies those decisions, or the bar-only run
 uses an explicitly versioned approximation and reports which decisions are
 unavailable or changed. It may not claim event-level parity from bars alone.
 
+The first typed Strategy 350 catalogue plan requests completed 100 ms bars,
+the early squeeze signal, a tradability Watchlist and reference data for
+screening. It requests raw trades and quotes only for selected candidates,
+alongside forming MACD timeframes, VWAP, prior close, LULD and historical V7
+dependencies. This is a requirement plan, not a scanner evaluator or trading
+loop. Each requested product needs a pinned catalogue definition and coverage.
+
 Historical V7 construction may consume certified completed bars and publish
 versioned level books and next-session seeds. Live V7 consumes the streaming
 market path. Both implementations must share level identity, state transitions,
