@@ -484,7 +484,7 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         initial_states: states,
         accounts,
         fill_model: crate::test_fill_model(),
-        cost_model,
+        cost_model: cost_model.clone(),
         limits: SessionLimits {
             maximum_orders: 10,
             maximum_positions: 2,
@@ -624,6 +624,87 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         restored_portfolio.snapshot("a").unwrap().budget_minor,
         10_000
     );
+    let standby = &session.controller.controllers()[1];
+    let execution_limits = crate::simulation_runtime::checkpoint::Limits {
+        maximum_bytes: 100_000,
+        maximum_orders: 10,
+        maximum_pending_fills: 100,
+        projection: arte_core::execution_positions::checkpoint::Limits {
+            positions: 2,
+            fills: 10,
+            lots_per_position: 4,
+            bytes: 50_000,
+        },
+    };
+    let execution_image = standby
+        .execution
+        .checkpoint_standby(
+            &combined,
+            &cut,
+            &standby.run,
+            &BTreeMap::new(),
+            execution_limits,
+        )
+        .unwrap();
+    let restored_execution = crate::simulation_runtime::Runtime::restore_standby_checkpoint(
+        &execution_image,
+        &execution_image.root.id,
+        &combined,
+        &cut,
+        &standby.run,
+        simulation_costs::Pinned::new(cost_model.clone(), &combined).unwrap(),
+        execution_limits,
+    )
+    .unwrap();
+    assert_eq!(
+        restored_execution
+            .checkpoint_standby(
+                &combined,
+                &cut,
+                &standby.run,
+                &BTreeMap::new(),
+                execution_limits,
+            )
+            .unwrap()
+            .root
+            .id,
+        execution_image.root.id
+    );
+    assert!(crate::simulation_runtime::Runtime::restore_checkpoint(
+        &execution_image,
+        &execution_image.root.id,
+        &combined,
+        &cut,
+        simulation_costs::Pinned::new(cost_model.clone(), &combined).unwrap(),
+        execution_limits,
+    )
+    .is_err());
+    assert!(
+        crate::simulation_runtime::Runtime::restore_standby_checkpoint(
+            &execution_image,
+            &execution_image.root.id,
+            &combined,
+            &cut,
+            &session.controller.controllers()[0].run,
+            simulation_costs::Pinned::new(cost_model.clone(), &combined).unwrap(),
+            execution_limits,
+        )
+        .is_err()
+    );
+    let execution_images = session
+        .controller
+        .capture_execution_shards(
+            &mut session.portfolio,
+            &combined,
+            &cut,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            execution_limits,
+            200_000,
+        )
+        .unwrap();
+    assert_eq!(execution_images.len(), 2);
+    assert_eq!(execution_images[1].root.id, execution_image.root.id);
     session
         .controller
         .seed_test_order(

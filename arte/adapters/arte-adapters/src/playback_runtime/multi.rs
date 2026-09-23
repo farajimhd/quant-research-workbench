@@ -7,6 +7,7 @@ use super::{
     runner::{Inputs, Journals, Step},
     Runtime,
 };
+use crate::simulation_runtime;
 use arte_core::{
     execution_events::Fill,
     market_structure::scheduler::playback::{sources::Catalog, Mode, Poll},
@@ -199,6 +200,85 @@ impl MultiRuntime {
         }
         self.require_complete_portfolio(portfolio, manifest, currencies)?;
         portfolio.checkpoint(manifest, cut, limits)
+    }
+
+    /// Selected execution uses the global boundary clock. Other lanes retain
+    /// their independently validated local frontiers, never a fabricated cut.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_execution_shards(
+        &self,
+        portfolio: &mut Portfolio,
+        manifest: &Pinned,
+        cut: &arte_core::portfolio::checkpoint::Cut,
+        last_fills: &BTreeMap<usize, BTreeMap<String, Fill>>,
+        currencies: &BTreeMap<u64, SettlementCurrency>,
+        limits: simulation_runtime::checkpoint::Limits,
+        maximum_total_bytes: usize,
+    ) -> Result<Vec<simulation_runtime::checkpoint::Bundle>> {
+        if maximum_total_bytes == 0
+            || maximum_total_bytes > 64 * 1024 * 1024
+            || last_fills
+                .keys()
+                .any(|index| *index >= self.controllers.len())
+        {
+            return Err(Error::Capacity(
+                "multi-execution checkpoint budget or shard".into(),
+            ));
+        }
+        let (selected, controller) = self
+            .selected()?
+            .ok_or_else(|| Error::Unready("multi-execution selected boundary absent".into()))?;
+        let boundary = controller.decision_view()?.pending()?.ok_or_else(|| {
+            Error::Unready("multi-execution selected market boundary absent".into())
+        })?;
+        if cut.boundary_hash != boundary.id
+            || cut.at_ns != boundary.evaluated_at_ns
+            || controller.status().acknowledged_boundaries.checked_add(1)
+                != Some(cut.boundary_sequence)
+        {
+            return Err(Error::Conflict("multi-execution global cut differs".into()));
+        }
+        for lane in &self.controllers {
+            lane.actions.require_complete()?;
+        }
+        self.require_complete_portfolio(portfolio, manifest, currencies)?;
+        let empty = BTreeMap::new();
+        let mut used = 0usize;
+        let mut images = Vec::with_capacity(self.controllers.len());
+        for (index, lane) in self.controllers.iter().enumerate() {
+            let left = maximum_total_bytes
+                .checked_sub(used)
+                .filter(|left| *left > 0)
+                .ok_or_else(|| Error::Capacity("multi-execution checkpoint total bytes".into()))?;
+            let lane_limits = simulation_runtime::checkpoint::Limits {
+                maximum_bytes: left.min(limits.maximum_bytes),
+                ..limits
+            };
+            let fills = last_fills.get(&index).unwrap_or(&empty);
+            let image = if index == selected {
+                lane.execution
+                    .checkpoint(manifest, cut, fills, lane_limits)?
+            } else {
+                lane.execution
+                    .checkpoint_standby(manifest, cut, &lane.run, fills, lane_limits)?
+            };
+            used = image.objects.values().try_fold(
+                used.checked_add(image.root.payload.len())
+                    .ok_or_else(|| Error::Capacity("multi-execution size overflow".into()))?,
+                |total, object| {
+                    total
+                        .checked_add(object.payload.len())
+                        .ok_or_else(|| Error::Capacity("multi-execution size overflow".into()))
+                },
+            )?;
+            if used > maximum_total_bytes {
+                return Err(Error::Capacity(
+                    "multi-execution checkpoint total bytes".into(),
+                ));
+            }
+            images.push(image);
+        }
+        Ok(images)
     }
 
     /// Test-only visibility for proving unselected shards cannot dispatch

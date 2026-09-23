@@ -1,6 +1,7 @@
 //! Quiescent execution-lane checkpoint. No pending fill publication is captured.
 //! Whole-run recovery must bind this graph to matching portfolio and market cuts.
 use super::*;
+use arte_core::market_structure::scheduler::playback::accounts::Run as MarketRun;
 use arte_core::{
     execution_positions::checkpoint::Limits as ProjectionLimits,
     portfolio::{checkpoint::Cut, Reservation},
@@ -49,6 +50,7 @@ struct Root {
     cost_model_hash: String,
     fill_model: arte_core::simulation_model::Model,
     cut: Cut,
+    frontier: Frontier,
     source: (u16, u64, u32),
     last_source_quote: Option<(arte_core::events::Observation, u64, u64)>,
     simulator: String,
@@ -59,6 +61,12 @@ struct Root {
     reservations: BTreeMap<String, Reservation>,
     released: BTreeSet<String>,
     cash: BTreeMap<String, Cash>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Frontier {
+    local_sequence: u64,
+    local_clock_ns: u64,
 }
 pub struct Bundle {
     pub root: Object,
@@ -110,6 +118,39 @@ fn encode(root: &Root, maximum: usize) -> Result<Object> {
     Ok(Object::new(writer.bytes))
 }
 impl Runtime {
+    fn standby_frontier(&self, run: &Run, cut: &Cut, market: &MarketRun) -> Result<Frontier> {
+        self.ready()?;
+        let local_clock_ns = self.simulator.clock_ns();
+        let local_sequence = market.status().acknowledged_boundaries;
+        if market.manifest_hash() != run.hash()
+            || self.source != Some(market.market()?.source_scope())
+            || self.simulator.run_id() != run.manifest().run_id
+            || self
+                .costs
+                .as_ref()
+                .is_none_or(|costs| costs.manifest_hash() != run.hash())
+            || local_clock_ns > cut.at_ns
+        {
+            return Err(Error::Conflict("standby execution frontier differs".into()));
+        }
+        if let Some(boundary) = market.pending()? {
+            if boundary.evaluated_at_ns < cut.at_ns
+                || boundary.evaluated_at_ns < local_clock_ns
+                || local_sequence.checked_add(1) != Some(boundary.sequence)
+            {
+                return Err(Error::Conflict("standby market head precedes cut".into()));
+            }
+        } else if market.status().mode
+            != arte_core::market_structure::scheduler::playback::Mode::Complete
+        {
+            return Err(Error::Unready("standby market head missing".into()));
+        }
+        Ok(Frontier {
+            local_sequence,
+            local_clock_ns,
+        })
+    }
+
     /// Whole-lane capture rejects funding absent from the execution graph.
     /// Reserved-but-unsubmitted plans must be resolved before this cut.
     pub fn require_complete_portfolio(
@@ -228,13 +269,45 @@ impl Runtime {
         last_fills: &BTreeMap<String, Fill>,
         limits: Limits,
     ) -> Result<Bundle> {
+        self.checkpoint_with_frontier(
+            run,
+            cut,
+            Frontier {
+                local_sequence: cut.boundary_sequence,
+                local_clock_ns: cut.at_ns,
+            },
+            last_fills,
+            limits,
+        )
+    }
+    /// An unselected shard keeps its own last execution clock and sequence.
+    /// Its preloaded future market head is never treated as executed.
+    pub fn checkpoint_standby(
+        &self,
+        run: &Run,
+        global_cut: &Cut,
+        market: &MarketRun,
+        last_fills: &BTreeMap<String, Fill>,
+        limits: Limits,
+    ) -> Result<Bundle> {
+        let frontier = self.standby_frontier(run, global_cut, market)?;
+        self.checkpoint_with_frontier(run, global_cut, frontier, last_fills, limits)
+    }
+    fn checkpoint_with_frontier(
+        &self,
+        run: &Run,
+        cut: &Cut,
+        frontier: Frontier,
+        last_fills: &BTreeMap<String, Fill>,
+        limits: Limits,
+    ) -> Result<Bundle> {
         self.ready()?;
         let context = context(run, cut, limits)?;
         let costs = self
             .costs
             .as_ref()
             .ok_or_else(|| Error::Unready("execution costs unbound".into()))?;
-        self.validate_checkpoint(run, cut, costs, last_fills, limits)?;
+        self.validate_checkpoint(run, cut, frontier, costs, last_fills, limits)?;
         let source = self
             .source
             .ok_or_else(|| Error::Unready("execution source missing".into()))?;
@@ -243,7 +316,7 @@ impl Runtime {
         let projection = self.projection.checkpoint(&context, limits.projection)?;
         let mut objects = BTreeMap::new();
         let mut root = Root {
-            version: 3,
+            version: 4,
             manifest_hash: run.hash().into(),
             cost_model_hash: costs.hash().into(),
             fill_model: self
@@ -251,6 +324,7 @@ impl Runtime {
                 .clone()
                 .ok_or_else(|| Error::Unready("checkpoint fill model missing".into()))?,
             cut: cut.clone(),
+            frontier,
             source: (source.provider, source.instrument, source.session),
             last_source_quote: self.last_source_quote.clone(),
             simulator: simulator.id.clone(),
@@ -296,6 +370,36 @@ impl Runtime {
         costs: Costs,
         limits: Limits,
     ) -> Result<Self> {
+        Self::restore_with_market(bundle, expected_root, run, cut, None, costs, limits)
+    }
+    pub fn restore_standby_checkpoint(
+        bundle: &Bundle,
+        expected_root: &str,
+        run: &Run,
+        global_cut: &Cut,
+        market: &MarketRun,
+        costs: Costs,
+        limits: Limits,
+    ) -> Result<Self> {
+        Self::restore_with_market(
+            bundle,
+            expected_root,
+            run,
+            global_cut,
+            Some(market),
+            costs,
+            limits,
+        )
+    }
+    fn restore_with_market(
+        bundle: &Bundle,
+        expected_root: &str,
+        run: &Run,
+        cut: &Cut,
+        market: Option<&MarketRun>,
+        costs: Costs,
+        limits: Limits,
+    ) -> Result<Self> {
         let context = context(run, cut, limits)?;
         if bundle.root.id != expected_root || bundle.objects.len() > limits.maximum_orders * 2 + 2 {
             return Err(Error::Conflict(
@@ -315,9 +419,12 @@ impl Runtime {
         bundle.root.verify()?;
         let root: Root = serde_json::from_slice(&bundle.root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
-        if root.version != 3
+        if root.version != 4
             || root.manifest_hash != run.hash()
             || root.cut != *cut
+            || (market.is_none()
+                && (root.frontier.local_sequence != cut.boundary_sequence
+                    || root.frontier.local_clock_ns != cut.at_ns))
             || root.cost_model_hash != costs.hash()
             || costs.manifest_hash() != run.hash()
             || root.owners.len() > limits.maximum_orders
@@ -407,14 +514,22 @@ impl Runtime {
         restored.released = root.released;
         restored.last_source_quote = root.last_source_quote;
         restored.fill_model = Some(root.fill_model);
-        restored.validate_checkpoint(run, cut, &costs, &fills, limits)?;
+        restored.validate_checkpoint(run, cut, root.frontier, &costs, &fills, limits)?;
         restored.costs = Some(costs);
+        if let Some(market) = market {
+            if restored.standby_frontier(run, cut, market)? != root.frontier {
+                return Err(Error::Conflict(
+                    "standby execution recovery frontier differs".into(),
+                ));
+            }
+        }
         Ok(restored)
     }
     fn validate_checkpoint(
         &self,
         run: &Run,
         cut: &Cut,
+        frontier: Frontier,
         costs: &Costs,
         fills: &BTreeMap<String, Fill>,
         limits: Limits,
@@ -426,7 +541,8 @@ impl Runtime {
             .require(costs.fill_model_hash(), &self.simulator)?;
         if self.simulator.run_id() != run.manifest().run_id
             || costs.manifest_hash() != run.hash()
-            || self.simulator.clock_ns() != cut.at_ns
+            || self.simulator.clock_ns() != frontier.local_clock_ns
+            || frontier.local_clock_ns > cut.at_ns
             || orders.len() > limits.maximum_orders
             || self.simulator.maximum_quote_fills() / 2 > limits.maximum_orders
             || self.owners.len() != orders.len()
@@ -441,7 +557,7 @@ impl Runtime {
                 "execution recovery population or clock differs".into(),
             ));
         }
-        self.validate_source_checkpoint(cut)?;
+        self.validate_source_checkpoint(frontier)?;
         let mut aggregates: BTreeMap<Key, Aggregate> = BTreeMap::new();
         for order in orders {
             let b = &order.bracket;
@@ -475,8 +591,8 @@ impl Runtime {
                     || fill.price_scale != b.price_scale
                     || cash.entry_quantity() != order.entry_filled
                     || cash.exit_quantity() != order.exit_filled
-                    || fill.at_ns > cut.at_ns
-                    || fill.sequence > cut.boundary_sequence
+                    || fill.at_ns > frontier.local_clock_ns
+                    || fill.sequence > frontier.local_sequence
                 {
                     return Err(Error::Conflict("execution cash and order disagree".into()));
                 }
@@ -576,7 +692,7 @@ impl Runtime {
         }
         Ok(())
     }
-    fn validate_source_checkpoint(&self, cut: &Cut) -> Result<()> {
+    fn validate_source_checkpoint(&self, frontier: Frontier) -> Result<()> {
         let source = self
             .source
             .ok_or_else(|| Error::Unready("checkpoint source missing".into()))?;
@@ -614,8 +730,8 @@ impl Runtime {
                     || event.key.session != source.session
                     || *sequence != sim_sequence
                     || *at != sim_at
-                    || *sequence > cut.boundary_sequence
-                    || *at > cut.at_ns
+                    || *sequence > frontier.local_sequence
+                    || *at > frontier.local_clock_ns
                     || event.sip.ns > *at
                     || content_hash(&quote)? != hash
                 {

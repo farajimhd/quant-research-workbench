@@ -164,6 +164,14 @@ The coordinator now captures the shared portfolio at the selected global cut
 after all action and funding gates pass. Its two-ticker unit test restores the
 image and rejects mismatched cut clocks and unsubmitted reservations. This is
 still a component, not the combined recoverable/publication graph.
+Execution checkpoint schema v4 now separates the global selected cut from a
+lane-local execution clock and sequence. Existing selected-lane restore keeps
+exact clock equality. A standby-lane capture and restore requires its own
+market cursor, source scope and earlier clock; it cannot be loaded through the
+selected-lane path. The coordinator can capture all execution lanes under a
+bounded total byte budget after the shared funding gate. A two-ticker offline
+test round-trips the standby image. Storage publication and combined root
+readback remain incomplete.
 The Strategy 350 historical account owner now selects its own ticker's
 consumers from a shared run manifest while requiring exact local configuration
 and state sets. A unit test covers another ticker, missing local inputs and

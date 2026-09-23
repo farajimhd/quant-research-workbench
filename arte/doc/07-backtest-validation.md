@@ -200,6 +200,14 @@ The selected boundary ID, sequence and evaluation clock must match the cut.
 An offline two-ticker test round-trips the portfolio image and rejects a wrong
 cut or an unsubmitted reservation. Market, execution and strategy component
 roots are not yet bound to this image by a published whole-run root.
+Simulated execution checkpoints now distinguish the selected global cut from
+each lane's local execution frontier. The selected lane still requires exact
+clock equality. Unselected lanes retain their last executed clock and local
+sequence, which must precede the preloaded market head and not exceed the
+global cut. The coordinator captures all lane images with a total byte bound
+after the shared funding gate. The offline two-ticker test round-trips a
+standby lane and rejects treating its image as selected or restoring it to the
+wrong market shard. These images are not yet bound by a published root.
 Strategy 350 account-owned state now has a bounded content-addressed
 component checkpoint. Restore requires the selected market boundary, exact
 effective configuration hashes, and independently read decision journal rows.
