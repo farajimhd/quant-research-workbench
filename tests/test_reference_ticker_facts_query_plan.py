@@ -58,6 +58,8 @@ class ReferenceTickerFactsQueryPlanTests(unittest.TestCase):
         )
         self.assertIn("inserted_at <= parseDateTime64BestEffort", queries["float"])
         self.assertIn("market_security_float_resolved_v1", queries["resolved_float"])
+        self.assertIn("shares_outstanding_source", queries["resolved_float"])
+        self.assertIn("shares_outstanding_as_of", queries["resolved_float"])
         self.assertIn("LIMIT 1 BY settlement_date", queries["short_interest"])
         self.assertIn("market_cash_dividend_v1 FINAL", queries["corporate"])
         self.assertIn("daily_session_bars_by_symbol_time_v1", queries["volume"])

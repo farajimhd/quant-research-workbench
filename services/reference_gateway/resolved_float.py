@@ -65,6 +65,11 @@ CREATE TABLE IF NOT EXISTS {sql(database, TABLE)}
     float_lower_bound Nullable(Float64),
     float_upper_bound Nullable(Float64),
     shares_outstanding Nullable(Float64),
+    shares_outstanding_source String,
+    shares_outstanding_as_of Nullable(Date),
+    shares_outstanding_evidence_ref String,
+    shares_outstanding_content_sha256 String,
+    shares_outstanding_conflict UInt8,
     sec_public_float_usd Nullable(Float64),
     sec_period_end Nullable(Date),
     sec_filed_at_utc Nullable(DateTime64(3, 'UTC')),
@@ -93,6 +98,11 @@ SETTINGS storage_policy = '{POLICY}'
     client.execute(f"ALTER TABLE {sql(database, TABLE)} ADD COLUMN IF NOT EXISTS sec_content_sha256 String DEFAULT '' AFTER sec_accession")
     client.execute(f"ALTER TABLE {sql(database, TABLE)} ADD COLUMN IF NOT EXISTS provider_evidence_ref String DEFAULT '' AFTER sec_content_sha256")
     client.execute(f"ALTER TABLE {sql(database, TABLE)} ADD COLUMN IF NOT EXISTS provider_content_sha256 String DEFAULT '' AFTER provider_evidence_ref")
+    client.execute(f"ALTER TABLE {sql(database, TABLE)} ADD COLUMN IF NOT EXISTS shares_outstanding_source String DEFAULT '' AFTER shares_outstanding")
+    client.execute(f"ALTER TABLE {sql(database, TABLE)} ADD COLUMN IF NOT EXISTS shares_outstanding_as_of Nullable(Date) AFTER shares_outstanding_source")
+    client.execute(f"ALTER TABLE {sql(database, TABLE)} ADD COLUMN IF NOT EXISTS shares_outstanding_evidence_ref String DEFAULT '' AFTER shares_outstanding_as_of")
+    client.execute(f"ALTER TABLE {sql(database, TABLE)} ADD COLUMN IF NOT EXISTS shares_outstanding_content_sha256 String DEFAULT '' AFTER shares_outstanding_evidence_ref")
+    client.execute(f"ALTER TABLE {sql(database, TABLE)} ADD COLUMN IF NOT EXISTS shares_outstanding_conflict UInt8 DEFAULT 0 AFTER shares_outstanding_content_sha256")
 
 
 def projection(database: str, day: date, run_id: str) -> str:
@@ -128,20 +138,10 @@ WITH
     (
         SELECT symbol_id,
           nullIf(argMaxIf(free_float, tuple(effective_date, inserted_at), free_float > 0), 0) reported_float,
-          nullIf(argMaxIf(shares_outstanding, tuple(effective_date, inserted_at), shares_outstanding > 0), 0) provider_shares,
           argMaxIf(source_evidence_ref, tuple(effective_date, inserted_at), free_float > 0) provider_ref,
           argMaxIf(source_content_sha256, tuple(effective_date, inserted_at), free_float > 0) provider_sha
         FROM {db}.market_security_float_v1 FINAL
         WHERE effective_date <= resolution_day AND inserted_at <= cutoff
-        GROUP BY symbol_id
-    ),
-    snapshot AS
-    (
-        SELECT symbol_id,
-          nullIf(argMaxIf(share_class_shares_outstanding, tuple(observed_at_utc, inserted_at), share_class_shares_outstanding > 0), 0) class_shares,
-          nullIf(argMaxIf(weighted_shares_outstanding, tuple(observed_at_utc, inserted_at), weighted_shares_outstanding > 0), 0) weighted_shares
-        FROM {db}.market_security_market_snapshot_v1 FINAL
-        WHERE observed_at_utc <= cutoff AND inserted_at <= cutoff
         GROUP BY symbol_id
     ),
     sec_float AS
@@ -161,12 +161,51 @@ WITH
     sec_shares AS
     (
         SELECT toString(cik) cik,
-          nullIf(argMaxIf(value, tuple(period_end_date, filed_at_utc, recorded_at_utc), value > 0), 0) shares
+          nullIf(argMaxIf(value, tuple(period_end_date, filed_at_utc, recorded_at_utc), value > 0), 0) shares,
+          argMaxIf(period_end_date, tuple(period_end_date, filed_at_utc, recorded_at_utc), value > 0) shares_date,
+          argMaxIf(accession_number, tuple(period_end_date, filed_at_utc, recorded_at_utc), value > 0) shares_accession,
+          argMaxIf(source_content_sha256, tuple(period_end_date, filed_at_utc, recorded_at_utc), value > 0) shares_sha
         FROM {db}.sec_xbrl_company_fact_v3 FINAL
         WHERE tag IN ('EntityCommonStockSharesOutstanding', 'CommonStockSharesOutstanding')
           AND unit_code = 'shares' AND period_end_date <= resolution_day
           AND filed_at_utc <= cutoff AND recorded_at_utc <= cutoff
         GROUP BY cik
+    ),
+    shares_sources AS
+    (
+        SELECT symbol_id, toFloat64(shares_outstanding) value, effective_date as_of,
+          'provider_share_class' source, source_evidence_ref evidence_ref,
+          source_content_sha256 content_sha, 4 priority
+        FROM {db}.market_security_float_v1 FINAL
+        WHERE shares_outstanding > 0 AND effective_date <= resolution_day AND inserted_at <= cutoff
+        UNION ALL
+        SELECT symbol_id, toFloat64(share_class_shares_outstanding), toDate(observed_at_utc),
+          'provider_snapshot_share_class', snapshot_evidence_ref, source_content_sha256, 3
+        FROM {db}.market_security_market_snapshot_v1 FINAL
+        WHERE share_class_shares_outstanding > 0 AND observed_at_utc <= cutoff AND inserted_at <= cutoff
+        UNION ALL
+        SELECT s.symbol_id, toFloat64(s.weighted_shares_outstanding), toDate(s.observed_at_utc),
+          'provider_weighted_single_class', s.snapshot_evidence_ref, s.source_content_sha256, 2
+        FROM {db}.market_security_market_snapshot_v1 s FINAL
+        INNER JOIN universe u ON u.symbol_id = s.symbol_id
+        INNER JOIN class_count cc ON cc.issuer_id = u.issuer_id AND cc.tradable_classes = 1
+        WHERE s.weighted_shares_outstanding > 0 AND s.observed_at_utc <= cutoff AND s.inserted_at <= cutoff
+        UNION ALL
+        SELECT u.symbol_id, toFloat64(sh.shares), sh.shares_date,
+          'sec_issuer_single_class', sh.shares_accession, sh.shares_sha, 1
+        FROM universe u
+        INNER JOIN class_count cc ON cc.issuer_id = u.issuer_id AND cc.tradable_classes = 1
+        INNER JOIN bridge b ON b.symbol_id = u.symbol_id AND b.cik_count = 1
+          AND u.issuer_id = concat('issuer:cik:', b.bridge_cik)
+        INNER JOIN sec_shares sh ON sh.cik = b.bridge_cik
+        WHERE sh.shares > 0
+    ),
+    shares_resolved AS
+    (
+        SELECT symbol_id,
+          argMax(tuple(value, source, as_of, evidence_ref, content_sha),
+            tuple(as_of, priority, content_sha, evidence_ref)) supply
+        FROM shares_sources GROUP BY symbol_id
     ),
     splits AS
     (
@@ -180,8 +219,9 @@ WITH
         SELECT u.symbol_id AS symbol_id, u.ticker AS ticker, u.issuer_id AS issuer_id, u.currency_code AS currency_code,
           r.reported_float AS reported_float,
           ifNull(r.provider_ref, '') AS provider_ref, ifNull(r.provider_sha, '') AS provider_sha,
-          coalesce(toFloat64(r.provider_shares), toFloat64(s.class_shares),
-            toFloat64(s.weighted_shares), toFloat64(sh.shares)) AS shares,
+          sr.supply.1 AS shares, sr.supply.2 AS shares_source,
+          sr.supply.3 AS shares_date, sr.supply.4 AS shares_ref,
+          sr.supply.5 AS shares_sha,
           sf.sec_value AS sec_value, sf.sec_date AS sec_date, sf.filed AS filed,
           ifNull(sf.accession, '') AS accession, ifNull(sf.sec_sha, '') AS sec_sha,
           b.cik_count AS cik_count, cc.tradable_classes AS tradable_classes,
@@ -190,9 +230,8 @@ WITH
         LEFT JOIN class_count cc ON cc.issuer_id = u.issuer_id
         LEFT JOIN bridge b ON b.symbol_id = u.symbol_id AND u.issuer_id = concat('issuer:cik:', b.bridge_cik)
         LEFT JOIN reported r ON r.symbol_id = u.symbol_id
-        LEFT JOIN snapshot s ON s.symbol_id = u.symbol_id
+        LEFT JOIN shares_resolved sr ON sr.symbol_id = u.symbol_id
         LEFT JOIN sec_float sf ON sf.cik = b.bridge_cik AND b.cik_count = 1
-        LEFT JOIN sec_shares sh ON sh.cik = b.bridge_cik AND b.cik_count = 1 AND cc.tradable_classes = 1
         LEFT JOIN splits sp ON sp.symbol_id = u.symbol_id
     ),
     prices AS
@@ -238,6 +277,11 @@ SELECT
     if(reported_float > 0, toNullable(toFloat64(reported_float)), NULL) float_lower_bound,
     if(reported_float > 0, toNullable(toFloat64(reported_float)), if(shares > 0, toNullable(toFloat64(shares)), NULL)) float_upper_bound,
     toNullable(toFloat64(shares)) shares_outstanding,
+    if(shares > 0, shares_source, '') shares_outstanding_source,
+    if(shares > 0, toNullable(shares_date), NULL) shares_outstanding_as_of,
+    if(shares > 0, shares_ref, '') shares_outstanding_evidence_ref,
+    if(shares > 0, shares_sha, '') shares_outstanding_content_sha256,
+    toUInt8(reported_float > 0 AND shares > 0 AND reported_float > shares) shares_outstanding_conflict,
     toNullable(toFloat64(sec_value)) sec_public_float_usd,
     toNullable(sec_date) sec_period_end, toNullable(filed) sec_filed_at_utc,
     accession sec_accession, sec_sha sec_content_sha256,
@@ -250,7 +294,8 @@ SELECT
       price <= 0, 'missing_aligned_canonical_price',
       shares > 0 AND sec_estimate > shares, 'estimate_exceeds_shares_outstanding', '') rejection_reason,
     '{VERSION}' calculation_version,
-    cityHash64(symbol_id, reported_float, shares, sec_value, sec_date, filed, accession,
+    cityHash64(symbol_id, reported_float, shares, shares_source, shares_date, shares_ref, shares_sha,
+      sec_value, sec_date, filed, accession,
       sec_sha, provider_ref, provider_sha, price_day, price, split_factor) source_fingerprint,
     '{run_id}' run_id, now64(3) inserted_at
 FROM calculated
@@ -285,7 +330,8 @@ def publish(client: ClickHouseHttpClient, database: str, day: date) -> dict[str,
         if parts != "0":
             raise RuntimeError(f"Published float has {parts} misplaced parts; stage={stage}")
         summary_text = client.execute(f"SELECT resolution_kind, rejection_reason, count() rows FROM {sql(database, TABLE)} FINAL WHERE resolution_date=toDate('{day_text}') GROUP BY resolution_kind, rejection_reason ORDER BY rows DESC FORMAT JSONEachRow")
-        return {"date": day_text, "rows": final_count, "run_id": run_id, "kinds": [json.loads(line) for line in summary_text.splitlines()]}
+        conflicts = int(scalar(client, f"SELECT countIf(shares_outstanding_conflict=1) FROM {sql(database, TABLE)} FINAL WHERE resolution_date=toDate('{day_text}')"))
+        return {"date": day_text, "rows": final_count, "run_id": run_id, "shares_outstanding_conflicts": conflicts, "kinds": [json.loads(line) for line in summary_text.splitlines()]}
     finally:
         # A failed stage remains available for diagnosis; completed stages are
         # removed only after the published partition is independently checked.

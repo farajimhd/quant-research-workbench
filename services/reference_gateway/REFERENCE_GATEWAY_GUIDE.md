@@ -28,6 +28,18 @@ source fingerprint remain with each row. `rejection_reason` records why an SEC
 estimate was not admitted. The canonical provider publication stays in
 `market_security_float_v1` and is never overwritten by an estimate.
 
+The same publication independently resolves the current listing-level
+`shares_outstanding` authority. It chooses the newest eligible dated observation
+from provider share-class counts, market snapshots, or SEC common-stock counts;
+issuer-wide weighted/SEC counts are admitted only when the issuer has one
+tradable class and a unique SEC bridge is available for SEC counts. A source
+type, as-of date, evidence reference, and content hash accompany the value.
+Missing counts stay null. The upstream publications remain immutable source
+facts; this dated resolution is the Reference Gateway's consumer-facing
+current-state authority, not a rewrite of historical point-in-time supply.
+If a reported float exceeds the selected outstanding count, the row retains
+both source values and sets `shares_outstanding_conflict=1` for reconciliation.
+
 An SEC public-float value is issuer level and an approximate valuation of
 non-affiliate shares. The price conversion is an estimate, with no calibrated
 uncertainty interval. It cannot allocate an issuer disclosure across several

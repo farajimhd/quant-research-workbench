@@ -271,7 +271,9 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
     borrow = first(borrow_rows)
     volume_rows = results.get("volume", [])
     volume = aggregate_daily_volume(volume_rows)
-    shares_outstanding = best_shares_outstanding(float_rows, market_rows, results.get("fundamentals", []))
+    shares_outstanding = first_number(first(results.get("resolved_float")), "shares_outstanding")
+    if shares_outstanding is None and not results.get("resolved_float"):
+        shares_outstanding = best_shares_outstanding(float_rows, market_rows, results.get("fundamentals", []))
     free_float = first_number(reported_float_row, "free_float")
     short_shares = first_number(short_interest, "short_interest")
     fundamentals = select_fundamentals(results.get("fundamentals", []), cutoff)
@@ -339,6 +341,7 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
             cutoff=cutoff,
             borrow=borrow,
             float_row=reported_float_row or float_row,
+            resolved_float_row=first(results.get("resolved_float")),
             fundamental_rows=fundamentals,
             market=market,
             short_interest=short_interest,
@@ -1001,7 +1004,9 @@ def synthesize_stock_facts(
     volume_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Create one auditable point-in-time stock profile for UI and strategy consumers."""
-    shares = best_shares_outstanding(float_rows, market_rows, fundamental_rows)
+    shares = first_number(resolved_float_row or {}, "shares_outstanding")
+    if shares is None and resolved_float_row is None:
+        shares = best_shares_outstanding(float_rows, market_rows, fundamental_rows)
     latest_price = first_number(first(volume_rows), "close")
     reported_float_row = first_with_number(float_rows, "free_float")
     reported_float = first_number(reported_float_row, "free_float")
@@ -1028,7 +1033,7 @@ def synthesize_stock_facts(
     supply_evidence = [
         evidence("Reported free float", reported_float, "shares", reported_float_row.get("effective_date"), "reported", "Provider-published tradable share count."),
         evidence("SEC-implied float", estimated_float, "shares", float_estimate.get("period_end_date"), "estimated", "SEC public-float value divided by the price on its measurement date, then split-adjusted."),
-        evidence("Shares outstanding", shares, "shares", latest_observation_date(float_rows, market_rows, fundamental_rows), "reported", "Upper bound for tradable shares, not a float estimate."),
+        evidence("Shares outstanding", shares, "shares", resolved_float_row.get("shares_outstanding_as_of") if resolved_float_row is not None else latest_observation_date(float_rows, market_rows, fundamental_rows), "reported", "Reference Gateway resolved share count; upper bound for tradable shares, not a float estimate."),
         evidence("Market-cap-implied shares", market_cap_implied_shares(market_rows, volume_rows), "shares", first(market_rows).get("observed_at_utc"), "derived", "Market capitalization divided by an aligned daily close; used only as a shares-outstanding cross-check."),
     ]
     supply_method = "reported" if reported_float else "estimated" if estimated_float else "upper_bound"
@@ -1050,6 +1055,9 @@ def synthesize_stock_facts(
             "reported_value": reported_float,
             "estimated_value": estimated_float,
             "shares_outstanding": shares,
+            "shares_outstanding_source": resolved_float_row.get("shares_outstanding_source") if resolved_float_row is not None else None,
+            "shares_outstanding_as_of": resolved_float_row.get("shares_outstanding_as_of") if resolved_float_row is not None else None,
+            "shares_outstanding_conflict": bool(resolved_float_row.get("shares_outstanding_conflict")) if resolved_float_row is not None else False,
             "upper_bound": float_estimate.get("upper_bound") or shares,
         },
     )
@@ -1759,11 +1767,12 @@ def fact_freshness(
     short_interest: dict[str, Any],
     short_volume: dict[str, Any],
     volume: dict[str, Any],
+    resolved_float_row: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     candidates: dict[str, Any] = {
         "market_cap": market.get("observed_at_utc"),
         "free_float": float_row.get("effective_date"),
-        "shares_outstanding": float_row.get("effective_date") or market.get("observed_at_utc"),
+        "shares_outstanding": resolved_float_row.get("shares_outstanding_as_of") if resolved_float_row is not None else float_row.get("effective_date") or market.get("observed_at_utc"),
         "daily_volume": volume.get("session_date"),
         "relative_volume_20d": volume.get("session_date"),
         "short_interest": short_interest.get("published_at_utc") or short_interest.get("publication_date") or short_interest.get("inserted_at"),

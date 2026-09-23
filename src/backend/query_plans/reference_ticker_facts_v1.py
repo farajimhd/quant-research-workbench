@@ -181,7 +181,10 @@ def resolved_float(symbol_id: str, cutoff: datetime, database: str) -> str:
     db = quote_ident(database)
     return f"""
         SELECT resolution_date, resolution_kind, float_shares, float_lower_bound,
-               float_upper_bound, shares_outstanding, sec_public_float_usd,
+               float_upper_bound, shares_outstanding, shares_outstanding_source,
+               shares_outstanding_as_of, shares_outstanding_evidence_ref,
+               shares_outstanding_content_sha256, sec_public_float_usd,
+               shares_outstanding_conflict,
                sec_period_end, sec_filed_at_utc, sec_accession, price_date,
                price_close, split_factor, rejection_reason, calculation_version,
                source_fingerprint
