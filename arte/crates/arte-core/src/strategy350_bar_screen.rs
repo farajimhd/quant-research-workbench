@@ -59,6 +59,179 @@ struct State {
     high: i64,
     late: bool,
 }
+impl State {
+    fn observe(
+        &mut self,
+        bucket: Option<(i64, i64, i64)>,
+        thresholds: Thresholds,
+    ) -> (bool, bool, i64) {
+        let prior_high = self.high;
+        let late_before = self.late;
+        let possible = bucket.is_some_and(|(_, high, low)| {
+            thresholds.prior_close > 0
+                && thresholds.prior_close < thresholds.ceiling
+                && high >= thresholds.floor
+                && (!late_before
+                    || high > prior_high
+                    || (prior_high > 0
+                        && low < prior_high
+                        && i128::from(high) * 10_000
+                            >= i128::from(prior_high) * i128::from(thresholds.hod_floor_bps)))
+        });
+        if let Some((open, high, _)) = bucket {
+            if self.open == 0 {
+                self.open = open;
+            }
+            self.high = self.high.max(high);
+            self.late |= i128::from(self.high) * 10_000
+                >= i128::from(self.open) * (10_000 + i128::from(thresholds.late_gain_bps));
+        }
+        (possible, late_before, prior_high)
+    }
+}
+#[derive(Clone, Copy)]
+struct Thresholds {
+    prior_close: i64,
+    ceiling: i64,
+    floor: i64,
+    late_gain_bps: u32,
+    hod_floor_bps: u32,
+}
+fn thresholds(
+    config: &Config,
+    fact: &PriceFact,
+    price_scale: u8,
+    start_ns: u64,
+) -> Result<Thresholds> {
+    if fact.source_hash != config.prior_close_source_hash
+        || fact.available_at_ns == 0
+        || fact.available_at_ns > start_ns
+    {
+        return Err(Error::Unready(
+            "Strategy 350 prior close not causally pinned".into(),
+        ));
+    }
+    let prior_close = fact.value.atoms_at_scale(price_scale)?;
+    let ceiling = config.prior_close_max.atoms_at_scale(price_scale)?;
+    let floor = config.purchase_min.atoms_at_scale(price_scale)?;
+    if ceiling <= floor || floor <= 0 {
+        return Err(Error::Invalid(
+            "Strategy 350 screen price thresholds".into(),
+        ));
+    }
+    Ok(Thresholds {
+        prior_close,
+        ceiling,
+        floor,
+        late_gain_bps: config.late_gain_bps,
+        hod_floor_bps: config.hod_floor_bps,
+    })
+}
+
+/// One completed 100 ms boundary. A selected bucket still requires exact
+/// event/quote refinement and is never an entry authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenPoint {
+    pub scope: crate::event_order::Scope,
+    pub start_ns: u64,
+    pub source: crate::exact_bars::Mode,
+    pub needs_refinement: bool,
+    pub late_before: bool,
+    pub prior_high_atoms: i64,
+}
+
+/// Live and historical bars use the same price-state transition as the
+/// columnar batch projector. This state has no database or broker capability.
+pub struct StreamingScreen {
+    scope: crate::event_order::Scope,
+    next_start_ns: u64,
+    price_scale: u8,
+    source: crate::exact_bars::Mode,
+    thresholds: Thresholds,
+    state: State,
+}
+impl StreamingScreen {
+    pub fn new(
+        scope: crate::event_order::Scope,
+        session_start_ns: u64,
+        price_scale: u8,
+        source: crate::exact_bars::Mode,
+        config: &Config,
+        expected_config_hash: &str,
+        prior_close: &PriceFact,
+    ) -> Result<Self> {
+        if scope.provider == 0
+            || scope.instrument == 0
+            || !(19000101..=29991231).contains(&scope.session)
+            || session_start_ns == 0
+            || !session_start_ns.is_multiple_of(BASE_INTERVAL_NS)
+            || price_scale > 9
+            || config.hash()? != expected_config_hash
+        {
+            return Err(Error::Invalid(
+                "Strategy 350 streaming screen identity".into(),
+            ));
+        }
+        Ok(Self {
+            scope,
+            next_start_ns: session_start_ns,
+            price_scale,
+            source,
+            thresholds: thresholds(config, prior_close, price_scale, session_start_ns)?,
+            state: State::default(),
+        })
+    }
+    pub fn observe(
+        &mut self,
+        start_ns: u64,
+        bar: Option<&crate::exact_bars::Bar>,
+    ) -> Result<ScreenPoint> {
+        if start_ns != self.next_start_ns {
+            return Err(Error::Conflict(
+                "Strategy 350 screen bucket gap or repeat".into(),
+            ));
+        }
+        let bucket = if let Some(bar) = bar {
+            if bar.start_ns != start_ns
+                || bar.end_ns.checked_sub(bar.start_ns) != Some(BASE_INTERVAL_NS)
+                || bar.price_scale != self.price_scale
+                || (self.source == crate::exact_bars::Mode::Live)
+                    != bar.last_trade_live_receipt_ns.is_some()
+                || bar.open <= 0
+                || bar.trades == 0
+                || bar.volume <= 0
+                || bar.notional <= 0
+                || bar.last_trade_source_ns < start_ns
+                || bar.last_trade_source_ns >= bar.end_ns
+                || bar.last_trade_live_receipt_ns == Some(0)
+                || bar.high < bar.open.max(bar.close)
+                || bar.low <= 0
+                || bar.low > bar.open.min(bar.close)
+            {
+                return Err(Error::Conflict(
+                    "Strategy 350 completed bar source or geometry".into(),
+                ));
+            }
+            Some((bar.open, bar.high, bar.low))
+        } else {
+            None
+        };
+        let next = start_ns
+            .checked_add(BASE_INTERVAL_NS)
+            .ok_or_else(|| Error::Capacity("Strategy 350 screen clock".into()))?;
+        let (needs_refinement, late_before, prior_high_atoms) =
+            self.state.observe(bucket, self.thresholds);
+        self.next_start_ns = next;
+        Ok(ScreenPoint {
+            scope: self.scope,
+            start_ns,
+            source: self.source,
+            needs_refinement,
+            late_before,
+            prior_high_atoms,
+        })
+    }
+}
 
 pub fn project(
     product: &Complete,
@@ -82,22 +255,7 @@ pub fn project(
         let fact = prior_closes
             .get(&batch.instrument)
             .ok_or_else(|| Error::Unready("Strategy 350 prior close missing".into()))?;
-        if fact.source_hash != config.prior_close_source_hash
-            || fact.available_at_ns == 0
-            || fact.available_at_ns > request.interval.start
-        {
-            return Err(Error::Unready(
-                "Strategy 350 prior close not causally pinned".into(),
-            ));
-        }
-        let prior_close = fact.value.atoms_at_scale(batch.price_scale)?;
-        let ceiling = config.prior_close_max.atoms_at_scale(batch.price_scale)?;
-        let floor = config.purchase_min.atoms_at_scale(batch.price_scale)?;
-        if ceiling <= floor || floor <= 0 {
-            return Err(Error::Invalid(
-                "Strategy 350 screen price thresholds".into(),
-            ));
-        }
+        let thresholds = thresholds(config, fact, batch.price_scale, request.interval.start)?;
         let open = batch
             .open
             .as_ref()
@@ -124,29 +282,11 @@ pub fn project(
         for (((&present, &bar_open), &bar_high), &bar_low) in
             batch.present.iter().zip(open).zip(high).zip(low)
         {
-            let prior_high = ticker.high;
-            let late_before = ticker.late;
+            let (possible, late_before, prior_high) =
+                ticker.observe(present.then_some((bar_open, bar_high, bar_low)), thresholds);
             out.prior_high_atoms.push(prior_high);
             out.late_before.push(late_before);
-            let possible = present
-                && prior_close > 0
-                && prior_close < ceiling
-                && bar_high >= floor
-                && (!late_before
-                    || bar_high > prior_high
-                    || (prior_high > 0
-                        && bar_low < prior_high
-                        && i128::from(bar_high) * 10_000
-                            >= i128::from(prior_high) * i128::from(config.hod_floor_bps)));
             out.needs_refinement.push(possible);
-            if present {
-                if ticker.open == 0 {
-                    ticker.open = bar_open;
-                }
-                ticker.high = ticker.high.max(bar_high);
-                ticker.late |= i128::from(ticker.high) * 10_000
-                    >= i128::from(ticker.open) * (10_000 + i128::from(config.late_gain_bps));
-            }
         }
         result.push(out);
     }
@@ -268,5 +408,93 @@ mod tests {
             wrong.execution_interval = interval;
             assert!(project(&fixture(), &wrong, &closes("19")).is_err());
         }
+    }
+    #[test]
+    fn streaming_and_batch_use_the_same_completed_bucket_rule() {
+        let product = fixture();
+        let batch = &product.batches()[0];
+        let expected = project(&product, &config(), &closes("19.99")).unwrap();
+        let hash = config().hash().unwrap();
+        for source in [
+            crate::exact_bars::Mode::Historical,
+            crate::exact_bars::Mode::Live,
+        ] {
+            let mut stream = StreamingScreen::new(
+                crate::event_order::Scope {
+                    provider: 1,
+                    instrument: 10,
+                    session: 20260922,
+                },
+                S,
+                2,
+                source,
+                &config(),
+                &hash,
+                &closes("19.99")[&10],
+            )
+            .unwrap();
+            for index in 0..batch.count as usize {
+                let start = S + index as u64 * BASE_INTERVAL_NS;
+                let bar = batch.present[index].then(|| crate::exact_bars::Bar {
+                    start_ns: start,
+                    end_ns: start + BASE_INTERVAL_NS,
+                    price_scale: 2,
+                    size_scale: 0,
+                    open: batch.open.as_ref().unwrap()[index],
+                    high: batch.high.as_ref().unwrap()[index],
+                    low: batch.low.as_ref().unwrap()[index],
+                    close: batch.open.as_ref().unwrap()[index],
+                    volume: 1,
+                    notional: i128::from(batch.open.as_ref().unwrap()[index]),
+                    trades: 1,
+                    last_trade_source_ns: start + 1,
+                    last_trade_live_receipt_ns: (source == crate::exact_bars::Mode::Live)
+                        .then_some(start + 2),
+                });
+                let point = stream.observe(start, bar.as_ref()).unwrap();
+                assert_eq!(point.source, source);
+                assert_eq!(point.needs_refinement, expected[0].needs_refinement[index]);
+                assert_eq!(point.late_before, expected[0].late_before[index]);
+                assert_eq!(point.prior_high_atoms, expected[0].prior_high_atoms[index]);
+            }
+            assert!(stream.observe(S + 5 * BASE_INTERVAL_NS, None).is_err());
+        }
+    }
+    #[test]
+    fn live_stream_rejects_historical_bar_without_advancing() {
+        let hash = config().hash().unwrap();
+        let mut stream = StreamingScreen::new(
+            crate::event_order::Scope {
+                provider: 1,
+                instrument: 10,
+                session: 20260922,
+            },
+            S,
+            2,
+            crate::exact_bars::Mode::Live,
+            &config(),
+            &hash,
+            &closes("19")[&10],
+        )
+        .unwrap();
+        let historical = crate::exact_bars::Bar {
+            start_ns: S,
+            end_ns: S + BASE_INTERVAL_NS,
+            price_scale: 2,
+            size_scale: 0,
+            open: 1000,
+            high: 1000,
+            low: 1000,
+            close: 1000,
+            volume: 1,
+            notional: 1000,
+            trades: 1,
+            last_trade_source_ns: S + 1,
+            last_trade_live_receipt_ns: None,
+        };
+        assert!(stream.observe(S, Some(&historical)).is_err());
+        let mut live = historical;
+        live.last_trade_live_receipt_ns = Some(S + 2);
+        assert!(stream.observe(S, Some(&live)).is_ok());
     }
 }

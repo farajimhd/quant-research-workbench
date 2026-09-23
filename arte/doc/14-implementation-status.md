@@ -10,6 +10,13 @@ fact, exact OHLC and Boolean operands, and resulting refinement mask. The hash
 is independent of Boolean batch partitioning. It is screening provenance, not
 entry permission; account decisions do not yet consume it as a typed operand.
 
+The Strategy 350 bar screen now uses one per-ticker state transition for the
+verified historical batch projector and a new completed-100-ms-bar streaming
+wrapper. Offline parity tests compare every bucket, including empty buckets
+and the late-mode boundary. The streaming wrapper pins market scope, prior
+close, configuration and source mode; a live bar without a receive timestamp
+is rejected before state advances. It has no direct order or database access.
+
 The ticker-shared Strategy 350 price gate can now emit immutable causal
 evidence. Its fingerprint binds the exact trade, policy, prior close, session
 context, evaluation clock, source kind, configuration and outcome. A live or
