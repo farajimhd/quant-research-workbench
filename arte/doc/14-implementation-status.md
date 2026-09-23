@@ -2,6 +2,13 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+Strategy 350 session contexts now identify their source as live or historical
+REST. The price gate rejects a context from the wrong source. A verified
+historical REST replay cannot certify a live session start. Historical replay
+still cannot prove live trade-receipt latency; the live two-channel watermark
+is a lateness assumption, not a completeness certificate. A true live handover
+proof remains unimplemented, and live Strategy 350 stays blocked.
+
 External ARTE adapters can no longer construct or mutate a Strategy 350 session
 context or set its completion flag. They can only inspect the context returned
 by the core session builder. The live builder still starts unready; a certified

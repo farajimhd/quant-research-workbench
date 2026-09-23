@@ -61,7 +61,14 @@ pub struct PriceFact {
     pub source_hash: String,
     pub source_order: Option<(u64, u64)>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextSource {
+    Live,
+    HistoricalRest,
+}
 pub struct SessionContext {
+    pub(crate) source: ContextSource,
     pub(crate) session: u32,
     pub(crate) at_ns: u64,
     pub(crate) source_order: (u64, u64),
@@ -71,6 +78,9 @@ pub struct SessionContext {
     pub(crate) complete: bool,
 }
 impl SessionContext {
+    pub fn source(&self) -> ContextSource {
+        self.source
+    }
     pub fn session(&self) -> u32 {
         self.session
     }
@@ -109,6 +119,7 @@ pub struct Outcome {
 
 pub struct State {
     scope: Scope,
+    source: ContextSource,
     session_start_ns: u64,
     config: Config,
     config_hash: String,
@@ -122,6 +133,7 @@ pub struct State {
 impl State {
     pub fn new(
         scope: Scope,
+        source: ContextSource,
         session_start_ns: u64,
         config: Config,
         expected_hash: &str,
@@ -137,6 +149,7 @@ impl State {
         }
         Ok(Self {
             scope,
+            source,
             session_start_ns,
             config,
             config_hash: hash,
@@ -168,7 +181,8 @@ impl State {
         result
     }
     fn update_context(&mut self, context: &SessionContext, known_at_ns: u64) -> Result<bool> {
-        if !context.complete
+        if context.source != self.source
+            || !context.complete
             || context.session != self.scope.session
             || context.at_ns < self.session_start_ns
             || context.at_ns > known_at_ns
@@ -404,6 +418,7 @@ mod tests {
     }
     fn context(at: u64, high: &str, prior: Option<PriceFact>) -> SessionContext {
         SessionContext {
+            source: ContextSource::Live,
             session: 20260922,
             at_ns: at,
             source_order: (at, at),
@@ -426,6 +441,7 @@ mod tests {
                 instrument: 10,
                 session: 20260922,
             },
+            ContextSource::Live,
             S,
             c,
             &hash,
@@ -599,6 +615,41 @@ mod tests {
             .observe_context(&context(4 * S, "11.40", None), 4 * S)
             .is_err());
         assert!(state.late_mode().is_err());
+    }
+    #[test]
+    fn historical_rest_context_cannot_certify_live_gate() {
+        let mut rest = context(2 * S, "10", None);
+        rest.source = ContextSource::HistoricalRest;
+        assert_eq!(rest.source(), ContextSource::HistoricalRest);
+        let mut live = state();
+        assert!(!live.observe_context(&rest, 2 * S).unwrap());
+        assert_eq!(
+            live.observe(
+                &event(2 * S, "10"),
+                &policy(),
+                Some(&fact("19", S)),
+                &rest,
+                2 * S,
+            )
+            .unwrap()
+            .block,
+            Some(Block::SessionContextUnavailable)
+        );
+        let config = config();
+        let hash = config.hash().unwrap();
+        let mut historical = State::new(
+            Scope {
+                provider: 1,
+                instrument: 10,
+                session: 20260922,
+            },
+            ContextSource::HistoricalRest,
+            S,
+            config,
+            &hash,
+        )
+        .unwrap();
+        assert!(historical.observe_context(&rest, 2 * S).unwrap());
     }
     #[test]
     fn context_source_order_can_advance_when_receipt_time_decreases() {

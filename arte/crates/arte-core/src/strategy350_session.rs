@@ -6,12 +6,12 @@ use crate::{
     event_order::Scope,
     event_storage::Batch,
     events::{Decimal, EventKind, Observation, Payload},
-    strategy350_price_gate::{PriceFact, SessionContext},
+    strategy350_price_gate::{ContextSource, PriceFact, SessionContext},
     trade_eligibility::Pinned,
     Error, Result,
 };
 
-pub const VERSION: &str = "arte.strategy-350-session.v1";
+pub const VERSION: &str = "arte.strategy-350-session.v2";
 
 pub struct Builder {
     scope: Scope,
@@ -19,6 +19,7 @@ pub struct Builder {
     end_ns: u64,
     price_scale: u8,
     policy_hash: String,
+    source: ContextSource,
     configuration_hash: String,
     start_certified: bool,
     open: Option<i64>,
@@ -37,6 +38,7 @@ impl Builder {
         end_ns: u64,
         price_scale: u8,
         policy_hash: String,
+        source: ContextSource,
         start_certified: bool,
     ) -> Result<Self> {
         if scope.provider == 0
@@ -61,6 +63,7 @@ impl Builder {
             end_ns,
             price_scale,
             &policy_hash,
+            source,
             start_certified,
         ))?;
         Ok(Self {
@@ -69,6 +72,7 @@ impl Builder {
             end_ns,
             price_scale,
             policy_hash,
+            source,
             configuration_hash,
             start_certified,
             open: None,
@@ -90,7 +94,15 @@ impl Builder {
         price_scale: u8,
         policy_hash: String,
     ) -> Result<Self> {
-        Self::new(scope, start_ns, end_ns, price_scale, policy_hash, false)
+        Self::new(
+            scope,
+            start_ns,
+            end_ns,
+            price_scale,
+            policy_hash,
+            ContextSource::Live,
+            false,
+        )
     }
     pub fn configuration_hash(&self) -> &str {
         &self.configuration_hash
@@ -175,6 +187,7 @@ impl Builder {
             self.high_order = order;
         }
         Ok(Some(SessionContext {
+            source: self.source,
             session: self.scope.session,
             at_ns: event.available_at_ns,
             source_order: order,
@@ -244,6 +257,7 @@ impl HistoricalReplay {
             end_ns,
             price_scale,
             policy.hash().into(),
+            ContextSource::HistoricalRest,
             true,
         )?;
         builder.configuration_hash =
@@ -407,6 +421,7 @@ mod tests {
             10 * S,
             2,
             policy.hash().into(),
+            ContextSource::Live,
             complete,
         )
         .unwrap()
@@ -491,6 +506,7 @@ mod tests {
                 instrument: 10,
                 session: 20260922,
             },
+            ContextSource::Live,
             S,
             config,
             &hash,
@@ -583,13 +599,24 @@ mod tests {
         assert_eq!(
             replay
                 .apply_batch(&batch, &p, |event, context| {
-                    seen.push((event.sip.ns, context.high().atoms, context.complete()));
+                    seen.push((
+                        event.sip.ns,
+                        context.high().atoms,
+                        context.complete(),
+                        context.source(),
+                    ));
                     Ok(())
                 })
                 .unwrap(),
             2
         );
-        assert_eq!(seen, vec![(2 * S, 1000, true), (3 * S, 1100, true)]);
+        assert_eq!(
+            seen,
+            vec![
+                (2 * S, 1000, true, ContextSource::HistoricalRest),
+                (3 * S, 1100, true, ContextSource::HistoricalRest),
+            ]
+        );
         assert_eq!(replay.next_batch_id(), None);
         assert_eq!(replay.finish().unwrap().0, 2);
         let (batch, verified) = verified_session();
