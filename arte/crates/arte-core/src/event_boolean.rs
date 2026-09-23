@@ -22,7 +22,7 @@ pub struct Transition {
     pub value: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Product {
     pub provider: u16,
@@ -35,6 +35,51 @@ pub struct Product {
     pub source_hash: String,
     pub evaluation_hash: String,
     pub transitions: Vec<Transition>,
+}
+
+impl Product {
+    pub fn validate(&self) -> Result<()> {
+        self.interval.validate()?;
+        if self.provider == 0
+            || self.instrument == 0
+            || !(19000101..=29991231).contains(&self.session)
+            || !hash_valid(&self.definition_hash)
+            || !hash_valid(&self.source_hash)
+            || !hash_valid(&self.evaluation_hash)
+            || self.event_count > 100_000_000
+            || self.transitions.len() > 10_000_000
+            || self.transitions.len() as u64 > self.event_count
+        {
+            return Err(Error::Invalid(
+                "event Boolean product identity or capacity".into(),
+            ));
+        }
+        let mut last = None;
+        for transition in &self.transitions {
+            if transition.event_index >= self.event_count
+                || !hash_valid(&transition.boundary_id)
+                || transition.source_sequence == 0
+                || transition.evaluated_at_ns == 0
+                || last.is_some_and(|prior: &Transition| {
+                    transition.event_index <= prior.event_index
+                        || transition.source_sequence <= prior.source_sequence
+                        || transition.evaluated_at_ns < prior.evaluated_at_ns
+                        || transition.value == prior.value
+                })
+                || (last.is_none() && transition.value.is_none())
+            {
+                return Err(Error::Conflict(
+                    "event Boolean transition order or state".into(),
+                ));
+            }
+            last = Some(transition);
+        }
+        Ok(())
+    }
+    pub fn hash(&self) -> Result<String> {
+        self.validate()?;
+        content_hash(&("arte.event-boolean.product.v1", self))
+    }
 }
 
 pub struct Builder {
@@ -192,7 +237,7 @@ impl Builder {
                 "event Boolean source ledger or evaluation count differs".into(),
             ));
         }
-        Ok(Product {
+        let product = Product {
             provider: self.scope.provider,
             instrument: self.scope.instrument,
             session: self.scope.session,
@@ -202,7 +247,9 @@ impl Builder {
             source_hash,
             evaluation_hash: format!("{:x}", self.evaluation_digest.finalize()),
             transitions: self.transitions,
-        })
+        };
+        product.validate()?;
+        Ok(product)
     }
 
     pub fn event_count(&self) -> u64 {
@@ -341,6 +388,10 @@ mod tests {
         assert_eq!(product.transitions.len(), 1);
         assert_eq!(product.transitions[0].event_index, 1);
         assert_eq!(product.transitions[0].value, Some(true));
+        assert_eq!(product.hash().unwrap().len(), 64);
+        let mut tampered = product.clone();
+        tampered.transitions[0].value = None;
+        assert!(tampered.hash().is_err());
 
         let mut changed_policy = Builder::new(scope(), interval(), &definition(), 3, 3).unwrap();
         for (index, event) in events.iter().enumerate() {

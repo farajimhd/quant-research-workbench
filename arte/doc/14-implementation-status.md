@@ -101,8 +101,13 @@ The half-open source interval and scope are part of the digest domain. Seal
 requires an independently supplied source
 count and digest. Offline unit tests cover matching and mismatched source
 evidence, repeated boundaries, interval bounds, budgets and wrong cadence.
-Durable ClickHouse publication,
-source-ledger binding, recovery and live/backtest producer wiring remain undone.
+Migration 024 and the event-Boolean ClickHouse adapter now provide immutable
+sparse transition publication and header-last readback. Storage policy and
+actual part placement are checked before I/O. A failed partial publication
+can retry missing rows but rejects changed or duplicate rows. Offline unit
+tests cover preparation, exact reconstruction and rejected row conflicts.
+The migration is unapplied and connected I/O untested. Independent source-ledger
+certification, recovery and live/backtest producer wiring remain undone.
 The first Strategy
 350 Early Squeeze historical formula and first-occurrence session latch now
 feed that path. The formula uses exact close-ratio, trade-count, and volume

@@ -84,7 +84,13 @@ that expectation from a verified event source or causal playback ledger;
 the builder's own observations are not independent coverage evidence.
 The source digest includes the scheduler's trade-eligibility result, so a
 different eligibility policy cannot reuse a source certificate silently.
-ClickHouse publication, readback, and a run-level producer remain unfinished.
+ARTE now has a separate ClickHouse schema for sparse event transitions and an
+immutable product header. The publisher checks the explicit SSD policy and
+actual part placement, compares retry rows, verifies all transition rows,
+then publishes the header. Readback requires the pinned product and source
+authority hashes. The schema has not been applied, connected readback has not
+been tested, and the external source authority still must certify the ledger.
+A run-level producer remains unfinished.
 
 ClickHouse is the sole durable store for backtest spools, run evidence, and
 operational logs. Use compact typed records and measured compression. SQLite
