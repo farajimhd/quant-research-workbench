@@ -2,6 +2,16 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+Execution cadence is now a required field in the new shared Rust computation
+contract. It supports real-time events or a fixed 100 ms multiple. Its identity
+hash changes when cadence changes. The contract covers strategy, Watchlist,
+signal stream, scanner, rule set, indicator, level book, and named computations.
+Strategy 350's new purchase-price gate pins event cadence. This gate implements
+only the causal prior-close price ceiling, purchase price floor, and latched
+late-mode prior-HOD zone. It is not an entry authorization or a full strategy
+port. Other definitions and scheduler dispatch are not wired to this contract
+yet; they must not be treated as interval-configurable in a runnable system.
+
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
 tests remain prohibited until the user copies ARTE to its separate repository.
