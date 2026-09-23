@@ -55,6 +55,12 @@ states without mutating them; missing, future, or stale frames block the gate.
 The rule declares event execution cadence. Offline tests cover the four-frame
 requirement, non-compounding previews, stale input, and invalid clocks. It is
 not yet wired to the historical Strategy 350 runner or account evaluator.
+An offline historical projection now consumes a certified, readback-verified
+100 ms compact-bar product. It pins request, coverage, calculation hash and
+price scale, and emits sparse completed close inputs at their bar-end clocks.
+It does not invent live receipt or last-trade timestamps. The projection
+reaches the shared four-frame MACD state, but the runnable backtest loop does
+not yet apply those inputs at each decision boundary.
 Numerical parity with the current Python/QMD MACD initialization is unproven;
 activation must remain blocked until that comparison and an effective
 configuration pin are complete.
@@ -65,7 +71,7 @@ The MACD state and this source advance atomically, with session, scale,
 watermark, and source identity checks. Offline tests cover sparse gaps and a
 fresh final bar. The live exact-bar owner now advances this source from its
 verified bar advance. The historical Strategy 350 runner does not yet consume
-it, so historical mode cannot claim the gate is connected.
+the projected schedule, so historical mode cannot claim the gate is connected.
 The four EMA states and sparse exact-bar buckets now have separate bounded,
 content-addressed recovery images. Restore checks period alphas, finite EMA
 values, frame clocks, source generation, active bucket geometry, and canonical

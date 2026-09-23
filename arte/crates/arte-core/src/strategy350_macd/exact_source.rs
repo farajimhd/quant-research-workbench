@@ -236,12 +236,44 @@ impl Source {
                 return Err(Error::Conflict("Strategy 350 MACD exact bar".into()));
             }
         }
+        self.advance_close(bar.map(|value| (value.start_ns, value.close)), watermark_ns)
+    }
+    /// A certified compact historical bar has no last-trade source timestamp.
+    /// Accept only its actual close and completed bucket clock; never invent a
+    /// trade timestamp or convert this path into live receipt evidence.
+    pub(crate) fn advance_compact_close(
+        &mut self,
+        bar: Option<(u64, i64)>,
+        watermark_ns: u64,
+    ) -> Result<Vec<CompletedInput>> {
+        if watermark_ns < self.watermark_ns || watermark_ns > self.session_end_ns {
+            return Err(Error::Conflict("Strategy 350 MACD watermark".into()));
+        }
+        if let Some((start_ns, close)) = bar {
+            if start_ns < self.watermark_ns
+                || start_ns < self.session_start_ns
+                || start_ns
+                    .checked_add(INTERVAL_NS)
+                    .is_none_or(|end| end > watermark_ns)
+                || !start_ns.is_multiple_of(INTERVAL_NS)
+                || close <= 0
+            {
+                return Err(Error::Conflict("Strategy 350 compact MACD close".into()));
+            }
+        }
+        self.advance_close(bar, watermark_ns)
+    }
+    fn advance_close(
+        &mut self,
+        bar: Option<(u64, i64)>,
+        watermark_ns: u64,
+    ) -> Result<Vec<CompletedInput>> {
         let mut next = self.clone();
         let mut output = Vec::with_capacity(8);
-        if let Some(bar) = bar {
-            next.seal_through(bar.start_ns, &mut output);
+        if let Some((bar_start_ns, bar_close)) = bar {
+            next.seal_through(bar_start_ns, &mut output);
             for (index, timeframe_ns) in TIMEFRAMES_NS.into_iter().enumerate() {
-                let start_ns = bar.start_ns / timeframe_ns * timeframe_ns;
+                let start_ns = bar_start_ns / timeframe_ns * timeframe_ns;
                 let end_ns = start_ns
                     .checked_add(timeframe_ns)
                     .ok_or_else(|| Error::Capacity("Strategy 350 MACD bucket clock".into()))?;
@@ -252,7 +284,7 @@ impl Source {
                 }
                 match &mut next.buckets[index] {
                     Some(bucket) if bucket.start_ns == start_ns => {
-                        bucket.close_atoms = bar.close;
+                        bucket.close_atoms = bar_close;
                     }
                     Some(_) => {
                         return Err(Error::Conflict("Strategy 350 MACD bucket order".into()));
@@ -261,7 +293,7 @@ impl Source {
                         *slot = Some(Bucket {
                             start_ns,
                             end_ns,
-                            close_atoms: bar.close,
+                            close_atoms: bar_close,
                         });
                     }
                 }

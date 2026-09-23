@@ -1,0 +1,212 @@
+//! Sparse MACD close schedule from one certified 100 ms historical product.
+//! The caller applies these inputs at their end clock before evaluating later
+//! events. No live receipt or historical trade execution timestamp is inferred.
+use super::{exact_source, Config, State};
+use crate::{
+    bar_catalogue::{Column, Complete, BASE_INTERVAL_NS},
+    event_order::Scope,
+    Error, Result,
+};
+
+pub struct Projection {
+    pub source: exact_source::Source,
+    pub state: State,
+    pub completed: Vec<exact_source::CompletedInput>,
+}
+
+pub fn project(
+    product: &Complete,
+    expected_request_hash: &str,
+    expected_coverage_hash: &str,
+    config: &Config,
+) -> Result<Projection> {
+    let request = product.request();
+    config.hash()?;
+    if request.hash()? != expected_request_hash
+        || product.coverage_hash() != expected_coverage_hash
+        || request.instruments.len() != 1
+        || request.timeframe_ns != BASE_INTERVAL_NS
+        || request.calculation_hash != config.source_algorithm_hash
+        || !request.columns.contains(&Column::Close)
+        || !request.columns.contains(&Column::Trades)
+    {
+        return Err(Error::Invalid(
+            "Strategy 350 historical MACD product".into(),
+        ));
+    }
+    let first = product
+        .batches()
+        .first()
+        .ok_or_else(|| Error::Unready("historical MACD bars missing".into()))?;
+    let scope = Scope {
+        provider: request.provider,
+        instrument: request.instruments[0],
+        session: request.session,
+    };
+    if first.price_scale != config.price_scale {
+        return Err(Error::Conflict("historical MACD price scale".into()));
+    }
+    let mut source = exact_source::Source::new(
+        scope,
+        request.interval.start,
+        request.interval.end,
+        config.price_scale,
+        request.calculation_hash.clone(),
+    )?;
+    let mut state = State::new(scope, request.interval.start, request.interval.end, config)?;
+    let mut completed = Vec::new();
+    for batch in product.batches() {
+        if batch.instrument != scope.instrument || batch.price_scale != config.price_scale {
+            return Err(Error::Conflict("historical MACD source changed".into()));
+        }
+        let closes = batch
+            .close
+            .as_deref()
+            .ok_or_else(|| Error::Unready("historical MACD close missing".into()))?;
+        let trades = batch
+            .trades
+            .as_deref()
+            .ok_or_else(|| Error::Unready("historical MACD trades missing".into()))?;
+        for slot in 0..batch.count as usize {
+            let start = (slot as u64)
+                .checked_mul(BASE_INTERVAL_NS)
+                .and_then(|offset| batch.first_start_ns.checked_add(offset))
+                .ok_or_else(|| Error::Capacity("historical MACD clock".into()))?;
+            let end = start
+                .checked_add(BASE_INTERVAL_NS)
+                .ok_or_else(|| Error::Capacity("historical MACD end".into()))?;
+            let bar = if batch.present[slot] {
+                if trades[slot] == 0 {
+                    return Err(Error::Conflict("historical MACD empty trade bar".into()));
+                }
+                Some((start, closes[slot]))
+            } else {
+                None
+            };
+            for input in source.advance_compact_close(bar, end)? {
+                state.observe_completed(input.timeframe_ns, input.end_ns, input.close)?;
+                completed.push(input);
+            }
+        }
+    }
+    if source.watermark_ns() != request.interval.end {
+        return Err(Error::Conflict("historical MACD coverage".into()));
+    }
+    state.require_source(&source)?;
+    Ok(Projection {
+        source,
+        state,
+        completed,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        bar_catalogue::{Batch, Coverage, Readback, Request, Source},
+        coverage::Interval,
+        execution_interval::ExecutionInterval,
+    };
+    const SECOND: u64 = 1_000_000_000;
+    const START: u64 = 30 * SECOND;
+
+    fn product() -> Complete {
+        let request = Request {
+            provider: 1,
+            instruments: vec![10],
+            session: 20260922,
+            interval: Interval {
+                start: START,
+                end: START + 30 * SECOND,
+            },
+            timeframe_ns: BASE_INTERVAL_NS,
+            source_generation: "a".repeat(64),
+            calculation_hash: "b".repeat(64),
+            columns: [Column::Close, Column::Trades].into(),
+            maximum_rows: 300,
+        };
+        let coverage = Coverage {
+            provider: request.provider,
+            session: request.session,
+            interval: request.interval,
+            timeframe_ns: request.timeframe_ns,
+            source_generation: request.source_generation.clone(),
+            calculation_hash: request.calculation_hash.clone(),
+            sources: [(
+                10,
+                Source {
+                    certificate_hash: "c".repeat(64),
+                    price_scale: 2,
+                    size_scale: 0,
+                },
+            )]
+            .into(),
+            published_at_ns: START + 31 * SECOND,
+        };
+        let mut present = vec![false; 300];
+        let mut close = vec![0; 300];
+        let mut trades = vec![0; 300];
+        for (slot, price) in [(0, 1000), (9, 1010), (299, 1050)] {
+            present[slot] = true;
+            close[slot] = price;
+            trades[slot] = 1;
+        }
+        let batch = Batch {
+            request_hash: request.hash().unwrap(),
+            coverage_hash: coverage.hash().unwrap(),
+            instrument: 10,
+            first_start_ns: START,
+            count: 300,
+            price_scale: 2,
+            size_scale: 0,
+            present,
+            open: None,
+            high: None,
+            low: None,
+            close: Some(close),
+            volume: None,
+            notional: None,
+            trades: Some(trades),
+        };
+        let mut readback = Readback::new(request, &coverage, START + 31 * SECOND).unwrap();
+        readback.observe(batch).unwrap();
+        readback.finish().unwrap()
+    }
+
+    #[test]
+    fn certified_sparse_compact_bars_seal_without_fabricated_trades() {
+        let complete = product();
+        let config = Config {
+            execution_interval: ExecutionInterval::Events,
+            price_scale: 2,
+            source_algorithm_hash: "b".repeat(64),
+        };
+        let request_hash = complete.request().hash().unwrap();
+        let coverage_hash = complete.coverage_hash().to_owned();
+        let projection = project(&complete, &request_hash, &coverage_hash, &config).unwrap();
+        assert_eq!(projection.source.watermark_ns(), START + 30 * SECOND);
+        assert_eq!(
+            projection
+                .completed
+                .iter()
+                .filter(|input| input.timeframe_ns == SECOND)
+                .count(),
+            2
+        );
+        assert_eq!(
+            projection
+                .completed
+                .iter()
+                .filter(|input| input.timeframe_ns == 30 * SECOND)
+                .count(),
+            1
+        );
+        assert_eq!(
+            projection.completed.last().unwrap().end_ns,
+            START + 30 * SECOND
+        );
+        assert!(project(&complete, &"f".repeat(64), &coverage_hash, &config).is_err());
+        assert!(project(&complete, &request_hash, &"f".repeat(64), &config).is_err());
+    }
+}
