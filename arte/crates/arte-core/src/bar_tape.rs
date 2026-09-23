@@ -14,17 +14,27 @@ struct Cursor {
     batch: usize,
     slot: usize,
 }
+struct Track {
+    product: usize,
+    instrument: u64,
+    session: u32,
+    end_batch: usize,
+    cursor: Cursor,
+}
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Head {
     end_ns: u64,
     instrument: u64,
     session: u32,
-    product: usize,
+    track: usize,
 }
 
 pub struct View<'a> {
+    pub provider: u16,
     pub instrument: u64,
     pub session: u32,
+    pub source_request_hash: &'a str,
+    pub source_coverage_hash: &'a str,
     pub start_ns: u64,
     pub end_ns: u64,
     pub batch: &'a Batch,
@@ -33,7 +43,9 @@ pub struct View<'a> {
 }
 pub struct Tape {
     products: Vec<Complete>,
-    cursors: Vec<Cursor>,
+    request_hashes: Vec<String>,
+    provider: u16,
+    tracks: Vec<Track>,
     ready: BinaryHeap<Reverse<Head>>,
     last_end_ns: Option<u64>,
     include_empty: bool,
@@ -65,12 +77,19 @@ impl Tape {
         if products.is_empty() || products.len() > 100_000 {
             return Err(Error::Invalid("bar tape product count".into()));
         }
+        let provider = products[0].request().provider;
+        let mut request_hashes = Vec::with_capacity(products.len());
         let mut scope = BTreeMap::<u64, Vec<(u64, u64)>>::new();
         for product in &products {
             let request = product.request();
-            if request.timeframe_ns != crate::bar_catalogue::BASE_INTERVAL_NS {
-                return Err(Error::Conflict("bar tape requires 100 ms base".into()));
+            if request.provider != provider
+                || request.timeframe_ns != crate::bar_catalogue::BASE_INTERVAL_NS
+            {
+                return Err(Error::Conflict(
+                    "bar tape provider or 100 ms base differs".into(),
+                ));
             }
+            request_hashes.push(request.hash()?);
             for &instrument in &request.instruments {
                 scope
                     .entry(instrument)
@@ -84,25 +103,60 @@ impl Tape {
                 return Err(Error::Conflict("bar tape overlapping generations".into()));
             }
         }
-        let count = products.len();
+        let mut tracks = Vec::new();
+        for (product_index, product) in products.iter().enumerate() {
+            let batches = product.batches();
+            let mut batch_index = 0;
+            for &instrument in &product.request().instruments {
+                let first_batch = batch_index;
+                while batches
+                    .get(batch_index)
+                    .is_some_and(|batch| batch.instrument == instrument)
+                {
+                    batch_index += 1;
+                }
+                if first_batch == batch_index {
+                    return Err(Error::Conflict(
+                        "bar tape instrument batches missing".into(),
+                    ));
+                }
+                tracks.push(Track {
+                    product: product_index,
+                    instrument,
+                    session: product.request().session,
+                    end_batch: batch_index,
+                    cursor: Cursor {
+                        batch: first_batch,
+                        slot: 0,
+                    },
+                });
+            }
+            if batch_index != batches.len() {
+                return Err(Error::Conflict("bar tape instrument batches differ".into()));
+            }
+        }
+        let count = tracks.len();
         let mut tape = Self {
             products,
-            cursors: vec![Cursor { batch: 0, slot: 0 }; count],
+            request_hashes,
+            provider,
+            tracks,
             ready: BinaryHeap::new(),
             last_end_ns: None,
             include_empty,
             fixed_interval_ns,
         };
-        for product in 0..count {
-            tape.push_next(product)?;
+        for track in 0..count {
+            tape.push_next(track)?;
         }
         Ok(tape)
     }
-    fn push_next(&mut self, product: usize) -> Result<()> {
-        let request = self.products[product].request();
-        let batches = self.products[product].batches();
-        let cursor = &mut self.cursors[product];
-        while cursor.batch < batches.len() {
+    fn push_next(&mut self, track_index: usize) -> Result<()> {
+        let track = &mut self.tracks[track_index];
+        let request = self.products[track.product].request();
+        let batches = self.products[track.product].batches();
+        let cursor = &mut track.cursor;
+        while cursor.batch < track.end_batch {
             let batch = &batches[cursor.batch];
             while cursor.slot < batch.count as usize {
                 let slot = cursor.slot;
@@ -120,9 +174,9 @@ impl Tape {
                     }
                     self.ready.push(Reverse(Head {
                         end_ns,
-                        instrument: batch.instrument,
-                        session: request.session,
-                        product,
+                        instrument: track.instrument,
+                        session: track.session,
+                        track: track_index,
                     }));
                     return Ok(());
                 }
@@ -154,18 +208,23 @@ impl Tape {
             return Err(Error::Conflict("bar tape time regressed".into()));
         }
         self.last_end_ns = Some(head.end_ns);
-        let cursor = self.cursors[head.product];
+        let track = &self.tracks[head.track];
+        let cursor = track.cursor;
         let batch_index = cursor.batch;
         let slot = cursor
             .slot
             .checked_sub(1)
             .ok_or_else(|| Error::Conflict("bar tape cursor missing".into()))?;
-        self.push_next(head.product)?;
-        let batch = &self.products[head.product].batches()[batch_index];
-        let start_ns = head.end_ns - self.products[head.product].request().timeframe_ns;
+        let product = track.product;
+        self.push_next(head.track)?;
+        let batch = &self.products[product].batches()[batch_index];
+        let start_ns = head.end_ns - self.products[product].request().timeframe_ns;
         Ok(Some(View {
+            provider: self.provider,
             instrument: head.instrument,
             session: head.session,
+            source_request_hash: &self.request_hashes[product],
+            source_coverage_hash: self.products[product].coverage_hash(),
             start_ns,
             end_ns: head.end_ns,
             batch,
@@ -187,12 +246,15 @@ mod tests {
     };
     use std::collections::{BTreeMap, BTreeSet};
     fn product(instrument: u64, present: Vec<bool>) -> Complete {
+        product_for_provider(1, instrument, present)
+    }
+    fn product_for_provider(provider: u16, instrument: u64, present: Vec<bool>) -> Complete {
         let interval = Interval {
             start: 1_000_000_000,
             end: 1_300_000_000,
         };
         let request = Request {
-            provider: 1,
+            provider,
             instruments: vec![instrument],
             session: 20260922,
             interval,
@@ -203,7 +265,7 @@ mod tests {
             maximum_rows: 3,
         };
         let coverage = Coverage {
-            provider: 1,
+            provider,
             session: request.session,
             interval,
             timeframe_ns: request.timeframe_ns,
@@ -244,6 +306,100 @@ mod tests {
             })
             .unwrap();
         readback.finish().unwrap()
+    }
+    fn multi_instrument_product() -> Complete {
+        let interval = Interval {
+            start: 1_000_000_000,
+            end: 1_300_000_000,
+        };
+        let request = Request {
+            provider: 1,
+            instruments: vec![10, 20],
+            session: 20260922,
+            interval,
+            timeframe_ns: 100_000_000,
+            source_generation: "a".repeat(64),
+            calculation_hash: "b".repeat(64),
+            columns: BTreeSet::from([Column::Close]),
+            maximum_rows: 6,
+        };
+        let source = Source {
+            certificate_hash: "c".repeat(64),
+            price_scale: 2,
+            size_scale: 2,
+        };
+        let coverage = Coverage {
+            provider: 1,
+            session: request.session,
+            interval,
+            timeframe_ns: request.timeframe_ns,
+            source_generation: request.source_generation.clone(),
+            calculation_hash: request.calculation_hash.clone(),
+            sources: BTreeMap::from([(10, source.clone()), (20, source)]),
+            published_at_ns: 2_000_000_000,
+        };
+        let request_hash = request.hash().unwrap();
+        let coverage_hash = coverage.hash().unwrap();
+        let mut readback = Readback::new(request, &coverage, 2_000_000_000).unwrap();
+        for (instrument, start, present) in [
+            (10, 1_000_000_000, vec![true, false]),
+            (10, 1_200_000_000, vec![true]),
+            (20, 1_000_000_000, vec![false, true, true]),
+        ] {
+            let count = present.len() as u32;
+            let close = present
+                .iter()
+                .map(|active| if *active { 1000 } else { 0 })
+                .collect();
+            readback
+                .observe(Batch {
+                    request_hash: request_hash.clone(),
+                    coverage_hash: coverage_hash.clone(),
+                    instrument,
+                    first_start_ns: start,
+                    count,
+                    price_scale: 2,
+                    size_scale: 2,
+                    present,
+                    open: None,
+                    high: None,
+                    low: None,
+                    close: Some(close),
+                    volume: None,
+                    notional: None,
+                    trades: None,
+                })
+                .unwrap();
+        }
+        readback.finish().unwrap()
+    }
+    #[test]
+    fn one_multi_instrument_product_merges_by_market_time() {
+        let product = multi_instrument_product();
+        let request_hash = product.request().hash().unwrap();
+        let coverage_hash = product.coverage_hash().to_owned();
+        let mut tape = Tape::new(vec![product]).unwrap();
+        let mut seen = Vec::new();
+        while let Some(view) = tape.next_present().unwrap() {
+            assert_eq!(view.provider, 1);
+            assert_eq!(view.source_request_hash, request_hash);
+            assert_eq!(view.source_coverage_hash, coverage_hash);
+            seen.push((view.end_ns, view.instrument));
+        }
+        assert_eq!(
+            seen,
+            [
+                (1_100_000_000, 10),
+                (1_200_000_000, 20),
+                (1_300_000_000, 10),
+                (1_300_000_000, 20),
+            ]
+        );
+        assert!(Tape::new(vec![
+            product_for_provider(1, 10, vec![true, false, false]),
+            product_for_provider(2, 20, vec![false, true, true]),
+        ])
+        .is_err());
     }
     #[test]
     fn stable_cross_ticker_order_skips_empty_buckets() {

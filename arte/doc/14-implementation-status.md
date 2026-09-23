@@ -332,7 +332,13 @@ is registered with it yet. A runnable system must reject any executable
 definition without its own validated interval.
 The completed-bar tape can now emit every 100 ms boundary or only aligned
 fixed-interval boundaries, including empty buckets. It refuses to represent
-event cadence using bars. This is backtest clock plumbing, not full evaluation.
+event cadence using bars. Its merge now keeps one cursor per instrument even
+when a verified product contains several instruments and several batches per
+instrument. This prevents ticker-major readback order from regressing market
+time. Each boundary also exposes the verified bar request and coverage hashes;
+mixed-provider tapes are rejected. A unit test covers one multi-instrument
+product, source identities, and equal-time ties.
+This is backtest clock plumbing, not full evaluation.
 The partial Strategy 350 gate now checks ordered source time and sequence, not
 receipt order. Equal receive timestamps and out-of-order arrival times can be
 processed after the ordered lane releases them. Late mode latches before the
