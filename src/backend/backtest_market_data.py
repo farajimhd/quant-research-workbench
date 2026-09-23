@@ -22,6 +22,11 @@ ARTE_DATABASE = "arte"
 MARKET_DAY_VERSION = "market-day-core-v5"
 MARKET_DAY_TABLES = ("bars_v1", "indicators_v1", "liquidity_100ms_v1")
 MARKET_DAY_STAGES = ("bars", "technical", "broker_100ms")
+FIXED_EXECUTION_BLOCKER = (
+    "Fixed-interval Backtest is not yet causally executable: aggregate 100ms rows "
+    "cannot be converted to synthetic quote/trade events for broker fills or V7 strategy state. "
+    "A native persisted-bar strategy and liquidity-aware broker path must pass equivalence tests first."
+)
 DEFAULT_LEDGER = Path(
     r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\build-ledger-v2.sqlite3"
 )
@@ -193,6 +198,29 @@ class MarketDayLedger:
         connection.execute("PRAGMA query_only=ON")
         return connection
 
+    def _planned_scopes(self, build_id: str, definition_hash: str, days: tuple[str, ...]) -> set[tuple[str, str]]:
+        """Read the producer's immutable population, not its completed subset."""
+        manifest = self.path.parent / "market-day" / f"{build_id}.json"
+        if not manifest.is_file():
+            raise ValueError(f"Certified market-day population manifest is unavailable: {manifest}")
+        report = json.loads(manifest.read_text(encoding="utf-8"))
+        definition = report.get("definition")
+        if (report.get("build_id") != build_id or not isinstance(definition, dict)
+                or _stable_hash(definition) != definition_hash):
+            raise ValueError("Market-day population manifest does not match the certified build")
+        plan = definition.get("plan") or {}
+        requested = set(plan.get("requested") or ())
+        if not set(days).issubset(requested):
+            raise ValueError("Backtest sessions are outside the certified market-day population")
+        scopes = {
+            (str(row["source_date"]), str(row["ticker"]))
+            for row in plan.get("units") or ()
+            if str(row.get("source_date")) in days
+        }
+        if not scopes or any(not any(day == scope_day for scope_day, _ in scopes) for day in days):
+            raise ValueError("Certified market-day population has an empty requested session")
+        return scopes
+
     def certified_plan(
         self,
         *,
@@ -218,11 +246,23 @@ class MarketDayLedger:
                 raise ValueError("No certified complete market-day-core-v5 build is available")
             errors: list[str] = []
             for build_id, definition_hash, _ in builds:
+                try:
+                    population = self._planned_scopes(str(build_id), str(definition_hash), days)
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    errors.append(f"{build_id}: {exc}")
+                    continue
+                selected = set(population)
+                if tickers:
+                    selected = {(day, ticker) for day in days for ticker in tickers}
+                    outside = selected.difference(population)
+                    if outside:
+                        errors.append(f"{build_id}: {len(outside)} ticker-days outside certified population")
+                        continue
                 params: list[Any] = [build_id, *days]
                 where_ticker = ""
-                if tickers:
-                    where_ticker = f" AND ticker IN ({','.join('?' for _ in tickers)})"
-                    params.extend(tickers)
+                selected_tickers = sorted({ticker for _, ticker in selected})
+                where_ticker = f" AND ticker IN ({','.join('?' for _ in selected_tickers)})"
+                params.extend(selected_tickers)
                 rows = connection.execute(
                     f"SELECT build_id,session_date,ticker,stage,attempt_id,source_hash,"
                     f"output_rows,output_hash FROM units WHERE build_id=? "
@@ -235,7 +275,7 @@ class MarketDayLedger:
                 scopes: dict[tuple[str, str], set[str]] = {}
                 for unit in units:
                     scopes.setdefault((unit.session_date, unit.ticker), set()).add(unit.stage)
-                expected = {(day, ticker) for day in days for ticker in tickers} if tickers else set(scopes)
+                expected = selected
                 missing = sorted(scope for scope in expected if scopes.get(scope) != set(MARKET_DAY_STAGES))
                 if not expected:
                     errors.append(f"{build_id}: no completed ticker-day products")
@@ -294,7 +334,7 @@ def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None) -> None:
     active = client or readonly_clickhouse_client()
     close = client is None
     try:
-        expected = len(plan.sessions) * len(plan.tickers)
+        expected = len({(unit.session_date, unit.ticker) for unit in plan.units})
         if expected <= 0:
             raise ValueError("Certified market-day plan has no ticker-day scope")
         stage_tables = {
@@ -358,18 +398,17 @@ def market_day_rows_sql(plan: CertifiedMarketDayPlan) -> str:
     technical = _unit_map(plan, "technical")
     liquidity = _unit_map(plan, "broker_100ms")
     scopes = []
-    for day in plan.sessions:
-        for ticker in plan.tickers:
-            key = (day, ticker)
-            if key not in bars or key not in technical or key not in liquidity:
-                raise ValueError(f"Certified market-day plan lost {day} {ticker}")
-            scopes.append(
-                "SELECT "
-                f"{_literal(day)} session_date,{_literal(ticker)} ticker,"
-                f"toUUID({_literal(bars[key].attempt_id)}) bars_attempt,"
-                f"toUUID({_literal(technical[key].attempt_id)}) indicators_attempt,"
-                f"toUUID({_literal(liquidity[key].attempt_id)}) liquidity_attempt"
-            )
+    for day, ticker in sorted(bars):
+        key = (day, ticker)
+        if key not in technical or key not in liquidity:
+            raise ValueError(f"Certified market-day plan lost {day} {ticker}")
+        scopes.append(
+            "SELECT "
+            f"{_literal(day)} session_date,{_literal(ticker)} ticker,"
+            f"toUUID({_literal(bars[key].attempt_id)}) bars_attempt,"
+            f"toUUID({_literal(technical[key].attempt_id)}) indicators_attempt,"
+            f"toUUID({_literal(liquidity[key].attempt_id)}) liquidity_attempt"
+        )
     scope_sql = " UNION ALL ".join(scopes)
     resolutions = tuple(sorted({100, *plan.required_resolutions_ms}))
     resolution_sql = ",".join(str(value) for value in resolutions)

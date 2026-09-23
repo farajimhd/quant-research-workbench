@@ -449,6 +449,8 @@ class ReplayRunDefinition:
                 raise ValueError("Fixed-interval Backtest requires a certified read-only market-data plan")
             if plan_interval != str(resolved_interval.milliseconds):
                 raise ValueError("Backtest market-data plan does not match execution_interval")
+            from src.backend.backtest_market_data import FIXED_EXECUTION_BLOCKER
+            raise ValueError(FIXED_EXECUTION_BLOCKER)
         if type(self.prepare_frames_only) is not bool or (self.prepare_frames_only and self.mode != RunMode.BACKTEST):
             raise ValueError('Frame preparation only requires Backtest mode and a boolean flag')
         if not 0 <= self.minimum_p_norm <= 1:
@@ -2917,6 +2919,8 @@ class ReplayRunController:
 
     async def _run_fixed_market_days(self) -> None:
         """Execute persisted boundaries without event replay or frame spooling."""
+        from src.backend.backtest_market_data import FIXED_EXECUTION_BLOCKER
+        raise RuntimeError(FIXED_EXECUTION_BLOCKER)
         from concurrent.futures import ThreadPoolExecutor
         from itertools import islice
         from src.backend.backtest_market_data import (
@@ -9786,6 +9790,16 @@ def backtest_preflight(
         ),
         "evidence": market_data_plan.get("token", "") if market_data_plan else market_data_error,
     })
+    if execution_interval.kind == "fixed":
+        from src.backend.backtest_market_data import FIXED_EXECUTION_BLOCKER
+        checks.append({
+            "id": "fixed_execution_contract",
+            "label": "Causal fixed-interval execution",
+            "status": "blocked",
+            "required": True,
+            "summary": FIXED_EXECUTION_BLOCKER,
+            "evidence": "native_bar_strategy_and_broker_equivalence_pending",
+        })
     from src.backend.historical_signal_preparation import signal_coverage_check
     signal_check = signal_coverage_check(
         activated_signal_streams,
@@ -9904,6 +9918,7 @@ def backtest_preflight(
         and storage_ready
         and sessions
         and (execution_interval.kind == "events" or bool(market_data_plan))
+        and execution_interval.kind != "fixed"
         and 1_000 <= initial_cash <= 1_000_000_000
     )
     return {

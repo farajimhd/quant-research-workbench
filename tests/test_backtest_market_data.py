@@ -4,7 +4,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, time
 from pathlib import Path
 
 from src.backend.backtest_market_data import (
@@ -13,6 +13,7 @@ from src.backend.backtest_market_data import (
     assert_select_only,
     market_day_rows_sql,
     verify_market_day_plan,
+    _stable_hash,
 )
 
 
@@ -30,6 +31,14 @@ class _ReadClient:
 
 class BacktestMarketDataTests(unittest.TestCase):
     def _ledger(self, root: Path) -> MarketDayLedger:
+        definition = {"plan": {"requested": ["2026-08-18"], "units": [
+            {"source_date": "2026-08-18", "ticker": "SUGP"},
+        ]}}
+        manifest_dir = root / "market-day"
+        manifest_dir.mkdir()
+        (manifest_dir / "build-1.json").write_text(json.dumps({
+            "build_id": "build-1", "definition": definition,
+        }), encoding="utf-8")
         path = root / "build-ledger-v2.sqlite3"
         connection = sqlite3.connect(path)
         connection.executescript("""
@@ -42,7 +51,7 @@ class BacktestMarketDataTests(unittest.TestCase):
         """)
         connection.execute(
             "INSERT INTO builds VALUES (?,?,?,?,?,?,?,?)",
-            ("build-1", "definition", "market-day-core-v5", "events", "rules",
+            ("build-1", _stable_hash(definition), "market-day-core-v5", "events", "rules",
              "arte", "core_complete", "2026-09-23T00:00:00Z"),
         )
         for stage in ("bars", "technical", "broker_100ms"):
@@ -92,10 +101,39 @@ class BacktestMarketDataTests(unittest.TestCase):
                     configuration={"strategy": {"execution_interval": "100ms"}},
                 )
 
+    def test_incomplete_full_population_fails_instead_of_shrinking(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = self._ledger(Path(directory))
+            manifest = ledger.path.parent / "market-day" / "build-1.json"
+            report = json.loads(manifest.read_text(encoding="utf-8"))
+            report["definition"]["plan"]["units"].append(
+                {"source_date": "2026-08-18", "ticker": "OTHER"}
+            )
+            manifest.write_text(json.dumps(report), encoding="utf-8")
+            connection = sqlite3.connect(ledger.path)
+            connection.execute("UPDATE builds SET definition_hash=?", (_stable_hash(report["definition"]),))
+            connection.commit()
+            connection.close()
+            with self.assertRaisesRegex(ValueError, "product gaps"):
+                ledger.certified_plan(
+                    sessions=[date(2026, 8, 18)], tickers=[],
+                    configuration={"strategy": {"execution_interval": "100ms"}},
+                )
+
     def test_select_only_guard_rejects_mutation(self) -> None:
         self.assertEqual(assert_select_only("SELECT 1"), "SELECT 1")
         with self.assertRaisesRegex(ValueError, "SELECT-only"):
             assert_select_only("INSERT INTO arte.bars_v1 VALUES")
+
+    def test_fixed_run_cannot_bypass_blocked_preflight(self) -> None:
+        from src.backend.replay_run_service import ReplayRunDefinition, RunMode
+
+        with self.assertRaisesRegex(ValueError, "not yet causally executable"):
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 18), start_time=time(4),
+                mode=RunMode.BACKTEST, execution_interval="100ms",
+                market_data_plan={"token": "test", "execution_interval": {"milliseconds": 100}},
+            )
 
 
 if __name__ == "__main__":
