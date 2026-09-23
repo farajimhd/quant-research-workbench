@@ -7,6 +7,7 @@ pub mod action_rejection;
 pub mod bar_catalogue;
 pub mod bar_tape;
 pub mod boolean_catalogue;
+pub mod boolean_compute;
 pub mod candidate_config;
 pub mod candidate_features;
 pub mod candidate_runtime;

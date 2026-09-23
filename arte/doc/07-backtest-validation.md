@@ -76,8 +76,13 @@ coverage. Strategy 350 intersects the verified signal with the bar mask. It
 also intersects Watchlist membership only when the pinned policy requires it.
 Products must match generation, ticker, session and grid.
 Unknown on a bucket that otherwise needs refinement blocks the run; false is
-not treated as missing. These contracts do not yet calculate or persist the
-signal and Watchlist products in ClickHouse.
+not treated as missing. A shared fixed-cadence producer now accepts one
+explicitly timed evaluation result per due boundary, binds it to a complete
+100 ms bar source, carries state across non-evaluation buckets, and hands the
+result to the sparse ClickHouse publication contract. An omitted or shifted
+evaluation fails. Unknown remains distinct from false. This is calculation
+output plumbing; Strategy 350 signal and Watchlist formulas are not yet ported,
+and the ClickHouse schema and connected publication have not been exercised.
 
 The first market-time tape borrows values from complete 100 ms columnar batches.
 It dispatches only nonempty buckets, sorts equal-time ticker events by instrument,

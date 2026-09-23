@@ -3,6 +3,7 @@ use super::*;
 use arte_core::boolean_catalogue::{
     Batch, Complete, Coverage, Readback, Request, TransitionDigest,
 };
+pub use arte_core::boolean_compute::DenseBatch;
 use arte_core::execution_interval::ExecutionInterval;
 use arte_core::{bar_catalogue::Complete as BarComplete, config::Acceptance};
 use serde::{Deserialize, Serialize};
@@ -10,15 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const TRANSITIONS: &str = "boolean_transitions_v1";
 const COVERAGE: &str = "boolean_coverage_v1";
-const PAGE_BUCKETS: u64 = 1_000;
+const PAGE_BUCKETS: u64 = arte_core::boolean_compute::MAX_BATCH_ROWS as u64;
 const BASE: u64 = arte_core::bar_catalogue::BASE_INTERVAL_NS;
 
-pub struct DenseBatch {
-    pub first_start_ns: u64,
-    pub evaluated: Vec<bool>,
-    pub known: Vec<bool>,
-    pub value: Vec<bool>,
-}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct TransitionRow {
     request_hash: String,
@@ -151,6 +146,22 @@ pub fn prepare_boolean_product(
         coverage,
         rows,
     })
+}
+/// Pure fixed-cadence path from a complete columnar computation result to the
+/// sparse ClickHouse publication contract. Rule evaluation itself is upstream.
+pub fn prepare_calculated_boolean_product(
+    bar: &BarComplete,
+    request: Request,
+    evaluations: &[arte_core::boolean_compute::Evaluation],
+    published_at_ns: u64,
+) -> Result<Prepared> {
+    let dense = arte_core::boolean_compute::project_fixed(
+        bar,
+        &request,
+        evaluations,
+        PAGE_BUCKETS as usize,
+    )?;
+    prepare_boolean_product(bar, request, dense, published_at_ns)
 }
 pub fn boolean_publication_scope(request: &Request) -> Result<String> {
     arte_core::content_hash(&("arte.boolean-publication.v1", request.hash()?))
@@ -742,5 +753,39 @@ mod tests {
             2_000_000_000
         )
         .is_err());
+    }
+    #[test]
+    fn calculated_grid_enters_sparse_publication_without_unknown_as_false() {
+        let source = bar();
+        let mut r = request();
+        r.interval = source.request().interval;
+        r.source_bar_request_hash = source.request().hash().unwrap();
+        r.source_bar_coverage_hash = source.coverage_hash().into();
+        r.maximum_rows = 2;
+        let due = 1_100_000_000;
+        let evaluation = arte_core::boolean_compute::Evaluation {
+            bucket_start_ns: due,
+            value: None,
+        };
+        let unknown =
+            prepare_calculated_boolean_product(&source, r.clone(), &[evaluation], 2_000_000_000)
+                .unwrap();
+        assert_eq!(unknown.transition_count(), 0);
+        let known = prepare_calculated_boolean_product(
+            &source,
+            r.clone(),
+            &[arte_core::boolean_compute::Evaluation {
+                bucket_start_ns: due,
+                value: Some(false),
+            }],
+            2_000_000_000,
+        )
+        .unwrap();
+        assert_eq!(known.transition_count(), 1);
+        assert_ne!(
+            unknown.coverage().transition_hash,
+            known.coverage().transition_hash
+        );
+        assert!(prepare_calculated_boolean_product(&source, r, &[], 2_000_000_000).is_err());
     }
 }

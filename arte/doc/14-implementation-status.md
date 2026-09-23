@@ -57,6 +57,10 @@ immutable transition pages, publishes coverage last, and rereads the product.
 Only pure preparation and decoding received focused unit tests. The schema was
 not applied, no database was opened, and connected writer/readback behavior is
 unverified. Historical signal/Watchlist algorithms remain unimplemented.
+The fixed-cadence Boolean producer now validates a complete vectorized result
+grid against its certified 100 ms bar source. It preserves unknown versus
+false and enters the sparse publication preparation path. This does not supply
+any Strategy 350 signal formula or prove connected ClickHouse publication.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
