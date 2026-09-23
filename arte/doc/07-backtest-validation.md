@@ -51,6 +51,22 @@ timestamps remain historical source-provenance clocks. They cannot be reused
 as intraday receive times in backtest decisions. A separate causal bar/session
 projection and narrow event refinement must supply backtest context.
 
+Strategy 350 adaptive initial-stop distance now has one Rust state machine for
+live completed one-second bars and bounded historical batches. It retains the
+last five completed observations and a bounded rolling range distribution. The
+90th percentile uses ordered sets with logarithmic insertion and eviction; it
+does not sort the full session on each bar. Integer scaled comparisons preserve
+the 10-cent minimum, 1.5 times two-bar range, 1.25 times session p90, and the
+larger of 10 cents or 5% of entry as the cap. Legitimate empty seconds do not
+create synthetic bars. This produces distance evidence only; structural stop
+selection, tick rounding, bracket submission and effective-config parity are
+not complete. Source provenance for this port is the SHA-256
+`99150e27212ed0f15a0c28c739ccb9b6286be65f2a76ca1755f387d44423d1c1`
+of the then-inspected strategy executor and
+`0541a69a375bd77901ef6ad92725a47abd9d49488b4cc4312e9ed1ea0399d80f`
+of the Strategy 350 candidate builder. These are audit references, not runtime
+imports or an assumption that the effective configuration is frozen.
+
 The first typed Strategy 350 catalogue plan requests completed 100 ms bars,
 the early squeeze signal and reference data for screening. Watchlist membership
 is requested only when the pinned activation policy requires it. Inspected

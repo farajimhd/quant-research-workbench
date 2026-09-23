@@ -37,6 +37,13 @@ row counts. It publishes causal contexts to a maintenance callback one batch at
 a time. Actual REST acquisition times are not backtest decision timestamps.
 Live handover authority, bar-backtest adaptation, and the remaining Strategy 350
 rules are still unimplemented.
+The Strategy 350 adaptive-stop noise calculation now has a bounded Rust state
+for completed one-second bars and a batch projection using that same state.
+It computes the source's two-bar range and rolling five-bar range p90 with
+exact scaled-integer cap comparisons. Two focused unit tests cover shared
+live/batch output and the bounded percentile window. Structural stop choice,
+tick rounding, a pinned effective configuration, and order submission remain
+separate unfinished work; this result alone cannot permit an entry.
 The first conservative Strategy 350 100 ms bar screen now emits contiguous
 candidate-refinement masks. It preserves buckets whose intrabar order could
 create a new HOD and subsequent qualifying pullback; it never authorizes a

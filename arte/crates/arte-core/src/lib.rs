@@ -44,6 +44,7 @@ pub mod simulation_costs;
 pub mod simulation_model;
 pub mod strategy350_bar_screen;
 pub mod strategy350_catalogue;
+pub mod strategy350_noise;
 pub mod strategy350_price_gate;
 pub mod strategy350_screen_join;
 pub mod strategy350_session;
