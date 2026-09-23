@@ -173,8 +173,12 @@ class Progress:
         self.thread = None
         self.live = None
         if mode == "auto" and sys.stdout.isatty():
-            from rich.live import Live
-            self.live = Live(self.render(), refresh_per_second=2)
+            try:
+                from rich.live import Live
+            except ImportError:
+                pass
+            else:
+                self.live = Live(self.render(), refresh_per_second=2)
 
     def render(self):
         with self.lock:
