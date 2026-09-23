@@ -167,6 +167,10 @@ capture through the existing owners. A unit test covers deterministic head
 ordering; multi-ticker service remains unexercised. Common-cut publication
 is still single-instrument. A multi-shard recovery graph is required before
 this can run a multi-ticker backtest through a durable checkpoint boundary.
+The coordinator selects the earliest cross-ticker market boundary before
+advancing its simulated execution clock or producing fills. Only the selected
+shard may publish fills. This ordering code has static and existing unit-test
+coverage, but a multi-ticker fill-order replay test remains outstanding.
 A run-scoped historical V7 seed catalog now pins exactly one seed-manifest
 hash per certified source shard. Multi-shard market startup checks the whole
 catalog against the run, then checks each ticker's seed identity, prior

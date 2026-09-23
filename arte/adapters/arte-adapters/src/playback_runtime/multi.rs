@@ -139,7 +139,9 @@ impl MultiRuntime {
         shard: usize,
         publisher: &mut impl crate::fill_journal::Publisher,
     ) -> Result<bool> {
-        if self.selected.is_some() || self.next_fill()?.is_none_or(|(index, _)| index != shard) {
+        if self.selected.as_ref().map(|(index, _)| *index) != Some(shard)
+            || self.next_fill()?.is_none_or(|(index, _)| index != shard)
+        {
             return Err(Error::Unready("multi-controller fill shard not due".into()));
         }
         self.controllers[shard].commit_fills(publisher).await
@@ -214,31 +216,40 @@ impl MultiRuntime {
 
     pub fn poll(&mut self) -> Result<MultiPoll> {
         if let Some((index, _)) = &self.selected {
-            self.selected()?;
+            let controller = &self.controllers[*index];
+            if controller.run.pending()?.is_none_or(|boundary| {
+                self.selected
+                    .as_ref()
+                    .is_none_or(|(_, id)| boundary.id != id)
+            }) {
+                return Err(Error::Conflict(
+                    "multi-controller selected boundary changed".into(),
+                ));
+            }
+            if let Some((shard, scope_hash)) = self.next_fill()? {
+                return Ok(MultiPoll::NeedsFills { shard, scope_hash });
+            }
             return Ok(MultiPoll::Boundary { shard: *index });
         }
-        if let Some((index, scope_hash)) = self.next_fill()? {
-            return Ok(MultiPoll::NeedsFills {
-                shard: index,
-                scope_hash,
-            });
+        for controller in &self.controllers {
+            if controller.next_fill_scope_hash()?.is_some() {
+                return Err(Error::Conflict(
+                    "multi-controller unselected fill pending".into(),
+                ));
+            }
         }
         let mut paused = false;
         let mut yielding = false;
         let mut complete = 0usize;
         for controller in &mut self.controllers {
-            match controller.poll()? {
+            // Select the global head before advancing any shard's execution
+            // clock or producing quote fills. Market heads remain independent.
+            match controller.run.poll()? {
                 Poll::Paused => paused = true,
                 Poll::Yield => yielding = true,
                 Poll::Complete => complete += 1,
                 Poll::Boundary => {}
             }
-        }
-        if let Some((index, scope_hash)) = self.next_fill()? {
-            return Ok(MultiPoll::NeedsFills {
-                shard: index,
-                scope_hash,
-            });
         }
         if paused {
             return Ok(MultiPoll::Paused);
@@ -254,7 +265,7 @@ impl MultiRuntime {
             if controller.status().mode == Mode::Complete {
                 continue;
             }
-            let boundary = controller.decision_view()?.pending()?.ok_or_else(|| {
+            let boundary = controller.run.pending()?.ok_or_else(|| {
                 Error::Conflict("multi-controller pending boundary absent".into())
             })?;
             let scope = controller.market_scope();
@@ -273,17 +284,28 @@ impl MultiRuntime {
         }
         let (index, id) = choose_head(heads)
             .ok_or_else(|| Error::Conflict("multi-controller has no pending boundary".into()))?;
+        if self.controllers[index].poll()? != Poll::Boundary {
+            return Err(Error::Conflict(
+                "multi-controller selected head changed".into(),
+            ));
+        }
         self.selected = Some((index, id));
+        if let Some((shard, scope_hash)) = self.next_fill()? {
+            return Ok(MultiPoll::NeedsFills { shard, scope_hash });
+        }
         Ok(MultiPoll::Boundary { shard: index })
     }
 
     fn next_fill(&self) -> Result<Option<(usize, String)>> {
-        for (index, controller) in self.controllers.iter().enumerate() {
-            if let Some(scope_hash) = controller.next_fill_scope_hash()? {
-                return Ok(Some((index, scope_hash)));
-            }
-        }
-        Ok(None)
+        self.selected
+            .as_ref()
+            .map(|(index, _)| {
+                self.controllers[*index]
+                    .next_fill_scope_hash()
+                    .map(|scope| scope.map(|scope_hash| (*index, scope_hash)))
+            })
+            .transpose()
+            .map(Option::flatten)
     }
 
     /// Generic-candidate release requires the existing verified published
