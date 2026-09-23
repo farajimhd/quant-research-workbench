@@ -103,6 +103,11 @@ does not advance the market/V7 tape. Independent shards now use bounded
 parallel indexing and return in stable scope order, with an atomic
 total-position cap. A non-empty two-shard unit test checks trade and quote
 positions, serial/parallel identity, total capacity and the combined run pin.
+Selected indexes now carry the run and catalog hashes. An immutable lookup
+rebinds them to the full prepared tape and plan before matching a pending
+trade or quote by key, event content and evaluation clock. The focused unit
+test rejects changed clocks, event bodies, run pins and positions. It does
+not execute Strategy 350 or persist a decision.
 A shared account-playback coordinator now waits until all tickers are pending
 or complete before selecting the earliest evaluated boundary. It pins the
 exact catalog shard set and run identity, and preserves each ticker's account

@@ -140,6 +140,13 @@ Independent shards now index with a bounded worker count. Output stays in
 sorted shard order and the total selected-position budget is enforced across
 workers. A non-empty two-shard unit test checks selected trade and quote
 positions, serial/parallel identity, total capacity and the combined run pin.
+Before a selected index is used at a pending market boundary, a lookup now
+rechecks the exact plan, prepared tape, run manifest and source catalog. It
+reconstructs selected event identities from the prepared tape and rejects
+duplicate keys, changed positions, event content or evaluation clocks. Its
+multi-ticker read checks the coordinator's selected boundary. Lookup only
+answers whether expensive refinement is due; it cannot move the market cursor
+or authorize an order.
 The shared account-playback coordinator now holds each ticker at its next
 market boundary. It releases only the earliest evaluated boundary after every
 other shard is pending or complete. Ties use source time, scope and local

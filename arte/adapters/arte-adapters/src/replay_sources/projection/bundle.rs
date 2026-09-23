@@ -5,8 +5,15 @@ use arte_core::{
     bar_catalogue::{Complete as Bars, Coverage as BarCoverage},
     content_hash,
     event_order::Scope,
-    events::EventKind,
-    market_structure::scheduler::playback::sources::{Catalog, HistoricalSource, Shard},
+    events::{EventKey, EventKind, Observation},
+    market_structure::scheduler::{
+        playback::{
+            accounts::multi::MultiRun,
+            sources::{Catalog, HistoricalSource, Shard},
+            Prepared,
+        },
+        Kind,
+    },
     run_manifest::{Clock, Pinned},
     strategy350_screen_join::RefinementPlan,
     strategy_dispatch::Mode,
@@ -14,6 +21,7 @@ use arte_core::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     sync::atomic::{AtomicUsize, Ordering},
     thread,
 };
@@ -42,6 +50,8 @@ pub struct Bundle<'a> {
 #[derive(Clone, Serialize)]
 pub struct SelectedIndex {
     pub scope: ScopeKey,
+    pub run_manifest_hash: String,
+    pub source_catalog_hash: String,
     pub plan_hash: String,
     pub prepared_hash: String,
     pub trade_positions: Vec<(usize, usize)>,
@@ -64,7 +74,113 @@ impl From<Scope> for ScopeKey {
 }
 impl SelectedIndex {
     pub fn hash(&self) -> Result<String> {
-        content_hash(&("arte.historical-selected-index.v1", self))
+        content_hash(&("arte.historical-selected-index.v2", self))
+    }
+    /// Recheck a persisted or transported index against its exact plan and
+    /// prepared source before any pending strategy boundary may use it.
+    pub fn bind(
+        &self,
+        plan: &RefinementPlan,
+        prepared: &Prepared,
+        run: &Pinned,
+        catalog: &Catalog,
+    ) -> Result<SelectedLookup> {
+        catalog.require(run, prepared)?;
+        if self.scope != ScopeKey::from(prepared.scope())
+            || self.run_manifest_hash != run.hash()
+            || self.source_catalog_hash != catalog.hash()?
+            || self.prepared_hash != prepared.hash()
+            || self.plan_hash != plan.evidence_hash()
+            || plan.scope() != prepared.scope()
+        {
+            return Err(Error::Conflict("historical selected index identity".into()));
+        }
+        let selected = plan.selected_prepared_positions(prepared, 10_000_000)?;
+        if selected.len() != self.trade_positions.len() + self.quote_positions.len() {
+            return Err(Error::Conflict("historical selected index count".into()));
+        }
+        let mut expected_trades = Vec::new();
+        let mut expected_quotes = Vec::new();
+        let mut events = BTreeMap::new();
+        for (frame_index, input_index) in selected {
+            let frame = &prepared.frames()[frame_index];
+            let observation = &frame.inputs[input_index].observation;
+            let value = (frame.evaluated_at_ns, content_hash(observation)?);
+            if events.insert(observation.key.clone(), value).is_some() {
+                return Err(Error::Conflict(
+                    "historical selected index duplicate event".into(),
+                ));
+            }
+            match observation.key.kind {
+                EventKind::Trade => expected_trades.push((frame_index, input_index)),
+                EventKind::Quote => expected_quotes.push((frame_index, input_index)),
+            }
+        }
+        if self.trade_positions != expected_trades || self.quote_positions != expected_quotes {
+            return Err(Error::Conflict(
+                "historical selected index positions".into(),
+            ));
+        }
+        Ok(SelectedLookup {
+            scope: self.scope,
+            run_manifest_hash: self.run_manifest_hash.clone(),
+            prepared_hash: self.prepared_hash.clone(),
+            events,
+        })
+    }
+}
+/// Immutable membership check. It never advances playback or grants an order.
+pub struct SelectedLookup {
+    scope: ScopeKey,
+    run_manifest_hash: String,
+    prepared_hash: String,
+    events: BTreeMap<EventKey, (u64, String)>,
+}
+impl SelectedLookup {
+    pub fn matches_observation(
+        &self,
+        observation: &Observation,
+        evaluated_at_ns: u64,
+    ) -> Result<bool> {
+        if ScopeKey::from(Scope {
+            provider: observation.key.provider,
+            instrument: observation.key.instrument,
+            session: observation.key.session,
+        }) != self.scope
+        {
+            return Ok(false);
+        }
+        let Some((expected_at, expected_hash)) = self.events.get(&observation.key) else {
+            return Ok(false);
+        };
+        if *expected_at != evaluated_at_ns || *expected_hash != content_hash(observation)? {
+            return Err(Error::Conflict("historical selected event changed".into()));
+        }
+        Ok(true)
+    }
+    pub fn matches_multi_pending(&self, multi: &MultiRun) -> Result<bool> {
+        let (_, run) = multi
+            .selected()?
+            .ok_or_else(|| Error::Unready("multi-ticker selected boundary absent".into()))?;
+        if self.scope != ScopeKey::from(run.market_scope()) {
+            return Ok(false);
+        }
+        if self.run_manifest_hash != run.manifest_hash()
+            || self.prepared_hash != run.prepared_hash()
+        {
+            return Err(Error::Conflict(
+                "historical selected playback run changed".into(),
+            ));
+        }
+        let boundary = run
+            .pending()?
+            .ok_or_else(|| Error::Unready("multi-ticker pending boundary absent".into()))?;
+        match boundary.kind {
+            Kind::Trade { observation, .. } | Kind::Quote { observation } => {
+                self.matches_observation(observation, boundary.evaluated_at_ns)
+            }
+            Kind::Completed { .. } => Ok(false),
+        }
     }
 }
 pub struct SelectedInput<'a> {
@@ -170,6 +286,8 @@ impl<'a> Bundle<'a> {
             }
             Ok(SelectedIndex {
                 scope: scope.into(),
+                run_manifest_hash: run.hash().into(),
+                source_catalog_hash: self.catalog.hash()?,
                 plan_hash: input.plan.evidence_hash().into(),
                 prepared_hash: prepared.hash().into(),
                 trade_positions,
@@ -617,6 +735,38 @@ mod tests {
             assert_eq!(left.trade_positions, vec![(0, 0)]);
             assert_eq!(left.quote_positions, vec![(0, 1)]);
             assert_eq!(left.hash().unwrap(), right.hash().unwrap());
+        }
+        for (index, projection, plan) in [
+            (&serial[0], &first, &first_plan),
+            (&serial[1], &second, &second_plan),
+        ] {
+            let lookup = index
+                .bind(plan, &projection.prepared, &run, bundle.catalog())
+                .unwrap();
+            let frame = &projection.prepared.frames()[0];
+            for input in &frame.inputs {
+                assert!(lookup
+                    .matches_observation(&input.observation, frame.evaluated_at_ns)
+                    .unwrap());
+                assert!(lookup
+                    .matches_observation(&input.observation, frame.evaluated_at_ns + 1)
+                    .is_err());
+            }
+            let mut changed = frame.inputs[0].observation.clone();
+            if let Payload::Trade { size, .. } = &mut changed.payload {
+                size.atoms += 1;
+            }
+            assert!(lookup
+                .matches_observation(&changed, frame.evaluated_at_ns)
+                .is_err());
+            assert!(index
+                .bind(plan, &projection.prepared, &single_run, bundle.catalog())
+                .is_err());
+            let mut wrong_position = index.clone();
+            wrong_position.trade_positions[0] = (0, 1);
+            assert!(wrong_position
+                .bind(plan, &projection.prepared, &run, bundle.catalog())
+                .is_err());
         }
         assert!(bundle.index_selected(inputs(), &run, 2, 2, 3).is_err());
         assert!(bundle
