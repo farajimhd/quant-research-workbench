@@ -136,6 +136,12 @@ class Ledger:
              for old_build,attempt,source_hash,updated in rows]
         return sorted(out,key=lambda row:(row['build_id']==build,row['updated_at'],row['build_id']),reverse=True)
 
+    def stage_counts(self, build_id):
+        with self.lock:
+            rows=self.db.execute("SELECT stage,count(*) FROM units WHERE build_id=? AND status='complete' GROUP BY stage",
+                (build_id,)).fetchall()
+        return dict(rows)
+
 
 def date_range(args):
     if args.date:
@@ -541,10 +547,47 @@ def completed(ledger, client, db, build, day, ticker, stage, source_hash):
         return None
     if row['source_hash'] != source_hash:
         raise ValueError("Published dependency changed; use --rebuild")
-    result = evidence(client,db,stage,build,day,ticker,row['attempt_id'])
+    key=(build,str(day),ticker,stage,row['attempt_id'])
+    result = getattr(client,'prefetched_evidence',{}).get(key)
+    if result is None:
+        result = evidence(client,db,stage,build,day,ticker,row['attempt_id'])
     if int(result['n']) != int(row['output_rows']) or str(result['hash']) != str(row['output_hash']) or result['n'] != result['unique_keys']:
         raise ValueError("Published output integrity failed; explicit rebuild required")
     return row
+
+
+def prefetch_certified_evidence(ledger, client, db, build, ticker, rows):
+    """Recheck published output hashes in three set-based ClickHouse scans.
+
+    Failed or abandoned attempts are excluded by their exact published UUIDs.
+    The cache is scoped to one ticker and one invocation, never persisted.
+    """
+    client.prefetched_evidence={}
+    days=sorted({row['source_date'] for row in rows})
+    if not days:
+        return
+    for stage in ('broker_100ms','bars','technical'):
+        published={day:ledger.unit(build,day,ticker,stage) for day in days}
+        published={day:unit for day,unit in published.items() if unit is not None}
+        if not published:
+            continue
+        attempts=sorted({str(uuid.UUID(unit['attempt_id'])) for unit in published.values()})
+        attempt_sql=','.join(f'toUUID({sql.literal(attempt)})' for attempt in attempts)
+        actual=client.query(f"""SELECT toString(session_date) AS day,toString(attempt_id) AS attempt,
+          count() AS n,uniqExact((resolution_ms,bucket_index)) AS unique_keys,
+          sum(cityHash64(tuple(*))) AS hash FROM {sql.table(db,stage)}
+          WHERE build_id={sql.literal(build)} AND ticker={sql.literal(ticker)}
+            AND session_date BETWEEN toDate({sql.literal(days[0])}) AND toDate({sql.literal(days[-1])})
+            AND attempt_id IN ({attempt_sql}) GROUP BY day,attempt""",stage+'_resume_integrity')
+        by_key={(item['day'],item['attempt']):item for item in actual}
+        for day,unit in published.items():
+            attempt=unit['attempt_id']
+            result=by_key.get((day,attempt),dict(n=0,unique_keys=0,hash=0))
+            if (int(result['n'])!=int(unit['output_rows']) or
+                str(result['hash'])!=str(unit['output_hash']) or
+                int(result['n'])!=int(result['unique_keys'])):
+                raise ValueError(f'{day} {ticker} {stage}: published output integrity failed')
+            client.prefetched_evidence[(build,day,ticker,stage,attempt)]=result
 
 
 def validate_bars(client, db, build, day, ticker, attempt):
@@ -735,6 +778,8 @@ def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation
         worker_local.client = client
         with state_lock:
             clients.append(client)
+
+    prefetch_certified_evidence(ledger,client,args.database,build,ticker,rows)
 
     def mark(day, attempt, stage):
         with state_lock:
@@ -932,6 +977,11 @@ def run(args):
             database_ready=True
             ledger=Ledger(runtime.parent / 'build-ledger-v2.sqlite3')
             ledger.build(build,definition,'building')
+            retained=ledger.stage_counts(build)
+            if retained:
+                print(f"Existing certified stages for {build}: liquidity {retained.get('broker_100ms',0)}, "
+                    f"bars {retained.get('bars',0)}, indicators {retained.get('technical',0)}. "
+                    "Progress starts at zero for this invocation's verification; certified rows are skipped.",flush=True)
             save(runtime / (build+'.json'),report)
             wanted = [r for r in plan['units'] if r['source_date'] in plan['requested']]
             by_ticker = {}

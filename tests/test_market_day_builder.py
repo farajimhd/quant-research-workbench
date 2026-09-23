@@ -381,6 +381,9 @@ class ClickHouseParity(unittest.TestCase):
             self.c.query(f"INSERT INTO {S.table(self.db,'bars')} (build_id,session_date,ticker,attempt_id,resolution_ms,bucket_index) VALUES ('fixture','2026-09-18','RETRY','{attempt}',100,147000)",'partial_fixture',False)
         result=B.evidence(self.c,self.db,'bars',self.build,self.day,'RETRY',new)
         B.publish(ledger,self.build,self.day,'RETRY','bars',new,'hash',result)
+        B.prefetch_certified_evidence(ledger,self.c,self.db,self.build,'RETRY',
+            [dict(source_date=str(self.day))])
+        self.assertEqual(len(self.c.prefetched_evidence),1)
         published=B.completed(ledger,self.c,self.db,self.build,self.day,'RETRY','bars','hash')
         self.assertEqual(published['attempt_id'],new)
         with self.assertRaisesRegex(ValueError,'dependency changed'):
@@ -388,7 +391,8 @@ class ClickHouseParity(unittest.TestCase):
         # A partial duplicate inside a published attempt must fail on resume.
         self.c.query(f"INSERT INTO {S.table(self.db,'bars')} (build_id,session_date,ticker,attempt_id,resolution_ms,bucket_index) VALUES ('fixture','2026-09-18','RETRY','{new}',100,147000)",'corrupt_fixture',False)
         with self.assertRaisesRegex(ValueError,'integrity failed'):
-            B.completed(ledger,self.c,self.db,self.build,self.day,'RETRY','bars','hash')
+            B.prefetch_certified_evidence(ledger,self.c,self.db,self.build,'RETRY',
+                [dict(source_date=str(self.day))])
         ledger.close()
 
     def test_runnable_interruption_and_inclusive_range_resume(self):

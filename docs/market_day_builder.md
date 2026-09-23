@@ -210,6 +210,12 @@ uses a fresh attempt ID, so an uncertain partial INSERT cannot duplicate a
 published result. The ledger is host-local and must be preserved with the
 runtime manifests; copying the ClickHouse tables alone does not transfer
 certification. There is no automatic garbage collection of abandoned attempts.
+The startup banner reports retained certified stage counts. The live Done
+counter starts at zero because it counts units verified or built in the current
+invocation. Resume groups each ticker's stored liquidity, bar, and indicator
+output-hash checks into three ClickHouse scans, then reuses those verified
+results while checking daily dependencies. It does not reinsert a certified
+stage.
 Resume revalidates published output and predecessor certificates. For V5
 quote-only predecessor chains, a build-status timestamp is excluded from new
 dependency hashes; existing published indicators remain reusable only when
