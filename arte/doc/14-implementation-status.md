@@ -17,6 +17,10 @@ of the pinned product requests and coverage, screen configuration, prior-close
 fact, exact OHLC and Boolean operands, and resulting refinement mask. The hash
 is independent of Boolean batch partitioning. It is screening provenance, not
 entry permission; account decisions do not yet consume it as a typed operand.
+The join requires the Signal Stream and any required Watchlist to declare
+100 ms execution cadence. A slower product's carried value cannot select a
+bucket that was not evaluated at that boundary. The general computation
+contract still permits other explicit cadences for other consumers.
 
 The Strategy 350 bar screen now uses one per-ticker state transition for the
 verified historical batch projector and a new completed-100-ms-bar streaming

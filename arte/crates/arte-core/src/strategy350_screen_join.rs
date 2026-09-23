@@ -2,7 +2,7 @@
 //! The output schedules event/quote refinement; it never authorizes an order.
 use crate::{
     bar_catalogue, boolean_catalogue, content_hash,
-    execution_interval::ExecutableKind,
+    execution_interval::{ExecutableKind, ExecutionInterval},
     strategy350_bar_screen::{self, ScreenBatch},
     strategy350_catalogue::{WatchlistPolicy, SIGNAL, WATCHLIST},
     strategy350_price_gate::PriceFact,
@@ -66,6 +66,7 @@ fn aligned(
     let b = bar.request();
     if !kind(&r.definition.kind)
         || r.definition.id != id
+        || r.definition.interval != ExecutionInterval::Fixed(bar_catalogue::BASE_INTERVAL_NS)
         || r.provider != b.provider
         || r.instrument != b.instruments[0]
         || r.session != b.session
@@ -184,9 +185,14 @@ pub fn select(
             let watch = watch_values.as_mut().map(BooleanCursor::next).transpose()?;
             let (watch_known, watch_true) =
                 watch.map_or((true, true), |(_, known, value)| (known, value));
-            if bar_possible && (!signal_known || !watch_known) {
+            if bar_possible
+                && (!signal_evaluated
+                    || !signal_known
+                    || watch.is_some_and(|(evaluated, _, _)| !evaluated)
+                    || !watch_known)
+            {
                 return Err(Error::Unready(
-                    "Strategy 350 required signal or Watchlist unknown".into(),
+                    "Strategy 350 required signal or Watchlist unevaluated or unknown".into(),
                 ));
             }
             let selected = bar_possible && signal_true && watch_true;
@@ -315,6 +321,17 @@ mod tests {
         value: Vec<bool>,
         parts: &[usize],
     ) -> boolean_catalogue::Complete {
+        boolean_with_parts_at_cadence(bar, kind, id, known, value, parts, 100_000_000)
+    }
+    fn boolean_with_parts_at_cadence(
+        bar: &bar_catalogue::Complete,
+        kind: ExecutableKind,
+        id: &str,
+        known: Vec<bool>,
+        value: Vec<bool>,
+        parts: &[usize],
+        cadence_ns: u64,
+    ) -> boolean_catalogue::Complete {
         let request = BoolRequest {
             provider: 1,
             instrument: 10,
@@ -324,7 +341,7 @@ mod tests {
                 kind,
                 id: id.into(),
                 implementation_hash: "d".repeat(64),
-                interval: ExecutionInterval::Fixed(100_000_000),
+                interval: ExecutionInterval::Fixed(cadence_ns),
             },
             source_bar_request_hash: bar.request().hash().unwrap(),
             source_bar_coverage_hash: bar.coverage_hash().into(),
@@ -357,7 +374,9 @@ mod tests {
                 coverage_hash: coverage.hash().unwrap(),
                 first_start_ns: S + offset as u64 * 100_000_000,
                 count: count as u32,
-                evaluated: vec![true; count],
+                evaluated: (offset..end)
+                    .map(|i| (S + (i as u64 + 1) * 100_000_000).is_multiple_of(cadence_ns))
+                    .collect(),
                 known: known[offset..end].to_vec(),
                 value: value[offset..end].to_vec(),
             })
@@ -462,6 +481,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(without_watch[0].refine, vec![true; 3]);
+    }
+    #[test]
+    fn carried_value_from_slower_signal_cannot_select_unevaluated_bucket() {
+        let b = bar();
+        let slower = boolean_with_parts_at_cadence(
+            &b,
+            ExecutableKind::SignalStream,
+            SIGNAL,
+            vec![false, true, true],
+            vec![false, true, true],
+            &[3],
+            200_000_000,
+        );
+        assert!(select(
+            &b,
+            &config(),
+            &close(),
+            &slower,
+            WatchlistPolicy::NotRequired,
+            None,
+        )
+        .is_err());
     }
     #[test]
     fn evidence_is_partition_independent_and_binds_prior_close_clock() {
