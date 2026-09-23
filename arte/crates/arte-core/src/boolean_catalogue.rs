@@ -36,6 +36,7 @@ impl Request {
         let count = (self.interval.end - self.interval.start) / BASE_INTERVAL_NS;
         if self.provider == 0
             || self.instrument == 0
+            || !matches!(self.definition.interval, ExecutionInterval::Fixed(_))
             || !(19000101..=29991231).contains(&self.session)
             || !self.interval.start.is_multiple_of(BASE_INTERVAL_NS)
             || !self.interval.end.is_multiple_of(BASE_INTERVAL_NS)
@@ -332,6 +333,13 @@ mod tests {
             .unwrap()
             .observe(wrong)
             .is_err());
+    }
+    #[test]
+    fn fixed_bar_product_rejects_event_cadence_signal() {
+        let mut r = request();
+        r.definition.interval = ExecutionInterval::Events;
+        assert!(r.validate().is_err());
+        assert!(TransitionDigest::new(&r).is_err());
     }
     #[test]
     fn incomplete_or_future_coverage_never_becomes_complete() {

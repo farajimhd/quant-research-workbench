@@ -87,7 +87,12 @@ unverified. The historical Early Squeeze formula is partial; other signal and
 Watchlist algorithms remain unimplemented.
 The fixed-cadence Boolean producer now validates a complete vectorized result
 grid against its certified 100 ms bar source. It preserves unknown versus
-false and enters the sparse publication preparation path. The first Strategy
+false and enters the sparse publication preparation path. The compact-bar
+signal and Watchlist catalogue rejects event-cadence definitions:
+its dense bucket readback cannot certify that an event-driven calculation ran
+at each causal event. Event-cadence Boolean products require a separate
+event-backed contract and implementation; no implicit bar approximation is allowed.
+The first Strategy
 350 Early Squeeze historical formula and first-occurrence session latch now
 feed that path. The formula uses exact close-ratio, trade-count, and volume
 comparisons against the prior non-empty 100 ms bar. It does not supply full live
