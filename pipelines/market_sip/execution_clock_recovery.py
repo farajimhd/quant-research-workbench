@@ -62,7 +62,7 @@ def normalize_trade(record,tokens):
 
 
 def canonical_key(row):
-    return (int(row['sip_timestamp_us']),int(row['event_meta']),int(row['price_primary_int']),
+    return (int(row['sip_timestamp_us']),int(row['event_meta']) & 63,int(row['price_primary_int']),
             struct.unpack('<f',struct.pack('<f',float(row['size_primary'])))[0],int(row['exchange_primary']),
             *(int(row[f'condition_token_{i}']) for i in range(1,6)))
 

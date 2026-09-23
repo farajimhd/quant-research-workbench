@@ -16,9 +16,14 @@ from pathlib import Path
 from typing import Any
 
 
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+sys.dont_write_bytecode = True
+
 REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "research").exists() and (parent / "pipelines").exists())
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from pipelines.market_sip.events.trade_reporting_flags import reporting_flags, reason_sql, flags_sql, REVISION as TRADE_REPORTING_REVISION
 
 from pipelines.market_sip.benchmarks.clickhouse_compact_schema_codec_benchmark import (  # noqa: E402
     QUOTE_SCHEMA_STRING,
@@ -1263,7 +1268,7 @@ def flatfile_trade_correction_filter_sql(args: argparse.Namespace) -> str:
     return f"\nAND toUInt8(greatest(0, least(15, toInt16OrZero(correction)))) NOT IN ({values})"
 
 
-def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_execution_timestamp: bool = False) -> str:
+def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_execution_timestamp: bool = False, trade_only: bool = False, include_reporting_reason: bool = False) -> str:
     quote_path = windows_path_to_clickhouse_path(Path(day.quote_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
     trade_path = windows_path_to_clickhouse_path(Path(day.trade_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
     bid_price = "toFloat64OrZero(bid_price)"
@@ -1311,7 +1316,8 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_exec
         else ""
     )
     trade_execution_expression = quote_execution_expression
-    return f"""
+    reporting_column = ", t.reporting_reason AS reporting_reason" if include_reporting_reason else ""
+    quote_sql = f"""
     SELECT
         q.ticker AS ticker,
         {quote_event_meta_expr()} AS event_meta,
@@ -1364,11 +1370,11 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_exec
     LEFT JOIN {condition_token_reference_subquery(args, "quote_conditions")} AS qc4 ON qc4.modifier_int = q.condition_code_4
     LEFT JOIN {indicator_token_reference_subquery(args)} AS qi1 ON qi1.modifier_int = q.indicator_code_1
 
-    UNION ALL
-
+"""
+    trade_sql = f"""
     SELECT
         t.ticker AS ticker,
-        {trade_event_meta_expr()} AS event_meta,
+        toUInt8(bitOr({trade_event_meta_expr()}, {flags_sql("t.reporting_reason")})) AS event_meta,
         t.sip_timestamp_us AS sip_timestamp_us,
         t.sequence_number_u32 AS sequence_number,
         t.price_int AS price_primary_int,
@@ -1382,7 +1388,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_exec
         {condition_token_expr("tc3")} AS condition_token_3,
         {condition_token_expr("tc4")} AS condition_token_4,
         {condition_token_expr("tc5")} AS condition_token_5,
-        t.event_date AS event_date{trade_execution_column}
+        t.event_date AS event_date{trade_execution_column}{reporting_column}
     FROM
     (
         SELECT
@@ -1394,6 +1400,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_exec
             toUInt8OrZero(exchange) AS exchange_u8,
             conditions,
             {trade_flags} AS trade_flags,
+            {reason_sql()} AS reporting_reason,
             {event_date_expr_from_us("intDiv(toUInt64OrZero(sip_timestamp), 1000)")} AS event_date,{trade_execution_expression}
             {condition_code_expr(1)} AS condition_code_1,
             {condition_code_expr(2)} AS condition_code_2,
@@ -1414,6 +1421,9 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_exec
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc4 ON tc4.modifier_int = t.condition_code_4
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc5 ON tc5.modifier_int = t.condition_code_5
 """
+    if include_reporting_reason and not trade_only:
+        raise ValueError("Reporting reasons require trade_only")
+    return trade_sql if trade_only else quote_sql + "\nUNION ALL\n" + trade_sql
 
 
 def insert_direct_day_sql(args: argparse.Namespace, day: DayFiles, build_step: int) -> str:
@@ -3126,7 +3136,7 @@ def sampled_raw_lookup_keys(events: list[dict[str, Any]]) -> set[tuple[str, int,
     return {(str(row["ticker"]), int(row["sip_timestamp_us"]), int(row["event_type"])) for row in events}
 
 
-def event_values_match(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+def event_values_match(expected: dict[str, Any], actual: dict[str, Any], *, allow_legacy_flags: bool = False) -> bool:
     int_fields = [
         "event_type",
         "event_meta",
@@ -3142,7 +3152,8 @@ def event_values_match(expected: dict[str, Any], actual: dict[str, Any]) -> bool
         "condition_token_5",
     ]
     for field in int_fields:
-        if int(expected[field]) != int(actual[field]):
+        mask = 63 if field == "event_meta" and allow_legacy_flags and not (int(actual[field]) & 192) else 0xFFFFFFFFFFFFFFFF
+        if (int(expected[field]) & mask) != (int(actual[field]) & mask):
             return False
     for field in ("size_primary", "size_secondary"):
         if abs(float(expected[field]) - float(actual[field])) > 1e-4:
@@ -3210,7 +3221,7 @@ def trade_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, 
     return {
         "ticker": str(row["ticker"]),
         "event_type": 1,
-        "event_meta": event_meta(1, trade_scale, 0, tape_code(row.get("tape"))),
+        "event_meta": event_meta(1, trade_scale, 0, tape_code(row.get("tape"))) | reporting_flags(row.get("conditions"), row.get("participant_timestamp"), row.get("sip_timestamp")),
         "sip_timestamp_us": to_int_or_zero(row.get("sip_timestamp")) // 1000,
         "sequence_number": to_int_or_zero(row.get("sequence_number")),
         "price_primary_int": trade_int,
@@ -3292,6 +3303,7 @@ def validate_events_against_raw_csv(
     days: list[DayFiles],
     *,
     sample_size: int | None = None,
+    allow_legacy_flags: bool = False,
 ) -> dict[str, dict[str, Any]]:
     token_maps = load_condition_token_maps(client, args)
     sample_by_kind = {
@@ -3317,7 +3329,7 @@ def validate_events_against_raw_csv(
                 if candidate_key[0] == key[0] and candidate_key[1] == key[1]
                 for candidate in candidate_rows
             ]
-            if not any(event_values_match(candidate, event) for candidate in candidates):
+            if not any(event_values_match(candidate, event, allow_legacy_flags=allow_legacy_flags) for candidate in candidates):
                 mismatches.append(
                     {
                         "ticker": event["ticker"],
@@ -3396,11 +3408,13 @@ def audit_day_events_against_raw_csv(
     args: argparse.Namespace,
     day: DayFiles,
     report_path: Path,
+    *,
+    allow_legacy_flags: bool = False,
 ) -> None:
     sample_size = max(0, int(getattr(args, "day_raw_audit_sample_size", 0)))
     if sample_size <= 0:
         return
-    validation = validate_events_against_raw_csv(client, args, [day], sample_size=sample_size)
+    validation = validate_events_against_raw_csv(client, args, [day], sample_size=sample_size, allow_legacy_flags=allow_legacy_flags)
     audit = {
         "type": "day_raw_csv_audit",
         "source_date": day.source_date,
@@ -3637,7 +3651,7 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
                 detail="existing events have unique ordinals and monotonic timestamps",
             )
             reporter.task_start(f"{day.source_date}:audit:raw_existing", "sample raw flatfile match", day=day.source_date, stage="audit")
-        audit_day_events_against_raw_csv(client, args, day, report_path)
+        audit_day_events_against_raw_csv(client, args, day, report_path, allow_legacy_flags=True)
         if reporter is not None:
             reporter.task_done(f"{day.source_date}:audit:raw_existing", "ok", detail="sample compact rows match raw flatfiles")
         if reporter is not None:
@@ -3776,6 +3790,7 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
             "source_date": day.source_date,
             "events_table": args.events_table,
             "status": "ok",
+            "trade_reporting_revision": TRADE_REPORTING_REVISION,
             "event_profile": asdict(profile),
                 "continuity_profile": asdict(continuity_profile),
                 "ticker_day_index_profile": asdict(index_profile),

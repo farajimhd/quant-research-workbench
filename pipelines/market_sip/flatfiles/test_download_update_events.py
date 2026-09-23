@@ -23,6 +23,7 @@ from pipelines.market_sip.flatfiles.download_update_events import (
     confirm_auto_update,
     execution_clock_existing_source_days,
     execution_clock_rows_match_archive,
+    event_values_match,
     format_auto_update_summary,
     insert_execution_clock_day_sql,
     insert_execution_clock_coverage_day_sql,
@@ -48,6 +49,15 @@ def _day(root: Path, source_date: str, *, cached_quote: bool = False, cached_tra
 
 
 class EventEncodingTests(unittest.TestCase):
+    def test_new_day_audit_requires_reporting_flags_but_legacy_skip_accepts_old_rows(self) -> None:
+        expected={"ticker":"A","event_type":1,"event_meta":193,"sip_timestamp_us":100,
+                  "price_primary_int":100,"price_secondary_int":0,"size_primary":1.0,
+                  "size_secondary":0.0,"exchange_primary":1,"exchange_secondary":0,
+                  "event_date":"2026-08-03",**{f"condition_token_{i}":0 for i in range(1,6)}}
+        old=dict(expected,event_meta=1)
+        self.assertFalse(event_values_match(expected,old))
+        self.assertTrue(event_values_match(expected,old,allow_legacy_flags=True))
+
     def test_canonical_archive_schema_and_writer_boundary_are_explicit(self) -> None:
         args = argparse.Namespace(database="market_sip_compact", events_table="events")
         sql = create_events_table_sql(
@@ -106,7 +116,7 @@ class EventEncodingTests(unittest.TestCase):
         assert event is not None
         self.assertEqual(event["ticker"], "OMEX")
         self.assertEqual(event["event_type"], 1)
-        self.assertEqual(event["event_meta"], 19)
+        self.assertEqual(event["event_meta"], 19 | 64)
         self.assertEqual(event["sip_timestamp_us"], 1745522406850095)
         self.assertEqual(event["sequence_number"], 6898024)
         self.assertEqual(event["price_primary_int"], 7690)
@@ -135,6 +145,8 @@ class EventEncodingTests(unittest.TestCase):
 
             self.assertEqual(sql.count("AND ticker IN ('SUGP')"), 2)
             self.assertNotIn("execution_timestamp_us", sql)
+            self.assertIn("AS reporting_reason", sql)
+            self.assertIn("bitOr(", sql)
 
     def test_execution_clock_sidecar_reconstructs_the_same_ticker_ordinal(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

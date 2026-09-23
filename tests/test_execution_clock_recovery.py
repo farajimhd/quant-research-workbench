@@ -21,6 +21,15 @@ def test_unique_exact_match():
     assert matched==[dict(ordinal=1,sip_timestamp_us=1000,execution_timestamp_us=999)]
 
 
+def test_reporting_flags_do_not_change_canonical_execution_identity():
+    s=source()
+    flagged=archive(s)
+    flagged['event_meta'] |= 0xC0
+    matched,report=reconcile([flagged],[s],{0:0,12:4,41:8})
+    assert report['complete']
+    assert matched[0]['ordinal']==1
+
+
 def test_same_fingerprint_different_clock_is_ambiguous():
     s=source();other=source(sequence_number=2,participant_timestamp=998000)
     matched,r=reconcile([archive(s),archive(s,2)],[s,other],{0:0,12:4,41:8})
