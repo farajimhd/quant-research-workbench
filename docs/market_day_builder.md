@@ -82,11 +82,13 @@ uses Rich, with `--progress text` for plain output.
 
 The build starts four ticker workers by default (`--workers 1` through `32`).
 Each worker owns one ticker's dates in chronological order and uses its own
-ClickHouse client. The per-query limits are four ClickHouse threads, 2 GiB
-memory, and 600 seconds; with four workers, up to four queries may run at once
-and the per-query memory limits sum to 8 GiB. At 32 workers, the default
-per-query ceilings allow up to 64 GiB of concurrent query memory and 128
-ClickHouse threads; choose that setting only when the host has headroom. Tune
+ClickHouse client. The ordinary per-query limits are four ClickHouse threads,
+2 GiB memory, and 600 seconds. A canonical ticker-day with at least four million
+events uses an 8 GiB cap for its ordered 100 ms liquidity query, with at most
+four such queries running concurrently; it does not spill temporary sort data
+to the `default` disk. At 32 workers, these caps allow up to 88 GiB of
+concurrent query memory and 128 ClickHouse threads; choose that setting only
+when the host has headroom. Tune
 `--workers`, `--max-threads`, `--max-memory-gb`, and `--query-timeout` for the host.
 No automatic write retries
 or unbounded worker fan-out occurs. A worker failure stops new ticker dispatch,

@@ -34,6 +34,8 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 RUNTIME = Path("D:/TradingML/runtimes")
 DEFAULT_ENV = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\secrets\.env")
 RESUME_COMPATIBLE_CONTROLLER_HASHES = frozenset({
+    # The three-table V5 controller before the bounded dense-ticker memory fix.
+    "cbeca10448af0b758fbb91ca9925cf7121966f728bf043a06d7b53f82dc3fc11",
     "994988b4804edf179707684409e3b981046bb26d78d46a7f60420499a79099b3",
     "3f0c616b95628e15a1055a39b49308149e7ec4ed5b4161191fd2766622db8609",
     # Earlier controller failed before publishing indicators on a quote-only predecessor.
@@ -696,7 +698,7 @@ def build_lock(path):
 def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation_source, rules_hash,
                  report, report_path, unit_log,
                  checkpoint_clock, worker_local,
-                 state_lock, progress, stop, clients):
+                 state_lock, progress, stop, clients, dense_slots):
     """Own one ticker's chronological bars and then its requested technical days."""
     client = getattr(worker_local,'client',None)
     if client is None:
@@ -727,7 +729,16 @@ def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation
                 continue
             attempt = str(uuid.uuid4())
             mark(day,attempt,'broker 100ms / VWAP / NBBO')
-            client.query(sql.broker_sql(args.database,build,day,ticker,attempt,plan['rules']),"broker_100ms",False)
+            broker_query=sql.broker_sql(args.database,build,day,ticker,attempt,plan['rules'])
+            if int(row['event_count'])>=4_000_000 and args.max_memory_gb<8:
+                # The ordered window for dense tickers can exceed the ordinary
+                # 2 GiB query cap. Limit concurrent 8 GiB scans separately;
+                # no external sort is permitted to spill onto the default disk.
+                with dense_slots:
+                    if stop.is_set(): return client
+                    client.query(broker_query + f" SETTINGS max_memory_usage={8*1024**3}","broker_100ms",False)
+            else:
+                client.query(broker_query,"broker_100ms",False)
             broker_result=evidence(client,args.database,'broker_100ms',build,day,ticker,attempt)
             if broker_result['n']!=broker_result['unique_keys']:
                 raise ValueError(f'{day} {ticker}: duplicate broker 100ms bucket keys')
@@ -898,6 +909,7 @@ def run(args):
             state_lock = threading.Lock()
             stop = threading.Event()
             clients = []
+            dense_slots = threading.BoundedSemaphore(4)
             worker_local = threading.local()
             checkpoint_clock = [time.monotonic()]
             report['active'] = {}
@@ -912,7 +924,7 @@ def run(args):
                         future = pool.submit(build_ticker,args,ledger,build,plan,ticker,rows,set(plan['requested']),
                             definition['calculation_source'],definition['rules_hash'],
                             report,report_path,runtime / (build+'.units.jsonl'),checkpoint_clock,worker_local,
-                            state_lock,progress,stop,clients)
+                            state_lock,progress,stop,clients,dense_slots)
                         pending[future] = ticker
                         return True
                     for _ in range(min(args.workers,len(by_ticker))): submit_next()
