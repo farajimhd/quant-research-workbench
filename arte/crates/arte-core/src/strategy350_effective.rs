@@ -97,6 +97,15 @@ impl Config {
         }
         Ok(())
     }
+
+    pub fn require_macd(&self, configuration_hash: &str) -> Result<()> {
+        if self.macd_config_hash != configuration_hash {
+            return Err(Error::Conflict(
+                "Strategy 350 MACD configuration differs".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

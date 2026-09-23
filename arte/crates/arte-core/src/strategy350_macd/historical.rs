@@ -22,11 +22,15 @@ pub struct Projection {
 }
 
 pub struct Evidence {
+    configuration_hash: String,
     outcome: Outcome,
     fingerprint: String,
     proof_hash: String,
 }
 impl Evidence {
+    pub fn configuration_hash(&self) -> &str {
+        &self.configuration_hash
+    }
     pub fn outcome(&self) -> &Outcome {
         &self.outcome
     }
@@ -166,6 +170,7 @@ impl Cursor {
             outcome.bullish,
         ))?;
         Ok(Evidence {
+            configuration_hash: self.state.config_hash().into(),
             outcome,
             fingerprint,
             proof_hash,
@@ -551,6 +556,7 @@ mod tests {
         let price_hash = price_config.hash().unwrap();
         let mut effective = crate::strategy350_effective::test_config(ExecutionInterval::Events);
         effective.price_gate_config_hash = price_hash.clone();
+        effective.macd_config_hash = config.hash().unwrap();
         let manifest = Manifest {
             schema_version: 3,
             run_id: "later-macd-run".into(),

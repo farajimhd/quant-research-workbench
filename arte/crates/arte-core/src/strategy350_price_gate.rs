@@ -915,12 +915,13 @@ mod tests {
             crate::execution_interval::ExecutionInterval::Fixed(100_000_000),
         );
         effective.price_gate_config_hash = gate_hash.to_owned();
-        decision_scope.config_hash = effective.hash().unwrap();
         let macd_config = crate::strategy350_macd::Config {
             execution_interval: ExecutionInterval::Events,
             price_scale: 2,
             source_algorithm_hash: "a".repeat(64),
         };
+        effective.macd_config_hash = macd_config.hash().unwrap();
+        decision_scope.config_hash = effective.hash().unwrap();
         let macd_state =
             crate::strategy350_macd::State::new(market_scope, S, 3 * S, &macd_config).unwrap();
         let macd_source = crate::strategy350_macd::exact_source::Source::new(
@@ -964,6 +965,19 @@ mod tests {
             .unwrap();
         assert!(evidence
             .require_live_macd(&changed_macd, &decision_scope, &input)
+            .is_err());
+        let mut foreign_macd_config = macd_config.clone();
+        foreign_macd_config.source_algorithm_hash = "b".repeat(64);
+        let foreign_macd =
+            crate::strategy350_macd::State::new(market_scope, S, 3 * S, &foreign_macd_config)
+                .unwrap()
+                .preview_live(&macd_source, &macd_boundary)
+                .unwrap();
+        evidence
+            .require_live_macd(&foreign_macd, &decision_scope, &input)
+            .unwrap();
+        assert!(effective
+            .require_macd(foreign_macd.configuration_hash())
             .is_err());
         assert!(evidence
             .require_live_decision(
@@ -1012,6 +1026,25 @@ mod tests {
             },
             |_| panic!("wrong scope cannot observe account state"),
             |_| panic!("wrong scope cannot calculate"),
+        )
+        .is_err());
+        assert!(crate::strategy350_transaction::prepare_market_decision(
+            &mut account,
+            crate::strategy350_transaction::MarketDecisionInput {
+                effective: &effective,
+                market_scope,
+                input: input.clone(),
+                safety: &safety,
+                price: &evidence,
+                expected_price_gate_hash: gate_hash,
+                maximum_price_age_ns: 200_000_000,
+                refinement: None,
+                macd: Some(&foreign_macd),
+                gap: None,
+                other_evidence_hash: &"c".repeat(64),
+            },
+            |_| panic!("foreign MACD cannot observe account state"),
+            |_| panic!("foreign MACD cannot calculate"),
         )
         .is_err());
         let decision = crate::strategy350_transaction::prepare_market_decision(
@@ -1372,6 +1405,13 @@ mod tests {
             crate::execution_interval::ExecutionInterval::Fixed(100_000_000),
         );
         effective.price_gate_config_hash = gate_hash.clone();
+        effective.macd_config_hash = crate::strategy350_macd::Config {
+            execution_interval: ExecutionInterval::Events,
+            price_scale: 0,
+            source_algorithm_hash: "b".repeat(64),
+        }
+        .hash()
+        .unwrap();
         let mut gate = State::new(
             market_scope,
             ContextSource::HistoricalRest,

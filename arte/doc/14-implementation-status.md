@@ -27,7 +27,7 @@ the complete entry rules.
 The run's existing per-consumer effective-config hash can now be derived from
 a typed Strategy 350 component bundle. The decision transaction and readback
 require that bundle to match the run scope. A supplied gap must match its
-pinned gap configuration; the price-gate configuration is checked too. The
+pinned gap configuration; price-gate and MACD configurations are checked too. The
 bundle includes signal, screen, price gate,
 MACD, noise, BOS, level book, rules, account risk, and optional Watchlist
 hashes. Callers must still verify the remaining components against their actual

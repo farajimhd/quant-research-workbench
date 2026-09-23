@@ -93,6 +93,9 @@ impl<'a> CommittedHistoricalDecision<'a> {
         let decision = committed.decision();
         effective.require_scope(&decision.scope)?;
         effective.require_price_gate(expected_price_gate_hash)?;
+        if let Some(macd) = macd {
+            effective.require_macd(macd.configuration_hash())?;
+        }
         if let Some(gap) = gap {
             effective.require_gap(gap)?;
         }
@@ -289,6 +292,9 @@ pub fn prepare_historical_market_decision<S: Clone + Serialize>(
     let scope = runtime.scope().clone();
     effective.require_scope(&scope)?;
     effective.require_price_gate(expected_price_gate_hash)?;
+    if let Some(macd) = macd {
+        effective.require_macd(macd.configuration_hash())?;
+    }
     if let Some(gap) = gap {
         effective.require_gap(gap)?;
     }
@@ -340,6 +346,9 @@ impl<'a> CommittedMarketDecision<'a> {
         let decision = committed.decision();
         effective.require_scope(&decision.scope)?;
         effective.require_price_gate(expected_price_gate_hash)?;
+        if let Some(macd) = macd {
+            effective.require_macd(macd.configuration_hash())?;
+        }
         if let Some(gap) = gap {
             effective.require_gap(gap)?;
         }
@@ -414,6 +423,9 @@ pub fn prepare_market_decision<S: Clone + Serialize>(
     let scope = runtime.scope().clone();
     effective.require_scope(&scope)?;
     effective.require_price_gate(expected_price_gate_hash)?;
+    if let Some(macd) = macd {
+        effective.require_macd(macd.configuration_hash())?;
+    }
     if let Some(gap) = gap {
         effective.require_gap(gap)?;
     }

@@ -10,6 +10,7 @@ use crate::{
 };
 
 pub struct Evidence {
+    configuration_hash: String,
     scope: Scope,
     run_id: String,
     event_key: EventKey,
@@ -21,6 +22,9 @@ pub struct Evidence {
     fingerprint: String,
 }
 impl Evidence {
+    pub fn configuration_hash(&self) -> &str {
+        &self.configuration_hash
+    }
     pub fn outcome(&self) -> &Outcome {
         &self.outcome
     }
@@ -117,6 +121,7 @@ impl State {
             outcome.bullish,
         ))?;
         Ok(Evidence {
+            configuration_hash: self.config_hash().into(),
             scope: self.scope,
             run_id: receipt.run_id.clone(),
             event_key: observation.key.clone(),
