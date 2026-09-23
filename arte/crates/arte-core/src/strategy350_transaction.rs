@@ -270,6 +270,9 @@ impl<'a> CommittedMarketDecision<'a> {
         )?;
         if has_exposure(&decision.actions) {
             require_live_refinement(refinement, market_scope, &decision.input)?;
+            return Err(Error::Unready(
+                "Strategy 350 live MACD evidence is not bound to this decision".into(),
+            ));
         }
         Ok(Self {
             committed,
@@ -338,6 +341,9 @@ pub fn prepare_market_decision<S: Clone + Serialize>(
                 maximum_price_age_ns,
             )?;
             require_live_refinement(refinement, market_scope, &input)?;
+            return Err(Error::Unready(
+                "Strategy 350 live MACD evidence is not bound to this decision".into(),
+            ));
         }
         Ok(actions)
     })

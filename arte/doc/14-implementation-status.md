@@ -86,8 +86,7 @@ an account add with selected refinement, commits and reads back the journal,
 and reaches the shared bracket/LULD planner. It rejects generic unproven
 planning and omitted MACD on readback. This is an in-process fixture, not a
 runnable full-session backtest. The remaining typed operands are still absent,
-so this does not
-authorize a production backtest or live order path.
+so this does not authorize a production backtest or live order path.
 Numerical parity with the current Python/QMD MACD initialization is unproven;
 activation must remain blocked until that comparison and an effective
 configuration pin are complete.
@@ -99,6 +98,12 @@ watermark, and source identity checks. Offline tests cover sparse gaps and a
 fresh final bar. The live exact-bar owner now advances this source from its
 verified bar advance. The historical Strategy 350 runner does not yet consume
 the projected schedule, so historical mode cannot claim the gate is connected.
+The live/paper Strategy 350 account transaction now rejects every entry/add
+after its existing price and selected-bucket checks. The live exact owner can
+calculate a four-frame MACD preview, but no sealed, account-bound live MACD
+evidence reaches that transaction or its journal readback. The former
+two-second live add fixture no longer claims authorization from price evidence
+alone. Wait and exit decisions remain possible; live exposure stays blocked.
 The four EMA states and sparse exact-bar buckets now have separate bounded,
 content-addressed recovery images. Restore checks period alphas, finite EMA
 values, frame clocks, source generation, active bucket geometry, and canonical
