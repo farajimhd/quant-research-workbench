@@ -899,6 +899,79 @@ fn event_boolean_source_ledger_requires_complete_pinned_playback() {
     assert_eq!(product.source_hash, proof.source_hash());
 }
 #[test]
+fn event_boolean_precompute_uses_every_shared_event_boundary() {
+    use crate::{
+        coverage::Interval,
+        event_boolean::replay::{project, Context, Limits},
+        execution_interval::{ExecutableKind, ExecutionContract, ExecutionInterval},
+    };
+    let prepared = prepared_playback();
+    let catalog = playback_catalog();
+    let manifest = account_run_manifest();
+    let hash = manifest.hash().unwrap();
+    let pinned = crate::run_manifest::Pinned::new(manifest, &hash).unwrap();
+    let definition = ExecutionContract {
+        kind: ExecutableKind::SignalStream,
+        id: "event-signal".into(),
+        implementation_hash: "a".repeat(64),
+        interval: ExecutionInterval::Events,
+    };
+    let interval = Interval {
+        start: 200 * SECOND,
+        end: 204 * SECOND,
+    };
+    let make = || playback::Playback::new(scheduler(10), prepared.clone(), 1).unwrap();
+    let mut seen = 0;
+    let (product, proof) = project(
+        make(),
+        Context {
+            prepared: &prepared,
+            catalog: &catalog,
+            manifest: &pinned,
+            interval,
+            definition: &definition,
+            limits: Limits {
+                maximum_events: 10,
+                maximum_transitions: 10,
+                maximum_boundaries: 100,
+            },
+            certified_at_ns: 205 * SECOND,
+        },
+        |boundary, market, quotes| {
+            assert!(market.available().is_ok());
+            let _ = quotes;
+            assert!(matches!(boundary.kind, Kind::Trade { .. }));
+            seen += 1;
+            Ok(Some(seen == 2))
+        },
+    )
+    .unwrap();
+    assert_eq!(seen, 2);
+    assert_eq!(product.event_count, 2);
+    assert_eq!(product.transitions.len(), 2);
+    assert_eq!(product.transitions[0].value, Some(false));
+    assert_eq!(product.transitions[1].value, Some(true));
+    assert_eq!(product.source_hash, proof.source_hash());
+    assert!(project(
+        make(),
+        Context {
+            prepared: &prepared,
+            catalog: &catalog,
+            manifest: &pinned,
+            interval,
+            definition: &definition,
+            limits: Limits {
+                maximum_events: 10,
+                maximum_transitions: 10,
+                maximum_boundaries: 1,
+            },
+            certified_at_ns: 205 * SECOND,
+        },
+        |_, _, _| Ok(Some(true)),
+    )
+    .is_err());
+}
+#[test]
 fn playback_reports_coalescing_without_replaying_duplicate_trade() {
     use playback::{Frame, Input, Limits, Playback, Poll, Prepared};
     let e = Input {

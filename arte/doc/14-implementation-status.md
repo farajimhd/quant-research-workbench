@@ -115,10 +115,17 @@ than caller-supplied hashes. One offline playback unit test covers completion,
 successful sealing, an omitted ledger event and an omitted producer event.
 The proof remains conditional on upstream source certification and does not
 establish live feed completeness. Migration 024 is unapplied, connected I/O is
-untested, and live-stream certification, recovery, and producer wiring remain.
+untested, and live-stream certification, recovery, and registered producer
+wiring remain.
+An in-process historical event-Boolean runner now evaluates each event boundary
+on the shared playback, with the current causal market and quote state, and
+returns a sealed product plus source proof. It rejects work-budget exhaustion.
+One offline unit test covers two event decisions and an insufficient boundary
+budget. The runner performs no account decisions or simulated/broker execution.
+No general signal registry or live event-Boolean producer is wired yet.
 The first Strategy
 350 Early Squeeze historical formula and first-occurrence session latch now
-feed that path. The formula uses exact close-ratio, trade-count, and volume
+feed the fixed-cadence Boolean path. The formula uses exact close-ratio, trade-count, and volume
 comparisons against the prior non-empty 100 ms bar. It does not supply full live
 episode semantics, Watchlist formulas, a pinned effective Strategy 350
 configuration, source parity, or connected ClickHouse publication.

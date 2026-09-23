@@ -37,6 +37,14 @@ account ordering. Vectorization must preserve prior-only operands, equal-time
 rules, order timing, and position-dependent behavior. A vectorized lookahead is
 not an acceptable speedup.
 
+For an explicitly event-cadence Boolean computation, a separate in-process
+precomputation runner now replays the same scheduler, evaluates every trade or
+quote boundary, and produces a product sealed by the independently observed
+playback ledger. The calculation callback sees the causal market and quote
+state. Its event and boundary work budgets are explicit. This is an offline
+signal/Watchlist preparation lane, not strategy or broker execution, and it
+does not replace the vectorized fixed-bar calculation path.
+
 Strategy 350 still contains trade-native rules, including an exact previous-trade
 crossing for some reentries and quote-dependent purchase checks. A 100 ms OHLCV
 bar cannot reconstruct the sequence of trades and quotes inside that bucket.
