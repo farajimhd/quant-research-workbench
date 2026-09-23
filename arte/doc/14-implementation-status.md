@@ -4844,6 +4844,9 @@ publication returns no receipt, and retry uses the same pending batch. The
 Strategy 350 boundary exposes this receipt separately from the generic
 playback progress step. An offline unit test covers ambiguous publication,
 exact retry, owner identity, both projections, and one-time receipt emission.
+The receipt and its per-fill ownership fields are opaque outside the execution
+adapter; consumers receive read-only views and cannot construct an apparent
+verified receipt from arbitrary fills.
 The caller must still carry this receipt into the next journaled Strategy 350
 observation and bind the entry's causal trade and resistance. Receipt exposure
 alone is not an automatic fill-to-state bridge or end-to-end execution.

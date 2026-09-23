@@ -27,13 +27,26 @@ pub struct Status {
 /// The original fill is not rewritten to manufacture strategy attribution.
 #[derive(Debug, Clone)]
 pub struct CommittedFill {
-    pub fill: Fill,
-    pub owner: arte_core::strategy_dispatch::Scope,
+    fill: Fill,
+    owner: arte_core::strategy_dispatch::Scope,
+}
+impl CommittedFill {
+    pub fn fill(&self) -> &Fill {
+        &self.fill
+    }
+    pub fn owner(&self) -> &arte_core::strategy_dispatch::Scope {
+        &self.owner
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct FillReceipt {
-    pub fills: Vec<CommittedFill>,
+    fills: Vec<CommittedFill>,
+}
+impl FillReceipt {
+    pub fn fills(&self) -> &[CommittedFill] {
+        &self.fills
+    }
 }
 pub struct Runtime {
     simulator: Simulator,
@@ -1675,9 +1688,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(receipt.fills.len(), 1);
-        assert_eq!(receipt.fills[0].owner, owner);
-        let fill = &receipt.fills[0].fill;
+        assert_eq!(receipt.fills().len(), 1);
+        assert_eq!(receipt.fills()[0].owner(), &owner);
+        let fill = receipt.fills()[0].fill();
         assert_eq!(
             runtime
                 .position(&Key::from_fill(fill).unwrap())
