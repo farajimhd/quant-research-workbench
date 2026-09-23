@@ -114,6 +114,23 @@ exact catalog shard set and run identity, and preserves each ticker's account
 journal barrier. One two-ticker unit test checks ordering, sorted shard
 identity and rejection of premature acknowledgment. This is not a complete
 Strategy 350 evaluator, OMS simulation, or measured end-to-end backtest.
+The full playback-controller adapter now has a cross-ticker coordinator above
+the per-ticker simulation owners. It requires the complete certified shard
+set, waits for pending fill publication, and chooses one deterministic market
+boundary only when all controllers have reached a boundary or completion.
+Its unit test covers the ordering key, not constructed multi-controller
+operation. Coordinator release requires the verified published common-cut
+receipt; it exposes no raw acknowledgment method or mutable controller.
+Fill publication, boundary service and common-cut capture are named
+operations. The fresh-session builder
+and publication graph still require one instrument. They do not provide a
+shared portfolio or multi-shard recovery, so this is not a runnable
+multi-ticker backtest.
+The Strategy 350 historical account owner now selects its own ticker's
+consumers from a shared run manifest while requiring exact local configuration
+and state sets. A unit test covers another ticker, missing local inputs and
+same-ticker wrong strategy kind. It still blocks exposure-increasing actions
+until the full evaluator is connected.
 This is replay routing, not a substitute for causal event, quote, level or
 account evidence. After a complete certified source load, the replay-source
 adapter can build a bounded, SIP-ordered index of selected trade or quote

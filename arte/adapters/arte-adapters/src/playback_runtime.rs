@@ -14,6 +14,7 @@ mod actions;
 pub mod candidate_position;
 pub mod candidates;
 pub mod checkpoint;
+pub mod multi;
 pub mod recovery;
 pub mod runner;
 pub mod session;
@@ -77,6 +78,18 @@ impl Runtime {
     }
     pub fn status(&self) -> Status {
         self.run.status()
+    }
+    pub fn market_scope(&self) -> arte_core::event_order::Scope {
+        self.run.market_scope()
+    }
+    pub fn manifest_hash(&self) -> &str {
+        self.run.manifest_hash()
+    }
+    pub fn prepared_hash(&self) -> &str {
+        self.run.prepared_hash()
+    }
+    pub fn run_id(&self) -> &str {
+        self.run.run_id()
     }
     pub fn execution_status(&self) -> simulation_runtime::Status {
         self.execution.status()

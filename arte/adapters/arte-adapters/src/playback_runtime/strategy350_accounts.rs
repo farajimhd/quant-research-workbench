@@ -72,10 +72,13 @@ impl<S: Clone + Serialize> Accounts<S> {
             return Err(Error::Invalid("Strategy 350 account owner bounds".into()));
         }
         let mut slots = BTreeMap::new();
-        for consumer in &manifest.manifest().consumers {
-            if consumer.instrument != instrument
-                || consumer.strategy_kind != StrategyKind::Strategy350
-            {
+        for consumer in manifest
+            .manifest()
+            .consumers
+            .iter()
+            .filter(|consumer| consumer.instrument == instrument)
+        {
+            if consumer.strategy_kind != StrategyKind::Strategy350 {
                 return Err(Error::Conflict(
                     "Strategy 350 account consumer differs".into(),
                 ));
@@ -116,8 +119,10 @@ impl<S: Clone + Serialize> Accounts<S> {
                 ));
             }
         }
-        if !configurations.is_empty() || !initial_states.is_empty() {
-            return Err(Error::Conflict("surplus Strategy 350 account input".into()));
+        if slots.is_empty() || !configurations.is_empty() || !initial_states.is_empty() {
+            return Err(Error::Conflict(
+                "Strategy 350 local account scope set differs".into(),
+            ));
         }
         Ok(Self {
             manifest_hash: manifest.hash().into(),
@@ -454,6 +459,31 @@ mod tests {
         let recorded = Pinned::new(recorded, &hash).unwrap();
         let (configs, states) = inputs(&recorded);
         assert!(Accounts::new(&recorded, 10, configs, states, 1024).is_err());
+    }
+
+    #[test]
+    fn account_owner_selects_only_its_ticker_from_a_shared_run_manifest() {
+        let base = manifest();
+        let mut combined = base.manifest().clone();
+        let mut other = combined.consumers[0].clone();
+        other.instrument = 20;
+        other.account = "third".into();
+        combined.consumers.push(other);
+        let hash = combined.hash().unwrap();
+        let combined = Pinned::new(combined, &hash).unwrap();
+        let (configs, states) = inputs(&combined);
+        let local = Accounts::new(&combined, 10, configs.clone(), states.clone(), 1024).unwrap();
+        assert_eq!(local.scope_hashes().count(), 2);
+        assert!(Accounts::new(&combined, 20, configs.clone(), states.clone(), 1024).is_err());
+        let mut surplus = configs.clone();
+        let other_scope = combined.scope("third", 20, "strategy-350").unwrap();
+        surplus.insert(content_hash(&other_scope).unwrap(), effective());
+        assert!(Accounts::new(&combined, 10, surplus, states.clone(), 1024).is_err());
+        let mut mixed = combined.manifest().clone();
+        mixed.consumers[0].strategy_kind = StrategyKind::GenericCandidate;
+        let hash = mixed.hash().unwrap();
+        let mixed = Pinned::new(mixed, &hash).unwrap();
+        assert!(Accounts::new(&mixed, 10, configs, states, 1024).is_err());
     }
 
     #[test]

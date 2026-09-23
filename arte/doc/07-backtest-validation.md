@@ -155,6 +155,19 @@ advances. A two-ticker unit test checks ordering and the receipt barrier.
 This is deterministic scheduling, not yet a complete Strategy 350 evaluator
 or measured vectorized end-to-end backtest. Representative throughput and
 the evaluator/OMS wiring remain outstanding.
+The adapter now also coordinates the full per-ticker playback controllers,
+which own simulated fills, funding, actions and checkpoints. It sorts and
+pins the exact catalog shard set, reports pending fill publication before
+selecting a decision boundary, and holds all tickers until each is pending or
+complete. The selected controller still enforces its own journal and action
+gates. Coordinator acknowledgment requires a verified published common cut;
+there is no raw release method or mutable-controller escape. The coordinator
+exposes bounded fill publication, selected boundary servicing and common-cut
+capture through the existing owners. A unit test covers deterministic head
+ordering; construction and multi-ticker service remain unexercised. Fresh
+session assembly and common-cut publication are still single-instrument.
+A shared portfolio and multi-shard recovery graph are required before this
+can run a multi-ticker backtest.
 The first shared Boolean product readback now records explicit evaluation
 cadence, known/unknown state, value, source-bar identity and complete bucket
 coverage. Strategy 350 intersects the verified signal with the bar mask. It
