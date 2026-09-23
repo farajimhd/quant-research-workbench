@@ -130,8 +130,14 @@ The market startup adapter now accepts a run-wide historical V7 seed catalog
 for a combined source catalog. Each shard must bind its own seed-manifest
 hash, prior session, historical producer and startup availability. A
 two-ticker unit test assembles both market runs and rejects a swapped seed
-or missing seed row. This does not assemble a shared portfolio or publish a
-multi-shard common-cut recovery graph.
+or missing seed row. Fresh multi-ticker Strategy 350 assembly now owns one
+shared simulated Portfolio and independent per-ticker market, execution and
+account-state owners. Its startup identity pins owner hashes,
+configurations, initial states, balances and models. The two-ticker offline
+test checks account cash isolation. It does not start a service or submit an
+order. The constructor currently rejects multiple sessions of one
+instrument. Combined checkpoint publication and the complete Strategy 350
+evaluator remain missing.
 The Strategy 350 historical account owner now selects its own ticker's
 consumers from a shared run manifest while requiring exact local configuration
 and state sets. A unit test covers another ticker, missing local inputs and

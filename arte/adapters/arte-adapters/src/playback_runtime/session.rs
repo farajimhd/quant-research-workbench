@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod bootstrap;
 pub mod document;
 pub mod market;
+pub mod multi;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -9,6 +9,7 @@ use arte_core::{
     v7_seed::{build, input_hash, SeedPolicy, SourceCertificate},
     v7_stream::StreamPolicy,
 };
+use std::collections::BTreeMap;
 const S: u64 = 1_000_000_000;
 pub(crate) fn fixture() -> (Document, Pinned, Catalog, Prepared, Bundle) {
     let bars: Vec<_> = (100..118)
@@ -163,6 +164,15 @@ fn portable_market_inputs_build_a_paused_run_and_empty_interval_completes() {
 }
 #[test]
 fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution() {
+    use crate::playback_runtime::session::{multi, Limits as SessionLimits};
+    use arte_core::{
+        execution_interval::ExecutionInterval,
+        portfolio::{Account, FundingStatus, Reservation},
+        simulation_costs,
+        strategy350_effective::Config as Effective,
+        strategy350_gap,
+        strategy_dispatch::StrategyKind,
+    };
     let (mut first_doc, single, mut sources, first_prepared, first_seed) = fixture();
     let bars: Vec<_> = (100..118)
         .map(|t| Candle {
@@ -240,6 +250,38 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
     let mut combined = single.manifest().clone();
     combined.source_manifest_hash = sources.hash().unwrap();
     combined.seed_manifest_hash = seeds.hash().unwrap();
+    let effective = Effective {
+        execution_interval: ExecutionInterval::Fixed(S),
+        gap: strategy350_gap::Config {
+            execution_interval: ExecutionInterval::Fixed(100_000_000),
+            maximum_levels: 1_000,
+        },
+        signal_config_hash: "a".repeat(64),
+        screen_config_hash: "b".repeat(64),
+        price_gate_config_hash: "c".repeat(64),
+        macd_config_hash: "d".repeat(64),
+        noise_config_hash: "e".repeat(64),
+        bos_config_hash: "f".repeat(64),
+        level_book_config_hash: "1".repeat(64),
+        rule_set_hash: "2".repeat(64),
+        account_risk_hash: "3".repeat(64),
+        watchlist_config_hash: None,
+    };
+    let cost_model = simulation_costs::Model {
+        schema_version: 1,
+        currency: "USD".into(),
+        currency_scale: 2,
+        fixed_per_fill_minor: 0,
+        per_share_atoms: 0,
+        per_share_scale: 0,
+        minimum_per_fill_minor: 0,
+    };
+    combined.execution = Execution::Simulated {
+        fill_model_hash: crate::test_fill_model().hash().unwrap(),
+        cost_model_hash: cost_model.hash().unwrap(),
+    };
+    combined.consumers[0].strategy_kind = StrategyKind::Strategy350;
+    combined.consumers[0].effective_config_hash = effective.hash().unwrap();
     let mut other = combined.consumers[0].clone();
     other.instrument = 2;
     other.account = "b".into();
@@ -308,6 +350,84 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
             &seeds,
         )
         .is_err());
+    let mut configs = BTreeMap::new();
+    let mut states = BTreeMap::new();
+    for (account, instrument) in [("a", 1), ("b", 2)] {
+        let scope = combined.scope(account, instrument, "strategy").unwrap();
+        let key = content_hash(&scope).unwrap();
+        configs.insert(key.clone(), effective.clone());
+        states.insert(key, instrument);
+    }
+    let accounts = ["a", "b"]
+        .into_iter()
+        .map(|id| {
+            (
+                id.into(),
+                Account {
+                    currency: "USD".into(),
+                    currency_scale: 2,
+                    simulation_run_id: Some(combined.manifest().run_id.clone()),
+                    budget_minor: if id == "a" { 10_000 } else { 20_000 },
+                    broker_available_minor: if id == "a" { 10_000 } else { 20_000 },
+                    balance_at_ns: 199 * S,
+                    max_balance_age_ns: 2 * S,
+                    reservations: BTreeMap::new(),
+                },
+            )
+        })
+        .collect();
+    let request = multi::Request {
+        manifest: &combined,
+        sources: &sources,
+        markets: vec![
+            multi::MarketRun {
+                run: second_run,
+                price_scale: 2,
+            },
+            multi::MarketRun {
+                run: first_run,
+                price_scale: 2,
+            },
+        ],
+        configurations: configs,
+        initial_states: states,
+        accounts,
+        fill_model: crate::test_fill_model(),
+        cost_model,
+        limits: SessionLimits {
+            maximum_orders: 10,
+            maximum_positions: 2,
+            maximum_fills: 10,
+            maximum_lots_per_position: 4,
+            maximum_pending_fills: 100,
+            maximum_candidate_state_bytes: 1024,
+        },
+    };
+    let startup_hash = request.hash().unwrap();
+    let session = multi::Session::from_request(request, &startup_hash).unwrap();
+    assert_eq!(session.startup_hash(), startup_hash);
+    assert_eq!(session.controller.controllers().len(), 2);
+    assert_eq!(session.strategy.len(), 2);
+    session
+        .portfolio
+        .reserve(
+            "a",
+            Reservation {
+                command_id: "reserved-a".into(),
+                instrument: 1,
+                cash_minor: 1_000,
+            },
+            200 * S,
+        )
+        .unwrap();
+    assert!(matches!(
+        session.portfolio.funding_status("a", "reserved-a").unwrap(),
+        FundingStatus::Reserved(_)
+    ));
+    assert_eq!(
+        session.portfolio.funding_status("b", "reserved-a").unwrap(),
+        FundingStatus::Absent
+    );
 }
 #[test]
 fn wrong_identity_future_evidence_and_partial_source_are_rejected() {

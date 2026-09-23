@@ -164,17 +164,23 @@ gates. Coordinator acknowledgment requires a verified published common cut;
 there is no raw release method or mutable-controller escape. The coordinator
 exposes bounded fill publication, selected boundary servicing and common-cut
 capture through the existing owners. A unit test covers deterministic head
-ordering; construction and multi-ticker service remain unexercised. Fresh
-session assembly and common-cut publication are still single-instrument.
-A shared portfolio and multi-shard recovery graph are required before this
-can run a multi-ticker backtest.
+ordering; multi-ticker service remains unexercised. Common-cut publication
+is still single-instrument. A multi-shard recovery graph is required before
+this can run a multi-ticker backtest through a durable checkpoint boundary.
 A run-scoped historical V7 seed catalog now pins exactly one seed-manifest
 hash per certified source shard. Multi-shard market startup checks the whole
 catalog against the run, then checks each ticker's seed identity, prior
 session, historical producer and availability before hydrating it. An offline
 two-ticker unit test accepts separate seeds and rejects cross-ticker seed
-substitution or a missing catalog shard. This is seed selection, not the
-shared portfolio, multi-session builder or recovery graph.
+substitution or a missing catalog shard.
+Fresh Strategy 350 assembly now creates one shared simulated Portfolio for
+all run accounts, while keeping separate per-ticker market, execution and
+account-state owners. The startup hash pins those owners, the effective
+configurations, initial states, per-account balances and simulation models.
+A two-ticker offline unit test builds the session and verifies account cash
+isolation. The constructor currently admits one session per instrument. The
+combined recovery/publication graph and complete Strategy 350 evaluator are
+still absent, so this is not yet an executable multi-day backtest.
 The first shared Boolean product readback now records explicit evaluation
 cadence, known/unknown state, value, source-bar identity and complete bucket
 coverage. Strategy 350 intersects the verified signal with the bar mask. It
