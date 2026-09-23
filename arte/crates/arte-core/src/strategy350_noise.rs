@@ -228,9 +228,15 @@ impl Source {
 /// Project one fully verified catalogue product into a dense 1s clock. A None
 /// slot is a certified empty second, not a zero-price bar. The caller must use
 /// the product's entire warmup interval for any session-relative calculation.
-pub fn project_compact_one_second(product: &Complete) -> Result<Vec<Option<CompletedBar>>> {
+pub fn project_compact_one_second(
+    product: &Complete,
+    expected_request_hash: &str,
+    expected_coverage_hash: &str,
+) -> Result<Vec<Option<CompletedBar>>> {
     let request = product.request();
-    if request.instruments.len() != 1
+    if request.hash()? != expected_request_hash
+        || product.coverage_hash() != expected_coverage_hash
+        || request.instruments.len() != 1
         || request.timeframe_ns != exact_bars::INTERVAL_NS
         || !request.interval.start.is_multiple_of(SECOND)
         || !request.interval.end.is_multiple_of(SECOND)
@@ -712,8 +718,12 @@ mod tests {
             bar_catalogue::Readback::new(request, &coverage, START + 3 * SECOND).unwrap();
         readback.observe(batch).unwrap();
         let complete = readback.finish().unwrap();
+        let request_hash = complete.request().hash().unwrap();
+        let coverage_hash = complete.coverage_hash().to_owned();
+        assert!(project_compact_one_second(&complete, &"f".repeat(64), &coverage_hash).is_err());
+        assert!(project_compact_one_second(&complete, &request_hash, &"f".repeat(64)).is_err());
         assert_eq!(
-            project_compact_one_second(&complete).unwrap(),
+            project_compact_one_second(&complete, &request_hash, &coverage_hash).unwrap(),
             vec![
                 Some(CompletedBar {
                     end_ns: START + SECOND,

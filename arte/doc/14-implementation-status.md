@@ -56,6 +56,9 @@ and trade-count columns. It preserves certified empty seconds and rejects
 missing columns or multi-instrument products. A focused unit test covers two
 nonempty 100 ms buckets in one second followed by an empty second. This is not
 yet wired into a runnable Strategy 350 backtest or quote-aware entry pricing.
+The projector now also requires the caller's exact compact request and
+coverage hashes, rejecting a verified product from a different source or
+calculation generation.
 The first conservative Strategy 350 100 ms bar screen now emits contiguous
 candidate-refinement masks. It preserves buckets whose intrabar order could
 create a new HOD and subsequent qualifying pullback; it never authorizes a

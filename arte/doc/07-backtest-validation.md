@@ -79,7 +79,9 @@ The historical side now projects the same exact 1s high/low source from a
 single readback-verified compact 100 ms catalogue product. It requests only
 high, low, and trade-count atoms, retains a dense 1s clock, and leaves certified
 empty seconds absent rather than fabricating a price. The caller must supply
-the complete session warmup needed by the rolling percentile. Entry-price or
+the exact compact request and coverage hashes plus the complete session warmup
+needed by the rolling percentile. A valid but differently pinned source
+generation or calculation is rejected. Entry-price or
 quote evidence is still a separate causal input; this projection does not
 manufacture it from bar closes.
 
