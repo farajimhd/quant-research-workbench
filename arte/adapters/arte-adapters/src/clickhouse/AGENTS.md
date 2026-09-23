@@ -3,11 +3,16 @@
 Read `../../../../doc/03-events.md`, `../../../../doc/04-data-lifecycle.md`,
 and `../../../../doc/05-v7-state.md` for the affected table.
 
-- Use only the configured ARTE database. Operational tables require the
+- Write operational state only to the configured ARTE database. Certified
+  read-only yearly compact events are the declared historical-source
+  exception. Operational tables require the
   explicit `live_market_ssd` policy and verified actual part placement; never
   fall back to `default` or an alias routing there.
-- ClickHouse is the sole durable store. No SQLite, parent database, flatfile,
-  local checkpoint, or cache may become a second authority.
+- ClickHouse is the sole durable store. Certified read-only
+  `market_sip_compact.events_YYYY` is an allowed historical source; ARTE
+  writes its journals, products, and checkpoints to the `arte` database.
+  No SQLite, direct consumer flatfile read, local checkpoint, or cache may
+  become a second authority.
 - Define immutable identities, revisions, source/knowledge clocks, and exact
   read resolution. ClickHouse sorting and background merges do not enforce
   uniqueness; reject conflicting rows before and after insert.
@@ -20,3 +25,7 @@ and `../../../../doc/05-v7-state.md` for the affected table.
 - Keep queries bounded by instrument, session, interval, and required columns.
   Verify schema compatibility, storage policy, and part placement before
   starting writers; an `IF NOT EXISTS` statement is not migration proof.
+- Preserve compatible existing `arte` V7 interval/coverage/builder-checkpoint
+  tables and market-day bars/technical products. Read only complete certified
+  generations with matching source/reporting, calculation, availability, and
+  attempt identities. Do not create a duplicate checkpoint authority.

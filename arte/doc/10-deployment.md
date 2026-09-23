@@ -25,11 +25,17 @@ See [implementation status](14-implementation-status.md).
 ## Release contents
 
 - Live, maintenance, backtest, and control/observer binaries.
+- ARTE-owned Rust/ClickHouse flatfile digestion and certified compact-source
+  reader. They do not execute the parent's `download_update_events` script.
 - Built frontend assets from this project's copied source.
 - Required broker gateway, reference components, and authentication helpers.
 - Pinned language runtimes for any retained non-Rust helper.
 - Lockfiles, schema versions, configuration schemas, and license notices.
 - Release manifest with component hashes and compatibility constraints.
+- Declared external data authorities: read-only certified yearly compact
+  tables, the `arte` V7 interval/coverage/checkpoint tables, and completed
+  `arte` market-day bar/indicator generations. Credentials and mount paths
+  remain external profile references.
 
 Third-party packaging must comply with its license. Where redistribution is not
 permitted, the project-owned installer provisions a pinned approved dependency.
@@ -88,6 +94,9 @@ After the initial implementation, copy this root into an empty independent check
 Build, test, install, run maintenance, replay a fixture, and serve the UI there.
 The parent tree must be absent or inaccessible. No parent processes may be running.
 Provision only declared external integrations and the new ClickHouse database.
+The parent source tree and services remain absent; a configured read-only
+ClickHouse `market_sip_compact` source is an external data authority, not a
+parent-code dependency. Verify its certificates and permissions separately.
 
 The latest user restriction changes the order: the user copies ARTE into its new
 repository before any service-backed testing. Builds and in-process tests may run

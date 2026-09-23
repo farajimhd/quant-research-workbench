@@ -1,5 +1,31 @@
 # V7 historical seeds and streaming state
 
+## Current persisted historical authority
+
+The user has selected the existing `arte` V7 persistence contract for
+continued use. `arte.structural_levels_v7` stores coalesced historical closing
+states as half-open `[valid_from, valid_to)` intervals. Here `valid_from` is
+the checkpoint's session-end availability, not an intraday confirmation.
+`arte.structural_level_coverage_v7` is the publication fence and session audit;
+`arte.structural_level_builder_checkpoint_v7` stores the latest complete
+historical engine checkpoint per ticker. A missing or empty-certified session
+must remain distinguishable.
+
+The stored contract is `arte-structural-levels-v7-1`. Preserve role-transition
+ancestry, mixture parent identity, fit geometry, and the terminal checkpoint.
+Read only a published coverage generation. Never expose a future `valid_to` as
+a strategy feature. Before ARTE advances a builder checkpoint, verify source,
+trade-condition/reporting, split, algorithm, numerical, and predecessor
+compatibility. A changed historical source resumes from the last compatible
+predecessor, not by relabeling a current checkpoint.
+
+These tables exist as a persistence design and, per the user's update, are
+being populated. This document does not claim that the full population,
+source coverage, storage placement, or ARTE Rust parity has been verified.
+ARTE must not build a redundant historical checkpoint store merely because
+an earlier proposal described one. A separate version is justified only by a
+validated incompatible change and an explicit migration.
+
 ## Two outputs, separate authority
 
 | Output | Producer | Allowed use |
@@ -14,10 +40,13 @@ certification. Streaming output must never be relabeled as a historical seed.
 Shared primitives do not make these two algorithms interchangeable. Version the
 historical extractor, streaming updater, and seed compatibility contract separately.
 
-## Initial ARTE historical MLE algorithm
+## Historical MLE algorithm and Rust parity target
 
-`arte-historical-mle-seed-1` is a new completed-session algorithm. It is not the
-parent application's `historical_checkpoint` export of a streaming object.
+`arte-historical-mle-seed-1` described a new completed-session Rust algorithm.
+Its steps remain a parity target, not permission to replace the existing
+historical V7 authority. It is not a `historical_checkpoint` export of a
+streaming object. ARTE must compare its levels, identities, fit results, and
+next-session decisions with the pinned existing V7 producer before promotion.
 
 - Require a session certificate with matching input hash and completed time bounds.
 - Use whole-session extraction to propose reaction areas. Keep rejected candidates
@@ -62,10 +91,12 @@ Keep detector/local-swing state, indicator state, and strategy state separate fr
 the level-book authority. Include each in recovery when the strategy depends on it.
 Do not use retrospective chart candles as strategy inputs.
 
-## New interval contract
+## Interval contract and causal query
 
-The contract is inspired by half-open intervals. It does not copy the earlier
-experimental level algorithm or assume its row fields are sufficient for V7.
+The original ARTE proposal below was inspired by half-open intervals. The
+existing `arte.structural_levels_v7` contract now supplies this shape and is
+the starting authority. The proposal does not copy the earlier experimental
+level algorithm or assume its row fields are sufficient for V7.
 
 | Record | Minimum responsibilities |
 |---|---|
@@ -86,11 +117,14 @@ mathematical proof and replay validation establish equivalence.
 
 ## Seed publication
 
-1. Pin the completed source generation and preceding certified seed.
+1. Pin the completed source generation and preceding certified seed or builder
+   checkpoint from the existing `arte` V7 authority.
 2. Run historical V7 and validate fit, lineage, identity, and split handling.
-3. Write immutable level/state objects to ClickHouse.
-4. Verify referenced object counts and hashes.
-5. Publish the seed manifest as certified.
+3. Write changed level intervals and the terminal builder checkpoint to
+   ClickHouse under a compatible versioned contract.
+4. Verify referenced object counts, hashes, interval continuity, and the
+   terminal checkpoint.
+5. Publish V7 coverage last as the certification fence.
 
 Readers ignore incomplete generations. Multi-table writes are not assumed atomic.
 Retries use deterministic publication identity. A crash between steps must not
@@ -117,9 +151,10 @@ There is no arbitrary older-seed fallback. Missing required sessions must be bui
 and certified. A corrupt seed or a qualified failed fit blocks readiness; do not
 silently substitute a fixed-width book or stale fitted values.
 
-## Seed object envelope
+## Earlier seed-object envelope proposal
 
-The initial persistence format is `arte-seed-objects-1`. A root object lists
+The earlier ARTE-specific persistence proposal is `arte-seed-objects-1`.
+A root object lists
 ordered level-object hashes and the historical seed metadata. Level objects
 contain the fit and observations needed to resume. Raw object bytes use SHA-256.
 Historical seed identity continues to use its versioned typed-content hash.
@@ -130,9 +165,12 @@ Repeated identical rows are accepted. Multiple distinct payloads for one immutab
 identity are an error. Loading verifies every object and reconstructs the seed
 before returning it. Table merges must not conceal conflicting payloads.
 
-`schemas/001-seed-storage.sql` defines the initial tables with `live_market_ssd`.
-It is not applied by build or validation commands. Existing tables require schema
-review; `IF NOT EXISTS` is not proof that a deployed schema matches the contract.
+`schemas/001-seed-storage.sql` defines those proposed tables with
+`live_market_ssd`. It is not applied by build or validation commands.
+This proposal must not become a parallel historical seed authority while the
+existing `arte.structural_levels_v7` contract is compatible. Existing tables
+require schema review; `IF NOT EXISTS` is not proof that a deployed schema
+matches the contract.
 
 ## Causal stream implementation boundary
 

@@ -2,6 +2,8 @@
 
 ## Strategy 350 and bar-first backtest design
 
+### Strategy identity and preparation plan
+
 Strategy 350 is the replacement candidate for the earlier starting strategy.
 Its current source is a revision of Strategy 349. The stated intent is to
 remove a duplicate historical Watchlist prior-close condition while retaining
@@ -20,10 +22,17 @@ source generation, calculation contract, coverage, precision, and knowledge
 cutoff for each product. A missing required product blocks that ticker or run;
 it never silently substitutes another source.
 
+### Vectorized 100 ms grid and exact refinement
+
 The first backtest execution grid is completed 100 ms bars. Read bounded,
-columnar batches for many tickers and sessions from ARTE ClickHouse. Vectorize
+columnar batches for many tickers and sessions from ARTE ClickHouse. The
+existing `arte.market_day_bars_v1` and `arte.market_day_technical_v1` are
+candidate persisted inputs, not merely a future materialization. Verify their
+completed build, unit attempts, source/reporting revision, seed mode, exact
+calculation identity, and coverage before a run pins them. Vectorize
 stateless transforms, rolling indicators, scanner predicates, Watchlist rules,
 market signals, and feature preparation across bars and independent tickers.
+
 Derive larger timeframes from the same verified base only when their aggregation
 contract is identical. Keep bar arrays contiguous and resident within the run's
 resource budget. Query ClickHouse by range and required columns, not per bar or
@@ -59,13 +68,17 @@ timestamps remain historical source-provenance clocks. They cannot be reused
 as intraday receive times in backtest decisions. A separate causal bar/session
 projection and narrow event refinement must supply backtest context.
 
+### Shared Strategy 350 components
+
 Strategy 350 adaptive initial-stop distance now has one Rust state machine for
 live completed one-second bars and bounded historical batches. It retains the
 last five completed observations and a bounded rolling range distribution. The
 90th percentile uses ordered sets with logarithmic insertion and eviction; it
 does not sort the full session on each bar. Integer scaled comparisons preserve
 the 10-cent minimum, 1.5 times two-bar range, 1.25 times session p90, and the
-larger of 10 cents or 5% of entry as the cap. Legitimate empty seconds do not
+larger of 10 cents or 5% of entry as the cap.
+
+Legitimate empty seconds do not
 create synthetic bars. This produces distance evidence only; structural stop
 selection, tick rounding, bracket submission and effective-config parity are
 not complete. Source provenance for this port is the SHA-256
@@ -74,6 +87,7 @@ of the then-inspected strategy executor and
 `0541a69a375bd77901ef6ad92725a47abd9d49488b4cc4312e9ed1ea0399d80f`
 of the Strategy 350 candidate builder. These are audit references, not runtime
 imports or an assumption that the effective configuration is frozen.
+
 The rolling noise state now has a bounded, immutable recovery object. It pins
 the configuration and session, saves only the recent bars and bounded range
 history, and rebuilds its percentile index on restore. Restore verifies bar
@@ -83,6 +97,7 @@ trade bars, checks the scheduler's 1s trade count, and includes the noise object
 in the same pending-boundary common-cut root. It never rounds the scheduler's
 floating-point bar into a price atom. The migration and connected readback are
 still unapplied and untested.
+
 The historical side now projects the same exact 1s high/low source from a
 single readback-verified compact 100 ms catalogue product. It requests only
 high, low, and trade-count atoms, retains a dense 1s clock, and leaves certified
@@ -92,12 +107,15 @@ needed by the rolling percentile. A valid but differently pinned source
 generation or calculation is rejected. Entry-price or
 quote evidence is still a separate causal input; this projection does not
 manufacture it from bar closes.
+
 The historical noise projector can process independent verified ticker/session
 products concurrently. It sorts scopes before dispatch, rejects duplicate
 scopes, and enforces caller-supplied worker and total output-second budgets.
 Each worker reads only an immutable product with pinned request and coverage
 hashes. Results return in stable scope order. This is a bounded preparation
 primitive, not a complete parallel backtest or a latency benchmark.
+
+### Catalogue, screen, and multi-shard refinement
 
 The first typed Strategy 350 catalogue plan requests completed 100 ms bars,
 the early squeeze signal and reference data for screening. Watchlist membership
@@ -113,33 +131,40 @@ The first Strategy 350 bar screen reads verified contiguous OHLC columns. It
 emits a compact per-bucket refinement mask, not entry decisions. It can reject
 an empty bucket, a ticker with prior close outside the configured range, or a
 bucket wholly outside the late-mode prior-HOD zone when that mode was already
-active and the bucket made no new high. A bucket that makes a new high remains
+active and the bucket made no new high.
+
+A bucket that makes a new high remains
 eligible for event refinement: bar OHLC cannot show whether a pullback followed
 that high. The same uncertainty applies when late mode first triggers inside a
 bucket. This is a bounded columnar prefix pass, not yet measured SIMD or a
 complete vectorized scanner/signal/Watchlist implementation.
+
 A multi-shard coordinator now runs the verified bar/signal/optional-Watchlist
 join across independent ticker sessions with bounded workers. It sorts scopes,
 rejects duplicates, checks each effective Strategy 350 component hash, and
 caps selected buckets and sparse intervals. Its output is only a deterministic
 refinement plan. The complete event/V7 replay must still consume all source
 events, including intervals the strategy screen does not select.
+
 Before a plan can index historical events, the replay projection must prove
 that its verified compact bars use the same certified trade revision and
 session interval as the run-pinned event tape. The one-ticker source link now
 performs that check. A combined catalog pins a projection-manifest identity
 for every ticker/session under one run source hash. Selected event positions
 must be bound through that catalog before strategy refinement can use them.
+
 The bundle now has a bounded selected-position index. It requires one screened
 product for every certified shard. Each bar product is checked against the
 trade certificate, coverage, cutoff and combined run source hash before its
 sparse plan is applied to the complete prepared tape. Trade and quote positions
 are kept separately in tape order. The index is an acceleration hint only;
 market, V7 and account replay must still advance over every prepared input.
+
 Independent shards now index with a bounded worker count. Output stays in
 sorted shard order and the total selected-position budget is enforced across
 workers. A non-empty two-shard unit test checks selected trade and quote
 positions, serial/parallel identity, total capacity and the combined run pin.
+
 Before a selected index is used at a pending market boundary, a lookup now
 rechecks the exact plan, prepared tape, run manifest and source catalog. It
 reconstructs selected event identities from the prepared tape and rejects
@@ -147,6 +172,7 @@ duplicate keys, changed positions, event content or evaluation clocks. Its
 multi-ticker read checks the coordinator's selected boundary. Lookup only
 answers whether expensive refinement is due; it cannot move the market cursor
 or authorize an order.
+
 The shared account-playback coordinator now holds each ticker at its next
 market boundary. It releases only the earliest evaluated boundary after every
 other shard is pending or complete. Ties use source time, scope and local
@@ -155,18 +181,22 @@ advances. A two-ticker unit test checks ordering and the receipt barrier.
 This is deterministic scheduling, not yet a complete Strategy 350 evaluator
 or measured vectorized end-to-end backtest. Representative throughput and
 the evaluator/OMS wiring remain outstanding.
+
 The adapter now also coordinates the full per-ticker playback controllers,
 which own simulated fills, funding, actions and checkpoints. It sorts and
 pins the exact catalog shard set, reports pending fill publication before
 selecting a decision boundary, and holds all tickers until each is pending or
 complete. The selected controller still enforces its own journal and action
-gates. Coordinator acknowledgment requires a verified published common cut;
+gates.
+
+Coordinator acknowledgment requires a verified published common cut;
 there is no raw release method or mutable-controller escape. The coordinator
 exposes bounded fill publication, selected boundary servicing and common-cut
 capture through the existing owners. A unit test covers deterministic head
 ordering; multi-ticker service remains unexercised. Common-cut publication
 is still single-instrument. A multi-shard recovery graph is required before
 this can run a multi-ticker backtest through a durable checkpoint boundary.
+
 The coordinator selects the earliest cross-ticker market boundary before
 advancing its simulated execution clock or producing fills. Only the selected
 shard may publish fills. A two-ticker unit test supplies staggered source
@@ -174,13 +204,16 @@ events and a later-shard active bracket plus quote. It checks earliest-boundary
 selection, confirms the later shard has not entered its execution decision view,
 and verifies no later fill is pending. A complete multi-ticker fill-order replay
 through published checkpoints remains outstanding.
+
 The coordinator may prepare later market heads to compare clocks, but production
 callers cannot borrow those controllers. They can read only the selected,
 fill-cleared controller. This prevents a scanner or strategy from reading a
 preloaded later ticker's state through the coordinator before its turn.
+
 The lower-level market-only multi-run applies the same access rule: its full
 run slice is test-only, while production consumers can query shard count and
 borrow only the selected run.
+
 The market-only multi-run can now capture every shard's playback cursor and
 account barrier in one bounded content-addressed graph. Restore requires an
 independently pinned root, source catalog, prepared input, seed/configuration,
@@ -188,18 +221,21 @@ quote policy and journal receipts for each shard. It verifies the restored
 selected boundary is still the earliest global head. An offline two-shard
 round-trip passes. This graph is not publishable whole-run recovery: it does
 not include simulated execution, Strategy 350 state or the shared portfolio.
+
 The full-controller coordinator now checks funding across every simulated
 execution lane against the exact shared portfolio account set. It rejects
 duplicate command ownership and reservations or settlements not owned by a
 submitted order. An offline two-ticker test accepts empty funding and rejects
 an unsubmitted reservation. This is a prerequisite for, not a substitute for,
 the whole-run publication cut.
+
 The coordinator can now capture the shared portfolio at the selected global
 boundary only after all lanes have completed actions and exact funding checks.
 The selected boundary ID, sequence and evaluation clock must match the cut.
 An offline two-ticker test round-trips the portfolio image and rejects a wrong
 cut or an unsubmitted reservation. Market, execution and strategy component
 roots are not yet bound to this image by a published whole-run root.
+
 Simulated execution checkpoints now distinguish the selected global cut from
 each lane's local execution frontier. The selected lane still requires exact
 clock equality. Unselected lanes retain their last executed clock and local
@@ -208,16 +244,25 @@ global cut. The coordinator captures all lane images with a total byte bound
 after the shared funding gate. The offline two-ticker test round-trips a
 standby lane and rejects treating its image as selected or restoring it to the
 wrong market shard. These images are not yet bound by a published root.
+
+### Account state and V7 seed startup
+
 Strategy 350 account-owned state now has a bounded content-addressed
 component checkpoint. Restore requires the selected market boundary, exact
 effective configuration hashes, and independently read decision journal rows.
 It does not substitute for a published multi-shard common cut.
+
 A run-scoped historical V7 seed catalog now pins exactly one seed-manifest
-hash per certified source shard. Multi-shard market startup checks the whole
+hash per certified source shard. The existing `arte.structural_levels_v7`,
+`arte.structural_level_coverage_v7`, and
+`arte.structural_level_builder_checkpoint_v7` must supply or be proven
+compatible with this catalog; a second ARTE seed store is not an automatic
+replacement. Multi-shard market startup checks the whole
 catalog against the run, then checks each ticker's seed identity, prior
 session, historical producer and availability before hydrating it. An offline
 two-ticker unit test accepts separate seeds and rejects cross-ticker seed
 substitution or a missing catalog shard.
+
 Fresh Strategy 350 assembly now creates one shared simulated Portfolio for
 all run accounts, while keeping separate per-ticker market, execution and
 account-state owners. The startup hash pins those owners, the effective
@@ -226,23 +271,30 @@ A two-ticker offline unit test builds the session and verifies account cash
 isolation. The constructor currently admits one session per instrument. The
 combined recovery/publication graph and complete Strategy 350 evaluator are
 still absent, so this is not yet an executable multi-day backtest.
+
+### Signal products and exact bar authority
+
 The first shared Boolean product readback now records explicit evaluation
 cadence, known/unknown state, value, source-bar identity and complete bucket
 coverage. Strategy 350 intersects the verified signal with the bar mask. It
 also intersects Watchlist membership only when the pinned policy requires it.
 Products must match generation, ticker, session and grid.
+
 Unknown on a bucket that otherwise needs refinement blocks the run; false is
 not treated as missing. A shared fixed-cadence producer now accepts one
 explicitly timed evaluation result per due boundary, binds it to a complete
 100 ms bar source, carries state across non-evaluation buckets, and hands the
 result to the sparse ClickHouse publication contract. An omitted or shifted
 evaluation fails. Unknown remains distinct from false. This is calculation
-output plumbing. The first Strategy 350 historical signal formula is now ported:
+output plumbing.
+
+The first Strategy 350 historical signal formula is now ported:
 a non-empty completed 100 ms bar must rise at least the pinned basis-point
 threshold from the prior non-empty bar while trade count and share volume both
 increase. The first occurrence activates the session-watch state through the
 remainder of the certified session. The rule is computed with exact integer
 comparisons, and its source-algorithm hash is part of the calculation identity.
+
 This does not implement all live episode roles, Watchlist formulas, or connected
 ClickHouse publication. The new signal's historical occurrence time is the
 completed bar end; it is not represented as a live receipt timestamp. Source
@@ -266,18 +318,22 @@ and keeps it distinct from the signal event time. A small immutable recovery
 object pins the source scope and formula hash at state creation, then verifies
 both before restore. The live recovery image joins the scheduler, candidate
 features, exact developing 100 ms bar, and signal state at one pending boundary.
+
 Restore requires that exact root and boundary; an independent latest signal
 snapshot is not a valid live recovery cut. The ClickHouse adapter writes
 content-addressed children before one root slot. It rejects conflicting slots
 and requires the approved SSD policy and actual part placement. Migration 023
 is authored but has not been applied; no connected read/write has been tested.
+
 Live dense-empty-bucket advancement and feed-continuity proof still need
 the MDE-to-signal actor; this state object alone does not authorize trading.
 The current ARTE market scheduler exposes floating-point bars. The signal
 formula uses exact integer compact-bar atoms; converting those floating-point
 bars back into price/size atoms would not prove equality at the 0.05% boundary.
 An exact compact 100 ms bar builder now consumes pinned-scale eligible ordered
-trades and an externally certified event-time watermark. It computes integer
+trades and an externally certified event-time watermark.
+
+It computes integer
 OHLC, share volume and notional, retains the real live receipt separately, and
 reports covered empty intervals without creating false bars. A unit test feeds
 those advances to the same Early Squeeze state across an empty bucket. No
@@ -287,11 +343,14 @@ common recovery cut. The ClickHouse publication adapter is authored but remains
 unapplied and untested against a database. Proof that the external watermark
 certifies empty intervals remains open.
 
+### Market-time tape and throughput
+
 The first market-time tape borrows values from complete 100 ms columnar batches.
 It dispatches only nonempty buckets, sorts equal-time ticker events by instrument,
 and rejects overlapping products for one instrument. Empty buckets remain in
 the verified batch arrays for rolling calculations and clock progression. The
 tape alone does not evaluate Strategy 350 or simulate orders.
+
 The tape now has three explicit traversals: sparse nonempty candidate buckets,
 every completed 100 ms boundary, and completed aligned fixed-interval
 boundaries. Empty boundaries carry clock progress but no fabricated trade or
@@ -316,9 +375,21 @@ parity tests show what events, signals, entries, exits, and P&L change. The chos
 timeframe is part of run identity. Coarser bars are an explicit fidelity tradeoff,
 never a silent fallback.
 
+### Historical capability and durable evidence
+
 Historical bars lack live receive-time evidence. Rules requiring measured feed
 latency or original arrival order are unavailable in Historical mode unless a
 separate recorded-live source supplies them. The run reports that limitation.
+
+Certified compact events can carry the versioned delayed-trade summary in
+`event_meta` bits `0x40/0x80`. A run may apply that exclusion only when the
+source-day reporting-coverage revision is certified. The bit does not provide
+an original local receive timestamp or the exact participant-to-SIP interval.
+For an older unknown day, a delayed-trade-dependent rule is unavailable until
+a certified source successor or canonical migration supplies the capability.
+Do not infer that continuous WebSocket uptime is required for a historical
+session: certified compact/flatfile sources can restore historical coverage,
+while recorded-live latency and missed decisions remain unrecoverable.
 
 All backtest journals, compact diagnostic logs, source and calculation manifests,
 checkpoints, decisions, orders, fills, and metrics persist in the dedicated ARTE
@@ -475,7 +546,7 @@ Wiring it into swing continuity remains required.
 
 | Mode | Input | Claim |
 |---|---|---|
-| Historical | Pinned reconciled REST generation | Behavior under available historical fields |
+| Historical | Pinned reconciled compact archive, flatfile-import, or REST generation | Behavior under certified historical fields |
 | Recorded-live | Original observation sequence and field availability | Reproduction of observed decisions |
 | Fault simulation | Pinned input plus explicit fault schedule | Behavior under modeled failures |
 
@@ -485,16 +556,20 @@ Corrections and REST enrichment must not appear before their declared availabili
 
 ## Run identity
 
-Certified REST loading preserves acquisition-time availability. That timestamp is
+Certified source loading preserves acquisition/publication-time availability.
+That timestamp is
 not automatically the historical simulation clock. Replay preparation must pin an
 explicit projection, preserve source provenance and label modeled availability.
 It must not invent a historical receive or execution timestamp. The certified
-source loader and a retrospective clock projection are implemented. The
+source loader and a retrospective clock projection are implemented for ARTE's
+REST certificate contract. They still need source adapters and capability
+checks for certified yearly compact and flatfile-import generations. The
 executable backtest loop is not yet connected to them.
 
 ### Historical source startup
 
-The read-only startup assembler accepts exact trade and quote certificate IDs,
+The current read-only startup assembler accepts exact REST trade and quote
+certificate IDs,
 the trade-policy hash, scope, session interval and source knowledge cutoff. It
 checks both certificate manifests before reading event batches. Policy loading
 uses session start as its knowledge cutoff, not the later REST acquisition time.
@@ -513,13 +588,13 @@ batches; the serialized-byte limits are not total process-memory guarantees.
 
 ### Retrospective projection contract
 
-`arte.historical-projection.v1` pins both acquisition certificate IDs, the session,
-the fixed modeled delay, the trade-eligibility policy hash and every eligibility
+`arte.historical-projection.v1` currently pins both REST acquisition certificate
+IDs, the session, the fixed modeled delay, the trade-eligibility policy hash and every eligibility
 decision. Its hash becomes the historical catalog's authority identity. The
 prepared input also pins the model identity and projected observations.
 
-Preparation requires one trade certificate and one quote certificate for the same
-provider, instrument and exact interval. It does not choose revisions or merge
+Current preparation requires one trade certificate and one quote certificate
+for the same provider, instrument and exact interval. It does not choose revisions or merge
 overlapping acquisitions. Every trade needs an explicit eligibility decision.
 The low-level adapter checks complete event-key coverage, not the correctness or
 approval of the caller's eligibility policy. Production preparation can instead
@@ -527,6 +602,13 @@ use `prepare_with_policy`, which evaluates the shared pinned trade-condition
 policy and includes its identity in the projection. The policy must cover the
 source interval and be available at its start. REST acquisition time cannot make
 a future policy available earlier.
+
+The revised source catalogue must add compact-archive and flatfile-import
+certificate types without pretending the current REST-only implementation
+already accepts them. A run pins source type, generation, event identity
+mapping, trade-reporting revision, eligibility rules, and the exact
+bar/indicator build. Mixing physical sources inside one run needs a verified
+reconciliation manifest, not a table-name fallback.
 
 `arte.trade-eligibility.v1` has disjoint allowed and excluded condition sets plus
 an explicit empty-condition rule. Any unknown condition fails evaluation, even
@@ -642,11 +724,13 @@ advancing the session and retain its expected identity in recovery metadata.
 `create_backtest_session` validates a fresh session before publishing and returns
 it paused after verified startup readback. On failure, rebuild the unused prepared
 run and retry the same document. Do not use fresh creation as checkpoint recovery.
+
 Common-cut root version 2 pins the startup identity for sessions. Restore requires
 the matching document and configuration/cost bindings. It restores current
 portfolio state; it does not reset balances from the initial startup document.
 Version 1 common-cut roots are rejected without implicit migration. Component-only
 graphs may omit startup identity, but cannot be restored as complete sessions.
+
 `load_backtest_session` independently reads the persisted startup document before
 restoring the checkpoint. It also reads sizing-rejection journal records in
 batches of 256. Each must match the retained decision/action evidence exactly.

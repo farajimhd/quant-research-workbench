@@ -2,28 +2,60 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+## Current historical-source correction
+
+The earlier REST-only source plan is superseded. Current design permits
+certified read-only `market_sip_compact.events_YYYY`, requires an ARTE-owned
+Rust/ClickHouse flatfile ingestion path, and retains REST for recent repair.
+The importer's write target is not approved. Current ARTE replay loading and
+projection code still implements its REST certificate path; it does not yet
+select or reconcile certified yearly compact and flatfile-import sources.
+The delayed-trade `event_meta` capability and source-day reporting revision
+must be checked before a historical run relies on the bit.
+
+The existing `arte.structural_levels_v7`,
+`arte.structural_level_coverage_v7`, and
+`arte.structural_level_builder_checkpoint_v7` contract and persisted
+`arte.market_day_bars_v1`/`arte.market_day_technical_v1` are design inputs.
+Current ARTE code has not yet adopted and verified these external products as
+its historical seed and fast Backtest authorities. Their presence or ongoing
+population is not proof of ARTE coverage, parity, or runnable readiness.
+
+## Detailed implementation notes
+
+The following notes retain prior implementation evidence, including work done
+under the superseded REST-only design. A passing component unit test in these
+notes must not be read as completion of the revised source integration.
+
+### Strategy 350 components and effective configuration
+
 The Strategy 350 momentum evaluator and 350/349/base candidate builders are now
 frozen as reference-only text snapshots with per-file source commits and SHA-256
 hashes. They are not packaged or imported at runtime. This pins source evidence
 for the remaining Rust strategy port; it does not pin an effective deployed
 configuration or make Strategy 350 executable end to end.
+
 The Rust Strategy 350 port now includes the activation-time frozen resistance
 gap calculation. It selects only causal resistance or resistance-origin
 transition levels between the activation price and four times that price,
 sorts by midpoint and level ID, and records only consecutive inter-level
 gaps. The value validates its geometry before hashing. Offline unit tests
-cover selection, ordering, capacity, future levels and tampering. It has not
+cover selection, ordering, capacity, future levels and tampering.
+
+It has not
 yet been attached to the account evaluator. The live lane can now derive it
 from the pending exact activation bar and the V7 view at that same cut. It
 rejects a later or already acknowledged cut instead of recomputing with newer
 levels. The caller still must journal this immutable value before acknowledging
 the cut; the live entry path does not consume it yet.
+
 The shared Strategy 350 account decision now accepts a typed frozen gap. Its
 content hash is part of the versioned decision evidence in both modes.
 Historical exposure increases require the gap, and committed readback rejects
 a missing or changed value. A supplied gap must precede its decision clock.
 This does not prove the live activation cut was durably journaled or connect
 the complete entry rules.
+
 The run's existing per-consumer effective-config hash can now be derived from
 a typed Strategy 350 component bundle. The decision transaction and readback
 require that bundle to match the run scope. A supplied gap must match its
@@ -32,6 +64,7 @@ configurations are checked too. Live selected buckets carry compact 32-byte
 screen/signal identities; live Watchlists remain unsupported. Historical
 refinement plans also carry an optional Watchlist identity from verified
 product requests and reject mixed batch identities.
+
 The bundle includes signal, screen, price gate,
 MACD, noise, BOS, level book, rules, account risk, and optional Watchlist
 hashes. Callers must still verify the remaining components against their actual
@@ -39,6 +72,7 @@ producer; the typed bundle alone does not prove producer readiness or full
 strategy parity.
 The frozen-gap configuration declares 100 ms signal-boundary cadence and pins
 the level budget.
+
 The broken-high base selector is now a separate Rust calculation. It prefers
 the newest causally confirmed low contained by the narrowest support band;
 only if none exists does it use the highest eligible reclaimed resistance
@@ -48,17 +82,22 @@ so this selector alone does not establish BOS evidence or authorize an entry.
 The BOS configuration also declares event cadence and pins freshness and input
 budgets. A selection hash binds the configuration and both supplied snapshots.
 
+### Historical signal preparation
+
 Historical Strategy 350 session-watch signal preparation now scans certified
 100 ms bar batches once and retains only sparse Boolean transitions. It no
 longer materializes a full-session evaluation vector and a second dense grid.
 An offline unit test proves identical transition rows and coverage identity
 against the prior dense preparation path. This does not complete the runnable
 Strategy 350 backtest or live account evaluator.
+
 Independent ticker/session signal preparations can now run with bounded worker
 count and a preflight worst-case transition-row budget. Results are sorted by
 session, provider and instrument. Offline tests compare serial and parallel
 identity and reject duplicate scopes and insufficient budgets. This is a
 preparation primitive, not a measured multi-day backtest throughput claim.
+
+### Live transport and readiness evidence
 
 Massive transport health now distinguishes a subscription request from observed
 market traffic. Neither state arms the shared exposure gate. The reviewed
@@ -68,6 +107,8 @@ would be unsafe. Ingestion and latency audits continue while new exposure stays
 blocked. A separately verified live handover/coverage authority, or a provider
 with an auditable completeness contract, is still required before Live can arm.
 
+### Market and account playback increments
+
 The Strategy 350 100 ms bar/Signal Stream/optional Watchlist join now walks
 verified Boolean batches with bounded cursors. It does not materialize a
 second full-session Boolean grid. Each selected batch carries a compact hash
@@ -75,45 +116,56 @@ of the pinned product requests and coverage, screen configuration, prior-close
 fact, exact OHLC and Boolean operands, and resulting refinement mask. The hash
 is independent of Boolean batch partitioning. It is screening provenance, not
 entry permission; account decisions do not yet consume it as a typed operand.
+
 Historical selected batches are now sealed. A selected 100 ms bucket can be
 addressed only through the verified join output. A bounded refinement planner
 turns the full contiguous screen interval into sparse half-open ranges for
 exact trade/quote replay, rejecting missing batches and interval-budget
 overflow. Its hash includes every source batch, including negative buckets.
 An in-process multi-shard coordinator now prepares those plans concurrently
-for independent ticker sessions. It validates effective Strategy 350 screen,
+for independent ticker sessions.
+
+It validates effective Strategy 350 screen,
 signal and optional Watchlist hashes, rejects duplicate scopes, and enforces
 per-shard and total selected-bucket and interval budgets. Output order is
 stable across worker counts. One offline unit test covers ordering, duplicate
 rejection, budget rejection and effective-hash mismatch. It does not execute
 the selected events or narrow full market/V7 replay.
+
 The historical replay projection can now bind one verified compact-bar product
 to the same certified trade revision as its run-pinned event tape. It checks
 the bar coverage hash, trade certificate, scope, interval and source knowledge
 cutoff before returning a historical source. One offline test covers valid
 binding and mismatched certificate/cutoff. A combined historical catalog now
 sorts and pins each ticker/session projection manifest under one run source
-hash. Each shard's compact bars still need the same trade certificate and
+hash.
+
+Each shard's compact bars still need the same trade certificate and
 knowledge cutoff. An offline two-shard test rejects duplicate scopes, changed
 projection authority, swapped bar coverage, and a single-shard run pin. The
 bundle now indexes selected trade and quote positions only after binding every
 screened shard to the combined run catalog and its verified compact bars.
+
 It rejects a missing shard or excess selected-position budget. This index
 does not advance the market/V7 tape. Independent shards now use bounded
 parallel indexing and return in stable scope order, with an atomic
 total-position cap. A non-empty two-shard unit test checks trade and quote
 positions, serial/parallel identity, total capacity and the combined run pin.
-Selected indexes now carry the run and catalog hashes. An immutable lookup
+Selected indexes now carry the run and catalog hashes.
+
+An immutable lookup
 rebinds them to the full prepared tape and plan before matching a pending
 trade or quote by key, event content and evaluation clock. The focused unit
 test rejects changed clocks, event bodies, run pins and positions. It does
 not execute Strategy 350 or persist a decision.
+
 A shared account-playback coordinator now waits until all tickers are pending
 or complete before selecting the earliest evaluated boundary. It pins the
 exact catalog shard set and run identity, and preserves each ticker's account
 journal barrier. One two-ticker unit test checks ordering, sorted shard
 identity and rejection of premature acknowledgment. This is not a complete
 Strategy 350 evaluator, OMS simulation, or measured end-to-end backtest.
+
 The full playback-controller adapter now has a cross-ticker coordinator above
 the per-ticker simulation owners. It requires the complete certified shard
 set, waits for pending fill publication, and chooses one deterministic market
@@ -121,23 +173,29 @@ boundary only when all controllers have reached a boundary or completion.
 Its unit test covers the ordering key, not constructed multi-controller
 operation. Coordinator release requires the verified published common-cut
 receipt; it exposes no raw acknowledgment method or mutable controller.
+
 Fill publication, boundary service and common-cut capture are named
 operations. The fresh-session builder
 and publication graph still require one instrument. They do not provide a
 shared portfolio or multi-shard recovery, so this is not a runnable
 multi-ticker backtest.
 The market startup adapter now accepts a run-wide historical V7 seed catalog
-for a combined source catalog. Each shard must bind its own seed-manifest
+for a combined source catalog.
+
+Each shard must bind its own seed-manifest
 hash, prior session, historical producer and startup availability. A
 two-ticker unit test assembles both market runs and rejects a swapped seed
 or missing seed row. Fresh multi-ticker Strategy 350 assembly now owns one
 shared simulated Portfolio and independent per-ticker market, execution and
 account-state owners. Its startup identity pins owner hashes,
-configurations, initial states, balances and models. The two-ticker offline
+configurations, initial states, balances and models.
+
+The two-ticker offline
 test checks account cash isolation. It does not start a service or submit an
 order. The constructor currently rejects multiple sessions of one
 instrument. Combined checkpoint publication and the complete Strategy 350
 evaluator remain missing.
+
 The Strategy 350 account owner now captures a bounded content-addressed
 checkpoint for its per-account states at a dispatched boundary. Restore checks
 the exact scope and effective configuration set, independent journal readbacks,
@@ -145,6 +203,7 @@ current versus pending decisions, and the supplied root pin. An offline
 two-ticker fixture round-trips the selected ticker's owner and rejects a wrong
 root. This component image is not a whole-run checkpoint: market, execution,
 other tickers and the shared portfolio still need one published recovery graph.
+
 Capture and restore also reject a current account receipt that disagrees with
 the market's due/committed barrier state. The multi-ticker coordinator exposes
 unselected controllers only in unit tests; production callers can borrow the
@@ -155,6 +214,7 @@ checks the catalog, prepared inputs, seed/configuration hashes, quote policies,
 journal receipts and earliest selected head. A two-shard offline round-trip
 passes. This graph excludes execution, Strategy 350 account state and portfolio;
 there is still no verified published whole-run multi-ticker cut.
+
 The multi-ticker controller now merges per-lane submitted funding ownership
 before checking exact coverage of the one shared portfolio. Duplicate command
 ownership or an unsubmitted reservation blocks the cut. A two-ticker offline
@@ -164,6 +224,7 @@ The coordinator now captures the shared portfolio at the selected global cut
 after all action and funding gates pass. Its two-ticker unit test restores the
 image and rejects mismatched cut clocks and unsubmitted reservations. This is
 still a component, not the combined recoverable/publication graph.
+
 Execution checkpoint schema v4 now separates the global selected cut from a
 lane-local execution clock and sequence. Existing selected-lane restore keeps
 exact clock equality. A standby-lane capture and restore requires its own
@@ -172,23 +233,30 @@ selected-lane path. The coordinator can capture all execution lanes under a
 bounded total byte budget after the shared funding gate. A two-ticker offline
 test round-trips the standby image. Storage publication and combined root
 readback remain incomplete.
+
 The Strategy 350 historical account owner now selects its own ticker's
 consumers from a shared run manifest while requiring exact local configuration
 and state sets. A unit test covers another ticker, missing local inputs and
 same-ticker wrong strategy kind. It still blocks exposure-increasing actions
 until the full evaluator is connected.
 This is replay routing, not a substitute for causal event, quote, level or
-account evidence. After a complete certified source load, the replay-source
+account evidence.
+
+After a complete certified source load, the replay-source
 adapter can build a bounded, SIP-ordered index of selected trade or quote
 events. The index borrows original observations without copying payloads, so
 repeated parameter runs can reuse it. It rejects source/certificate scope,
 channel, interval, clock and budget mismatches. It does not selectively skip
-certificate pages or narrow the market/V7 replay. The runnable backtest loop
+certificate pages or narrow the market/V7 replay.
+
+The runnable backtest loop
 does not yet consume this index. The immutable modeled playback tape now also
 exposes a bounded list of selected frame/input positions. This preserves the
 complete market/V7 tape and modeled event clocks while avoiding a full
 strategy-refinement scan on every parameter run. The executable Strategy 350
-loop and multi-day performance measurement remain open. A run-bound cursor now
+loop and multi-day performance measurement remain open.
+
+A run-bound cursor now
 resolves selected trade positions lazily through the historical source catalog,
 returning the same modeled event proofs used by the Strategy 350 decision
 contract. It excludes quote inputs from trade proofs; quote state still follows
@@ -197,12 +265,14 @@ run ID and prepared tape hash and a matching pending trade boundary. It checks
 the exact observation, eligibility, and modeled evaluation clock before
 releasing a proof. Other boundaries do not advance the cursor. This is proof
 routing, not a running backtest.
+
 The proof identity now also binds the full pinned run manifest hash (domain
 v2). Reusing a run ID and tape with a changed strategy configuration cannot
 reuse an old proof. The playback controller exposes the cursor only through
 its decision view, after fill publication and boundary dispatch; it rejects
 runs without a Strategy 350 consumer. The full Strategy 350 evaluator and
 account fan-out are still not connected.
+
 The Strategy 350 four-timeframe forming-MACD purchase predicate now has one
 Rust state for 1s, 5s, 10s, and 30s completed bars. It uses the shared MACD
 EMA primitive. A selected trade previews all four from the last completed
@@ -210,6 +280,7 @@ states without mutating them; missing, future, or stale frames block the gate.
 The rule declares event execution cadence. Offline tests cover the four-frame
 requirement, non-compounding previews, stale input, and invalid clocks. It is
 not yet wired to the historical Strategy 350 runner or account evaluator.
+
 An offline historical projection now consumes a certified, readback-verified
 100 ms compact-bar product. It pins request, coverage, calculation hash and
 price scale, and emits sparse completed close inputs at their bar-end clocks.
@@ -218,12 +289,14 @@ reaches the shared four-frame MACD state, but the runnable backtest loop does
 not yet apply those inputs at each decision boundary. The historical product
 exposes a monotonic replay cursor, not its end-of-session EMA state. The cursor
 applies only closes sealed by the current replay clock and rejects rewind.
+
 The playback controller can now pair a selected run-bound trade proof with a
 MACD preview. It peeks before consuming the refinement cursor, verifies the
 pending observation and modeled clock, and leaves ineligible trades without a
 MACD result. This is a typed decision-facing bridge, not the full Strategy 350
 evaluator or account action loop.
 The historical playback adapter now has a separate Strategy 350 account owner.
+
 It requires one pinned effective configuration and one independent initial
 state per manifest consumer. It checks the exact pending market boundary
 before preparing an account decision. Journal writes are bounded and
@@ -233,50 +306,63 @@ reduce-only exit actions pass this incomplete owner. Exposure increases remain b
 until the complete Strategy 350 evaluator is wired. This owner is not yet
 constructed by a runnable backtest session or command, and its connected
 journal path has not been exercised.
+
 The execution interval remains a required, identity-pinned field on every
 computational contract, including Signal Streams, scanner rules, indicators,
 level books, Watchlists, and named calculations. Contract validation does not
 yet prove that every live producer dispatches at its declared interval.
 Strategy 350 historical decision preparation now rejects a market boundary
-outside its pinned interval before mutating account state. The playback barrier
+outside its pinned interval before mutating account state.
+
+The playback barrier
 now includes only consumers whose intervals are due. It journals no invented
 decision for an off-interval consumer. Restore recomputes the due set from the
 pinned scopes and pending market boundary; an empty due set can checkpoint and
 advance. A fixed interval with no matching completed-bar producer is rejected
-at run construction and recovery. Unit tests cover mixed event/fixed consumers,
+at run construction and recovery.
+
+Unit tests cover mixed event/fixed consumers,
 the empty due set and its recovery. The current playback market bridge produces
 one-second bars, not the planned 100 ms bar-backtest lane. Strategy 350 quote
 evaluation, protection arbitration, and the complete evaluator remain open.
+
 An eligible preview now returns a private, source-bound MACD evidence value.
 Its fingerprint pins the compact request and coverage, MACD configuration,
 run-bound trade proof, completed-frame clocks and exact floating-point outputs.
 The account journal does not yet require this value as a typed operand.
 Historical Strategy 350 decision preparation and journal readback now accept
-that typed MACD evidence and bind its fingerprint to the decision hash. A
+that typed MACD evidence and bind its fingerprint to the decision hash.
+
+A
 different proof or omission at readback is rejected. Entry/add actions now
 require proof-matched bullish four-frame MACD evidence at both decision
 preparation and journal readback. Wait and exit decisions may omit it. The
 existing two-second historical add fixture is correctly rejected because a
 completed 30-second frame cannot exist then. A later-time offline test now
 derives bullish four-frame evidence from a certified compact product, binds a
-real prepared run proof, and passes the historical MACD admission gate. A
+real prepared run proof, and passes the historical MACD admission gate.
+
+A
 later-time unit path now also builds causal historical price evidence, prepares
 an account add with selected refinement, commits and reads back the journal,
 and reaches the shared bracket/LULD planner. It rejects generic unproven
 planning and omitted MACD on readback. This is an in-process fixture, not a
 runnable full-session backtest. The remaining typed operands are still absent,
 so this does not authorize a production backtest or live order path.
+
 Numerical parity with the current Python/QMD MACD initialization is unproven;
 activation must remain blocked until that comparison and an effective
 configuration pin are complete.
 An exact-bar input source now aggregates only sealed nonempty 100 ms bars into
 sparse 1s/5s/10s/30s completed closes. It never reconstructs integer prices
 from the scheduler's floating-point bars or fabricates closes through a gap.
+
 The MACD state and this source advance atomically, with session, scale,
 watermark, and source identity checks. Offline tests cover sparse gaps and a
 fresh final bar. The live exact-bar owner now advances this source from its
 verified bar advance. The historical Strategy 350 runner does not yet consume
 the projected schedule, so historical mode cannot claim the gate is connected.
+
 The live/paper Strategy 350 account transaction now rejects every entry/add
 after its existing price and selected-bucket checks. The live exact owner can
 calculate a four-frame MACD preview. It now also emits a private live evidence
@@ -285,12 +371,14 @@ paired exact source, MACD configuration, complete observation and receipt,
 boundary identity, evaluation clock, and preview outputs. The market lane can
 expose it for the pending boundary, but account decisions and journal readback
 can now bind its exact event, receipt, scheduler boundary, and fingerprint.
+
 Omitting a recorded MACD value at readback or changing the trade content is
 rejected. It remains optional for non-exposure decisions, and the independent
 live exposure block remains in force because full feed continuity and all
 Strategy 350 operands are not ready. The former
 two-second live add fixture no longer claims authorization from price evidence
 alone. Wait and exit decisions remain possible; live exposure stays blocked.
+
 The four EMA states and sparse exact-bar buckets now have separate bounded,
 content-addressed recovery images. Restore checks period alphas, finite EMA
 values, frame clocks, source generation, active bucket geometry, and canonical
@@ -300,15 +388,19 @@ scheduler cut, and the ClickHouse cut adapter includes them in root-last
 publication/readback. Offline unit tests exercise the bundle and damaged-child
 rejection. The schema was not applied and no connected ClickHouse cut was
 published or recovered. Live feed and broker safety gates remain unready.
+
 The plan can now test a run-pinned replay event against those ranges by SIP
 time with a half-open boundary. Strategy 350 account decisions bind the plan
 identity in historical mode and a sealed selected bucket in live mode.
 Entry/add actions fail if the event was not selected; wait/exit decisions can
 still be journaled. The live bucket identity includes the pinned screen and
-signal configurations, source bar identity and prior-close fact. The decision
+signal configurations, source bar identity and prior-close fact.
+
+The decision
 evidence domain is v2; v1 receipts are not reused. Screening remains a
 candidate filter, not order permission. Full level, quote, portfolio and
 broker readiness checks remain separate incomplete work.
+
 The join requires the Signal Stream and any required Watchlist to declare
 100 ms execution cadence. A slower product's carried value cannot select a
 bucket that was not evaluated at that boundary. The general computation
@@ -319,7 +411,9 @@ verified historical batch projector and a new completed-100-ms-bar streaming
 wrapper. Offline parity tests compare every bucket, including empty buckets
 and the late-mode boundary. The streaming wrapper pins market scope, prior
 close, configuration and source mode; a live bar without a receive timestamp
-is rejected before state advances. Live empty buckets are accepted only through
+is rejected before state advances.
+
+Live empty buckets are accepted only through
 a pinned exact-bar builder advance, with bounded, atomic catch-up. Adapter code
 cannot fabricate that advance. The upstream watermark still needs certified
 feed coverage; this screen alone cannot grant live trading readiness. It has
@@ -331,22 +425,28 @@ context, evaluation clock, source kind, configuration and outcome. A live or
 paper account decision may reuse allowed evidence only for the matching market
 scope and configuration, within a caller-pinned freshness limit. Historical
 REST evidence has no live availability clock and cannot satisfy that check.
+
 Live evidence requires an actual receive receipt; REST time cannot be promoted.
 The Strategy 350 market-decision entry point includes this fingerprint and
 the caller's other evidence hash in the account-owned journal transaction. It
 checks the live price evidence before returning an entry or add. A separate
 sealed readback proof recomputes that hash and checks the run, price gate and
-freshness again at bracket planning. The generic planner still refuses Strategy
+freshness again at bracket planning.
+
+The generic planner still refuses Strategy
 350; only the proof-bearing planner can reuse the common bracket and LULD
 validator. This is not yet a complete Strategy 350 runtime: the remaining
 pinned operands, account risk, and broker path are not connected, so live
 exposure remains blocked downstream.
+
 Historical price evidence now has a separate proof check. A run-pinned
 historical source catalog binds a prepared playback once and resolves exact
 frame/input indices without a per-decision source scan. The proof carries the
 modeled availability clock, event content, eligibility, prepared-source and run
 identity. The Strategy 350 gate rejects mismatched source content, mode, run,
-clock or blocked eligibility without creating a live receipt. Historical
+clock or blocked eligibility without creating a live receipt.
+
+Historical
 account decisions now use the same `Decision` and journal transaction envelope
 as live decisions, with a separate modeled-evidence hash. Entry/add actions
 require the allowed historical price gate and replay proof. Exact journal
@@ -383,6 +483,7 @@ identity. A changed interval changes the run hash and rejects a prior scope;
 missing or invalid intervals fail. Decision journal schema v2 carries the same
 interval. The generic candidate runtime rejects Strategy 350 before evaluating
 any boundary.
+
 The generic bracket planner rejects Strategy 350 by kind, even when the
 instance is renamed or used in another mode. Missing or changed kinds are
 rejected by the manifest contract. The current playback action path has no
@@ -402,7 +503,9 @@ The Strategy 350 Early Squeeze signal configuration now explicitly pins its
 rejected, and the interval participates in its configuration hash and recovery
 identity. This does not complete cadence binding for every producer.
 The live signal can now return one value and availability clock per sealed
-100 ms bucket in a coalesced exact-bar advance. A later activation does not
+100 ms bucket in a coalesced exact-bar advance.
+
+A later activation does not
 retroactively mark earlier buckets active. The bounded transition commits
 state only after all buckets validate; the existing final-state call avoids
 allocating a per-bucket vector. A ticker-owned live join now feeds the same
@@ -416,17 +519,21 @@ Execution cadence is now a required field in the new shared Rust computation
 contract. It supports real-time events or a fixed 100 ms multiple. Its identity
 hash changes when cadence changes. The contract covers strategy, Watchlist,
 signal stream, scanner, rule set, indicator, level book, and named computations.
-Strategy 350's new purchase-price gate pins event cadence. This gate implements
+Strategy 350's new purchase-price gate pins event cadence.
+
+This gate implements
 only the causal prior-close price ceiling, purchase price floor, and latched
 late-mode prior-HOD zone. It is not an entry authorization or a full strategy
 port. Startup dependency definitions and plan nodes now carry explicit cadence;
 the plan identity pins it for signal streams, Watchlists, and other dependencies.
+
 The causal scheduler boundary now has a validated cadence check. It routes
 source trades and quotes to event computations and only a matching completed
 bar to fixed-cadence computations. The shared test checks the bar and trade
 boundaries. This is routing plumbing; no general signal or Watchlist calculator
 is registered with it yet. A runnable system must reject any executable
 definition without its own validated interval.
+
 The completed-bar tape can now emit every 100 ms boundary or only aligned
 fixed-interval boundaries, including empty buckets. It refuses to represent
 event cadence using bars. Its merge now keeps one cursor per instrument even
@@ -435,6 +542,7 @@ instrument. This prevents ticker-major readback order from regressing market
 time. Each boundary also exposes the verified bar request and coverage hashes;
 mixed-provider tapes are rejected. A unit test covers one multi-instrument
 product, source identities, and equal-time ties.
+
 This is backtest clock plumbing, not full evaluation.
 The bar tape now has a bounded, content-addressed cursor checkpoint. It stores
 source hashes, mode, per-instrument cursors and queued boundary heads, not bar
@@ -442,6 +550,7 @@ arrays. Restore requires an independently pinned root and the same verified
 products. Unit tests compare every remaining boundary and checkpoint hash after
 restore. Publication and a common cut with strategy, portfolio, OMS and fill
 state are still unimplemented.
+
 The partial Strategy 350 gate now checks ordered source time and sequence, not
 receipt order. Equal receive timestamps and out-of-order arrival times can be
 processed after the ordered lane releases them. Late mode latches before the
@@ -449,6 +558,7 @@ purchase-price floor is applied. The gate now accepts independent causal session
 context updates. They can latch late mode without a trade decision, enforce a
 monotonic session high and source order, and fail on conflicting context. The
 eligible-trade context builder now exists as a bounded per-ticker Rust component.
+
 It derives open, high, and strictly prior high from source-ordered eligible trades.
 The trade policy hash and source order are pinned; equal availability times do
 not erase prior-event evidence. An uncertified session start cannot mark context
@@ -457,6 +567,7 @@ maintenance-only historical replay. The latter requires a fully verified REST
 certificate, exact session scope, each pinned readback batch in order, and exact
 row counts. It publishes causal contexts to a maintenance callback one batch at
 a time. Actual REST acquisition times are not backtest decision timestamps.
+
 Live handover authority, bar-backtest adaptation, and the remaining Strategy 350
 rules are still unimplemented.
 The Strategy 350 adaptive-stop noise calculation now has a bounded Rust state
@@ -466,24 +577,28 @@ exact scaled-integer cap comparisons. Two focused unit tests cover shared
 live/batch output and the bounded percentile window. Structural stop choice,
 tick rounding, a pinned effective configuration, and order submission remain
 separate unfinished work; this result alone cannot permit an entry.
+
 The adaptive noise state now has a bounded immutable checkpoint. An offline
 test compares restored continuation with an uninterrupted run and rejects a
 forged internally inconsistent image. The live exact owner now includes this
 image and its integer 1s source in the same common-cut graph as the scheduler,
 features, exact 100 ms builder, and signal. The ClickHouse schema remains
 unapplied; live Strategy 350 activation must remain blocked.
+
 An offline historical projector now derives the same exact 1s noise bars from
 one verified compact 100 ms catalogue product using only selected high, low,
 and trade-count columns. It preserves certified empty seconds and rejects
 missing columns or multi-instrument products. A focused unit test covers two
 nonempty 100 ms buckets in one second followed by an empty second. This is not
 yet wired into a runnable Strategy 350 backtest or quote-aware entry pricing.
+
 The projector now also requires the caller's exact compact request and
 coverage hashes, rejecting a verified product from a different source or
 calculation generation.
 Independent verified ticker/session noise products can now be projected by a
 bounded worker pool. The caller supplies worker count and aggregate output
 budget; duplicate scopes are rejected and results have deterministic order.
+
 Offline unit tests cover serial/parallel equivalence and budget rejection.
 This does not yet schedule the full backtest or establish throughput.
 The first conservative Strategy 350 100 ms bar screen now emits contiguous
@@ -491,6 +606,7 @@ candidate-refinement masks. It preserves buckets whose intrabar order could
 create a new HOD and subsequent qualifying pullback; it never authorizes a
 trade. Full scanner/signal/Watchlist calculation, selected-candidate event
 replay, and throughput validation remain unimplemented.
+
 An in-memory Boolean calculation catalogue now verifies complete dense
 readback, declared execution cadence, source-bar identity, and distinct unknown
 state. A Strategy 350 join requires an aligned signal product; Watchlist is
@@ -499,21 +615,27 @@ required only under an explicit membership policy. The current source uses
 produces only an event-refinement mask. Sparse fixed-cadence transition storage
 is now authored in migration 022, with an offline-tested reader that verifies
 SSD policy and part placement before use, exact coverage and transition digest,
-and full dense expansion. A prepared-product path now checks the pinned source
+and full dense expansion.
+
+A prepared-product path now checks the pinned source
 bar generation, full dense input, fixed-cadence state changes, and exact sparse
 digest. The ClickHouse publisher checks acceptance and ownership, compares
 immutable transition pages, publishes coverage last, and rereads the product.
+
 Only pure preparation and decoding received focused unit tests. The schema was
 not applied, no database was opened, and connected writer/readback behavior is
 unverified. The historical Early Squeeze formula is partial; other signal and
 Watchlist algorithms remain unimplemented.
 The fixed-cadence Boolean producer now validates a complete vectorized result
-grid against its certified 100 ms bar source. It preserves unknown versus
+grid against its certified 100 ms bar source.
+
+It preserves unknown versus
 false and enters the sparse publication preparation path. The compact-bar
 signal and Watchlist catalogue rejects event-cadence definitions:
 its dense bucket readback cannot certify that an event-driven calculation ran
 at each causal event. Event-cadence Boolean products use a separate
 event-backed contract; no implicit bar approximation is allowed.
+
 The first event-backed Boolean contract now consumes the shared scheduler's
 event boundaries with the declared `events` interval. It rejects wrong scope,
 clocks, duplicate boundary sequence and capacity overflow. Each event enters
@@ -523,18 +645,21 @@ The half-open source interval and scope are part of the digest domain. Seal
 requires an independently supplied source
 count and digest. Offline unit tests cover matching and mismatched source
 evidence, repeated boundaries, interval bounds, budgets and wrong cadence.
+
 Migration 024 and the event-Boolean ClickHouse adapter now provide immutable
 sparse transition publication and header-last readback. Storage policy and
 actual part placement are checked before I/O. A failed partial publication
 can retry missing rows but rejects changed or duplicate rows. Offline unit
 tests cover preparation, exact reconstruction and rejected row conflicts.
 Historical/recorded-live playback now has an independent event-boundary ledger.
+
 It compares its count with completed shared playback, requires the exact
 prepared source in the run-pinned catalogue, and produces a scoped proof.
 An event-Boolean producer that omits an event cannot seal against that proof.
 The publisher's public preparation path now requires the proof type rather
 than caller-supplied hashes. One offline playback unit test covers completion,
 successful sealing, an omitted ledger event and an omitted producer event.
+
 The proof remains conditional on upstream source certification and does not
 establish live feed completeness. Migration 024 is unapplied, connected I/O is
 untested, and live-stream certification, recovery, and registered producer
@@ -542,6 +667,7 @@ wiring remain.
 An in-process historical event-Boolean runner now evaluates each event boundary
 on the shared playback, with the current causal market and quote state, and
 returns a sealed product plus source proof. It rejects work-budget exhaustion.
+
 One offline unit test covers two event decisions and an insufficient boundary
 budget. The runner performs no account decisions or simulated/broker execution.
 No general signal registry or live event-Boolean producer is wired yet.
@@ -550,22 +676,27 @@ publication preparation contract. It carries the runner's proof into the
 prepared ClickHouse product without a caller-supplied replacement. This path
 compiled and its component unit tests pass, but the composed call itself has
 no connected acceptance test; no schema was applied or service started.
+
 The first Strategy
 350 Early Squeeze historical formula and first-occurrence session latch now
 feed the fixed-cadence Boolean path. The formula uses exact close-ratio, trade-count, and volume
 comparisons against the prior non-empty 100 ms bar. It does not supply full live
 episode semantics, Watchlist formulas, a pinned effective Strategy 350
 configuration, source parity, or connected ClickHouse publication.
+
 The same Early Squeeze state now has separate historical and live modes. Live
 observation requires a genuine availability clock; historical projection never
 substitutes one. The bounded immutable checkpoint pins its source scope and
 formula at state creation, verifies its content hash, and rejects clock or
 geometry mismatch on restore. The former signal-only Migration 023 was
-replaced before application. Migration 023 now holds one full live-lane root
+replaced before application.
+
+Migration 023 now holds one full live-lane root
 with scheduler, candidate-feature and exact-bar/signal children at one pending
 boundary. The adapter writes and reads back all content-addressed child objects
 before publishing the immutable root slot. In-process unit tests cover the
 common-cut roundtrip, boundary idempotency, and conflicting root rows.
+
 No connected ClickHouse publication or recovery has been tested. A complete
 lane/scheduler recovery root, continuous empty-bucket advancement, and feed
 coverage remain required for live use.
@@ -573,6 +704,7 @@ The live lane accepts a restored exact signal owner only while its scheduler
 holds the same pending boundary ID, sequence, and evaluation time. An already
 acknowledged cut is rejected. This guard does not restore other lane features
 or grant broker authority.
+
 The inspected live scheduler currently exposes floating-point bars. Feeding
 those into the exact integer signal by rounding would not establish parity at
 its threshold. An exact compact 100 ms bar builder now exists and drives the
@@ -581,12 +713,14 @@ eligible trades and an external watermark; it does not infer empty intervals
 from silence. The live lane now owns this builder when configured and
 cross-checks exact 100 ms completed bars against the scheduler. Full lane-root
 publication and watermark/coverage acceptance are still incomplete.
+
 At a shared close the scheduler presents larger timeframes before the 100 ms
 bar. The exact owner now retains the just-sealed integer bar across those
 boundaries and checkpoints it. A focused unit test restores between the 1s and
 100 ms boundaries, verifies identical continuation, and rejects a trade-count
 mismatch. Adaptive-noise state is now included in the live cut, but source
 coverage, effective Strategy 350 parity, and connected durability remain open.
+
 The live common-cut root now pins scheduler, candidate features, and
 the exact-bar/signal owner to the same pending boundary. Restore verifies the
 root and component hashes, configuration, source scope, sequence, boundary ID,
@@ -608,6 +742,7 @@ preparation from vectorized completed 100 ms bar batches, driven by the scanner,
 data catalogue and rule sets. It requires pinned ClickHouse bars, indicators,
 historical levels, signals and Watchlist products, a validated compact bar
 contract, and compact ClickHouse-only logs and run evidence. SQLite is forbidden.
+
 The inspected Strategy 350 builder states a Watchlist prior-close fix but does
 not visibly remove a rule in its body. Effective-configuration confirmation is
 required before parity claims; no prior candidate compatibility path is planned.
@@ -616,6 +751,7 @@ The first Rust compact-bar contract now defines a bounded column selection and
 bucket values, exact request and coverage identity, source knowledge cutoff,
 and complete ordered readback for all requested instruments. Five core unit
 tests pass. An adapter unit test verifies query projection and sparse expansion.
+
 The ClickHouse reader preflights storage policy
 and part placement, reads a pinned coverage payload, projects required columns,
 pages sparse nonempty buckets, and reconstructs dense 100 ms arrays. Precision
@@ -623,6 +759,7 @@ is pinned per ticker, including wholly empty pages. Migration 021 authors the
 sparse table and compressed coverage table; it is not applied. A single-instrument
 materializer now consumes a verified REST trade source and the pinned condition
 policy. It sorts one ticker's trades and rejects duplicate source identities.
+
 accumulates exact scaled OHLCV/notional values, and leaves empty buckets sparse.
 The publisher re-verifies the source certificate, requires acceptance and an
 ownership lease, compares each persisted page before making coverage visible,
@@ -631,6 +768,7 @@ Connected writer/readback behavior and compression remain untested. The
 multi-ticker catalogue executor, scanner/rule evaluator, reference-pinned
 precision supply, Strategy 350 port, and runnable bar-based backtest remain
 unimplemented. No throughput benchmark, database connection, or service test ran.
+
 The first typed Strategy 350 dependency planner now separates broad bar/signal
 screening from selected-candidate trade/quote refinement. It rejects missing
 product definitions and duplicate ticker scopes. Two focused unit tests pass.
@@ -3760,7 +3898,7 @@ was started during this implementation. Existing application files remain unchan
 | V7 historical extraction | Gap-separated extrema, profile peaks, bounded-span candidate clustering and auditable role-based selection |
 | V7 numerical fit | Versioned projected-BFGS Student-t fit, fitted band geometry and two-component BIC partition |
 | Historical MLE seeds | Completed-session builder, predecessor continuity, retained evidence, split audit and availability checks |
-| Seed persistence | Immutable object graph, manifest-last publication, reconstruction checks and ClickHouse adapter methods |
+| ARTE proposed seed persistence | Immutable object graph, manifest-last publication, reconstruction checks and ClickHouse adapter methods; not yet connected to the existing `arte` V7 interval/checkpoint authority |
 | Causal streaming V7 | Prior-seed initialization, rolling noise, contact outcomes, directional proposals, refits and recovery |
 | Provider adapter | REST/WS field normalization and bounded REST pagination implementation |
 | Persistence adapter | ClickHouse identifier checks, policy/part checks and synchronous inserts |
@@ -3778,6 +3916,11 @@ not prove provider, broker, or ClickHouse compatibility.
 - Effective configuration export from the selected current candidate.
 - Integration of the receiver with the complete in-process live path.
 - Durable maintenance jobs, source certification and repair/publication integration.
+- Read-only certified yearly compact source loading, delayed-trade capability
+  checks, and reconciliation with the current REST certificate path.
+- Rust/ClickHouse flatfile digestion after the importer write target is decided.
+- Adoption and parity validation of existing `arte` V7 interval/coverage/
+  builder checkpoints and market-day bar/indicator generations.
 - Final event schema and migrations after source-identity validation.
 - Complete broker session, warning chain, pacing, protection and restart integration.
 - Reference service, broker gateway and browser-login dependency packaging.
@@ -3979,7 +4122,9 @@ uses exit-first dispatch and commits only after matching journal readback. Ambig
 writes retain one immutable pending decision. Exact retries do not rerun strategy
 calculation; later inputs cannot overtake the pending acknowledgment. Calculation
 errors and incomplete readbacks leave committed state unchanged. The ClickHouse
-adapter connects append/readback to this commit boundary. Three offline tests cover
+adapter connects append/readback to this commit boundary.
+
+Three offline tests cover
 write failure, calculation failure and retries after commit. This runner is generic;
 the complete selected-strategy state and live/backtest event loops are not yet wired.
 Prepared state is memory-only; crash recovery and durable OMS submission gating
@@ -4051,6 +4196,7 @@ The decoder feeds normalized-event and silence assessments into the same gate;
 decode or gate-update failures clear readiness. Missing required participant clocks
 remain blocking during silence audits. Three offline tests cover channel readiness,
 disconnect invalidation, submission rechecks and decoder-to-gate behavior.
+
 The live loop must still bind transport health, schedule audits and use the current
 monotonic clock for each ledger check. This gate does not replace coverage, seed,
 broker reconciliation, strategy approval or bracket validation.
@@ -4079,6 +4225,7 @@ and knowledge time. A pinned versioned manifest preserves batch application orde
 Restoration verifies complete readback and tolerates identical physical retry rows
 before database merges. Reused live receipt slots with different contents fail.
 Payload corrections remain separate observations, not destructive replacements.
+
 Four offline tests cover live/REST sharing, missing/corrupt readback, receipt
 collisions and ordered restoration. The batch uses the existing EventStore retry
 rules; cross-batch deduplication and receipt-slot enforcement remain writer duties.
@@ -4107,7 +4254,9 @@ gated ClickHouse publisher. It retains an Arc-owned pending batch through failed
 or cancelled publication futures. Exact pending work is retried before dequeuing
 another batch. Wrong batch acknowledgments fail. Progress exposes pending identity,
 attempt count and acknowledged batch identity before a slow write completes.
-Shutdown retains pending/queued work; closing input supports draining. Four offline
+Shutdown retains pending/queued work; closing input supports draining.
+
+Four offline
 fake-publisher tests cover retry order, incorrect acknowledgments, cancellation and
 in-flight progress. No database function ran. This is not process-crash durability
 or certified source coverage. Durable acquisition catalog, ingestion fan-out,
@@ -4118,7 +4267,9 @@ Certificates require a complete non-cyclic pagination chain, checked page identi
 ordering and interval membership, zero rejected rows, consistent counts and
 acknowledged batch references. Empty coverage still requires a verified successful
 page. Gap queries match provider, instrument, channel, source revision, contract,
-capabilities and publication cutoff. Three offline tests cover unfinished pagination,
+capabilities and publication cutoff.
+
+Three offline tests cover unfinished pagination,
 empty coverage and revision/channel/knowledge-time isolation. The acquisition owner
 must supply real evidence behind page flags and batch acknowledgments. These
 metadata checks do not prove provider completeness or replace response validation.
@@ -4176,7 +4327,9 @@ Checkpoint acknowledgment follows progress-object readback, head append and head
 readback. Exact retries reuse the same revision. Missing predecessors, skipped
 pages and conflicting latest heads fail before acknowledgement. Recovery resolves
 the indexed head and then validates its linked progress chain. Candidate migration
-006 stores append-only heads on live_market_ssd. Two offline tests cover retry/fork
+006 stores append-only heads on live_market_ssd.
+
+Two offline tests cover retry/fork
 rules and conflicting pre-merge readback. No database operations ran.
 One externally fenced owner per job remains mandatory; this is not a distributed
 lock or compare-and-swap service. Ownership fencing, job scheduling and actual
@@ -4213,6 +4366,7 @@ before dispatch. Results distinguish complete, stopped, failed and not-started j
 Fail-fast stops new admission, signals existing workers and joins them. Worker
 panics are accounted for without hiding other job results. Five offline tests cover
 concurrency, duplicate rejection, fail-fast, panic accounting and pre-start shutdown.
+
 No network worker ran. Memory admission uses estimates, not an enforced OS RSS cap.
 The scheduler's worker factory still needs the real lease/runner binding, measured
 resource profiles, rate-limit coordination and executable service wiring. Callers
@@ -4227,6 +4381,7 @@ phase and terminal state; slow observers do not create an unbounded queue. Inter
 workers mark their observer state on drop. Credentials are neither serialized nor
 Debug-formatted. Extraction, identity, event-storage, durability and resource-budget
 acceptance are mandatory before constructing the runtime context.
+
 Two offline tests cover acceptance gating and interrupted-observer state. The real
 campaign compiled but did not run. Host assignment/failover fencing, coordinated
 cross-host provider rate limits, measured memory/CPU isolation and executable service wiring
@@ -4238,6 +4393,7 @@ Permits remain held through response consumption. HTTP 429 and 503 responses app
 a shared cooldown. No automatic retry occurs. Retry-After accepts decimal seconds
 or IMF-fixdate; malformed, obsolete-format, past-date or excessive values halt new
 admissions instead of guessing a delay. Missing headers use the configured cooldown.
+
 The policy has no production defaults. Status exposes admission count, remaining
 cooldown and the halted state, without credentials. Three deterministic offline tests
 cover spacing, cooldown, response concurrency, cancelled waiters and unsafe delays.
@@ -4245,7 +4401,9 @@ See [HTTP Retry-After semantics](https://www.rfc-editor.org/rfc/rfc9110.html#sec
 This is process-local coordination, not a provider-account-wide distributed quota.
 Already admitted requests cannot be recalled at the provider. Maintenance shutdown
 now cancels local read-only REST futures, including semaphore waits, cooldown waits
-and response reads. Cancellation drops the request permit and is reported as stopped,
+and response reads.
+
+Cancellation drops the request permit and is reported as stopped,
 not a provider failure. Closed control channels also stop acquisition. Cancellation
 is latched; clearing a stop flag cannot restart that fetcher. Database publication,
 recovery and checkpoint futures are not cancelled by this boundary. A completed page
@@ -4282,6 +4440,7 @@ runtime and the typed candidate runtime. It appends the pending batch, verifies
 readback and only then acknowledges state. Errors or cancelled futures leave the
 pending transaction available for an exact retry. Its database publisher requires
 extraction and durability acceptance plus an exclusively borrowed local scope lease.
+
 Every record must match that scope. Existing ClickHouse append logic validates the
 table policy, actual part placement, predecessor and immutable retry slots.
 Two offline tests cover ambiguous writes, incomplete readback, cancellation and
@@ -4313,6 +4472,7 @@ risk into currency minor units, rounding required amounts upward. Configured fee
 reserves count against both order limits. Bracket validation runs before reservation.
 The account mutex protects aggregate cash across ticker requests. Identical reservation
 retries do not consume cash twice; rejected order limits do not mutate reservations.
+
 The returned funding evidence includes the plan hash. It is not broker permission.
 Two offline tests cover conversion, overflow, cash competition, exact retry and risk
 limits; all 176 tests pass. Same settlement currency must be certified by the caller.
@@ -4326,6 +4486,7 @@ Fees are removed from both budgets before sizing. The size-and-reserve path read
 the account snapshot, sizes a copy of the maximum plan, then uses the account-locked
 reservation check. A concurrent cash change can reject the request; it cannot cause
 an overspend. Successful plans must be retained for exact reservation retries.
+
 Already reserved commands cannot be silently resized. One new test checks cash/risk
 and lot limits over a range of budgets; the reservation test now covers actual sizing
 and retained-plan retry. All 177 offline tests pass. Account mandate provenance,
@@ -4338,6 +4499,7 @@ Funding and broker serialization read the bracket's scale. Old bracket JSON with
 that field is rejected; there is no inferred-scale migration. No operational data
 exists from this implementation and no database migration ran. Broker prices now
 serialize directly as exact decimal JSON numbers without a floating-point round trip.
+
 Two offline tests verify scale-sensitive identity, rejection of missing scale and
 decimal serialization beyond binary floating-point integer precision. All 179 tests
 and static checks passed. Instrument tick/scale certification and actual broker
@@ -4367,7 +4529,9 @@ complete protection. The immutable original bracket remains unchanged; active st
 and target prices are separate position state. Revisions must be contiguous and
 exact retries must retain identical contents. Acknowledgments apply after the current
 quote, so they cannot change earlier fills. Replacements require an open position
-and cannot undo a triggered stop. A profit-lock replacement incompatible with an
+and cannot undo a triggered stop.
+
+A profit-lock replacement incompatible with an
 unfilled entry requires entry cancellation first. Two offline tests cover these
 transitions, invalid clocks/revisions and unchanged state after rejection. All 185
 tests pass. The caller must still schedule modeled acknowledgment latency and apply
@@ -4381,6 +4545,7 @@ revisions and quote frontier. Restore checks the pinned content hash, byte/order
 bounds, identities, scales, quantities and protection geometry. It does not infer
 missing fields or load another model version. Checkpoints are returned as bytes;
 this component performs no filesystem or database operation.
+
 Two offline tests prove partial-exit continuation matches checkpoint/restore for the
 fixture, and reject hash/model/quantity corruption. All 187 tests pass. This is not
 whole-engine recovery: market, strategy, portfolio, journal and simulator checkpoints
@@ -4393,6 +4558,7 @@ Missing execution time is not fabricated. Broker identity uses session, account,
 paper/live marker and execution ID; simulation identity uses explicit run/model,
 command, account, sequence and leg. A bounded fill book accepts exact retries once
 and rejects conflicting contents without overwriting prior evidence.
+
 The simulator now emits this schema directly and requires an explicit production
 run ID. Its model version is 3; checkpoints bind the run ID. One offline test covers
 origin separation and duplicate/conflicting execution reports. All 188 tests pass.
@@ -4407,6 +4573,7 @@ The price scale cannot change mid-projection. Exact fill retries do not count tw
 Conflicting reports, excess exits, opposing entries, clock rewinds, overflow and
 capacity failures leave state unchanged. Position, fill-identity and per-position
 lot budgets are explicit. Adjacent entry lots at the same price are coalesced.
+
 Two offline tests cover FIFO partial exits, short accounting, duplicate identity,
 scope/capacity limits and rejection atomicity. All 190 tests pass. This is a derived
 projection, not broker balance or portfolio reservation authority. It excludes fees,
@@ -4434,6 +4601,7 @@ position projection. A quote generates fills once. Contiguous account-scope batc
 then pass through verified journal publication before projection. Pending publication
 blocks later quotes, submissions and amendments; an exact quote retry reuses pending
 work. The caller selects a scope-owned publisher through the exposed next-scope hash.
+
 Status reports retained fills and the applied prefix. Constructor limits must cover
 the simulator's maximum possible fill count per quote.
 Two offline tests cover the real simulator-to-journal-to-projection flow for two
@@ -4466,7 +4634,9 @@ verified NumPy 2.4.4 and SciPy 1.18.1, all 70 extraction cases passed (44 select
 and 330 rejected levels). All 87 fit cases passed matching statuses and the existing
 tolerance: max(0.001 ticks, 1e-8 of expected value). Maximum observed difference was
 0.00140556 ticks. The loader now checks installed dependency versions before source
-execution; an offline injected-version test confirms drift is rejected. No dependency
+execution; an offline injected-version test confirms drift is rejected.
+
+No dependency
 was installed. The 196 Rust tests, formatting, static checks and source hashes also
 passed. These fixtures do not certify all-session fitting, consolidation, streaming,
 full strategy decisions or trading robustness. No services or network tests ran.
@@ -4487,7 +4657,9 @@ authority coverage available at the check time. Missing intervals receive stable
 resumable job identities. Channel/instrument/implementation mismatches and job
 budget overflow reject the plan. Non-event dependencies remain explicitly unresolved.
 Three offline tests cover missing intervals, stable retries, source revisions,
-publication clocks, future ranges and invalid bindings. All 202 Rust tests,
+publication clocks, future ranges and invalid bindings.
+
+All 202 Rust tests,
 formatting, static checks and copied-source hashes pass. No service ran. This does
 not yet dispatch the startup jobs, certify derived requirements, warm the strategy
 or grant trading readiness. Full startup orchestration remains incomplete.
@@ -4499,6 +4671,7 @@ publication clock must match before the catalog advances. It then recalculates
 remaining source gaps. Worker and verification failures remain visible; neither a
 completion label nor a coverage ID alone grants source completion. An offline test
 covers matching publication and wrong-instrument publication through the real pool.
+
 All 203 Rust tests, formatting, static checks and copied-source hashes pass.
 Production worker/loader wiring, persisted startup recovery, derived materialization
 and warming remain incomplete. Source completion is not trading readiness. No
@@ -4520,6 +4693,7 @@ Discovery filters by authority hash, overlapping interval and publication clock.
 It rejects result overflow instead of truncating, reloads each certificate, checks
 the full authority and interval, and verifies its event batches before returning
 a catalog. The index is not coverage authority and stores no event payloads.
+
 All 205 Rust tests, formatting, static checks and source hashes pass. The new decoder
 test covers malformed identities, duplicate rows and capacity overflow. SQL and
 database behavior remain untested; schema 008 was not applied. Existing unindexed
@@ -4543,6 +4717,7 @@ watermark is now monotonic, and bar volume/notional/count overflow fails before
 state changes. A retained in-memory Series combines the same bar builder and MACD
 for historical and live use. Completed bars advance indicators; developing previews
 do not. Capacity exhaustion preserves prior state and never discards session bars.
+
 Three new tests cover watermark boundaries, aggregate overflow and series parity
 with the shared indicator implementation. All 209 Rust tests, formatting, static
 checks and source hashes pass. The first static-check run found an unnecessary
@@ -4564,6 +4739,7 @@ seed and configuration, including split factor and evidence. Restore checks the
 trusted expected hash before decoding and verifies component clocks and bar counts.
 Failed runtime state cannot issue a checkpoint. An offline continuation test matches
 subsequent hashes after restore and rejects wrong content, seed or configuration.
+
 All 211 Rust tests, formatting, static checks and source hashes pass after correcting
 the split-configuration serialization. Snapshots have a 64 MiB serialized limit;
 temporary allocation accounting and durable publication remain incomplete. These
@@ -4575,6 +4751,7 @@ instrument and session boundary. A bounded identity map prevents retransmissions
 from advancing calculations. Changed payload, SIP clock or eligibility for the same
 key blocks the runtime. Duplicate receipts retain their separate ingestion/audit
 path and do not rewrite calculation state. Recovery v2 includes the identity map.
+
 One new test verifies deduplication after restore and failure on changed eligibility.
 All 212 Rust tests, formatting, static checks and source hashes pass. Upstream
 ordering, condition qualification, latency gates, quote processing and live actor
@@ -4587,6 +4764,7 @@ Pending retransmissions coalesce; changed identities, late arrivals and capacity
 exhaustion block release. Rejected input remains owned by the caller. Consumer
 failure retains the unacknowledged prefix for exact retry. Two offline tests cover
 ordering, partial application, half-open boundaries and capacity/late failures.
+
 The market bridge also accepts a separate processing clock without rewriting source
 availability or receipts. All 214 Rust tests, formatting, static checks and source
 hashes pass. Watermark production, already-released duplicate routing, queue recovery
@@ -4598,6 +4776,7 @@ before watermark checks, and preserves original receipt clocks while using a sha
 processing clock for a released prefix. Errors block all strategy-facing projections.
 The normalized-input test now covers reverse arrival order through this combined
 path, completed-bar counts, duplicate release and changed-eligibility rejection.
+
 All 214 Rust tests, formatting, static checks and source hashes pass. The owner does
 not yet restore its pending queue or establish live watermarks. Condition-policy
 production, latency-gated actor wiring and full strategy execution remain incomplete.
@@ -4625,6 +4804,7 @@ cancellation instead of calling the strategy calculation. Exit-priority arbitrat
 remains ahead of that callback. The completed input's event clock must match the bar
 boundary, and dispatch rejects future event times. The composed candidate test now
 covers both stale-bar outcomes; another test rejects future input before calculation.
+
 All 217 Rust tests, formatting, static checks and source hashes pass. Full per-operand
 freshness and handling fresh account updates after a bar close remain incomplete.
 No service or broker integration test ran.
@@ -4667,6 +4847,7 @@ lateness allowance; silence cannot advance it. Disconnect latches recovery. This
 a conservative operating assumption, not proof of provider completeness, and may
 delay quiet instruments. One offline test covers both-channel progression and
 monotonicity. All 215 Rust tests, formatting, static checks and source hashes pass.
+
 The real live lane was compiled but not exercised against a feed. Representative
 latency tuning, full actor dispatch, quote state and strategy scheduling remain
 incomplete. No services or network integration tests ran.
@@ -4676,7 +4857,9 @@ prices without floating-point conversion. Executable access rejects stale/future
 source or availability clocks, zero prices/sizes, locked quotes and crossed quotes.
 Duplicate deliveries do not refresh age. Older updates cannot replace newer quotes;
 conflicting latest identities block the book. The live lane retains quote state and
-requires the current feed gate when exposing an executable quote. An offline test
+requires the current feed gate when exposing an executable quote.
+
+An offline test
 covers mixed decimal scales, retransmission age, crossed updates and old/conflicting
 input. All 216 Rust tests, formatting, static checks and source hashes pass. Raw
 quote persistence, quote recovery, strategy frame wiring and account execution remain
@@ -4749,7 +4932,9 @@ catalog and verified seed bundles. It also requires quote policies, strategy
 journal readbacks, the cost model and fill evidence. It restores each selected
 or standby controller and Strategy 350 account owner, restores the shared
 portfolio, checks funding across all lanes,
-then recaptures the entire graph and requires the same root. A two-ticker unit
+then recaptures the entire graph and requires the same root.
+
+A two-ticker unit
 test restores the selected and standby lanes and rejects a substituted seed
 bundle or missing strategy-journal readback. The market configuration hash is
 derived from the independently supplied startup document, not accepted as a
@@ -4797,7 +4982,9 @@ configuration and has schema v3. The target state has a bounded,
 content-addressed recovery image. Restore checks the image hash, configured
 mode, level budget, causal frontier, pending break geometry and the multiplier
 implied by session progress. Offline tests reject a rehashed but semantically
-altered multiplier and a different configuration. The concrete account state
+altered multiplier and a different configuration.
+
+The concrete account state
 now owns target progression. Playback validates it against each account's
 effective contract at construction, after preparation, at checkpoint and at
 restore. Full validation is kept off the decision hot path. The target state
@@ -4808,7 +4995,9 @@ Strategy 350 initial-stop selection now has a Rust port of the frozen v27
 structural and adaptive rules. It chooses a recent confirmed supported swing,
 then a support band below VWAP, then the configured one- or five-percent
 fallback. Causal completed-bar noise sets the minimum distance; a required
-distance above the configured entry cap rejects the candidate. The selection
+distance above the configured entry cap rejects the candidate.
+
+The selection
 pins structural and level inputs and is bound to the effective strategy's
 initial-stop and noise configurations. Offline tests cover fallback behavior,
 stale or future inputs and the cap. This does not yet create a journaled entry,
@@ -4820,16 +5009,20 @@ Entry/add and exit fills maintain filled quantity; only a flat exit freezes the
 prior resistance ID, high and close clock. Any target fill blocks reentry for
 the remainder of its exact one-second candle. A recent close or the same
 resistance then requires a trade to cross the prior high from at or below it.
+
 The state is embedded in the concrete account journal image and checked
 against run, account, instrument, market session and effective configuration
 at playback and recovery boundaries. Offline tests cover partial target fills,
 same-resistance reentry after the rapid window and semantic recovery rejection.
 The historical decision boundary compares this quantity and long direction
 with the strategy-attributed position projection after the staged observation
-callback. This permits the callback to apply an already committed fill before
+callback.
+
+This permits the callback to apply an already committed fill before
 comparison, while failing closed if either side is stale or divergent. The
 calculation boundary checks again before actions. Offline tests cover a
 missing projected entry, a matching entry, and an unobserved partial exit.
+
 The full evaluator still must bind the proposed resistance ID and every other
 entry condition to causal evidence. Committed fill receipts are not yet fed
 back into this reentry state automatically, so the caller must supply verified
@@ -4844,6 +5037,7 @@ publication returns no receipt, and retry uses the same pending batch. The
 Strategy 350 boundary exposes this receipt separately from the generic
 playback progress step. An offline unit test covers ambiguous publication,
 exact retry, owner identity, both projections, and one-time receipt emission.
+
 The receipt and its per-fill ownership fields are opaque outside the execution
 adapter; consumers receive read-only views and cannot construct an apparent
 verified receipt from arbitrary fills.

@@ -26,8 +26,8 @@ Zero latency is not a promise. Rust performance does not prove trading correctne
 | R01 | All source and documentation live inside this root | [Deployment](10-deployment.md) |
 | R02 | No changes to existing parent files, including frontend files | [Deployment](10-deployment.md) |
 | R03 | No parent app, service, source path, or configuration dependency | [Architecture](02-architecture.md) |
-| R04 | Separate ClickHouse database; no legacy table writes or reads | [Data lifecycle](04-data-lifecycle.md) |
-| R05 | Live WebSocket; historical and gap-fill REST | [Data lifecycle](04-data-lifecycle.md) |
+| R04 | ARTE ClickHouse persistence; certified yearly compact events are read-only historical input | [Data lifecycle](04-data-lifecycle.md) |
+| R05 | Live WebSocket; historical compact archive and flatfile digestion; recent gap-fill REST | [Data lifecycle](04-data-lifecycle.md) |
 | R06 | Preserve source clocks and missing-field semantics | [Events](03-events.md) |
 | R07 | No persisted dense ordinal; immediate source-keyed insertion | [Events](03-events.md) |
 | R08 | Avoid duplicate payloads and unnecessary derived persistence | [Events](03-events.md) |
@@ -46,6 +46,8 @@ Zero latency is not a promise. Rust performance does not prove trading correctne
 | R21 | Named laptop/workstation profiles and selective service restart | [Deployment](10-deployment.md) |
 | R22 | Copy and reduce UI; support Backtest, Debug, and Live | [App contracts](09-app-contracts.md) |
 | R23 | Extract this root into a new repository after the initial implementation | [Deployment](10-deployment.md) |
+| R24 | Preserve existing `arte` V7 interval, coverage, and builder-checkpoint authority | [V7 state](05-v7-state.md) |
+| R25 | Consume certified persisted `arte` bars and indicators for fast Backtest | [Validation](07-backtest-validation.md) |
 
 ## Scope exclusions
 
@@ -54,11 +56,14 @@ Zero latency is not a promise. Rust performance does not prove trading correctne
 - A general strategy plugin marketplace or initial WASM plugin host.
 - Automatic strategy promotion based on backtest profitability.
 - Automatic live activation after deployment.
-- Changes to existing `market_sip_compact.events_YYYY` tables.
+- Unapproved changes to existing `market_sip_compact.events_YYYY` rows or schema.
 - A second persistent database service, such as SQLite, Redis, or PostgreSQL.
 
-The old archive remains unchanged. Its existing importer is outside this project.
-The new system acquires its own required historical coverage through REST.
+The old archive remains unchanged and may be read only with matching
+certification and capability evidence. The existing importer is outside this
+project; ARTE reimplements required flatfile digestion in Rust and ClickHouse.
+Its write target needs a separate design decision.
+REST remains available for recent missing coverage and gap repair.
 Large historical acquisition is an explicit capacity and cost gate.
 
 ## Configuration principle

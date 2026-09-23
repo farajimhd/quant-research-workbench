@@ -1,6 +1,24 @@
 # ARTE design index
 
-Design baseline: 2026-09-15.
+Design baseline: 2026-09-15. Historical-source revision: 2026-09-23.
+
+## Read this first
+
+The current design admits certified `market_sip_compact.events_YYYY` as a
+read-only historical source. ARTE also needs an independent Rust/ClickHouse
+flatfile digestion path for missing or outage-affected source days. It must
+reimplement the required `download_update_events` semantics without executing
+that Python script. The new importer's write target remains undecided.
+REST repairs recent gaps; WebSocket carries Live. Historical consumers use certified ClickHouse
+products, not raw flatfiles. This revision supersedes the earlier REST-only
+historical-source boundary. It does not make the parent application a runtime
+dependency or authorize writes to the existing yearly tables.
+
+The existing `arte` V7 interval, coverage, and builder-checkpoint tables and
+persisted market-day bars/indicators are design inputs. Their source revisions,
+coverage, storage placement, calculation versions, and causal availability
+must be verified before ARTE uses them. Their existence is not end-to-end
+Backtest readiness.
 
 ARTE means Automated Real-Time Trading Engine. Its repository name is `arte`.
 These documents specify ARTE. They do not describe a deployed
@@ -12,9 +30,9 @@ can be enabled.
 |---|---|---|
 | 1 | [Charter](01-charter.md) | Scope, hard boundaries, requirement IDs |
 | 2 | [Architecture](02-architecture.md) | Processes, authorities, startup, shutdown |
-| 3 | [Event contracts](03-events.md) | Identity, clocks, ordering, compact storage |
-| 4 | [Data lifecycle](04-data-lifecycle.md) | REST, gap repair, certification, retention |
-| 5 | [V7 state](05-v7-state.md) | Historical seeds, streaming state, causal intervals |
+| 3 | [Event contracts](03-events.md) | Compact source bits, identity, clocks, ordering, storage |
+| 4 | [Data lifecycle](04-data-lifecycle.md) | Source selection, flatfiles, REST, gap repair, certification, retention |
+| 5 | [V7 state](05-v7-state.md) | Existing intervals/checkpoints, historical seeds, streaming state |
 | 6 | [Trading and broker](06-trading-broker.md) | Strategy, accounts, brackets, IBKR |
 | 7 | [Backtest and validation](07-backtest-validation.md) | Shared semantics, replay, acceptance |
 | 8 | [Performance and operations](08-performance-operations.md) | Resources, latency, monitoring, failure policy |
@@ -32,8 +50,12 @@ direction a later message replaced.
 ## Superseded proposals
 
 - No live REST polling. Live uses WebSocket.
-- No flatfile or legacy importer dependency in this project.
-- No production reader for the parent application's canonical event database.
+- REST as the only historical source. Certified yearly compact events and
+  ingestion-owned flatfile digestion are now included.
+- A blanket ban on reading the existing canonical event database. Read-only,
+  capability-checked historical access is now allowed.
+- Runtime dependence on the parent importer remains forbidden. Use its pinned
+  semantics as a source for the ARTE-owned Rust/ClickHouse implementation.
 - No persisted dense ordinal as a prerequisite for event insertion.
 - No promotion of streaming V7 state into an authoritative daily seed.
 - No shared parent frontend or backend at runtime. Copy required UI source here.

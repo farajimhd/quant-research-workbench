@@ -21,6 +21,7 @@ The Strategy 350 effective configuration is one typed, content-hashed bundle
 per run consumer. It names the execution interval and hashes of its signal,
 screen, price gate, MACD, noise, BOS, level book, rules, account risk, and
 optional Watchlist contracts. It includes the frozen-gap configuration.
+
 The run manifest pins the bundle hash. A decision must match that hash and
 must check each supplied component against its bundle entry before exposure
 can increase. A bundle hash alone does not prove a producer ran or that its

@@ -4,7 +4,8 @@ Read `../../../../doc/03-events.md` and `../../../../doc/04-data-lifecycle.md`.
 This also governs the flat `rest_acquisition.rs` module via the parent
 `src/AGENTS.md` ownership map.
 
-- Fetch historical trades and quotes only through bounded REST workers.
+- When the selected source is REST, fetch historical trades and quotes only
+  through bounded REST workers.
   Resolve point-in-time instrument identity and paginate to completion,
   including equal-timestamp page boundaries. Keep retry cursors durable and
   restart-safe; a transport error is not an empty certified interval.
@@ -22,3 +23,8 @@ This also governs the flat `rest_acquisition.rs` module via the parent
 - Reconcile the fully closed session before historical V7 seed publication.
   A later correction publishes a successor generation and cannot hot-swap
   the active session's seed.
+- REST is one historical source, not the only one. A certified yearly compact
+  day may be read directly. ARTE-owned Rust/ClickHouse flatfile digestion
+  must cover source days unavailable after Live outages. Keep source types,
+  capability evidence, and revisions separate until a verified reconciliation
+  manifest joins them.

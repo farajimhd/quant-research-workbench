@@ -6,8 +6,9 @@ This file summarizes the user's messages and annotation comments in the ARTE des
 conversation. It records intent, decisions, corrections, and open questions.
 It is an organized summary, not a verbatim transcript or an implementation report.
 
-Source scope: the conversation supplied with this task, from the initial live-chart
-latency concern through the ARTE rename and the request for this record.
+Original source scope: the conversation supplied with this task, from the
+initial live-chart latency concern through the ARTE rename and the request for
+this record. Later confirmed corrections are appended with new source labels.
 Conversation identifier: `01a06023-7d1e-7c63-82c6-fc12916f17e1`.
 Individual message dates are not inferred. Source labels identify grouped passages,
 not exact message IDs.
@@ -69,12 +70,14 @@ Design owners: [Charter](01-charter.md), [Architecture](02-architecture.md),
 
 ## 3. Historical and live market data
 
-**Confirmed latest direction. Sources: U03, U05, U14, U15, U16, U17, U18.**
+**Historical direction as of U18, later amended by U25. Sources: U03, U05,
+U14, U15, U16, U17, U18.**
 
 - Allocate a separate ClickHouse database for the new system.
 - Receive live data through WebSocket.
 - Acquire historical data and repair gaps through REST.
-- Do not require flatfiles or `download_update_events` in the new system.
+- At that point, the user proposed not requiring flatfiles or
+  `download_update_events` in the new system. U25 supersedes this exclusion.
 - Use a unified event authority for historical and live trade/quote data.
 - Preserve execution/participant timestamps where the source supplies them.
 - Preserve the local receive timestamp for live latency inspection.
@@ -87,10 +90,13 @@ Design owners: [Charter](01-charter.md), [Architecture](02-architecture.md),
 
 **Confirmed. Source: U15.**
 
-The existing `market_sip_compact.events_YYYY` tables are expensive established assets.
-Do not change their schema, rewrite their contents, or enrich them in place.
-Only their existing `download_update_events` path may append new rows.
-The new REST-based system does not replace or modify those assets.
+The existing `market_sip_compact.events_YYYY` tables are expensive established
+assets. The earlier boundary was: do not change their schema, rewrite their
+contents, or enrich them in place; only the existing
+`download_update_events` path may append new rows. The proposed REST-based
+system would not replace or modify those assets. U25 now allows certified
+read-only historical use and calls for a Rust/ClickHouse rewrite of flatfile
+digestion. Its eventual write target remains undecided.
 
 ### Ordinal decision
 
@@ -114,9 +120,10 @@ The user wanted to replace a fixed three-day check with the last certified archi
 They explained that flatfiles often arrive the following morning, leaving a recent day
 to be filled through REST. They also wanted the importer to trigger level checkpoints.
 
-The later REST-historical direction removes the importer/flatfile dependency for ARTE.
-The underlying requirements remain: acquire only missing coverage, repair all required
-products, and produce the next session's historical seed after the session completes.
+The later REST-historical direction removed the importer/flatfile dependency
+at that time. U25 reverses that exclusion while retaining the underlying
+requirements: acquire only missing coverage, repair all required products,
+and produce the next session's historical seed after the session completes.
 
 Design owners: [Events](03-events.md), [Data lifecycle](04-data-lifecycle.md).
 
@@ -391,3 +398,33 @@ is accepted. Never fabricate a user approval from an assistant recommendation.
 | Label | User message anchor | Main contribution |
 |---|---|---|
 | U24 | "latest strategy called 350" and "Logs ... Clickhouse, using SQLite is forbidden" | Replacement candidate; vectorized 100 ms bar backtest; catalogue/rules; compact bars; ClickHouse-only evidence |
+
+## Latest source and documentation correction
+
+**Confirmed. Sources: U25 and U26. These supersede the REST-only historical
+boundary but do not approve a new importer write target.**
+
+- Reorganize ARTE documentation into shorter, clearer sections without
+  deleting earlier decisions, context, or information. Mark changed decisions
+  as superseded rather than silently removing them.
+- Permit certified `market_sip_compact.events_YYYY` as historical input.
+  Its compact contract now has a delayed-trade reporting bit, and the current
+  `download_update_events` insertion path computes it for future imports.
+  This changes the earlier reason for excluding the archive from ARTE.
+- Do not rely on uninterrupted Live uptime for historical Backtest coverage.
+  Include flatfile digestion for missed periods as well as REST gap repair.
+  Historical recovery does not recreate original local receive timestamps.
+- Preserve and use the existing `arte` V7 level intervals, coverage, and
+  builder checkpoints when compatible. Do not discard that efficient contract
+  merely because ARTE has an earlier alternative seed proposal.
+- Preserve and use persisted `arte` bars and indicators so multi-day Backtest
+  preparation can be fast. Verify their source and calculation identity.
+- Reimplement the necessary `download_update_events` semantics in Rust and
+  ClickHouse inside ARTE. Discuss the importer's write target and detailed
+  contract before authorizing writes; do not simply copy/execute the Python
+  script or assume permission to append to yearly tables.
+
+| Label | User message anchor | Main contribution |
+|---|---|---|
+| U25 | "boundary that might not help ... flatfiles digestions" | Read-only compact history, flatfile resilience, retained `arte` V7 and bars/indicators, documentation reorganization |
+| U26 | "download_update_events ... rewritten ... in Rust and Clickhouse" | Rust/ClickHouse importer target; write destination remains for discussion |

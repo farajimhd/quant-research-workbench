@@ -1,9 +1,52 @@
 # Event identity, clocks, and storage
 
+## Source generations and capability
+
+One logical event interface may resolve multiple certified physical sources:
+the read-only `market_sip_compact.events_YYYY` archive, an ARTE-owned
+flatfile-import generation after its write target is approved, and ARTE's
+WebSocket/REST event generations. The run pins one reconciled generation and
+its source manifests for each required interval. A table name or maximum
+date is not a coverage certificate. Overlap is resolved by verified event
+identity and revisions; no source is silently preferred on a conflict.
+
+The existing yearly compact table uses an ordinal in its physical ordering.
+ARTE may read that ordinal as source provenance and a deterministic tie-break
+for those rows. It is not an identity or an insertion prerequisite for ARTE's
+own event format. The earlier decision to drop a dense ordinal from a new
+ARTE event table remains in force.
+
+### Delayed-trade evidence in yearly compact events
+
+The current ingestion contract assigns high bits of `event_meta` without
+changing its low six bits. Trade bit `0x40` means reporting evidence was
+evaluated under the pinned `trade_reporting_v1` revision. Trade bit `0x80`
+means delayed/out-of-sequence under that revision; `0xC0` is evaluated and
+delayed, `0x40` is evaluated without delayed evidence, and `0x00` is unknown
+or legacy. `0x80` without `0x40` is invalid. Quote high bits remain zero.
+The rule considers specified sale conditions, an earlier New York participant
+date, or participant-to-SIP lag greater than ten seconds. Missing/invalid
+participant clocks remain unknown unless an explicit condition proves delay.
+
+These bits are a versioned exclusion summary, not a stored execution timestamp.
+They can support a delayed-trade filter only when source-day reporting coverage
+certifies the exact revision. They cannot reconstruct a precise execution gap,
+live receive latency, or an event-level rule needing the absent raw clock.
+Do not treat an unflagged legacy row as certified timely. A new importer must
+preserve these semantics and original condition evidence.
+
 ## Proposed compact bar contract
 
 ARTE needs a versioned compact bar product, beginning with completed 100 ms
-bars. The proposed schema is authored but not applied. Validate its codec and
+bars. This paragraph describes the earlier ARTE-native proposal; it is not a
+claim that no `arte` bars exist. The current market-day builder already writes
+versioned `arte.market_day_bars_v1` and technical products from certified
+compact events. ARTE must validate that existing schema, source/revision
+identity, retention, and range-query cost before adopting it or publishing a
+compatible successor.
+
+The proposed schema is authored but not applied as an
+ARTE-owned writer. Validate its codec and
 range-query cost before enabling a writer. It must include instrument,
 session, half-open interval, timeframe, adjustment and calculation versions,
 source generation and coverage identity, completeness, OHLC, volume, trade count,
@@ -24,7 +67,8 @@ does not certify a source interval.
 
 ## Agreed decisions
 
-- Use one logical compact event authority for trades and quotes.
+- Use one logical compact event interface for trades and quotes. Certified
+  physical sources remain distinct and run-pinned.
 - Insert rows without a dense ordinal.
 - Preserve source sequence, identity, precision, and conditions.
 - Do not duplicate a payload just because both transports delivered it.

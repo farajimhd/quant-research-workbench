@@ -2,7 +2,8 @@
 
 ## Status
 
-The design records user decisions through 2026-09-15. External facts below were
+The original design recorded user decisions through 2026-09-15; the
+historical-source revision is dated 2026-09-23. External facts below were
 reviewed during the design discussion. Recheck provider and broker contracts before
 implementation release. Account entitlements and live payloads still require testing.
 
@@ -44,3 +45,21 @@ This is provenance, not a required runtime revision or a strategy approval.
 Copied code must be readable and testable without the old source tree. Public source
 links and origin hashes are allowed as provenance. File imports, service calls,
 build paths and test prerequisites back into the parent tree are prohibited.
+
+## Current repository contract evidence
+
+These files informed the 2026-09-23 source-policy revision. They are provenance
+for the Rust/ClickHouse port and existing ClickHouse products, not ARTE runtime
+imports or evidence that connected acceptance has passed.
+
+| Existing source | Contract to preserve or verify |
+|---|---|
+| `pipelines/market_sip/flatfiles/download_update_events.py` | Certified source-day import, compact event encoding and delayed-reporting flags; rewrite required semantics in ARTE Rust/ClickHouse |
+| `pipelines/market_sip/events/trade_reporting_flags.py` and `docs/trade_reporting_flags.md` | `event_meta` evaluated/delayed bits, unknown handling and source-day reporting revision |
+| `research/level_book/v7/clickhouse_persistence.py` and `docs/architecture/LEVEL_BOOK_V7_PERSISTENCE.md` | Existing `arte` V7 half-open intervals, coverage fence, terminal builder checkpoint and historical availability |
+| `scripts/build_market_day.py` and `docs/market_day_builder.md` | Existing persisted `arte` market-day bars/technical products, source/build/attempt identity and storage checks |
+
+Before extraction, inventory and copy or reimplement each required behavior
+inside ARTE with source hashes. After extraction, the listed paths are not
+runtime dependencies. The existing ClickHouse tables remain external data
+authorities under explicit schemas, credentials, and certification checks.

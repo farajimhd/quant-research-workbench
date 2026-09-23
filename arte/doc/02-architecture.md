@@ -5,7 +5,7 @@
 | Process | Owns | Must not do |
 |---|---|---|
 | Live runtime | MDE, ticker state, streaming V7, strategy, portfolio, OMS | Wait for chart rendering or fetch features through HTTP |
-| Data Maintenance | REST acquisition, repair, certification, historical V7, retention | Submit broker orders or rewrite active live state |
+| Data Maintenance | Certified compact-source selection, Rust/ClickHouse flatfile digestion, REST repair, historical V7, derived products, retention | Submit broker orders or rewrite active live state |
 | Backtest worker | Replay and simulated execution | Connect to a live broker or mutate live namespaces |
 | Control and observer API | Commands, cached status, audit queries, UI delivery | Become market or trading authority |
 | Broker support | Packaged gateway/authentication lifecycle | Infer account permission from UI selection |
@@ -13,6 +13,26 @@
 
 Required support processes belong to this distribution. Their exact language is
 not a contract. The latency-critical domain code is Rust.
+
+## Historical source authority
+
+The live and historical paths are separate at ingestion, then meet at shared
+versioned event, bar, indicator, signal, and strategy contracts. Historical
+preparation may select a certified read-only yearly compact source, an
+ARTE-owned flatfile-import generation, or a completed REST generation. The
+source catalogue pins capabilities and coverage; it does not silently prefer
+one source when overlapping payloads differ. The flatfile importer must be a
+Rust/ClickHouse rewrite of the required `download_update_events` semantics.
+Its write target remains open and no existing-yearly-table write is approved.
+
+ARTE may read `market_sip_compact.events_YYYY` but may not import code,
+configuration, services, or caches from the parent app at runtime. Historical
+consumers never reopen raw flatfiles. Existing persisted `arte` market-day
+bars/indicators and V7 interval/checkpoint products are accepted only through
+their completed publication fences, source identities, availability clocks,
+and compatibility checks. A stopped Live service leaves a recorded-live gap;
+it does not prevent later historical recovery from complete certified source
+data. It cannot recreate local receipt timestamps or missed live decisions.
 
 ## Live data path
 
@@ -61,12 +81,15 @@ violations reject the plan. Equivalent input ordering produces the same plan has
 The plan describes required work; it is not coverage evidence or permission to trade.
 Every executable or computational definition also pins an execution interval.
 This includes strategies, Watchlists, signal streams, scanner rules, indicators,
-level books, and named calculations. The interval is either real-time events or
+level books, and named calculations.
+
+The interval is either real-time events or
 a fixed multiple of 100 ms. It is independent of the input bar timeframe: a
 strategy may consume 100 ms bars but evaluate on every eligible event, or a
 signal stream may evaluate only at completed bar boundaries. No definition may
 inherit an interval from its source or scheduler default. The interval is part
 of the definition and plan identity. Missing or invalid intervals fail planning.
+
 Each run consumer also pins its strategy interval. The same value is carried
 into its account decision scope and durable journal identity; changing it
 requires a new run manifest and cannot reuse prior decisions.
@@ -74,6 +97,7 @@ For fixed intervals, dispatch only on a completed aligned boundary that has
 not already been dispatched. Historical replay and live use the same declared
 interval; different source availability can still change which causal operands
 are present. Interval changes require a new pinned contract and validation.
+
 Current declarations are caller-supplied. The `startup_repair` adapter binds trade
 and quote requirements to provider authorities and verified acquisition coverage.
 It creates maintenance jobs only for missing intervals. Source revision, channel,
@@ -91,8 +115,10 @@ job list does not mean that the strategy is ready.
 
 - VALIDATING checks configuration, resources, storage, versions, and account mode.
 - RECEIVING_BUFFERED captures live arrivals before the historical handover.
-- REPAIRING certifies the missing source and derived intervals.
-- WARMING loads the certified historical seed and replays the causal prefix.
+- REPAIRING selects certified archive/flatfile/REST source generations and
+  certifies missing source and derived intervals.
+- WARMING loads the compatible persisted historical V7 checkpoint/seed and
+  required bars/indicators, then replays the causal prefix.
 - READY requires reconciled broker state and fresh required feeds.
 
 Readiness is per instrument and per account, with a global operator gate.

@@ -9,15 +9,18 @@ also follow the rules in their like-named child directory's `AGENTS.md`.
 Those child files do not apply to the flat parent modules by path alone.
 
 - Live market intake uses WebSocket and stamps receive time before parsing or
-  batching. Historical acquisition and gap repair use REST. Neither path may
-  read parent tables, flatfiles, or parent services at runtime.
+  batching. Historical preparation may read certified yearly compact events;
+  ARTE-owned Rust/ClickHouse flatfile digestion and REST repair provide other
+  source generations. Only the ingestion authority opens raw flatfiles. No
+  adapter calls parent code or services at runtime.
 - Preserve source identity, exact price/size, SIP and participant precision,
   optional receive time, corrections, and provenance. REST acquisition time
   is not live receive time. Do not invent a dense persisted ordinal.
 - Resolve REST/WS overlap by verified source identity; do not duplicate a
   payload or erase what was known at a past live decision. Source sequence
   jumps alone do not certify gaps.
-- Maintenance owns acquisition, gap repair, coverage certification, historical
+- Maintenance owns compact-source selection, flatfile acquisition, REST gap
+  repair, coverage certification, historical
   V7, and retention. Live may report suspected gaps and buffer arrivals, but
   cannot trade through missing required source or derived dependencies.
 - The live receiver, market state, calculations, and strategy share an owned

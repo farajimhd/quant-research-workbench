@@ -11,6 +11,9 @@ Read `../doc/02-architecture.md`, `../doc/06-trading-broker.md`, and
   channels, bars, indicators, Signal Streams, Watchlists, V7, lookbacks,
   reference capabilities, and each computation's own execution interval.
   Missing dependencies block readiness; do not infer defaults from data.
+- Historical runs pin whether each interval came from certified yearly
+  compact, ARTE flatfile import, or REST, including delayed-trade reporting
+  revision and derived `arte` bar/indicator/V7 generation identities.
 - Keep account cash, allocation, risk, margin, currency, instrument, and mode
   permissions separate per account. No UI selection may grant broker access.
 - Laptop and workstation profiles carry explicit approved resource, retention,
