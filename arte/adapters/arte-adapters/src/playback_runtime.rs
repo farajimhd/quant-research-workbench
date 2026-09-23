@@ -161,7 +161,7 @@ impl Runtime {
     ) -> Result<
         Option<(
             arte_core::market_structure::scheduler::playback::sources::HistoricalEventProof,
-            Option<arte_core::strategy350_macd::Outcome>,
+            Option<arte_core::strategy350_macd::historical::Evidence>,
         )>,
     > {
         let run = self.decision_view()?;

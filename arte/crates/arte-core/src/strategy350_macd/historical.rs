@@ -16,7 +16,22 @@ pub struct Projection {
     session_start_ns: u64,
     session_end_ns: u64,
     config: Config,
+    request_hash: String,
+    coverage_hash: String,
     completed: Vec<exact_source::CompletedInput>,
+}
+
+pub struct Evidence {
+    outcome: Outcome,
+    fingerprint: String,
+}
+impl Evidence {
+    pub fn outcome(&self) -> &Outcome {
+        &self.outcome
+    }
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
 }
 
 /// The only decision-facing historical view. The final projected state is
@@ -102,7 +117,7 @@ impl Cursor {
         &mut self,
         proof: &HistoricalEventProof,
         observation: &Observation,
-    ) -> Result<Outcome> {
+    ) -> Result<Evidence> {
         let Payload::Trade { price, .. } = &observation.payload else {
             return Err(Error::Conflict(
                 "historical MACD proof is not a trade".into(),
@@ -117,7 +132,33 @@ impl Cursor {
         {
             return Err(Error::Conflict("historical MACD proof differs".into()));
         }
-        self.preview_trade(proof.source_time_ns(), proof.evaluated_at_ns(), *price)
+        let outcome =
+            self.preview_trade(proof.source_time_ns(), proof.evaluated_at_ns(), *price)?;
+        let values = outcome.previews.map(|preview| {
+            preview.map(|value| {
+                (
+                    value.timeframe_ns,
+                    value.completed_end_ns,
+                    value.line.to_bits(),
+                    value.signal.to_bits(),
+                )
+            })
+        });
+        let fingerprint = content_hash(&(
+            "arte.strategy-350-historical-macd-evidence.v1",
+            self.projection.request_hash.as_str(),
+            self.projection.coverage_hash.as_str(),
+            self.state.config_hash(),
+            proof.identity_hash()?,
+            outcome.event_time_ns,
+            outcome.evaluated_at_ns,
+            values,
+            outcome.bullish,
+        ))?;
+        Ok(Evidence {
+            outcome,
+            fingerprint,
+        })
     }
 }
 
@@ -205,6 +246,8 @@ pub fn project(
         session_start_ns: request.interval.start,
         session_end_ns: request.interval.end,
         config: config.clone(),
+        request_hash: expected_request_hash.into(),
+        coverage_hash: expected_coverage_hash.into(),
         completed,
     })
 }
@@ -226,6 +269,8 @@ pub(crate) fn test_empty_cursor(
             price_scale,
             source_algorithm_hash: "b".repeat(64),
         },
+        request_hash: "d".repeat(64),
+        coverage_hash: "e".repeat(64),
         completed: Vec::new(),
     }
     .cursor()

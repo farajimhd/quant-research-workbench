@@ -1331,8 +1331,14 @@ mod tests {
                 2,
             );
             let preview = macd.preview_proof(&first, selected_observation).unwrap();
-            assert_eq!(preview.event_time_ns, first.source_time_ns());
-            assert!(!preview.bullish);
+            assert_eq!(preview.outcome().event_time_ns, first.source_time_ns());
+            assert!(!preview.outcome().bullish);
+            assert_eq!(preview.fingerprint().len(), 64);
+            let changed_run_proof = changed_source.event(0, 0).unwrap();
+            let changed_run_evidence = macd
+                .preview_proof(&changed_run_proof, selected_observation)
+                .unwrap();
+            assert_ne!(preview.fingerprint(), changed_run_evidence.fingerprint());
             let mut changed_observation = selected_observation.clone();
             if let crate::events::Payload::Trade { price, .. } = &mut changed_observation.payload {
                 price.atoms += 1;

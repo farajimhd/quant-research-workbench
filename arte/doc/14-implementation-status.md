@@ -68,6 +68,10 @@ MACD preview. It peeks before consuming the refinement cursor, verifies the
 pending observation and modeled clock, and leaves ineligible trades without a
 MACD result. This is a typed decision-facing bridge, not the full Strategy 350
 evaluator or account action loop.
+An eligible preview now returns a private, source-bound MACD evidence value.
+Its fingerprint pins the compact request and coverage, MACD configuration,
+run-bound trade proof, completed-frame clocks and exact floating-point outputs.
+The account journal does not yet require this value as a typed operand.
 Numerical parity with the current Python/QMD MACD initialization is unproven;
 activation must remain blocked until that comparison and an effective
 configuration pin are complete.
