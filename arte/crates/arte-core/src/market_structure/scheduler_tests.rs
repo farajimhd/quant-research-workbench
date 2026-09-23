@@ -1051,6 +1051,7 @@ fn multi_ticker_playback_preserves_global_boundary_order_and_account_barriers() 
     assert!(MultiRun::new(&pinned, &catalog, vec![]).is_err());
     assert!(MultiRun::new(&pinned, &catalog, vec![make(1, prepared_playback())]).is_err());
     let mut multi = MultiRun::new(&pinned, &catalog, vec![second_run, first_run]).unwrap();
+    assert_eq!(multi.shard_count(), 2);
     assert_eq!(multi.runs()[0].market_scope().instrument, 1);
     multi.resume_all().unwrap();
     let mut prior = None;

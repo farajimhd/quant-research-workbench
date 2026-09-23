@@ -77,7 +77,12 @@ impl MultiRun {
         })
     }
 
-    pub fn runs(&self) -> &[Run] {
+    pub fn shard_count(&self) -> usize {
+        self.runs.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runs(&self) -> &[Run] {
         &self.runs
     }
 

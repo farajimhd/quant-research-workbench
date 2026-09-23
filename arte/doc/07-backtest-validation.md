@@ -178,6 +178,9 @@ The coordinator may prepare later market heads to compare clocks, but production
 callers cannot borrow those controllers. They can read only the selected,
 fill-cleared controller. This prevents a scanner or strategy from reading a
 preloaded later ticker's state through the coordinator before its turn.
+The lower-level market-only multi-run applies the same access rule: its full
+run slice is test-only, while production consumers can query shard count and
+borrow only the selected run.
 Strategy 350 account-owned state now has a bounded content-addressed
 component checkpoint. Restore requires the selected market boundary, exact
 effective configuration hashes, and independently read decision journal rows.
