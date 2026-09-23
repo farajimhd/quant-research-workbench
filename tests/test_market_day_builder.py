@@ -331,8 +331,8 @@ class ClickHouseParity(unittest.TestCase):
 
     def test_runnable_interruption_and_inclusive_range_resume(self):
         runtime=B.RUNTIME / 'market-day-tests' / uuid.uuid4().hex
-        args=B.parse_args(['--start-date','2026-09-17','--end-date','2026-09-18',
-            '--tickers','AADX,AEG','--workers','2','--database',self.db,'--runtime',str(runtime),'--progress','text'])
+        args=B.parse_args(['--start-date','2026-08-18','--end-date','2026-08-19',
+            '--tickers','CD,TGLS','--workers','2','--database',self.db,'--runtime',str(runtime),'--progress','text'])
         real=B.Client
         class InterruptOnce(real):
             def query(self,query,label='query',read=True):
@@ -352,28 +352,28 @@ class ClickHouseParity(unittest.TestCase):
         self.assertEqual(report['completed'],0)
         self.assertEqual(report['skipped'],8)
         self.assertEqual(report['seed_modes'],{'bootstrap':0,'carried':0})
-        self.assertEqual(report['definition']['plan']['requested'],['2026-09-17','2026-09-18'])
+        self.assertEqual(report['definition']['plan']['requested'],['2026-08-18','2026-08-19'])
         published=self.c.query(f"SELECT ticker,stage,count() AS n FROM {S.table(self.db,'units')} FINAL "
             f"WHERE build_id={S.literal(report['build_id'])} AND status='complete' "
             "GROUP BY ticker,stage ORDER BY ticker,stage",'published_parallel')
         self.assertEqual({(row['ticker'],row['stage']):int(row['n']) for row in published},
-            {('AADX','bars'):2,('AADX','events'):2,('AADX','technical'):2,('AADX','seed'):2,
-             ('AEG','bars'):2,('AEG','events'):2,('AEG','technical'):2,('AEG','seed'):2})
+            {('CD','bars'):2,('CD','events'):2,('CD','technical'):2,('CD','seed'):2,
+             ('TGLS','bars'):2,('TGLS','events'):2,('TGLS','technical'):2,('TGLS','seed'):2})
         prior=self.c.query(f"SELECT ema_7 FROM {S.table(self.db,'technical')} WHERE "
-            f"build_id={S.literal(report['build_id'])} AND ticker='AADX' "
-            "AND session_date='2026-09-17' AND resolution_ms=1000 "
+            f"build_id={S.literal(report['build_id'])} AND ticker='CD' "
+            "AND session_date='2026-08-18' AND resolution_ms=1000 "
             "ORDER BY bucket_index DESC LIMIT 1",'prior_ema')[0]['ema_7']
         first=self.c.query(f"SELECT t.ema_7,b.close_int/10000. AS close FROM {S.table(self.db,'technical')} t "
             f"INNER JOIN {S.table(self.db,'bars')} b ON t.build_id=b.build_id AND t.session_date=b.session_date "
             "AND t.ticker=b.ticker AND t.resolution_ms=b.resolution_ms AND t.bucket_index=b.bucket_index "
-            f"WHERE t.build_id={S.literal(report['build_id'])} AND t.ticker='AADX' "
-            "AND t.session_date='2026-09-18' AND t.resolution_ms=1000 "
+            f"WHERE t.build_id={S.literal(report['build_id'])} AND t.ticker='CD' "
+            "AND t.session_date='2026-08-19' AND t.resolution_ms=1000 "
             f"AND b.attempt_id=(SELECT attempt_id FROM {S.table(self.db,'units')} FINAL "
-            f"WHERE build_id={S.literal(report['build_id'])} AND ticker='AADX' "
-            "AND session_date='2026-09-18' AND stage='bars' AND status='complete') "
+            f"WHERE build_id={S.literal(report['build_id'])} AND ticker='CD' "
+            "AND session_date='2026-08-19' AND stage='bars' AND status='complete') "
             "ORDER BY t.bucket_index LIMIT 1",'carried_ema')[0]
         self.assertAlmostEqual(first['ema_7'],prior*.75+first['close']*.25,places=8)
-        standalone=B.parse_args(['--date','2026-09-18','--tickers','AADX,AEG','--workers','2',
+        standalone=B.parse_args(['--date','2026-08-19','--tickers','CD,TGLS','--workers','2',
             '--database',self.db,'--runtime',str(B.RUNTIME/'market-day-tests'/uuid.uuid4().hex),
             '--progress','text'])
         with redirect_stdout(io.StringIO()):
