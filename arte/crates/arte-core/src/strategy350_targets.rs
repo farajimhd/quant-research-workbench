@@ -3,6 +3,7 @@
 use crate::{content_hash, execution_interval::ExecutionInterval, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+pub mod checkpoint;
 
 const FAST_WINDOW_NS: u64 = 3_000_000_000;
 
