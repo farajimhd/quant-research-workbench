@@ -346,6 +346,7 @@ mod recovery_tests {
             mode: dispatch::Mode::Backtest,
             account: "a".into(),
             strategy_instance: "candidate".into(),
+            strategy_kind: dispatch::StrategyKind::GenericCandidate,
             instrument: 1,
             code_hash: "b".repeat(64),
             config_hash: "c".repeat(64),

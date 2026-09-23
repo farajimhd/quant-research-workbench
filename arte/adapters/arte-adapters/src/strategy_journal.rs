@@ -107,6 +107,7 @@ mod tests {
                 mode: Mode::Backtest,
                 account: account.into(),
                 strategy_instance: "s".into(),
+                strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
                 instrument: 1,
                 code_hash: "code".into(),
                 config_hash: "config".into(),

@@ -34,7 +34,7 @@ fn model() -> Model {
 fn run() -> Run {
     let hash = "a".repeat(64);
     let manifest = Manifest {
-        schema_version: 1,
+        schema_version: 2,
         run_id: "recovery".into(),
         mode: Mode::Backtest,
         code_release_hash: hash.clone(),
@@ -55,6 +55,7 @@ fn run() -> Run {
                 account: account.into(),
                 instrument: 1,
                 strategy_instance: "s".into(),
+                strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
                 effective_config_hash: hash.clone(),
             })
             .collect(),

@@ -72,7 +72,7 @@ pub(crate) fn fixture() -> (Document, Pinned, Catalog, Prepared, Bundle) {
         }],
     };
     let manifest = Manifest {
-        schema_version: 1,
+        schema_version: 2,
         run_id: "market-startup-test".into(),
         mode: strategy_dispatch::Mode::Backtest,
         code_release_hash: "a".repeat(64),
@@ -91,6 +91,7 @@ pub(crate) fn fixture() -> (Document, Pinned, Catalog, Prepared, Bundle) {
             account: "a".into(),
             instrument: 1,
             strategy_instance: "strategy".into(),
+            strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
             effective_config_hash: "f".repeat(64),
         }],
     };

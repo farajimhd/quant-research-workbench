@@ -222,6 +222,7 @@ mod tests {
                 account: "a".into(),
                 instrument: 1,
                 strategy_instance: "s".into(),
+                strategy_kind: crate::strategy_dispatch::StrategyKind::GenericCandidate,
                 code_hash: "code".into(),
                 config_hash: "config".into(),
             },

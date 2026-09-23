@@ -120,6 +120,7 @@ mod tests {
             account: "a".into(),
             instrument: 1,
             strategy_instance: strategy.into(),
+            strategy_kind: crate::strategy_dispatch::StrategyKind::GenericCandidate,
             config_hash: "a".repeat(64),
             code_hash: "c".repeat(64),
         }

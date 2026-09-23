@@ -145,6 +145,7 @@ pub(crate) mod tests {
             mode: Mode::Backtest,
             account: account.into(),
             strategy_instance: "s".into(),
+            strategy_kind: crate::strategy_dispatch::StrategyKind::GenericCandidate,
             instrument: 1,
             code_hash: "c".into(),
             config_hash: "f".into(),

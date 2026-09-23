@@ -10,12 +10,19 @@ pub enum Mode {
     Paper,
     Backtest,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategyKind {
+    GenericCandidate,
+    Strategy350,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scope {
     pub run_id: String,
     pub mode: Mode,
     pub account: String,
     pub strategy_instance: String,
+    pub strategy_kind: StrategyKind,
     pub instrument: u64,
     pub code_hash: String,
     pub config_hash: String,
@@ -286,6 +293,7 @@ mod tests {
             mode,
             account: "a".into(),
             strategy_instance: "s".into(),
+            strategy_kind: StrategyKind::GenericCandidate,
             instrument: 1,
             code_hash: "code".into(),
             config_hash: "config".into(),

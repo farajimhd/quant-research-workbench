@@ -2,13 +2,14 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
-The generic bracket planner now rejects the canonical Strategy 350 instance ID
-in every mode. The current playback action path has no causal Strategy 350
-price-gate proof, so that declared instance cannot create an exposure-increasing
-plan. The run manifest still permits arbitrary instance names; this guard alone
-cannot identify a renamed Strategy 350 implementation. A dedicated strategy
-kind pin and verified gate-to-decision-to-order path remain required before
-activation. This is an interim safety interlock, not a completed execution engine.
+Run manifest schema v2 now pins a strategy kind for each account/instrument
+consumer. The kind propagates into the decision scope and journal identity. The
+generic bracket planner rejects Strategy 350 by kind, even when the instance is
+renamed or used in another mode. Missing kind and changed kind are rejected by
+the manifest contract. The current playback action path still has no causal
+Strategy 350 price-gate proof, so a verified gate-to-decision-to-order path
+remains required before activation. The kind pin is a safety interlock, not a
+completed execution engine.
 
 The Strategy 350 conservative bar screen now pins and validates its own 100 ms
 execution interval. Cadence is included in its identity; other values fail

@@ -821,6 +821,7 @@ mod tests {
                     mode: Mode::Backtest,
                     account: "a".into(),
                     strategy_instance: "v7".into(),
+                    strategy_kind: crate::strategy_dispatch::StrategyKind::GenericCandidate,
                     instrument: 1,
                     code_hash: "pinned".into(),
                     config_hash: crate::candidate_runtime::configuration_hash(

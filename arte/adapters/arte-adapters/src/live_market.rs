@@ -726,6 +726,7 @@ mod tests {
             mode: Mode::Paper,
             account: account.into(),
             strategy_instance: "candidate".into(),
+            strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
             instrument: 1,
             code_hash: "code".into(),
             config_hash: "config".into(),

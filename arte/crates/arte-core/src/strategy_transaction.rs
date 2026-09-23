@@ -147,6 +147,7 @@ mod tests {
                 mode: Mode::Backtest,
                 account: "a".into(),
                 strategy_instance: "s".into(),
+                strategy_kind: crate::strategy_dispatch::StrategyKind::GenericCandidate,
                 instrument: 1,
                 code_hash: "code".into(),
                 config_hash: "config".into(),

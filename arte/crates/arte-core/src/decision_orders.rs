@@ -50,7 +50,7 @@ impl Plan {
     }
 }
 fn require_strategy_order_authority(scope: &crate::strategy_dispatch::Scope) -> Result<()> {
-    if scope.strategy_instance == crate::strategy350_catalogue::STRATEGY {
+    if scope.strategy_kind == crate::strategy_dispatch::StrategyKind::Strategy350 {
         return Err(Error::Unready(
             "Strategy 350 order requires causal price-gate decision proof".into(),
         ));
@@ -128,7 +128,7 @@ pub fn bracket(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::strategy_dispatch::{Mode, Scope};
+    use crate::strategy_dispatch::{Mode, Scope, StrategyKind};
     #[test]
     fn strategy_350_cannot_use_ungated_generic_order_planner() {
         let mut scope = Scope {
@@ -136,6 +136,7 @@ mod tests {
             mode: Mode::Backtest,
             account: "account".into(),
             strategy_instance: crate::strategy350_catalogue::STRATEGY.into(),
+            strategy_kind: StrategyKind::Strategy350,
             instrument: 10,
             code_hash: "code".into(),
             config_hash: "config".into(),
@@ -144,6 +145,8 @@ mod tests {
         scope.mode = Mode::Live;
         assert!(require_strategy_order_authority(&scope).is_err());
         scope.strategy_instance = "independent-candidate".into();
+        assert!(require_strategy_order_authority(&scope).is_err());
+        scope.strategy_kind = StrategyKind::GenericCandidate;
         assert!(require_strategy_order_authority(&scope).is_ok());
     }
     #[test]

@@ -892,6 +892,7 @@ mod tests {
             account: "a".into(),
             instrument: 1,
             strategy_instance: "one".into(),
+            strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
             code_hash: "c".into(),
             config_hash: "f".into(),
         };
@@ -984,6 +985,7 @@ mod tests {
             account: "a".into(),
             instrument: 1,
             strategy_instance: "one".into(),
+            strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
             code_hash: "c".into(),
             config_hash: "f".into(),
         };
@@ -1028,6 +1030,7 @@ mod tests {
                 account: "a".into(),
                 instrument: 1,
                 strategy_instance: "s".into(),
+                strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
                 code_hash: "code".into(),
                 config_hash: "config".into(),
             },
@@ -1453,6 +1456,7 @@ mod tests {
                 account: "a".into(),
                 instrument: 1,
                 strategy_instance: "s".into(),
+                strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
                 code_hash: "code".into(),
                 config_hash: "config".into(),
             },
