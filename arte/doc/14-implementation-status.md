@@ -19,8 +19,11 @@ event cadence using bars. This is backtest clock plumbing, not full evaluation.
 The partial Strategy 350 gate now checks ordered source time and sequence, not
 receipt order. Equal receive timestamps and out-of-order arrival times can be
 processed after the ordered lane releases them. Late mode latches before the
-purchase-price floor is applied. Quote/bar-driven late-mode updates outside this
-trade gate and the remaining Strategy 350 rules are still unimplemented.
+purchase-price floor is applied. The gate now accepts independent causal session
+context updates. They can latch late mode without a trade decision, enforce a
+monotonic session high and source order, and fail on conflicting context. The
+eligible-trade context builder, quote/bar connection, and remaining Strategy 350
+rules are still unimplemented.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service

@@ -61,6 +61,7 @@ pub struct PriceFact {
 pub struct SessionContext {
     pub session: u32,
     pub at_ns: u64,
+    pub source_order: (u64, u64),
     pub open: Decimal,
     pub high: Decimal,
     pub prior_high: Option<PriceFact>,
@@ -89,6 +90,7 @@ pub struct State {
     // The ordered market lane releases by source time and provider sequence.
     // Receive/availability time is evidence, not the event-order key.
     last_source_order: Option<(u64, u64)>,
+    last_context: Option<((u64, u64), i64, i64)>,
     failed: bool,
 }
 impl State {
@@ -114,6 +116,7 @@ impl State {
             config_hash: hash,
             late_mode: false,
             last_source_order: None,
+            last_context: None,
             failed: false,
         })
     }
@@ -127,6 +130,51 @@ impl State {
             ));
         }
         Ok(self.late_mode)
+    }
+    /// Session context may advance on a quote, bar, or clock boundary without
+    /// an eligible trade. Only the context timestamp grants causal knowledge.
+    pub fn observe_context(&mut self, context: &SessionContext, known_at_ns: u64) -> Result<bool> {
+        self.late_mode()?;
+        let result = self.update_context(context, known_at_ns);
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    fn update_context(&mut self, context: &SessionContext, known_at_ns: u64) -> Result<bool> {
+        if !context.complete
+            || context.session != self.scope.session
+            || context.at_ns < self.session_start_ns
+            || context.at_ns > known_at_ns
+            || context.source_order.0 < self.session_start_ns
+            || context.source_order.0 > context.at_ns
+        {
+            return Ok(false);
+        }
+        let open = context.open.atoms_at_scale(self.config.price_scale)?;
+        let high = context.high.atoms_at_scale(self.config.price_scale)?;
+        if open <= 0 || high < open {
+            return Err(Error::Conflict(
+                "Strategy 350 session price geometry".into(),
+            ));
+        }
+        if self
+            .last_context
+            .is_some_and(|(order, old_open, old_high)| {
+                context.source_order < order
+                    || open != old_open
+                    || high < old_high
+                    || (context.source_order == order && high != old_high)
+            })
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 session context regressed".into(),
+            ));
+        }
+        self.last_context = Some((context.source_order, open, high));
+        self.late_mode |= i128::from(high) * 10_000
+            >= i128::from(open) * (10_000 + i128::from(self.config.late_gain_bps));
+        Ok(true)
     }
     pub fn observe(
         &mut self,
@@ -175,31 +223,25 @@ impl State {
         }
         let eligible = policy.evaluate(event, evaluated_at_ns)?;
         self.last_source_order = Some((event.sip.ns, event.key.sequence));
+        let context_ready = self.update_context(context, evaluated_at_ns)?;
         if !eligible {
             return Ok(Outcome {
                 late_mode: self.late_mode,
                 block: Some(Block::IneligibleTrade),
             });
         }
-        if !context.complete
-            || context.session != self.scope.session
-            || context.at_ns < self.session_start_ns
-            || context.at_ns > evaluated_at_ns
-        {
+        if !context_ready {
             return Ok(Outcome {
                 late_mode: self.late_mode,
                 block: Some(Block::SessionContextUnavailable),
             });
         }
-        let open = context.open.atoms_at_scale(self.config.price_scale)?;
         let high = context.high.atoms_at_scale(self.config.price_scale)?;
-        if open <= 0 || high < open || high < price_atoms {
+        if high < price_atoms {
             return Err(Error::Conflict(
                 "Strategy 350 session price geometry".into(),
             ));
         }
-        self.late_mode |= i128::from(high) * 10_000
-            >= i128::from(open) * (10_000 + i128::from(self.config.late_gain_bps));
         let prior = prior_close.and_then(|fact| {
             if fact.available_at_ns == 0
                 || fact.available_at_ns > self.session_start_ns
@@ -323,6 +365,7 @@ mod tests {
         SessionContext {
             session: 20260922,
             at_ns: at,
+            source_order: (at, at),
             open: Decimal::parse("10").unwrap(),
             high: Decimal::parse(high).unwrap(),
             prior_high: prior,
@@ -492,6 +535,63 @@ mod tests {
             )
             .unwrap();
         assert_eq!(outcome.block, Some(Block::CurrentPriceBelowMinimum));
+        assert!(outcome.late_mode);
+    }
+    #[test]
+    fn nontrade_context_latches_late_mode_and_rejects_regression() {
+        let mut state = state();
+        assert!(state
+            .observe_context(&context(2 * S, "11.50", None), 2 * S)
+            .unwrap());
+        assert!(state.late_mode().unwrap());
+        assert!(state
+            .observe_context(&context(2 * S, "11.50", None), 3 * S)
+            .unwrap());
+        assert!(state
+            .observe_context(&context(3 * S, "11.60", None), 3 * S)
+            .unwrap());
+        assert!(state
+            .observe_context(&context(4 * S, "11.40", None), 4 * S)
+            .is_err());
+        assert!(state.late_mode().is_err());
+    }
+    #[test]
+    fn context_source_order_can_advance_when_receipt_time_decreases() {
+        let mut state = state();
+        let mut first = context(4 * S, "10", None);
+        first.source_order = (2 * S, 2 * S);
+        assert!(state.observe_context(&first, 4 * S).unwrap());
+        let mut later_source = context(3 * S, "11.50", None);
+        later_source.source_order = (3 * S, 3 * S);
+        assert!(state.observe_context(&later_source, 4 * S).unwrap());
+        assert!(state.late_mode().unwrap());
+    }
+    #[test]
+    fn ineligible_trade_still_observes_known_session_context() {
+        let rejected = trade_eligibility::Policy {
+            schema_version: 1,
+            provider: 1,
+            valid_from_ns: 0,
+            valid_to_ns: u64::MAX,
+            available_at_ns: 0,
+            source_manifest_hash: "b".repeat(64),
+            allowed_conditions: BTreeSet::from([7]),
+            excluded_conditions: BTreeSet::new(),
+            allow_empty_conditions: false,
+        };
+        let hash = rejected.hash().unwrap();
+        let policy = Pinned::new(rejected, &hash).unwrap();
+        let mut state = state();
+        let outcome = state
+            .observe(
+                &event(2 * S, "11.50"),
+                &policy,
+                None,
+                &context(2 * S, "11.50", None),
+                2 * S,
+            )
+            .unwrap();
+        assert_eq!(outcome.block, Some(Block::IneligibleTrade));
         assert!(outcome.late_mode);
     }
 }
