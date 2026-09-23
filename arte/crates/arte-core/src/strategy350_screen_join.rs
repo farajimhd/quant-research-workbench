@@ -212,10 +212,22 @@ mod tests {
             source_bar_coverage_hash: bar.coverage_hash().into(),
             maximum_rows: 3,
         };
+        let mut digest = boolean_catalogue::TransitionDigest::new(&request).unwrap();
+        let mut last = None;
+        for (i, (&k, &v)) in known.iter().zip(&value).enumerate() {
+            let next = k.then_some(v);
+            if next != last {
+                digest.observe(S + i as u64 * 100_000_000, k, v).unwrap();
+            }
+            last = next;
+        }
+        let (transition_hash, transition_count) = digest.finish();
         let coverage = BoolCoverage {
             request_hash: request.hash().unwrap(),
             source_bar_coverage_hash: bar.coverage_hash().into(),
             producer_hash: "d".repeat(64),
+            transition_hash,
+            transition_count,
             published_at_ns: 3 * S,
         };
         let mut read = BoolReadback::new(request, &coverage, 3 * S).unwrap();

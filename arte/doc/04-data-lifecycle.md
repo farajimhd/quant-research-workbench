@@ -69,6 +69,14 @@ run or recovery checkpoint. Bar-based historical level construction and
 streaming live level updates share tested semantics but have separate source
 and availability contracts.
 
+Fixed-cadence Boolean products such as signal streams and Watchlists use sparse
+known/value transitions under a published complete coverage record. That record
+pins the source bar generation, computation contract, exact transition count,
+and streaming digest. Readback expands the changes to the complete 100 ms grid.
+An absent transition means carry forward only after the digest and coverage
+are verified. Unknown remains distinct from false. Event-cadence products need
+a separate event-evaluation record; they cannot use this sparse inference.
+
 ClickHouse is the sole durable store for backtest spools, run evidence, and
 operational logs. Use compact typed records and measured compression. SQLite
 files are not an allowed fallback, temporary spool, or recovery authority.
@@ -79,6 +87,7 @@ files are not an allowed fallback, temporary spool, or recovery authority.
 | Live receipt metadata | Retain the recorded-live audit window and pinned incident runs |
 | Required completed bars | Short rolling backtest/continuation window; pin active runs |
 | Indicators | Persist continuation state and decision evidence; avoid all-value histories |
+| Fixed-cadence Boolean products | Sparse changes and complete pinned coverage; retain products required by active runs |
 | Historical V7 levels | Changed versions and required fit inputs; retain referenced seeds |
 | Streaming V7 | Separate audit/recovery retention; never a daily historical seed |
 | Trading journals | Durable run, decision, command, fill and reconciliation evidence |

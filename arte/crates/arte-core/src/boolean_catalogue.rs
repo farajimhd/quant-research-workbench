@@ -8,6 +8,7 @@ use crate::{
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub const VERSION: &str = "arte.boolean-catalogue.v1";
 fn hash_ok(hash: &str) -> bool {
@@ -60,6 +61,8 @@ pub struct Coverage {
     pub request_hash: String,
     pub source_bar_coverage_hash: String,
     pub producer_hash: String,
+    pub transition_hash: String,
+    pub transition_count: u64,
     pub published_at_ns: u64,
 }
 impl Coverage {
@@ -67,6 +70,7 @@ impl Coverage {
         if !hash_ok(&self.request_hash)
             || !hash_ok(&self.source_bar_coverage_hash)
             || !hash_ok(&self.producer_hash)
+            || !hash_ok(&self.transition_hash)
             || self.published_at_ns == 0
         {
             return Err(Error::Invalid("Boolean product coverage".into()));
@@ -79,12 +83,62 @@ impl Coverage {
             || self.source_bar_coverage_hash != request.source_bar_coverage_hash
             || self.producer_hash != request.definition.implementation_hash
             || self.published_at_ns > as_of_ns
+            || self.transition_count
+                > (request.interval.end - request.interval.start) / BASE_INTERVAL_NS
         {
             return Err(Error::Unready(
                 "Boolean product coverage differs or is unavailable".into(),
             ));
         }
         Ok(hash)
+    }
+}
+/// Streaming digest over sparse fixed-cadence state transitions. Neither row
+/// absence nor a retry copy can silently change the published Boolean state.
+pub struct TransitionDigest {
+    hasher: Sha256,
+    interval: Interval,
+    cadence_ns: u64,
+    last: Option<u64>,
+    count: u64,
+}
+impl TransitionDigest {
+    pub fn new(request: &Request) -> Result<Self> {
+        request.validate()?;
+        let ExecutionInterval::Fixed(cadence_ns) = request.definition.interval else {
+            return Err(Error::Invalid(
+                "sparse transition digest requires fixed cadence".into(),
+            ));
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(VERSION.as_bytes());
+        hasher.update(request.hash()?.as_bytes());
+        Ok(Self {
+            hasher,
+            interval: request.interval,
+            cadence_ns,
+            last: None,
+            count: 0,
+        })
+    }
+    pub fn observe(&mut self, bucket_start_ns: u64, known: bool, value: bool) -> Result<()> {
+        if bucket_start_ns < self.interval.start
+            || bucket_start_ns >= self.interval.end
+            || !bucket_start_ns.is_multiple_of(BASE_INTERVAL_NS)
+            || !(bucket_start_ns + BASE_INTERVAL_NS).is_multiple_of(self.cadence_ns)
+            || self.last.is_some_and(|last| bucket_start_ns <= last)
+            || (value && !known)
+        {
+            return Err(Error::Conflict("Boolean transition order or value".into()));
+        }
+        self.hasher.update(bucket_start_ns.to_be_bytes());
+        self.hasher.update([u8::from(known), u8::from(value)]);
+        self.last = Some(bucket_start_ns);
+        self.count += 1;
+        Ok(())
+    }
+    pub fn finish(self) -> (String, u64) {
+        (format!("{:x}", self.hasher.finalize()), self.count)
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -123,6 +177,9 @@ pub struct Readback {
     failed: bool,
 }
 impl Readback {
+    pub fn request(&self) -> &Request {
+        &self.request
+    }
     pub fn new(request: Request, coverage: &Coverage, as_of_ns: u64) -> Result<Self> {
         let coverage_hash = coverage.require(&request, as_of_ns)?;
         Ok(Self {
@@ -223,10 +280,16 @@ mod tests {
         }
     }
     fn coverage(r: &Request) -> Coverage {
+        let mut digest = TransitionDigest::new(r).unwrap();
+        digest.observe(1_100_000_000, true, true).unwrap();
+        digest.observe(1_300_000_000, true, false).unwrap();
+        let (transition_hash, transition_count) = digest.finish();
         Coverage {
             request_hash: r.hash().unwrap(),
             source_bar_coverage_hash: r.source_bar_coverage_hash.clone(),
             producer_hash: r.definition.implementation_hash.clone(),
+            transition_hash,
+            transition_count,
             published_at_ns: 2_000_000_000,
         }
     }
@@ -283,5 +346,22 @@ mod tests {
         let mut readback = Readback::new(r, &c, c.published_at_ns).unwrap();
         readback.observe(partial).unwrap();
         assert!(readback.finish().is_err());
+    }
+    #[test]
+    fn transition_digest_binds_order_state_and_exact_request() {
+        let r = request();
+        let mut one = TransitionDigest::new(&r).unwrap();
+        one.observe(1_100_000_000, true, true).unwrap();
+        assert!(one.observe(1_100_000_000, true, true).is_err());
+        one.observe(1_300_000_000, true, false).unwrap();
+        let digest = one.finish();
+        let mut other = TransitionDigest::new(&r).unwrap();
+        other.observe(1_100_000_000, true, true).unwrap();
+        other.observe(1_300_000_000, false, false).unwrap();
+        assert_ne!(digest, other.finish());
+        assert!(TransitionDigest::new(&r)
+            .unwrap()
+            .observe(1_200_000_000, true, true)
+            .is_err());
     }
 }

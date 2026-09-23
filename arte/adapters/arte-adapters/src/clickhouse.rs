@@ -5,6 +5,7 @@ use arte_core::{Error, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Duration;
+mod boolean_products;
 mod compact_bars;
 mod coverage_index;
 mod eligibility_policies;
