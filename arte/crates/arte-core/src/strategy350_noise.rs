@@ -308,7 +308,7 @@ pub fn project_compact_one_second(
     }
     Ok(output)
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Distance {
     pub observed_at_ns: u64,
     pub short_range_atoms: i64,

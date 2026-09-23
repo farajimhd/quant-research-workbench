@@ -49,6 +49,7 @@ pub mod strategy350_bos;
 pub mod strategy350_catalogue;
 pub mod strategy350_effective;
 pub mod strategy350_gap;
+pub mod strategy350_initial_stop;
 pub mod strategy350_macd;
 pub mod strategy350_noise;
 pub mod strategy350_price_gate;

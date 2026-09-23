@@ -4803,3 +4803,13 @@ effective contract at construction, after preparation, at checkpoint and at
 restore. Full validation is kept off the decision hot path. The target state
 is carried by the generic account journal image when that concrete type is
 used, but the executable Strategy 350 evaluator is still absent. No service ran.
+
+Strategy 350 initial-stop selection now has a Rust port of the frozen v27
+structural and adaptive rules. It chooses a recent confirmed supported swing,
+then a support band below VWAP, then the configured one- or five-percent
+fallback. Causal completed-bar noise sets the minimum distance; a required
+distance above the configured entry cap rejects the candidate. The selection
+pins structural and level inputs and is bound to the effective strategy's
+initial-stop and noise configurations. Offline tests cover fallback behavior,
+stale or future inputs and the cap. This does not yet create a journaled entry,
+broker bracket or executable full evaluator. No service ran.

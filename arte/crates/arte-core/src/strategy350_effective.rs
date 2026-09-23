@@ -3,11 +3,12 @@
 //! explicit. This value contains no runtime state or broker authority.
 use crate::{
     content_hash, execution_interval::ExecutionInterval, strategy350_gap::Config as GapConfig,
+    strategy350_initial_stop::Config as InitialStopConfig,
     strategy350_targets::Config as TargetProgressConfig, Error, Result,
 };
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: &str = "arte.strategy-350-effective.v3";
+pub const VERSION: &str = "arte.strategy-350-effective.v4";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +22,7 @@ pub struct Config {
     pub noise_config_hash: String,
     pub bos_config_hash: String,
     pub target_progress: TargetProgressConfig,
+    pub initial_stop: InitialStopConfig,
     pub level_book_config_hash: String,
     pub rule_set_hash: String,
     pub account_risk_hash: String,
@@ -51,6 +53,7 @@ impl Config {
         self.execution_interval.validate()?;
         self.gap.hash()?;
         self.target_progress.hash()?;
+        self.initial_stop.hash()?;
         if [
             &self.signal_config_hash,
             &self.screen_config_hash,
@@ -130,6 +133,50 @@ impl Config {
         Ok(())
     }
 
+    pub fn require_initial_stop(&self, configuration_hash: &str) -> Result<()> {
+        if self.initial_stop.hash()? != configuration_hash {
+            return Err(Error::Conflict(
+                "Strategy 350 initial-stop configuration differs".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn require_noise(&self, configuration_hash: &str) -> Result<()> {
+        if self.noise_config_hash != configuration_hash {
+            return Err(Error::Conflict(
+                "Strategy 350 adaptive-noise configuration differs".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn select_initial_stop(
+        &self,
+        snapshot: &crate::strategy350_bos::StructuralSnapshot,
+        levels: &[crate::strategy_targets::TargetLevel],
+        noise: &crate::strategy350_noise::State,
+        now_ns: u64,
+        entry_ask: f64,
+        vwap: f64,
+        tick: f64,
+    ) -> Result<crate::strategy350_initial_stop::Selection> {
+        self.require_noise(noise.configuration_hash())?;
+        let selected = crate::strategy350_initial_stop::select(
+            snapshot,
+            levels,
+            noise,
+            now_ns,
+            entry_ask,
+            vwap,
+            tick,
+            &self.initial_stop,
+        )?;
+        self.require_initial_stop(&selected.configuration_hash)?;
+        Ok(selected)
+    }
+
     pub fn require_screen_inputs(
         &self,
         screen_config_hash: [u8; 32],
@@ -171,6 +218,14 @@ pub(crate) fn test_config(execution_interval: ExecutionInterval) -> Config {
             execution_interval: ExecutionInterval::Events,
             maximum_distinct_levels: 1_000,
         },
+        initial_stop: InitialStopConfig {
+            execution_interval: ExecutionInterval::Events,
+            maximum_snapshot_age_ns: 1_000_000_000,
+            maximum_noise_age_ns: 2_000_000_000,
+            maximum_swing_age_ns: 30_000_000_000,
+            maximum_levels: 1_000,
+            fallback_percent: 1,
+        },
         level_book_config_hash: "1".repeat(64),
         rule_set_hash: "2".repeat(64),
         account_risk_hash: "3".repeat(64),
@@ -198,6 +253,9 @@ mod tests {
         assert_ne!(changed.hash().unwrap(), hash);
         changed = base.clone();
         changed.target_progress.maximum_distinct_levels += 1;
+        assert_ne!(changed.hash().unwrap(), hash);
+        changed = base.clone();
+        changed.initial_stop.fallback_percent = 5;
         assert_ne!(changed.hash().unwrap(), hash);
         changed = base.clone();
         changed.watchlist_config_hash = Some("5".repeat(64));
