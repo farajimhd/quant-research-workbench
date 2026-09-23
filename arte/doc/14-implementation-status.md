@@ -160,6 +160,10 @@ before checking exact coverage of the one shared portfolio. Duplicate command
 ownership or an unsubmitted reservation blocks the cut. A two-ticker offline
 test passes empty funding and rejects a reservation without an execution owner.
 This does not capture the per-lane execution clocks or publish recovery.
+The coordinator now captures the shared portfolio at the selected global cut
+after all action and funding gates pass. Its two-ticker unit test restores the
+image and rejects mismatched cut clocks and unsubmitted reservations. This is
+still a component, not the combined recoverable/publication graph.
 The Strategy 350 historical account owner now selects its own ticker's
 consumers from a shared run manifest while requiring exact local configuration
 and state sets. A unit test covers another ticker, missing local inputs and

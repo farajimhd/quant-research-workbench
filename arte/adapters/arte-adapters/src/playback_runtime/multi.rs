@@ -167,6 +167,40 @@ impl MultiRuntime {
         portfolio.require_checkpoint_funding(&expected)
     }
 
+    /// Capture account cash at the selected global boundary only after every
+    /// execution lane and the exact funding union pass the shared cut gate.
+    pub fn capture_portfolio(
+        &self,
+        portfolio: &mut Portfolio,
+        manifest: &Pinned,
+        cut: &arte_core::portfolio::checkpoint::Cut,
+        currencies: &BTreeMap<u64, SettlementCurrency>,
+        limits: &arte_core::portfolio::checkpoint::Limits,
+    ) -> Result<arte_core::seed_storage::Object> {
+        let (index, controller) = self
+            .selected()?
+            .ok_or_else(|| Error::Unready("multi-controller portfolio cut absent".into()))?;
+        let boundary = controller
+            .decision_view()?
+            .pending()?
+            .ok_or_else(|| Error::Unready("multi-controller portfolio boundary absent".into()))?;
+        if self.selected.as_ref().map(|(shard, _)| *shard) != Some(index)
+            || cut.boundary_hash != boundary.id
+            || cut.at_ns != boundary.evaluated_at_ns
+            || controller.status().acknowledged_boundaries.checked_add(1)
+                != Some(cut.boundary_sequence)
+        {
+            return Err(Error::Conflict(
+                "multi-controller portfolio cut differs".into(),
+            ));
+        }
+        for lane in &self.controllers {
+            lane.actions.require_complete()?;
+        }
+        self.require_complete_portfolio(portfolio, manifest, currencies)?;
+        portfolio.checkpoint(manifest, cut, limits)
+    }
+
     /// Test-only visibility for proving unselected shards cannot dispatch
     /// execution. Production callers may inspect only the selected controller.
     #[cfg(test)]

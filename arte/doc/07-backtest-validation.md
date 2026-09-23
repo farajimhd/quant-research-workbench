@@ -194,6 +194,12 @@ duplicate command ownership and reservations or settlements not owned by a
 submitted order. An offline two-ticker test accepts empty funding and rejects
 an unsubmitted reservation. This is a prerequisite for, not a substitute for,
 the whole-run publication cut.
+The coordinator can now capture the shared portfolio at the selected global
+boundary only after all lanes have completed actions and exact funding checks.
+The selected boundary ID, sequence and evaluation clock must match the cut.
+An offline two-ticker test round-trips the portfolio image and rejects a wrong
+cut or an unsubmitted reservation. Market, execution and strategy component
+roots are not yet bound to this image by a published whole-run root.
 Strategy 350 account-owned state now has a bounded content-addressed
 component checkpoint. Restore requires the selected market boundary, exact
 effective configuration hashes, and independently read decision journal rows.

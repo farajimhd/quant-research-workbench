@@ -527,6 +527,103 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         .controller
         .require_complete_portfolio(&mut session.portfolio, &combined, &BTreeMap::new())
         .is_err());
+    assert!(session.portfolio.release("a", "reserved-a").unwrap());
+    session.controller.resume_all().unwrap();
+    let mut selected = None;
+    for _ in 0..100 {
+        let polled = session.controller.poll().unwrap();
+        if !matches!(polled, crate::playback_runtime::multi::MultiPoll::Yield) {
+            selected = Some(polled);
+            break;
+        }
+    }
+    assert!(
+        matches!(
+            selected,
+            Some(crate::playback_runtime::multi::MultiPoll::Boundary { shard: 0 })
+        ),
+        "{selected:?}"
+    );
+    assert_eq!(session.controller.selected().unwrap().unwrap().0, 0);
+    let boundary = session
+        .controller
+        .selected()
+        .unwrap()
+        .unwrap()
+        .1
+        .decision_view()
+        .unwrap()
+        .pending()
+        .unwrap()
+        .unwrap();
+    let cut = arte_core::portfolio::checkpoint::Cut {
+        boundary_sequence: 1,
+        boundary_hash: boundary.id.into(),
+        at_ns: boundary.evaluated_at_ns,
+    };
+    let portfolio_limits = arte_core::portfolio::checkpoint::Limits {
+        maximum_accounts: 2,
+        maximum_reservations: 10,
+        maximum_settlements: 10,
+        maximum_bytes: 100_000,
+    };
+    let mut wrong_cut = cut.clone();
+    wrong_cut.at_ns += 1;
+    assert!(session
+        .controller
+        .capture_portfolio(
+            &mut session.portfolio,
+            &combined,
+            &wrong_cut,
+            &BTreeMap::new(),
+            &portfolio_limits,
+        )
+        .is_err());
+    session
+        .portfolio
+        .reserve(
+            "a",
+            Reservation {
+                command_id: "unsubmitted".into(),
+                instrument: 1,
+                cash_minor: 100,
+            },
+            200 * S,
+        )
+        .unwrap();
+    assert!(session
+        .controller
+        .capture_portfolio(
+            &mut session.portfolio,
+            &combined,
+            &cut,
+            &BTreeMap::new(),
+            &portfolio_limits,
+        )
+        .is_err());
+    assert!(session.portfolio.release("a", "unsubmitted").unwrap());
+    let portfolio_image = session
+        .controller
+        .capture_portfolio(
+            &mut session.portfolio,
+            &combined,
+            &cut,
+            &BTreeMap::new(),
+            &portfolio_limits,
+        )
+        .unwrap();
+    let restored_portfolio = arte_core::portfolio::Portfolio::restore_checkpoint(
+        &combined,
+        &cut,
+        &portfolio_image,
+        &portfolio_image.id,
+        &portfolio_limits,
+    )
+    .unwrap();
+    assert_eq!(
+        restored_portfolio.snapshot("a").unwrap().budget_minor,
+        10_000
+    );
     session
         .controller
         .seed_test_order(
@@ -547,23 +644,6 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
             200 * S,
         )
         .unwrap();
-    session.controller.resume_all().unwrap();
-    let mut selected = None;
-    for _ in 0..100 {
-        let polled = session.controller.poll().unwrap();
-        if !matches!(polled, crate::playback_runtime::multi::MultiPoll::Yield) {
-            selected = Some(polled);
-            break;
-        }
-    }
-    assert!(
-        matches!(
-            selected,
-            Some(crate::playback_runtime::multi::MultiPoll::Boundary { shard: 0 })
-        ),
-        "{selected:?}"
-    );
-    assert_eq!(session.controller.selected().unwrap().unwrap().0, 0);
     assert!(session.controller.controllers()[1].decision_view().is_err());
     assert_eq!(
         session.controller.controllers()[1]
