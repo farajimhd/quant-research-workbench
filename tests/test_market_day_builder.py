@@ -156,7 +156,7 @@ class ClickHouseParity(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.args=B.parse_args(['--date','2026-09-18','--max-threads','2'])
-        cls.c=B.Client(cls.args)
+        cls.c=B.Client(cls.args,persistent=False)
         cls.db='market_day_test_'+uuid.uuid4().hex
         cls.build='fixture'
         cls.day=date(2026,9,18)
