@@ -4,10 +4,11 @@ Status: partial implementation. This is not the complete ARTE system.
 
 Run manifest schema v2 now pins a strategy kind for each account/instrument
 consumer. The kind propagates into the decision scope and journal identity. The
-generic bracket planner rejects Strategy 350 by kind, even when the instance is
-renamed or used in another mode. Missing kind and changed kind are rejected by
-the manifest contract. The current playback action path still has no causal
-Strategy 350 price-gate proof, so a verified gate-to-decision-to-order path
+generic candidate runtime rejects Strategy 350 before evaluating any boundary.
+The generic bracket planner rejects Strategy 350 by kind, even when the
+instance is renamed or used in another mode. Missing or changed kinds are
+rejected by the manifest contract. The current playback action path has no
+causal Strategy 350 price-gate proof, so a verified gate-to-decision-to-order path
 remains required before activation. The kind pin is a safety interlock, not a
 completed execution engine.
 

@@ -135,6 +135,11 @@ impl Runtime {
         state: candidate::State,
         maximum_state_bytes: usize,
     ) -> Result<Self> {
+        if scope.strategy_kind != dispatch::StrategyKind::GenericCandidate {
+            return Err(Error::Unready(
+                "candidate runtime does not implement the declared strategy kind".into(),
+            ));
+        }
         let config_hash = scope.config_hash.clone();
         if config_hash.len() != 64
             || !config_hash
@@ -352,6 +357,10 @@ mod recovery_tests {
             config_hash: "c".repeat(64),
         };
         let runtime = Runtime::new(scope.clone(), candidate::State::default(), 100_000).unwrap();
+        let mut wrong_kind = scope.clone();
+        wrong_kind.strategy_instance = "renamed".into();
+        wrong_kind.strategy_kind = dispatch::StrategyKind::Strategy350;
+        assert!(Runtime::new(wrong_kind, candidate::State::default(), 100_000).is_err());
         let context = "d".repeat(64);
         let image = runtime.checkpoint(&context, 200_000).unwrap();
         let restore = |scope: &dispatch::Scope| {
