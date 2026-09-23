@@ -4824,12 +4824,15 @@ The state is embedded in the concrete account journal image and checked
 against run, account, instrument, market session and effective configuration
 at playback and recovery boundaries. Offline tests cover partial target fills,
 same-resistance reentry after the rapid window and semantic recovery rejection.
-The historical decision boundary now compares this quantity and long direction
-with the strategy-attributed position projection after durable fill readback.
-It fails closed if either side is stale or divergent. Offline tests cover a
+The historical decision boundary compares this quantity and long direction
+with the strategy-attributed position projection after the staged observation
+callback. This permits the callback to apply an already committed fill before
+comparison, while failing closed if either side is stale or divergent. The
+calculation boundary checks again before actions. Offline tests cover a
 missing projected entry, a matching entry, and an unobserved partial exit.
 The full evaluator still must bind the proposed resistance ID and every other
 entry condition to causal evidence. Committed fill receipts are not yet fed
-back into this reentry state automatically, so a real fill currently blocks
-further decisions until that bridge is implemented. This is not order
+back into this reentry state automatically, so the caller must supply verified
+fill evidence in the observation callback or a real fill blocks subsequent
+decisions. This is not order
 authority. No service ran.

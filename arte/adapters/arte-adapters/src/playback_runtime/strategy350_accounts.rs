@@ -320,19 +320,21 @@ impl<S: StateContract> Accounts<S> {
         slot.runtime
             .committed_state()
             .require_market_scope(view.market_scope())?;
-        slot.runtime
-            .committed_state()
-            .require_projected_position(controller.strategy_position(slot.runtime.scope())?)?;
         if !boundary.due_for(slot.route) {
             return Err(Error::Unready(
                 "Strategy 350 decision boundary is outside declared interval".into(),
             ));
         }
+        let scope = slot.runtime.scope().clone();
         let decision = strategy350_transaction::prepare_historical_market_decision(
             &mut slot.runtime,
             request,
-            observe,
             |state| {
+                observe(state)?;
+                state.require_projected_position(controller.strategy_position(&scope)?)
+            },
+            |state| {
+                state.require_projected_position(controller.strategy_position(&scope)?)?;
                 let actions = restrict_actions(calculate(state)?)?;
                 state.validate_hot(&slot.effective)?;
                 Ok(actions)
