@@ -2,6 +2,13 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+Historical Strategy 350 session-watch signal preparation now scans certified
+100 ms bar batches once and retains only sparse Boolean transitions. It no
+longer materializes a full-session evaluation vector and a second dense grid.
+An offline unit test proves identical transition rows and coverage identity
+against the prior dense preparation path. This does not complete the runnable
+Strategy 350 backtest or live account evaluator.
+
 Massive transport health now distinguishes a subscription request from observed
 market traffic. Neither state arms the shared exposure gate. The reviewed
 provider quickstart shows auth, subscribe and data messages but does not define

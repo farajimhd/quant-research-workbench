@@ -184,10 +184,97 @@ pub fn prepare_strategy350_signal(
             "Strategy 350 signal definition differs".into(),
         ));
     }
-    let projection = arte_core::strategy350_signal::project(bar, config, session_start_ns)?;
-    let prepared =
-        prepare_calculated_boolean_product(bar, request, &projection.evaluations, published_at_ns)?;
-    Ok((prepared, projection.first_occurrence_end_ns))
+    request.validate()?;
+    source_matches(&request, bar)?;
+    let source = bar.request();
+    if request.interval.start != session_start_ns
+        || published_at_ns < request.interval.end
+        || ![
+            arte_core::bar_catalogue::Column::Close,
+            arte_core::bar_catalogue::Column::Volume,
+            arte_core::bar_catalogue::Column::Trades,
+        ]
+        .into_iter()
+        .all(|column| source.columns.contains(&column))
+    {
+        return Err(Error::Unready(
+            "Strategy 350 signal certified source or publication clock".into(),
+        ));
+    }
+    let request_hash = request.hash()?;
+    let mut state = arte_core::strategy350_signal::State::new_historical(
+        config,
+        source.hash()?,
+        session_start_ns,
+        request.interval.end,
+    )?;
+    let mut digest = TransitionDigest::new(&request)?;
+    let mut rows = Vec::with_capacity(2);
+    let mut previous = None;
+    for batch in bar.batches() {
+        let close = batch
+            .close
+            .as_deref()
+            .ok_or_else(|| Error::Unready("Strategy 350 signal close missing".into()))?;
+        let volume = batch
+            .volume
+            .as_deref()
+            .ok_or_else(|| Error::Unready("Strategy 350 signal volume missing".into()))?;
+        let trades = batch
+            .trades
+            .as_deref()
+            .ok_or_else(|| Error::Unready("Strategy 350 signal trades missing".into()))?;
+        for slot in 0..batch.count as usize {
+            let at = (slot as u64)
+                .checked_mul(BASE)
+                .and_then(|offset| batch.first_start_ns.checked_add(offset))
+                .ok_or_else(|| Error::Capacity("Strategy 350 signal clock".into()))?;
+            let active = state.observe(
+                at,
+                batch.present[slot],
+                close[slot],
+                volume[slot],
+                trades[slot],
+            )?;
+            if previous != Some(active) {
+                digest.observe(at, true, active)?;
+                rows.push(TransitionRow {
+                    request_hash: request_hash.clone(),
+                    provider: request.provider,
+                    instrument: request.instrument,
+                    session: request.session,
+                    bucket_start_ns: at,
+                    known: 1,
+                    value: u8::from(active),
+                });
+                previous = Some(active);
+            }
+        }
+    }
+    if state.next_bucket_ns() != request.interval.end {
+        return Err(Error::Unready(
+            "Strategy 350 signal source incomplete".into(),
+        ));
+    }
+    let (transition_hash, transition_count) = digest.finish();
+    let coverage = Coverage {
+        request_hash,
+        source_bar_coverage_hash: request.source_bar_coverage_hash.clone(),
+        producer_hash: request.definition.implementation_hash.clone(),
+        transition_hash,
+        transition_count,
+        published_at_ns,
+    };
+    coverage.require(&request, published_at_ns)?;
+    let first = state.first_occurrence_end_ns();
+    Ok((
+        Prepared {
+            request,
+            coverage,
+            rows,
+        },
+        first,
+    ))
 }
 pub fn boolean_publication_scope(request: &Request) -> Result<String> {
     arte_core::content_hash(&("arte.boolean-publication.v1", request.hash()?))
@@ -843,6 +930,20 @@ mod tests {
         .unwrap();
         assert_eq!(first, Some(1_200_000_000));
         assert_eq!(prepared.transition_count(), 2);
+        let dense_projection =
+            arte_core::strategy350_signal::project(&source, config.clone(), 1_000_000_000).unwrap();
+        let dense_prepared = prepare_calculated_boolean_product(
+            &source,
+            request.clone(),
+            &dense_projection.evaluations,
+            2_000_000_000,
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.coverage().hash().unwrap(),
+            dense_prepared.coverage().hash().unwrap()
+        );
+        assert_eq!(prepared.rows, dense_prepared.rows);
         assert!(prepare_strategy350_signal(
             &source,
             request.clone(),
