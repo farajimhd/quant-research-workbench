@@ -422,11 +422,12 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
     let mut missing = seeds.clone();
     missing.entries.pop();
     assert!(first_doc
+        .clone()
         .assemble_multi(
             &first_hash,
             &combined,
             &sources,
-            first_prepared,
+            first_prepared.clone(),
             &first_seed,
             &missing,
         )
@@ -724,12 +725,10 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
     ))
     .unwrap();
     let standby_seed_hash = second_seed.hydrate().unwrap().hash;
-    let standby_configuration_hash = standby
-        .run
-        .market()
-        .unwrap()
-        .configuration_hash()
-        .to_owned();
+    let standby_configuration_hash = second_doc
+        .configuration
+        .recovery_hash(&second_doc.split)
+        .unwrap();
     let restored_standby = crate::playback_runtime::Runtime::restore_standby_checkpoint(
         &standby_controller_image,
         &standby_controller_image.root.id,
@@ -846,6 +845,7 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         maximum_bytes: 1_000_000,
         execution: execution_limits,
         portfolio: portfolio_limits,
+        maximum_strategy_state_bytes: 1024,
     };
     let mut graph = session
         .controller
@@ -860,9 +860,12 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
             &graph_limits,
         )
         .unwrap();
-    assert_eq!(graph.markets.len(), 2);
+    assert_eq!(graph.controllers.len(), 2);
     assert_eq!(graph.strategies.len(), 2);
-    assert_eq!(graph.executions.len(), 2);
+    assert_eq!(
+        graph.controllers[&2].root.id,
+        standby_controller_image.root.id
+    );
     graph
         .verify_pins(&graph.root.id, &combined, &startup_hash, &cut, 1_000_000)
         .unwrap();
@@ -874,6 +877,102 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         .is_err());
     assert!(graph
         .verify_pins(&graph.root.id, &combined, &"0".repeat(64), &cut, 1_000_000)
+        .is_err());
+    let first_key = content_hash(&combined.scope("a", 1, "strategy").unwrap()).unwrap();
+    let second_key = content_hash(&combined.scope("b", 2, "strategy").unwrap()).unwrap();
+    let recovery_evidence = || {
+        use crate::playback_runtime::multi::checkpoint::ShardEvidence;
+        BTreeMap::from([
+            (
+                1,
+                ShardEvidence {
+                    startup: &first_doc,
+                    expected_startup_hash: &first_hash,
+                    prepared: first_prepared.clone(),
+                    seed: &first_seed,
+                    receipts: Vec::new(),
+                    strategy_configurations: BTreeMap::from([(
+                        first_key.clone(),
+                        effective.clone(),
+                    )]),
+                    strategy_readbacks: BTreeMap::from([(first_key.clone(), Vec::new())]),
+                },
+            ),
+            (
+                2,
+                ShardEvidence {
+                    startup: &second_doc,
+                    expected_startup_hash: &second_hash,
+                    prepared: second_prepared.clone(),
+                    seed: &second_seed,
+                    receipts: Vec::new(),
+                    strategy_configurations: BTreeMap::from([(
+                        second_key.clone(),
+                        effective.clone(),
+                    )]),
+                    strategy_readbacks: BTreeMap::from([(second_key.clone(), Vec::new())]),
+                },
+            ),
+        ])
+    };
+    let recovered = graph
+        .restore::<u64>(
+            &graph.root.id,
+            &combined,
+            &startup_hash,
+            &cut,
+            &sources,
+            &seeds,
+            recovery_evidence(),
+            &cost_model,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &graph_limits,
+        )
+        .unwrap();
+    assert_eq!(recovered.controller.selected().unwrap().unwrap().0, 0);
+    assert_eq!(*recovered.strategy[&2].state(&second_key).unwrap(), 2);
+    assert_eq!(
+        recovered.portfolio.snapshot("b").unwrap().budget_minor,
+        20_000
+    );
+    let mut wrong_recovery = recovery_evidence();
+    wrong_recovery.get_mut(&2).unwrap().seed = &first_seed;
+    assert!(graph
+        .restore::<u64>(
+            &graph.root.id,
+            &combined,
+            &startup_hash,
+            &cut,
+            &sources,
+            &seeds,
+            wrong_recovery,
+            &cost_model,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &graph_limits,
+        )
+        .is_err());
+    let mut missing_readback = recovery_evidence();
+    missing_readback
+        .get_mut(&2)
+        .unwrap()
+        .strategy_readbacks
+        .clear();
+    assert!(graph
+        .restore::<u64>(
+            &graph.root.id,
+            &combined,
+            &startup_hash,
+            &cut,
+            &sources,
+            &seeds,
+            missing_readback,
+            &cost_model,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &graph_limits,
+        )
         .is_err());
     graph.strategies.get_mut(&2).unwrap().root = all_strategy_images[&1].root.clone();
     assert!(graph

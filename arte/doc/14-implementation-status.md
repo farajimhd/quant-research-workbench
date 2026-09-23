@@ -4733,3 +4733,26 @@ configuration, quote policy and cost-model evidence. It rejects using a
 standby image as a selected image. The two-ticker offline test restores and
 recaptures the standby controller with the same root. Whole-run semantic
 restore, durable readback and publication remain incomplete. No service ran.
+
+The unpublished multi-ticker graph is now schema v2. It stores one controller
+image per ticker instead of separate, redundant market and simulated execution
+images. Each controller image owns its market barrier, execution frontier,
+retained action progress and working targets. Strategy 350 account images and
+the shared portfolio remain separate authorities. The offline two-ticker test
+confirms that the graph pins the same standby controller image that can be
+restored independently. Graph-wide semantic restore and publication are not
+yet implemented. No service ran.
+
+The schema-v2 multi-ticker graph now has an offline semantic restore path. It
+requires independent startup documents, prepared market frames, the run seed
+catalog and verified seed bundles. It also requires quote policies, strategy
+journal readbacks, the cost model and fill evidence. It restores each selected
+or standby controller and Strategy 350
+account owner, restores the shared portfolio, checks funding across all lanes,
+then recaptures the entire graph and requires the same root. A two-ticker unit
+test restores the selected and standby lanes and rejects a substituted seed
+bundle or missing strategy-journal readback. The market configuration hash is
+derived from the independently supplied startup document, not accepted as a
+second caller-provided value. This is backtest-only recovery. It is not
+durable ClickHouse readback, broker reconciliation, publication or permission
+to trade. No service ran.

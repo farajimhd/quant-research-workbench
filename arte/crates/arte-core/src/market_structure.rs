@@ -40,6 +40,11 @@ pub struct Config {
     pub additional_timeframes: Vec<Timeframe>,
     pub structure: StreamPolicy,
 }
+impl Config {
+    pub fn recovery_hash(&self, split: &SplitAdjustment) -> Result<String> {
+        crate::content_hash(&(RECOVERY_VERSION, self, split.factor, &split.evidence))
+    }
+}
 pub struct Runtime {
     provider: u16,
     market: Series,
@@ -94,8 +99,7 @@ impl Runtime {
         {
             return Err(Error::Capacity("market event identity budget".into()));
         }
-        let configuration_hash =
-            crate::content_hash(&(RECOVERY_VERSION, &config, split.factor, &split.evidence))?;
+        let configuration_hash = config.recovery_hash(split)?;
         let start_ns = config
             .start_second
             .checked_mul(SECOND)
