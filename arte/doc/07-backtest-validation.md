@@ -66,6 +66,11 @@ of the then-inspected strategy executor and
 `0541a69a375bd77901ef6ad92725a47abd9d49488b4cc4312e9ed1ea0399d80f`
 of the Strategy 350 candidate builder. These are audit references, not runtime
 imports or an assumption that the effective configuration is frozen.
+The rolling noise state now has a bounded, immutable recovery object. It pins
+the configuration and session, saves only the recent bars and bounded range
+history, and rebuilds its percentile index on restore. Restore verifies bar
+ordering, sample counts, range IDs, the latest five-bar range and canonical
+bytes. This object is not yet included in the live lane common-cut root.
 
 The first typed Strategy 350 catalogue plan requests completed 100 ms bars,
 the early squeeze signal and reference data for screening. Watchlist membership

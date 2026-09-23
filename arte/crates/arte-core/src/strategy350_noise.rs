@@ -3,6 +3,7 @@
 use crate::{content_hash, execution_interval::ExecutionInterval, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
+pub mod checkpoint;
 
 const SECOND: u64 = 1_000_000_000;
 const BPS: i128 = 10_000;
@@ -46,7 +47,7 @@ impl Config {
         content_hash(&(VERSION, self))
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletedBar {
     pub end_ns: u64,
     pub high_atoms: i64,
@@ -74,6 +75,7 @@ pub struct State {
     lower: BTreeSet<(i64, u64)>,
     upper: BTreeSet<(i64, u64)>,
     next_range_id: u64,
+    observed_bars: u64,
     last_end_ns: Option<u64>,
     failed: bool,
 }
@@ -97,6 +99,7 @@ impl State {
             lower: BTreeSet::new(),
             upper: BTreeSet::new(),
             next_range_id: 0,
+            observed_bars: 0,
             last_end_ns: None,
             failed: false,
         })
@@ -180,6 +183,10 @@ impl State {
             {
                 return Err(Error::Invalid("Strategy 350 completed bar".into()));
             }
+            let observed_bars = self
+                .observed_bars
+                .checked_add(1)
+                .ok_or_else(|| Error::Capacity("Strategy 350 observed bars".into()))?;
             if self.bars.len() == 5 {
                 self.bars.pop_front();
             }
@@ -193,6 +200,7 @@ impl State {
                 )?;
             }
             self.last_end_ns = Some(bar.end_ns);
+            self.observed_bars = observed_bars;
             Ok(())
         })();
         if result.is_err() {

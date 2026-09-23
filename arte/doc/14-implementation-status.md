@@ -44,6 +44,10 @@ exact scaled-integer cap comparisons. Two focused unit tests cover shared
 live/batch output and the bounded percentile window. Structural stop choice,
 tick rounding, a pinned effective configuration, and order submission remain
 separate unfinished work; this result alone cannot permit an entry.
+The adaptive noise state now has a bounded immutable checkpoint. An offline
+test compares restored continuation with an uninterrupted run and rejects a
+forged internally inconsistent image. It is not yet part of the published live
+common cut, so live Strategy 350 activation must remain blocked.
 The first conservative Strategy 350 100 ms bar screen now emits contiguous
 candidate-refinement masks. It preserves buckets whose intrabar order could
 create a new HOD and subsequent qualifying pullback; it never authorizes a
