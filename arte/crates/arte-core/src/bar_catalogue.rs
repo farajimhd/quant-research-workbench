@@ -2,7 +2,7 @@
 //! Columnar selection and validation happen before a batch enters the replay clock.
 use crate::{content_hash, coverage::Interval, Error, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const CONTRACT: &str = "arte.compact-bars.v1";
 pub const BASE_INTERVAL_NS: u64 = 100_000_000;
@@ -29,7 +29,7 @@ pub enum Column {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
-    pub provider: u32,
+    pub provider: u16,
     pub instruments: Vec<u64>,
     pub session: u32,
     pub interval: Interval,
@@ -38,6 +38,78 @@ pub struct Request {
     pub calculation_hash: String,
     pub columns: BTreeSet<Column>,
     pub maximum_rows: usize,
+}
+
+/// Published only after the source certificates and derived bucket grid have
+/// passed independent readback. Publication is the adapter's responsibility.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Coverage {
+    pub provider: u16,
+    pub session: u32,
+    pub interval: Interval,
+    pub timeframe_ns: u64,
+    pub source_generation: String,
+    pub calculation_hash: String,
+    pub sources: BTreeMap<u64, Source>,
+    pub published_at_ns: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Source {
+    pub certificate_hash: String,
+    pub price_scale: u8,
+    pub size_scale: u8,
+}
+
+impl Coverage {
+    pub fn hash(&self) -> Result<String> {
+        self.interval.validate()?;
+        if self.provider == 0
+            || self.session == 0
+            || self.timeframe_ns < BASE_INTERVAL_NS
+            || !self.timeframe_ns.is_multiple_of(BASE_INTERVAL_NS)
+            || !self.interval.start.is_multiple_of(self.timeframe_ns)
+            || !self.interval.end.is_multiple_of(self.timeframe_ns)
+            || !hash_valid(&self.source_generation)
+            || !hash_valid(&self.calculation_hash)
+            || self.sources.is_empty()
+            || self.sources.len() > 100_000
+            || self.sources.iter().any(|(instrument, source)| {
+                *instrument == 0
+                    || !hash_valid(&source.certificate_hash)
+                    || source.price_scale > 9
+                    || source.size_scale > 9
+            })
+            || self.published_at_ns == 0
+        {
+            return Err(Error::Invalid("compact bar coverage manifest".into()));
+        }
+        content_hash(&(CONTRACT, "coverage", self))
+    }
+    pub fn require(&self, request: &Request, source_as_of_ns: u64) -> Result<String> {
+        request.validate()?;
+        let hash = self.hash()?;
+        if self.provider != request.provider
+            || self.session != request.session
+            || self.timeframe_ns != request.timeframe_ns
+            || self.source_generation != request.source_generation
+            || self.calculation_hash != request.calculation_hash
+            || self.interval.start > request.interval.start
+            || self.interval.end < request.interval.end
+            || self.published_at_ns > source_as_of_ns
+            || request
+                .instruments
+                .iter()
+                .any(|id| !self.sources.contains_key(id))
+        {
+            return Err(Error::Unready(
+                "compact bar coverage does not satisfy request".into(),
+            ));
+        }
+        Ok(hash)
+    }
 }
 
 impl Request {
@@ -57,6 +129,7 @@ impl Request {
             || !hash_valid(&self.calculation_hash)
             || self.columns.is_empty()
             || self.maximum_rows == 0
+            || self.maximum_rows > 2_000_000
         {
             return Err(Error::Invalid("compact bar request".into()));
         }
@@ -105,6 +178,7 @@ pub struct Batch {
 pub struct Readback {
     request: Request,
     coverage_hash: String,
+    sources: BTreeMap<u64, Source>,
     next_instrument: usize,
     next_start_ns: u64,
     rows: usize,
@@ -119,15 +193,13 @@ pub struct Complete {
 }
 
 impl Readback {
-    pub fn new(request: Request, coverage_hash: String) -> Result<Self> {
-        request.validate()?;
-        if !hash_valid(&coverage_hash) {
-            return Err(Error::Invalid("compact bar coverage identity".into()));
-        }
+    pub fn new(request: Request, coverage: &Coverage, source_as_of_ns: u64) -> Result<Self> {
+        let coverage_hash = coverage.require(&request, source_as_of_ns)?;
         Ok(Self {
             next_start_ns: request.interval.start,
             request,
             coverage_hash,
+            sources: coverage.sources.clone(),
             next_instrument: 0,
             rows: 0,
             batches: Vec::new(),
@@ -157,6 +229,9 @@ impl Readback {
         }
         if self.request.instruments.get(self.next_instrument) != Some(&batch.instrument)
             || batch.first_start_ns != self.next_start_ns
+            || self.sources.get(&batch.instrument).is_none_or(|source| {
+                source.price_scale != batch.price_scale || source.size_scale != batch.size_scale
+            })
         {
             return Err(Error::Conflict("compact bar readback gap or order".into()));
         }
@@ -313,10 +388,40 @@ mod tests {
             maximum_rows: 20,
         }
     }
+    fn coverage(request: &Request) -> Coverage {
+        Coverage {
+            provider: request.provider,
+            session: request.session,
+            interval: request.interval,
+            timeframe_ns: request.timeframe_ns,
+            source_generation: request.source_generation.clone(),
+            calculation_hash: request.calculation_hash.clone(),
+            sources: [
+                (
+                    10,
+                    Source {
+                        certificate_hash: "d".repeat(64),
+                        price_scale: 2,
+                        size_scale: 2,
+                    },
+                ),
+                (
+                    20,
+                    Source {
+                        certificate_hash: "e".repeat(64),
+                        price_scale: 2,
+                        size_scale: 2,
+                    },
+                ),
+            ]
+            .into(),
+            published_at_ns: 3_000_000_000,
+        }
+    }
     fn batch(request: &Request) -> Batch {
         Batch {
             request_hash: request.hash().unwrap(),
-            coverage_hash: "c".repeat(64),
+            coverage_hash: coverage(request).hash().unwrap(),
             instrument: 10,
             first_start_ns: 1_000_000_000,
             count: 2,
@@ -376,10 +481,11 @@ mod tests {
     #[test]
     fn complete_readback_rejects_missing_or_reordered_buckets() {
         let r = request();
-        let mut incomplete = Readback::new(r.clone(), "c".repeat(64)).unwrap();
+        let manifest = coverage(&r);
+        let mut incomplete = Readback::new(r.clone(), &manifest, 3_000_000_000).unwrap();
         incomplete.observe(batch(&r)).unwrap();
         assert!(incomplete.finish().is_err());
-        let mut readback = Readback::new(r.clone(), "c".repeat(64)).unwrap();
+        let mut readback = Readback::new(r.clone(), &manifest, 3_000_000_000).unwrap();
         let mut one = batch(&r);
         one.count = 10;
         one.present.resize(10, false);
@@ -398,7 +504,7 @@ mod tests {
         readback.observe(one.clone()).unwrap();
         assert!(readback.observe(one).is_err());
         assert!(readback.finish().is_err());
-        let mut readback = Readback::new(r.clone(), "c".repeat(64)).unwrap();
+        let mut readback = Readback::new(r.clone(), &manifest, 3_000_000_000).unwrap();
         let mut two = batch(&r);
         two.count = 10;
         two.instrument = 20;
@@ -420,5 +526,17 @@ mod tests {
         readback.observe(first).unwrap();
         readback.observe(two).unwrap();
         assert_eq!(readback.finish().unwrap().batches.len(), 2);
+    }
+    #[test]
+    fn coverage_requires_exact_generation_complete_tickers_and_source_knowledge() {
+        let r = request();
+        let manifest = coverage(&r);
+        assert!(Readback::new(r.clone(), &manifest, 2_999_999_999).is_err());
+        let mut missing = manifest.clone();
+        missing.sources.remove(&20);
+        assert!(Readback::new(r.clone(), &missing, 3_000_000_000).is_err());
+        let mut changed = manifest.clone();
+        changed.calculation_hash = "f".repeat(64);
+        assert!(Readback::new(r, &changed, 3_000_000_000).is_err());
     }
 }

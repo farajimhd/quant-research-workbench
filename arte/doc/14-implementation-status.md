@@ -15,11 +15,17 @@ historical levels, signals and Watchlist products, a validated compact bar
 contract, and compact ClickHouse-only logs and run evidence. SQLite is forbidden.
 The first Rust compact-bar contract now defines a bounded column selection and
 100 ms grid with exact scaled integer prices, sizes and notional. It validates
-bucket values, exact request and coverage identity, and complete ordered
-readback for all requested instruments. Four focused unit
-tests pass. The independently certified coverage manifest, ClickHouse bar table
-and reader, scanner/rule planner, Strategy 350 port, and runnable bar-based
-backtest remain unimplemented. No throughput benchmark or service test ran.
+bucket values, exact request and coverage identity, source knowledge cutoff,
+and complete ordered readback for all requested instruments. Five core unit
+tests pass. An adapter unit test verifies query projection and sparse expansion.
+The ClickHouse reader preflights storage policy
+and part placement, reads a pinned coverage payload, projects required columns,
+pages sparse nonempty buckets, and reconstructs dense 100 ms arrays. Precision
+is pinned per ticker, including wholly empty pages. Migration 021 authors the
+sparse table and compressed coverage table; it is not applied. The source-backed
+coverage publisher and derived-bar writer, scanner/rule planner, Strategy 350
+port, and runnable bar-based backtest remain unimplemented. No throughput
+benchmark, database connection, or service test ran.
 No backward compatibility with obsolete strategy or storage formats is required.
 
 ## Indexed bootstrap and historical gap projection

@@ -3,8 +3,8 @@
 ## Proposed compact bar contract
 
 ARTE needs a versioned compact bar product, beginning with completed 100 ms
-bars. This contract is not materialized yet. Define its exact schema and codecs
-from measured workloads before enabling a writer. It must include instrument,
+bars. The proposed schema is authored but not applied. Validate its codec and
+range-query cost before enabling a writer. It must include instrument,
 session, half-open interval, timeframe, adjustment and calculation versions,
 source generation and coverage identity, completeness, OHLC, volume, trade count,
 and the minimal fields required by Strategy 350 and its scanner, signal, and
@@ -17,6 +17,10 @@ on every bar. Materialize only products required for backtest, continuation, or
 auditable decisions; set bounded retention and pin referenced generations.
 Derived indicators and levels have separate versioned contracts and causal
 availability. Bar aggregation alone cannot restore missing event-level fields.
+The authored layout stores exact scaled integers only for nonempty buckets.
+A pinned complete coverage manifest permits the reader to reconstruct empty
+buckets as zeros with an explicit presence mask. Sparse-table silence alone
+does not certify a source interval.
 
 ## Agreed decisions
 

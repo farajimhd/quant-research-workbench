@@ -35,6 +35,14 @@ account ordering. Vectorization must preserve prior-only operands, equal-time
 rules, order timing, and position-dependent behavior. A vectorized lookahead is
 not an acceptable speedup.
 
+Strategy 350 still contains trade-native rules, including an exact previous-trade
+crossing for some reentries and quote-dependent purchase checks. A 100 ms OHLCV
+bar cannot reconstruct the sequence of trades and quotes inside that bucket.
+The port must list each rule's minimum input capability. Either a measured,
+bounded event/quote refinement supplies those decisions, or the bar-only run
+uses an explicitly versioned approximation and reports which decisions are
+unavailable or changed. It may not claim event-level parity from bars alone.
+
 Historical V7 construction may consume certified completed bars and publish
 versioned level books and next-session seeds. Live V7 consumes the streaming
 market path. Both implementations must share level identity, state transitions,

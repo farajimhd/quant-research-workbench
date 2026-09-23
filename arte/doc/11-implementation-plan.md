@@ -32,6 +32,9 @@ and strategy acceptance remain separate approvals.
 - ClickHouse is the only external durable persistence service.
 - MDE and strategy share the live process and in-memory domain state.
 - Backtest shares contracts, not live processes, accounts or mutable state.
+- Do not add backward compatibility for obsolete strategy candidates, SQLite
+  artifacts, or superseded ARTE contracts. Pin and migrate accepted runs only
+  when a new contract needs them.
 - Strategy 350 is the current replacement candidate; pin exact source and
   configuration before porting and do not infer release approval from its number.
 - Historical preparation starts from vectorized completed 100 ms bar batches
