@@ -19,6 +19,7 @@ pub struct Limits {
     pub maximum_strategy_state_bytes: usize,
 }
 
+#[derive(Clone)]
 pub struct ShardEvidence<'a> {
     pub startup: &'a super::super::session::market::Document,
     pub expected_startup_hash: &'a str,

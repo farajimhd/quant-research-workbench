@@ -22,6 +22,7 @@ mod event_boolean_products;
 mod execution_checkpoints;
 mod fills;
 mod live_cut_checkpoints;
+mod multi_run_checkpoints;
 mod order_authorizations;
 mod portfolio_checkpoints;
 mod quote_policies;
@@ -38,6 +39,9 @@ pub use event_boolean_products::{
 pub use execution_checkpoints::{execution_checkpoint_scope, ExecutionRecovery};
 pub use fills::FillPublisher;
 pub use live_cut_checkpoints::{live_cut_checkpoint_scope, Recovery as LiveCutRecovery};
+pub use multi_run_checkpoints::{
+    scope as multi_backtest_checkpoint_scope, RestoreRequest as MultiBacktestRestoreRequest,
+};
 pub use order_authorizations::OrderPublisher;
 pub use portfolio_checkpoints::portfolio_checkpoint_scope;
 #[cfg(test)]

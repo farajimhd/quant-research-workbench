@@ -4764,3 +4764,13 @@ small header. Hydration verifies every chunk and object hash, exact references,
 the run/cut/startup identity and graph pins. The two-ticker offline test covers
 round-trip hydration and rejects a missing chunk. No ClickHouse publication or
 power-loss durability test ran.
+
+Migration 025 and the multi-backtest ClickHouse adapter now define dedicated
+root and chunk tables on `live_market_ssd`. The adapter preflights table policy
+and part placement. Publication requires repository-extraction and durability
+acceptance plus an exclusive lease. It semantically restores before the first
+write, writes and reads back every chunk before the root, then reloads and
+restores the stored graph. It does not acknowledge a boundary or enable broker
+access. An in-memory unit test covers failed chunk writes and conflicting
+roots. Migration 025 is unapplied; connected ClickHouse and power-loss tests
+did not run.
