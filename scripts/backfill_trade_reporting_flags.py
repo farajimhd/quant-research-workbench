@@ -291,9 +291,13 @@ def submit_month(c,sources):
         c.query(f"DROP TABLE IF EXISTS {month_map}",read=False)
         c.query(f"CREATE TABLE {month_map} (ticker LowCardinality(String),ordinal UInt64,expected_meta UInt8) ENGINE=MergeTree ORDER BY (ticker,ordinal) SETTINGS storage_policy='live_market_ssd'",read=False)
         for mapping in mappings:
-            c.query(f"INSERT INTO {month_map} SELECT ticker,ordinal,expected_meta FROM {mapping} WHERE mismatch=0",read=False)
+            c.query(f"INSERT INTO {month_map} SELECT ticker,ordinal,expected_meta FROM {mapping} WHERE mismatch=0 AND bitAnd(expected_meta,192)!=64",read=False)
         placement(c,month_map,'live_market_ssd')
-        expected=sum(json.loads(latest(c,s['source_date'])['details'])['counts']['n'] for s in sources)
+        expected=sum(
+            json.loads(latest(c,s['source_date'])['details'])['counts']['delayed']+
+            json.loads(latest(c,s['source_date'])['details'])['counts']['unknown']
+            for s in sources
+        )
         actual=c.query(f"SELECT count() n FROM {month_map}")[0]['n']
         if actual!=expected:
             raise ValueError(f'Monthly mapping row count {actual} != {expected}; canonical mutation refused')
@@ -390,6 +394,10 @@ def process_day(c,a,source,progress):
         details['counts']=matched
         checkpoint('staged')
     if a.stage_only:
+        placement(c,raw,'live_market_ssd')
+        placement(c,mapping,'live_market_ssd')
+        if c.query(f'SELECT count() n FROM {mapping}')[0]['n']!=details['counts']['n']:
+            raise ValueError(f'{day}: staged mapping row count changed')
         progress.completed+=1
         return
     placement(c,mapping,'live_market_ssd')
@@ -495,6 +503,9 @@ def main(argv=None):
                             if any(not m['is_done'] for m in pending(c,f"market_sip_compact.events_{month[:4]}",month_map)):
                                 raise ValueError(f'{month}: monthly map still needed by a running mutation')
                             c.query(f'DROP TABLE IF EXISTS {month_map}',read=False)
+        if missing:
+            print(f'PARTIAL | {len(missing)} requested sessions lack certified source days; rerun when available',flush=True)
+            return 2
         return 0
     except KeyboardInterrupt:
         print('Interrupted. Coverage and staged evidence retained; rerun the same command. Submitted ClickHouse mutations may continue.',file=sys.stderr)

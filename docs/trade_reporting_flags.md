@@ -28,8 +28,8 @@ canonical mutation changes `event_meta` only. Original trade tokens, quote
 rows, and canonical ordinals are preserved.
 
 For a multi-day range, the script stages and verifies each day separately,
-copies their exact ordinal mappings into one SSD-backed map per month, then
-submits one ClickHouse mutation for that month. This avoids rewriting a large
+copies only delayed and unknown ordinal keys into one SSD-backed map per month,
+then submits one ClickHouse mutation for that month. This avoids rewriting a large
 monthly source part once for every day. Each day is marked `complete` only
 after the monthly mutation finishes and that day's flags pass exact
 verification. A mutation interrupted on the client continues in ClickHouse;

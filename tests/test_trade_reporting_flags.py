@@ -112,7 +112,7 @@ class ClickHouseTests(unittest.TestCase):
             self.c.query(f"INSERT INTO {name} VALUES ('TEST',{ordinal},{meta})",read=False)
         self.c.query(f"CREATE TABLE {self.mapping+'c'} (ticker String,ordinal UInt64,expected_meta UInt8) ENGINE=MergeTree ORDER BY (ticker,ordinal) SETTINGS storage_policy='live_market_ssd'",read=False)
         for name in (self.mapping,self.mapping+'b'):
-            self.c.query(f"INSERT INTO {self.mapping+'c'} SELECT * FROM {name}",read=False)
+            self.c.query(f"INSERT INTO {self.mapping+'c'} SELECT * FROM {name} WHERE bitAnd(expected_meta,192)!=64",read=False)
         sources=[dict(source_date=day,first_sip_timestamp_us=stamp,last_sip_timestamp_us=stamp) for day,stamp in zip(['2026-08-03','2026-08-04'],times)]
         query=migration.month_mutation_sql(self.target,sources,self.mapping+'c').replace('mutations_sync=0','mutations_sync=2')
         self.c.query(query,read=False)
