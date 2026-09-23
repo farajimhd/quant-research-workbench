@@ -59,6 +59,11 @@ yet wired into a runnable Strategy 350 backtest or quote-aware entry pricing.
 The projector now also requires the caller's exact compact request and
 coverage hashes, rejecting a verified product from a different source or
 calculation generation.
+Independent verified ticker/session noise products can now be projected by a
+bounded worker pool. The caller supplies worker count and aggregate output
+budget; duplicate scopes are rejected and results have deterministic order.
+Offline unit tests cover serial/parallel equivalence and budget rejection.
+This does not yet schedule the full backtest or establish throughput.
 The first conservative Strategy 350 100 ms bar screen now emits contiguous
 candidate-refinement masks. It preserves buckets whose intrabar order could
 create a new HOD and subsequent qualifying pullback; it never authorizes a

@@ -9,6 +9,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
 pub mod checkpoint;
+pub mod parallel;
 
 const SECOND: u64 = 1_000_000_000;
 const BPS: i128 = 10_000;
@@ -650,12 +651,11 @@ mod tests {
             980
         );
     }
-    #[test]
-    fn verified_compact_columns_project_exact_noise_without_empty_bars() {
+    fn compact_fixture(instrument: u64) -> crate::bar_catalogue::Complete {
         use crate::{bar_catalogue, coverage::Interval};
         let request = bar_catalogue::Request {
             provider: 1,
-            instruments: vec![10],
+            instruments: vec![instrument],
             session: 20260922,
             interval: Interval {
                 start: START,
@@ -675,7 +675,7 @@ mod tests {
             source_generation: request.source_generation.clone(),
             calculation_hash: request.calculation_hash.clone(),
             sources: [(
-                10,
+                instrument,
                 bar_catalogue::Source {
                     certificate_hash: "c".repeat(64),
                     price_scale: 2,
@@ -700,7 +700,7 @@ mod tests {
         let batch = bar_catalogue::Batch {
             request_hash: request.hash().unwrap(),
             coverage_hash: coverage.hash().unwrap(),
-            instrument: 10,
+            instrument,
             first_start_ns: START,
             count: 20,
             price_scale: 2,
@@ -717,7 +717,11 @@ mod tests {
         let mut readback =
             bar_catalogue::Readback::new(request, &coverage, START + 3 * SECOND).unwrap();
         readback.observe(batch).unwrap();
-        let complete = readback.finish().unwrap();
+        readback.finish().unwrap()
+    }
+    #[test]
+    fn verified_compact_columns_project_exact_noise_without_empty_bars() {
+        let complete = compact_fixture(10);
         let request_hash = complete.request().hash().unwrap();
         let coverage_hash = complete.coverage_hash().to_owned();
         assert!(project_compact_one_second(&complete, &"f".repeat(64), &coverage_hash).is_err());
@@ -733,5 +737,38 @@ mod tests {
                 None,
             ]
         );
+    }
+    #[test]
+    fn parallel_compact_projection_is_bounded_and_deterministic() {
+        use super::parallel::{project_many, Pinned};
+        let first = compact_fixture(10);
+        let second = compact_fixture(20);
+        let first_hash = first.request().hash().unwrap();
+        let second_hash = second.request().hash().unwrap();
+        let pins = [
+            Pinned {
+                product: &second,
+                request_hash: &second_hash,
+                coverage_hash: second.coverage_hash(),
+            },
+            Pinned {
+                product: &first,
+                request_hash: &first_hash,
+                coverage_hash: first.coverage_hash(),
+            },
+        ];
+        let serial = project_many(&pins, 1, 4).unwrap();
+        let parallel = project_many(&pins, 2, 4).unwrap();
+        assert_eq!(
+            serial.iter().map(|p| p.instrument).collect::<Vec<_>>(),
+            vec![10, 20]
+        );
+        assert_eq!(
+            parallel.iter().map(|p| &p.bars).collect::<Vec<_>>(),
+            serial.iter().map(|p| &p.bars).collect::<Vec<_>>()
+        );
+        assert!(project_many(&pins, 2, 3).is_err());
+        assert!(project_many(&pins[..1], 0, 4).is_err());
+        assert!(project_many(&[pins[0], pins[0]], 2, 4).is_err());
     }
 }

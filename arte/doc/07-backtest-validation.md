@@ -84,6 +84,12 @@ needed by the rolling percentile. A valid but differently pinned source
 generation or calculation is rejected. Entry-price or
 quote evidence is still a separate causal input; this projection does not
 manufacture it from bar closes.
+The historical noise projector can process independent verified ticker/session
+products concurrently. It sorts scopes before dispatch, rejects duplicate
+scopes, and enforces caller-supplied worker and total output-second budgets.
+Each worker reads only an immutable product with pinned request and coverage
+hashes. Results return in stable scope order. This is a bounded preparation
+primitive, not a complete parallel backtest or a latency benchmark.
 
 The first typed Strategy 350 catalogue plan requests completed 100 ms bars,
 the early squeeze signal and reference data for screening. Watchlist membership
