@@ -116,6 +116,57 @@ impl MultiRuntime {
         self.controllers.len()
     }
 
+    /// All lanes must agree with one shared portfolio. The exact union must
+    /// account for every reservation and settlement; no unsubmitted plan may
+    /// hide in an account at a recoverable cut.
+    pub fn require_complete_portfolio(
+        &self,
+        portfolio: &mut Portfolio,
+        manifest: &Pinned,
+        currencies: &BTreeMap<u64, SettlementCurrency>,
+    ) -> Result<()> {
+        if self
+            .controllers
+            .iter()
+            .any(|controller| controller.manifest_hash() != manifest.hash())
+        {
+            return Err(Error::Conflict(
+                "multi-controller portfolio run differs".into(),
+            ));
+        }
+        let mut expected: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> = manifest
+            .manifest()
+            .consumers
+            .iter()
+            .map(|consumer| (consumer.account.clone(), (BTreeSet::new(), BTreeSet::new())))
+            .collect();
+        for controller in &self.controllers {
+            for (account, (reserved, settled)) in controller
+                .execution
+                .checkpoint_funding(portfolio, currencies)?
+            {
+                let (all_reserved, all_settled) = expected.get_mut(&account).ok_or_else(|| {
+                    Error::Conflict("multi-controller funding account differs".into())
+                })?;
+                for command in reserved {
+                    if !all_reserved.insert(command.clone()) || all_settled.contains(&command) {
+                        return Err(Error::Conflict(
+                            "multi-controller duplicate funding command".into(),
+                        ));
+                    }
+                }
+                for command in settled {
+                    if !all_settled.insert(command.clone()) || all_reserved.contains(&command) {
+                        return Err(Error::Conflict(
+                            "multi-controller duplicate funding command".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        portfolio.require_checkpoint_funding(&expected)
+    }
+
     /// Test-only visibility for proving unselected shards cannot dispatch
     /// execution. Production callers may inspect only the selected controller.
     #[cfg(test)]

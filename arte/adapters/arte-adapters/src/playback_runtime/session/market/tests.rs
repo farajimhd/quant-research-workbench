@@ -500,6 +500,10 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
     assert_eq!(session.controller.shard_count(), 2);
     assert_eq!(session.strategy.len(), 2);
     session
+        .controller
+        .require_complete_portfolio(&mut session.portfolio, &combined, &BTreeMap::new())
+        .unwrap();
+    session
         .portfolio
         .reserve(
             "a",
@@ -519,6 +523,10 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         session.portfolio.funding_status("b", "reserved-a").unwrap(),
         FundingStatus::Absent
     );
+    assert!(session
+        .controller
+        .require_complete_portfolio(&mut session.portfolio, &combined, &BTreeMap::new())
+        .is_err());
     session
         .controller
         .seed_test_order(

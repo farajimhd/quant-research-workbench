@@ -155,6 +155,11 @@ checks the catalog, prepared inputs, seed/configuration hashes, quote policies,
 journal receipts and earliest selected head. A two-shard offline round-trip
 passes. This graph excludes execution, Strategy 350 account state and portfolio;
 there is still no verified published whole-run multi-ticker cut.
+The multi-ticker controller now merges per-lane submitted funding ownership
+before checking exact coverage of the one shared portfolio. Duplicate command
+ownership or an unsubmitted reservation blocks the cut. A two-ticker offline
+test passes empty funding and rejects a reservation without an execution owner.
+This does not capture the per-lane execution clocks or publish recovery.
 The Strategy 350 historical account owner now selects its own ticker's
 consumers from a shared run manifest while requiring exact local configuration
 and state sets. A unit test covers another ticker, missing local inputs and

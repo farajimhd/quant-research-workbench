@@ -188,6 +188,12 @@ quote policy and journal receipts for each shard. It verifies the restored
 selected boundary is still the earliest global head. An offline two-shard
 round-trip passes. This graph is not publishable whole-run recovery: it does
 not include simulated execution, Strategy 350 state or the shared portfolio.
+The full-controller coordinator now checks funding across every simulated
+execution lane against the exact shared portfolio account set. It rejects
+duplicate command ownership and reservations or settlements not owned by a
+submitted order. An offline two-ticker test accepts empty funding and rejects
+an unsubmitted reservation. This is a prerequisite for, not a substitute for,
+the whole-run publication cut.
 Strategy 350 account-owned state now has a bounded content-addressed
 component checkpoint. Restore requires the selected market boundary, exact
 effective configuration hashes, and independently read decision journal rows.

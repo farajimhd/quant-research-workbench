@@ -34,6 +34,7 @@ pub struct Limits {
     pub maximum_pending_fills: usize,
     pub projection: ProjectionLimits,
 }
+pub(crate) type FundingCommands = BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)>;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cash {
@@ -117,23 +118,38 @@ impl Runtime {
         accounts: impl Iterator<Item = String>,
         currencies: &BTreeMap<u64, arte_core::simulation_costs::SettlementCurrency>,
     ) -> Result<()> {
-        self.require_portfolio(portfolio, currencies)?;
         let mut expected: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> = accounts
             .map(|id| (id, (BTreeSet::new(), BTreeSet::new())))
             .collect();
+        for (account, (reserved, settled)) in self.checkpoint_funding(portfolio, currencies)? {
+            let (all_reserved, all_settled) = expected
+                .get_mut(&account)
+                .ok_or_else(|| Error::Conflict("checkpoint funding owner account".into()))?;
+            all_reserved.extend(reserved);
+            all_settled.extend(settled);
+        }
+        portfolio.require_checkpoint_funding(&expected)
+    }
+    /// This lane's submitted commands. The whole-run coordinator must combine
+    /// all lanes before checking exact portfolio funding coverage.
+    pub(crate) fn checkpoint_funding(
+        &self,
+        portfolio: &arte_core::portfolio::Portfolio,
+        currencies: &BTreeMap<u64, arte_core::simulation_costs::SettlementCurrency>,
+    ) -> Result<FundingCommands> {
+        self.require_portfolio(portfolio, currencies)?;
+        let mut expected = BTreeMap::<String, (BTreeSet<String>, BTreeSet<String>)>::new();
         for order in self.simulator.positions() {
             let command = &order.bracket.command_id;
             let owner = &self.owners[command];
-            let (reserved, settled) = expected
-                .get_mut(&owner.account)
-                .ok_or_else(|| Error::Conflict("checkpoint funding owner account".into()))?;
+            let (reserved, settled) = expected.entry(owner.account.clone()).or_default();
             if !self.released.contains(command) {
                 reserved.insert(command.clone());
             } else if order.entry_filled > 0 {
                 settled.insert(command.clone());
             }
         }
-        portfolio.require_checkpoint_funding(&expected)
+        Ok(expected)
     }
     /// Validate this instrument lane against a quiescent shared portfolio. The
     /// coordinator must separately account for other lanes and unsubmitted plans.
