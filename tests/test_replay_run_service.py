@@ -2178,6 +2178,11 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
                 RuntimeError("QMD derived bundle closed early for BORR: received_frames=0 expected_frames=-1")
             )
         )
+        self.assertTrue(
+            _retryable_historical_stream_error(
+                RuntimeError("QMD derived bundle failed for NCNO: error sending request for url (http://clickhouse/)")
+            )
+        )
         self.assertFalse(
             _retryable_historical_stream_error(
                 RuntimeError("invalid focused repair coverage row")

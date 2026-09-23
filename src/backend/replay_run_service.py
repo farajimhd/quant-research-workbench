@@ -9833,6 +9833,7 @@ def _retryable_historical_stream_error(error: Exception) -> bool:
         "historical cache byte limit exceeded" in detail
         or "qmd derived stream closed early" in detail
         or "qmd derived bundle closed early" in detail
+        or "error sending request for url" in detail
     )
 
 
