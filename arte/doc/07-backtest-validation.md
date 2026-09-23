@@ -58,6 +58,16 @@ alongside forming MACD timeframes, VWAP, prior close, LULD and historical V7
 dependencies. This is a requirement plan, not a scanner evaluator or trading
 loop. Each requested product needs a pinned catalogue definition and coverage.
 
+The first Strategy 350 bar screen reads verified contiguous OHLC columns. It
+emits a compact per-bucket refinement mask, not entry decisions. It can reject
+an empty bucket, a ticker with prior close outside the configured range, or a
+bucket wholly outside the late-mode prior-HOD zone when that mode was already
+active and the bucket made no new high. A bucket that makes a new high remains
+eligible for event refinement: bar OHLC cannot show whether a pullback followed
+that high. The same uncertainty applies when late mode first triggers inside a
+bucket. This is a bounded columnar prefix pass, not yet measured SIMD or a
+complete vectorized scanner/signal/Watchlist implementation.
+
 The first market-time tape borrows values from complete 100 ms columnar batches.
 It dispatches only nonempty buckets, sorts equal-time ticker events by instrument,
 and rejects overlapping products for one instrument. Empty buckets remain in

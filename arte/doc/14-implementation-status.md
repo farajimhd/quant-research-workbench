@@ -33,6 +33,11 @@ row counts. It publishes causal contexts to a maintenance callback one batch at
 a time. Actual REST acquisition times are not backtest decision timestamps.
 Live handover authority, bar-backtest adaptation, and the remaining Strategy 350
 rules are still unimplemented.
+The first conservative Strategy 350 100 ms bar screen now emits contiguous
+candidate-refinement masks. It preserves buckets whose intrabar order could
+create a new HOD and subsequent qualifying pullback; it never authorizes a
+trade. Scanner/signal/Watchlist conjunction, selected-candidate event replay,
+and throughput validation remain unimplemented.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
