@@ -20,8 +20,34 @@ from pipelines.market_sip.events import market_day_sql as S
 
 
 class Arguments(unittest.TestCase):
+    def test_quote_only_predecessor_bootstraps_or_carries_earlier_price_state(self):
+        class Client:
+            def __init__(self,mode): self.mode=mode
+            def query(self,query,label):
+                if label=='prior_state_candidate':
+                    return [dict(build_id='old',attempt_id='attempt',source_hash='source')]
+                if label=='prior_bar_unit':
+                    return [dict(attempt_id='bars',source_hash='bar-source')]
+                if label=='prior_technical_values':
+                    if "2026-08-18" in query: return []
+                    return [dict(resolution_ms=f,macd_signal=1.,**{f'ema_{p}':1. for p in S.EMAS}) for f in S.FRAMES]
+                if label=='prior_close_values':
+                    if "2026-08-18" in query: return []
+                    return [dict(resolution_ms=f,close=1.) for f in S.FRAMES]
+                if label=='prior_empty_seed':
+                    return [dict(mode=self.mode,predecessor_date='2026-08-17',
+                        prior_build_id='old' if self.mode else '',prior_state_hash='prior' if self.mode else '')]
+                raise AssertionError(label)
+        with patch.object(B,'completed',return_value={'attempt_id':'attempt'}):
+            self.assertEqual(B.prior_indicator_state(Client(0),'arte','new',date(2026,8,19),
+                'AACBU','2026-08-18','calc','rules',[]),(None,None,''))
+            state,prior_hash,prior_build=B.prior_indicator_state(Client(1),'arte','new',date(2026,8,19),
+                'AACBU','2026-08-18','calc','rules',[])
+        self.assertEqual((set(state),prior_build),(set(S.FRAMES),'old'))
+        self.assertTrue(prior_hash)
+
     def test_transport_only_resume_requires_exact_prior_build(self):
-        previous={'controller_source':next(iter(B.TRANSPORT_ONLY_CONTROLLER_HASHES)),
+        previous={'controller_source':next(iter(B.RESUME_COMPATIBLE_CONTROLLER_HASHES)),
             'version':'market-day-core-v4','range':['2026-08-18'],'rules_hash':'same'}
         saved={'definition':previous,'build_id':B.digest(previous)}
         current={**previous,'controller_source':'new-transport-code'}

@@ -133,13 +133,16 @@ larger requests fail explicitly rather than truncating the requested range.
 
 For EMA/MACD continuity, the builder reads the preceding exchange session's
 certified terminal technical row and close from persisted ClickHouse tables.
+If that session has only quote-only bars and zero technical rows, it follows
+the certified seed chain to the last earlier price-bearing session. A quote-only
+chain with no prior price state bootstraps at the first later eligible bar.
 It prefers the current build, then a completed compatible V4 build. The state
 must match the calculation source and trade-rule hash; its published units and
 output hashes are revalidated. If no compatible state exists, that ticker-day
 uses a **first-bar bootstrap**, recorded in the runtime unit log and seed counts.
 Such a bootstrap is a defined new-series boundary, not a claim of full-history
-EMA continuity. A missing preceding session is never silently replaced by an
-older one. Split references are frozen from `q_live.market_stock_split_v1`;
+EMA continuity. A missing or uncertified preceding session is never silently
+replaced by an older one. Split references are frozen from `q_live.market_stock_split_v1`;
 carried price and MACD states are adjusted for splits effective between sessions.
 Future splits are excluded and conflicting ratios fail closed. Persisted raw bars
 remain unadjusted. RSI/ATR reset for each requested session; RSI's first change

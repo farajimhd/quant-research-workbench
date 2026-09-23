@@ -32,9 +32,11 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 
 RUNTIME = Path("D:/TradingML/runtimes")
 DEFAULT_ENV = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\secrets\.env")
-TRANSPORT_ONLY_CONTROLLER_HASHES = frozenset({
+RESUME_COMPATIBLE_CONTROLLER_HASHES = frozenset({
     "994988b4804edf179707684409e3b981046bb26d78d46a7f60420499a79099b3",
     "3f0c616b95628e15a1055a39b49308149e7ec4ed5b4161191fd2766622db8609",
+    # Earlier controller failed before publishing indicators on a quote-only predecessor.
+    "07d1e3cf0b4d4c87fc82012eedf690b39dd117349d728ad62c1d8ad42456a2c2",
 })
 
 
@@ -526,10 +528,13 @@ def validate_technical(client,db,build,day,ticker,attempt):
     return actual
 
 
-def prior_indicator_state(client, db, build, day, ticker, predecessor, calculation_source, rules_hash, splits):
-    """Load only the preceding session's certified, compatible terminal state."""
+def prior_indicator_state(client, db, build, day, ticker, predecessor, calculation_source, rules_hash, splits,
+                          visited=()):
+    """Load the last certified price state across verified quote-only sessions."""
     if not predecessor:
         return None, None, ''
+    if predecessor in visited or len(visited) >= 50:
+        raise ValueError(f'{predecessor} {ticker}: cyclic or excessive prior indicator chain')
     candidates=client.query(f"""SELECT u.build_id AS build_id,u.attempt_id AS attempt_id,u.source_hash AS source_hash
       FROM (SELECT * FROM {sql.table(db,'units')} FINAL) u
       INNER JOIN (SELECT * FROM {sql.table(db,'builds')} FINAL) b ON u.build_id=b.build_id
@@ -560,6 +565,24 @@ def prior_indicator_state(client, db, build, day, ticker, predecessor, calculati
     closes=client.query(f"SELECT resolution_ms,close_int/10000.*({factor}) AS close FROM {sql.table(db,'bars')} WHERE {sql.selection(old_build,old_day,ticker,bars_unit[0]['attempt_id'])} AND price_valid=1 ORDER BY resolution_ms,bucket_index DESC LIMIT 1 BY resolution_ms",'prior_close_values')
     by_frame={int(row['resolution_ms']):row for row in technical}
     close_by_frame={int(row['resolution_ms']):float(row['close']) for row in closes}
+    if not by_frame and not close_by_frame:
+        seed=client.query(f"SELECT mode,predecessor_date,prior_build_id,prior_state_hash "
+            f"FROM {sql.table(db,'seed')} WHERE {sql.selection(old_build,old_day,ticker,candidate['attempt_id'])}",
+            'prior_empty_seed')
+        if len(seed)!=1 or int(seed[0]['mode']) not in (0,1):
+            raise ValueError(f'{predecessor} {ticker}: invalid quote-only seed provenance')
+        if int(seed[0]['mode'])==0:
+            if seed[0]['prior_build_id'] or seed[0]['prior_state_hash']:
+                raise ValueError(f'{predecessor} {ticker}: bootstrap seed has prior-state provenance')
+            return None,None,''
+        earlier=seed[0]['predecessor_date']
+        if not earlier or earlier>=predecessor or not seed[0]['prior_build_id'] or not seed[0]['prior_state_hash']:
+            raise ValueError(f'{predecessor} {ticker}: invalid carried quote-only predecessor')
+        state,prior_hash,prior_build=prior_indicator_state(client,db,build,day,ticker,earlier,
+            calculation_source,rules_hash,splits,visited+(predecessor,))
+        if not state or not prior_hash or prior_build!=seed[0]['prior_build_id']:
+            raise ValueError(f'{predecessor} {ticker}: carried quote-only state has no earlier price state')
+        return state,digest([predecessor,old_build,candidate,seed[0],prior_hash]),prior_build
     if set(by_frame)!=set(sql.FRAMES) or set(close_by_frame)!=set(sql.FRAMES):
         raise ValueError(f'{predecessor} {ticker}: incomplete prior timeframe state')
     state={frame:{**{f'ema_{p}':float(by_frame[frame][f'ema_{p}']) for p in sql.EMAS},
@@ -707,9 +730,9 @@ def build_ticker(args, build, plan, ticker, rows, requested, calculation_source,
 
 
 def transport_compatible_resume(saved, definition):
-    """Reuse builds across known controller-only transport and limit changes."""
+    """Reuse completed stages after bounded controller changes with unchanged SQL."""
     previous=saved.get('definition') if isinstance(saved,dict) else None
-    if not isinstance(previous,dict) or previous.get('controller_source') not in TRANSPORT_ONLY_CONTROLLER_HASHES:
+    if not isinstance(previous,dict) or previous.get('controller_source') not in RESUME_COMPATIBLE_CONTROLLER_HASHES:
         return False
     if saved.get('build_id') != digest(previous):
         return False
