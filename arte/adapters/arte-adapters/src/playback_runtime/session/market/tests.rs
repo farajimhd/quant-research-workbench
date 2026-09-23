@@ -563,6 +563,38 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
             .pending_fills,
         0
     );
+    let selected_controller = &session.controller.controllers()[0];
+    let image = session.strategy[&1]
+        .checkpoint(selected_controller, 100_000)
+        .unwrap();
+    let scope = combined.scope("a", 1, "strategy").unwrap();
+    let scope_hash = content_hash(&scope).unwrap();
+    let configs = BTreeMap::from([(scope_hash.clone(), effective)]);
+    let readbacks = BTreeMap::from([(scope_hash.clone(), Vec::new())]);
+    let restored =
+        crate::playback_runtime::strategy350_accounts::Accounts::<u64>::restore_checkpoint(
+            &image,
+            &image.root.id,
+            selected_controller,
+            configs.clone(),
+            &readbacks,
+            1024,
+            100_000,
+        )
+        .unwrap();
+    assert_eq!(*restored.state(&scope_hash).unwrap(), 1);
+    assert!(
+        crate::playback_runtime::strategy350_accounts::Accounts::<u64>::restore_checkpoint(
+            &image,
+            &"0".repeat(64),
+            selected_controller,
+            configs,
+            &readbacks,
+            1024,
+            100_000,
+        )
+        .is_err()
+    );
 }
 #[test]
 fn wrong_identity_future_evidence_and_partial_source_are_rejected() {

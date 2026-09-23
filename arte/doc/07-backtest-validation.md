@@ -174,6 +174,10 @@ events and a later-shard active bracket plus quote. It checks earliest-boundary
 selection, confirms the later shard has not entered its execution decision view,
 and verifies no later fill is pending. A complete multi-ticker fill-order replay
 through published checkpoints remains outstanding.
+Strategy 350 account-owned state now has a bounded content-addressed
+component checkpoint. Restore requires the selected market boundary, exact
+effective configuration hashes, and independently read decision journal rows.
+It does not substitute for a published multi-shard common cut.
 A run-scoped historical V7 seed catalog now pins exactly one seed-manifest
 hash per certified source shard. Multi-shard market startup checks the whole
 catalog against the run, then checks each ticker's seed identity, prior

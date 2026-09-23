@@ -15,6 +15,7 @@ use arte_core::{
 use futures_util::{stream, StreamExt};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+pub mod checkpoint;
 
 struct Slot<S> {
     runtime: Runtime<S>,

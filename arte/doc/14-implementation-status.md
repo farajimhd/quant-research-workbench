@@ -138,6 +138,13 @@ test checks account cash isolation. It does not start a service or submit an
 order. The constructor currently rejects multiple sessions of one
 instrument. Combined checkpoint publication and the complete Strategy 350
 evaluator remain missing.
+The Strategy 350 account owner now captures a bounded content-addressed
+checkpoint for its per-account states at a dispatched boundary. Restore checks
+the exact scope and effective configuration set, independent journal readbacks,
+current versus pending decisions, and the supplied root pin. An offline
+two-ticker fixture round-trips the selected ticker's owner and rejects a wrong
+root. This component image is not a whole-run checkpoint: market, execution,
+other tickers and the shared portfolio still need one published recovery graph.
 The Strategy 350 historical account owner now selects its own ticker's
 consumers from a shared run manifest while requiring exact local configuration
 and state sets. A unit test covers another ticker, missing local inputs and
