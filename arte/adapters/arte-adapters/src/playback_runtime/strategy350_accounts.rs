@@ -146,6 +146,9 @@ impl<S: Clone + Serialize> Accounts<S> {
             .ok_or_else(|| Error::Unready("Strategy 350 playback boundary missing".into()))?;
         let mut receipts = Vec::with_capacity(self.slots.len());
         for slot in self.slots.values() {
+            if !view.is_due(slot.runtime.scope())? {
+                continue;
+            }
             if view.needs_decision(slot.runtime.scope())? {
                 return Err(Error::Unready(
                     "Strategy 350 account receipt pending".into(),

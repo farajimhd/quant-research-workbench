@@ -142,9 +142,14 @@ level books, Watchlists, and named calculations. Contract validation does not
 yet prove that every live producer dispatches at its declared interval.
 Strategy 350 historical decision preparation now rejects a market boundary
 outside its pinned interval before mutating account state. The playback barrier
-still requires an explicit no-evaluation receipt for each off-interval boundary;
-until that exists, mixed or fixed-cadence Strategy 350 runs cannot advance end
-to end.
+now includes only consumers whose intervals are due. It journals no invented
+decision for an off-interval consumer. Restore recomputes the due set from the
+pinned scopes and pending market boundary; an empty due set can checkpoint and
+advance. A fixed interval with no matching completed-bar producer is rejected
+at run construction and recovery. Unit tests cover mixed event/fixed consumers,
+the empty due set and its recovery. The current playback market bridge produces
+one-second bars, not the planned 100 ms bar-backtest lane. Strategy 350 quote
+evaluation, protection arbitration, and the complete evaluator remain open.
 An eligible preview now returns a private, source-bound MACD evidence value.
 Its fingerprint pins the compact request and coverage, MACD configuration,
 run-bound trade proof, completed-frame clocks and exact floating-point outputs.

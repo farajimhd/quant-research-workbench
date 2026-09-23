@@ -113,13 +113,15 @@ impl Run {
             playback.scheduler.scope().instrument,
             maximum_consumers,
         )?;
+        Self::require_interval_sources(&scopes, &playback.scheduler)?;
         let barrier = match (playback.pending()?, &bundle.barrier) {
-            (Some(boundary), Some(image)) => Some(Barrier::restore_checkpoint(
+            (Some(boundary), Some(image)) => Some(Barrier::restore_checkpoint_active(
                 image,
                 &image.id,
                 context,
                 boundary.input(String::new()),
                 &scopes,
+                &Self::active_scopes(&scopes, &boundary),
                 maximum_consumers,
                 1024 * 1024,
                 receipts,

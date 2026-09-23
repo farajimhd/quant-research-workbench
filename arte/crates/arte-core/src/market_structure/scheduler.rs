@@ -69,7 +69,13 @@ impl Boundary<'_> {
     /// source events; fixed cadence observes the matching completed bar, never
     /// a later bar or a repeated interpolation of an earlier one.
     pub fn due_for(&self, route: crate::execution_interval::Route) -> bool {
-        match (&self.kind, route.interval()) {
+        self.due_for_interval(route.interval())
+    }
+    pub(crate) fn due_for_interval(
+        &self,
+        interval: crate::execution_interval::ExecutionInterval,
+    ) -> bool {
+        match (&self.kind, interval) {
             (
                 Kind::Trade { .. } | Kind::Quote { .. },
                 crate::execution_interval::ExecutionInterval::Events,

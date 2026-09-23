@@ -11,18 +11,35 @@ pub mod checkpoint;
 
 pub struct Barrier {
     input: InputBoundary,
+    declared: BTreeSet<String>,
     // Exact scope hash -> accepted decision hash. No market arrays are copied.
     accounts: BTreeMap<String, Option<String>>,
     finished: bool,
 }
 impl Barrier {
     pub fn new(input: InputBoundary, scopes: &[Scope], maximum_accounts: usize) -> Result<Self> {
-        if maximum_accounts == 0 || maximum_accounts > 4096 || scopes.len() > maximum_accounts {
+        if scopes.is_empty() {
+            return Err(Error::Invalid("account boundary requires consumers".into()));
+        }
+        Self::new_active(input, scopes, scopes, maximum_accounts)
+    }
+    /// The declared population is pinned by the run. Only active consumers
+    /// owe a journal decision at this particular market boundary.
+    pub fn new_active(
+        input: InputBoundary,
+        declared: &[Scope],
+        active: &[Scope],
+        maximum_accounts: usize,
+    ) -> Result<Self> {
+        if maximum_accounts == 0
+            || maximum_accounts > 4096
+            || declared.is_empty()
+            || declared.len() > maximum_accounts
+            || active.len() > declared.len()
+        {
             return Err(Error::Capacity("account boundary budget".into()));
         }
-        let first = scopes
-            .first()
-            .ok_or_else(|| Error::Invalid("account boundary requires consumers".into()))?;
+        let first = &declared[0];
         if input.event_id.is_empty()
             || input.available_at_ns > input.evaluated_at_ns
             || input.event_time_ns > input.evaluated_at_ns
@@ -31,7 +48,8 @@ impl Barrier {
         }
         let mut identities = BTreeSet::new();
         let mut accounts = BTreeMap::new();
-        for scope in scopes {
+        let mut declared_hashes = BTreeSet::new();
+        for scope in declared {
             State::new(scope.clone())?;
             if scope.run_id != first.run_id
                 || scope.mode != first.mode
@@ -40,10 +58,17 @@ impl Barrier {
             {
                 return Err(Error::Conflict("account boundary consumer scope".into()));
             }
-            accounts.insert(content_hash(scope)?, None);
+            declared_hashes.insert(content_hash(scope)?);
+        }
+        for scope in active {
+            let hash = content_hash(scope)?;
+            if !declared_hashes.contains(&hash) || accounts.insert(hash, None).is_some() {
+                return Err(Error::Conflict("active boundary consumer scope".into()));
+            }
         }
         Ok(Self {
             input,
+            declared: declared_hashes,
             accounts,
             finished: false,
         })
@@ -63,6 +88,12 @@ impl Barrier {
             .get(&content_hash(scope)?)
             .map(|value| value.is_none())
             .ok_or_else(|| Error::Conflict("unregistered boundary consumer".into()))
+    }
+    pub fn is_active(&self, scope: &Scope) -> Result<bool> {
+        Ok(self.accounts.contains_key(&content_hash(scope)?))
+    }
+    pub fn is_declared(&self, scope: &Scope) -> Result<bool> {
+        Ok(self.declared.contains(&content_hash(scope)?))
     }
     fn same_market_input(&self, input: &InputBoundary) -> bool {
         input.event_id == self.input.event_id
@@ -189,6 +220,59 @@ pub(crate) mod tests {
             .unwrap();
         let rows = runtime.pending_batch().unwrap().records().to_vec();
         runtime.acknowledge(&rows).unwrap()
+    }
+    #[test]
+    fn active_population_is_exact_and_recovered_from_receipts() {
+        let scopes = [scope("a"), scope("b")];
+        let context = "a".repeat(64);
+        let receipt = receipt(scopes[0].clone(), input());
+        let mut barrier = Barrier::new_active(input(), &scopes, &scopes[..1], 2).unwrap();
+        assert!(barrier.is_active(&scopes[0]).unwrap());
+        assert!(!barrier.is_active(&scopes[1]).unwrap());
+        assert_eq!(barrier.remaining(), 1);
+        assert!(barrier.record(&receipt).unwrap());
+        let image = barrier.checkpoint(&context, 4096).unwrap();
+        let recovered = Barrier::restore_checkpoint_active(
+            &image,
+            &image.id,
+            &context,
+            input(),
+            &scopes,
+            &scopes[..1],
+            2,
+            4096,
+            &[&receipt],
+        )
+        .unwrap();
+        assert_eq!(recovered.remaining(), 0);
+        assert!(Barrier::restore_checkpoint_active(
+            &image,
+            &image.id,
+            &context,
+            input(),
+            &scopes,
+            &scopes[1..],
+            2,
+            4096,
+            &[&receipt],
+        )
+        .is_err());
+        let mut empty = Barrier::new_active(input(), &scopes, &[], 2).unwrap();
+        assert_eq!(empty.remaining(), 0);
+        let empty_image = empty.checkpoint(&context, 4096).unwrap();
+        assert!(Barrier::restore_checkpoint_active(
+            &empty_image,
+            &empty_image.id,
+            &context,
+            input(),
+            &scopes,
+            &[],
+            2,
+            4096,
+            &[],
+        )
+        .is_ok());
+        empty.acknowledge_market(&input(), |_| Ok(())).unwrap();
     }
     #[test]
     fn recovery_requires_exact_independent_receipts() {

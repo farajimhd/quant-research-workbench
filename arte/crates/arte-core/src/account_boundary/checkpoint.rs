@@ -61,10 +61,34 @@ impl Barrier {
         maximum_bytes: usize,
         receipts: &[&Committed],
     ) -> Result<Self> {
+        Self::restore_checkpoint_active(
+            image,
+            expected_hash,
+            context,
+            input,
+            scopes,
+            scopes,
+            maximum_accounts,
+            maximum_bytes,
+            receipts,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_checkpoint_active(
+        image: &Object,
+        expected_hash: &str,
+        context: &str,
+        input: InputBoundary,
+        declared: &[Scope],
+        active: &[Scope],
+        maximum_accounts: usize,
+        maximum_bytes: usize,
+        receipts: &[&Committed],
+    ) -> Result<Self> {
         bounds(context, maximum_bytes)?;
         if image.id != expected_hash
             || image.payload.len() > maximum_bytes
-            || receipts.len() > scopes.len()
+            || receipts.len() > active.len()
         {
             return Err(Error::Invalid(
                 "account barrier recovery identity or budget".into(),
@@ -73,7 +97,7 @@ impl Barrier {
         image.verify()?;
         let snapshot: Snapshot = serde_json::from_slice(&image.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
-        let mut restored = Self::new(input, scopes, maximum_accounts)?;
+        let mut restored = Self::new_active(input, declared, active, maximum_accounts)?;
         if snapshot.version != 1
             || snapshot.context_hash != context
             || snapshot.input_hash != content_hash(&restored.input)?

@@ -4,7 +4,7 @@ use super::{Boundary, Playback, Poll, Prepared, Runtime, Scheduler, Status};
 use crate::{
     account_boundary::Barrier,
     run_manifest::Pinned,
-    strategy_dispatch::{Mode, Scope},
+    strategy_dispatch::{Mode, Scope, StrategyKind},
     strategy_transaction::Committed,
     Error, Result,
 };
@@ -18,6 +18,17 @@ pub struct Run {
     maximum_consumers: usize,
 }
 impl Run {
+    fn due(scope: &Scope, boundary: &Boundary<'_>) -> bool {
+        scope.strategy_kind != StrategyKind::Strategy350
+            || boundary.due_for_interval(scope.execution_interval)
+    }
+    fn active_scopes(scopes: &[Scope], boundary: &Boundary<'_>) -> Vec<Scope> {
+        scopes
+            .iter()
+            .filter(|scope| Self::due(scope, boundary))
+            .cloned()
+            .collect()
+    }
     pub fn new(
         manifest: &Pinned,
         sources: &super::sources::Catalog,
@@ -36,6 +47,7 @@ impl Run {
         }
         let scopes =
             Self::consumer_scopes(manifest, scheduler.scope().instrument, maximum_consumers)?;
+        Self::require_interval_sources(&scopes, &scheduler)?;
         Ok(Self {
             playback: Playback::new(scheduler, prepared, frames_per_poll)?,
             manifest_hash: manifest.hash().into(),
@@ -43,6 +55,22 @@ impl Run {
             barrier: None,
             maximum_consumers,
         })
+    }
+    fn require_interval_sources(scopes: &[Scope], scheduler: &Scheduler) -> Result<()> {
+        for scope in scopes {
+            if scope.strategy_kind == StrategyKind::Strategy350 {
+                if let crate::execution_interval::ExecutionInterval::Fixed(ns) =
+                    scope.execution_interval
+                {
+                    scheduler.state()?.timeframe(ns).map_err(|_| {
+                        Error::Unready(
+                            "Strategy 350 playback interval has no completed-bar producer".into(),
+                        )
+                    })?;
+                }
+            }
+        }
+        Ok(())
     }
     fn consumer_scopes(
         manifest: &Pinned,
@@ -116,19 +144,42 @@ impl Run {
                 .ok_or_else(|| Error::Unready("playback boundary missing".into()))?;
             // Each account may provide its own feature hash. The barrier binds
             // the common source identity and clocks, not account-specific data.
-            self.barrier = Some(Barrier::new(
+            let active = Self::active_scopes(&self.scopes, &boundary);
+            self.barrier = Some(Barrier::new_active(
                 boundary.input(String::new()),
                 &self.scopes,
+                &active,
                 self.maximum_consumers,
             )?);
         }
         Ok(result)
     }
     pub fn needs_decision(&self, scope: &Scope) -> Result<bool> {
-        self.barrier
+        let barrier = self
+            .barrier
+            .as_ref()
+            .ok_or_else(|| Error::Unready("no account boundary".into()))?;
+        if !barrier.is_declared(scope)? {
+            return Err(Error::Conflict("unregistered boundary consumer".into()));
+        }
+        if !barrier.is_active(scope)? {
+            return Ok(false);
+        }
+        barrier.needs_decision(scope)
+    }
+    pub fn is_due(&self, scope: &Scope) -> Result<bool> {
+        let boundary = self
+            .pending()?
+            .ok_or_else(|| Error::Unready("no account boundary".into()))?;
+        if !self
+            .barrier
             .as_ref()
             .ok_or_else(|| Error::Unready("no account boundary".into()))?
-            .needs_decision(scope)
+            .is_declared(scope)?
+        {
+            return Err(Error::Conflict("unregistered boundary consumer".into()));
+        }
+        Ok(Self::due(scope, &boundary))
     }
     /// Advance the shared feature authority once per market boundary. Repeated
     /// calls while account journals are pending are idempotent.

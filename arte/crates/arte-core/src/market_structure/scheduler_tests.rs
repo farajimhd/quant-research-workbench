@@ -100,6 +100,147 @@ fn account_playback_recovery_keeps_partial_journal_progress() {
     );
 }
 #[test]
+fn strategy350_playback_requires_only_interval_due_accounts() {
+    use crate::{account_boundary::tests::receipt, execution_interval::ExecutionInterval};
+    use playback::{accounts::Run, Poll};
+    let mut manifest = account_run_manifest();
+    manifest.consumers[0].strategy_kind = crate::strategy_dispatch::StrategyKind::Strategy350;
+    manifest.consumers[0].execution_interval = ExecutionInterval::Events;
+    manifest.consumers[1].strategy_kind = crate::strategy_dispatch::StrategyKind::Strategy350;
+    manifest.consumers[1].execution_interval = ExecutionInterval::Fixed(SECOND);
+    let hash = manifest.hash().unwrap();
+    let pinned = crate::run_manifest::Pinned::new(manifest, &hash).unwrap();
+    let mut run = Run::new(
+        &pinned,
+        &playback_catalog(),
+        scheduler(10),
+        prepared_playback(),
+        1,
+        2,
+    )
+    .unwrap();
+    let scopes = run.scopes().to_vec();
+    run.resume().unwrap();
+    let mut event_boundaries = 0;
+    let mut bar_boundaries = 0;
+    loop {
+        match run.poll().unwrap() {
+            Poll::Boundary => {
+                let boundary = run.pending().unwrap().unwrap();
+                let due = if matches!(boundary.kind, Kind::Completed { .. }) {
+                    bar_boundaries += 1;
+                    1
+                } else {
+                    event_boundaries += 1;
+                    0
+                };
+                assert!(run.is_due(&scopes[due]).unwrap());
+                assert!(!run.is_due(&scopes[1 - due]).unwrap());
+                assert_eq!(run.remaining(), Some(1));
+                assert!(run.needs_decision(&scopes[due]).unwrap());
+                assert!(!run.needs_decision(&scopes[1 - due]).unwrap());
+                assert!(run.acknowledge().is_err());
+                let input = run.pending().unwrap().unwrap().input("features".into());
+                assert!(run
+                    .record(&receipt(scopes[1 - due].clone(), input.clone()))
+                    .is_err());
+                run.record(&receipt(scopes[due].clone(), input)).unwrap();
+                run.acknowledge().unwrap();
+            }
+            Poll::Yield => {}
+            Poll::Complete => break,
+            Poll::Paused => panic!("unexpected pause"),
+        }
+    }
+    assert!(event_boundaries > 0);
+    assert!(bar_boundaries > 0);
+}
+#[test]
+fn strategy350_playback_rejects_missing_fixed_interval_producer() {
+    use crate::execution_interval::ExecutionInterval;
+    use playback::accounts::Run;
+    let mut manifest = account_run_manifest();
+    manifest.consumers[0].strategy_kind = crate::strategy_dispatch::StrategyKind::Strategy350;
+    manifest.consumers[0].execution_interval = ExecutionInterval::Fixed(100_000_000);
+    let hash = manifest.hash().unwrap();
+    let pinned = crate::run_manifest::Pinned::new(manifest, &hash).unwrap();
+    assert!(Run::new(
+        &pinned,
+        &playback_catalog(),
+        scheduler(10),
+        prepared_playback(),
+        1,
+        2,
+    )
+    .is_err());
+}
+#[test]
+fn strategy350_empty_due_boundary_restores_without_decisions() {
+    use crate::execution_interval::ExecutionInterval;
+    use playback::{accounts::Run, Poll};
+    let mut manifest = account_run_manifest();
+    for consumer in &mut manifest.consumers {
+        consumer.strategy_kind = crate::strategy_dispatch::StrategyKind::Strategy350;
+        consumer.execution_interval = ExecutionInterval::Fixed(SECOND);
+    }
+    let hash = manifest.hash().unwrap();
+    let pinned = crate::run_manifest::Pinned::new(manifest, &hash).unwrap();
+    let mut scheduler = scheduler(10);
+    let policy = std::sync::Arc::new(empty_quote_policy(1));
+    scheduler.bind_quote_policy(policy.clone()).unwrap();
+    let seed = scheduler.market.runtime.structure.seed_hash.clone();
+    let config = scheduler.market.runtime.configuration_hash().to_owned();
+    let context = "c".repeat(64);
+    let mut run = Run::new(
+        &pinned,
+        &playback_catalog(),
+        scheduler,
+        prepared_playback(),
+        1,
+        2,
+    )
+    .unwrap();
+    run.resume().unwrap();
+    while run.poll().unwrap() == Poll::Yield {}
+    assert!(matches!(
+        run.pending().unwrap().unwrap().kind,
+        Kind::Trade { .. }
+    ));
+    assert_eq!(run.remaining(), Some(0));
+    for scope in run.scopes() {
+        assert!(!run.is_due(scope).unwrap());
+        assert!(!run.needs_decision(scope).unwrap());
+    }
+    let image = run.checkpoint(&context, 10_000_000).unwrap();
+    let mut restored = Run::restore_checkpoint(
+        &image,
+        &image.root.id,
+        &pinned,
+        &playback_catalog(),
+        prepared_playback(),
+        checkpoint::Request {
+            context_hash: &context,
+            run_id: "causal-offline-test",
+            seed_hash: &seed,
+            configuration_hash: &config,
+            quote_policy: policy,
+            maximum_pending: 10,
+            maximum_bytes: 10_000_000,
+        },
+        1,
+        2,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(restored.remaining(), Some(0));
+    assert_eq!(
+        image.root.id,
+        restored.checkpoint(&context, 10_000_000).unwrap().root.id
+    );
+    run.acknowledge().unwrap();
+    restored.acknowledge().unwrap();
+}
+#[test]
 fn playback_recovery_preserves_cursor_and_pending_boundaries() {
     use playback::{Mode, Playback, Poll};
     let mut scheduler = scheduler(10);
