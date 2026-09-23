@@ -1149,6 +1149,81 @@ mod tests {
             },
         )
         .unwrap();
+        // Missing prior close blocks entry, but must not erase a committed
+        // non-entry decision from the account journal.
+        let mut blocked_gate = state();
+        let blocked_price = blocked_gate
+            .observe_evidence(
+                &live_event,
+                &policy(),
+                None,
+                &context(2 * S, "10", None),
+                2 * S,
+            )
+            .unwrap();
+        assert_eq!(
+            blocked_price.outcome().block,
+            Some(Block::PriorCloseUnavailableOrTooHigh)
+        );
+        assert!(blocked_price
+            .require_live_decision(
+                market_scope,
+                &decision_scope,
+                &input,
+                gate_hash,
+                200_000_000
+            )
+            .is_err());
+        let mut blocked_account =
+            crate::strategy_transaction::Runtime::new(decision_scope.clone(), 0_u64, 1024).unwrap();
+        let blocked_decision = crate::strategy350_transaction::prepare_market_decision(
+            &mut blocked_account,
+            crate::strategy350_transaction::MarketDecisionInput {
+                effective: &effective,
+                market_scope,
+                input: input.clone(),
+                safety: &safety,
+                price: &blocked_price,
+                expected_price_gate_hash: gate_hash,
+                maximum_price_age_ns: 200_000_000,
+                refinement: None,
+                macd: Some(&macd_evidence),
+                gap: None,
+                other_evidence_hash: &same_other_hash,
+            },
+            |_| Ok(()),
+            |_| {
+                Ok(vec![crate::strategy_dispatch::Action::Wait {
+                    reason: "prior_close_missing".into(),
+                }])
+            },
+        )
+        .unwrap();
+        let blocked_rows = blocked_account.pending_batch().unwrap().records().to_vec();
+        let blocked_committed = blocked_account.acknowledge(&blocked_rows).unwrap();
+        let blocked_readback =
+            crate::strategy350_transaction::CommittedMarketDecision::from_readback(
+                &blocked_committed,
+                crate::strategy350_transaction::LiveReadback {
+                    effective: &effective,
+                    market_scope,
+                    price: &blocked_price,
+                    expected_price_gate_hash: gate_hash,
+                    maximum_price_age_ns: 200_000_000,
+                    refinement: None,
+                    macd: Some(&macd_evidence),
+                    gap: None,
+                    other_evidence_hash: &same_other_hash,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            blocked_readback
+                .require_at(input.evaluated_at_ns)
+                .unwrap()
+                .decision_id,
+            blocked_decision.decision_id
+        );
         let mut changed_effective = effective.clone();
         changed_effective.gap.maximum_levels += 1;
         assert!(
@@ -1442,7 +1517,7 @@ mod tests {
             market_scope,
             ContextSource::HistoricalRest,
             S,
-            config,
+            config.clone(),
             &gate_hash,
         )
         .unwrap();
@@ -1633,6 +1708,78 @@ mod tests {
                 .unwrap()
                 .decision_id,
             wait.decision_id
+        );
+        let mut blocked_gate = State::new(
+            market_scope,
+            ContextSource::HistoricalRest,
+            S,
+            config.clone(),
+            &gate_hash,
+        )
+        .unwrap();
+        let blocked_price = blocked_gate
+            .observe_evidence(
+                &modeled_event,
+                &policy(),
+                None,
+                &historical_context,
+                input.evaluated_at_ns,
+            )
+            .unwrap();
+        assert_eq!(
+            blocked_price.outcome().block,
+            Some(Block::PriorCloseUnavailableOrTooHigh)
+        );
+        assert!(blocked_price
+            .require_historical_decision(&proof, &decision_scope, &input, &gate_hash)
+            .is_err());
+        let mut blocked_account =
+            crate::strategy_transaction::Runtime::new(decision_scope.clone(), 0_u64, 1024).unwrap();
+        let blocked_wait = crate::strategy350_transaction::prepare_historical_market_decision(
+            &mut blocked_account,
+            crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                effective: &effective,
+                input: input.clone(),
+                safety: &safety,
+                price: &blocked_price,
+                source: &proof,
+                expected_price_gate_hash: &gate_hash,
+                refinement: None,
+                macd: Some(&macd_evidence),
+                gap: None,
+                other_evidence_hash: &other_hash,
+            },
+            |_| Ok(()),
+            |_| {
+                Ok(vec![crate::strategy_dispatch::Action::Wait {
+                    reason: "prior_close_missing".into(),
+                }])
+            },
+        )
+        .unwrap();
+        let blocked_rows = blocked_account.pending_batch().unwrap().records().to_vec();
+        let blocked_committed = blocked_account.acknowledge(&blocked_rows).unwrap();
+        let blocked_readback =
+            crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
+                &blocked_committed,
+                crate::strategy350_transaction::HistoricalReadback {
+                    effective: &effective,
+                    price: &blocked_price,
+                    source: &proof,
+                    expected_price_gate_hash: &gate_hash,
+                    refinement: None,
+                    macd: Some(&macd_evidence),
+                    gap: None,
+                    other_evidence_hash: &other_hash,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            blocked_readback
+                .require_at(input.evaluated_at_ns)
+                .unwrap()
+                .decision_id,
+            blocked_wait.decision_id
         );
         assert!(
             crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(

@@ -4774,3 +4774,10 @@ restores the stored graph. It does not acknowledge a boundary or enable broker
 access. An in-memory unit test covers failed chunk writes and conflicting
 roots. Migration 025 is unapplied; connected ClickHouse and power-loss tests
 did not run.
+
+Strategy 350 committed-decision readback now separates causal evidence
+identity from entry authorization. A blocked prior-close price observation
+can retain a committed wait in both live and historical journals. Exposure
+readback still requires the purchase price gate plus its other evidence.
+Offline unit tests cover both blocked waits. This does not complete the
+Strategy 350 evaluator or enable exposure-increasing decisions. No service ran.

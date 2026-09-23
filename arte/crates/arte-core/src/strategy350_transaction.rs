@@ -111,13 +111,19 @@ impl<'a> CommittedHistoricalDecision<'a> {
                 "Strategy 350 historical committed evidence differs".into(),
             ));
         }
-        price.require_historical_decision(
+        price.require_historical_identity(
             source,
             &decision.scope,
             &decision.input,
             expected_price_gate_hash,
         )?;
         if has_exposure(&decision.actions) {
+            price.require_historical_decision(
+                source,
+                &decision.scope,
+                &decision.input,
+                expected_price_gate_hash,
+            )?;
             require_historical_refinement(refinement, source)?;
             require_historical_macd(macd, source, &decision.input)?;
             require_gap(gap, &decision.input)?;
@@ -374,14 +380,20 @@ impl<'a> CommittedMarketDecision<'a> {
                 "Strategy 350 committed market evidence differs".into(),
             ));
         }
-        price.require_live_decision(
+        price.require_live_identity(
             market_scope,
             &decision.scope,
             &decision.input,
             expected_price_gate_hash,
-            maximum_price_age_ns,
         )?;
         if has_exposure(&decision.actions) {
+            price.require_live_decision(
+                market_scope,
+                &decision.scope,
+                &decision.input,
+                expected_price_gate_hash,
+                maximum_price_age_ns,
+            )?;
             require_live_refinement(refinement, market_scope, &decision.input)?;
             require_gap(gap, &decision.input)?;
             return Err(Error::Unready(
