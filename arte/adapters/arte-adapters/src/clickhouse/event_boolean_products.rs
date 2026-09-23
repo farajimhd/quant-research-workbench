@@ -4,7 +4,7 @@ use super::*;
 use arte_core::{
     config::Acceptance,
     coverage::Interval,
-    event_boolean::{Product, Transition},
+    event_boolean::{ledger::SourceProof, Product, Transition},
     execution_interval::{ExecutionContract, ExecutionInterval},
 };
 use serde::{Deserialize, Serialize};
@@ -162,11 +162,11 @@ pub struct Prepared {
 
 /// Boundary-ledger evidence from an independently verified source owner.
 /// This value is only a contract; its origin still requires a trusted verifier.
-pub struct ExpectedSource {
-    pub authority_hash: String,
-    pub event_count: u64,
-    pub source_hash: String,
-    pub certified_at_ns: u64,
+struct ExpectedSource {
+    authority_hash: String,
+    event_count: u64,
+    source_hash: String,
+    certified_at_ns: u64,
 }
 impl Prepared {
     pub fn hash(&self) -> &str {
@@ -177,9 +177,37 @@ impl Prepared {
     }
 }
 
-/// Pure preparation. This does not assert that a source manifest is certified;
-/// the caller must verify it independently before publication.
+/// Pure preparation from a completed, catalogue-pinned shared playback proof.
 pub fn prepare_event_boolean_product(
+    product: Product,
+    definition: &ExecutionContract,
+    source: &SourceProof,
+    published_at_ns: u64,
+) -> Result<Prepared> {
+    if product.provider != source.scope().provider
+        || product.instrument != source.scope().instrument
+        || product.session != source.scope().session
+        || product.interval != source.interval()
+        || product.definition_hash != source.definition_hash()
+    {
+        return Err(Error::Conflict(
+            "event Boolean source proof domain differs".into(),
+        ));
+    }
+    prepare_from_source(
+        product,
+        definition,
+        &ExpectedSource {
+            authority_hash: source.authority_hash().into(),
+            event_count: source.event_count(),
+            source_hash: source.source_hash().into(),
+            certified_at_ns: source.certified_at_ns(),
+        },
+        published_at_ns,
+    )
+}
+
+fn prepare_from_source(
     product: Product,
     definition: &ExecutionContract,
     source: &ExpectedSource,
@@ -487,8 +515,7 @@ mod tests {
     }
     #[test]
     fn event_product_header_and_sparse_rows_reconstruct_exact_identity() {
-        let prepared =
-            prepare_event_boolean_product(product(), &definition(), &source(), 500).unwrap();
+        let prepared = prepare_from_source(product(), &definition(), &source(), 500).unwrap();
         let row = Row::from_transition(
             prepared.hash(),
             prepared.product(),
@@ -518,8 +545,7 @@ mod tests {
     }
     #[test]
     fn duplicate_foreign_and_changed_rows_fail_readback() {
-        let prepared =
-            prepare_event_boolean_product(product(), &definition(), &source(), 500).unwrap();
+        let prepared = prepare_from_source(product(), &definition(), &source(), 500).unwrap();
         let row = Row::from_transition(
             prepared.hash(),
             prepared.product(),
@@ -558,15 +584,15 @@ mod tests {
         .is_err());
         let mut fixed = definition();
         fixed.interval = ExecutionInterval::Fixed(100_000_000);
-        assert!(prepare_event_boolean_product(product(), &fixed, &source(), 500).is_err());
+        assert!(prepare_from_source(product(), &fixed, &source(), 500).is_err());
         let mut wrong = source();
         wrong.event_count = 2;
-        assert!(prepare_event_boolean_product(product(), &definition(), &wrong, 500).is_err());
+        assert!(prepare_from_source(product(), &definition(), &wrong, 500).is_err());
         wrong = source();
         wrong.source_hash = "f".repeat(64);
-        assert!(prepare_event_boolean_product(product(), &definition(), &wrong, 500).is_err());
+        assert!(prepare_from_source(product(), &definition(), &wrong, 500).is_err());
         wrong = source();
         wrong.certified_at_ns = 501;
-        assert!(prepare_event_boolean_product(product(), &definition(), &wrong, 500).is_err());
+        assert!(prepare_from_source(product(), &definition(), &wrong, 500).is_err());
     }
 }

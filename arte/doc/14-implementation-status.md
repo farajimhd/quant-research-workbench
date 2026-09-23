@@ -106,11 +106,16 @@ sparse transition publication and header-last readback. Storage policy and
 actual part placement are checked before I/O. A failed partial publication
 can retry missing rows but rejects changed or duplicate rows. Offline unit
 tests cover preparation, exact reconstruction and rejected row conflicts.
-Preparation now binds a caller-supplied source-authority record to the exact
-event count, boundary digest and certification time; mismatches fail closed.
-The migration is unapplied and connected I/O untested. The independent verifier
-that should produce that source record, recovery, and live/backtest producer
-wiring remain undone.
+Historical/recorded-live playback now has an independent event-boundary ledger.
+It compares its count with completed shared playback, requires the exact
+prepared source in the run-pinned catalogue, and produces a scoped proof.
+An event-Boolean producer that omits an event cannot seal against that proof.
+The publisher's public preparation path now requires the proof type rather
+than caller-supplied hashes. One offline playback unit test covers completion,
+successful sealing, an omitted ledger event and an omitted producer event.
+The proof remains conditional on upstream source certification and does not
+establish live feed completeness. Migration 024 is unapplied, connected I/O is
+untested, and live-stream certification, recovery, and producer wiring remain.
 The first Strategy
 350 Early Squeeze historical formula and first-occurrence session latch now
 feed that path. The formula uses exact close-ratio, trade-count, and volume

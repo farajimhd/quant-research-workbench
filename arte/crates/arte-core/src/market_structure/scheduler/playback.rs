@@ -125,6 +125,9 @@ impl Prepared {
     pub fn hash(&self) -> &str {
         &self.hash
     }
+    pub fn scope(&self) -> Scope {
+        self.scope
+    }
     /// Check the playback domain, not upstream completeness. Empty intervals
     /// still need their terminal watermark. No clocks or source rows are changed.
     pub fn require_interval(&self, interval: crate::coverage::Interval) -> Result<()> {
@@ -265,6 +268,12 @@ impl Playback {
             pending_boundary: self.scheduler.pending.is_some(),
             failure: self.failure.clone(),
         }
+    }
+    pub fn run_id(&self) -> &str {
+        &self.scheduler.run_id
+    }
+    pub fn scope(&self) -> Scope {
+        self.scheduler.scope()
     }
     /// Caller must first commit all required account journals and execution work.
     /// This is a local cursor acknowledgment, not a durability receipt.

@@ -828,6 +828,77 @@ fn prepared_playback() -> playback::Prepared {
     .unwrap()
 }
 #[test]
+fn event_boolean_source_ledger_requires_complete_pinned_playback() {
+    use crate::{
+        coverage::Interval,
+        event_boolean::{ledger::SourceLedger, Builder},
+        execution_interval::{ExecutableKind, ExecutionContract, ExecutionInterval},
+    };
+    use playback::{Playback, Poll};
+    let source = prepared_playback();
+    let catalog = playback_catalog();
+    let manifest = account_run_manifest();
+    let hash = manifest.hash().unwrap();
+    let pinned = crate::run_manifest::Pinned::new(manifest, &hash).unwrap();
+    let scope = source.scope();
+    let interval = Interval {
+        start: 200 * SECOND,
+        end: 204 * SECOND,
+    };
+    let definition = ExecutionContract {
+        kind: ExecutableKind::SignalStream,
+        id: "event-signal".into(),
+        implementation_hash: "a".repeat(64),
+        interval: ExecutionInterval::Events,
+    };
+    let mut playback = Playback::new(scheduler(10), source.clone(), 1).unwrap();
+    assert!(SourceLedger::new(scope, interval, &definition, 10)
+        .unwrap()
+        .certify_playback(&playback, &source, &catalog, &pinned, 205 * SECOND)
+        .is_err());
+    let mut ledger = SourceLedger::new(scope, interval, &definition, 10).unwrap();
+    let mut omitted_ledger = SourceLedger::new(scope, interval, &definition, 10).unwrap();
+    let mut producer = Builder::new(scope, interval, &definition, 10, 10).unwrap();
+    let mut omitted = Builder::new(scope, interval, &definition, 10, 10).unwrap();
+    let mut events = 0;
+    playback.resume().unwrap();
+    loop {
+        match playback.poll().unwrap() {
+            Poll::Boundary => {
+                let boundary = playback.pending().unwrap().unwrap();
+                if ledger.observe(&boundary).unwrap() {
+                    if events == 0 {
+                        omitted_ledger.observe(&boundary).unwrap();
+                    }
+                    producer.observe(&boundary, Some(true)).unwrap();
+                    if events == 0 {
+                        omitted.observe(&boundary, Some(true)).unwrap();
+                    }
+                    events += 1;
+                }
+                let id = boundary.id.to_owned();
+                playback.acknowledge(&id).unwrap();
+            }
+            Poll::Yield => {}
+            Poll::Complete => break,
+            Poll::Paused => panic!("unexpected pause"),
+        }
+    }
+    assert_eq!(events, 2);
+    assert!(omitted_ledger
+        .certify_playback(&playback, &source, &catalog, &pinned, 205 * SECOND)
+        .is_err());
+    let proof = ledger
+        .certify_playback(&playback, &source, &catalog, &pinned, 205 * SECOND)
+        .unwrap();
+    assert_eq!(proof.event_count(), 2);
+    assert_eq!(proof.authority_hash(), catalog.hash().unwrap());
+    assert!(omitted.seal_verified(&proof).is_err());
+    let product = producer.seal_verified(&proof).unwrap();
+    assert_eq!(product.event_count, 2);
+    assert_eq!(product.source_hash, proof.source_hash());
+}
+#[test]
 fn playback_reports_coalescing_without_replaying_duplicate_trade() {
     use playback::{Frame, Input, Limits, Playback, Poll, Prepared};
     let e = Input {

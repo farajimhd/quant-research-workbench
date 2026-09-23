@@ -10,6 +10,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+pub mod ledger;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -106,6 +107,62 @@ fn hash_valid(hash: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+fn source_domain(scope: Scope, interval: Interval, definition_hash: &str) -> Result<String> {
+    content_hash(&(
+        "arte.event-boolean.domain.v1",
+        (scope.provider, scope.instrument, scope.session),
+        (interval.start, interval.end),
+        definition_hash,
+    ))
+}
+
+fn source_item(
+    boundary: &Boundary<'_>,
+    scope: Scope,
+    interval: Interval,
+    last_sequence: u64,
+    last_source_ns: u64,
+    last_evaluated_ns: u64,
+) -> Result<(String, u64)> {
+    let (observation, eligibility) = match &boundary.kind {
+        Kind::Trade {
+            observation,
+            eligible,
+        } => (*observation, Some(*eligible)),
+        Kind::Quote { observation } => (*observation, None),
+        Kind::Completed { .. } => {
+            return Err(Error::Invalid(
+                "event Boolean requires event boundary".into(),
+            ))
+        }
+    };
+    observation.validate()?;
+    if observation.key.provider != scope.provider
+        || observation.key.instrument != scope.instrument
+        || observation.key.session != scope.session
+        || observation.sip.ns < interval.start
+        || observation.sip.ns >= interval.end
+        || !hash_valid(boundary.id)
+        || boundary.sequence <= last_sequence
+        || observation.sip.ns < last_source_ns
+        || boundary.evaluated_at_ns < last_evaluated_ns
+        || observation.available_at_ns > boundary.evaluated_at_ns
+    {
+        return Err(Error::Conflict(
+            "event Boolean boundary scope or clocks".into(),
+        ));
+    }
+    let item = content_hash(&(
+        "arte.event-boolean.source-item.v1",
+        boundary.id,
+        boundary.sequence,
+        content_hash(observation)?,
+        eligibility,
+        boundary.evaluated_at_ns,
+    ))?;
+    Ok((item, observation.sip.ns))
+}
+
 impl Builder {
     pub fn new(
         scope: Scope,
@@ -129,12 +186,7 @@ impl Builder {
             return Err(Error::Capacity("event Boolean evaluation budget".into()));
         }
         let definition_hash = definition.hash()?;
-        let domain = content_hash(&(
-            "arte.event-boolean.domain.v1",
-            (scope.provider, scope.instrument, scope.session),
-            (interval.start, interval.end),
-            &definition_hash,
-        ))?;
+        let domain = source_domain(scope, interval, &definition_hash)?;
         let mut source_digest = Sha256::new();
         source_digest.update(b"arte.event-boolean.source.v1");
         source_digest.update(domain.as_bytes());
@@ -168,42 +220,17 @@ impl Builder {
                 "event Boolean requires event boundary".into(),
             ));
         }
-        let (observation, eligibility) = match &boundary.kind {
-            Kind::Trade {
-                observation,
-                eligible,
-            } => (*observation, Some(*eligible)),
-            Kind::Quote { observation } => (*observation, None),
-            Kind::Completed { .. } => unreachable!(),
-        };
-        observation.validate()?;
-        if observation.key.provider != self.scope.provider
-            || observation.key.instrument != self.scope.instrument
-            || observation.key.session != self.scope.session
-            || observation.sip.ns < self.interval.start
-            || observation.sip.ns >= self.interval.end
-            || !hash_valid(boundary.id)
-            || boundary.sequence <= self.last_sequence
-            || observation.sip.ns < self.last_source_ns
-            || boundary.evaluated_at_ns < self.last_evaluated_ns
-            || observation.available_at_ns > boundary.evaluated_at_ns
-        {
-            return Err(Error::Conflict(
-                "event Boolean boundary scope or clocks".into(),
-            ));
-        }
         if self.count == self.maximum_events {
             return Err(Error::Capacity("event Boolean evaluation budget".into()));
         }
-        let observation_hash = content_hash(observation)?;
-        let source_item = content_hash(&(
-            "arte.event-boolean.source-item.v1",
-            boundary.id,
-            boundary.sequence,
-            observation_hash,
-            eligibility,
-            boundary.evaluated_at_ns,
-        ))?;
+        let (source_item, source_ns) = source_item(
+            boundary,
+            self.scope,
+            self.interval,
+            self.last_sequence,
+            self.last_source_ns,
+            self.last_evaluated_ns,
+        )?;
         let evaluation_item = content_hash(&(&source_item, value))?;
         let index = self.count;
         if self.state != value {
@@ -222,7 +249,7 @@ impl Builder {
         self.evaluation_digest.update(evaluation_item.as_bytes());
         self.count += 1;
         self.last_sequence = boundary.sequence;
-        self.last_source_ns = observation.sip.ns;
+        self.last_source_ns = source_ns;
         self.last_evaluated_ns = boundary.evaluated_at_ns;
         self.state = value;
         Ok(())
@@ -230,7 +257,7 @@ impl Builder {
 
     /// A verified source ledger supplies expected count/hash. A caller cannot
     /// turn an omitted evaluation into complete coverage by sealing early.
-    pub fn seal(self, expected_events: u64, expected_source_hash: &str) -> Result<Product> {
+    pub(crate) fn seal(self, expected_events: u64, expected_source_hash: &str) -> Result<Product> {
         let source_hash = format!("{:x}", self.source_digest.finalize());
         if self.count != expected_events || source_hash != expected_source_hash {
             return Err(Error::Unready(
@@ -250,6 +277,18 @@ impl Builder {
         };
         product.validate()?;
         Ok(product)
+    }
+
+    pub fn seal_verified(self, source: &ledger::SourceProof) -> Result<Product> {
+        if self.scope != source.scope()
+            || self.interval != source.interval()
+            || self.definition_hash != source.definition_hash()
+        {
+            return Err(Error::Conflict(
+                "event Boolean verified source domain differs".into(),
+            ));
+        }
+        self.seal(source.event_count(), source.source_hash())
     }
 
     pub fn event_count(&self) -> u64 {
