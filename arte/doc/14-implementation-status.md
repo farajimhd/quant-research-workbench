@@ -7,6 +7,13 @@ frozen as reference-only text snapshots with per-file source commits and SHA-256
 hashes. They are not packaged or imported at runtime. This pins source evidence
 for the remaining Rust strategy port; it does not pin an effective deployed
 configuration or make Strategy 350 executable end to end.
+The Rust Strategy 350 port now includes the activation-time frozen resistance
+gap calculation. It selects only causal resistance or resistance-origin
+transition levels between the activation price and four times that price,
+sorts by midpoint and level ID, and records only consecutive inter-level
+gaps. The value validates its geometry before hashing. Offline unit tests
+cover selection, ordering, capacity, future levels and tampering. It has not
+yet been attached to a certified activation snapshot or the account evaluator.
 
 Historical Strategy 350 session-watch signal preparation now scans certified
 100 ms bar batches once and retains only sparse Boolean transitions. It no
