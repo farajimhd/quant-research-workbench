@@ -2,6 +2,15 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+A bounded, in-process Massive REST/WebSocket overlap auditor now compares the
+exact verified REST batch chain with captured live events by provider sequence,
+normalized payload, and SIP millisecond bucket. It rejects missing, duplicate,
+changed, foreign, or over-budget observations. The result is diagnostic only.
+The current WebSocket transport does not retain a per-channel subscription
+acknowledgment. Neither the overlap result nor the existing watermark proves
+uninterrupted feed coverage. The auditor is not wired to live handover or a
+ClickHouse audit writer, so Strategy 350 live readiness remains blocked.
+
 Strategy 350 session contexts now identify their source as live or historical
 REST. The price gate rejects a context from the wrong source. A verified
 historical REST replay cannot certify a live session start. Historical replay

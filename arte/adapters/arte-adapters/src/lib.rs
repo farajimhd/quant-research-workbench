@@ -22,6 +22,7 @@ pub mod replay_sources;
 pub mod request_governor;
 pub mod rest_acquisition;
 pub mod simulation_runtime;
+pub mod source_overlap;
 pub mod startup_quote_policies;
 pub mod startup_references;
 pub mod startup_repair;
