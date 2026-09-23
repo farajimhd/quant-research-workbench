@@ -4781,3 +4781,13 @@ can retain a committed wait in both live and historical journals. Exposure
 readback still requires the purchase price gate plus its other evidence.
 Offline unit tests cover both blocked waits. This does not complete the
 Strategy 350 evaluator or enable exposure-increasing decisions. No service ran.
+
+The frozen Strategy 350 v27 target rules now have an account-state Rust
+component. It tracks distinct resistance breaks at event cadence. In-position
+fast triples must fit within three seconds and upgrade targets from 5 to 8 to
+10; session-wide triples continue while flat and progress beyond 10. Batches
+reject future or regressing break clocks and distinct-level budget overflow
+without partial state mutation. Momentum target rounding consumes the
+validated frozen inter-resistance average; a single-level snapshot cannot
+produce a target. These rules are not yet bound to the effective rule-set
+hash, evaluator, journal or OMS. No service ran.

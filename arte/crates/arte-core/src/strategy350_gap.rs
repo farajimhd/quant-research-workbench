@@ -43,6 +43,12 @@ pub struct FrozenGap {
     pub average: Option<f64>,
 }
 impl FrozenGap {
+    /// Calculate a momentum target from the retained activation snapshot.
+    /// An absent inter-resistance gap cannot be replaced by entry distance.
+    pub fn target_price(&self, entry_basis: f64, multiplier: u32, tick: f64) -> Result<f64> {
+        self.validate()?;
+        crate::strategy350_targets::target_price(entry_basis, self.average, multiplier, tick)
+    }
     pub fn hash(&self) -> Result<String> {
         self.validate()?;
         content_hash(&("arte.strategy-350-frozen-gap.v1", self))
@@ -247,9 +253,11 @@ mod tests {
         );
         assert_eq!(frozen.gaps, vec![10., 15.]);
         assert_eq!(frozen.average, Some(12.5));
+        assert_eq!(frozen.target_price(10., 5, 0.01).unwrap(), 72.5);
         let mut changed = frozen.clone();
         changed.gaps[0] = 9.;
         assert!(changed.hash().is_err());
+        assert!(changed.target_price(10., 5, 0.01).is_err());
         assert_eq!(
             freeze(&levels, 10., 2 * S, &config(5))
                 .unwrap()
@@ -262,12 +270,9 @@ mod tests {
     #[test]
     fn rejects_future_or_duplicate_geometry_and_missing_gap() {
         let one = level("one", 15., ActiveRole::Resistance, None);
-        assert_eq!(
-            freeze(std::slice::from_ref(&one), 10., 2 * S, &config(1))
-                .unwrap()
-                .average,
-            None
-        );
+        let singleton = freeze(std::slice::from_ref(&one), 10., 2 * S, &config(1)).unwrap();
+        assert_eq!(singleton.average, None);
+        assert!(singleton.target_price(10., 5, 0.01).is_err());
         let mut future = one.clone();
         future.geometry.confirmed_at_ns = 3 * S;
         assert!(freeze(&[future], 10., 2 * S, &config(1)).is_err());
