@@ -103,6 +103,15 @@ SHA-256 `bc268dd23900cd3ac255d92c5fd342ac6b630fb09344fe2ba34a79eabac838b8`
 ARTE runs from its own Rust source and a pinned formula configuration after
 extraction; it does not load either origin file.
 
+The signal state now has explicit historical and live modes. Historical
+projection records the completed-bar end and leaves availability absent. Live
+evaluation requires an actual availability time no earlier than that bar end
+and keeps it distinct from the signal event time. A small immutable recovery
+object pins the source scope and formula hash at state creation, then verifies
+both before restore. No ClickHouse writer for this recovery object is connected
+yet. Live dense-empty-bucket advancement and feed-continuity proof still need
+the MDE-to-signal actor; this state object alone does not authorize trading.
+
 The first market-time tape borrows values from complete 100 ms columnar batches.
 It dispatches only nonempty buckets, sorts equal-time ticker events by instrument,
 and rejects overlapping products for one instrument. Empty buckets remain in

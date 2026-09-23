@@ -56,7 +56,8 @@ digest. The ClickHouse publisher checks acceptance and ownership, compares
 immutable transition pages, publishes coverage last, and rereads the product.
 Only pure preparation and decoding received focused unit tests. The schema was
 not applied, no database was opened, and connected writer/readback behavior is
-unverified. Historical signal/Watchlist algorithms remain unimplemented.
+unverified. The historical Early Squeeze formula is partial; other signal and
+Watchlist algorithms remain unimplemented.
 The fixed-cadence Boolean producer now validates a complete vectorized result
 grid against its certified 100 ms bar source. It preserves unknown versus
 false and enters the sparse publication preparation path. The first Strategy
@@ -65,6 +66,13 @@ feed that path. The formula uses exact close-ratio, trade-count, and volume
 comparisons against the prior non-empty 100 ms bar. It does not supply full live
 episode semantics, Watchlist formulas, a pinned effective Strategy 350
 configuration, source parity, or connected ClickHouse publication.
+The same Early Squeeze state now has separate historical and live modes. Live
+observation requires a genuine availability clock; historical projection never
+substitutes one. The bounded immutable checkpoint pins its source scope and
+formula at state creation, verifies its content hash, and rejects clock or
+geometry mismatch on restore. It is not yet published to ClickHouse or wired
+to the MDE live actor. Continuous empty-bucket advancement and feed coverage
+remain required for live use.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
