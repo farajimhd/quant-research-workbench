@@ -101,8 +101,9 @@ screened shard to the combined run catalog and its verified compact bars.
 It rejects a missing shard or excess selected-position budget. This index
 does not advance the market/V7 tape. Independent shards now use bounded
 parallel indexing and return in stable scope order, with an atomic
-total-position cap. Non-empty selection integration coverage and the shared
-multi-ticker execution loop remain unwired.
+total-position cap. A non-empty two-shard unit test checks trade and quote
+positions, serial/parallel identity, total capacity and the combined run pin.
+The shared multi-ticker execution loop remains unwired.
 This is replay routing, not a substitute for causal event, quote, level or
 account evidence. After a complete certified source load, the replay-source
 adapter can build a bounded, SIP-ordered index of selected trade or quote

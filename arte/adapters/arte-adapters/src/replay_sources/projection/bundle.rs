@@ -330,6 +330,206 @@ impl<'a> Bundle<'a> {
 mod tests {
     use super::*;
     use crate::replay_sources::projection::bar_link::tests::fixture_for;
+    use arte_core::{
+        bar_catalogue::{
+            Batch as BarBatch, Column, Readback as BarReadback, Request as BarRequest,
+        },
+        boolean_catalogue::{self, Batch as BoolBatch, Readback as BoolReadback},
+        events::{Decimal, EventKey, Observation, Payload, SourceTime},
+        execution_interval::{ExecutableKind, ExecutionContract, ExecutionInterval},
+        market_structure::scheduler::playback::{Frame, Input, Limits, Prepared},
+        strategy350_bar_screen::Config as ScreenConfig,
+        strategy350_catalogue::{WatchlistPolicy, SIGNAL},
+        strategy350_price_gate::PriceFact,
+        strategy350_screen_join,
+    };
+    use std::collections::BTreeSet;
+
+    fn selected_fixture(
+        instrument: u64,
+    ) -> (Projection, Bars, BarCoverage, RefinementPlan, Pinned) {
+        let (mut projection, _, coverage, run) = fixture_for(instrument, "a");
+        let scope = projection.prepared.scope();
+        let event = |kind, sequence, ns| Observation {
+            key: EventKey {
+                provider: 1,
+                instrument,
+                session: scope.session,
+                kind,
+                sequence,
+            },
+            payload: match kind {
+                EventKind::Trade => Payload::Trade {
+                    price: Decimal {
+                        atoms: 1_000,
+                        scale: 2,
+                    },
+                    size: Decimal { atoms: 1, scale: 0 },
+                    exchange: 1,
+                    trade_id: sequence.to_string(),
+                    trf: None,
+                    conditions: vec![],
+                    correction: None,
+                },
+                EventKind::Quote => Payload::Quote {
+                    bid: Decimal {
+                        atoms: 990,
+                        scale: 2,
+                    },
+                    ask: Decimal {
+                        atoms: 1_010,
+                        scale: 2,
+                    },
+                    bid_size: Decimal { atoms: 1, scale: 0 },
+                    ask_size: Decimal { atoms: 1, scale: 0 },
+                    bid_exchange: 1,
+                    ask_exchange: 1,
+                    conditions: vec![],
+                    indicators: vec![],
+                },
+            },
+            sip: SourceTime {
+                ns,
+                precision_ns: 1,
+            },
+            participant: None,
+            available_at_ns: 1_100_000_002,
+            receipt: None,
+        };
+        projection.prepared = Prepared::new(
+            scope,
+            "historical-modeled",
+            vec![
+                Frame {
+                    watermark_ns: 1_100_000_000,
+                    evaluated_at_ns: 1_100_000_002,
+                    inputs: vec![
+                        Input {
+                            observation: event(EventKind::Trade, 1, 1_050_000_000),
+                            eligible: true,
+                        },
+                        Input {
+                            observation: event(EventKind::Quote, 2, 1_060_000_000),
+                            eligible: false,
+                        },
+                    ],
+                },
+                Frame {
+                    watermark_ns: 1_300_000_000,
+                    evaluated_at_ns: 1_300_000_002,
+                    inputs: vec![],
+                },
+            ],
+            Limits {
+                maximum_frames: 4,
+                maximum_events: 4,
+                maximum_serialized_bytes: 4096,
+            },
+        )
+        .unwrap();
+        projection.catalog.shards[0].prepared_hash = projection.prepared.hash().into();
+        let request = BarRequest {
+            provider: 1,
+            instruments: vec![instrument],
+            session: scope.session,
+            interval: arte_core::coverage::Interval {
+                start: 1_000_000_000,
+                end: 1_300_000_000,
+            },
+            timeframe_ns: 100_000_000,
+            source_generation: projection.manifest.trade_certificate.clone(),
+            calculation_hash: coverage.calculation_hash.clone(),
+            columns: BTreeSet::from([Column::Open, Column::High, Column::Low]),
+            maximum_rows: 3,
+        };
+        let mut bar_read = BarReadback::new(request.clone(), &coverage, 2_000_000_000).unwrap();
+        bar_read
+            .observe(BarBatch {
+                request_hash: request.hash().unwrap(),
+                coverage_hash: coverage.hash().unwrap(),
+                instrument,
+                first_start_ns: request.interval.start,
+                count: 3,
+                price_scale: 2,
+                size_scale: 0,
+                present: vec![true, false, false],
+                open: Some(vec![1_000, 0, 0]),
+                high: Some(vec![1_100, 0, 0]),
+                low: Some(vec![1_000, 0, 0]),
+                close: None,
+                volume: None,
+                notional: None,
+                trades: None,
+            })
+            .unwrap();
+        let bars = bar_read.finish().unwrap();
+        let signal_request = boolean_catalogue::Request {
+            provider: 1,
+            instrument,
+            session: scope.session,
+            interval: request.interval,
+            definition: ExecutionContract {
+                kind: ExecutableKind::SignalStream,
+                id: SIGNAL.into(),
+                implementation_hash: "d".repeat(64),
+                interval: ExecutionInterval::Fixed(100_000_000),
+            },
+            source_bar_request_hash: request.hash().unwrap(),
+            source_bar_coverage_hash: bars.coverage_hash().into(),
+            maximum_rows: 3,
+        };
+        let mut digest = boolean_catalogue::TransitionDigest::new(&signal_request).unwrap();
+        digest.observe(1_000_000_000, true, true).unwrap();
+        let (transition_hash, transition_count) = digest.finish();
+        let signal_coverage = boolean_catalogue::Coverage {
+            request_hash: signal_request.hash().unwrap(),
+            source_bar_coverage_hash: bars.coverage_hash().into(),
+            producer_hash: "d".repeat(64),
+            transition_hash,
+            transition_count,
+            published_at_ns: 2_000_000_000,
+        };
+        let mut signal_read =
+            BoolReadback::new(signal_request, &signal_coverage, 2_000_000_000).unwrap();
+        signal_read
+            .observe(BoolBatch {
+                request_hash: signal_coverage.request_hash.clone(),
+                coverage_hash: signal_coverage.hash().unwrap(),
+                first_start_ns: request.interval.start,
+                count: 3,
+                evaluated: vec![true; 3],
+                known: vec![true; 3],
+                value: vec![true; 3],
+            })
+            .unwrap();
+        let signal = signal_read.finish().unwrap();
+        let config = ScreenConfig {
+            execution_interval: ExecutionInterval::Fixed(100_000_000),
+            prior_close_source_hash: "e".repeat(64),
+            prior_close_max: Decimal::parse("20").unwrap(),
+            purchase_min: Decimal::parse("1").unwrap(),
+            late_gain_bps: 1_500,
+            hod_floor_bps: 7_000,
+        };
+        let prior_close = PriceFact {
+            value: Decimal::parse("9").unwrap(),
+            available_at_ns: 999_999_999,
+            source_hash: "e".repeat(64),
+            source_order: None,
+        };
+        let selected = strategy350_screen_join::select(
+            &bars,
+            &config,
+            &prior_close,
+            &signal,
+            WatchlistPolicy::NotRequired,
+            None,
+        )
+        .unwrap();
+        let plan = RefinementPlan::from_batches(scope, request.interval, &selected, 3).unwrap();
+        assert_eq!(plan.intervals().len(), 1);
+        (projection, bars, coverage, plan, run)
+    }
 
     #[test]
     fn combined_catalog_pins_each_projection_and_binds_two_bar_sources() {
@@ -378,5 +578,49 @@ mod tests {
         assert!(bundle.index_selected(vec![], &run, 1, 0, 1).is_err());
         assert!(bundle.index_selected(vec![], &run, 1, 1, 0).is_err());
         assert!(bundle.index_selected(vec![], &run, 0, 1, 1).is_err());
+    }
+
+    #[test]
+    fn selected_trade_and_quote_positions_are_stable_across_worker_counts() {
+        let (first, first_bars, first_coverage, first_plan, single_run) = selected_fixture(10);
+        let (second, second_bars, second_coverage, second_plan, _) = selected_fixture(20);
+        let bundle = Bundle::new(vec![&second, &first]).unwrap();
+        let mut manifest = single_run.manifest().clone();
+        manifest.source_manifest_hash = bundle.catalog().hash().unwrap();
+        let mut consumer = manifest.consumers[0].clone();
+        consumer.account = "other-account".into();
+        consumer.instrument = 20;
+        manifest.consumers.push(consumer);
+        let run = Pinned::new(manifest.clone(), &manifest.hash().unwrap()).unwrap();
+        let inputs = || {
+            vec![
+                SelectedInput {
+                    bars: &second_bars,
+                    coverage: &second_coverage,
+                    plan: &second_plan,
+                    source_as_of_ns: 2_000_000_000,
+                },
+                SelectedInput {
+                    bars: &first_bars,
+                    coverage: &first_coverage,
+                    plan: &first_plan,
+                    source_as_of_ns: 2_000_000_000,
+                },
+            ]
+        };
+        let serial = bundle.index_selected(inputs(), &run, 1, 2, 4).unwrap();
+        let parallel = bundle.index_selected(inputs(), &run, 2, 2, 4).unwrap();
+        assert_eq!(serial.len(), 2);
+        assert_eq!(serial[0].scope.instrument, 10);
+        assert_eq!(serial[1].scope.instrument, 20);
+        for (left, right) in serial.iter().zip(&parallel) {
+            assert_eq!(left.trade_positions, vec![(0, 0)]);
+            assert_eq!(left.quote_positions, vec![(0, 1)]);
+            assert_eq!(left.hash().unwrap(), right.hash().unwrap());
+        }
+        assert!(bundle.index_selected(inputs(), &run, 2, 2, 3).is_err());
+        assert!(bundle
+            .index_selected(inputs(), &single_run, 2, 2, 4)
+            .is_err());
     }
 }

@@ -138,8 +138,10 @@ are kept separately in tape order. The index is an acceleration hint only;
 market, V7 and account replay must still advance over every prepared input.
 Independent shards now index with a bounded worker count. Output stays in
 sorted shard order and the total selected-position budget is enforced across
-workers. Non-empty selection integration coverage, representative throughput
-measurement and a shared multi-ticker execution loop remain outstanding.
+workers. A non-empty two-shard unit test checks selected trade and quote
+positions, serial/parallel identity, total capacity and the combined run pin.
+Representative throughput measurement and a shared multi-ticker execution
+loop remain outstanding.
 The first shared Boolean product readback now records explicit evaluation
 cadence, known/unknown state, value, source-bar identity and complete bucket
 coverage. Strategy 350 intersects the verified signal with the bar mask. It
