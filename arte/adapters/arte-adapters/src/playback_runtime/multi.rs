@@ -42,6 +42,19 @@ fn choose_head<'a>(
 }
 
 impl MultiRuntime {
+    #[cfg(test)]
+    pub(crate) fn seed_test_order(
+        &mut self,
+        shard: usize,
+        bracket: arte_core::orders::Bracket,
+        at_ns: u64,
+    ) -> Result<()> {
+        self.controllers
+            .get_mut(shard)
+            .ok_or_else(|| Error::Invalid("test order shard missing".into()))?
+            .seed_test_order(bracket, at_ns)
+    }
+
     pub fn new(manifest: &Pinned, catalog: &Catalog, controllers: Vec<Runtime>) -> Result<Self> {
         if controllers.is_empty()
             || controllers.len() > 100_000

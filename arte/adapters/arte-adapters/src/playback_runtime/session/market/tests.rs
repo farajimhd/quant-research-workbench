@@ -169,6 +169,7 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         events::{Decimal, EventKey, EventKind, Observation, Payload, SourceTime},
         execution_interval::ExecutionInterval,
         market_structure::scheduler::playback::Input,
+        orders::{Bracket, Side},
         portfolio::{Account, FundingStatus, Reservation},
         simulation_costs,
         strategy350_effective::Config as Effective,
@@ -177,6 +178,82 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
     };
     let (mut first_doc, single, mut sources, _, first_seed) = fixture();
     let prepared_trade = |instrument: u64, sip_ns: u64| {
+        let trade = Input {
+            observation: Observation {
+                key: EventKey {
+                    provider: 1,
+                    instrument,
+                    session: 20260915,
+                    kind: EventKind::Trade,
+                    sequence: 1,
+                },
+                payload: Payload::Trade {
+                    price: Decimal {
+                        atoms: 10,
+                        scale: 0,
+                    },
+                    size: Decimal { atoms: 1, scale: 0 },
+                    exchange: 1,
+                    trade_id: format!("{instrument}-1"),
+                    trf: None,
+                    conditions: vec![],
+                    correction: None,
+                },
+                sip: SourceTime {
+                    ns: sip_ns,
+                    precision_ns: 1,
+                },
+                participant: None,
+                available_at_ns: sip_ns,
+                receipt: None,
+            },
+            eligible: true,
+        };
+        let mut inputs = vec![trade];
+        if instrument == 2 {
+            let quote = Input {
+                observation: Observation {
+                    key: EventKey {
+                        provider: 1,
+                        instrument,
+                        session: 20260915,
+                        kind: EventKind::Quote,
+                        sequence: 0,
+                    },
+                    payload: Payload::Quote {
+                        bid: Decimal {
+                            atoms: 999,
+                            scale: 2,
+                        },
+                        ask: Decimal {
+                            atoms: 1001,
+                            scale: 2,
+                        },
+                        bid_size: Decimal {
+                            atoms: 10,
+                            scale: 0,
+                        },
+                        ask_size: Decimal {
+                            atoms: 10,
+                            scale: 0,
+                        },
+                        bid_exchange: 1,
+                        ask_exchange: 1,
+                        conditions: vec![],
+                        indicators: vec![],
+                    },
+                    sip: SourceTime {
+                        ns: sip_ns,
+                        precision_ns: 1,
+                    },
+                    participant: None,
+                    available_at_ns: sip_ns,
+                    receipt: None,
+                },
+                eligible: false,
+            };
+            inputs.insert(0, quote);
+        }
         Prepared::new(
             Scope {
                 provider: 1,
@@ -188,37 +265,7 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
                 Frame {
                     watermark_ns: sip_ns + S,
                     evaluated_at_ns: sip_ns + S,
-                    inputs: vec![Input {
-                        observation: Observation {
-                            key: EventKey {
-                                provider: 1,
-                                instrument,
-                                session: 20260915,
-                                kind: EventKind::Trade,
-                                sequence: 1,
-                            },
-                            payload: Payload::Trade {
-                                price: Decimal {
-                                    atoms: 10,
-                                    scale: 0,
-                                },
-                                size: Decimal { atoms: 1, scale: 0 },
-                                exchange: 1,
-                                trade_id: format!("{instrument}-1"),
-                                trf: None,
-                                conditions: vec![],
-                                correction: None,
-                            },
-                            sip: SourceTime {
-                                ns: sip_ns,
-                                precision_ns: 1,
-                            },
-                            participant: None,
-                            available_at_ns: sip_ns,
-                            receipt: None,
-                        },
-                        eligible: true,
-                    }],
+                    inputs,
                 },
                 Frame {
                     watermark_ns: 300 * S,
@@ -228,7 +275,7 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
             ],
             Limits {
                 maximum_frames: 2,
-                maximum_events: 1,
+                maximum_events: 2,
                 maximum_serialized_bytes: 10_000,
             },
         )
@@ -472,6 +519,26 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         session.portfolio.funding_status("b", "reserved-a").unwrap(),
         FundingStatus::Absent
     );
+    session
+        .controller
+        .seed_test_order(
+            1,
+            Bracket {
+                command_id: "later-shard-fill".into(),
+                account: "b".into(),
+                instrument: 2,
+                side: Side::Long,
+                quantity: 1,
+                entry: 1001,
+                price_scale: 2,
+                stop: Some(900),
+                target: Some(1100),
+                tick: 1,
+                deadline_ns: 205 * S,
+            },
+            200 * S,
+        )
+        .unwrap();
     session.controller.resume_all().unwrap();
     let mut selected = None;
     for _ in 0..100 {
@@ -490,6 +557,12 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
     );
     assert_eq!(session.controller.selected().unwrap().unwrap().0, 0);
     assert!(session.controller.controllers()[1].decision_view().is_err());
+    assert_eq!(
+        session.controller.controllers()[1]
+            .execution_status()
+            .pending_fills,
+        0
+    );
 }
 #[test]
 fn wrong_identity_future_evidence_and_partial_source_are_rejected() {
