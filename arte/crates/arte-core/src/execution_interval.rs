@@ -145,4 +145,34 @@ mod tests {
         assert!(c.hash().is_err());
         assert!(Route::new(&c).is_err());
     }
+
+    #[test]
+    fn every_computational_kind_requires_and_pins_its_own_interval() {
+        let kinds = [
+            ExecutableKind::Strategy,
+            ExecutableKind::Watchlist,
+            ExecutableKind::SignalStream,
+            ExecutableKind::RuleSet,
+            ExecutableKind::Scanner,
+            ExecutableKind::Indicator,
+            ExecutableKind::LevelBook,
+            ExecutableKind::Computation("portfolio-risk".into()),
+        ];
+        for kind in kinds {
+            let mut contract = ExecutionContract {
+                kind,
+                id: "cadence-check".into(),
+                implementation_hash: "a".repeat(64),
+                interval: ExecutionInterval::Events,
+            };
+            let events_hash = contract.hash().unwrap();
+            let mut value = serde_json::to_value(&contract).unwrap();
+            value.as_object_mut().unwrap().remove("interval");
+            assert!(serde_json::from_value::<ExecutionContract>(value).is_err());
+            contract.interval = ExecutionInterval::Fixed(100_000_000);
+            assert_ne!(events_hash, contract.hash().unwrap());
+            contract.interval = ExecutionInterval::Fixed(150_000_000);
+            assert!(contract.hash().is_err());
+        }
+    }
 }
