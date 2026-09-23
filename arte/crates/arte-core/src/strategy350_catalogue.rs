@@ -124,6 +124,7 @@ pub fn plan_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_interval::ExecutionInterval;
     use std::collections::BTreeMap;
     fn ticker() -> Ticker {
         Ticker {
@@ -141,6 +142,12 @@ mod tests {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .map(|dependency| Definition {
+                execution_interval: match &dependency {
+                    Dependency::Bars(_)
+                    | Dependency::MarketSignal(_)
+                    | Dependency::Watchlist(_) => ExecutionInterval::Fixed(BASE_BAR_NS),
+                    _ => ExecutionInterval::Events,
+                },
                 dependency,
                 implementation_hash: "a".repeat(64),
                 inputs: vec![],

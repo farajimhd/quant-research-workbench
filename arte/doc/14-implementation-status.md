@@ -9,8 +9,10 @@ signal stream, scanner, rule set, indicator, level book, and named computations.
 Strategy 350's new purchase-price gate pins event cadence. This gate implements
 only the causal prior-close price ceiling, purchase price floor, and latched
 late-mode prior-HOD zone. It is not an entry authorization or a full strategy
-port. Other definitions and scheduler dispatch are not wired to this contract
-yet; they must not be treated as interval-configurable in a runnable system.
+port. Startup dependency definitions and plan nodes now carry explicit cadence;
+the plan identity pins it for signal streams, Watchlists, and other dependencies.
+Scheduler dispatch is not wired to this contract yet. A runnable system must
+reject any executable definition without its own validated interval.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service

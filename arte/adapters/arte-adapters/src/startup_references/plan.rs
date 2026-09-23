@@ -90,6 +90,7 @@ mod tests {
                         dependency: Dependency::PreviousClose,
                     },
                     implementation_hash: "a".repeat(64),
+                    execution_interval: arte_core::execution_interval::ExecutionInterval::Events,
                     intervals: vec![Interval {
                         start: 100,
                         end: 200,

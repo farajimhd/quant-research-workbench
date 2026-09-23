@@ -20,12 +20,21 @@ impl ExecutionInterval {
             )),
         }
     }
-    pub fn due(self, event_ns: u64, last_completed_end_ns: Option<u64>) -> Result<bool> {
+    pub fn due(
+        self,
+        watermark_ns: u64,
+        last_completed_end_ns: Option<u64>,
+        last_dispatched_end_ns: Option<u64>,
+    ) -> Result<bool> {
         self.validate()?;
         Ok(match self {
             Self::Events => true,
-            Self::Fixed(ns) => last_completed_end_ns
-                .is_some_and(|end| end != 0 && end.is_multiple_of(ns) && end <= event_ns),
+            Self::Fixed(ns) => last_completed_end_ns.is_some_and(|end| {
+                end != 0
+                    && end.is_multiple_of(ns)
+                    && end <= watermark_ns
+                    && last_dispatched_end_ns.is_none_or(|dispatched| end > dispatched)
+            }),
         })
     }
 }
@@ -89,14 +98,17 @@ mod tests {
         assert!(ExecutionInterval::Fixed(0).validate().is_err());
         assert!(
             ExecutionInterval::Fixed(100_000_000)
-                .due(100_000_000, None)
+                .due(100_000_000, None, None)
                 .unwrap()
                 == false
         );
         assert!(ExecutionInterval::Fixed(100_000_000)
-            .due(100_000_000, Some(100_000_000))
+            .due(100_000_000, Some(100_000_000), None)
             .unwrap());
-        assert!(ExecutionInterval::Events.due(1, None).unwrap());
+        assert!(!ExecutionInterval::Fixed(100_000_000)
+            .due(100_000_000, Some(100_000_000), Some(100_000_000))
+            .unwrap());
+        assert!(ExecutionInterval::Events.due(1, None, None).unwrap());
         let mut c = ExecutionContract {
             kind: ExecutableKind::Watchlist,
             id: "tradability".into(),

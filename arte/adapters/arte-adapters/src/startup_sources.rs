@@ -150,6 +150,7 @@ mod tests {
                 vec![Definition {
                     dependency: Dependency::Trades,
                     implementation_hash: "a".repeat(64),
+                    execution_interval: arte_core::execution_interval::ExecutionInterval::Events,
                     inputs: vec![],
                 }],
                 &[dependency_plan::Request {

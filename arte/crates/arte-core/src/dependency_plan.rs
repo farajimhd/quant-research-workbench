@@ -2,6 +2,7 @@
 use crate::{
     content_hash,
     coverage::{Dependency, Interval},
+    execution_interval::ExecutionInterval,
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,7 @@ pub struct Input {
 pub struct Definition {
     pub dependency: Dependency,
     pub implementation_hash: String,
+    pub execution_interval: ExecutionInterval,
     pub inputs: Vec<Input>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +35,7 @@ pub struct Key {
 pub struct Node {
     pub key: Key,
     pub implementation_hash: String,
+    pub execution_interval: ExecutionInterval,
     pub intervals: Vec<Interval>,
     pub consumers: BTreeSet<String>,
     pub inputs: Vec<Input>,
@@ -120,6 +123,7 @@ pub fn build(
         if definition.inputs.len() > 256 {
             return Err(Error::Capacity("dependency edge budget".into()));
         }
+        definition.execution_interval.validate()?;
         definition.inputs.sort_by(|a, b| {
             a.dependency
                 .cmp(&b.dependency)
@@ -150,6 +154,7 @@ pub fn build(
         let node = nodes.entry(key.clone()).or_insert_with(|| Node {
             key,
             implementation_hash: definition.implementation_hash.clone(),
+            execution_interval: definition.execution_interval,
             intervals: vec![],
             consumers: BTreeSet::new(),
             inputs: definition.inputs.clone(),
@@ -176,6 +181,7 @@ pub fn build(
                 let node = nodes.entry(key.clone()).or_insert_with(|| Node {
                     key,
                     implementation_hash: definition.implementation_hash.clone(),
+                    execution_interval: definition.execution_interval,
                     intervals: vec![],
                     consumers: BTreeSet::new(),
                     inputs: definition.inputs.clone(),
@@ -215,6 +221,7 @@ mod tests {
         Definition {
             dependency,
             implementation_hash: "a".repeat(64),
+            execution_interval: ExecutionInterval::Events,
             inputs,
         }
     }
@@ -352,5 +359,36 @@ mod tests {
                 Err(Error::Invalid(_))
             ));
         }
+    }
+    #[test]
+    fn computation_cadence_is_required_and_changes_plan_identity() {
+        let request = [request(
+            "signal",
+            1,
+            Dependency::MarketSignal("stream".into()),
+            100,
+            200,
+        )];
+        let mut definition = definition(Dependency::MarketSignal("stream".into()), vec![]);
+        let event_plan = build(vec![definition.clone()], &request, 1).unwrap();
+        assert_eq!(
+            event_plan.nodes[0].execution_interval,
+            ExecutionInterval::Events
+        );
+        definition.execution_interval = ExecutionInterval::Fixed(100_000_000);
+        let bar_plan = build(vec![definition.clone()], &request, 1).unwrap();
+        assert_ne!(event_plan.id().unwrap(), bar_plan.id().unwrap());
+        assert_eq!(
+            bar_plan.nodes[0].execution_interval,
+            ExecutionInterval::Fixed(100_000_000)
+        );
+        definition.execution_interval = ExecutionInterval::Fixed(50_000_000);
+        assert!(build(vec![definition], &request, 1).is_err());
+        let missing = serde_json::json!({
+            "dependency": {"MarketSignal":"stream"},
+            "implementation_hash": "a".repeat(64),
+            "inputs": []
+        });
+        assert!(serde_json::from_value::<Definition>(missing).is_err());
     }
 }

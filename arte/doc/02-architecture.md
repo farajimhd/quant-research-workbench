@@ -59,6 +59,18 @@ It does not create a cross product of all instruments and all dependencies.
 Missing definitions, cycles, unpinned implementations, invalid clocks and capacity
 violations reject the plan. Equivalent input ordering produces the same plan hash.
 The plan describes required work; it is not coverage evidence or permission to trade.
+Every executable or computational definition also pins an execution interval.
+This includes strategies, Watchlists, signal streams, scanner rules, indicators,
+level books, and named calculations. The interval is either real-time events or
+a fixed multiple of 100 ms. It is independent of the input bar timeframe: a
+strategy may consume 100 ms bars but evaluate on every eligible event, or a
+signal stream may evaluate only at completed bar boundaries. No definition may
+inherit an interval from its source or scheduler default. The interval is part
+of the definition and plan identity. Missing or invalid intervals fail planning.
+For fixed intervals, dispatch only on a completed aligned boundary that has
+not already been dispatched. Historical replay and live use the same declared
+interval; different source availability can still change which causal operands
+are present. Interval changes require a new pinned contract and validation.
 Current declarations are caller-supplied. The `startup_repair` adapter binds trade
 and quote requirements to provider authorities and verified acquisition coverage.
 It creates maintenance jobs only for missing intervals. Source revision, channel,

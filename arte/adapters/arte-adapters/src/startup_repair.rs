@@ -136,6 +136,7 @@ mod tests {
         acquisition::{Certificate, Page, Verifier},
         coverage::Interval,
         dependency_plan::{self, Definition, Input, Request},
+        execution_interval::ExecutionInterval,
     };
     fn fixture() -> (Plan, Binding, Catalog, Limits) {
         let plan = dependency_plan::build(
@@ -143,11 +144,13 @@ mod tests {
                 Definition {
                     dependency: Dependency::Trades,
                     implementation_hash: "a".repeat(64),
+                    execution_interval: ExecutionInterval::Events,
                     inputs: vec![],
                 },
                 Definition {
                     dependency: Dependency::Bars(60),
                     implementation_hash: "b".repeat(64),
+                    execution_interval: ExecutionInterval::Fixed(100_000_000),
                     inputs: vec![Input {
                         dependency: Dependency::Trades,
                         extra_history_ns: 10,
