@@ -1,5 +1,23 @@
 # Event identity, clocks, and storage
 
+## Proposed compact bar contract
+
+ARTE needs a versioned compact bar product, beginning with completed 100 ms
+bars. This contract is not materialized yet. Define its exact schema and codecs
+from measured workloads before enabling a writer. It must include instrument,
+session, half-open interval, timeframe, adjustment and calculation versions,
+source generation and coverage identity, completeness, OHLC, volume, trade count,
+and the minimal fields required by Strategy 350 and its scanner, signal, and
+level rules. Preserve exact price and size semantics and explicit empty buckets;
+do not invent trades or forward-fill a price without a named rule.
+
+Use columnar arrays and compact physical types where lossless. Measure
+compression, range-query cost, and rebuild cost. Do not repeat run-wide metadata
+on every bar. Materialize only products required for backtest, continuation, or
+auditable decisions; set bounded retention and pin referenced generations.
+Derived indicators and levels have separate versioned contracts and causal
+availability. Bar aggregation alone cannot restore missing event-level fields.
+
 ## Agreed decisions
 
 - Use one logical compact event authority for trades and quotes.

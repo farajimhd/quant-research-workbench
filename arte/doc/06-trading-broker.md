@@ -13,6 +13,11 @@ Pin the effective strategy source and configuration. A candidate number alone is
 not an implementation identity. An existing experimental strategy is not approved
 for Live merely because it has been ported.
 
+Strategy 350 is the current replacement candidate. The historical prior-close
+gate remains in the executor and fails closed when unavailable. Its exact copied
+source and configuration must be pinned; later source revisions cannot silently
+replace a running or backtested strategy.
+
 ## Multiple accounts
 
 Position-dependent state is keyed by mode, broker session, account, strategy instance,

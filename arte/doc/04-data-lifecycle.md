@@ -60,6 +60,19 @@ before using it in the next session.
 
 ## Persistence and retention
 
+Backtest preparation reads pinned bars, indicators, historical level books,
+scanner and Watchlist products from this database. Maintenance builds missing
+required products from certified REST events, validates them, and publishes a
+dependency-readiness manifest before the run starts. It builds only requested
+products and retains short rolling bar history plus any generation pinned by a
+run or recovery checkpoint. Bar-based historical level construction and
+streaming live level updates share tested semantics but have separate source
+and availability contracts.
+
+ClickHouse is the sole durable store for backtest spools, run evidence, and
+operational logs. Use compact typed records and measured compression. SQLite
+files are not an allowed fallback, temporary spool, or recovery authority.
+
 | Product | Policy |
 |---|---|
 | Compact events | Retain configured historical coverage and pinned source generations |

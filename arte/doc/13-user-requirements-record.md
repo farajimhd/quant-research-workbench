@@ -368,3 +368,26 @@ messages. Related comments in the same turn are grouped under one source label.
 Preserve superseded decisions as history, not active requirements. Add later user
 corrections with new source labels. Update the owning design document when a change
 is accepted. Never fabricate a user approval from an assistant recommendation.
+
+## Later backtest direction
+
+**Confirmed. Source: U24, user's Strategy 350 and backtest notes.**
+
+- Consider the latest Strategy 350 as a replacement for the prior starting
+  strategy. Treat its changing source as a pinned candidate, not an approved live
+  release.
+- The scanner, data catalogue and rule-set design govern backtest preparation.
+  Their vectorized bar path supersedes a different current implementation path.
+- Start with completed 100 ms bars so several days can be backtested quickly.
+  Consider coarser timeframes only if measured speed warrants the fidelity cost.
+- Read required bars, indicators and historical level books from ARTE ClickHouse.
+  Optimize historical level construction over bars and live level updates over
+  streaming data.
+- Generate historical market signals and Watchlist results efficiently from bars.
+- Design and validate the contemplated compact bar contract before materializing it.
+- Persist all logs and run evidence in ClickHouse, compactly and compressed.
+  SQLite is forbidden, including a backtest spool.
+
+| Label | User message anchor | Main contribution |
+|---|---|---|
+| U24 | "latest strategy called 350" and "Logs ... Clickhouse, using SQLite is forbidden" | Replacement candidate; vectorized 100 ms bar backtest; catalogue/rules; compact bars; ClickHouse-only evidence |

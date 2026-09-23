@@ -32,6 +32,11 @@ and strategy acceptance remain separate approvals.
 - ClickHouse is the only external durable persistence service.
 - MDE and strategy share the live process and in-memory domain state.
 - Backtest shares contracts, not live processes, accounts or mutable state.
+- Strategy 350 is the current replacement candidate; pin exact source and
+  configuration before porting and do not infer release approval from its number.
+- Historical preparation starts from vectorized completed 100 ms bar batches
+  selected by the scanner, catalogue and rule sets. ClickHouse holds all run
+  evidence and compact logs; SQLite is prohibited.
 - Complete brackets and buffered official LULD checks gate exposure increases.
 
 ## Decisions requiring evidence
@@ -50,6 +55,9 @@ and strategy acceptance remain separate approvals.
 | Historical LULD | Official recorded coverage or explicit modeled alternative | Official-band historical claims |
 | Durability | ClickHouse acknowledgment/recovery semantics and measured latency | Crash-safe order submission |
 | Retention | Run pins, seed dependencies and recovery requirements | Automated expiry |
+| Strategy 350 | Frozen source/configuration, causal rule and decision parity | Candidate backtest and live activation |
+| Compact bars | Lossless schema, source coverage, codec and multi-day query benchmarks | Materialized 100 ms backtest path |
+| Bar fidelity | Event versus bar signals, V7 transitions and order/P&L comparison | Coarser timeframe or parity claims |
 
 An unresolved gate must be visible in readiness output. Do not implement a silent
 fallback to the parent app, flatfiles, stale seeds, or approximate missing data.

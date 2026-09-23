@@ -1,5 +1,68 @@
 # Backtest, debugging, and validation
 
+## Strategy 350 and bar-first backtest design
+
+Strategy 350 is the replacement candidate for the earlier starting strategy.
+Its current source is a revision of Strategy 349. It removes the duplicate
+historical Watchlist prior-close condition. The causal executor still enforces
+that condition and fails closed when the prior close is unavailable. Freeze the
+exact copied source, dependencies, effective configuration, and hashes before
+porting. Later changes to Strategy 350 require a new pinned version and parity
+run. Candidate number 350 alone is not an approval for live orders.
+
+This section supersedes any event-by-event historical preparation plan where a
+certified bar product can supply the same causal operands. The scanner, data
+catalogue, and rule-set definitions select the smallest required universe,
+sessions, columns, and timeframes before computation. The catalogue records the
+source generation, calculation contract, coverage, precision, and knowledge
+cutoff for each product. A missing required product blocks that ticker or run;
+it never silently substitutes another source.
+
+The first backtest execution grid is completed 100 ms bars. Read bounded,
+columnar batches for many tickers and sessions from ARTE ClickHouse. Vectorize
+stateless transforms, rolling indicators, scanner predicates, Watchlist rules,
+market signals, and feature preparation across bars and independent tickers.
+Derive larger timeframes from the same verified base only when their aggregation
+contract is identical. Keep bar arrays contiguous and resident within the run's
+resource budget. Query ClickHouse by range and required columns, not per bar or
+per decision. The same plan must support several days without rebuilding
+unchanged products.
+
+Stateful levels, strategy decisions, account reservations, fills, and OMS actions
+still advance in causal boundary order. Batch and parallelize independent ticker
+work, then merge candidate actions through one deterministic market-time and
+account ordering. Vectorization must preserve prior-only operands, equal-time
+rules, order timing, and position-dependent behavior. A vectorized lookahead is
+not an acceptable speedup.
+
+Historical V7 construction may consume certified completed bars and publish
+versioned level books and next-session seeds. Live V7 consumes the streaming
+market path. Both implementations must share level identity, state transitions,
+causality rules, and tested decision semantics. A historical full-session fit
+cannot be substituted for an intraday streaming state. Historical bar-based
+level books, signal products, bars, and indicators are read from ARTE ClickHouse
+when their pinned contracts and coverage are ready. Missing dependencies are
+built through maintenance and published before the backtest uses them. Streaming
+state continues in memory and persists the required audit and recovery products.
+
+Measure full-session preparation time, bars per second, peak memory, ClickHouse
+bytes read, and end-to-end backtest throughput on representative multi-day runs.
+Raise the base timeframe only after measurements show 100 ms is insufficient and
+parity tests show what events, signals, entries, exits, and P&L change. The chosen
+timeframe is part of run identity. Coarser bars are an explicit fidelity tradeoff,
+never a silent fallback.
+
+Historical bars lack live receive-time evidence. Rules requiring measured feed
+latency or original arrival order are unavailable in Historical mode unless a
+separate recorded-live source supplies them. The run reports that limitation.
+
+All backtest journals, compact diagnostic logs, source and calculation manifests,
+checkpoints, decisions, orders, fills, and metrics persist in the dedicated ARTE
+ClickHouse database. Use typed codes, run and boundary IDs, shared dictionaries,
+bounded payloads, partitioning, and tested ClickHouse compression codecs instead
+of repeated verbose JSON. Preserve enough causal evidence to debug and reproduce
+each decision. SQLite is forbidden for both the run spool and durable logs.
+
 ## Shared core
 
 Use the same event normalization, bars, indicators, V7 streaming algorithm, detectors,
