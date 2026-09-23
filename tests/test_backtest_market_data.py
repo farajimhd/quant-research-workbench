@@ -11,6 +11,7 @@ from src.backend.backtest_market_data import (
     ExecutionInterval,
     MarketDayLedger,
     assert_select_only,
+    market_day_boundary,
     market_day_rows_sql,
     verify_market_day_plan,
     _stable_hash,
@@ -38,6 +39,14 @@ class _CorruptReadClient(_ReadClient):
 
 
 class BacktestMarketDataTests(unittest.TestCase):
+    def test_persisted_boundary_uses_midnight_new_york_clock(self) -> None:
+        self.assertEqual(
+            market_day_boundary("2026-08-18", 14_700_100).isoformat(),
+            "2026-08-18T04:05:00.100000-04:00",
+        )
+        with self.assertRaisesRegex(ValueError, "04:00-20:00"):
+            market_day_boundary("2026-08-18", 72_000_100)
+
     def _ledger(self, root: Path) -> MarketDayLedger:
         definition = {"plan": {"requested": ["2026-08-18"], "units": [
             {"source_date": "2026-08-18", "ticker": "SUGP"},

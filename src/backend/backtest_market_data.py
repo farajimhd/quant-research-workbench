@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from contextlib import closing
-from datetime import date
+from datetime import date, datetime, time, timedelta
 import hashlib
 import json
 import os
@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import sqlite3
 from typing import Any, Iterable, Iterator, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 
 ARTE_DATABASE = "arte"
@@ -37,6 +38,17 @@ DEFAULT_LEDGER = Path(
 FIXED_RESOLUTIONS_MS = (100, 1_000, 5_000, 10_000, 30_000, 60_000, 300_000, 3_600_000)
 _INTERVAL = re.compile(r"^(?P<value>[1-9][0-9]*)(?P<unit>ms|s|m|h)$")
 _TICKER = re.compile(r"^[A-Z][A-Z0-9.\-]{0,15}$")
+_NEW_YORK = ZoneInfo("America/New_York")
+
+
+def market_day_boundary(session_date: date | str, boundary_ms: int) -> datetime:
+    """Decode the persisted bucket clock, whose origin is midnight New York."""
+    day = date.fromisoformat(session_date) if isinstance(session_date, str) else session_date
+    if not 14_400_000 <= boundary_ms <= 72_000_000:
+        raise ValueError("Market-day boundary must be within 04:00-20:00 New York")
+    return datetime.combine(day, time.min, tzinfo=_NEW_YORK) + timedelta(
+        milliseconds=boundary_ms
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -2931,6 +2931,7 @@ class ReplayRunController:
         from itertools import islice
         from src.backend.backtest_market_data import (
             MarketDayLedger, configuration_tickers, iter_market_day_rows,
+            market_day_boundary,
         )
 
         configuration = self.definition.configuration_revision["payload"]
@@ -2976,11 +2977,9 @@ class ReplayRunController:
                     if self._stop_requested:
                         await self._finish("stopped")
                         return
-                    local_start = datetime.combine(
-                        date.fromisoformat(str(row["session_date"])),
-                        clock_time(4, 0), tzinfo=NEW_YORK,
+                    at = market_day_boundary(
+                        str(row["session_date"]), int(row["boundary_ms"])
                     )
-                    at = local_start + timedelta(milliseconds=int(row["boundary_ms"]))
                     if at > self.definition.session_end:
                         continue
                     ticker = _ticker(row["ticker"])
