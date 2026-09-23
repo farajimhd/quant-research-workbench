@@ -44,9 +44,13 @@ state. A Strategy 350 join requires aligned signal and Watchlist products and
 produces only an event-refinement mask. Sparse fixed-cadence transition storage
 is now authored in migration 022, with an offline-tested reader that verifies
 SSD policy and part placement before use, exact coverage and transition digest,
-and full dense expansion. The migration has not been applied; no database was
-opened. Publication/writer code and the historical signal/Watchlist algorithms
-are still unimplemented.
+and full dense expansion. A prepared-product path now checks the pinned source
+bar generation, full dense input, fixed-cadence state changes, and exact sparse
+digest. The ClickHouse publisher checks acceptance and ownership, compares
+immutable transition pages, publishes coverage last, and rereads the product.
+Only pure preparation and decoding received focused unit tests. The schema was
+not applied, no database was opened, and connected writer/readback behavior is
+unverified. Historical signal/Watchlist algorithms remain unimplemented.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service

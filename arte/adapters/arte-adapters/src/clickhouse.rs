@@ -6,6 +6,10 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Duration;
 mod boolean_products;
+pub use boolean_products::{
+    boolean_publication_scope, prepare_boolean_product, DenseBatch,
+    Prepared as PreparedBooleanProduct,
+};
 mod compact_bars;
 mod coverage_index;
 mod eligibility_policies;

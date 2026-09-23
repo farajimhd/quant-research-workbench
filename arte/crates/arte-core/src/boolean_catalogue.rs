@@ -17,7 +17,7 @@ fn hash_ok(hash: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub provider: u16,
@@ -55,7 +55,7 @@ impl Request {
         content_hash(&(VERSION, "request", self))
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Coverage {
     pub request_hash: String,
