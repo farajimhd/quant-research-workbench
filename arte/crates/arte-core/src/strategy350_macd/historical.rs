@@ -299,20 +299,21 @@ mod tests {
     const SECOND: u64 = 1_000_000_000;
     const START: u64 = 30 * SECOND;
 
-    fn product() -> Complete {
+    fn product_with_bars(end_ns: u64, bars: &[(usize, i64)]) -> Complete {
+        let count = ((end_ns - START) / BASE_INTERVAL_NS) as usize;
         let request = Request {
             provider: 1,
             instruments: vec![10],
             session: 20260922,
             interval: Interval {
                 start: START,
-                end: START + 30 * SECOND,
+                end: end_ns,
             },
             timeframe_ns: BASE_INTERVAL_NS,
             source_generation: "a".repeat(64),
             calculation_hash: "b".repeat(64),
             columns: [Column::Close, Column::Trades].into(),
-            maximum_rows: 300,
+            maximum_rows: count,
         };
         let coverage = Coverage {
             provider: request.provider,
@@ -330,12 +331,12 @@ mod tests {
                 },
             )]
             .into(),
-            published_at_ns: START + 31 * SECOND,
+            published_at_ns: end_ns + SECOND,
         };
-        let mut present = vec![false; 300];
-        let mut close = vec![0; 300];
-        let mut trades = vec![0; 300];
-        for (slot, price) in [(0, 1000), (9, 1010), (299, 1050)] {
+        let mut present = vec![false; count];
+        let mut close = vec![0; count];
+        let mut trades = vec![0; count];
+        for &(slot, price) in bars {
             present[slot] = true;
             close[slot] = price;
             trades[slot] = 1;
@@ -345,7 +346,7 @@ mod tests {
             coverage_hash: coverage.hash().unwrap(),
             instrument: 10,
             first_start_ns: START,
-            count: 300,
+            count: count as u32,
             price_scale: 2,
             size_scale: 0,
             present,
@@ -357,9 +358,13 @@ mod tests {
             notional: None,
             trades: Some(trades),
         };
-        let mut readback = Readback::new(request, &coverage, START + 31 * SECOND).unwrap();
+        let mut readback = Readback::new(request, &coverage, end_ns + SECOND).unwrap();
         readback.observe(batch).unwrap();
         readback.finish().unwrap()
+    }
+
+    fn product() -> Complete {
+        product_with_bars(START + 30 * SECOND, &[(0, 1000), (9, 1010), (299, 1050)])
     }
 
     #[test]
@@ -416,5 +421,156 @@ mod tests {
         assert_eq!(cursor.advance_to(START + 30 * SECOND).unwrap(), 4);
         assert!(project(&complete, &"f".repeat(64), &coverage_hash, &config).is_err());
         assert!(project(&complete, &request_hash, &"f".repeat(64), &config).is_err());
+    }
+
+    #[test]
+    fn certified_later_bar_can_make_all_four_forming_frames_bullish() {
+        use crate::{
+            events::{EventKey, EventKind, Payload, SourceTime},
+            market_structure::scheduler::playback::{
+                sources::{Catalog, Shard},
+                Frame, Input, Limits, Prepared,
+            },
+            run_manifest::{Clock, Consumer, Execution, Manifest, Pinned},
+            strategy_dispatch::{InputBoundary, Mode, StrategyKind},
+        };
+        let complete = product_with_bars(START + 60 * SECOND, &[(299, 900)]);
+        let config = Config {
+            execution_interval: ExecutionInterval::Events,
+            price_scale: 2,
+            source_algorithm_hash: "b".repeat(64),
+        };
+        let mut cursor = project(
+            &complete,
+            &complete.request().hash().unwrap(),
+            complete.coverage_hash(),
+            &config,
+        )
+        .unwrap()
+        .cursor()
+        .unwrap();
+        let event_time = START + 30 * SECOND + 1;
+        let before = cursor
+            .preview_trade(
+                event_time - 2,
+                event_time - 2,
+                Decimal {
+                    atoms: 1000,
+                    scale: 2,
+                },
+            )
+            .unwrap();
+        assert!(!before.bullish);
+        let after = cursor
+            .preview_trade(
+                event_time,
+                event_time + 1,
+                Decimal {
+                    atoms: 1000,
+                    scale: 2,
+                },
+            )
+            .unwrap();
+        assert!(after.bullish);
+        assert!(after.previews.iter().all(Option::is_some));
+        let observation = Observation {
+            key: EventKey {
+                provider: 1,
+                instrument: 10,
+                session: 20260922,
+                kind: EventKind::Trade,
+                sequence: 1,
+            },
+            payload: Payload::Trade {
+                price: Decimal {
+                    atoms: 1000,
+                    scale: 2,
+                },
+                size: Decimal { atoms: 1, scale: 0 },
+                exchange: 1,
+                trade_id: "later-trade".into(),
+                trf: None,
+                conditions: Vec::new(),
+                correction: None,
+            },
+            sip: SourceTime {
+                ns: event_time,
+                precision_ns: 1,
+            },
+            participant: None,
+            available_at_ns: event_time + 1,
+            receipt: None,
+        };
+        let scope = cursor.scope();
+        let prepared = Prepared::new(
+            scope,
+            "modeled-completed-macd-v1",
+            vec![Frame {
+                watermark_ns: event_time,
+                evaluated_at_ns: event_time + 1,
+                inputs: vec![Input {
+                    observation: observation.clone(),
+                    eligible: true,
+                }],
+            }],
+            Limits {
+                maximum_frames: 1,
+                maximum_events: 1,
+                maximum_serialized_bytes: 4096,
+            },
+        )
+        .unwrap();
+        let catalog = Catalog {
+            schema_version: 1,
+            authority_manifest_hash: "c".repeat(64),
+            clock: Clock::Historical,
+            shards: vec![Shard {
+                provider: scope.provider,
+                instrument: scope.instrument,
+                session: scope.session,
+                prepared_hash: prepared.hash().into(),
+                clock_model: "modeled-completed-macd-v1".into(),
+            }],
+        };
+        let manifest = Manifest {
+            schema_version: 3,
+            run_id: "later-macd-run".into(),
+            mode: Mode::Backtest,
+            code_release_hash: "a".repeat(64),
+            source_manifest_hash: catalog.hash().unwrap(),
+            reference_manifest_hash: "b".repeat(64),
+            seed_manifest_hash: "d".repeat(64),
+            algorithm_manifest_hash: "e".repeat(64),
+            dependency_plan_hash: "f".repeat(64),
+            hardware_profile_hash: "1".repeat(64),
+            clock: Clock::Historical,
+            execution: Execution::Simulated {
+                fill_model_hash: "2".repeat(64),
+                cost_model_hash: "3".repeat(64),
+            },
+            consumers: vec![Consumer {
+                account: "first".into(),
+                instrument: 10,
+                strategy_instance: "strategy-350".into(),
+                strategy_kind: StrategyKind::Strategy350,
+                execution_interval: ExecutionInterval::Events,
+                effective_config_hash: "4".repeat(64),
+            }],
+        };
+        let pinned = Pinned::new(manifest.clone(), &manifest.hash().unwrap()).unwrap();
+        let source = catalog.bind_historical(&pinned, &prepared).unwrap();
+        let proof = source.event(0, 0).unwrap();
+        let evidence = cursor.preview_proof(&proof, &observation).unwrap();
+        assert!(evidence.outcome().bullish);
+        let input = InputBoundary {
+            event_id: "later-trade".into(),
+            event_time_ns: event_time,
+            available_at_ns: event_time + 1,
+            evaluated_at_ns: event_time + 1,
+            source_sequence: 1,
+            feature_hash: "features".into(),
+        };
+        crate::strategy350_transaction::require_historical_macd(Some(&evidence), &proof, &input)
+            .unwrap();
     }
 }
