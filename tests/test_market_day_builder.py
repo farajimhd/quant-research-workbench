@@ -24,24 +24,23 @@ class Arguments(unittest.TestCase):
         class Client:
             def __init__(self,mode): self.mode=mode
             def query(self,query,label):
-                if label=='prior_state_candidate':
-                    return [dict(build_id='old',attempt_id='attempt',source_hash='source')]
-                if label=='prior_bar_unit':
-                    return [dict(attempt_id='bars',source_hash='bar-source')]
                 if label=='prior_technical_values':
                     if "2026-08-18" in query: return []
                     return [dict(resolution_ms=f,macd_signal=1.,**{f'ema_{p}':1. for p in S.EMAS}) for f in S.FRAMES]
                 if label=='prior_close_values':
                     if "2026-08-18" in query: return []
                     return [dict(resolution_ms=f,close=1.) for f in S.FRAMES]
-                if label=='prior_empty_seed':
-                    return [dict(mode=self.mode,predecessor_date='2026-08-17',
-                        prior_build_id='old' if self.mode else '',prior_state_hash='prior' if self.mode else '')]
                 raise AssertionError(label)
+        class Ledger:
+            def __init__(self,mode): self.mode=mode
+            def candidates(self,*_): return [dict(build_id='old',attempt_id='attempt',source_hash='source')]
+            def unit(self,*_): return dict(attempt_id='bars',source_hash='bar-source')
+            def seed(self,*_): return dict(attempt_id='attempt',mode=self.mode,predecessor_date='2026-08-17',
+                prior_build_id='old' if self.mode else '',prior_state_hash='prior' if self.mode else '')
         with patch.object(B,'completed',return_value={'attempt_id':'attempt'}):
-            self.assertEqual(B.prior_indicator_state(Client(0),'arte','new',date(2026,8,19),
+            self.assertEqual(B.prior_indicator_state(Ledger(0),Client(0),'arte','new',date(2026,8,19),
                 'AACBU','2026-08-18','calc','rules',[]),(None,None,''))
-            state,prior_hash,prior_build=B.prior_indicator_state(Client(1),'arte','new',date(2026,8,19),
+            state,prior_hash,prior_build=B.prior_indicator_state(Ledger(1),Client(1),'arte','new',date(2026,8,19),
                 'AACBU','2026-08-18','calc','rules',[])
         self.assertEqual((set(state),prior_build),(set(S.FRAMES),'old'))
         self.assertTrue(prior_hash)
@@ -101,7 +100,7 @@ class Arguments(unittest.TestCase):
         a=B.parse_args(['--date','2026-09-18'])
         self.assertEqual((a.start,a.end),(date(2026,9,18),date(2026,9,18)))
         self.assertEqual(a.database,'arte')
-        self.assertEqual(S.table(a.database,'bars'),'arte.market_day_bars_v1')
+        self.assertEqual(S.table(a.database,'bars'),'arte.bars_v1')
         a=B.parse_args(['--start-date','2026-09-17','--end-date','2026-09-18'])
         self.assertEqual((a.end-a.start).days+1,2)
 
@@ -267,13 +266,14 @@ class ClickHouseParity(unittest.TestCase):
         for ordinal,(offset,kind,primary,secondary,size,bidsize,token) in enumerate(values):
             arms.append(f"SELECT toUInt64({S.bounds(self.day,'04:05:00')}+{offset}) AS sip_timestamp_us,toUInt64({ordinal}) AS ordinal,toUInt8({kind|6}) AS event_meta,toUInt32({primary}) AS price_primary_int,toUInt32({secondary}) AS price_secondary_int,toFloat32({size}) AS size_primary,toFloat32({bidsize}) AS size_secondary,toUInt8({token}) AS condition_token_1,toUInt8(0) AS condition_token_2,toUInt8(0) AS condition_token_3,toUInt8(0) AS condition_token_4,toUInt8(0) AS condition_token_5")
         rules=[dict(token_id=1,modifier_int=0,update_high_low=1,update_last=1,update_volume=1)]
-        self.c.query(S.events_sql(self.db,self.build,self.day,'EVT',self.attempt,rules,' UNION ALL '.join(arms)),'fixture_events',False)
-        rows=self.c.query(f"SELECT ordinal,execution_vwap,execution_volume,cumulative_volume,bid_int,volume_valid FROM {S.table(self.db,'events')} WHERE ticker='EVT' ORDER BY sip_timestamp_us,ordinal",'event_values')
-        self.assertAlmostEqual(rows[1]['execution_vwap'],1.01)
-        self.assertEqual(rows[1]['bid_int'],10000)
-        self.assertEqual(rows[2]['bid_int'],9800)
+        self.c.query(S.broker_sql(self.db,self.build,self.day,'EVT',self.attempt,rules,' UNION ALL '.join(arms)),'fixture_broker',False)
+        rows=self.c.query(f"SELECT bucket_index,execution_vwap,cumulative_execution_volume,cumulative_volume,bid_int,volume_valid,event_count,quote_event_count FROM {S.table(self.db,'broker_100ms')} WHERE ticker='EVT' ORDER BY bucket_index",'broker_values')
+        self.assertAlmostEqual(rows[0]['execution_vwap'],1.01)
+        self.assertEqual(rows[0]['bid_int'],9800)
+        self.assertEqual(rows[0]['event_count'],3)
+        self.assertEqual(rows[0]['quote_event_count'],2)
         self.assertAlmostEqual(rows[-1]['execution_vwap'],(10*1.01+5*.99)/15)
-        self.assertEqual(rows[-1]['execution_volume'],15)
+        self.assertEqual(rows[-1]['cumulative_execution_volume'],15)
         self.assertEqual(rows[-1]['cumulative_volume'],21)
         self.assertEqual(rows[-1]['volume_valid'],0)
         self.c.query(S.base_sql(self.db,self.build,self.day,'EVT',self.attempt),'fixture_base',False)
@@ -304,21 +304,21 @@ class ClickHouseParity(unittest.TestCase):
             "toUInt8(0) AS condition_token_3,toUInt8(0) AS condition_token_4,"
             "toUInt8(0) AS condition_token_5"
             for ordinal,(offset,kind,primary,secondary,size,flags) in enumerate(values))
-        self.c.query(S.events_sql(self.db,self.build,self.day,'FLAGS',self.attempt,[],source),'flag_events',False)
-        rows=self.c.query(f"SELECT ordinal,price_valid,extremes_valid,volume_valid,execution_valid,"
-            f"cumulative_volume,execution_volume FROM {S.table(self.db,'events')} "
-            "WHERE ticker='FLAGS' ORDER BY ordinal",'flag_values')
+        self.c.query(S.broker_sql(self.db,self.build,self.day,'FLAGS',self.attempt,[],source),'flag_broker',False)
+        rows=self.c.query(f"SELECT bucket_index,price_valid,extremes_valid,volume_valid,"
+            f"cumulative_volume,cumulative_execution_volume,execution_volume,reporting_delayed_trades FROM {S.table(self.db,'broker_100ms')} "
+            "WHERE ticker='FLAGS' ORDER BY bucket_index",'flag_values')
         self.assertEqual([r['volume_valid'] for r in rows],[0,1,0,1,0,1])
         self.assertEqual([r['price_valid'] for r in rows],[0,1,0,1,0,1])
         self.assertEqual([r['extremes_valid'] for r in rows],[0,1,0,1,0,1])
-        self.assertEqual([r['execution_valid'] for r in rows],[0,1,0,1,0,0])
+        self.assertEqual([r['execution_volume'] for r in rows],[0,5,0,3,0,0])
         self.assertEqual(rows[-1]['cumulative_volume'],10)
-        self.assertEqual(rows[-1]['execution_volume'],8)
+        self.assertEqual(rows[-1]['cumulative_execution_volume'],8)
         self.c.query(S.base_sql(self.db,self.build,self.day,'FLAGS',self.attempt),'flag_bars',False)
         bars=self.c.query(f"SELECT sum(volume) AS volume,sum(trade_count) AS trades "
             f"FROM {S.table(self.db,'bars')} WHERE ticker='FLAGS' AND resolution_ms=100",'flag_bar_values')[0]
         self.assertEqual((bars['volume'],bars['trades']),(10,3))
-        metrics=B.validate_events(self.c,self.db,self.build,self.day,'FLAGS',self.attempt,
+        metrics=B.validate_broker(self.c,self.db,self.build,self.day,'FLAGS',self.attempt,
             {'n':6,'session_events':6,'reporting_delayed_trades':2})
         self.assertEqual(metrics['pre_0405_volume_eligible_trades'],2)
         self.assertEqual(metrics['reporting_delayed_trades'],2)
@@ -356,19 +356,23 @@ class ClickHouseParity(unittest.TestCase):
         self.assertAlmostEqual(row['macd_line'],0.,places=10)
 
     def test_resume_does_not_publish_abandoned_attempt(self):
+        ledger_path=B.RUNTIME/'market-day-tests'/uuid.uuid4().hex/'ledger.sqlite3'
+        ledger_path.parent.mkdir(parents=True,exist_ok=True)
+        ledger=B.Ledger(ledger_path)
         old,new=str(uuid.uuid4()),str(uuid.uuid4())
         for attempt in (old,new):
             self.c.query(f"INSERT INTO {S.table(self.db,'bars')} (build_id,session_date,ticker,attempt_id,resolution_ms,bucket_index) VALUES ('fixture','2026-09-18','RETRY','{attempt}',100,147000)",'partial_fixture',False)
         result=B.evidence(self.c,self.db,'bars',self.build,self.day,'RETRY',new)
-        B.publish(self.c,self.db,self.build,self.day,'RETRY','bars',new,'hash',result)
-        published=B.completed(self.c,self.db,self.build,self.day,'RETRY','bars','hash')
+        B.publish(ledger,self.build,self.day,'RETRY','bars',new,'hash',result)
+        published=B.completed(ledger,self.c,self.db,self.build,self.day,'RETRY','bars','hash')
         self.assertEqual(published['attempt_id'],new)
         with self.assertRaisesRegex(ValueError,'dependency changed'):
-            B.completed(self.c,self.db,self.build,self.day,'RETRY','bars','different')
+            B.completed(ledger,self.c,self.db,self.build,self.day,'RETRY','bars','different')
         # A partial duplicate inside a published attempt must fail on resume.
         self.c.query(f"INSERT INTO {S.table(self.db,'bars')} (build_id,session_date,ticker,attempt_id,resolution_ms,bucket_index) VALUES ('fixture','2026-09-18','RETRY','{new}',100,147000)",'corrupt_fixture',False)
         with self.assertRaisesRegex(ValueError,'integrity failed'):
-            B.completed(self.c,self.db,self.build,self.day,'RETRY','bars','hash')
+            B.completed(ledger,self.c,self.db,self.build,self.day,'RETRY','bars','hash')
+        ledger.close()
 
     def test_runnable_interruption_and_inclusive_range_resume(self):
         runtime=B.RUNTIME / 'market-day-tests' / uuid.uuid4().hex
@@ -394,24 +398,22 @@ class ClickHouseParity(unittest.TestCase):
         self.assertEqual(report['skipped'],8)
         self.assertEqual(report['seed_modes'],{'bootstrap':0,'carried':0})
         self.assertEqual(report['definition']['plan']['requested'],['2026-08-18','2026-08-19'])
-        published=self.c.query(f"SELECT ticker,stage,count() AS n FROM {S.table(self.db,'units')} FINAL "
-            f"WHERE build_id={S.literal(report['build_id'])} AND status='complete' "
-            "GROUP BY ticker,stage ORDER BY ticker,stage",'published_parallel')
-        self.assertEqual({(row['ticker'],row['stage']):int(row['n']) for row in published},
-            {('CD','bars'):2,('CD','events'):2,('CD','technical'):2,('CD','seed'):2,
-             ('TGLS','bars'):2,('TGLS','events'):2,('TGLS','technical'):2,('TGLS','seed'):2})
+        ledger=B.Ledger(runtime.parent/'build-ledger-v2.sqlite3')
+        published=ledger.db.execute("SELECT ticker,stage,count(*) FROM units WHERE build_id=? AND status='complete' GROUP BY ticker,stage",(report['build_id'],)).fetchall()
+        self.assertEqual({(ticker,stage):n for ticker,stage,n in published},
+            {('CD','bars'):2,('CD','broker_100ms'):2,('CD','technical'):2,
+             ('TGLS','bars'):2,('TGLS','broker_100ms'):2,('TGLS','technical'):2})
         prior=self.c.query(f"SELECT ema_7 FROM {S.table(self.db,'technical')} WHERE "
             f"build_id={S.literal(report['build_id'])} AND ticker='CD' "
             "AND session_date='2026-08-18' AND resolution_ms=1000 "
             "ORDER BY bucket_index DESC LIMIT 1",'prior_ema')[0]['ema_7']
+        bar_attempt=ledger.unit(report['build_id'],'2026-08-19','CD','bars')['attempt_id']
         first=self.c.query(f"SELECT t.ema_7,b.close_int/10000. AS close FROM {S.table(self.db,'technical')} t "
             f"INNER JOIN {S.table(self.db,'bars')} b ON t.build_id=b.build_id AND t.session_date=b.session_date "
             "AND t.ticker=b.ticker AND t.resolution_ms=b.resolution_ms AND t.bucket_index=b.bucket_index "
             f"WHERE t.build_id={S.literal(report['build_id'])} AND t.ticker='CD' "
             "AND t.session_date='2026-08-19' AND t.resolution_ms=1000 "
-            f"AND b.attempt_id=(SELECT attempt_id FROM {S.table(self.db,'units')} FINAL "
-            f"WHERE build_id={S.literal(report['build_id'])} AND ticker='CD' "
-            "AND session_date='2026-08-19' AND stage='bars' AND status='complete') "
+            f"AND b.attempt_id=toUUID({S.literal(bar_attempt)}) "
             "ORDER BY t.bucket_index LIMIT 1",'carried_ema')[0]
         self.assertAlmostEqual(first['ema_7'],prior*.75+first['close']*.25,places=8)
         standalone=B.parse_args(['--date','2026-08-19','--tickers','CD,TGLS','--workers','2',
@@ -422,6 +424,7 @@ class ClickHouseParity(unittest.TestCase):
         standalone_report=json.loads((standalone.runtime/'latest.json').read_text())
         self.assertEqual(standalone_report['seed_modes'],{'bootstrap':0,'carried':2})
         self.assertEqual(len(standalone_report['definition']['plan']['units']),2)
+        ledger.close()
 
 
 if __name__=='__main__': unittest.main()

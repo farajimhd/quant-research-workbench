@@ -76,7 +76,7 @@ CLICKHOUSE_WORKSTATION_USER/PASSWORD, and CLICKHOUSE_URL/USER/PASSWORD.
 Runtime manifests default to `D:/TradingML/runtimes/market-day`; `--runtime` must
 remain under the available runtime root. The default output database is
 `arte`. Market-day output tables retain their independent `_v1` schema suffix;
-the `market-day-core-v4` string is the calculation revision, not a table version.
+the `market-day-core-v5` string is the calculation revision, not a table version.
 Python needs `pandas_market_calendars`; interactive progress
 uses Rich, with `--progress text` for plain output.
 
@@ -119,8 +119,12 @@ larger requests fail explicitly rather than truncating the requested range.
    truncated-millisecond age <= 1,000 ms. No future or equal-time later quote is
    visible to an earlier trade. Quote observation timestamps remain available so
    consumers can reevaluate freshness during event gaps.
-3. Persist event indicator updates, then reduce those persisted rows into sparse
-   100ms trade bars. Quotes outside 04:00–20:00 ET are not carried into the session.
+3. In one ordered ClickHouse event pass, reduce trades and quotes into one
+   `liquidity_100ms_v1` row per nonempty 100 ms bucket. This row retains the
+   latest causal quote and its observation time, bid/ask sizes, eligible trade
+   volume, event counts, and cumulative execution VWAP. There is no persisted
+   per-event duplicate. Reduce these rows into sparse 100 ms trade bars.
+   Quotes outside 04:00–20:00 ET are not carried into the session.
    Excluded events and eligibility counts are exposed in the runtime report.
 4. Read 100ms bars to build 1s, 5s, 10s and 30s together. Read 30s to build 1m,
    5m and 1h together. Bucket indices are offsets from New York midnight; all
@@ -136,7 +140,7 @@ certified terminal technical row and close from persisted ClickHouse tables.
 If that session has only quote-only bars and zero technical rows, it follows
 the certified seed chain to the last earlier price-bearing session. A quote-only
 chain with no prior price state bootstraps at the first later eligible bar.
-It prefers the current build, then a completed compatible V4 build. The state
+It prefers the current build, then a completed compatible V5 build. The state
 must match the calculation source and trade-rule hash; its published units and
 output hashes are revalidated. If no compatible state exists, that ticker-day
 uses a **first-bar bootstrap**, recorded in the runtime unit log and seed counts.
@@ -152,70 +156,71 @@ RSI is 100, matching QMD. No missing bars are fabricated. A price-bearing bar
 without eligible extremes blocks technical publication.
 
 The indicator definition, parameters, seeds, calculation source hashes, calendar,
-input certificates and price scale are stored once per build. Floating indicator
+input certificates and price scale are recorded in the runtime build manifest and
+the compact runtime SQLite certification ledger. Floating indicator
 outputs use Float64; price primitives use UInt64 at scale 10,000, because scaling
 the canonical UInt32 cent representation can exceed UInt32. Volume remains
 Float64 to preserve fractional canonical sizes. No JSON indicator payload is
-repeated per bar/event.
+repeated per bar or broker bucket.
 
 ## Tables and consumer contract
 
-All six tables specify `storage_policy='live_market_ssd'`. Preflight checks the
+All three ClickHouse tables specify `storage_policy='live_market_ssd'`. Preflight checks the
 policy's disks, the dated-universe table and its active parts, and existing
 output column definitions; completion checks actual
 active-part placement. Incorrect existing placement is a hard error, not a
 setting-only repair or fallback to `default`.
 
-| Table suffix (prefix `market_day_`, suffix `_v1`) | Purpose |
+| Table in `arte` | Purpose |
 |---|---|
-| `events` | Event-cursor updates: eligibility, causal NBBO, cumulative volume/notional, execution VWAP, spread |
-| `bars` | Sparse integer OHLC, sums/counts, additive execution primitives and validity |
-| `technical` | Typed timeframe indicator values, readiness and calculation state |
-| `seed` | Per ticker-day bootstrap/carried mode, predecessor and prior-state hash |
-| `units` | Published attempt ID and source/output integrity for each ticker-day stage |
-| `builds` | Shared definition and final `core_complete` status |
+| `bars_v1` | Sparse integer OHLC, sums/counts, additive execution primitives and validity, keyed by resolution |
+| `indicators_v1` | Typed indicator values, readiness and calculation state, keyed by resolution |
+| `liquidity_100ms_v1` | One aggregate per event-bearing 100 ms bucket: quote depth and timestamp, spread, eligible trade volume/count, cumulative volume/notional and execution VWAP |
 
-Large data tables use MergeTree with monthly session partitions. Registry tables
-use ReplacingMergeTree and must be read with `FINAL`. Data rows are immutable,
-keyed by build, instrument/session, attempt and event/bar coordinates. Failed
-attempts may retain rows, but are **never consumer-visible authority**. Consumers
-must first select a `core_complete` build, then join each product to its matching
-`units FINAL` row with status=`complete`, including the exact `attempt_id`.
-Technical consumers must additionally join the matching certified `seed` row;
-`mode=0` means first-bar bootstrap and `mode=1` means carried predecessor state.
-Reading an entire table without these predicates is incorrect.
+Data tables use MergeTree with monthly session partitions. Rows are immutable,
+keyed by build, ticker/session, attempt and resolution/bucket. The runtime
+`build-ledger-v2.sqlite3` stores build status, certified stage row counts/hashes,
+attempt IDs and seed provenance. Failed attempts may retain ClickHouse rows, but
+are **never consumer-visible authority**. Consumers must select a `core_complete`
+build from the runtime manifest/ledger and constrain each table to its certified
+attempt ID. The Backtest consumer has not yet been changed to read these tables.
 
-An event value is available at its canonical event cursor. A technical value is
-available only when its bar ends; a bar's bucket start is not its availability
-time. The last technical row provides EMA/MACD and mature Wilder state; incomplete
-days are recomputed, not resumed mid-recurrence. These outputs do not replace raw
-events for fills or intrabar strategy/forming updates, nor the separate structural,
-corporate-action, population, reference and signal authorities.
+A 100 ms liquidity row and its bar become available only at the bucket end;
+`bucket_index` denotes the start, not the decision time. Quote freshness for a
+fill must be checked against `quote_timestamp_us` at the actual fill time.
+Displayed ask size bounds aggressive buy liquidity; bid size bounds aggressive
+sell liquidity. Eligible trade volume can inform a conservative passive-fill
+budget, but the table does not infer aggressor side or prove queue position.
+Multiple orders must share a bucket's budget rather than each consuming it in
+full. Empty 100 ms buckets have no row. Exact event replay remains the canonical
+authority for sub-bucket fill timing and stop triggers. Indicators become
+available only when their bars end. Backtest broker integration remains separate.
 
 ## Resume and certification
 
-Rerun the same command to validate and skip published units. `--rebuild` creates
+Rerun the same command on the same host/runtime to validate and skip published units. `--rebuild` creates
 a distinct build ID without deleting existing data; resume that specific build
 with `--build-id <printed-id>` and the original arguments/runtime. Source, rules,
 code, parameters, range and runtime owner are pinned. A per-database OS lock
 prevents simultaneous local controllers; separate runtime owners get different
 build IDs. Ctrl+C cancels the active query and preserves completed units. A retry
 uses a fresh attempt ID, so an uncertain partial INSERT cannot duplicate a
-published result. There is no automatic garbage collection of abandoned attempts.
-The transport-only connection fix can resume the known failed V4 controller build
-when its plan, calculation source, rules, runtime owner and original build hash
-all match. Other controller changes still create a new build. Read-only plans
+published result. The ledger is host-local and must be preserved with the
+runtime manifests; copying the ClickHouse tables alone does not transfer
+certification. There is no automatic garbage collection of abandoned attempts.
+Read-only plans
 write `last-plan.json` so they do not replace the failed build's `latest.json`.
 
 Verification checks source-day totals against continuity, ordinal uniqueness and
-bounds, source fingerprints before/after calculation, event count conservation,
+bounds, source fingerprints before/after calculation, event count conservation in
+the 100 ms liquidity aggregates,
 unique output keys, volume/notional/count conservation, direct-versus-hierarchical
 OHLC equality, indicator coverage/finite values, and SSD placement. Resume rechecks
 stored output hashes. Core certification is **not Backtest behavioral acceptance**;
 the consumers remain unchanged pending decision/order/fill equivalence testing.
 
-The calculation reads canonical events once to produce event-derived rows and
-uses those persisted rows for bars. Integrity verification intentionally performs
+The calculation reads canonical events once to produce the 100 ms liquidity rows
+and uses those persisted rows for bars. Integrity verification intentionally performs
 additional canonical scans. The controller does not claim a single total disk
 scan, or that the fastest all-universe implementation has been established.
 `latest.json`, per-build files and immutable `runs/*.json` retain aggregate

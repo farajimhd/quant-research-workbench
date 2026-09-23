@@ -11,7 +11,7 @@ import re
 from datetime import timedelta
 from pipelines.market_sip.events.trade_reporting_flags import DELAYED, REVISION as REPORTING_REVISION
 
-VERSION = "market-day-core-v4"
+VERSION = "market-day-core-v5"
 EMAS = (7, 9, 12, 15, 20, 26, 50)
 FRAMES = (100, 1000, 5000, 10000, 30000, 60000, 300000, 3600000)
 POLICY = "live_market_ssd"
@@ -29,22 +29,31 @@ def identifier(value):
 
 
 def table(db, name):
-    return f"{identifier(db)}.market_day_{name}_v1"
+    names = {'bars':'bars_v1','technical':'indicators_v1','broker_100ms':'liquidity_100ms_v1'}
+    return f"{identifier(db)}.{names[name]}"
 
 
 def ddl(db):
     common = "build_id String, session_date Date, ticker LowCardinality(String), attempt_id UUID"
     definitions = {
-        "events": (f"""{common}, sip_timestamp_us UInt64 CODEC(Delta,ZSTD(1)),
-            ordinal UInt64 CODEC(Delta,ZSTD(1)), kind UInt8,
-            price_int UInt64 CODEC(T64,ZSTD(1)), size Float64,
+        "broker_100ms": (f"""{common}, resolution_ms UInt32, bucket_index UInt32,
+            first_event_us UInt64 CODEC(Delta,ZSTD(1)),
+            last_event_us UInt64 CODEC(Delta,ZSTD(1)),
+            event_count UInt32, source_trade_count UInt32, quote_event_count UInt32,
+            reporting_delayed_trades UInt32, volume_ineligible_trades UInt32,
+            price_ineligible_trades UInt32, execution_ineligible_trades UInt32,
+            pre_0405_trades UInt32, pre_0405_volume_eligible_trades UInt32,
+            invalid_trade_values UInt32,
+            open_int UInt64, high_int UInt64, low_int UInt64, close_int UInt64,
+            volume Float64, trade_count UInt32, notional Float64,
+            execution_volume Float64, execution_notional Float64,
             price_valid UInt8, extremes_valid UInt8, volume_valid UInt8,
-            execution_valid UInt8, quote_timestamp_us UInt64 CODEC(Delta,ZSTD(1)),
+            quote_timestamp_us UInt64 CODEC(Delta,ZSTD(1)),
             bid_int UInt64, ask_int UInt64, bid_size Float64, ask_size Float64,
             cumulative_volume Float64, cumulative_notional Float64,
-            execution_volume Float64, execution_notional Float64,
-            execution_vwap Float64, spread Float64, nbbo_valid UInt8""",
-            "build_id, session_date, ticker, attempt_id, sip_timestamp_us, ordinal"),
+            cumulative_execution_volume Float64, cumulative_execution_notional Float64,
+            execution_vwap Float64, spread Float64, quote_valid UInt8""",
+            "build_id, session_date, ticker, attempt_id, resolution_ms, bucket_index"),
         "bars": (f"""{common}, resolution_ms UInt32, bucket_index UInt32,
             open_int UInt64, high_int UInt64, low_int UInt64, close_int UInt64,
             volume Float64, trade_count UInt64, notional Float64,
@@ -58,20 +67,10 @@ def ddl(db):
             previous_close Float64, sample_count UInt64,
             avg_gain Float64, avg_loss Float64""",
             "build_id, session_date, ticker, attempt_id, resolution_ms, bucket_index"),
-        "seed": (f"""{common}, mode UInt8, predecessor_date String,
-            prior_build_id String, prior_state_hash String""",
-            "build_id, session_date, ticker, attempt_id"),
-        "units": ("""build_id String, session_date Date, ticker LowCardinality(String),
-            stage LowCardinality(String), attempt_id UUID, source_hash String,
-            output_rows UInt64, output_hash UInt64, status LowCardinality(String),
-            updated_at DateTime64(6,'UTC')""", "build_id, session_date, ticker, stage"),
-        "builds": ("""build_id String, session_date Date, definition_json String,
-            status LowCardinality(String), updated_at DateTime64(6,'UTC')""", "build_id"),
     }
     for name, (columns, order) in definitions.items():
-        engine = "ReplacingMergeTree(updated_at)" if name in ("units","builds") else "MergeTree"
         yield f"""CREATE TABLE IF NOT EXISTS {table(db,name)} ({columns})
-            ENGINE={engine} PARTITION BY toYYYYMM(session_date) ORDER BY ({order})
+            ENGINE=MergeTree PARTITION BY toYYYYMM(session_date) ORDER BY ({order})
             SETTINGS storage_policy='{POLICY}'"""
 
 
@@ -107,11 +106,11 @@ def condition_expressions(rules):
     return form_ok, eligible(last), eligible(high), eligible(volume)
 
 
-def events_sql(db, build, day, ticker, attempt, rules, source=None):
+def broker_sql(db, build, day, ticker, attempt, rules, source=None):
     form, last, high, volume = condition_expressions(rules)
     source = source or canonical_source(day, ticker)
     window = "ORDER BY sip_timestamp_us,ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-    return f"""INSERT INTO {table(db,'events')}
+    return f"""INSERT INTO {table(db,'broker_100ms')}
     WITH decoded AS (
       SELECT *,bitAnd(event_meta,1) AS kind,
         toUInt64(price_primary_int)*if(bitAnd(event_meta,2)!=0,1,100) AS price_int,
@@ -126,7 +125,9 @@ def events_sql(db, build, day, ticker, attempt, rules, source=None):
         toUInt8(usable AND {last}) AS price_valid,
         toUInt8(usable AND {high}) AS extremes_valid,
         toUInt8(usable AND {volume}) AS volume_valid,
-        kind=0 AND secondary_int>0 AND price_int>=secondary_int AS valid_quote
+        kind=0 AND secondary_int>0 AND price_int>=secondary_int
+          AND isFinite(size) AND isFinite(toFloat64(size_secondary))
+          AND size>=0 AND toFloat64(size_secondary)>=0 AS valid_quote
       FROM ({source})
     ), quoted AS (
       SELECT *,argMaxIf(tuple(sip_timestamp_us,secondary_int,price_int,
@@ -145,24 +146,49 @@ def events_sql(db, build, day, ticker, attempt, rules, source=None):
         sumIf(price_int/10000.*size,execution_valid) OVER ({window}) AS en
       FROM classified
     ) SELECT {literal(build)},toDate({literal(day)}),{literal(ticker)},toUUID({literal(attempt)}),
-      sip_timestamp_us,ordinal,kind,price_int,size,price_valid,extremes_valid,volume_valid,execution_valid,
-      q.1,q.2,q.3,q.4,q.5,cv,cn,ev,en,if(ev>0,en/ev,0.),
-      if(q.1>0,(q.3-q.2)/10000.,0.),nbbo_valid FROM cumulative"""
+      toUInt32(100),toUInt32(intDiv(sip_timestamp_us-{bounds(day)},100000)) AS bucket,
+      min(sip_timestamp_us),max(sip_timestamp_us),
+      toUInt32(count()),toUInt32(countIf(kind=1)),toUInt32(countIf(kind=0)),
+      toUInt32(countIf(kind=1 AND bitAnd(event_meta,{DELAYED})!=0)),
+      toUInt32(countIf(kind=1 AND NOT volume_valid)),
+      toUInt32(countIf(kind=1 AND NOT price_valid)),
+      toUInt32(countIf(kind=1 AND volume_valid AND NOT execution_valid)),
+      toUInt32(countIf(kind=1 AND sip_timestamp_us<{bounds(day,'04:05:00')})),
+      toUInt32(countIf(kind=1 AND sip_timestamp_us<{bounds(day,'04:05:00')} AND volume_valid)),
+      toUInt32(countIf(kind=1 AND (price_int=0 OR size<=0 OR NOT isFinite(size)))),
+      argMinIf(price_int,tuple(sip_timestamp_us,ordinal),price_valid),
+      maxIf(price_int,extremes_valid),minIf(price_int,extremes_valid),
+      argMaxIf(price_int,tuple(sip_timestamp_us,ordinal),price_valid),
+      sumIf(size,volume_valid),toUInt32(countIf(volume_valid)),
+      sumIf(price_int/10000.*size,volume_valid),
+      sumIf(size,execution_valid),sumIf(price_int/10000.*size,execution_valid),
+      max(price_valid),max(extremes_valid),max(volume_valid),
+      argMax(q.1,tuple(sip_timestamp_us,ordinal)),
+      argMax(q.2,tuple(sip_timestamp_us,ordinal)),
+      argMax(q.3,tuple(sip_timestamp_us,ordinal)),
+      argMax(q.4,tuple(sip_timestamp_us,ordinal)),
+      argMax(q.5,tuple(sip_timestamp_us,ordinal)),
+      argMax(cv,tuple(sip_timestamp_us,ordinal)),
+      argMax(cn,tuple(sip_timestamp_us,ordinal)),
+      argMax(ev,tuple(sip_timestamp_us,ordinal)),
+      argMax(en,tuple(sip_timestamp_us,ordinal)),
+      if(argMax(ev,tuple(sip_timestamp_us,ordinal))>0,
+        argMax(en,tuple(sip_timestamp_us,ordinal))/argMax(ev,tuple(sip_timestamp_us,ordinal)),0.),
+      if(argMax(q.1,tuple(sip_timestamp_us,ordinal))>0,
+        (argMax(q.3,tuple(sip_timestamp_us,ordinal))-argMax(q.2,tuple(sip_timestamp_us,ordinal)))/10000.,0.),
+      toUInt8(argMax(q.1,tuple(sip_timestamp_us,ordinal))>0
+        AND argMax(q.2,tuple(sip_timestamp_us,ordinal))>0
+        AND argMax(q.3,tuple(sip_timestamp_us,ordinal))>=argMax(q.2,tuple(sip_timestamp_us,ordinal)))
+      FROM cumulative GROUP BY bucket"""
 
 
 def base_sql(db, build, day, ticker, attempt):
     return f"""INSERT INTO {table(db,'bars')}
-    SELECT build_id,session_date,ticker,attempt_id,toUInt32(100),
-      toUInt32(intDiv(sip_timestamp_us-{bounds(day)},100000)) AS bucket,
-      argMinIf(price_int,tuple(sip_timestamp_us,ordinal),price_valid),
-      maxIf(price_int,extremes_valid),minIf(price_int,extremes_valid),
-      argMaxIf(price_int,tuple(sip_timestamp_us,ordinal),price_valid),
-      sumIf(size,volume_valid),countIf(volume_valid),sumIf(price_int/10000.*size,volume_valid),
-      sumIf(size,execution_valid),sumIf(price_int/10000.*size,execution_valid),
-      max(price_valid),max(extremes_valid)
-    FROM {table(db,'events')} WHERE {selection(build,day,ticker,attempt)}
-      AND kind=1 AND (price_valid OR extremes_valid OR volume_valid)
-    GROUP BY build_id,session_date,ticker,attempt_id,bucket"""
+    SELECT build_id,session_date,ticker,attempt_id,resolution_ms,bucket_index,
+      open_int,high_int,low_int,close_int,volume,trade_count,notional,
+      execution_volume,execution_notional,price_valid,extremes_valid
+    FROM {table(db,'broker_100ms')} WHERE {selection(build,day,ticker,attempt)}
+      AND (price_valid OR extremes_valid OR volume_valid)"""
 
 
 def rollup_sql(db, build, day, ticker, attempt, parent, targets):
@@ -198,15 +224,12 @@ def split_factor(splits, day, ticker, date_column='b.session_date'):
     return '*'.join(terms) or '1.'
 
 
-def technical_sql(db, build, day, ticker, attempt, prior=None):
+def technical_sql(db, build, day, ticker, attempt, bar_attempt, prior=None):
     source = f"""SELECT b.session_date,b.resolution_ms,b.bucket_index,
       b.close_int,b.high_int,b.low_int
       FROM {table(db,'bars')} b
-      INNER JOIN (SELECT session_date,attempt_id FROM {table(db,'units')} FINAL
-        WHERE build_id={literal(build)} AND ticker={literal(ticker)} AND stage='bars' AND status='complete'
-        AND session_date=toDate({literal(day)})) u
-      ON b.session_date=u.session_date AND b.attempt_id=u.attempt_id
-      WHERE b.build_id={literal(build)} AND b.ticker={literal(ticker)} AND b.price_valid=1 AND b.extremes_valid=1"""
+      WHERE {selection(build,day,ticker,bar_attempt)}
+        AND b.price_valid=1 AND b.extremes_valid=1"""
     return technical_from_source(db, build, day, ticker, attempt, source, prior)
 
 

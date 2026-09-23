@@ -17,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -51,6 +52,87 @@ def save(path, value):
         stream.flush()
         os.fsync(stream.fileno())
     temporary.replace(path)
+
+
+class Ledger:
+    """Durable build certificates in the runtime root, outside market tables."""
+    def __init__(self, path):
+        self.path = path
+        self.lock = threading.RLock()
+        self.db = sqlite3.connect(path, timeout=60, check_same_thread=False)
+        self.db.execute('PRAGMA journal_mode=WAL')
+        self.db.execute('PRAGMA synchronous=FULL')
+        self.db.execute('PRAGMA busy_timeout=60000')
+        self.db.executescript('''
+          CREATE TABLE IF NOT EXISTS builds (build_id TEXT PRIMARY KEY, definition_hash TEXT NOT NULL,
+            version TEXT NOT NULL, calculation_source TEXT NOT NULL, rules_hash TEXT NOT NULL,
+            database_name TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS units (build_id TEXT NOT NULL, session_date TEXT NOT NULL,
+            ticker TEXT NOT NULL, stage TEXT NOT NULL, attempt_id TEXT NOT NULL,
+            source_hash TEXT NOT NULL, output_rows INTEGER NOT NULL, output_hash TEXT NOT NULL,
+            status TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY (build_id,session_date,ticker,stage));
+          CREATE TABLE IF NOT EXISTS seeds (build_id TEXT NOT NULL, session_date TEXT NOT NULL,
+            ticker TEXT NOT NULL, attempt_id TEXT NOT NULL, mode INTEGER NOT NULL,
+            predecessor_date TEXT NOT NULL, prior_build_id TEXT NOT NULL, prior_state_hash TEXT NOT NULL,
+            PRIMARY KEY (build_id,session_date,ticker));
+        ''')
+
+    def close(self):
+        with self.lock: self.db.close()
+
+    def build(self, build_id, definition, status):
+        fingerprint=digest(definition)
+        with self.lock,self.db:
+            old=self.db.execute('SELECT definition_hash FROM builds WHERE build_id=?',(build_id,)).fetchone()
+            if old and old[0]!=fingerprint: raise ValueError('Build ID has changed definition')
+            self.db.execute('INSERT INTO builds VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(build_id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at',
+                (build_id,fingerprint,definition['version'],definition['calculation_source'],
+                 definition['rules_hash'],definition['database'],status,datetime.now(timezone.utc).isoformat()))
+
+    def unit(self, build_id, day, ticker, stage):
+        with self.lock:
+            row=self.db.execute('SELECT attempt_id,source_hash,output_rows,output_hash,status FROM units WHERE build_id=? AND session_date=? AND ticker=? AND stage=?',
+                (build_id,str(day),ticker,stage)).fetchone()
+        return dict(zip(('attempt_id','source_hash','output_rows','output_hash','status'),row)) if row else None
+
+    def publish(self, build_id, day, ticker, stage, attempt, source_hash, result):
+        values=(build_id,str(day),ticker,stage,attempt,source_hash,int(result['n']),str(result['hash']),
+            'complete',datetime.now(timezone.utc).isoformat())
+        with self.lock,self.db:
+            self.db.execute('INSERT OR IGNORE INTO units VALUES (?,?,?,?,?,?,?,?,?,?)',values)
+            row=self.unit(build_id,day,ticker,stage)
+            if row != dict(attempt_id=attempt,source_hash=source_hash,output_rows=int(result['n']),
+                           output_hash=str(result['hash']),status='complete'):
+                raise ValueError(f'{day} {ticker} {stage}: conflicting published unit')
+
+    def seed(self, build_id, day, ticker):
+        with self.lock:
+            row=self.db.execute('SELECT attempt_id,mode,predecessor_date,prior_build_id,prior_state_hash FROM seeds WHERE build_id=? AND session_date=? AND ticker=?',
+                (build_id,str(day),ticker)).fetchone()
+        return dict(zip(('attempt_id','mode','predecessor_date','prior_build_id','prior_state_hash'),row)) if row else None
+
+    def put_seed(self, build_id, day, ticker, attempt, values):
+        with self.lock,self.db:
+            self.db.execute('INSERT OR IGNORE INTO seeds VALUES (?,?,?,?,?,?,?,?)',
+                (build_id,str(day),ticker,attempt,values['mode'],values['predecessor_date'],
+                 values['prior_build_id'],values['prior_state_hash']))
+            if self.seed(build_id,day,ticker)!={'attempt_id':attempt,**values}:
+                raise ValueError(f'{day} {ticker}: conflicting seed provenance')
+
+    def candidates(self, day, ticker, build, database, calculation_source, rules_hash, version):
+        with self.lock:
+            rows=self.db.execute('''SELECT u.build_id,u.attempt_id,u.source_hash,b.updated_at
+              FROM units u JOIN builds b ON b.build_id=u.build_id
+              JOIN seeds s ON s.build_id=u.build_id AND s.session_date=u.session_date AND s.ticker=u.ticker
+              AND s.attempt_id=u.attempt_id
+              WHERE u.session_date=? AND u.ticker=? AND u.stage='technical' AND u.status='complete'
+                AND (b.status='core_complete' OR u.build_id=?) AND b.database_name=?
+                AND b.version=? AND b.calculation_source=? AND b.rules_hash=?''',
+              (str(day),ticker,build,database,version,calculation_source,rules_hash)).fetchall()
+        out=[dict(build_id=old_build,attempt_id=attempt,source_hash=source_hash,updated_at=updated)
+             for old_build,attempt,source_hash,updated in rows]
+        return sorted(out,key=lambda row:(row['build_id']==build,row['updated_at'],row['build_id']),reverse=True)
 
 
 def date_range(args):
@@ -281,13 +363,17 @@ def storage_preflight(client, db, require_tables=False):
     misplaced_universe = client.query("SELECT table,disk_name FROM system.parts WHERE active AND database='q_live' AND table IN ('feature_tradable_universe_snapshot_v2','feature_tradable_universe_snapshot_coverage_v2') AND disk_name!='live_market_ssd' LIMIT 1", "population_parts")
     if misplaced_universe:
         raise ValueError("Dated tradable universe has parts outside live_market_ssd")
-    rows = client.query(f"SELECT name,storage_policy FROM system.tables WHERE database={sql.literal(db)} AND startsWith(name,'market_day_')", "table_policies")
+    names=('bars_v1','indicators_v1','liquidity_100ms_v1')
+    legacy=client.query(f"SELECT name FROM system.tables WHERE database={sql.literal(db)} AND startsWith(name,'market_day_')",'legacy_tables')
+    if legacy:
+        raise ValueError('Legacy market_day_* tables remain; remove them explicitly before the V1 rebuild')
+    rows = client.query(f"SELECT name,storage_policy FROM system.tables WHERE database={sql.literal(db)} AND name IN {names}", "table_policies")
     if any(row["storage_policy"] != sql.POLICY for row in rows):
-        raise ValueError("Existing market-day table has an incorrect storage policy; explicit migration required")
-    if require_tables and len(rows) != 6:
-        raise ValueError("Market-day table schema is incomplete")
+        raise ValueError("Existing market-data table has an incorrect storage policy; explicit migration required")
+    if require_tables and {row['name'] for row in rows} != set(names):
+        raise ValueError("Bars, indicators, or liquidity table schema is incomplete")
     if rows:
-        columns=client.query(f"SELECT table,name,type FROM system.columns WHERE database={sql.literal(db)} AND startsWith(table,'market_day_') ORDER BY table,position",'schema_contract')
+        columns=client.query(f"SELECT table,name,type FROM system.columns WHERE database={sql.literal(db)} AND table IN {names} ORDER BY table,position",'schema_contract')
         actual={r['name']:[] for r in rows}
         for column in columns:
             actual[column['table']].append((column['name'],column['type'].replace(' ','')))
@@ -297,7 +383,7 @@ def storage_preflight(client, db, require_tables=False):
             expected=re.findall(r"(?:^|,)\s*(\w+)\s+(LowCardinality\(String\)|DateTime64\(6,'UTC'\)|[A-Za-z]+[0-9]*)",body)
             if name in actual and actual[name]!=expected:
                 raise ValueError('Existing table does not match the versioned schema: '+name)
-    wrong = client.query(f"SELECT table,disk_name,count() AS parts FROM system.parts WHERE active AND database={sql.literal(db)} AND startsWith(table,'market_day_') AND disk_name!='live_market_ssd' GROUP BY table,disk_name", "part_placement")
+    wrong = client.query(f"SELECT table,disk_name,count() AS parts FROM system.parts WHERE active AND database={sql.literal(db)} AND table IN {names} AND disk_name!='live_market_ssd' GROUP BY table,disk_name", "part_placement")
     if wrong:
         raise ValueError("Market-day parts are not on live_market_ssd; explicit migration required")
 
@@ -439,23 +525,22 @@ def source_evidence(client, row):
 
 
 def evidence(client, db, kind, build, day, ticker, attempt):
-    key = "(sip_timestamp_us,ordinal)" if kind == 'events' else "(session_date,ticker)" if kind == 'seed' else "(resolution_ms,bucket_index)"
+    key = "(resolution_ms,bucket_index)"
     return client.query(f"SELECT count() AS n,uniqExact({key}) AS unique_keys,sum(cityHash64(tuple(*))) AS hash FROM {sql.table(db,kind)} WHERE {sql.selection(build,day,ticker,attempt)}", kind+"_integrity")[0]
 
 
-def publish(client, db, build, day, ticker, stage, attempt, source_hash, result):
-    client.query(f"INSERT INTO {sql.table(db,'units')} VALUES ({sql.literal(build)},toDate({sql.literal(day)}),{sql.literal(ticker)},{sql.literal(stage)},toUUID({sql.literal(attempt)}),{sql.literal(source_hash)},{int(result['n'])},{int(result['hash'])},'complete',now64(6))", "publish_"+stage, False)
+def publish(ledger, build, day, ticker, stage, attempt, source_hash, result):
+    ledger.publish(build,day,ticker,stage,attempt,source_hash,result)
 
 
-def completed(client, db, build, day, ticker, stage, source_hash):
-    rows = client.query(f"SELECT attempt_id,source_hash,output_rows,output_hash FROM {sql.table(db,'units')} FINAL WHERE {sql.selection(build,day,ticker)} AND stage={sql.literal(stage)} AND status='complete'", "resume")
-    if not rows:
+def completed(ledger, client, db, build, day, ticker, stage, source_hash):
+    row = ledger.unit(build,day,ticker,stage)
+    if not row:
         return None
-    row = rows[0]
     if row['source_hash'] != source_hash:
         raise ValueError("Published dependency changed; use --rebuild")
     result = evidence(client,db,stage,build,day,ticker,row['attempt_id'])
-    if int(result['n']) != int(row['output_rows']) or int(result['hash']) != int(row['output_hash']) or result['n'] != result['unique_keys']:
+    if int(result['n']) != int(row['output_rows']) or str(result['hash']) != str(row['output_hash']) or result['n'] != result['unique_keys']:
         raise ValueError("Published output integrity failed; explicit rebuild required")
     return row
 
@@ -488,38 +573,47 @@ def validate_bars(client, db, build, day, ticker, attempt):
         raise ValueError("Direct/hierarchical rollup parity failed")
 
 
-def validate_events(client,db,build,day,ticker,attempt,source):
+def validate_broker(client,db,build,day,ticker,attempt,source):
     where=sql.selection(build,day,ticker,attempt)
-    metrics=client.query(f"""SELECT count() AS events,countIf(kind=1) AS trades,
-      countIf(kind=1 AND NOT volume_valid) AS volume_ineligible_trades,
-      countIf(kind=1 AND NOT price_valid) AS price_ineligible_trades,
-      countIf(kind=1 AND volume_valid AND NOT execution_valid) AS execution_ineligible_trades,
-      countIf(kind=1 AND sip_timestamp_us<{sql.bounds(day,'04:05:00')}) AS pre_0405_trades,
-      countIf(kind=1 AND sip_timestamp_us<{sql.bounds(day,'04:05:00')} AND volume_valid=1) AS pre_0405_volume_eligible_trades,
-      countIf(kind=1 AND (price_int=0 OR size<=0 OR NOT isFinite(size))) AS invalid_trade_values,
-      sumIf(size,volume_valid) AS volume,sumIf(price_int/10000.*size,volume_valid) AS notional,
-      countIf(volume_valid) AS trade_count,
-      sumIf(size,execution_valid) AS execution_volume,
-      sumIf(price_int/10000.*size,execution_valid) AS execution_notional
-      FROM {sql.table(db,'events')} WHERE {where}""",'event_conservation')[0]
+    metrics=client.query(f"""SELECT sum(event_count) AS events,sum(source_trade_count) AS trades,
+      sum(volume_ineligible_trades) AS volume_ineligible_trades,
+      sum(price_ineligible_trades) AS price_ineligible_trades,
+      sum(execution_ineligible_trades) AS execution_ineligible_trades,
+      sum(pre_0405_trades) AS pre_0405_trades,
+      sum(pre_0405_volume_eligible_trades) AS pre_0405_volume_eligible_trades,
+      sum(invalid_trade_values) AS invalid_trade_values,
+      sum(volume) AS volume,sum(notional) AS notional,sum(trade_count) AS trade_count,
+      sum(execution_volume) AS execution_volume,sum(execution_notional) AS execution_notional,
+      sum(reporting_delayed_trades) AS reporting_delayed_trades
+      FROM {sql.table(db,'broker_100ms')} WHERE {where}""",'broker_conservation')[0]
     if int(metrics['events'])!=int(source['session_events']):
-        raise ValueError('Event stage lost or duplicated canonical session events')
+        raise ValueError('Broker 100ms stage lost or duplicated canonical session events')
+    if int(metrics['reporting_delayed_trades'])!=int(source['reporting_delayed_trades']):
+        raise ValueError('Broker 100ms delayed-trade count disagrees with canonical source')
+    bad=client.query(f"SELECT count() AS n FROM {sql.table(db,'broker_100ms')} WHERE {where} AND "
+        "(resolution_ms!=100 OR event_count=0 OR first_event_us>last_event_us OR "
+        "(quote_valid AND (quote_timestamp_us=0 OR bid_int=0 OR ask_int<bid_int)) OR "
+        "NOT isFinite(volume) OR volume<0 OR NOT isFinite(bid_size) OR NOT isFinite(ask_size) OR "
+        "bid_size<0 OR ask_size<0)",'broker_validity')[0]
+    if int(bad['n']):
+        raise ValueError('Invalid broker 100ms values')
     bars=client.query(f"SELECT sum(volume) AS volume,sum(notional) AS notional,sum(trade_count) AS trade_count,sum(execution_volume) AS execution_volume,sum(execution_notional) AS execution_notional FROM {sql.table(db,'bars')} WHERE {where} AND resolution_ms=100",'base_conservation')[0]
     for key,value in bars.items():
         if abs(float(value)-float(metrics[key]))>1e-9*max(1.,abs(float(metrics[key]))):
-            raise ValueError('Event/base-bar conservation failed: '+key)
+            raise ValueError('Broker/base-bar conservation failed: '+key)
     metrics['outside_session_events']=int(source['n'])-int(source['session_events'])
-    metrics['reporting_delayed_trades']=int(source['reporting_delayed_trades'])
     return metrics
 
 
-def validate_technical(client,db,build,day,ticker,attempt):
+def validate_technical(ledger,client,db,build,day,ticker,attempt):
     where=sql.selection(build,day,ticker,attempt)
     expressions=[f'NOT isFinite({name})' for name in [*(f'ema_{p}' for p in sql.EMAS),'macd_line','macd_signal','macd_histogram','rsi_14','atr_14']]
     invalid=client.query(f"SELECT count() AS n FROM {sql.table(db,'technical')} WHERE {where} AND ({' OR '.join(expressions)} OR rsi_14<0 OR rsi_14>100 OR atr_14<0)",'technical_validity')[0]
     if int(invalid['n']):
         raise ValueError('Invalid technical indicator values')
-    expected=client.query(f"SELECT count() AS n,countIf(price_valid AND NOT extremes_valid) AS unsupported FROM {sql.table(db,'bars')} WHERE {sql.selection(build,day,ticker)} AND attempt_id=(SELECT attempt_id FROM {sql.table(db,'units')} FINAL WHERE {sql.selection(build,day,ticker)} AND stage='bars' AND status='complete') AND price_valid=1",'technical_coverage')[0]
+    bar_unit=ledger.unit(build,day,ticker,'bars')
+    if not bar_unit: raise ValueError(f'{day} {ticker}: missing certified bars')
+    expected=client.query(f"SELECT count() AS n,countIf(price_valid AND NOT extremes_valid) AS unsupported FROM {sql.table(db,'bars')} WHERE {sql.selection(build,day,ticker,bar_unit['attempt_id'])} AND price_valid=1",'technical_coverage')[0]
     actual=evidence(client,db,'technical',build,day,ticker,attempt)
     if int(expected['unsupported']):
         raise ValueError('Price-bearing bars with unavailable extremes require an explicit indicator validity contract')
@@ -528,61 +622,47 @@ def validate_technical(client,db,build,day,ticker,attempt):
     return actual
 
 
-def prior_indicator_state(client, db, build, day, ticker, predecessor, calculation_source, rules_hash, splits,
+def prior_indicator_state(ledger, client, db, build, day, ticker, predecessor, calculation_source, rules_hash, splits,
                           visited=()):
     """Load the last certified price state across verified quote-only sessions."""
     if not predecessor:
         return None, None, ''
     if predecessor in visited or len(visited) >= 50:
         raise ValueError(f'{predecessor} {ticker}: cyclic or excessive prior indicator chain')
-    candidates=client.query(f"""SELECT u.build_id AS build_id,u.attempt_id AS attempt_id,u.source_hash AS source_hash
-      FROM (SELECT * FROM {sql.table(db,'units')} FINAL) u
-      INNER JOIN (SELECT * FROM {sql.table(db,'builds')} FINAL) b ON u.build_id=b.build_id
-      INNER JOIN (SELECT * FROM {sql.table(db,'units')} FINAL WHERE stage='seed' AND status='complete') s
-        ON u.build_id=s.build_id AND u.session_date=s.session_date AND u.ticker=s.ticker
-        AND u.attempt_id=s.attempt_id
-      WHERE u.session_date=toDate({sql.literal(predecessor)}) AND u.ticker={sql.literal(ticker)}
-        AND u.stage='technical' AND u.status='complete'
-        AND (b.status='core_complete' OR u.build_id={sql.literal(build)})
-        AND JSONExtractString(b.definition_json,'version')={sql.literal(sql.VERSION)}
-        AND JSONExtractString(b.definition_json,'calculation_source')={sql.literal(calculation_source)}
-        AND JSONExtractString(b.definition_json,'rules_hash')={sql.literal(rules_hash)}
-      ORDER BY (u.build_id={sql.literal(build)}) DESC,b.updated_at DESC,u.build_id DESC LIMIT 1""",'prior_state_candidate')
+    candidates=ledger.candidates(predecessor,ticker,build,db,calculation_source,rules_hash,sql.VERSION)
     if not candidates:
         return None, None, ''
     candidate=candidates[0]
     old_build=candidate['build_id']
     old_day=date.fromisoformat(predecessor)
-    if not completed(client,db,old_build,old_day,ticker,'technical',candidate['source_hash']):
+    if not completed(ledger,client,db,old_build,old_day,ticker,'technical',candidate['source_hash']):
         raise ValueError(f'{predecessor} {ticker}: missing certified prior indicator state')
-    if not completed(client,db,old_build,old_day,ticker,'seed',candidate['source_hash']):
+    seed=ledger.seed(old_build,old_day,ticker)
+    if not seed or seed['attempt_id']!=candidate['attempt_id']:
         raise ValueError(f'{predecessor} {ticker}: missing certified prior seed provenance')
-    bars_unit=client.query(f"SELECT attempt_id,source_hash FROM {sql.table(db,'units')} FINAL WHERE {sql.selection(old_build,old_day,ticker)} AND stage='bars' AND status='complete'",'prior_bar_unit')
-    if len(bars_unit)!=1 or not completed(client,db,old_build,old_day,ticker,'bars',bars_unit[0]['source_hash']):
+    bars_unit=ledger.unit(old_build,old_day,ticker,'bars')
+    if not bars_unit or not completed(ledger,client,db,old_build,old_day,ticker,'bars',bars_unit['source_hash']):
         raise ValueError(f'{predecessor} {ticker}: missing certified prior bars')
     factor=sql.split_factor(splits,day,ticker,f'toDate({sql.literal(predecessor)})')
     technical=client.query(f"SELECT resolution_ms,{','.join(f'ema_{p}*({factor}) AS ema_{p}' for p in sql.EMAS)},macd_signal*({factor}) AS macd_signal FROM {sql.table(db,'technical')} WHERE {sql.selection(old_build,old_day,ticker,candidate['attempt_id'])} ORDER BY resolution_ms,bucket_index DESC LIMIT 1 BY resolution_ms",'prior_technical_values')
-    closes=client.query(f"SELECT resolution_ms,close_int/10000.*({factor}) AS close FROM {sql.table(db,'bars')} WHERE {sql.selection(old_build,old_day,ticker,bars_unit[0]['attempt_id'])} AND price_valid=1 ORDER BY resolution_ms,bucket_index DESC LIMIT 1 BY resolution_ms",'prior_close_values')
+    closes=client.query(f"SELECT resolution_ms,close_int/10000.*({factor}) AS close FROM {sql.table(db,'bars')} WHERE {sql.selection(old_build,old_day,ticker,bars_unit['attempt_id'])} AND price_valid=1 ORDER BY resolution_ms,bucket_index DESC LIMIT 1 BY resolution_ms",'prior_close_values')
     by_frame={int(row['resolution_ms']):row for row in technical}
     close_by_frame={int(row['resolution_ms']):float(row['close']) for row in closes}
     if not by_frame and not close_by_frame:
-        seed=client.query(f"SELECT mode,predecessor_date,prior_build_id,prior_state_hash "
-            f"FROM {sql.table(db,'seed')} WHERE {sql.selection(old_build,old_day,ticker,candidate['attempt_id'])}",
-            'prior_empty_seed')
-        if len(seed)!=1 or int(seed[0]['mode']) not in (0,1):
+        if int(seed['mode']) not in (0,1):
             raise ValueError(f'{predecessor} {ticker}: invalid quote-only seed provenance')
-        if int(seed[0]['mode'])==0:
-            if seed[0]['prior_build_id'] or seed[0]['prior_state_hash']:
+        if int(seed['mode'])==0:
+            if seed['prior_build_id'] or seed['prior_state_hash']:
                 raise ValueError(f'{predecessor} {ticker}: bootstrap seed has prior-state provenance')
             return None,None,''
-        earlier=seed[0]['predecessor_date']
-        if not earlier or earlier>=predecessor or not seed[0]['prior_build_id'] or not seed[0]['prior_state_hash']:
+        earlier=seed['predecessor_date']
+        if not earlier or earlier>=predecessor or not seed['prior_build_id'] or not seed['prior_state_hash']:
             raise ValueError(f'{predecessor} {ticker}: invalid carried quote-only predecessor')
-        state,prior_hash,prior_build=prior_indicator_state(client,db,build,day,ticker,earlier,
+        state,prior_hash,prior_build=prior_indicator_state(ledger,client,db,build,day,ticker,earlier,
             calculation_source,rules_hash,splits,visited+(predecessor,))
-        if not state or not prior_hash or prior_build!=seed[0]['prior_build_id']:
+        if not state or not prior_hash or prior_build!=seed['prior_build_id']:
             raise ValueError(f'{predecessor} {ticker}: carried quote-only state has no earlier price state')
-        return state,digest([predecessor,old_build,candidate,seed[0],prior_hash]),prior_build
+        return state,digest([predecessor,old_build,candidate,seed,prior_hash]),prior_build
     if set(by_frame)!=set(sql.FRAMES) or set(close_by_frame)!=set(sql.FRAMES):
         raise ValueError(f'{predecessor} {ticker}: incomplete prior timeframe state')
     state={frame:{**{f'ema_{p}':float(by_frame[frame][f'ema_{p}']) for p in sql.EMAS},
@@ -590,7 +670,7 @@ def prior_indicator_state(client, db, build, day, ticker, predecessor, calculati
         'close':close_by_frame[frame]} for frame in sql.FRAMES}
     if not all(math.isfinite(value) for item in state.values() for value in item.values()):
         raise ValueError(f'{predecessor} {ticker}: nonfinite prior state')
-    return state,digest([old_build,predecessor,candidate['attempt_id'],candidate['source_hash'],bars_unit[0],state]),old_build
+    return state,digest([old_build,predecessor,candidate['attempt_id'],candidate['source_hash'],bars_unit,state]),old_build
 
 
 @contextmanager
@@ -613,7 +693,7 @@ def build_lock(path):
             msvcrt.locking(stream.fileno(),msvcrt.LK_UNLCK,1)
 
 
-def build_ticker(args, build, plan, ticker, rows, requested, calculation_source, rules_hash,
+def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation_source, rules_hash,
                  report, report_path, unit_log,
                  checkpoint_clock, worker_local,
                  state_lock, progress, stop, clients):
@@ -640,28 +720,31 @@ def build_ticker(args, build, plan, ticker, rows, requested, calculation_source,
             mark(day,'','source verification')
             source = source_evidence(client,row)
             source_hash = digest([source,plan['rules'],sql.VERSION])
-            if completed(client,args.database,build,day,ticker,'bars',source_hash):
-                if not completed(client,args.database,build,day,ticker,'events',source_hash):
-                    raise ValueError(f'{day} {ticker}: published bars lack certified event indicators')
+            if completed(ledger,client,args.database,build,day,ticker,'bars',source_hash):
+                if not completed(ledger,client,args.database,build,day,ticker,'broker_100ms',source_hash):
+                    raise ValueError(f'{day} {ticker}: published bars lack certified broker 100ms inputs')
                 progress.finish(ticker,'bars',skipped=True)
                 continue
             attempt = str(uuid.uuid4())
-            mark(day,attempt,'events / VWAP / NBBO')
-            client.query(sql.events_sql(args.database,build,day,ticker,attempt,plan['rules']),"events",False)
+            mark(day,attempt,'broker 100ms / VWAP / NBBO')
+            client.query(sql.broker_sql(args.database,build,day,ticker,attempt,plan['rules']),"broker_100ms",False)
+            broker_result=evidence(client,args.database,'broker_100ms',build,day,ticker,attempt)
+            if broker_result['n']!=broker_result['unique_keys']:
+                raise ValueError(f'{day} {ticker}: duplicate broker 100ms bucket keys')
             mark(day,attempt,'100ms bars')
             client.query(sql.base_sql(args.database,build,day,ticker,attempt),"100ms",False)
             mark(day,attempt,'fine / higher rollups')
             client.query(sql.rollup_sql(args.database,build,day,ticker,attempt,100,(1000,5000,10000,30000)),"fine_rollup",False)
             client.query(sql.rollup_sql(args.database,build,day,ticker,attempt,30000,(60000,300000,3600000)),"higher_rollup",False)
             validate_bars(client,args.database,build,day,ticker,attempt)
-            metrics=validate_events(client,args.database,build,day,ticker,attempt,source)
+            metrics=validate_broker(client,args.database,build,day,ticker,attempt,source)
             if source_evidence(client,row) != source:
                 raise ValueError(f'{day} {ticker}: canonical source changed during build')
-            for stage in ('events','bars'):
+            for stage in ('broker_100ms','bars'):
                 result=evidence(client,args.database,stage,build,day,ticker,attempt)
                 if result['n'] != result['unique_keys']:
                     raise ValueError(f'{day} {ticker}: duplicate {stage} output keys')
-                publish(client,args.database,build,day,ticker,stage,attempt,source_hash,result)
+                publish(ledger,build,day,ticker,stage,attempt,source_hash,result)
             with state_lock:
                 with unit_log.open('a',encoding='utf-8') as stream:
                     stream.write(json.dumps(dict(day=str(day),ticker=ticker,metrics=metrics),sort_keys=True)+'\n')
@@ -673,12 +756,15 @@ def build_ticker(args, build, plan, ticker, rows, requested, calculation_source,
             if row['source_date'] not in requested or stop.is_set(): continue
             day = date.fromisoformat(row['source_date'])
             mark(day,'','indicator dependencies')
-            dependencies = client.query(f"SELECT session_date,attempt_id,source_hash,output_hash FROM {sql.table(args.database,'units')} FINAL WHERE {sql.selection(build,day,ticker)} AND stage='bars' AND status='complete'", "indicator_dependencies")
-            prior,prior_hash,prior_build=prior_indicator_state(client,args.database,build,day,ticker,
+            bar_unit=ledger.unit(build,day,ticker,'bars')
+            if not bar_unit or not completed(ledger,client,args.database,build,day,ticker,'bars',bar_unit['source_hash']):
+                raise ValueError(f'{day} {ticker}: missing certified bars for indicators')
+            dependencies=[dict(session_date=str(day),**bar_unit)]
+            prior,prior_hash,prior_build=prior_indicator_state(ledger,client,args.database,build,day,ticker,
                 plan['predecessors'][str(day)],calculation_source,rules_hash,plan['splits'])
             dependency_hash = digest([dependencies,prior_hash,sql.VERSION])
-            technical_unit=completed(client,args.database,build,day,ticker,'technical',dependency_hash)
-            seed_unit=completed(client,args.database,build,day,ticker,'seed',dependency_hash)
+            technical_unit=completed(ledger,client,args.database,build,day,ticker,'technical',dependency_hash)
+            seed_unit=ledger.seed(build,day,ticker)
             if technical_unit and seed_unit:
                 if technical_unit['attempt_id']!=seed_unit['attempt_id']:
                     raise ValueError(f'{day} {ticker}: seed and indicator attempts differ')
@@ -690,30 +776,15 @@ def build_ticker(args, build, plan, ticker, rows, requested, calculation_source,
             seed_mode='carried' if prior else 'bootstrap'
             if not technical_unit:
                 mark(day,attempt,f'EMA / MACD / RSI / ATR ({seed_mode})')
-                client.query(sql.technical_sql(args.database,build,day,ticker,attempt,prior),"technical",False)
-                result = validate_technical(client,args.database,build,day,ticker,attempt)
+                client.query(sql.technical_sql(args.database,build,day,ticker,attempt,bar_unit['attempt_id'],prior),"technical",False)
+                result = validate_technical(ledger,client,args.database,build,day,ticker,attempt)
                 if result['n'] != result['unique_keys']:
                     raise ValueError(f'{day} {ticker}: duplicate indicator keys')
-                publish(client,args.database,build,day,ticker,'technical',attempt,dependency_hash,result)
+                publish(ledger,build,day,ticker,'technical',attempt,dependency_hash,result)
             mark(day,attempt,f'publishing {seed_mode} provenance')
             seed_values=dict(mode=int(bool(prior)),predecessor_date=plan['predecessors'][str(day)] or '',
                 prior_build_id=prior_build,prior_state_hash=prior_hash or '')
-            existing_seed=client.query(f"SELECT mode,predecessor_date,prior_build_id,prior_state_hash "
-                f"FROM {sql.table(args.database,'seed')} WHERE {sql.selection(build,day,ticker,attempt)}",'seed_resume')
-            if existing_seed:
-                if existing_seed != [seed_values]:
-                    raise ValueError(f'{day} {ticker}: ambiguous or changed seed provenance')
-            else:
-                client.query(f"INSERT INTO {sql.table(args.database,'seed')} VALUES ("
-                    f"{sql.literal(build)},toDate({sql.literal(day)}),{sql.literal(ticker)},"
-                    f"toUUID({sql.literal(attempt)}),{seed_values['mode']},"
-                    f"{sql.literal(seed_values['predecessor_date'])},"
-                    f"{sql.literal(seed_values['prior_build_id'])},"
-                    f"{sql.literal(seed_values['prior_state_hash'])})",'seed',False)
-            seed_result=evidence(client,args.database,'seed',build,day,ticker,attempt)
-            if int(seed_result['n'])!=1 or seed_result['n']!=seed_result['unique_keys']:
-                raise ValueError(f'{day} {ticker}: invalid seed provenance')
-            publish(client,args.database,build,day,ticker,'seed',attempt,dependency_hash,seed_result)
+            ledger.put_seed(build,day,ticker,attempt,seed_values)
             with state_lock:
                 report['seed_modes'][seed_mode]+=1
                 with unit_log.open('a',encoding='utf-8') as stream:
@@ -752,6 +823,7 @@ def run(args):
         report = dict(status="preflight", started_at=datetime.now(timezone.utc).isoformat(), profiles=[],run_id=uuid.uuid4().hex)
         report_path = runtime / ('last-plan.json' if args.plan_only else 'latest.json')
         database_ready=False
+        ledger=None
         try:
             storage_preflight(client,args.database)
             plan = source_plan(client,args)
@@ -768,8 +840,8 @@ def run(args):
                 indicators=dict(ema=dict(periods=sql.EMAS,seed='first eligible close',basis='completed nonempty bars'),
                     macd=dict(fast=12,slow=26,signal=9),rsi=dict(period=14,seed='first 14 changes',reset='session'),
                     atr=dict(period=14,seed='first 14 true ranges',reset='session'),
-                    event=dict(fields=['execution_vwap','cumulative_volume','cumulative_notional','execution_volume','execution_notional','bid_int','ask_int','bid_size','ask_size','spread','nbbo_valid','quote_timestamp_us'],
-                        reset='session',cursor=['sip_timestamp_us','ordinal'],max_quote_age_ms=1000)),
+                    broker_100ms=dict(fields=['execution_vwap','cumulative_volume','cumulative_notional','execution_volume','execution_notional','bid_int','ask_int','bid_size','ask_size','spread','quote_valid','quote_timestamp_us'],
+                        reset='session',source_cursor=['sip_timestamp_us','ordinal'],availability='completed 100ms bucket')),
                 price_scale=10000,session_timezone='America/New_York',session_hours=['04:00','20:00'],
                 trade_eligibility=dict(session_start='04:00',excluded_reporting_flag=sql.DELAYED,
                     reporting_revision=sql.REPORTING_REVISION),storage_policy=sql.POLICY,
@@ -814,7 +886,8 @@ def run(args):
                 client.query(statement,"schema",False)
             storage_preflight(client,args.database,True)
             database_ready=True
-            client.query(f"INSERT INTO {sql.table(args.database,'builds')} VALUES ({sql.literal(build)},toDate({sql.literal(args.end)}),{sql.literal(json.dumps(definition,sort_keys=True,default=str))},'building',now64(6))",'build_started',False)
+            ledger=Ledger(runtime.parent / 'build-ledger-v2.sqlite3')
+            ledger.build(build,definition,'building')
             save(runtime / (build+'.json'),report)
             wanted = [r for r in plan['units'] if r['source_date'] in plan['requested']]
             by_ticker = {}
@@ -836,7 +909,7 @@ def run(args):
                         if stop.is_set(): return False
                         try: ticker, rows = next(ticker_iter)
                         except StopIteration: return False
-                        future = pool.submit(build_ticker,args,build,plan,ticker,rows,set(plan['requested']),
+                        future = pool.submit(build_ticker,args,ledger,build,plan,ticker,rows,set(plan['requested']),
                             definition['calculation_source'],definition['rules_hash'],
                             report,report_path,runtime / (build+'.units.jsonl'),checkpoint_clock,worker_local,
                             state_lock,progress,stop,clients)
@@ -883,9 +956,9 @@ def run(args):
             print("Build failed: "+report['error'],file=sys.stderr,flush=True)
             return 1
         finally:
-            if database_ready:
+            if database_ready and ledger is not None:
                 try:
-                    client.query(f"INSERT INTO {sql.table(args.database,'builds')} VALUES ({sql.literal(build)},toDate({sql.literal(args.end)}),{sql.literal(json.dumps(definition,sort_keys=True,default=str))},{sql.literal(report['status'])},now64(6))",'build_status',False)
+                    ledger.build(build,definition,report['status'])
                 except Exception as error:
                     # Preserve the triggering worker/certification error, if any.
                     # A failed publication must never be reported as success.
@@ -925,6 +998,8 @@ def run(args):
                 print(f"Core build complete: {build}\nManifest: {report_path}",flush=True)
             for worker_client in locals().get('clients',[]):
                 worker_client.close()
+            if ledger is not None:
+                ledger.close()
             client.close()
 
 
