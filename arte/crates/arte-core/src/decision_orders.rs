@@ -3,7 +3,7 @@ use crate::{
     content_hash,
     events::Decimal,
     orders::{Bands, Bracket, RiskPolicy, Side},
-    strategy350_transaction::CommittedMarketDecision,
+    strategy350_transaction::{CommittedHistoricalDecision, CommittedMarketDecision},
     strategy_dispatch::Action,
     strategy_transaction::Committed,
     Error, Result,
@@ -101,6 +101,29 @@ pub fn bracket_350(
         action_index,
         allocation,
         now_ns,
+        regular,
+        bands,
+        policy,
+    )
+}
+
+/// Historical Strategy 350 uses the same bracket/LULD validator, but only a
+/// replay-bound modeled decision can enter this path. It has no broker access.
+pub fn bracket_350_historical(
+    committed: &CommittedHistoricalDecision<'_>,
+    action_index: usize,
+    allocation: &Allocation,
+    modeled_now_ns: u64,
+    regular: bool,
+    bands: Option<&Bands>,
+    policy: &RiskPolicy,
+) -> Result<Plan> {
+    let decision = committed.require_at(modeled_now_ns)?;
+    bracket_from_decision(
+        decision,
+        action_index,
+        allocation,
+        modeled_now_ns,
         regular,
         bands,
         policy,

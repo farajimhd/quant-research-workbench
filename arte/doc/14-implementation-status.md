@@ -55,8 +55,14 @@ frame/input indices without a per-decision source scan. The proof carries the
 modeled availability clock, event content, eligibility, prepared-source and run
 identity. The Strategy 350 gate rejects mismatched source content, mode, run,
 clock or blocked eligibility without creating a live receipt. Historical
-account transaction and simulated order planning are not yet connected to this
-proof; the live-only transaction must not be used as a backtest shortcut.
+account decisions now use the same `Decision` and journal transaction envelope
+as live decisions, with a separate modeled-evidence hash. Entry/add actions
+require the allowed historical price gate and replay proof. Exact journal
+readback creates a historical decision proof; simulated bracket planning then
+uses the same bracket/LULD validator as live, with no broker capability and no
+claim of measured latency. The generic Strategy 350 planner still rejects
+unproven decisions. Remaining operands are still represented by a caller hash;
+the runnable Strategy 350 backtest and full semantic parity are unfinished.
 
 A bounded, in-process Massive REST/WebSocket overlap auditor now compares the
 exact verified REST batch chain with captured live events by provider sequence,

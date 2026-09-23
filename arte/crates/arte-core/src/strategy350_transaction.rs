@@ -3,6 +3,7 @@
 use crate::{
     content_hash,
     event_order::Scope as MarketScope,
+    market_structure::scheduler::playback::sources::HistoricalEventProof,
     strategy350_price_gate::PriceEvidence,
     strategy_dispatch::{Action, Decision, InputBoundary, Mode, Safety, StrategyKind},
     strategy_transaction::{Committed, Runtime},
@@ -21,6 +22,118 @@ pub struct MarketDecisionInput<'a> {
     pub expected_price_gate_hash: &'a str,
     pub maximum_price_age_ns: u64,
     pub other_evidence_hash: &'a str,
+}
+
+/// The same account decision/journal envelope, with a pinned modeled replay
+/// event instead of a live receive timestamp or REST acquisition clock.
+pub struct HistoricalMarketDecisionInput<'a> {
+    pub input: InputBoundary,
+    pub safety: &'a Safety,
+    pub price: &'a PriceEvidence,
+    pub source: &'a HistoricalEventProof,
+    pub expected_price_gate_hash: &'a str,
+    pub other_evidence_hash: &'a str,
+}
+
+pub struct CommittedHistoricalDecision<'a> {
+    committed: &'a Committed,
+}
+impl<'a> CommittedHistoricalDecision<'a> {
+    pub fn from_readback(
+        committed: &'a Committed,
+        price: &PriceEvidence,
+        source: &HistoricalEventProof,
+        expected_price_gate_hash: &str,
+        other_evidence_hash: &str,
+    ) -> Result<Self> {
+        require_other_hash(other_evidence_hash)?;
+        let decision = committed.decision();
+        let expected = historical_evidence_hash(price, source, other_evidence_hash)?;
+        if decision.evidence_hash != expected {
+            return Err(Error::Conflict(
+                "Strategy 350 historical committed evidence differs".into(),
+            ));
+        }
+        price.require_historical_decision(
+            source,
+            &decision.scope,
+            &decision.input,
+            expected_price_gate_hash,
+        )?;
+        Ok(Self { committed })
+    }
+
+    pub(crate) fn require_at(&self, modeled_now_ns: u64) -> Result<&Decision> {
+        let decision = self.committed.decision();
+        if modeled_now_ns < decision.input.evaluated_at_ns {
+            return Err(Error::Unready(
+                "Strategy 350 historical order precedes modeled decision".into(),
+            ));
+        }
+        Ok(decision)
+    }
+}
+
+fn require_other_hash(hash: &str) -> Result<()> {
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(Error::Invalid("Strategy 350 other evidence hash".into()));
+    }
+    Ok(())
+}
+fn historical_evidence_hash(
+    price: &PriceEvidence,
+    source: &HistoricalEventProof,
+    other_evidence_hash: &str,
+) -> Result<String> {
+    content_hash(&(
+        "arte.strategy-350-market-decision.v1",
+        "historical-modeled",
+        price.fingerprint(),
+        source.identity_hash()?,
+        other_evidence_hash,
+    ))
+}
+
+pub fn prepare_historical_market_decision<S: Clone + Serialize>(
+    runtime: &mut Runtime<S>,
+    request: HistoricalMarketDecisionInput<'_>,
+    observe: impl FnOnce(&mut S) -> Result<()>,
+    calculate: impl FnOnce(&mut S) -> Result<Vec<Action>>,
+) -> Result<Decision> {
+    let HistoricalMarketDecisionInput {
+        input,
+        safety,
+        price,
+        source,
+        expected_price_gate_hash,
+        other_evidence_hash,
+    } = request;
+    require_other_hash(other_evidence_hash)?;
+    let scope = runtime.scope().clone();
+    if scope.strategy_kind != StrategyKind::Strategy350
+        || scope.mode != Mode::Backtest
+        || scope.instrument != source.scope().instrument
+    {
+        return Err(Error::Invalid(
+            "Strategy 350 historical decision scope".into(),
+        ));
+    }
+    price.require_historical_identity(source, &scope, &input, expected_price_gate_hash)?;
+    let evidence_hash = historical_evidence_hash(price, source, other_evidence_hash)?;
+    runtime.prepare_observed(input.clone(), safety, evidence_hash, observe, |state| {
+        let actions = calculate(state)?;
+        if actions
+            .iter()
+            .any(|action| matches!(action, Action::Enter(_) | Action::Add(_)))
+        {
+            price.require_historical_decision(source, &scope, &input, expected_price_gate_hash)?;
+        }
+        Ok(actions)
+    })
 }
 
 /// Sealed evidence for planning an exposure increase after journal readback.
