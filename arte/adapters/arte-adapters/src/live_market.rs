@@ -106,6 +106,30 @@ impl Lane {
         self.exact_signal = Some(owner);
         Ok(())
     }
+    /// A restored signal owner may join only the same pending scheduler cut.
+    /// The pending boundary can then be read again without advancing signal
+    /// state. A fully acknowledged scheduler cut has no boundary identity and
+    /// cannot be inferred from its sequence alone.
+    pub fn bind_recovered_exact_signal(&mut self, owner: live_exact_signal::Owner) -> Result<()> {
+        self.available()?;
+        let scope = self.market.scope();
+        let source = owner.scope();
+        let pending = self.market.pending()?.ok_or_else(|| {
+            Error::Unready("recovered exact signal requires pending boundary".into())
+        })?;
+        if self.exact_signal.is_some()
+            || (source.provider, source.instrument, source.session)
+                != (scope.provider, scope.instrument, scope.session)
+            || owner.last_boundary() != (pending.sequence, Some(pending.id))
+            || owner.last_evaluated_at_ns() != pending.evaluated_at_ns
+        {
+            return Err(Error::Conflict(
+                "recovered exact signal boundary differs".into(),
+            ));
+        }
+        self.exact_signal = Some(owner);
+        Ok(())
+    }
     pub fn first_squeeze_occurrence(
         &self,
     ) -> Result<Option<arte_core::strategy350_signal::Occurrence>> {
@@ -949,6 +973,66 @@ mod tests {
         assert_eq!(lane.first_squeeze_occurrence().unwrap(), None);
         assert!(lane.prepare_next(gate.at(1), 202 * SECOND).is_err());
         assert_eq!(lane.exact_signal.as_ref().unwrap().last_boundary().0, 1);
+        let image = lane.exact_signal.as_ref().unwrap().checkpoint().unwrap();
+        let generation = "a".repeat(64);
+        let config = SignalConfig {
+            minimum_move_bps: 5,
+            source_algorithm_hash: "b".repeat(64),
+        };
+        let boundary = lane.market.pending().unwrap().unwrap();
+        let recovered = live_exact_signal::Owner::restore(
+            &image,
+            &image.root.id,
+            live_exact_signal::Recovery {
+                scope,
+                session_start_ns: 200 * SECOND,
+                session_end_ns: 300 * SECOND,
+                price_scale: 2,
+                size_scale: 0,
+                source_generation_hash: &generation,
+                signal_config: config,
+                expected_sequence: boundary.sequence,
+                expected_boundary_id: Some(boundary.id),
+            },
+        )
+        .unwrap();
+        lane.exact_signal = None;
+        lane.bind_recovered_exact_signal(recovered).unwrap();
+        assert_eq!(lane.first_squeeze_occurrence().unwrap(), None);
+        let pending = lane.market.pending().unwrap().unwrap();
+        assert_eq!(
+            lane.exact_signal
+                .as_mut()
+                .unwrap()
+                .observe(&pending)
+                .unwrap(),
+            None
+        );
+        let id = pending.id.to_owned();
+        lane.acknowledge_boundary(&id).unwrap();
+        lane.exact_signal = None;
+        let recovery_without_pending = live_exact_signal::Owner::restore(
+            &image,
+            &image.root.id,
+            live_exact_signal::Recovery {
+                scope,
+                session_start_ns: 200 * SECOND,
+                session_end_ns: 300 * SECOND,
+                price_scale: 2,
+                size_scale: 0,
+                source_generation_hash: &generation,
+                signal_config: SignalConfig {
+                    minimum_move_bps: 5,
+                    source_algorithm_hash: "b".repeat(64),
+                },
+                expected_sequence: 1,
+                expected_boundary_id: Some(&id),
+            },
+        )
+        .unwrap();
+        assert!(lane
+            .bind_recovered_exact_signal(recovery_without_pending)
+            .is_err());
     }
 
     #[test]

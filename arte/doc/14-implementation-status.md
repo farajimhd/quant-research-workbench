@@ -77,13 +77,18 @@ cover root hash references, boundary idempotency, and conflicting root rows.
 No connected ClickHouse publication or recovery has been tested. A complete
 lane/scheduler recovery root, continuous empty-bucket advancement, and feed
 coverage remain required for live use.
+The live lane accepts a restored exact signal owner only while its scheduler
+holds the same pending boundary ID, sequence, and evaluation time. An already
+acknowledged cut is rejected. This guard does not restore other lane features
+or grant broker authority.
 The inspected live scheduler currently exposes floating-point bars. Feeding
 those into the exact integer signal by rounding would not establish parity at
 its threshold. An exact compact 100 ms bar builder now exists and drives the
 signal in an offline unit test. It requires pinned source/scales, ordered
 eligible trades and an external watermark; it does not infer empty intervals
-from silence. The live lane does not yet own this builder, persist its state,
-or prove its watermark and completed bars align with the scheduler.
+from silence. The live lane now owns this builder when configured and
+cross-checks exact 100 ms completed bars against the scheduler. Full lane-root
+publication and watermark/coverage acceptance are still incomplete.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
