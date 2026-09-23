@@ -126,6 +126,20 @@ MACD preview. It peeks before consuming the refinement cursor, verifies the
 pending observation and modeled clock, and leaves ineligible trades without a
 MACD result. This is a typed decision-facing bridge, not the full Strategy 350
 evaluator or account action loop.
+The historical playback adapter now has a separate Strategy 350 account owner.
+It requires one pinned effective configuration and one independent initial
+state per manifest consumer. It checks the exact pending market boundary
+before preparing an account decision. Journal writes are bounded and
+concurrent; readback receipts are retained for retry and registered with the
+shared playback barrier. Only wait, hold, cancel-entry, and positive-quantity
+reduce-only exit actions pass this incomplete owner. Exposure increases remain blocked here
+until the complete Strategy 350 evaluator is wired. This owner is not yet
+constructed by a runnable backtest session or command, and its connected
+journal path has not been exercised.
+The execution interval remains a required, identity-pinned field on every
+computational contract, including Signal Streams, scanner rules, indicators,
+level books, Watchlists, and named calculations. Contract validation does not
+yet prove that every live producer dispatches at its declared interval.
 An eligible preview now returns a private, source-bound MACD evidence value.
 Its fingerprint pins the compact request and coverage, MACD configuration,
 run-bound trade proof, completed-frame clocks and exact floating-point outputs.
