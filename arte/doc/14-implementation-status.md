@@ -2,6 +2,12 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+The Strategy 350 momentum evaluator and 350/349/base candidate builders are now
+frozen as reference-only text snapshots with per-file source commits and SHA-256
+hashes. They are not packaged or imported at runtime. This pins source evidence
+for the remaining Rust strategy port; it does not pin an effective deployed
+configuration or make Strategy 350 executable end to end.
+
 Historical Strategy 350 session-watch signal preparation now scans certified
 100 ms bar batches once and retains only sparse Boolean transitions. It no
 longer materializes a full-session evaluation vector and a second dense grid.

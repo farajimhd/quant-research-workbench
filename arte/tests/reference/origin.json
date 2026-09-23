@@ -64,6 +64,30 @@
       "source": "src/backend/historical_hod_candidate.py",
       "sha256": "b24148726909b8e7f6967e4fc88400953acf853ad52bca76667145d0187580c8",
       "destination": "tests/reference/src/backend/historical_hod_candidate.py.txt"
+    },
+    {
+      "source": "src/trading_runtime/early_squeeze_momentum.py",
+      "source_commit": "dcbd64f3eb6c0bdc926d2cf8d1062c228fd6138d",
+      "sha256": "99150e27212ed0f15a0c28c739ccb9b6286be65f2a76ca1755f387d44423d1c1",
+      "destination": "tests/reference/src/trading_runtime/early_squeeze_momentum.py.txt"
+    },
+    {
+      "source": "src/backend/early_squeeze_momentum_candidate.py",
+      "source_commit": "3180252b307694c0510c901a682cc3a6d336a169",
+      "sha256": "863bd5f5673d8e1ee4c0e59f2b7fbc173f0dcc1f013668c5f434124229c632f7",
+      "destination": "tests/reference/src/backend/early_squeeze_momentum_candidate.py.txt"
+    },
+    {
+      "source": "src/backend/early_squeeze_momentum_349_candidate.py",
+      "source_commit": "aace24003d460c2fefaa2326f89a33af8c74f79d",
+      "sha256": "1550b7dddb4f71441de6edcb083b3598ced93a7d14c2937340d448add041602c",
+      "destination": "tests/reference/src/backend/early_squeeze_momentum_349_candidate.py.txt"
+    },
+    {
+      "source": "src/backend/early_squeeze_momentum_350_candidate.py",
+      "source_commit": "aace24003d460c2fefaa2326f89a33af8c74f79d",
+      "sha256": "0541a69a375bd77901ef6ad92725a47abd9d49488b4cc4312e9ed1ea0399d80f",
+      "destination": "tests/reference/src/backend/early_squeeze_momentum_350_candidate.py.txt"
     }
   ]
 }

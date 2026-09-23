@@ -3,6 +3,11 @@
 These text snapshots pin the latest available strategy and V7 source at the start
 of the Rust port. The user approved using the latest source as a starting point.
 `origin.json` records each source path, commit, and SHA-256 before copying.
+The root commit identifies the initial V7 snapshot. Later Strategy 350 entries
+carry their own last-source commits. The frozen Strategy 350 reference includes
+its 350/349/base candidate builders and the shared momentum evaluator. These
+files preserve source semantics for a Rust port; they do not pin a deployed
+effective configuration or imply that the complete evaluator has been ported.
 Git preserves these snapshots as opaque bytes. This retains original line endings
 and hashes across extraction. Rust and other editable source retain normal text checks.
 
