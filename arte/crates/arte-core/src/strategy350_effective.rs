@@ -33,6 +33,18 @@ fn hash_valid(hash: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+pub(crate) fn hash_bytes(hash: &str) -> Result<[u8; 32]> {
+    if !hash_valid(hash) {
+        return Err(Error::Invalid("Strategy 350 component hash bytes".into()));
+    }
+    let mut bytes = [0_u8; 32];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hash[index * 2..index * 2 + 2], 16)
+            .map_err(|_| Error::Invalid("Strategy 350 component hash bytes".into()))?;
+    }
+    Ok(bytes)
+}
+
 impl Config {
     pub fn validate(&self) -> Result<()> {
         self.execution_interval.validate()?;
@@ -106,6 +118,28 @@ impl Config {
         }
         Ok(())
     }
+
+    pub fn require_screen_inputs(
+        &self,
+        screen_config_hash: [u8; 32],
+        signal_config_hash: [u8; 32],
+        watchlist_config_hash: Option<[u8; 32]>,
+    ) -> Result<()> {
+        if hash_bytes(&self.screen_config_hash)? != screen_config_hash
+            || hash_bytes(&self.signal_config_hash)? != signal_config_hash
+            || self
+                .watchlist_config_hash
+                .as_deref()
+                .map(hash_bytes)
+                .transpose()?
+                != watchlist_config_hash
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 screen, signal or Watchlist configuration differs".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +209,20 @@ mod tests {
         config.require_scope(&scope).unwrap();
         let gap = crate::strategy350_gap::freeze(&[], 10., 100_000_000, &config.gap).unwrap();
         config.require_gap(&gap).unwrap();
+        config
+            .require_screen_inputs([0xbb; 32], [0xaa; 32], None)
+            .unwrap();
+        assert!(config
+            .require_screen_inputs([0xcc; 32], [0xaa; 32], None)
+            .is_err());
+        let mut with_watchlist = config.clone();
+        with_watchlist.watchlist_config_hash = Some("5".repeat(64));
+        assert!(with_watchlist
+            .require_screen_inputs([0xbb; 32], [0xaa; 32], None)
+            .is_err());
+        with_watchlist
+            .require_screen_inputs([0xbb; 32], [0xaa; 32], Some([0x55; 32]))
+            .unwrap();
         let other = crate::strategy350_gap::freeze(
             &[],
             10.,

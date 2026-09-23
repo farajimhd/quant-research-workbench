@@ -17,6 +17,9 @@ pub struct SelectedBatch {
     scope: crate::event_order::Scope,
     first_start_ns: u64,
     refine: Vec<bool>,
+    screen_config_hash: [u8; 32],
+    signal_config_hash: [u8; 32],
+    watchlist_config_hash: Option<[u8; 32]>,
     /// Exact verified inputs and this batch's refinement mask, not an order proof.
     evidence_hash: String,
 }
@@ -90,6 +93,9 @@ pub struct RefinementPlan {
     scope: crate::event_order::Scope,
     source_interval: Interval,
     intervals: Vec<Interval>,
+    screen_config_hash: [u8; 32],
+    signal_config_hash: [u8; 32],
+    watchlist_config_hash: Option<[u8; 32]>,
     evidence_hash: String,
 }
 /// Lazily derives run-pinned trade proofs from a bounded sparse schedule.
@@ -226,14 +232,23 @@ impl RefinementPlan {
             return Err(Error::Invalid("Strategy 350 refinement plan bounds".into()));
         }
         let mut cursor = source_interval.start;
+        let screen_config_hash = batches[0].screen_config_hash;
+        let signal_config_hash = batches[0].signal_config_hash;
+        let watchlist_config_hash = batches[0].watchlist_config_hash;
         let mut intervals: Vec<Interval> = Vec::new();
         let mut digest = Sha256::new();
-        digest.update(b"arte.strategy-350-refinement-plan.v1");
+        digest.update(b"arte.strategy-350-refinement-plan.v2");
         digest.update(scope.provider.to_be_bytes());
         digest.update(scope.instrument.to_be_bytes());
         digest.update(scope.session.to_be_bytes());
         digest.update(source_interval.start.to_be_bytes());
         digest.update(source_interval.end.to_be_bytes());
+        digest.update(screen_config_hash);
+        digest.update(signal_config_hash);
+        digest.update([u8::from(watchlist_config_hash.is_some())]);
+        if let Some(hash) = watchlist_config_hash {
+            digest.update(hash);
+        }
         for batch in batches {
             let count = batch.refine.len();
             let span_ns = (count as u64)
@@ -243,6 +258,9 @@ impl RefinementPlan {
                 .checked_add(span_ns)
                 .ok_or_else(|| Error::Capacity("Strategy 350 refinement batch clock".into()))?;
             if batch.scope != scope
+                || batch.screen_config_hash != screen_config_hash
+                || batch.signal_config_hash != signal_config_hash
+                || batch.watchlist_config_hash != watchlist_config_hash
                 || batch.first_start_ns != cursor
                 || count == 0
                 || end_ns > source_interval.end
@@ -289,6 +307,9 @@ impl RefinementPlan {
             scope,
             source_interval,
             intervals,
+            screen_config_hash,
+            signal_config_hash,
+            watchlist_config_hash,
             evidence_hash: format!("{:x}", digest.finalize()),
         })
     }
@@ -303,6 +324,13 @@ impl RefinementPlan {
     }
     pub fn evidence_hash(&self) -> &str {
         &self.evidence_hash
+    }
+    pub fn configuration_hashes(&self) -> ([u8; 32], [u8; 32], Option<[u8; 32]>) {
+        (
+            self.screen_config_hash,
+            self.signal_config_hash,
+            self.watchlist_config_hash,
+        )
     }
     /// Test a run-pinned historical trade against the sparse screen ranges.
     /// A false result only skips expensive Strategy 350 refinement; market
@@ -433,6 +461,8 @@ pub struct LiveSelectedBucket {
     available_at_ns: u64,
     screen_possible: bool,
     signal_active: bool,
+    screen_config_hash: [u8; 32],
+    signal_config_hash: [u8; 32],
     selection_identity: [u8; 32],
 }
 impl LiveSelectedBucket {
@@ -448,9 +478,12 @@ impl LiveSelectedBucket {
     pub fn needs_refinement(&self) -> bool {
         self.screen_possible && self.signal_active
     }
+    pub fn configuration_hashes(&self) -> ([u8; 32], [u8; 32], Option<[u8; 32]>) {
+        (self.screen_config_hash, self.signal_config_hash, None)
+    }
     pub fn identity_hash(&self) -> Result<String> {
         content_hash(&(
-            "arte.strategy-350-live-selected-bucket.v1",
+            "arte.strategy-350-live-selected-bucket.v2",
             self.scope.provider,
             self.scope.instrument,
             self.scope.session,
@@ -458,6 +491,8 @@ impl LiveSelectedBucket {
             self.available_at_ns,
             self.screen_possible,
             self.signal_active,
+            self.screen_config_hash,
+            self.signal_config_hash,
             self.selection_identity,
         ))
     }
@@ -469,12 +504,25 @@ pub(crate) fn test_live_selected(
     start_ns: u64,
     available_at_ns: u64,
 ) -> LiveSelectedBucket {
+    test_live_selected_with_hashes(scope, start_ns, available_at_ns, [0xbb; 32], [0xaa; 32])
+}
+
+#[cfg(test)]
+pub(crate) fn test_live_selected_with_hashes(
+    scope: crate::event_order::Scope,
+    start_ns: u64,
+    available_at_ns: u64,
+    screen_config_hash: [u8; 32],
+    signal_config_hash: [u8; 32],
+) -> LiveSelectedBucket {
     LiveSelectedBucket {
         scope,
         start_ns,
         available_at_ns,
         screen_possible: true,
         signal_active: true,
+        screen_config_hash,
+        signal_config_hash,
         selection_identity: [0; 32],
     }
 }
@@ -496,6 +544,9 @@ pub(crate) fn test_historical_refinement(
                     as usize
             ],
             evidence_hash: "a".repeat(64),
+            screen_config_hash: [0xbb; 32],
+            signal_config_hash: [0xaa; 32],
+            watchlist_config_hash: None,
         }],
         1,
     )
@@ -508,6 +559,8 @@ pub struct StreamingJoin {
     scope: crate::event_order::Scope,
     screen: StreamingScreen,
     signal: strategy350_signal::State,
+    screen_config_hash: [u8; 32],
+    signal_config_hash: [u8; 32],
     selection_identity: [u8; 32],
 }
 impl StreamingJoin {
@@ -559,6 +612,8 @@ impl StreamingJoin {
             scope,
             screen,
             signal,
+            screen_config_hash: crate::strategy350_effective::hash_bytes(expected_screen_hash)?,
+            signal_config_hash: crate::strategy350_effective::hash_bytes(expected_signal_hash)?,
             selection_identity,
         })
     }
@@ -597,6 +652,8 @@ impl StreamingJoin {
                 available_at_ns: signal_point.available_at_ns(),
                 screen_possible: screen_point.needs_refinement,
                 signal_active: signal_point.active(),
+                screen_config_hash: self.screen_config_hash,
+                signal_config_hash: self.signal_config_hash,
                 selection_identity: self.selection_identity,
             });
         }
@@ -719,6 +776,7 @@ pub fn select(
             "Strategy 350 bar screen batch count".into(),
         ));
     }
+    let screen_hash = config.hash()?;
     let source_hash = content_hash(&(
         "arte.strategy-350-screen-input.v1",
         bar.request().hash()?,
@@ -729,9 +787,19 @@ pub fn select(
             .map(|product| product.request().hash())
             .transpose()?,
         watchlist.map(boolean_catalogue::Complete::coverage_hash),
-        config.hash()?,
+        &screen_hash,
         prior_close,
     ))?;
+    let screen_config_hash = crate::strategy350_effective::hash_bytes(&screen_hash)?;
+    let signal_config_hash =
+        crate::strategy350_effective::hash_bytes(&signal.request().definition.implementation_hash)?;
+    let watchlist_config_hash = watchlist
+        .map(|product| {
+            crate::strategy350_effective::hash_bytes(
+                &product.request().definition.implementation_hash,
+            )
+        })
+        .transpose()?;
     let mut signal_values = BooleanCursor::new(signal);
     let mut watch_values = watchlist.map(BooleanCursor::new);
     let mut output = Vec::with_capacity(screen.len());
@@ -814,6 +882,9 @@ pub fn select(
             },
             first_start_ns,
             refine,
+            screen_config_hash,
+            signal_config_hash,
+            watchlist_config_hash,
             evidence_hash: format!("{:x}", hasher.finalize()),
         });
     }
@@ -1088,6 +1159,10 @@ mod tests {
         assert_eq!(selected[1].start_ns(), S + 200_000_000);
         assert!(selected[1].needs_refinement());
         assert_eq!(selected[1].available_at_ns(), S + 300_000_000);
+        assert_eq!(
+            selected[1].configuration_hashes().0,
+            crate::strategy350_effective::hash_bytes(&config().hash().unwrap()).unwrap()
+        );
         assert_eq!(selected[1].identity_hash().unwrap().len(), 64);
         assert_ne!(
             selected[0].identity_hash().unwrap(),
@@ -1151,6 +1226,22 @@ mod tests {
         let scope = selected[0].scope();
         let source_interval = b.request().interval;
         let plan = RefinementPlan::from_batches(scope, source_interval, &selected, 2).unwrap();
+        assert_eq!(
+            plan.configuration_hashes(),
+            (
+                crate::strategy350_effective::hash_bytes(&config().hash().unwrap()).unwrap(),
+                crate::strategy350_effective::hash_bytes(
+                    &signal.request().definition.implementation_hash
+                )
+                .unwrap(),
+                Some(
+                    crate::strategy350_effective::hash_bytes(
+                        &watch.request().definition.implementation_hash
+                    )
+                    .unwrap()
+                )
+            )
+        );
         assert_eq!(plan.scope(), scope);
         assert_eq!(plan.source_interval(), source_interval);
         assert_eq!(plan.intervals().len(), 2);

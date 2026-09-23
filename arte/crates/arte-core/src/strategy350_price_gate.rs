@@ -1047,6 +1047,32 @@ mod tests {
             |_| panic!("foreign MACD cannot calculate"),
         )
         .is_err());
+        let foreign_selection = crate::strategy350_screen_join::test_live_selected_with_hashes(
+            market_scope,
+            2 * S,
+            2 * S + 100_000_000,
+            [0xcc; 32],
+            [0xaa; 32],
+        );
+        assert!(crate::strategy350_transaction::prepare_market_decision(
+            &mut account,
+            crate::strategy350_transaction::MarketDecisionInput {
+                effective: &effective,
+                market_scope,
+                input: input.clone(),
+                safety: &safety,
+                price: &evidence,
+                expected_price_gate_hash: gate_hash,
+                maximum_price_age_ns: 200_000_000,
+                refinement: Some(&foreign_selection),
+                macd: Some(&macd_evidence),
+                gap: None,
+                other_evidence_hash: &"c".repeat(64),
+            },
+            |_| panic!("foreign screen cannot observe account state"),
+            |_| panic!("foreign screen cannot calculate"),
+        )
+        .is_err());
         let decision = crate::strategy350_transaction::prepare_market_decision(
             &mut account,
             crate::strategy350_transaction::MarketDecisionInput {
