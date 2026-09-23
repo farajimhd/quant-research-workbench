@@ -271,10 +271,10 @@ def storage_preflight(client, db, require_tables=False):
     policies = client.query("SELECT disks FROM system.storage_policies WHERE policy_name='live_market_ssd'", "storage_policy")
     if not policies or any(row["disks"] != ["live_market_ssd"] for row in policies):
         raise ValueError("Required SSD-only live_market_ssd policy is unavailable")
-    universe = client.query("SELECT storage_policy FROM system.tables WHERE database='q_live' AND name='feature_tradable_universe_v1'", "population_policy")
-    if universe != [{'storage_policy':sql.POLICY}]:
-        raise ValueError("Dated tradable universe is absent or not on live_market_ssd")
-    misplaced_universe = client.query("SELECT disk_name FROM system.parts WHERE active AND database='q_live' AND table='feature_tradable_universe_v1' AND disk_name!='live_market_ssd' LIMIT 1", "population_parts")
+    universe = client.query("SELECT name,storage_policy FROM system.tables WHERE database='q_live' AND name IN ('feature_tradable_universe_snapshot_v2','feature_tradable_universe_snapshot_coverage_v2')", "population_policy")
+    if len(universe) != 2 or any(row['storage_policy'] != sql.POLICY for row in universe):
+        raise ValueError("Certified pre-open tradable universe is absent or not on live_market_ssd")
+    misplaced_universe = client.query("SELECT table,disk_name FROM system.parts WHERE active AND database='q_live' AND table IN ('feature_tradable_universe_snapshot_v2','feature_tradable_universe_snapshot_coverage_v2') AND disk_name!='live_market_ssd' LIMIT 1", "population_parts")
     if misplaced_universe:
         raise ValueError("Dated tradable universe has parts outside live_market_ssd")
     rows = client.query(f"SELECT name,storage_policy FROM system.tables WHERE database={sql.literal(db)} AND startsWith(name,'market_day_')", "table_policies")
@@ -321,15 +321,30 @@ def source_plan(client, args):
     populations = []
     tradable_by_day = {}
     for day in sessions:
+        certificate = client.query(f"SELECT snapshot_id,source_universe_date,captured_at_utc,cutoff_utc,row_count,tradable_count,source_hash,revision,status "
+            f"FROM q_live.feature_tradable_universe_snapshot_coverage_v2 FINAL WHERE session_date={sql.literal(day)}", "population_certificate")
+        if len(certificate) != 1 or certificate[0]['status'] != 'certified' or certificate[0]['revision'] != 'preopen-tradable-snapshot-v2':
+            raise ValueError(f"Missing certified pre-open tradable universe for {day}")
+        certificate = certificate[0]
+        if certificate['captured_at_utc'] >= certificate['cutoff_utc']:
+            raise ValueError(f"Tradable universe was captured after the {day} pre-open cutoff")
+        snapshot_id = certificate['snapshot_id']
+        proof = client.query(f"SELECT count() AS n,countIf(is_tradable=1) AS tradable,"
+            "sum(cityHash64(tuple(ticker,symbol_id,listing_id,security_id,is_tradable,exclusion_reason,source_run_id,captured_at_utc))) AS source_hash "
+            f"FROM q_live.feature_tradable_universe_snapshot_v2 WHERE session_date={sql.literal(day)} AND snapshot_id={sql.literal(snapshot_id)}", "population_integrity")[0]
+        if (int(proof['n']) != int(certificate['row_count']) or int(proof['tradable']) != int(certificate['tradable_count'])
+                or int(proof['source_hash']) != int(certificate['source_hash'])):
+            raise ValueError(f"Certified pre-open tradable universe integrity failed for {day}")
         members = client.query(f"SELECT ticker,symbol_id,listing_id,security_id,source_run_id,inserted_at "
-            f"FROM q_live.feature_tradable_universe_v1 FINAL WHERE universe_date={sql.literal(day)} "
-            "AND is_tradable=1 ORDER BY ticker,symbol_id,listing_id", "dated_tradable_universe")
+            f"FROM (SELECT ticker,symbol_id,listing_id,security_id,source_run_id,captured_at_utc AS inserted_at "
+            f"FROM q_live.feature_tradable_universe_snapshot_v2 WHERE session_date={sql.literal(day)} "
+            f"AND snapshot_id={sql.literal(snapshot_id)} AND is_tradable=1) ORDER BY ticker,symbol_id,listing_id", "dated_tradable_universe")
         if not members or any(not row['ticker'] for row in members):
             raise ValueError(f"Missing or invalid dated tradable universe for {day}; current membership is not a historical substitute")
         tickers = {row['ticker'] for row in members}
         tradable_by_day[str(day)] = tickers
-        populations.append(dict(session_date=str(day),authority='q_live.feature_tradable_universe_v1',
-            tradable_tickers=len(tickers),snapshot_rows=len(members),snapshot_hash=digest(members)))
+        populations.append(dict(session_date=str(day),authority='q_live.feature_tradable_universe_snapshot_v2',
+            certificate=certificate,tradable_tickers=len(tickers),snapshot_rows=len(members),snapshot_hash=digest(members)))
     coverage = []
     for day, population in zip(sessions, populations):
         batch=client.query(f"SELECT source_date,ticker,event_count,next_ordinal,last_ordinal,first_sip_timestamp_us,last_sip_timestamp_us,build_step,updated_at FROM market_sip_compact.events_ordinal_continuity FINAL WHERE source_date={sql.literal(day)}{restriction} ORDER BY ticker", "ticker_coverage")
@@ -699,8 +714,9 @@ def run(args):
                 rules_hash=digest(plan['rules']),seed_policy='preceding-session-certified-state-or-first-bar',
                 controller_source=digest(Path(__file__).read_text()), plan=plan, database=args.database,
                 start=str(args.start),end=str(args.end),
-                population_authority=dict(table='q_live.feature_tradable_universe_v1',
-                    membership='same-date is_tradable=1 and certified canonical ticker events',
+                population_authority=dict(table='q_live.feature_tradable_universe_snapshot_v2',
+                    coverage='q_live.feature_tradable_universe_snapshot_coverage_v2',
+                    membership='certified pre-open is_tradable=1 and canonical ticker events',
                     warmup='none',missing_date='fail_closed'),
                 indicators=dict(ema=dict(periods=sql.EMAS,seed='first eligible close',basis='completed nonempty bars'),
                     macd=dict(fast=12,slow=26,signal=9),rsi=dict(period=14,seed='first 14 changes',reset='session'),

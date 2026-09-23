@@ -5,10 +5,11 @@ import os
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from services.reference_gateway.config import ReferenceGatewayConfig
+from services.reference_gateway.tradable_snapshots import publish_retained_snapshot, record_missing_sessions, target_session
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -52,7 +53,10 @@ def _run_step_06_specs(
             "",
             "",
         )
-    feature_date = feature_date or datetime.now(UTC).date()
+    feature_date = feature_date or (
+        target_session(datetime.now(UTC)) if specs == ("tradable_universe", "scanner_static")
+        else datetime.now(UTC).date()
+    )
     output_name = "sec_bridge_syncs" if specs == ("sec_market_bridge",) else "tradable_rebuilds"
     runtime_root = Path(os.environ.get("REFERENCE_GATEWAY_RUNTIME_ROOT_WIN", "D:/TradingML/runtimes/reference_gateway"))
     output_root = runtime_root / output_name
@@ -104,12 +108,24 @@ def _run_step_06_specs(
         ",".join(specs),
     ]
     completed = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+    snapshot_detail = ""
+    if completed.returncode == 0 and specs == ("tradable_universe", "scanner_static"):
+        from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+
+        client = ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password())
+        snapshot = publish_retained_snapshot(
+            client, config.clickhouse_write_database, feature_date, expected_session=feature_date,
+        )
+        gaps = record_missing_sessions(client,config.clickhouse_write_database,
+            feature_date-timedelta(days=45),feature_date-timedelta(days=1))
+        snapshot_detail = "\ntradable_snapshot_certificate=" + json.dumps(snapshot, sort_keys=True)
+        snapshot_detail += "\ntradable_unresolved_sessions=" + json.dumps(gaps)
     result = PublicationRebuildResult(
         status="completed" if completed.returncode == 0 else "failed",
         reason=reason,
         command=command,
         returncode=completed.returncode,
-        stdout_tail=tail(relationship_stdout + "\n" + completed.stdout),
+        stdout_tail=tail(relationship_stdout + "\n" + completed.stdout + snapshot_detail),
         stderr_tail=tail(completed.stderr),
     )
     if completed.returncode != 0:

@@ -50,6 +50,16 @@ gateway can also insert the new issuer/security/listing/symbol graph rows. It
 then rebuilds the tradable/scanner publications again. The audit remains
 read-only validation; it does not directly patch `is_tradable`.
 
+Historical market-day consumers use the separate immutable
+`feature_tradable_universe_snapshot_v2` and its
+`feature_tradable_universe_snapshot_coverage_v2` certificate. A gateway
+publication targets the next XNYS session whose 04:00 ET cutoff has not passed.
+The certificate records capture time, source run, counts, and a row hash on
+`live_market_ssd`; missed sessions are recorded as unresolved. A retained V1
+publication can be certified only for the future session implied by its actual
+capture clock. The gateway cannot reconstruct old tradability by rerunning its
+current-graph query with an old date.
+
 Initialize the market-publication schema after hours:
 
 ```powershell

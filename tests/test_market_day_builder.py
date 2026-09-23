@@ -117,6 +117,13 @@ class Arguments(unittest.TestCase):
                     return [dict(source_date=day,total_event_rows_after_filters=2) for day in days]
                 if label=='day_coverage_totals':
                     return [dict(source_date=day,n=2) for day in days]
+                if label=='population_certificate':
+                    return [] if self.missing else [dict(snapshot_id='fixture',source_universe_date=days[0],
+                        captured_at_utc='2026-09-18 03:00:00.000',cutoff_utc='2026-09-18 08:00:00.000',
+                        row_count=1,tradable_count=1,source_hash=1,
+                        revision='preopen-tradable-snapshot-v2',status='certified')]
+                if label=='population_integrity':
+                    return [dict(n=1,tradable=1,source_hash=1)]
                 if label=='dated_tradable_universe':
                     day=next(self.population_dates)
                     return [] if day==self.missing else [dict(ticker='AADX',symbol_id='symbol:aadx',
@@ -137,7 +144,7 @@ class Arguments(unittest.TestCase):
         self.assertEqual(plan['predecessors']['2026-09-18'],'2026-09-17')
         self.assertEqual(plan['population'][-1]['excluded_canonical_tickers'],1)
         self.assertEqual(plan['population'][-1]['selected_ticker_days'],1)
-        with self.assertRaisesRegex(ValueError,'dated tradable universe for 2026-09-18'):
+        with self.assertRaisesRegex(ValueError,'certified pre-open tradable universe for 2026-09-18'):
             B.source_plan(Client(missing='2026-09-18'),args)
         with self.assertRaisesRegex(ValueError,'Requested tickers lack dated tradability'):
             B.source_plan(Client(),B.parse_args(['--date','2026-09-18','--tickers','AAA']))

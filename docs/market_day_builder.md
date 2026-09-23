@@ -25,13 +25,35 @@ Both range endpoints are **inclusive New York dates**. Do not combine `--date`
 with range arguments. Closed calendar dates are explicitly recorded as excluded;
 a range with no exchange sessions is rejected. Omit `--tickers` to select all
 dated-tradable tickers that also have certified source events. The builder reads
-`q_live.feature_tradable_universe_v1 FINAL` with `universe_date` equal to each
-session and `is_tradable=1`. It never substitutes the latest snapshot for a
-missing historical date. Duplicate admitted listing rows collapse to one ticker
-for bar calculation; the complete dated snapshot is fingerprinted in the build.
+`q_live.feature_tradable_universe_snapshot_v2` through a matching certified
+`q_live.feature_tradable_universe_snapshot_coverage_v2` row. The snapshot must
+have been captured before 04:00 ET on its XNYS session date, and the builder
+checks its row count and hash before accepting `is_tradable=1` members. It never
+substitutes the latest snapshot for a missing historical session. Duplicate
+admitted listing rows collapse to one ticker for bar calculation; the complete
+dated snapshot and its certificate are fingerprinted in the build.
 Requested ticker-days without dated admission or canonical events fail preflight.
 Only requested sessions need canonical and dated-population coverage. No earlier
 sessions are built automatically.
+
+The Reference Gateway publishes current-graph snapshots only for the next
+session whose 04:00 ET cutoff has not passed. Its session assignment uses the
+XNYS calendar, so an after-close Friday publication targets Monday (or the
+next exchange session), including holidays and daylight-saving changes. A
+retained V1 publication may be copied into the immutable V2 snapshot only if
+its actual `inserted_at` proves it was captured before that session's cutoff.
+The read-only audit and bounded certification command is:
+
+```powershell
+python -B scripts/audit_tradable_snapshots.py --start-date 2026-08-18 --end-date 2026-09-18
+python -B scripts/audit_tradable_snapshots.py --start-date 2026-08-18 --end-date 2026-09-18 --execute
+```
+
+The second command copies only retained historical publications and writes
+coverage certificates on `live_market_ssd`; unresolved sessions remain recorded
+and cannot be built. It never stamps today's identity graph with a past date.
+Previously built `arte` days retain their original build/population identity;
+they require a new build under the V2 authority before Backtest consumer cutover.
 
 Connection settings come from environment variables or `--env-file`. The default
 file is the existing workstation secrets `.env`; credentials are never printed or
