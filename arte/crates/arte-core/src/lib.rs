@@ -50,6 +50,7 @@ pub mod strategy350_price_gate;
 pub mod strategy350_screen_join;
 pub mod strategy350_session;
 pub mod strategy350_signal;
+pub mod strategy350_transaction;
 pub mod strategy_adds;
 pub mod strategy_candidate;
 pub mod strategy_dispatch;

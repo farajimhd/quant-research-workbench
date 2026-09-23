@@ -9,8 +9,12 @@ paper account decision may reuse allowed evidence only for the matching market
 scope and configuration, within a caller-pinned freshness limit. Historical
 REST evidence has no live availability clock and cannot satisfy that check.
 Live evidence requires an actual receive receipt; REST time cannot be promoted.
-This evidence is not yet included in a dedicated Strategy 350 journaled
-decision or accepted by the bracket planner; exposure remains blocked.
+The Strategy 350 market-decision entry point now includes this fingerprint and
+the caller's other evidence hash in the account-owned journal transaction. It
+checks the live price evidence before returning an entry or add. This is not
+yet a complete Strategy 350 runtime: the remaining pinned operands, account
+risk, bracket planner and broker path are not connected, so exposure remains
+blocked at the order boundary.
 
 A bounded, in-process Massive REST/WebSocket overlap auditor now compares the
 exact verified REST batch chain with captured live events by provider sequence,

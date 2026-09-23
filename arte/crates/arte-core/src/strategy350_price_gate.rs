@@ -144,21 +144,19 @@ impl PriceEvidence {
     pub fn live_available_at_ns(&self) -> Option<u64> {
         self.live_available_at_ns
     }
-    /// Final live decision binding. This is not an order or broker authorization.
-    pub fn require_live_decision(
+    /// Bind even blocked evidence to the exact live run before journaling it.
+    pub fn require_live_identity(
         &self,
         market_scope: Scope,
         scope: &crate::strategy_dispatch::Scope,
         input: &crate::strategy_dispatch::InputBoundary,
         expected_gate_hash: &str,
-        maximum_age_ns: u64,
     ) -> Result<()> {
         use crate::strategy_dispatch::{Mode, StrategyKind};
         let available = self
             .live_available_at_ns
             .ok_or_else(|| Error::Unready("Strategy 350 live price evidence missing".into()))?;
         if self.source != ContextSource::Live
-            || self.outcome.block.is_some()
             || self.scope != market_scope
             || self.config_hash != expected_gate_hash
             || scope.strategy_kind != StrategyKind::Strategy350
@@ -168,11 +166,30 @@ impl PriceEvidence {
             || input.event_time_ns < self.event_time_ns
             || input.available_at_ns < available
             || input.evaluated_at_ns < available
+        {
+            return Err(Error::Unready(
+                "Strategy 350 price evidence does not belong to this live decision".into(),
+            ));
+        }
+        Ok(())
+    }
+    /// Final exposure gate. This is not an order or broker authorization.
+    pub fn require_live_decision(
+        &self,
+        market_scope: Scope,
+        scope: &crate::strategy_dispatch::Scope,
+        input: &crate::strategy_dispatch::InputBoundary,
+        expected_gate_hash: &str,
+        maximum_age_ns: u64,
+    ) -> Result<()> {
+        self.require_live_identity(market_scope, scope, input, expected_gate_hash)?;
+        let available = self.live_available_at_ns.unwrap();
+        if self.outcome.block.is_some()
             || maximum_age_ns == 0
             || input.evaluated_at_ns - available >= maximum_age_ns
         {
             return Err(Error::Unready(
-                "Strategy 350 price evidence is not live decision authority".into(),
+                "Strategy 350 price evidence is not exposure authority".into(),
             ));
         }
         Ok(())
@@ -822,6 +839,77 @@ mod tests {
                 200_000_000
             )
             .is_ok());
+        let mut account =
+            crate::strategy_transaction::Runtime::new(decision_scope.clone(), 0_u64, 1024).unwrap();
+        let safety = crate::strategy_dispatch::Safety {
+            position_quantity: 0,
+            pending_exit_quantity: 0,
+            exit_pending: false,
+            pending_entry: false,
+            last_exit_reason: None,
+            flatten: false,
+            protective_stop_crossed: false,
+            manual_exit: false,
+            completed_macd_reversal: false,
+            setup_phase: crate::strategy_lifecycle::Phase::Building,
+            luld_buffer_reached: false,
+            encounter_exit: false,
+            early_setup_failed: false,
+            structural_exit: false,
+        };
+        assert!(crate::strategy350_transaction::prepare_market_decision(
+            &mut account,
+            crate::strategy350_transaction::MarketDecisionInput {
+                market_scope: Scope {
+                    session: 20260923,
+                    ..market_scope
+                },
+                input: input.clone(),
+                safety: &safety,
+                price: &evidence,
+                expected_price_gate_hash: gate_hash,
+                maximum_price_age_ns: 200_000_000,
+                other_evidence_hash: &"c".repeat(64),
+            },
+            |_| panic!("wrong scope cannot observe account state"),
+            |_| panic!("wrong scope cannot calculate"),
+        )
+        .is_err());
+        let decision = crate::strategy350_transaction::prepare_market_decision(
+            &mut account,
+            crate::strategy350_transaction::MarketDecisionInput {
+                market_scope,
+                input: input.clone(),
+                safety: &safety,
+                price: &evidence,
+                expected_price_gate_hash: gate_hash,
+                maximum_price_age_ns: 200_000_000,
+                other_evidence_hash: &"c".repeat(64),
+            },
+            |state| {
+                *state += 1;
+                Ok(())
+            },
+            |_| {
+                Ok(vec![crate::strategy_dispatch::Action::Wait {
+                    reason: "other_gates_pending".into(),
+                }])
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            decision.evidence_hash,
+            content_hash(&(
+                "arte.strategy-350-market-decision.v1",
+                evidence.fingerprint(),
+                "c".repeat(64)
+            ))
+            .unwrap()
+        );
+        assert_eq!(*account.committed_state(), 0);
+        let rows = account.pending_batch().unwrap().records().to_vec();
+        account.acknowledge(&rows).unwrap();
+        assert_eq!(*account.committed_state(), 1);
         decision_scope.account = "second".into();
         assert!(evidence
             .require_live_decision(
