@@ -70,12 +70,13 @@ The same Early Squeeze state now has separate historical and live modes. Live
 observation requires a genuine availability clock; historical projection never
 substitutes one. The bounded immutable checkpoint pins its source scope and
 formula at state creation, verifies its content hash, and rejects clock or
-geometry mismatch on restore. Migration 023 and a ClickHouse adapter now
-provide immutable scoped signal-checkpoint publication, exact readback, and
-latest-as-of restore. In-process unit tests cover ambiguous insert retry,
-causal latest selection, and conflicting slots. The migration was not applied
-and no database was opened. The MDE live actor, continuous empty-bucket
-advancement, and feed coverage remain required for live use.
+geometry mismatch on restore. The former signal-only Migration 023 was
+replaced before application. Its current schema and adapter hold a combined
+exact-bar and signal root at one scheduler boundary. In-process unit tests
+cover root hash references, boundary idempotency, and conflicting root rows.
+No connected ClickHouse publication or recovery has been tested. A complete
+lane/scheduler recovery root, continuous empty-bucket advancement, and feed
+coverage remain required for live use.
 The inspected live scheduler currently exposes floating-point bars. Feeding
 those into the exact integer signal by rounding would not establish parity at
 its threshold. An exact compact 100 ms bar builder now exists and drives the

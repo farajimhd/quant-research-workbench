@@ -149,6 +149,9 @@ impl State {
     pub fn scope_hash(&self) -> &str {
         &self.scope_hash
     }
+    pub fn config_hash(&self) -> Result<String> {
+        self.config.hash()
+    }
     pub fn next_bucket_ns(&self) -> u64 {
         self.next_bucket_ns
     }
@@ -157,6 +160,12 @@ impl State {
     }
     pub fn last_available_at_ns(&self) -> Option<u64> {
         self.last_available_at_ns
+    }
+    pub fn is_pristine(&self) -> bool {
+        self.next_bucket_ns == self.session_start_ns
+            && self.previous.is_none()
+            && self.first_occurrence_end_ns.is_none()
+            && self.last_available_at_ns.is_none()
     }
     pub fn first_occurrence(&self) -> Option<Occurrence> {
         self.first_occurrence_end_ns

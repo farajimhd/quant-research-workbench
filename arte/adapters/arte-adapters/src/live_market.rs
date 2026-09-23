@@ -1,5 +1,6 @@
 //! In-process audited feed to ordered market/V7 calculations. No service startup.
 use crate::live_decode::AuditedEvent;
+use crate::live_exact_signal;
 use arte_core::{
     candidate_features,
     events::EventKind,
@@ -22,6 +23,7 @@ pub struct Lane {
     maximum_quote_age_ns: u64,
     features: candidate_features::State,
     trade_policy: Option<std::sync::Arc<arte_core::trade_eligibility::Pinned>>,
+    exact_signal: Option<live_exact_signal::Owner>,
 }
 impl Lane {
     pub fn new(
@@ -45,6 +47,7 @@ impl Lane {
             maximum_quote_age_ns,
             market,
             trade_policy: None,
+            exact_signal: None,
             high: BTreeMap::new(),
             allowed_lateness_ns,
             failed: false,
@@ -85,6 +88,32 @@ impl Lane {
         }
         self.trade_policy = Some(policy);
         Ok(())
+    }
+    /// Bind before the first released boundary. A later bind could omit the
+    /// first same-session squeeze occurrence and is rejected.
+    pub fn bind_exact_signal(&mut self, owner: live_exact_signal::Owner) -> Result<()> {
+        self.available()?;
+        let scope = self.market.scope();
+        let source = owner.scope();
+        if self.exact_signal.is_some()
+            || self.market.sequence() != 0
+            || self.market.pending()?.is_some()
+            || (source.provider, source.instrument, source.session)
+                != (scope.provider, scope.instrument, scope.session)
+        {
+            return Err(Error::Conflict("exact signal live binding differs".into()));
+        }
+        self.exact_signal = Some(owner);
+        Ok(())
+    }
+    pub fn first_squeeze_occurrence(
+        &self,
+    ) -> Result<Option<arte_core::strategy350_signal::Occurrence>> {
+        self.available()?;
+        self.exact_signal
+            .as_ref()
+            .map(|owner| owner.first_occurrence())
+            .ok_or_else(|| Error::Unready("exact signal not bound".into()))
     }
     /// Persist/audit every observation independently, including duplicate/rejected
     /// input. Eligibility comes from the pinned trade-condition policy, not health.
@@ -148,6 +177,9 @@ impl Lane {
                     .pending()?
                     .ok_or_else(|| Error::Conflict("prepared live boundary missing".into()))?;
                 self.features.observe(&boundary, self.market.state()?)?;
+                if let Some(owner) = &mut self.exact_signal {
+                    owner.observe(&boundary)?;
+                }
             }
             Ok(prepared)
         })();
@@ -839,6 +871,84 @@ mod tests {
         assert!(lane
             .current_luld(gate.at(101), 202 * SECOND, 2, SECOND)
             .is_err());
+    }
+    #[test]
+    fn exact_signal_binds_before_first_live_boundary_and_consumes_it_once() {
+        use arte_core::{
+            events::{Decimal, EventKey, Observation, Payload, Receipt, SourceTime},
+            exact_bars::{Builder, Mode as BarMode},
+            exposure::Gate,
+            strategy350_signal::{Config as SignalConfig, State as SignalState},
+        };
+        const SECOND: u64 = 1_000_000_000;
+        let mut lane = lane();
+        let scope = lane.market.scope();
+        let bars = Builder::new(
+            scope,
+            BarMode::Live,
+            200 * SECOND,
+            300 * SECOND,
+            2,
+            0,
+            "a".repeat(64),
+        )
+        .unwrap();
+        let signal = SignalState::new_live(
+            SignalConfig {
+                minimum_move_bps: 5,
+                source_algorithm_hash: "b".repeat(64),
+            },
+            bars.configuration_hash().into(),
+            200 * SECOND,
+            300 * SECOND,
+        )
+        .unwrap();
+        lane.bind_exact_signal(live_exact_signal::Owner::new(bars, signal).unwrap())
+            .unwrap();
+        assert_eq!(lane.first_squeeze_occurrence().unwrap(), None);
+        let event = Observation {
+            key: EventKey {
+                provider: 1,
+                instrument: 1,
+                session: 20260915,
+                kind: EventKind::Trade,
+                sequence: 1,
+            },
+            payload: Payload::Trade {
+                price: Decimal::parse("10.00").unwrap(),
+                size: Decimal::parse("1").unwrap(),
+                exchange: 1,
+                trade_id: "t1".into(),
+                trf: None,
+                conditions: vec![],
+                correction: None,
+            },
+            sip: SourceTime {
+                ns: 200 * SECOND + 1,
+                precision_ns: 1,
+            },
+            participant: None,
+            available_at_ns: 200 * SECOND + 2,
+            receipt: Some(Receipt {
+                run_id: "test".into(),
+                lane: 1,
+                sequence: 1,
+                utc_ns: 200 * SECOND + 2,
+                monotonic_ns: 1,
+            }),
+        };
+        lane.market.enqueue(&event, true).unwrap();
+        lane.high.insert(EventKind::Trade, 202 * SECOND);
+        lane.high.insert(EventKind::Quote, 202 * SECOND);
+        let mut gate = Gate::new(100, 2).unwrap();
+        gate.transport(true);
+        gate.update(1, EventKind::Trade, 1, true).unwrap();
+        gate.update(1, EventKind::Quote, 1, true).unwrap();
+        assert!(lane.prepare_next(gate.at(1), 202 * SECOND).unwrap());
+        assert_eq!(lane.exact_signal.as_ref().unwrap().last_boundary().0, 1);
+        assert_eq!(lane.first_squeeze_occurrence().unwrap(), None);
+        assert!(lane.prepare_next(gate.at(1), 202 * SECOND).is_err());
+        assert_eq!(lane.exact_signal.as_ref().unwrap().last_boundary().0, 1);
     }
 
     #[test]

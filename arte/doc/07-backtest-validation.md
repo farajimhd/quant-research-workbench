@@ -108,11 +108,13 @@ projection records the completed-bar end and leaves availability absent. Live
 evaluation requires an actual availability time no earlier than that bar end
 and keeps it distinct from the signal event time. A small immutable recovery
 object pins the source scope and formula hash at state creation, then verifies
-both before restore. An ARTE ClickHouse adapter now publishes immutable
-per-prefix signal snapshots and loads the latest snapshot available at a
-requested cutoff. It rejects conflicting slots, rechecks restored state, and
-requires the approved SSD policy and actual part placement. Migration 023 is
-authored but has not been applied; no connected read/write has been tested.
+both before restore. The live recovery image combines the exact developing
+100 ms bar, signal state, and scheduler boundary sequence in one immutable
+root. Restore requires that exact root and boundary; an independent latest
+signal snapshot is not a valid live recovery cut. The ClickHouse adapter uses
+child objects followed by a root, rejects conflicting slots, and requires the
+approved SSD policy and actual part placement. Migration 023 is authored but
+has not been applied; no connected read/write has been tested.
 Live dense-empty-bucket advancement and feed-continuity proof still need
 the MDE-to-signal actor; this state object alone does not authorize trading.
 The current ARTE market scheduler exposes floating-point bars. The signal

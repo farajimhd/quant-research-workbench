@@ -14,6 +14,7 @@ mod compact_bars;
 mod coverage_index;
 mod eligibility_policies;
 mod event_batches;
+mod exact_signal_checkpoints;
 mod execution_checkpoints;
 mod fills;
 mod order_authorizations;
@@ -23,9 +24,11 @@ mod references;
 mod rejections;
 mod run_checkpoints;
 mod run_manifests;
-mod signal_checkpoints;
 mod startup;
 mod trade_policies;
+pub use exact_signal_checkpoints::{
+    exact_signal_checkpoint_scope, Recovery as ExactSignalRecovery,
+};
 pub use execution_checkpoints::{execution_checkpoint_scope, ExecutionRecovery};
 pub use fills::FillPublisher;
 pub use order_authorizations::OrderPublisher;
@@ -41,7 +44,6 @@ pub(crate) use run_checkpoints::tests::publication as checkpoint_publication_tes
 #[cfg(test)]
 pub(crate) use run_checkpoints::tests::roundtrip as checkpoint_roundtrip_test;
 pub use run_manifests::run_manifest_scope;
-pub use signal_checkpoints::{signal_checkpoint_scope, Recovery as SignalRecovery};
 pub use startup::backtest_startup_scope;
 #[cfg(test)]
 pub(crate) use startup::create_test as startup_session_test;

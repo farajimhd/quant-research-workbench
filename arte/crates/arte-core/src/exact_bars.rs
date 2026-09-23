@@ -4,6 +4,7 @@ use crate::{
     content_hash,
     event_order::Scope,
     events::{EventKind, Observation, Payload},
+    seed_storage::Object,
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,21 @@ pub struct Advance<'a> {
 pub struct Builder {
     scope: Scope,
     configuration_hash: String,
+    mode: Mode,
+    session_start_ns: u64,
+    session_end_ns: u64,
+    price_scale: u8,
+    size_scale: u8,
+    closed_through_ns: u64,
+    last_order: Option<(u64, u64)>,
+    current: Option<Bar>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Saved {
+    version: u32,
+    configuration_hash: String,
+    scope: (u16, u64, u32),
     mode: Mode,
     session_start_ns: u64,
     session_end_ns: u64,
@@ -108,8 +124,117 @@ impl Builder {
     pub fn configuration_hash(&self) -> &str {
         &self.configuration_hash
     }
+    pub fn scope(&self) -> Scope {
+        self.scope
+    }
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
     pub fn current(&self) -> Option<&Bar> {
         self.current.as_ref()
+    }
+    pub fn is_pristine(&self) -> bool {
+        self.closed_through_ns == self.session_start_ns
+            && self.last_order.is_none()
+            && self.current.is_none()
+    }
+    pub fn checkpoint(&self) -> Result<Object> {
+        let saved = Saved {
+            version: 1,
+            configuration_hash: self.configuration_hash.clone(),
+            scope: (
+                self.scope.provider,
+                self.scope.instrument,
+                self.scope.session,
+            ),
+            mode: self.mode,
+            session_start_ns: self.session_start_ns,
+            session_end_ns: self.session_end_ns,
+            price_scale: self.price_scale,
+            size_scale: self.size_scale,
+            closed_through_ns: self.closed_through_ns,
+            last_order: self.last_order,
+            current: self.current.clone(),
+        };
+        let payload =
+            serde_json::to_vec(&saved).map_err(|e| Error::Serialization(e.to_string()))?;
+        if payload.len() > 4096 {
+            return Err(Error::Capacity("exact-bar checkpoint bytes".into()));
+        }
+        Ok(Object::new(payload))
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore(
+        object: &Object,
+        scope: Scope,
+        mode: Mode,
+        session_start_ns: u64,
+        session_end_ns: u64,
+        price_scale: u8,
+        size_scale: u8,
+        source_generation_hash: String,
+    ) -> Result<Self> {
+        object.verify()?;
+        if object.payload.len() > 4096 {
+            return Err(Error::Capacity("exact-bar checkpoint bytes".into()));
+        }
+        let saved: Saved = serde_json::from_slice(&object.payload)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+        let mut builder = Self::new(
+            scope,
+            mode,
+            session_start_ns,
+            session_end_ns,
+            price_scale,
+            size_scale,
+            source_generation_hash,
+        )?;
+        if saved.version != 1
+            || saved.configuration_hash != builder.configuration_hash
+            || saved.scope != (scope.provider, scope.instrument, scope.session)
+            || saved.mode != mode
+            || saved.session_start_ns != session_start_ns
+            || saved.session_end_ns != session_end_ns
+            || saved.price_scale != price_scale
+            || saved.size_scale != size_scale
+            || saved.closed_through_ns < session_start_ns
+            || saved.closed_through_ns > session_end_ns
+            || saved
+                .last_order
+                .is_some_and(|(at, _)| at < session_start_ns || at >= session_end_ns)
+            || saved.current.as_ref().is_some_and(|bar| {
+                bar.start_ns < session_start_ns
+                    || bar.start_ns >= session_end_ns
+                    || !bar.start_ns.is_multiple_of(INTERVAL_NS)
+                    || bar.start_ns.checked_add(INTERVAL_NS) != Some(bar.end_ns)
+                    || bar.start_ns > saved.closed_through_ns
+                    || saved.closed_through_ns >= bar.end_ns
+                    || bar.price_scale != price_scale
+                    || bar.size_scale != size_scale
+                    || bar.open <= 0
+                    || bar.high < bar.open.max(bar.close)
+                    || bar.low <= 0
+                    || bar.low > bar.open.min(bar.close)
+                    || bar.volume <= 0
+                    || bar.notional <= 0
+                    || bar.trades == 0
+                    || bar.last_trade_source_ns < bar.start_ns
+                    || bar.last_trade_source_ns >= bar.end_ns
+                    || saved
+                        .last_order
+                        .is_none_or(|(at, _)| at < bar.last_trade_source_ns || at >= bar.end_ns)
+                    || (mode == Mode::Live) != bar.last_trade_live_receipt_ns.is_some()
+            })
+            || (saved.current.is_some() && saved.last_order.is_none())
+        {
+            return Err(Error::Conflict(
+                "exact-bar checkpoint scope or geometry".into(),
+            ));
+        }
+        builder.closed_through_ns = saved.closed_through_ns;
+        builder.last_order = saved.last_order;
+        builder.current = saved.current;
+        Ok(builder)
     }
     /// `eligible` is the result of the pinned trade-condition policy. An
     /// ineligible trade advances source order but cannot alter a bar.
@@ -431,5 +556,86 @@ mod tests {
         assert!(wrong
             .observe_live_advance(&bars.advance(S + 400_000_000).unwrap(), S + 410_000_000)
             .is_err());
+    }
+    #[test]
+    fn developing_exact_bar_restores_only_under_identical_source_and_geometry() {
+        let generation = "a".repeat(64);
+        let mut original = Builder::new(
+            scope(),
+            Mode::Live,
+            S,
+            S + 300_000_000,
+            2,
+            0,
+            generation.clone(),
+        )
+        .unwrap();
+        original
+            .trade(&trade(1, S + 1, "10.01", "2", true), true)
+            .unwrap();
+        let image = original.checkpoint().unwrap();
+        let restore = |object: &Object| {
+            Builder::restore(
+                object,
+                scope(),
+                Mode::Live,
+                S,
+                S + 300_000_000,
+                2,
+                0,
+                generation.clone(),
+            )
+        };
+        let mut recovered = restore(&image).unwrap();
+        assert!(Builder::restore(
+            &image,
+            scope(),
+            Mode::Historical,
+            S,
+            S + 300_000_000,
+            2,
+            0,
+            generation.clone()
+        )
+        .is_err());
+        assert!(Builder::restore(
+            &image,
+            scope(),
+            Mode::Live,
+            S,
+            S + 300_000_000,
+            3,
+            0,
+            generation.clone()
+        )
+        .is_err());
+        assert!(Builder::restore(
+            &image,
+            scope(),
+            Mode::Live,
+            S,
+            S + 300_000_000,
+            2,
+            0,
+            "b".repeat(64)
+        )
+        .is_err());
+        let next = trade(2, S + 2, "10.02", "3", true);
+        original.trade(&next, true).unwrap();
+        recovered.trade(&next, true).unwrap();
+        assert_eq!(
+            original.checkpoint().unwrap().id,
+            recovered.checkpoint().unwrap().id
+        );
+        assert_eq!(
+            original.advance(S + 100_000_000).unwrap().completed,
+            recovered.advance(S + 100_000_000).unwrap().completed
+        );
+        let mut corrupt = image.clone();
+        corrupt.payload[0] ^= 1;
+        assert!(restore(&corrupt).is_err());
+        let mut invalid: serde_json::Value = serde_json::from_slice(&image.payload).unwrap();
+        invalid["current"]["end_ns"] = serde_json::json!(S + 500_000_000);
+        assert!(restore(&Object::new(serde_json::to_vec(&invalid).unwrap())).is_err());
     }
 }

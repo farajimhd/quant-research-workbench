@@ -165,6 +165,9 @@ impl Scheduler {
     pub fn scope(&self) -> crate::event_order::Scope {
         self.market.scope()
     }
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
     pub fn watermark_ns(&self) -> u64 {
         self.market.watermark_ns()
     }
