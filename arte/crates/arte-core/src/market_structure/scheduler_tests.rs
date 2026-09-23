@@ -325,6 +325,7 @@ fn quotes_and_trades_share_causal_boundaries_without_future_quote_leakage() {
         implementation_hash: "a".repeat(64),
         interval: crate::execution_interval::ExecutionInterval::Events,
     };
+    let event_route = crate::execution_interval::Route::new(&event_signal).unwrap();
     let mut scheduler = scheduler(10);
     let first = replay_quote(1, 200);
     for (event, eligible) in [
@@ -340,7 +341,7 @@ fn quotes_and_trades_share_causal_boundaries_without_future_quote_leakage() {
     while scheduler.prepare_next(202 * SECOND, 202 * SECOND).unwrap() {
         let boundary = scheduler.pending().unwrap().unwrap();
         assert_eq!(
-            boundary.due_for(&event_signal).unwrap(),
+            boundary.due_for(event_route),
             !matches!(boundary.kind, Kind::Completed { .. })
         );
         let id = boundary.id.to_owned();
@@ -1074,6 +1075,9 @@ fn every_boundary_is_seen_without_next_trade_or_empty_bar_leakage() {
         interval: ExecutionInterval::Fixed(2 * SECOND),
         ..bar_signal.clone()
     };
+    let event_route = crate::execution_interval::Route::new(&event_signal).unwrap();
+    let bar_route = crate::execution_interval::Route::new(&bar_signal).unwrap();
+    let other_bar_route = crate::execution_interval::Route::new(&other_bar_signal).unwrap();
     let mut scheduler = scheduler(10);
     for e in [event(3, 203, 30), event(1, 200, 10), event(2, 201, 20)] {
         scheduler.enqueue(&e, true).unwrap();
@@ -1089,9 +1093,9 @@ fn every_boundary_is_seen_without_next_trade_or_empty_bar_leakage() {
         assert_eq!(input.evaluated_at_ns, 205 * SECOND);
         assert!(ids.insert(boundary.id.to_owned()));
         let is_completed = matches!(boundary.kind, Kind::Completed { .. });
-        assert_eq!(boundary.due_for(&event_signal).unwrap(), !is_completed);
-        assert_eq!(boundary.due_for(&bar_signal).unwrap(), is_completed);
-        assert!(!boundary.due_for(&other_bar_signal).unwrap());
+        assert_eq!(boundary.due_for(event_route), !is_completed);
+        assert_eq!(boundary.due_for(bar_route), is_completed);
+        assert!(!boundary.due_for(other_bar_route));
         match boundary.kind {
             Kind::Quote { .. } => panic!("trade-only fixture"),
             Kind::Completed {

@@ -88,6 +88,24 @@ impl ExecutionContract {
     }
 }
 
+/// Validate and pin an executable once before scheduling. Boundary checks use
+/// only this copyable clock, not JSON serialization or SHA-256 on the hot path.
+#[derive(Debug, Clone, Copy)]
+pub struct Route {
+    interval: ExecutionInterval,
+}
+impl Route {
+    pub fn new(contract: &ExecutionContract) -> Result<Self> {
+        contract.hash()?;
+        Ok(Self {
+            interval: contract.interval,
+        })
+    }
+    pub fn interval(self) -> ExecutionInterval {
+        self.interval
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,7 +140,12 @@ mod tests {
         assert!(c.hash().is_ok());
         c.kind = ExecutableKind::Computation("portfolio-risk".into());
         assert!(c.hash().is_ok());
+        assert_eq!(
+            Route::new(&c).unwrap().interval(),
+            ExecutionInterval::Fixed(100_000_000)
+        );
         c.kind = ExecutableKind::Computation("".into());
         assert!(c.hash().is_err());
+        assert!(Route::new(&c).is_err());
     }
 }
