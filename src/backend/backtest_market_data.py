@@ -50,6 +50,15 @@ class ExecutionInterval:
             return value
         if isinstance(value, Mapping):
             kind = str(value.get("kind") or "").strip().lower()
+            if not kind and value.get("unit") is not None:
+                unit = str(value["unit"]).strip().lower()
+                scale = {
+                    "milliseconds": 1, "seconds": 1_000,
+                    "minutes": 60_000, "hours": 3_600_000,
+                }.get(unit)
+                if scale is None:
+                    raise ValueError(f"Unsupported persisted Backtest interval unit: {unit}")
+                return cls.fixed(int(value.get("value") or 0) * scale)
             if kind == "events":
                 return cls("events")
             if kind == "fixed":
@@ -153,13 +162,16 @@ def compile_required_resolutions(
     def visit(value: Any) -> None:
         if isinstance(value, Mapping):
             for key, child in value.items():
-                if key in {"interval", "left_interval", "right_interval", "timeframe", "working_timeframe"}:
+                if key in {
+                    "execution_interval", "interval", "left_interval", "right_interval",
+                    "timeframe", "working_timeframe",
+                }:
                     try:
                         parsed = ExecutionInterval.parse(child)
                     except (TypeError, ValueError):
                         pass
                     else:
-                        if parsed.kind == "fixed" and parsed.milliseconds in FIXED_RESOLUTIONS_MS:
+                        if parsed.kind == "fixed":
                             required.add(int(parsed.milliseconds))
                 visit(child)
         elif isinstance(value, (list, tuple)):
@@ -242,12 +254,12 @@ class MarketDayLedger:
         with closing(self._connect()) as connection:
             builds = connection.execute(
                 "SELECT build_id,definition_hash,updated_at FROM builds "
-                "WHERE database_name=? AND version=? AND status='core_complete' "
+                "WHERE database_name=? AND version=? AND status IN ('building','core_complete') "
                 "ORDER BY updated_at DESC,build_id DESC",
                 (ARTE_DATABASE, MARKET_DAY_VERSION),
             ).fetchall()
             if not builds:
-                raise ValueError("No certified complete market-day-core-v5 build is available")
+                raise ValueError("No market-day-core-v5 build with certifiable sessions is available")
             errors: list[str] = []
             for build_id, definition_hash, _ in builds:
                 try:
@@ -334,7 +346,7 @@ def readonly_clickhouse_client():
 
 
 def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None) -> None:
-    """Prove the pinned attempts exist through the dedicated read-only account."""
+    """Recheck pinned row counts, keys, hashes, and resolutions read-only."""
     active = client or readonly_clickhouse_client()
     close = client is None
     try:
@@ -350,25 +362,48 @@ def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None) -> None:
             units = [unit for unit in plan.units if unit.stage == stage]
             if len(units) != expected:
                 raise ValueError(f"Certified market-day plan has incomplete {stage} scope")
-            days = ",".join(_literal(value) for value in plan.sessions)
-            sql = assert_select_only(
-                f"SELECT toString(session_date) AS session_date,ticker,toString(attempt_id) AS attempt_id "
-                f"FROM {ARTE_DATABASE}.{table} WHERE build_id={_literal(plan.build_id)} "
-                f"AND session_date IN ({days}) GROUP BY session_date,ticker,attempt_id FORMAT JSONEachRow"
-            )
-            raw = active.execute(sql)
-            rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
-            actual = {
-                (str(row["session_date"]), str(row["ticker"]), str(row["attempt_id"]))
-                for row in rows
-            }
-            required = {(unit.session_date, unit.ticker, unit.attempt_id) for unit in units}
-            missing = required.difference(actual)
-            if missing:
-                raise ValueError(
-                    f"Persisted {ARTE_DATABASE}.{table} coverage changed: expected "
-                    f"{expected} certified ticker-days, missing {len(missing)}"
-                )
+            by_day: dict[str, list[MarketDayUnit]] = {}
+            for unit in units:
+                by_day.setdefault(unit.session_date, []).append(unit)
+            for day, day_units in by_day.items():
+                ordered = sorted(day_units, key=lambda unit: unit.ticker)
+                for offset in range(0, len(ordered), 256):
+                    batch = ordered[offset:offset + 256]
+                    tickers = ",".join(_literal(unit.ticker) for unit in batch)
+                    sql = assert_select_only(
+                        "SELECT ticker,toString(attempt_id) AS attempt_id,"
+                        "count() AS n,uniqExact((resolution_ms,bucket_index)) AS unique_keys,"
+                        "toString(sum(cityHash64(tuple(*)))) AS hash,"
+                        "groupUniqArray(resolution_ms) AS resolutions "
+                        f"FROM {ARTE_DATABASE}.{table} WHERE build_id={_literal(plan.build_id)} "
+                        f"AND session_date=toDate({_literal(day)}) AND ticker IN ({tickers}) "
+                        "GROUP BY ticker,attempt_id FORMAT JSONEachRow"
+                    )
+                    rows = [json.loads(line) for line in active.execute(sql).splitlines() if line.strip()]
+                    actual = {(str(row["ticker"]), str(row["attempt_id"])): row for row in rows}
+                    if len(actual) != len(rows):
+                        raise ValueError(f"Persisted {ARTE_DATABASE}.{table} has duplicate integrity groups")
+                    for unit in batch:
+                        row = actual.get((unit.ticker, unit.attempt_id))
+                        count = int(row["n"]) if row else 0
+                        output_hash = str(row["hash"]) if row else "0"
+                        unique = int(row["unique_keys"]) if row else 0
+                        if (count != unit.output_rows or output_hash != unit.output_hash
+                                or unique != count):
+                            raise ValueError(
+                                f"Persisted {ARTE_DATABASE}.{table} integrity changed: "
+                                f"{day} {unit.ticker} expected {unit.output_rows} rows, "
+                                f"found {count}"
+                            )
+                        if row and stage in {"bars", "technical"}:
+                            missing = set(plan.required_resolutions_ms).difference(
+                                int(value) for value in row["resolutions"]
+                            )
+                            if missing:
+                                raise ValueError(
+                                    f"Persisted {ARTE_DATABASE}.{table} lacks {day} "
+                                    f"{unit.ticker} resolutions {sorted(missing)}"
+                                )
     finally:
         if close:
             active.close()
@@ -397,49 +432,60 @@ def _unit_map(plan: CertifiedMarketDayPlan, stage: str) -> dict[tuple[str, str],
 
 
 def market_day_rows_sql(plan: CertifiedMarketDayPlan) -> str:
-    """One ordered fixed-boundary projection; no server-side product generation."""
+    """Read only pinned attempts, including both sides of the bounded joins."""
     bars = _unit_map(plan, "bars")
     technical = _unit_map(plan, "technical")
     liquidity = _unit_map(plan, "broker_100ms")
-    scopes = []
     for day, ticker in sorted(bars):
         key = (day, ticker)
         if key not in technical or key not in liquidity:
             raise ValueError(f"Certified market-day plan lost {day} {ticker}")
-        scopes.append(
-            "SELECT "
-            f"{_literal(day)} session_date,{_literal(ticker)} ticker,"
-            f"toUUID({_literal(bars[key].attempt_id)}) bars_attempt,"
-            f"toUUID({_literal(technical[key].attempt_id)}) indicators_attempt,"
-            f"toUUID({_literal(liquidity[key].attempt_id)}) liquidity_attempt"
+    if not bars:
+        raise ValueError("Certified market-day plan has no bar scopes")
+
+    def pinned(stage: str, units: Mapping[tuple[str, str], MarketDayUnit]) -> str:
+        attempts = ",".join(
+            f"(toDate({_literal(day)}),{_literal(ticker)},toUUID({_literal(unit.attempt_id)}))"
+            for (day, ticker), unit in sorted(units.items())
         )
-    scope_sql = " UNION ALL ".join(scopes)
+        return (
+            f"SELECT * FROM arte.{stage} WHERE build_id={_literal(plan.build_id)} "
+            f"AND (session_date,ticker,attempt_id) IN ({attempts})"
+        )
+
     resolutions = tuple(sorted({100, *plan.required_resolutions_ms}))
     resolution_sql = ",".join(str(value) for value in resolutions)
     return assert_select_only(f"""
-      WITH scopes AS ({scope_sql})
-      SELECT b.session_date,b.ticker,b.bucket_index,b.resolution_ms,
+      SELECT b.session_date AS session_date,b.ticker AS ticker,
+        b.bucket_index AS bucket_index,b.resolution_ms AS resolution_ms,
         (toUInt64(b.bucket_index)+1)*b.resolution_ms AS boundary_ms,
-        b.open_int,b.high_int,b.low_int,b.close_int,b.volume,b.trade_count,b.notional,
-        b.execution_volume,b.execution_notional,b.price_valid,b.extremes_valid,
+        b.open_int AS open_int,b.high_int AS high_int,b.low_int AS low_int,
+        b.close_int AS close_int,b.volume AS volume,b.trade_count AS trade_count,
+        b.notional AS notional,b.execution_volume AS execution_volume,
+        b.execution_notional AS execution_notional,b.price_valid AS price_valid,
+        b.extremes_valid AS extremes_valid,
         i.ema_7,i.ema_9,i.ema_12,i.ema_15,i.ema_20,i.ema_26,i.ema_50,
         i.macd_line,i.macd_signal,i.macd_histogram,i.rsi_14,i.atr_14,
         i.rsi_ready,i.atr_ready,i.previous_close,
-        l.first_event_us,l.last_event_us,l.event_count,l.source_trade_count,l.quote_event_count,
-        l.quote_timestamp_us,l.bid_int,l.ask_int,l.bid_size,l.ask_size,l.spread,l.quote_valid,
-        l.cumulative_volume,l.cumulative_notional,l.cumulative_execution_volume,
-        l.cumulative_execution_notional,l.execution_vwap
-      FROM scopes s
-      INNER JOIN arte.bars_v1 b ON b.build_id={_literal(plan.build_id)}
-        AND b.session_date=toDate(s.session_date) AND b.ticker=s.ticker
-        AND b.attempt_id=s.bars_attempt AND b.resolution_ms IN ({resolution_sql})
-      LEFT JOIN arte.indicators_v1 i ON i.build_id={_literal(plan.build_id)}
-        AND i.session_date=b.session_date AND i.ticker=b.ticker
-        AND i.attempt_id=s.indicators_attempt AND i.resolution_ms=b.resolution_ms
+        l.first_event_us AS first_event_us,l.last_event_us AS last_event_us,
+        l.event_count AS event_count,l.source_trade_count AS source_trade_count,
+        l.quote_event_count AS quote_event_count,
+        l.quote_timestamp_us AS quote_timestamp_us,l.bid_int AS bid_int,
+        l.ask_int AS ask_int,l.bid_size AS bid_size,l.ask_size AS ask_size,
+        l.spread AS spread,l.quote_valid AS quote_valid,
+        l.cumulative_volume AS cumulative_volume,
+        l.cumulative_notional AS cumulative_notional,
+        l.cumulative_execution_volume AS cumulative_execution_volume,
+        l.cumulative_execution_notional AS cumulative_execution_notional,
+        l.execution_vwap AS execution_vwap
+      FROM ({pinned('bars_v1', bars)} AND resolution_ms IN ({resolution_sql})) b
+      LEFT JOIN ({pinned('indicators_v1', technical)}) i ON
+        i.session_date=b.session_date AND i.ticker=b.ticker
+        AND i.resolution_ms=b.resolution_ms
         AND i.bucket_index=b.bucket_index
-      LEFT JOIN arte.liquidity_100ms_v1 l ON l.build_id={_literal(plan.build_id)}
-        AND l.session_date=b.session_date AND l.ticker=b.ticker
-        AND l.attempt_id=s.liquidity_attempt AND l.resolution_ms=100
+      LEFT JOIN ({pinned('liquidity_100ms_v1', liquidity)}) l ON
+        l.session_date=b.session_date AND l.ticker=b.ticker
+        AND l.resolution_ms=100
         AND b.resolution_ms=100 AND l.bucket_index=b.bucket_index
       ORDER BY b.session_date,boundary_ms,b.resolution_ms,b.ticker
       FORMAT JSONEachRow

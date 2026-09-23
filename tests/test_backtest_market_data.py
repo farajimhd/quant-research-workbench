@@ -24,9 +24,17 @@ class _ReadClient:
     def execute(self, sql: str) -> str:
         self.queries.append(sql)
         return json.dumps({
-            "session_date": "2026-08-18", "ticker": "SUGP",
+            "ticker": "SUGP", "n": 10, "unique_keys": 10,
+            "hash": "42", "resolutions": [100, 1000],
             "attempt_id": "00000000-0000-0000-0000-000000000001",
         }) + "\n"
+
+
+class _CorruptReadClient(_ReadClient):
+    def execute(self, sql: str) -> str:
+        row = json.loads(super().execute(sql))
+        row["hash"] = "43"
+        return json.dumps(row) + "\n"
 
 
 class BacktestMarketDataTests(unittest.TestCase):
@@ -59,7 +67,7 @@ class BacktestMarketDataTests(unittest.TestCase):
                 "INSERT INTO units VALUES (?,?,?,?,?,?,?,?,?,?)",
                 ("build-1", "2026-08-18", "SUGP", stage,
                  "00000000-0000-0000-0000-000000000001", "source", 10,
-                 "output", "complete", "2026-09-23T00:00:00Z"),
+                 "42", "complete", "2026-09-23T00:00:00Z"),
             )
         connection.commit()
         connection.close()
@@ -71,6 +79,17 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertEqual(ExecutionInterval.parse("1s").milliseconds, 1_000)
         with self.assertRaises(ValueError):
             ExecutionInterval.parse("250ms")
+
+    def test_nested_unsupported_fixed_interval_fails_before_data_access(self) -> None:
+        from src.backend.backtest_market_data import compile_required_resolutions
+
+        with self.assertRaisesRegex(ValueError, "200"):
+            compile_required_resolutions(
+                {"signal_activation": {"signal_streams": [
+                    {"execution_interval": {"value": 200, "unit": "milliseconds"}},
+                ]}},
+                ExecutionInterval.parse("100ms"),
+            )
 
     def test_catalogue_pins_all_three_read_only_products(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -87,6 +106,9 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertIn("arte.indicators_v1", sql)
         self.assertIn("arte.liquidity_100ms_v1", sql)
         self.assertNotIn("market_day_events", sql)
+        self.assertNotIn("WITH scopes", sql)
+        self.assertIn("b.session_date AS session_date", sql)
+        self.assertIn("l.quote_timestamp_us AS quote_timestamp_us", sql)
 
     def test_missing_stage_fails_catalogue_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -100,6 +122,28 @@ class BacktestMarketDataTests(unittest.TestCase):
                     sessions=[date(2026, 8, 18)], tickers=["SUGP"],
                     configuration={"strategy": {"execution_interval": "100ms"}},
                 )
+
+    def test_day_can_certify_before_entire_campaign_finishes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = self._ledger(Path(directory))
+            connection = sqlite3.connect(ledger.path)
+            connection.execute("UPDATE builds SET status='building'")
+            connection.commit()
+            connection.close()
+            plan = ledger.certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=[],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+            self.assertEqual(plan.tickers, ("SUGP",))
+
+    def test_changed_persisted_hash_fails_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self._ledger(Path(directory)).certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+            with self.assertRaisesRegex(ValueError, "integrity changed"):
+                verify_market_day_plan(plan, _CorruptReadClient())
 
     def test_incomplete_full_population_fails_instead_of_shrinking(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
