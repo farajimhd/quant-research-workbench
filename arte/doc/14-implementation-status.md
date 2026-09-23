@@ -60,7 +60,9 @@ An offline historical projection now consumes a certified, readback-verified
 price scale, and emits sparse completed close inputs at their bar-end clocks.
 It does not invent live receipt or last-trade timestamps. The projection
 reaches the shared four-frame MACD state, but the runnable backtest loop does
-not yet apply those inputs at each decision boundary.
+not yet apply those inputs at each decision boundary. The historical product
+exposes a monotonic replay cursor, not its end-of-session EMA state. The cursor
+applies only closes sealed by the current replay clock and rejects rewind.
 Numerical parity with the current Python/QMD MACD initialization is unproven;
 activation must remain blocked until that comparison and an effective
 configuration pin are complete.

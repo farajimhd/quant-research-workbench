@@ -1,17 +1,95 @@
 //! Sparse MACD close schedule from one certified 100 ms historical product.
 //! The caller applies these inputs at their end clock before evaluating later
 //! events. No live receipt or historical trade execution timestamp is inferred.
-use super::{exact_source, Config, State};
+use super::{exact_source, Config, Outcome, State};
 use crate::{
     bar_catalogue::{Column, Complete, BASE_INTERVAL_NS},
     event_order::Scope,
+    events::Decimal,
     Error, Result,
 };
 
 pub struct Projection {
-    pub source: exact_source::Source,
-    pub state: State,
-    pub completed: Vec<exact_source::CompletedInput>,
+    scope: Scope,
+    session_start_ns: u64,
+    session_end_ns: u64,
+    config: Config,
+    completed: Vec<exact_source::CompletedInput>,
+}
+
+/// The only decision-facing historical view. The final projected state is
+/// deliberately not exposed: replay must advance this cursor monotonically.
+pub struct Cursor {
+    projection: Projection,
+    state: State,
+    next: usize,
+    clock_ns: u64,
+}
+impl Projection {
+    pub fn completed_count(&self) -> usize {
+        self.completed.len()
+    }
+    pub fn cursor(self) -> Result<Cursor> {
+        let state = State::new(
+            self.scope,
+            self.session_start_ns,
+            self.session_end_ns,
+            &self.config,
+        )?;
+        Ok(Cursor {
+            clock_ns: self.session_start_ns,
+            projection: self,
+            state,
+            next: 0,
+        })
+    }
+}
+impl Cursor {
+    pub fn advance_to(&mut self, clock_ns: u64) -> Result<usize> {
+        if clock_ns < self.clock_ns || clock_ns > self.projection.session_end_ns {
+            return Err(Error::Conflict("historical MACD replay clock".into()));
+        }
+        if self
+            .projection
+            .completed
+            .get(self.next)
+            .is_none_or(|input| input.end_ns > clock_ns)
+        {
+            self.clock_ns = clock_ns;
+            return Ok(0);
+        }
+        let mut staged = self.state.clone();
+        let mut next = self.next;
+        while let Some(input) = self.projection.completed.get(next) {
+            if input.end_ns > clock_ns {
+                break;
+            }
+            staged.observe_completed(input.timeframe_ns, input.end_ns, input.close)?;
+            next += 1;
+        }
+        let applied = next - self.next;
+        self.state = staged;
+        self.next = next;
+        self.clock_ns = clock_ns;
+        Ok(applied)
+    }
+    pub fn preview_trade(
+        &mut self,
+        event_time_ns: u64,
+        evaluated_at_ns: u64,
+        price: Decimal,
+    ) -> Result<Outcome> {
+        if event_time_ns >= self.projection.session_end_ns
+            || evaluated_at_ns < event_time_ns
+            || !price.positive()
+            || price.scale != self.projection.config.price_scale
+        {
+            return Err(Error::Invalid("historical MACD trade".into()));
+        }
+        self.advance_to(event_time_ns)?;
+        self.state
+            .preview_trade(event_time_ns, evaluated_at_ns, price)
+    }
 }
 
 pub fn project(
@@ -94,8 +172,10 @@ pub fn project(
     }
     state.require_source(&source)?;
     Ok(Projection {
-        source,
-        state,
+        scope,
+        session_start_ns: request.interval.start,
+        session_end_ns: request.interval.end,
+        config: config.clone(),
         completed,
     })
 }
@@ -185,7 +265,7 @@ mod tests {
         let request_hash = complete.request().hash().unwrap();
         let coverage_hash = complete.coverage_hash().to_owned();
         let projection = project(&complete, &request_hash, &coverage_hash, &config).unwrap();
-        assert_eq!(projection.source.watermark_ns(), START + 30 * SECOND);
+        assert_eq!(projection.completed_count(), 7);
         assert_eq!(
             projection
                 .completed
@@ -206,6 +286,26 @@ mod tests {
             projection.completed.last().unwrap().end_ns,
             START + 30 * SECOND
         );
+        let mut cursor = projection.cursor().unwrap();
+        let price = Decimal {
+            atoms: 1000,
+            scale: 2,
+        };
+        assert!(
+            !cursor
+                .preview_trade(START + SECOND - 1, START + SECOND - 1, price)
+                .unwrap()
+                .bullish
+        );
+        assert_eq!(cursor.advance_to(START + SECOND).unwrap(), 1);
+        assert!(cursor.advance_to(START + SECOND - 1).is_err());
+        let before_later_closes = cursor
+            .preview_trade(START + 4 * SECOND, START + 4 * SECOND, price)
+            .unwrap();
+        assert!(before_later_closes.previews[0].is_none());
+        assert!(before_later_closes.previews[2].is_none());
+        assert_eq!(cursor.advance_to(START + 29 * SECOND).unwrap(), 2);
+        assert_eq!(cursor.advance_to(START + 30 * SECOND).unwrap(), 4);
         assert!(project(&complete, &"f".repeat(64), &coverage_hash, &config).is_err());
         assert!(project(&complete, &request_hash, &"f".repeat(64), &config).is_err());
     }
