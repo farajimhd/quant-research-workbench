@@ -123,6 +123,11 @@ returns a sealed product plus source proof. It rejects work-budget exhaustion.
 One offline unit test covers two event decisions and an insufficient boundary
 budget. The runner performs no account decisions or simulated/broker execution.
 No general signal registry or live event-Boolean producer is wired yet.
+The adapter now composes that historical runner directly with the event-Boolean
+publication preparation contract. It carries the runner's proof into the
+prepared ClickHouse product without a caller-supplied replacement. This path
+compiled and its component unit tests pass, but the composed call itself has
+no connected acceptance test; no schema was applied or service started.
 The first Strategy
 350 Early Squeeze historical formula and first-occurrence session latch now
 feed the fixed-cadence Boolean path. The formula uses exact close-ratio, trade-count, and volume

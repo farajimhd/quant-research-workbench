@@ -4,8 +4,10 @@ use super::*;
 use arte_core::{
     config::Acceptance,
     coverage::Interval,
-    event_boolean::{ledger::SourceProof, Product, Transition},
+    event_boolean::{ledger::SourceProof, replay, Product, Transition},
     execution_interval::{ExecutionContract, ExecutionInterval},
+    market_structure::scheduler::{playback::Playback, Boundary},
+    quote_state::Book,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -205,6 +207,23 @@ pub fn prepare_event_boolean_product(
         },
         published_at_ns,
     )
+}
+
+/// Pure offline composition of the shared event clock, independent source
+/// proof, and immutable ClickHouse publication payload. Does not perform I/O.
+pub fn prepare_replayed_event_boolean_product(
+    playback: Playback,
+    context: replay::Context<'_>,
+    published_at_ns: u64,
+    evaluate: impl FnMut(
+        &Boundary<'_>,
+        &arte_core::market_structure::Runtime,
+        &Book,
+    ) -> Result<Option<bool>>,
+) -> Result<Prepared> {
+    let definition = context.definition;
+    let (product, proof) = replay::project(playback, context, evaluate)?;
+    prepare_event_boolean_product(product, definition, &proof, published_at_ns)
 }
 
 fn prepare_from_source(

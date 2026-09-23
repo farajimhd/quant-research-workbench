@@ -101,6 +101,10 @@ underlying source authority being independently certified; it does not prove
 provider completeness or live feed health. Live-stream certification remains
 unimplemented.
 A run-level producer remains unfinished.
+The historical precompute runner and event-Boolean publisher can now be
+composed in one pure preparation call. It returns the product ready for the
+header-last ClickHouse publisher; it does not publish or start a service.
+That composition compiled but has not been exercised against ClickHouse.
 
 ClickHouse is the sole durable store for backtest spools, run evidence, and
 operational logs. Use compact typed records and measured compression. SQLite
