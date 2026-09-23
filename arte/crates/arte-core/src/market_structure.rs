@@ -787,6 +787,9 @@ pub(crate) mod tests {
     pub(super) fn runtime(maximum_bars: usize) -> Runtime {
         runtime_with_timeframes(maximum_bars, vec![])
     }
+    pub(super) fn runtime_for(maximum_bars: usize, instrument: u64) -> Runtime {
+        try_runtime_for(maximum_bars, vec![], instrument).unwrap()
+    }
     pub(crate) fn runtime_with_timeframes(
         maximum_bars: usize,
         additional_timeframes: Vec<Timeframe>,
@@ -794,6 +797,13 @@ pub(crate) mod tests {
         try_runtime(maximum_bars, additional_timeframes).unwrap()
     }
     fn try_runtime(maximum_bars: usize, additional_timeframes: Vec<Timeframe>) -> Result<Runtime> {
+        try_runtime_for(maximum_bars, additional_timeframes, 1)
+    }
+    fn try_runtime_for(
+        maximum_bars: usize,
+        additional_timeframes: Vec<Timeframe>,
+        instrument: u64,
+    ) -> Result<Runtime> {
         let bars: Vec<_> = (100..118)
             .map(|t| Candle {
                 t,
@@ -805,7 +815,7 @@ pub(crate) mod tests {
             })
             .collect();
         let source = SourceCertificate {
-            instrument: 1,
+            instrument,
             ticker: "TEST".into(),
             session: 20260914,
             start_second: 100,
@@ -828,7 +838,7 @@ pub(crate) mod tests {
             &seed,
             Config {
                 provider: 1,
-                instrument: 1,
+                instrument,
                 session: 20260915,
                 start_second: 200,
                 end_second: 300,

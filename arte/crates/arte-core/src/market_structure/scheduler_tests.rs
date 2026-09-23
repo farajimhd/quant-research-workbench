@@ -973,6 +973,115 @@ fn prepared_playback() -> playback::Prepared {
     .unwrap()
 }
 #[test]
+fn multi_ticker_playback_preserves_global_boundary_order_and_account_barriers() {
+    use crate::account_boundary::tests::receipt;
+    use playback::{
+        accounts::{
+            multi::{MultiPoll, MultiRun},
+            Run,
+        },
+        Frame, Input, Limits, Prepared,
+    };
+    let first = prepared_playback();
+    let mut second_events = [event(1, 200, 10), event(2, 203, 20)];
+    for observation in &mut second_events {
+        observation.key.instrument = 2;
+    }
+    let second_scope = crate::event_order::Scope {
+        provider: 1,
+        instrument: 2,
+        session: 20260915,
+    };
+    let second = Prepared::new(
+        second_scope,
+        "historical-explicit-clock-v1",
+        vec![
+            Frame {
+                watermark_ns: 201 * SECOND,
+                evaluated_at_ns: 201 * SECOND,
+                inputs: vec![Input {
+                    observation: second_events[0].clone(),
+                    eligible: true,
+                }],
+            },
+            Frame {
+                watermark_ns: 204 * SECOND,
+                evaluated_at_ns: 204 * SECOND,
+                inputs: vec![Input {
+                    observation: second_events[1].clone(),
+                    eligible: true,
+                }],
+            },
+        ],
+        Limits {
+            maximum_frames: 10,
+            maximum_events: 10,
+            maximum_serialized_bytes: 10_000,
+        },
+    )
+    .unwrap();
+    let mut catalog = playback_catalog();
+    catalog.shards.push(playback::sources::Shard {
+        provider: 1,
+        instrument: 2,
+        session: 20260915,
+        prepared_hash: second.hash().into(),
+        clock_model: "historical-explicit-clock-v1".into(),
+    });
+    let mut manifest = account_run_manifest();
+    manifest.consumers.truncate(1);
+    let mut other = manifest.consumers[0].clone();
+    other.account = "other".into();
+    other.instrument = 2;
+    manifest.consumers.push(other);
+    manifest.source_manifest_hash = catalog.hash().unwrap();
+    let hash = manifest.hash().unwrap();
+    let pinned = crate::run_manifest::Pinned::new(manifest, &hash).unwrap();
+    let make = |instrument, prepared| {
+        let market = super::super::tests::runtime_for(10, instrument);
+        let scheduler = Scheduler::new(
+            Ordered::new(market, 10).unwrap(),
+            "causal-offline-test".into(),
+        )
+        .unwrap();
+        Run::new(&pinned, &catalog, scheduler, prepared, 1, 1).unwrap()
+    };
+    let first_run = make(1, first);
+    let second_run = make(2, second);
+    assert!(MultiRun::new(&pinned, &catalog, vec![]).is_err());
+    assert!(MultiRun::new(&pinned, &catalog, vec![make(1, prepared_playback())]).is_err());
+    let mut multi = MultiRun::new(&pinned, &catalog, vec![second_run, first_run]).unwrap();
+    assert_eq!(multi.runs()[0].market_scope().instrument, 1);
+    multi.resume_all().unwrap();
+    let mut prior = None;
+    let mut boundaries = [0usize; 2];
+    loop {
+        match multi.poll().unwrap() {
+            MultiPoll::Boundary { shard } => {
+                let (selected, run) = multi.selected().unwrap().unwrap();
+                assert_eq!(selected, shard);
+                let boundary = run.pending().unwrap().unwrap();
+                let order = (
+                    boundary.evaluated_at_ns,
+                    boundary.input(String::new()).event_time_ns,
+                );
+                assert!(prior.is_none_or(|value| order >= value));
+                prior = Some(order);
+                let input = boundary.input("features".into());
+                let scope = run.scopes()[0].clone();
+                assert!(multi.acknowledge_selected().is_err());
+                multi.record_selected(&receipt(scope, input)).unwrap();
+                multi.acknowledge_selected().unwrap();
+                boundaries[shard] += 1;
+            }
+            MultiPoll::Yield => {}
+            MultiPoll::Complete => break,
+            MultiPoll::Paused => panic!("unexpected pause"),
+        }
+    }
+    assert!(boundaries[0] > 0 && boundaries[1] > 0);
+}
+#[test]
 fn event_boolean_source_ledger_requires_complete_pinned_playback() {
     use crate::{
         coverage::Interval,

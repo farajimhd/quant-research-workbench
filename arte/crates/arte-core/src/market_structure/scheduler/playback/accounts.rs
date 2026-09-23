@@ -9,6 +9,7 @@ use crate::{
     Error, Result,
 };
 pub mod checkpoint;
+pub mod multi;
 
 pub struct Run {
     playback: Playback,
@@ -110,6 +111,9 @@ impl Run {
     }
     pub fn prepared_hash(&self) -> &str {
         self.playback.prepared_hash()
+    }
+    pub fn market_scope(&self) -> crate::event_order::Scope {
+        self.playback.scope()
     }
     pub fn scopes(&self) -> &[Scope] {
         &self.scopes

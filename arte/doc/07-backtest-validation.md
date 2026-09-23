@@ -140,8 +140,14 @@ Independent shards now index with a bounded worker count. Output stays in
 sorted shard order and the total selected-position budget is enforced across
 workers. A non-empty two-shard unit test checks selected trade and quote
 positions, serial/parallel identity, total capacity and the combined run pin.
-Representative throughput measurement and a shared multi-ticker execution
-loop remain outstanding.
+The shared account-playback coordinator now holds each ticker at its next
+market boundary. It releases only the earliest evaluated boundary after every
+other shard is pending or complete. Ties use source time, scope and local
+sequence. Every account journal receipt remains mandatory before that ticker
+advances. A two-ticker unit test checks ordering and the receipt barrier.
+This is deterministic scheduling, not yet a complete Strategy 350 evaluator
+or measured vectorized end-to-end backtest. Representative throughput and
+the evaluator/OMS wiring remain outstanding.
 The first shared Boolean product readback now records explicit evaluation
 cadence, known/unknown state, value, source-bar identity and complete bucket
 coverage. Strategy 350 intersects the verified signal with the bar mask. It

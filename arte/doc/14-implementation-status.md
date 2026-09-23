@@ -103,7 +103,12 @@ does not advance the market/V7 tape. Independent shards now use bounded
 parallel indexing and return in stable scope order, with an atomic
 total-position cap. A non-empty two-shard unit test checks trade and quote
 positions, serial/parallel identity, total capacity and the combined run pin.
-The shared multi-ticker execution loop remains unwired.
+A shared account-playback coordinator now waits until all tickers are pending
+or complete before selecting the earliest evaluated boundary. It pins the
+exact catalog shard set and run identity, and preserves each ticker's account
+journal barrier. One two-ticker unit test checks ordering, sorted shard
+identity and rejection of premature acknowledgment. This is not a complete
+Strategy 350 evaluator, OMS simulation, or measured end-to-end backtest.
 This is replay routing, not a substitute for causal event, quote, level or
 account evidence. After a complete certified source load, the replay-source
 adapter can build a bounded, SIP-ordered index of selected trade or quote
