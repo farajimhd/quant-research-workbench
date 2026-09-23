@@ -125,9 +125,10 @@ trades and an externally certified event-time watermark. It computes integer
 OHLC, share volume and notional, retains the real live receipt separately, and
 reports covered empty intervals without creating false bars. A unit test feeds
 those advances to the same Early Squeeze state across an empty bucket. No
-floating-point reconstruction is approved for parity. The live lane still
-needs to bind this builder to its scheduler, persist its in-progress state,
-and prove that the external watermark certifies those empty intervals.
+floating-point reconstruction is approved for parity. The live lane binds the
+builder to scheduler boundaries and can capture its in-progress state in a
+common in-memory recovery cut. ClickHouse publication of the whole lane cut
+and proof that the external watermark certifies empty intervals remain open.
 
 The first market-time tape borrows values from complete 100 ms columnar batches.
 It dispatches only nonempty buckets, sorts equal-time ticker events by instrument,

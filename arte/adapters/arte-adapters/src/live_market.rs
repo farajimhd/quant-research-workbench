@@ -11,6 +11,7 @@ use arte_core::{
     Error, Result,
 };
 use std::collections::BTreeMap;
+pub mod recovery;
 /// Both channels must progress. This conservative frontier can delay a quiet
 /// instrument. It is an explicit lateness assumption, not provider completeness.
 pub struct Lane {
@@ -490,7 +491,44 @@ mod tests {
         high.insert(EventKind::Trade, 150);
         assert_eq!(frontier(&high, 10, 95).unwrap(), 110);
     }
+    fn feature_config() -> candidate_features::Config {
+        const SECOND: u64 = 1_000_000_000;
+        candidate_features::Config {
+            swings: arte_core::local_swings::Config {
+                reversal_bps: 50.,
+                volatility_multiple: 2.,
+                volatility_cap_multiple: 2.,
+                lifetime_bars: 1800,
+                maximum_levels: 100,
+            },
+            encounters: arte_core::strategy_encounters::stream::Config {
+                tick: 0.01,
+                settings: arte_core::strategy_encounters::Settings {
+                    breakout_buffer_ticks: 1.,
+                    breakout_buffer_bps: 0.,
+                    rejection_break_offset_bps: 10.,
+                    topping_tail_fraction: 0.5,
+                    maximum_encounters: 100,
+                },
+                maximum_prior_levels: 100,
+            },
+            setup: arte_core::strategy_setup::SetupSettings {
+                range_ns: 30 * SECOND,
+                minimum_bars: 1,
+                maximum_gap_ns: 0,
+            },
+            forming_macd: true,
+            minimum_range_pct: 1.,
+            minimum_progress_pct: 1.,
+            maximum_quote_age_ns: SECOND,
+            maximum_completed_bar_age_ns: SECOND,
+            maximum_levels: 100,
+        }
+    }
     fn lane() -> Lane {
+        lane_with_seed().0
+    }
+    fn lane_with_seed() -> (Lane, String) {
         use arte_core::{
             market_structure::{Config, Ordered, Runtime},
             v7_extraction::Candle,
@@ -556,45 +594,10 @@ mod tests {
             "offline-live-lane".into(),
         )
         .unwrap();
-        let mut lane = Lane::new(
-            scheduler,
-            SECOND / 10,
-            SECOND,
-            candidate_features::Config {
-                swings: arte_core::local_swings::Config {
-                    reversal_bps: 50.,
-                    volatility_multiple: 2.,
-                    volatility_cap_multiple: 2.,
-                    lifetime_bars: 1800,
-                    maximum_levels: 100,
-                },
-                encounters: arte_core::strategy_encounters::stream::Config {
-                    tick: 0.01,
-                    settings: arte_core::strategy_encounters::Settings {
-                        breakout_buffer_ticks: 1.,
-                        breakout_buffer_bps: 0.,
-                        rejection_break_offset_bps: 10.,
-                        topping_tail_fraction: 0.5,
-                        maximum_encounters: 100,
-                    },
-                    maximum_prior_levels: 100,
-                },
-                setup: arte_core::strategy_setup::SetupSettings {
-                    range_ns: 30 * SECOND,
-                    minimum_bars: 1,
-                    maximum_gap_ns: 0,
-                },
-                forming_macd: true,
-                minimum_range_pct: 1.,
-                minimum_progress_pct: 1.,
-                maximum_quote_age_ns: SECOND,
-                maximum_completed_bar_age_ns: SECOND,
-                maximum_levels: 100,
-            },
-        )
-        .unwrap();
+        let seed_hash = seed.hash.clone();
+        let mut lane = Lane::new(scheduler, SECOND / 10, SECOND, feature_config()).unwrap();
         lane.bind_quote_policy(crate::test_quote_policy()).unwrap();
-        lane
+        (lane, seed_hash)
     }
     #[test]
     fn live_release_obeys_gate_and_requires_each_boundary_acknowledgment() {
@@ -905,7 +908,7 @@ mod tests {
             strategy350_signal::{Config as SignalConfig, State as SignalState},
         };
         const SECOND: u64 = 1_000_000_000;
-        let mut lane = lane();
+        let (mut lane, seed_hash) = lane_with_seed();
         let scope = lane.market.scope();
         let bars = Builder::new(
             scope,
@@ -971,6 +974,55 @@ mod tests {
         assert!(lane.prepare_next(gate.at(1), 202 * SECOND).unwrap());
         assert_eq!(lane.exact_signal.as_ref().unwrap().last_boundary().0, 1);
         assert_eq!(lane.first_squeeze_occurrence().unwrap(), None);
+        lane.market
+            .bind_quote_policy(std::sync::Arc::new(crate::test_quote_policy()))
+            .unwrap();
+        let context = "c".repeat(64);
+        let cut = lane.checkpoint_pending(&context, 1_000_000).unwrap();
+        let market_hash = lane.market.state().unwrap().configuration_hash().to_owned();
+        let generation = "a".repeat(64);
+        let boundary = lane.market.pending().unwrap().unwrap();
+        let id = boundary.id.to_owned();
+        let restored = Lane::restore_pending(
+            &cut,
+            recovery::Request {
+                context_hash: &context,
+                expected_root: &cut.root.id,
+                scheduler: arte_core::market_structure::scheduler::checkpoint::Request {
+                    context_hash: &context,
+                    run_id: "offline-live-lane",
+                    seed_hash: &seed_hash,
+                    configuration_hash: &market_hash,
+                    quote_policy: std::sync::Arc::new(crate::test_quote_policy()),
+                    maximum_pending: 10,
+                    maximum_bytes: 1_000_000,
+                },
+                signal: live_exact_signal::Recovery {
+                    scope,
+                    session_start_ns: 200 * SECOND,
+                    session_end_ns: 300 * SECOND,
+                    price_scale: 2,
+                    size_scale: 0,
+                    source_generation_hash: &generation,
+                    signal_config: SignalConfig {
+                        minimum_move_bps: 5,
+                        source_algorithm_hash: "b".repeat(64),
+                    },
+                    expected_sequence: 1,
+                    expected_boundary_id: Some(&id),
+                },
+                feature_config: feature_config(),
+                allowed_lateness_ns: SECOND / 10,
+                maximum_quote_age_ns: SECOND,
+                maximum_bytes: 1_000_000,
+            },
+        )
+        .unwrap();
+        assert_eq!(restored.pending_boundary().unwrap().unwrap().id, id);
+        assert_eq!(restored.first_squeeze_occurrence().unwrap(), None);
+        assert!(restored.high.is_empty());
+        assert!(restored.quotes.policy_hash().is_err());
+        assert!(restored.bands.latest().is_none());
         assert!(lane.prepare_next(gate.at(1), 202 * SECOND).is_err());
         assert_eq!(lane.exact_signal.as_ref().unwrap().last_boundary().0, 1);
         let image = lane.exact_signal.as_ref().unwrap().checkpoint().unwrap();

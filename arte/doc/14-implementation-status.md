@@ -89,6 +89,14 @@ eligible trades and an external watermark; it does not infer empty intervals
 from silence. The live lane now owns this builder when configured and
 cross-checks exact 100 ms completed bars against the scheduler. Full lane-root
 publication and watermark/coverage acceptance are still incomplete.
+An in-memory live common-cut root now pins scheduler, candidate features, and
+the exact-bar/signal owner to the same pending boundary. Restore verifies the
+root and component hashes, configuration, source scope, sequence, boundary ID,
+and evaluation time. It leaves the independent quote/LULD safety books,
+trade-policy binding, and two-channel release frontier unready, so recovery
+cannot reuse stale safety evidence. A focused offline roundtrip passed. The
+common root is not yet published in ClickHouse and does not restore broker or
+portfolio authority.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
