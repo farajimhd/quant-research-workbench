@@ -29,7 +29,11 @@ events. The index borrows original observations without copying payloads, so
 repeated parameter runs can reuse it. It rejects source/certificate scope,
 channel, interval, clock and budget mismatches. It does not selectively skip
 certificate pages or narrow the market/V7 replay. The runnable backtest loop
-does not yet consume this index; that integration and multi-day performance
+does not yet consume this index. The immutable modeled playback tape now also
+exposes a bounded list of selected frame/input positions. This preserves the
+complete market/V7 tape and modeled event clocks while avoiding a full
+strategy-refinement scan on every parameter run. The executable Strategy 350
+loop, proof binding at each selected position, and multi-day performance
 measurement remain open.
 The plan can now test a run-pinned replay event against those ranges by SIP
 time with a half-open boundary. Strategy 350 account decisions bind the plan

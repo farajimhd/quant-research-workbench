@@ -128,6 +128,11 @@ impl Prepared {
     pub fn scope(&self) -> Scope {
         self.scope
     }
+    /// Immutable prepared frames for bounded, run-pinned research routing.
+    /// Reading this view does not advance or narrow the market playback cursor.
+    pub fn frames(&self) -> &[Frame] {
+        &self.frames
+    }
     /// Check the playback domain, not upstream completeness. Empty intervals
     /// still need their terminal watermark. No clocks or source rows are changed.
     pub fn require_interval(&self, interval: crate::coverage::Interval) -> Result<()> {

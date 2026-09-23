@@ -252,6 +252,51 @@ impl RefinementPlan {
         });
         Ok(selected)
     }
+    /// Return locations in the complete modeled playback tape. Market/V7 still
+    /// processes every frame; only expensive strategy refinement uses this list.
+    pub fn selected_prepared_positions(
+        &self,
+        prepared: &crate::market_structure::scheduler::playback::Prepared,
+        maximum_selected: usize,
+    ) -> Result<Vec<(usize, usize)>> {
+        if prepared.scope() != self.scope {
+            return Err(Error::Conflict("Strategy 350 prepared scope".into()));
+        }
+        prepared.require_interval(self.source_interval)?;
+        if maximum_selected == 0 || maximum_selected > 10_000_000 {
+            return Err(Error::Capacity(
+                "Strategy 350 prepared selection budget".into(),
+            ));
+        }
+        let mut positions = Vec::new();
+        for (frame_index, frame) in prepared.frames().iter().enumerate() {
+            for (input_index, input) in frame.inputs.iter().enumerate() {
+                let event = &input.observation;
+                if event.receipt.is_some()
+                    || matches!(
+                        event.payload,
+                        crate::events::Payload::Trade {
+                            correction: Some(_),
+                            ..
+                        }
+                    )
+                {
+                    return Err(Error::Conflict(
+                        "Strategy 350 prepared source is not historical".into(),
+                    ));
+                }
+                if self.contains_source_time(self.scope, event.sip.ns)? {
+                    if positions.len() == maximum_selected {
+                        return Err(Error::Capacity(
+                            "Strategy 350 prepared selected inputs".into(),
+                        ));
+                    }
+                    positions.push((frame_index, input_index));
+                }
+            }
+        }
+        Ok(positions)
+    }
     fn contains_source_time(&self, scope: crate::event_order::Scope, at: u64) -> Result<bool> {
         if scope != self.scope || at < self.source_interval.start || at >= self.source_interval.end
         {
@@ -1057,6 +1102,36 @@ mod tests {
         assert!(plan
             .selected_source_indices(&live, crate::events::EventKind::Trade, 3)
             .is_err());
+        let mut modeled = source.clone();
+        modeled.sort_unstable_by_key(|event| (event.sip.ns, event.key.sequence));
+        let prepared = crate::market_structure::scheduler::playback::Prepared::new(
+            scope,
+            "historical-model",
+            vec![crate::market_structure::scheduler::playback::Frame {
+                watermark_ns: source_interval.end,
+                evaluated_at_ns: source_interval.end + 1,
+                inputs: modeled
+                    .into_iter()
+                    .map(
+                        |observation| crate::market_structure::scheduler::playback::Input {
+                            observation,
+                            eligible: true,
+                        },
+                    )
+                    .collect(),
+            }],
+            crate::market_structure::scheduler::playback::Limits {
+                maximum_frames: 1,
+                maximum_events: 4,
+                maximum_serialized_bytes: 100_000,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            plan.selected_prepared_positions(&prepared, 3).unwrap(),
+            vec![(0, 0), (0, 1), (0, 3)]
+        );
+        assert!(plan.selected_prepared_positions(&prepared, 2).is_err());
         assert!(plan.contains_source_time(scope, S).unwrap());
         assert!(plan.contains_source_time(scope, S + 99_999_999).unwrap());
         assert!(!plan.contains_source_time(scope, S + 100_000_000).unwrap());
