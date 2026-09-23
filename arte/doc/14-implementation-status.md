@@ -4700,3 +4700,11 @@ same cut, configuration, scope, journal readback, and canonical image. The
 two-ticker offline unit test exercises standby round-trip and rejects treating
 its image as selected. This is not a complete whole-run recovery publication.
 No service ran.
+
+The multi-ticker controller now captures all Strategy 350 account-owner images
+under one selected global cut. It requires an exact owner for each ticker and
+bounds total image bytes. The selected ticker uses its selected-boundary image;
+other tickers use standby images bound to the same cut. The two-ticker unit test
+rejects an incomplete owner set, wrong cut and insufficient byte budget. This
+still does not publish an atomic root across market, strategy, execution and
+portfolio state. No service ran.

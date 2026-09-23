@@ -281,6 +281,69 @@ impl MultiRuntime {
         Ok(images)
     }
 
+    /// Capture every Strategy 350 account owner at the selected global cut.
+    /// Standby market heads may be preloaded, but their account decisions must
+    /// remain at their own acknowledged frontiers.
+    pub fn capture_strategy350_shards<S: Clone + serde::Serialize>(
+        &self,
+        owners: &BTreeMap<u64, super::strategy350_accounts::Accounts<S>>,
+        cut: &arte_core::portfolio::checkpoint::Cut,
+        maximum_total_bytes: usize,
+    ) -> Result<BTreeMap<u64, super::strategy350_accounts::checkpoint::Bundle>> {
+        if maximum_total_bytes == 0 || maximum_total_bytes > 64 * 1024 * 1024 {
+            return Err(Error::Capacity(
+                "multi-strategy checkpoint byte budget".into(),
+            ));
+        }
+        let (selected, controller) = self
+            .selected()?
+            .ok_or_else(|| Error::Unready("multi-strategy selected boundary absent".into()))?;
+        let boundary = controller.decision_view()?.pending()?.ok_or_else(|| {
+            Error::Unready("multi-strategy selected market boundary absent".into())
+        })?;
+        if cut.boundary_hash != boundary.id
+            || cut.at_ns != boundary.evaluated_at_ns
+            || controller.status().acknowledged_boundaries.checked_add(1)
+                != Some(cut.boundary_sequence)
+            || owners.len() != self.controllers.len()
+        {
+            return Err(Error::Conflict(
+                "multi-strategy global cut or owners differ".into(),
+            ));
+        }
+        let mut images = BTreeMap::new();
+        let mut used = 0usize;
+        for (index, lane) in self.controllers.iter().enumerate() {
+            lane.actions.require_complete()?;
+            let instrument = lane.market_scope().instrument;
+            let owner = owners
+                .get(&instrument)
+                .ok_or_else(|| Error::Conflict("multi-strategy ticker owner missing".into()))?;
+            let left = maximum_total_bytes
+                .checked_sub(used)
+                .filter(|left| *left > 0)
+                .ok_or_else(|| Error::Capacity("multi-strategy checkpoint byte budget".into()))?;
+            let image = if index == selected {
+                owner.checkpoint(lane, left)?
+            } else {
+                owner.checkpoint_standby(lane, cut, left)?
+            };
+            used = image.accounts.values().try_fold(
+                used.checked_add(image.root.payload.len())
+                    .ok_or_else(|| Error::Capacity("multi-strategy size overflow".into()))?,
+                |total, object| {
+                    total
+                        .checked_add(object.payload.len())
+                        .ok_or_else(|| Error::Capacity("multi-strategy size overflow".into()))
+                },
+            )?;
+            if used > maximum_total_bytes || images.insert(instrument, image).is_some() {
+                return Err(Error::Capacity("multi-strategy duplicate or budget".into()));
+            }
+        }
+        Ok(images)
+    }
+
     /// Test-only visibility for proving unselected shards cannot dispatch
     /// execution. Production callers may inspect only the selected controller.
     #[cfg(test)]
