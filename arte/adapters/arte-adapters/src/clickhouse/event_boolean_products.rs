@@ -82,6 +82,7 @@ struct Header {
     interval: Interval,
     definition_hash: String,
     source_authority_hash: String,
+    source_certified_at_ns: u64,
     event_count: u64,
     source_hash: String,
     evaluation_hash: String,
@@ -89,7 +90,7 @@ struct Header {
     published_at_ns: u64,
 }
 impl Header {
-    fn from_product(product: &Product, source_authority_hash: &str, published_at_ns: u64) -> Self {
+    fn from_product(product: &Product, source: &ExpectedSource, published_at_ns: u64) -> Self {
         Self {
             schema_version: 1,
             provider: product.provider,
@@ -97,7 +98,8 @@ impl Header {
             session: product.session,
             interval: product.interval,
             definition_hash: product.definition_hash.clone(),
-            source_authority_hash: source_authority_hash.into(),
+            source_authority_hash: source.authority_hash.clone(),
+            source_certified_at_ns: source.certified_at_ns,
             event_count: product.event_count,
             source_hash: product.source_hash.clone(),
             evaluation_hash: product.evaluation_hash.clone(),
@@ -119,6 +121,8 @@ impl Header {
             || self.event_count > 100_000_000
             || self.transition_count > 10_000_000
             || self.transition_count as u64 > self.event_count
+            || self.source_certified_at_ns < self.interval.end
+            || self.source_certified_at_ns > self.published_at_ns
             || self.published_at_ns < self.interval.end
             || self.published_at_ns > as_of_ns
         {
@@ -155,6 +159,15 @@ pub struct Prepared {
     header: Header,
     hash: String,
 }
+
+/// Boundary-ledger evidence from an independently verified source owner.
+/// This value is only a contract; its origin still requires a trusted verifier.
+pub struct ExpectedSource {
+    pub authority_hash: String,
+    pub event_count: u64,
+    pub source_hash: String,
+    pub certified_at_ns: u64,
+}
 impl Prepared {
     pub fn hash(&self) -> &str {
         &self.hash
@@ -169,20 +182,23 @@ impl Prepared {
 pub fn prepare_event_boolean_product(
     product: Product,
     definition: &ExecutionContract,
-    source_authority_hash: &str,
+    source: &ExpectedSource,
     published_at_ns: u64,
 ) -> Result<Prepared> {
     if definition.interval != ExecutionInterval::Events
         || definition.hash()? != product.definition_hash
-        || !hash_valid(source_authority_hash)
+        || !hash_valid(&source.authority_hash)
+        || !hash_valid(&source.source_hash)
+        || source.event_count != product.event_count
+        || source.source_hash != product.source_hash
     {
         return Err(Error::Conflict(
             "event Boolean definition or source authority".into(),
         ));
     }
     let hash = product.hash()?;
-    let header = Header::from_product(&product, source_authority_hash, published_at_ns);
-    header.validate(source_authority_hash, published_at_ns)?;
+    let header = Header::from_product(&product, source, published_at_ns);
+    header.validate(&source.authority_hash, published_at_ns)?;
     Ok(Prepared {
         product,
         header,
@@ -461,10 +477,18 @@ mod tests {
             }],
         }
     }
+    fn source() -> ExpectedSource {
+        ExpectedSource {
+            authority_hash: "e".repeat(64),
+            event_count: 3,
+            source_hash: "b".repeat(64),
+            certified_at_ns: 450,
+        }
+    }
     #[test]
     fn event_product_header_and_sparse_rows_reconstruct_exact_identity() {
         let prepared =
-            prepare_event_boolean_product(product(), &definition(), &"e".repeat(64), 500).unwrap();
+            prepare_event_boolean_product(product(), &definition(), &source(), 500).unwrap();
         let row = Row::from_transition(
             prepared.hash(),
             prepared.product(),
@@ -495,7 +519,7 @@ mod tests {
     #[test]
     fn duplicate_foreign_and_changed_rows_fail_readback() {
         let prepared =
-            prepare_event_boolean_product(product(), &definition(), &"e".repeat(64), 500).unwrap();
+            prepare_event_boolean_product(product(), &definition(), &source(), 500).unwrap();
         let row = Row::from_transition(
             prepared.hash(),
             prepared.product(),
@@ -534,6 +558,15 @@ mod tests {
         .is_err());
         let mut fixed = definition();
         fixed.interval = ExecutionInterval::Fixed(100_000_000);
-        assert!(prepare_event_boolean_product(product(), &fixed, &"e".repeat(64), 500).is_err());
+        assert!(prepare_event_boolean_product(product(), &fixed, &source(), 500).is_err());
+        let mut wrong = source();
+        wrong.event_count = 2;
+        assert!(prepare_event_boolean_product(product(), &definition(), &wrong, 500).is_err());
+        wrong = source();
+        wrong.source_hash = "f".repeat(64);
+        assert!(prepare_event_boolean_product(product(), &definition(), &wrong, 500).is_err());
+        wrong = source();
+        wrong.certified_at_ns = 501;
+        assert!(prepare_event_boolean_product(product(), &definition(), &wrong, 500).is_err());
     }
 }

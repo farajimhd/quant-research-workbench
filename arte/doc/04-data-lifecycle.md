@@ -90,6 +90,10 @@ actual part placement, compares retry rows, verifies all transition rows,
 then publishes the header. Readback requires the pinned product and source
 authority hashes. The schema has not been applied, connected readback has not
 been tested, and the external source authority still must certify the ledger.
+The publication adapter now also requires that authority's expected event
+count, boundary digest and certification time. It rejects disagreement with
+the sealed product, as well as certification after publication. This check
+does not itself prove that the supplied authority record is genuine.
 A run-level producer remains unfinished.
 
 ClickHouse is the sole durable store for backtest spools, run evidence, and

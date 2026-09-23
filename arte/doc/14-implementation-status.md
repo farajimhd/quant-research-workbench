@@ -106,8 +106,11 @@ sparse transition publication and header-last readback. Storage policy and
 actual part placement are checked before I/O. A failed partial publication
 can retry missing rows but rejects changed or duplicate rows. Offline unit
 tests cover preparation, exact reconstruction and rejected row conflicts.
-The migration is unapplied and connected I/O untested. Independent source-ledger
-certification, recovery and live/backtest producer wiring remain undone.
+Preparation now binds a caller-supplied source-authority record to the exact
+event count, boundary digest and certification time; mismatches fail closed.
+The migration is unapplied and connected I/O untested. The independent verifier
+that should produce that source record, recovery, and live/backtest producer
+wiring remain undone.
 The first Strategy
 350 Early Squeeze historical formula and first-occurrence session latch now
 feed that path. The formula uses exact close-ratio, trade-count, and volume

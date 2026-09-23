@@ -29,7 +29,7 @@ mod startup;
 mod trade_policies;
 pub use event_boolean_products::{
     event_boolean_publication_scope, prepare_event_boolean_product,
-    Prepared as PreparedEventBooleanProduct,
+    ExpectedSource as ExpectedEventBooleanSource, Prepared as PreparedEventBooleanProduct,
 };
 pub use execution_checkpoints::{execution_checkpoint_scope, ExecutionRecovery};
 pub use fills::FillPublisher;
