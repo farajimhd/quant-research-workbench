@@ -2495,7 +2495,10 @@ impl HistoricalDerivedCache {
                         products.apply_event(&event, event.ts());
                     }
                     let mut indicator_bars = Vec::new();
-                    for bar in shard.apply_event(&event).await {
+                    // A sparse event can close several timeframes at once. The
+                    // store emits in frame order, which need not be bar-end order.
+                    let emitted_bars = order_derived_bars(shard.apply_event(&event).await);
+                    for bar in emitted_bars {
                         let is_base = bar.timeframe.eq_ignore_ascii_case("100ms");
                         let valid_price = valid_price_bar(&bar);
                         if !valid_price && !is_base {
@@ -2592,7 +2595,8 @@ impl HistoricalDerivedCache {
                 .await?;
         }
         let mut final_indicator_bars = Vec::new();
-        for bar in shard.finalize_due(window.end).await {
+        let emitted_bars = order_derived_bars(shard.finalize_due(window.end).await);
+        for bar in emitted_bars {
             let is_base = bar.timeframe.eq_ignore_ascii_case("100ms");
             let valid_price = valid_price_bar(&bar);
             if !valid_price && !is_base {
@@ -4301,6 +4305,12 @@ async fn forming_bar_from_events(
         .map(|bar| ChartBarRow::from_bar(&bar)))
 }
 
+fn order_derived_bars(mut bars: Vec<BarRow>) -> Vec<BarRow> {
+    // Stable ordering keeps the base timeframe first at equal close times.
+    bars.sort_by_key(|bar| bar.bar_end);
+    bars
+}
+
 fn valid_price_bar(bar: &BarRow) -> bool {
     [bar.open, bar.high, bar.low, bar.close]
         .into_iter()
@@ -4343,6 +4353,32 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::{broadcast, Mutex, Notify};
+
+    #[tokio::test]
+    async fn sparse_multi_timeframe_closes_are_processed_in_bar_end_order() {
+        use qmd_core::bars::{SharedBarStore, TradeAggregationRules, TradeUpdateRule};
+        use qmd_core::event::{MarketEvent, QuoteEvent};
+
+        let first = Utc.with_ymd_and_hms(2026, 8, 19, 13, 29, 30).unwrap();
+        let store = SharedBarStore::new_without_structure(
+            vec!["30s".into(), "1s".into()], 2, 1,
+            TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap(),
+        );
+        let shard = store.shard(0);
+        let quote = |ts, sequence| MarketEvent::Quote(QuoteEvent {
+            ask_exchange: 1, ask_price: 10.1, ask_size: 100, bid_exchange: 1,
+            bid_price: 10.0, bid_size: 100, conditions: vec![], indicators: vec![],
+            ingest_ts: ts, raw: json!({}), sequence, tape: 1, ticker: "SCNX".into(), ts,
+        });
+        assert!(shard.apply_event(&quote(first, 1)).await.is_empty());
+        let emitted = shard.apply_event(&quote(first + Duration::seconds(30), 2)).await;
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(emitted[0].bar_end, first + Duration::seconds(30));
+        assert_eq!(emitted[1].bar_end, first + Duration::seconds(1));
+        let ordered = super::order_derived_bars(emitted);
+        assert_eq!(ordered[0].bar_end, first + Duration::seconds(1));
+        assert_eq!(ordered[1].bar_end, first + Duration::seconds(30));
+    }
 
     #[tokio::test]
     async fn indicator_queue_preserves_order_and_releases_consumed_bytes() {
