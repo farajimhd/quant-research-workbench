@@ -11,8 +11,12 @@ only the causal prior-close price ceiling, purchase price floor, and latched
 late-mode prior-HOD zone. It is not an entry authorization or a full strategy
 port. Startup dependency definitions and plan nodes now carry explicit cadence;
 the plan identity pins it for signal streams, Watchlists, and other dependencies.
-Scheduler dispatch is not wired to this contract yet. A runnable system must
-reject any executable definition without its own validated interval.
+The causal scheduler boundary now has a validated cadence check. It routes
+source trades and quotes to event computations and only a matching completed
+bar to fixed-cadence computations. The shared test checks the bar and trade
+boundaries. This is routing plumbing; no general signal or Watchlist calculator
+is registered with it yet. A runnable system must reject any executable
+definition without its own validated interval.
 The completed-bar tape can now emit every 100 ms boundary or only aligned
 fixed-interval boundaries, including empty buckets. It refuses to represent
 event cadence using bars. This is backtest clock plumbing, not full evaluation.

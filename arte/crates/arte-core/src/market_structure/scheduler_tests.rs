@@ -319,6 +319,12 @@ fn replay_quote(sequence: u64, second: u64) -> crate::events::Observation {
 }
 #[test]
 fn quotes_and_trades_share_causal_boundaries_without_future_quote_leakage() {
+    let event_signal = crate::execution_interval::ExecutionContract {
+        kind: crate::execution_interval::ExecutableKind::SignalStream,
+        id: "event-signal".into(),
+        implementation_hash: "a".repeat(64),
+        interval: crate::execution_interval::ExecutionInterval::Events,
+    };
     let mut scheduler = scheduler(10);
     let first = replay_quote(1, 200);
     for (event, eligible) in [
@@ -333,6 +339,10 @@ fn quotes_and_trades_share_causal_boundaries_without_future_quote_leakage() {
     let mut seen = vec![];
     while scheduler.prepare_next(202 * SECOND, 202 * SECOND).unwrap() {
         let boundary = scheduler.pending().unwrap().unwrap();
+        assert_eq!(
+            boundary.due_for(&event_signal).unwrap(),
+            !matches!(boundary.kind, Kind::Completed { .. })
+        );
         let id = boundary.id.to_owned();
         match boundary.kind {
             Kind::Quote { observation } => {
@@ -1047,6 +1057,23 @@ fn scheduler(maximum_bars: usize) -> Scheduler {
 }
 #[test]
 fn every_boundary_is_seen_without_next_trade_or_empty_bar_leakage() {
+    use crate::execution_interval::{ExecutableKind, ExecutionContract, ExecutionInterval};
+    let event_signal = ExecutionContract {
+        kind: ExecutableKind::SignalStream,
+        id: "event-signal".into(),
+        implementation_hash: "a".repeat(64),
+        interval: ExecutionInterval::Events,
+    };
+    let bar_signal = ExecutionContract {
+        kind: ExecutableKind::SignalStream,
+        id: "bar-signal".into(),
+        implementation_hash: "b".repeat(64),
+        interval: ExecutionInterval::Fixed(SECOND),
+    };
+    let other_bar_signal = ExecutionContract {
+        interval: ExecutionInterval::Fixed(2 * SECOND),
+        ..bar_signal.clone()
+    };
     let mut scheduler = scheduler(10);
     for e in [event(3, 203, 30), event(1, 200, 10), event(2, 201, 20)] {
         scheduler.enqueue(&e, true).unwrap();
@@ -1061,6 +1088,10 @@ fn every_boundary_is_seen_without_next_trade_or_empty_bar_leakage() {
         assert_eq!(input.event_id, boundary.id);
         assert_eq!(input.evaluated_at_ns, 205 * SECOND);
         assert!(ids.insert(boundary.id.to_owned()));
+        let is_completed = matches!(boundary.kind, Kind::Completed { .. });
+        assert_eq!(boundary.due_for(&event_signal).unwrap(), !is_completed);
+        assert_eq!(boundary.due_for(&bar_signal).unwrap(), is_completed);
+        assert!(!boundary.due_for(&other_bar_signal).unwrap());
         match boundary.kind {
             Kind::Quote { .. } => panic!("trade-only fixture"),
             Kind::Completed {

@@ -65,6 +65,25 @@ pub enum Kind<'a> {
     },
 }
 impl Boundary<'_> {
+    /// A computation runs only on its declared clock. Event cadence observes
+    /// source events; fixed cadence observes the matching completed bar, never
+    /// a later bar or a repeated interpolation of an earlier one.
+    pub fn due_for(&self, contract: &crate::execution_interval::ExecutionContract) -> Result<bool> {
+        contract.hash()?;
+        Ok(match (&self.kind, contract.interval) {
+            (
+                Kind::Trade { .. } | Kind::Quote { .. },
+                crate::execution_interval::ExecutionInterval::Events,
+            ) => true,
+            (
+                Kind::Completed {
+                    interval_ns, bar, ..
+                },
+                crate::execution_interval::ExecutionInterval::Fixed(ns),
+            ) => *interval_ns == ns && bar.bar.end_ns.is_multiple_of(ns),
+            _ => false,
+        })
+    }
     /// The completed-bar computation retains its first availability. This does
     /// not fabricate a historical market receipt. Trade availability stays raw.
     pub fn input(&self, feature_hash: String) -> crate::strategy_dispatch::InputBoundary {
