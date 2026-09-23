@@ -80,6 +80,13 @@ addressed only through the verified join output. A bounded refinement planner
 turns the full contiguous screen interval into sparse half-open ranges for
 exact trade/quote replay, rejecting missing batches and interval-budget
 overflow. Its hash includes every source batch, including negative buckets.
+An in-process multi-shard coordinator now prepares those plans concurrently
+for independent ticker sessions. It validates effective Strategy 350 screen,
+signal and optional Watchlist hashes, rejects duplicate scopes, and enforces
+per-shard and total selected-bucket and interval budgets. Output order is
+stable across worker counts. One offline unit test covers ordering, duplicate
+rejection, budget rejection and effective-hash mismatch. It does not execute
+the selected events or narrow full market/V7 replay.
 This is replay routing, not a substitute for causal event, quote, level or
 account evidence. After a complete certified source load, the replay-source
 adapter can build a bounded, SIP-ordered index of selected trade or quote

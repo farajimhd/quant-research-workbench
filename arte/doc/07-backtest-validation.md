@@ -118,6 +118,12 @@ eligible for event refinement: bar OHLC cannot show whether a pullback followed
 that high. The same uncertainty applies when late mode first triggers inside a
 bucket. This is a bounded columnar prefix pass, not yet measured SIMD or a
 complete vectorized scanner/signal/Watchlist implementation.
+A multi-shard coordinator now runs the verified bar/signal/optional-Watchlist
+join across independent ticker sessions with bounded workers. It sorts scopes,
+rejects duplicates, checks each effective Strategy 350 component hash, and
+caps selected buckets and sparse intervals. Its output is only a deterministic
+refinement plan. The complete event/V7 replay must still consume all source
+events, including intervals the strategy screen does not select.
 The first shared Boolean product readback now records explicit evaluation
 cadence, known/unknown state, value, source-bar identity and complete bucket
 coverage. Strategy 350 intersects the verified signal with the bar mask. It

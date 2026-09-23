@@ -12,6 +12,7 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+pub mod parallel;
 
 pub struct SelectedBatch {
     scope: crate::event_order::Scope,
@@ -913,13 +914,16 @@ mod tests {
     use std::collections::BTreeSet;
     const S: u64 = 1_000_000_000;
     fn bar() -> bar_catalogue::Complete {
+        bar_for(10)
+    }
+    fn bar_for(instrument: u64) -> bar_catalogue::Complete {
         let interval = Interval {
             start: S,
             end: S + 300_000_000,
         };
         let request = BarRequest {
             provider: 1,
-            instruments: vec![10],
+            instruments: vec![instrument],
             session: 20260922,
             interval,
             timeframe_ns: 100_000_000,
@@ -936,7 +940,7 @@ mod tests {
             source_generation: request.source_generation.clone(),
             calculation_hash: request.calculation_hash.clone(),
             sources: BTreeMap::from([(
-                10,
+                instrument,
                 Source {
                     certificate_hash: "c".repeat(64),
                     price_scale: 2,
@@ -949,7 +953,7 @@ mod tests {
         read.observe(BarBatch {
             request_hash: request.hash().unwrap(),
             coverage_hash: coverage.hash().unwrap(),
-            instrument: 10,
+            instrument,
             first_start_ns: S,
             count: 3,
             price_scale: 2,
@@ -996,7 +1000,7 @@ mod tests {
     ) -> boolean_catalogue::Complete {
         let request = BoolRequest {
             provider: 1,
-            instrument: 10,
+            instrument: bar.request().instruments[0],
             session: 20260922,
             interval: bar.request().interval,
             definition: ExecutionContract {
@@ -1064,6 +1068,114 @@ mod tests {
             source_hash: "e".repeat(64),
             source_order: None,
         }
+    }
+    #[test]
+    fn parallel_screen_plans_sort_shards_and_enforce_effective_budgets() {
+        let bars10 = bar_for(10);
+        let bars20 = bar_for(20);
+        let signal10 = boolean(
+            &bars10,
+            ExecutableKind::SignalStream,
+            SIGNAL,
+            vec![true; 3],
+            vec![true; 3],
+        );
+        let signal20 = boolean(
+            &bars20,
+            ExecutableKind::SignalStream,
+            SIGNAL,
+            vec![true; 3],
+            vec![true; 3],
+        );
+        let screen = config();
+        let prior_close = close();
+        let mut effective = crate::strategy350_effective::test_config(ExecutionInterval::Events);
+        effective.screen_config_hash = screen.hash().unwrap();
+        effective.signal_config_hash = "d".repeat(64);
+        let pin = |bars, signal| parallel::Pinned {
+            bars,
+            signal,
+            watchlist: None,
+            screen: &screen,
+            prior_close: &prior_close,
+            effective: &effective,
+            watchlist_policy: WatchlistPolicy::NotRequired,
+        };
+        let limits = || parallel::Limits {
+            workers: 2,
+            maximum_intervals_per_shard: 3,
+            maximum_total_intervals: 6,
+            maximum_selected_buckets_per_shard: 3,
+            maximum_total_selected_buckets: 6,
+        };
+        let projected = parallel::prepare_many(
+            vec![pin(&bars20, &signal20), pin(&bars10, &signal10)],
+            limits(),
+        )
+        .unwrap();
+        assert_eq!(
+            projected
+                .iter()
+                .map(|item| item.scope.instrument)
+                .collect::<Vec<_>>(),
+            [10, 20]
+        );
+        assert!(projected.iter().all(|item| item.selected_buckets > 0));
+        assert_ne!(
+            projected[0].plan.evidence_hash(),
+            projected[1].plan.evidence_hash()
+        );
+        let mut serial_limits = limits();
+        serial_limits.workers = 1;
+        let serial = parallel::prepare_many(
+            vec![pin(&bars10, &signal10), pin(&bars20, &signal20)],
+            serial_limits,
+        )
+        .unwrap();
+        assert_eq!(
+            projected
+                .iter()
+                .map(|item| item.plan.evidence_hash())
+                .collect::<Vec<_>>(),
+            serial
+                .iter()
+                .map(|item| item.plan.evidence_hash())
+                .collect::<Vec<_>>()
+        );
+        assert!(parallel::prepare_many(
+            vec![pin(&bars10, &signal10), pin(&bars10, &signal10)],
+            limits(),
+        )
+        .is_err());
+        let mut tight = limits();
+        tight.maximum_total_selected_buckets = 1;
+        assert!(parallel::prepare_many(
+            vec![pin(&bars10, &signal10), pin(&bars20, &signal20)],
+            tight,
+        )
+        .is_err());
+        let mut tight_intervals = limits();
+        tight_intervals.maximum_total_intervals = 1;
+        assert!(parallel::prepare_many(
+            vec![pin(&bars10, &signal10), pin(&bars20, &signal20)],
+            tight_intervals,
+        )
+        .is_err());
+        let mut changed = effective.clone();
+        changed.signal_config_hash = "0".repeat(64);
+        assert!(parallel::prepare_many(
+            vec![parallel::Pinned {
+                bars: &bars10,
+                signal: &signal10,
+                watchlist: None,
+                screen: &screen,
+                prior_close: &prior_close,
+                effective: &changed,
+                watchlist_policy: WatchlistPolicy::NotRequired,
+            }],
+            limits(),
+        )
+        .is_err());
     }
     #[test]
     fn live_join_uses_same_sealed_advance_and_preserves_bucket_activation() {
