@@ -75,6 +75,13 @@ trade bars, checks the scheduler's 1s trade count, and includes the noise object
 in the same pending-boundary common-cut root. It never rounds the scheduler's
 floating-point bar into a price atom. The migration and connected readback are
 still unapplied and untested.
+The historical side now projects the same exact 1s high/low source from a
+single readback-verified compact 100 ms catalogue product. It requests only
+high, low, and trade-count atoms, retains a dense 1s clock, and leaves certified
+empty seconds absent rather than fabricating a price. The caller must supply
+the complete session warmup needed by the rolling percentile. Entry-price or
+quote evidence is still a separate causal input; this projection does not
+manufacture it from bar closes.
 
 The first typed Strategy 350 catalogue plan requests completed 100 ms bars,
 the early squeeze signal and reference data for screening. Watchlist membership

@@ -50,6 +50,12 @@ forged internally inconsistent image. The live exact owner now includes this
 image and its integer 1s source in the same common-cut graph as the scheduler,
 features, exact 100 ms builder, and signal. The ClickHouse schema remains
 unapplied; live Strategy 350 activation must remain blocked.
+An offline historical projector now derives the same exact 1s noise bars from
+one verified compact 100 ms catalogue product using only selected high, low,
+and trade-count columns. It preserves certified empty seconds and rejects
+missing columns or multi-instrument products. A focused unit test covers two
+nonempty 100 ms buckets in one second followed by an empty second. This is not
+yet wired into a runnable Strategy 350 backtest or quote-aware entry pricing.
 The first conservative Strategy 350 100 ms bar screen now emits contiguous
 candidate-refinement masks. It preserves buckets whose intrabar order could
 create a new HOD and subsequent qualifying pullback; it never authorizes a

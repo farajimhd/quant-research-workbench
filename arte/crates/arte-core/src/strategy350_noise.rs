@@ -1,6 +1,11 @@
 //! Strategy 350 causal adaptive-distance evidence from completed one-second bars.
 //! Shared by live and historical projection. This is not a bracket/order authority.
-use crate::{content_hash, exact_bars, execution_interval::ExecutionInterval, Error, Result};
+use crate::{
+    bar_catalogue::{Column, Complete},
+    content_hash, exact_bars,
+    execution_interval::ExecutionInterval,
+    Error, Result,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
 pub mod checkpoint;
@@ -127,38 +132,57 @@ impl Source {
         Ok(())
     }
     pub fn absorb(&mut self, bar: &exact_bars::Bar) -> Result<()> {
+        self.absorb_atoms(
+            bar.start_ns,
+            bar.end_ns,
+            bar.price_scale,
+            bar.high,
+            bar.low,
+            bar.trades,
+        )
+    }
+    pub fn absorb_atoms(
+        &mut self,
+        start_ns: u64,
+        end_ns: u64,
+        price_scale: u8,
+        high_atoms: i64,
+        low_atoms: i64,
+        trades: u64,
+    ) -> Result<()> {
         self.verify()?;
-        if bar.end_ns.checked_sub(bar.start_ns) != Some(exact_bars::INTERVAL_NS)
-            || bar.start_ns < self.last_closed_end_ns
-            || bar.end_ns > self.session_end_ns
-            || bar.price_scale != self.price_scale
-            || bar.trades == 0
-            || bar.low <= 0
-            || bar.high < bar.low
+        if end_ns.checked_sub(start_ns) != Some(exact_bars::INTERVAL_NS)
+            || !start_ns.is_multiple_of(exact_bars::INTERVAL_NS)
+            || start_ns < self.last_closed_end_ns
+            || end_ns > self.session_end_ns
+            || price_scale != self.price_scale
+            || trades == 0
+            || low_atoms <= 0
+            || high_atoms < low_atoms
         {
             return Err(Error::Conflict("Strategy 350 exact source bar".into()));
         }
-        let start_ns = bar.start_ns / SECOND * SECOND;
+        let bucket_start_ns = start_ns / SECOND * SECOND;
         if let Some(bucket) = &mut self.developing {
-            if bucket.start_ns != start_ns || bar.start_ns < bucket.last_100ms_end_ns {
+            if bucket.start_ns != bucket_start_ns || start_ns < bucket.last_100ms_end_ns {
                 return Err(Error::Conflict(
                     "Strategy 350 one-second close missing".into(),
                 ));
             }
-            bucket.high_atoms = bucket.high_atoms.max(bar.high);
-            bucket.low_atoms = bucket.low_atoms.min(bar.low);
+            bucket.high_atoms = bucket.high_atoms.max(high_atoms);
+            bucket.low_atoms = bucket.low_atoms.min(low_atoms);
             bucket.trades = bucket
                 .trades
-                .checked_add(bar.trades)
+                .checked_add(trades)
                 .ok_or_else(|| Error::Capacity("Strategy 350 one-second trade count".into()))?;
-            bucket.last_100ms_end_ns = bar.end_ns;
+            bucket.last_100ms_end_ns = end_ns;
         } else {
             self.developing = Some(Developing {
-                start_ns,
-                high_atoms: bar.high,
-                low_atoms: bar.low,
-                trades: bar.trades,
-                last_100ms_end_ns: bar.end_ns,
+                start_ns: bucket_start_ns,
+                high_atoms,
+                low_atoms,
+                trades,
+                last_100ms_end_ns: end_ns,
             });
         }
         Ok(())
@@ -200,6 +224,82 @@ impl Source {
             .as_ref()
             .map(|bucket| bucket.last_100ms_end_ns)
     }
+}
+/// Project one fully verified catalogue product into a dense 1s clock. A None
+/// slot is a certified empty second, not a zero-price bar. The caller must use
+/// the product's entire warmup interval for any session-relative calculation.
+pub fn project_compact_one_second(product: &Complete) -> Result<Vec<Option<CompletedBar>>> {
+    let request = product.request();
+    if request.instruments.len() != 1
+        || request.timeframe_ns != exact_bars::INTERVAL_NS
+        || !request.interval.start.is_multiple_of(SECOND)
+        || !request.interval.end.is_multiple_of(SECOND)
+        || ![Column::High, Column::Low, Column::Trades]
+            .into_iter()
+            .all(|column| request.columns.contains(&column))
+    {
+        return Err(Error::Invalid(
+            "Strategy 350 compact noise projection request".into(),
+        ));
+    }
+    let first = product
+        .batches()
+        .first()
+        .ok_or_else(|| Error::Unready("Strategy 350 compact noise batches missing".into()))?;
+    let mut source = Source::new(
+        request.interval.start,
+        request.interval.end,
+        first.price_scale,
+    )?;
+    let seconds = (request.interval.end - request.interval.start) / SECOND;
+    let mut output = Vec::with_capacity(seconds as usize);
+    for batch in product.batches() {
+        if batch.instrument != request.instruments[0] || batch.price_scale != first.price_scale {
+            return Err(Error::Conflict(
+                "Strategy 350 compact source changed".into(),
+            ));
+        }
+        let high = batch
+            .high
+            .as_deref()
+            .ok_or_else(|| Error::Unready("noise high missing".into()))?;
+        let low = batch
+            .low
+            .as_deref()
+            .ok_or_else(|| Error::Unready("noise low missing".into()))?;
+        let trades = batch
+            .trades
+            .as_deref()
+            .ok_or_else(|| Error::Unready("noise trades missing".into()))?;
+        for slot in 0..batch.count as usize {
+            let start_ns = (slot as u64)
+                .checked_mul(exact_bars::INTERVAL_NS)
+                .and_then(|offset| batch.first_start_ns.checked_add(offset))
+                .ok_or_else(|| Error::Capacity("Strategy 350 compact slot clock".into()))?;
+            let end_ns = start_ns
+                .checked_add(exact_bars::INTERVAL_NS)
+                .ok_or_else(|| Error::Capacity("Strategy 350 compact slot end".into()))?;
+            if batch.present[slot] {
+                source.absorb_atoms(
+                    start_ns,
+                    end_ns,
+                    batch.price_scale,
+                    high[slot],
+                    low[slot],
+                    trades[slot],
+                )?;
+            }
+            if end_ns.is_multiple_of(SECOND) {
+                output.push(source.close(end_ns, None)?);
+            }
+        }
+    }
+    if output.len() != seconds as usize || source.last_closed_end_ns() != request.interval.end {
+        return Err(Error::Conflict(
+            "Strategy 350 compact noise coverage".into(),
+        ));
+    }
+    Ok(output)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Distance {
@@ -542,6 +642,86 @@ mod tests {
                 .unwrap()
                 .low_atoms,
             980
+        );
+    }
+    #[test]
+    fn verified_compact_columns_project_exact_noise_without_empty_bars() {
+        use crate::{bar_catalogue, coverage::Interval};
+        let request = bar_catalogue::Request {
+            provider: 1,
+            instruments: vec![10],
+            session: 20260922,
+            interval: Interval {
+                start: START,
+                end: START + 2 * SECOND,
+            },
+            timeframe_ns: exact_bars::INTERVAL_NS,
+            source_generation: "a".repeat(64),
+            calculation_hash: "b".repeat(64),
+            columns: [Column::High, Column::Low, Column::Trades].into(),
+            maximum_rows: 20,
+        };
+        let coverage = bar_catalogue::Coverage {
+            provider: 1,
+            session: 20260922,
+            interval: request.interval,
+            timeframe_ns: exact_bars::INTERVAL_NS,
+            source_generation: request.source_generation.clone(),
+            calculation_hash: request.calculation_hash.clone(),
+            sources: [(
+                10,
+                bar_catalogue::Source {
+                    certificate_hash: "c".repeat(64),
+                    price_scale: 2,
+                    size_scale: 0,
+                },
+            )]
+            .into(),
+            published_at_ns: START + 3 * SECOND,
+        };
+        let mut present = vec![false; 20];
+        present[0] = true;
+        present[9] = true;
+        let mut high = vec![0; 20];
+        let mut low = vec![0; 20];
+        let mut trades = vec![0; 20];
+        high[0] = 1010;
+        low[0] = 990;
+        trades[0] = 2;
+        high[9] = 1020;
+        low[9] = 995;
+        trades[9] = 3;
+        let batch = bar_catalogue::Batch {
+            request_hash: request.hash().unwrap(),
+            coverage_hash: coverage.hash().unwrap(),
+            instrument: 10,
+            first_start_ns: START,
+            count: 20,
+            price_scale: 2,
+            size_scale: 0,
+            present,
+            open: None,
+            high: Some(high),
+            low: Some(low),
+            close: None,
+            volume: None,
+            notional: None,
+            trades: Some(trades),
+        };
+        let mut readback =
+            bar_catalogue::Readback::new(request, &coverage, START + 3 * SECOND).unwrap();
+        readback.observe(batch).unwrap();
+        let complete = readback.finish().unwrap();
+        assert_eq!(
+            project_compact_one_second(&complete).unwrap(),
+            vec![
+                Some(CompletedBar {
+                    end_ns: START + SECOND,
+                    high_atoms: 1020,
+                    low_atoms: 990
+                }),
+                None,
+            ]
         );
     }
 }
