@@ -2,6 +2,14 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+The Strategy 350 100 ms bar/Signal Stream/optional Watchlist join now walks
+verified Boolean batches with bounded cursors. It does not materialize a
+second full-session Boolean grid. Each selected batch carries a compact hash
+of the pinned product requests and coverage, screen configuration, prior-close
+fact, exact OHLC and Boolean operands, and resulting refinement mask. The hash
+is independent of Boolean batch partitioning. It is screening provenance, not
+entry permission; account decisions do not yet consume it as a typed operand.
+
 The ticker-shared Strategy 350 price gate can now emit immutable causal
 evidence. Its fingerprint binds the exact trade, policy, prior close, session
 context, evaluation clock, source kind, configuration and outcome. A live or
