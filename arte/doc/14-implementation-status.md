@@ -17,6 +17,13 @@ of the pinned product requests and coverage, screen configuration, prior-close
 fact, exact OHLC and Boolean operands, and resulting refinement mask. The hash
 is independent of Boolean batch partitioning. It is screening provenance, not
 entry permission; account decisions do not yet consume it as a typed operand.
+Historical selected batches are now sealed. A selected 100 ms bucket can be
+addressed only through the verified join output. A bounded refinement planner
+turns the full contiguous screen interval into sparse half-open ranges for
+exact trade/quote replay, rejecting missing batches and interval-budget
+overflow. Its hash includes every source batch, including negative buckets.
+This is replay routing, not a substitute for causal event, quote, level or
+account evidence, and it is not yet connected to the runnable backtest loader.
 The join requires the Signal Stream and any required Watchlist to declare
 100 ms execution cadence. A slower product's carried value cannot select a
 bucket that was not evaluated at that boundary. The general computation

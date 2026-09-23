@@ -1,7 +1,9 @@
 //! Conservative Strategy 350 bar and signal screen with explicit Watchlist policy.
 //! The output schedules event/quote refinement; it never authorizes an order.
 use crate::{
-    bar_catalogue, boolean_catalogue, content_hash, exact_bars,
+    bar_catalogue, boolean_catalogue, content_hash,
+    coverage::Interval,
+    exact_bars,
     execution_interval::{ExecutableKind, ExecutionInterval},
     strategy350_bar_screen::{self, ScreenBatch, ScreenIdentity, StreamingScreen},
     strategy350_catalogue::{WatchlistPolicy, SIGNAL, WATCHLIST},
@@ -12,11 +14,186 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub struct SelectedBatch {
-    pub instrument: u64,
-    pub first_start_ns: u64,
-    pub refine: Vec<bool>,
+    scope: crate::event_order::Scope,
+    first_start_ns: u64,
+    refine: Vec<bool>,
     /// Exact verified inputs and this batch's refinement mask, not an order proof.
-    pub evidence_hash: String,
+    evidence_hash: String,
+}
+/// A true 100 ms historical screen bucket. This selects an exact event/quote
+/// replay range; it never substitutes for causal event or order evidence.
+pub struct HistoricalSelectedBucket<'a> {
+    scope: crate::event_order::Scope,
+    start_ns: u64,
+    row_index: usize,
+    batch_evidence_hash: &'a str,
+}
+impl SelectedBatch {
+    pub fn scope(&self) -> crate::event_order::Scope {
+        self.scope
+    }
+    pub fn first_start_ns(&self) -> u64 {
+        self.first_start_ns
+    }
+    pub fn refine(&self) -> &[bool] {
+        &self.refine
+    }
+    pub fn evidence_hash(&self) -> &str {
+        &self.evidence_hash
+    }
+    pub fn selected_bucket(&self, index: usize) -> Result<Option<HistoricalSelectedBucket<'_>>> {
+        let selected = *self
+            .refine
+            .get(index)
+            .ok_or_else(|| Error::Invalid("Strategy 350 selected bucket index".into()))?;
+        if !selected {
+            return Ok(None);
+        }
+        let offset_ns = (index as u64)
+            .checked_mul(bar_catalogue::BASE_INTERVAL_NS)
+            .ok_or_else(|| Error::Capacity("Strategy 350 selected bucket clock".into()))?;
+        let start_ns = self
+            .first_start_ns
+            .checked_add(offset_ns)
+            .ok_or_else(|| Error::Capacity("Strategy 350 selected bucket clock".into()))?;
+        Ok(Some(HistoricalSelectedBucket {
+            scope: self.scope,
+            start_ns,
+            row_index: index,
+            batch_evidence_hash: &self.evidence_hash,
+        }))
+    }
+}
+impl HistoricalSelectedBucket<'_> {
+    pub fn scope(&self) -> crate::event_order::Scope {
+        self.scope
+    }
+    pub fn start_ns(&self) -> u64 {
+        self.start_ns
+    }
+    pub fn identity_hash(&self) -> Result<String> {
+        content_hash(&(
+            "arte.strategy-350-historical-selected-bucket.v1",
+            self.scope.provider,
+            self.scope.instrument,
+            self.scope.session,
+            self.start_ns,
+            self.row_index,
+            self.batch_evidence_hash,
+        ))
+    }
+}
+
+/// Sparse half-open ranges for exact historical trade/quote replay. The full
+/// certified screen interval must be supplied; omitted batches are rejected.
+pub struct RefinementPlan {
+    scope: crate::event_order::Scope,
+    source_interval: Interval,
+    intervals: Vec<Interval>,
+    evidence_hash: String,
+}
+impl RefinementPlan {
+    pub fn from_batches(
+        scope: crate::event_order::Scope,
+        source_interval: Interval,
+        batches: &[SelectedBatch],
+        maximum_intervals: usize,
+    ) -> Result<Self> {
+        source_interval.validate()?;
+        if scope.provider == 0
+            || scope.instrument == 0
+            || batches.is_empty()
+            || batches.len() > 100_000
+            || maximum_intervals == 0
+            || maximum_intervals > 1_000_000
+            || !source_interval
+                .start
+                .is_multiple_of(bar_catalogue::BASE_INTERVAL_NS)
+            || !source_interval
+                .end
+                .is_multiple_of(bar_catalogue::BASE_INTERVAL_NS)
+        {
+            return Err(Error::Invalid("Strategy 350 refinement plan bounds".into()));
+        }
+        let mut cursor = source_interval.start;
+        let mut intervals: Vec<Interval> = Vec::new();
+        let mut digest = Sha256::new();
+        digest.update(b"arte.strategy-350-refinement-plan.v1");
+        digest.update(scope.provider.to_be_bytes());
+        digest.update(scope.instrument.to_be_bytes());
+        digest.update(scope.session.to_be_bytes());
+        digest.update(source_interval.start.to_be_bytes());
+        digest.update(source_interval.end.to_be_bytes());
+        for batch in batches {
+            let count = batch.refine.len();
+            let span_ns = (count as u64)
+                .checked_mul(bar_catalogue::BASE_INTERVAL_NS)
+                .ok_or_else(|| Error::Capacity("Strategy 350 refinement batch clock".into()))?;
+            let end_ns = cursor
+                .checked_add(span_ns)
+                .ok_or_else(|| Error::Capacity("Strategy 350 refinement batch clock".into()))?;
+            if batch.scope != scope
+                || batch.first_start_ns != cursor
+                || count == 0
+                || end_ns > source_interval.end
+            {
+                return Err(Error::Conflict(
+                    "Strategy 350 refinement batch gap or scope".into(),
+                ));
+            }
+            digest.update(batch.first_start_ns.to_be_bytes());
+            digest.update((count as u64).to_be_bytes());
+            digest.update(batch.evidence_hash.as_bytes());
+            for (index, &refine) in batch.refine.iter().enumerate() {
+                if !refine {
+                    continue;
+                }
+                let start_ns = cursor + index as u64 * bar_catalogue::BASE_INTERVAL_NS;
+                let end_ns = start_ns + bar_catalogue::BASE_INTERVAL_NS;
+                if let Some(last) = intervals.last_mut().filter(|last| last.end == start_ns) {
+                    last.end = end_ns;
+                } else {
+                    if intervals.len() == maximum_intervals {
+                        return Err(Error::Capacity(
+                            "Strategy 350 refinement interval budget".into(),
+                        ));
+                    }
+                    intervals.push(Interval {
+                        start: start_ns,
+                        end: end_ns,
+                    });
+                }
+            }
+            cursor = end_ns;
+        }
+        if cursor != source_interval.end {
+            return Err(Error::Unready(
+                "Strategy 350 refinement source interval incomplete".into(),
+            ));
+        }
+        for interval in &intervals {
+            digest.update(interval.start.to_be_bytes());
+            digest.update(interval.end.to_be_bytes());
+        }
+        Ok(Self {
+            scope,
+            source_interval,
+            intervals,
+            evidence_hash: format!("{:x}", digest.finalize()),
+        })
+    }
+    pub fn scope(&self) -> crate::event_order::Scope {
+        self.scope
+    }
+    pub fn source_interval(&self) -> Interval {
+        self.source_interval
+    }
+    pub fn intervals(&self) -> &[Interval] {
+        &self.intervals
+    }
+    pub fn evidence_hash(&self) -> &str {
+        &self.evidence_hash
+    }
 }
 
 /// A completed live bucket selected for exact event/quote refinement. This
@@ -331,7 +508,11 @@ pub fn select(
             refine.push(selected);
         }
         output.push(SelectedBatch {
-            instrument,
+            scope: crate::event_order::Scope {
+                provider: bar.request().provider,
+                instrument,
+                session: bar.request().session,
+            },
             first_start_ns,
             refine,
             evidence_hash: format!("{:x}", hasher.finalize()),
@@ -639,6 +820,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected[0].refine, vec![true, false, true]);
+        assert_eq!(selected[0].scope().instrument, 10);
+        assert_eq!(selected[0].refine(), &[true, false, true]);
+        let first = selected[0].selected_bucket(0).unwrap().unwrap();
+        let third = selected[0].selected_bucket(2).unwrap().unwrap();
+        assert_eq!(first.start_ns(), S);
+        assert_eq!(third.start_ns(), S + 200_000_000);
+        assert_ne!(
+            first.identity_hash().unwrap(),
+            third.identity_hash().unwrap()
+        );
+        assert!(selected[0].selected_bucket(1).unwrap().is_none());
+        assert!(selected[0].selected_bucket(3).is_err());
+        let scope = selected[0].scope();
+        let source_interval = b.request().interval;
+        let plan = RefinementPlan::from_batches(scope, source_interval, &selected, 2).unwrap();
+        assert_eq!(plan.scope(), scope);
+        assert_eq!(plan.source_interval(), source_interval);
+        assert_eq!(plan.intervals().len(), 2);
+        assert_eq!(plan.intervals()[0].start, S);
+        assert_eq!(plan.intervals()[0].end, S + 100_000_000);
+        assert_eq!(plan.intervals()[1].start, S + 200_000_000);
+        assert_eq!(plan.intervals()[1].end, S + 300_000_000);
+        assert_eq!(plan.evidence_hash().len(), 64);
+        assert!(RefinementPlan::from_batches(scope, source_interval, &selected, 1).is_err());
+        assert!(RefinementPlan::from_batches(
+            scope,
+            Interval {
+                start: S,
+                end: S + 400_000_000,
+            },
+            &selected,
+            2,
+        )
+        .is_err());
         let unknown = boolean(
             &b,
             ExecutableKind::Watchlist,
@@ -690,6 +905,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(without_watch[0].refine, vec![true; 3]);
+        let silent = boolean(
+            &b,
+            ExecutableKind::SignalStream,
+            SIGNAL,
+            vec![true; 3],
+            vec![false; 3],
+        );
+        let no_candidates = select(
+            &b,
+            &config(),
+            &close(),
+            &silent,
+            WatchlistPolicy::NotRequired,
+            None,
+        )
+        .unwrap();
+        let empty_plan =
+            RefinementPlan::from_batches(scope, source_interval, &no_candidates, 2).unwrap();
+        assert!(empty_plan.intervals().is_empty());
+        assert_ne!(plan.evidence_hash(), empty_plan.evidence_hash());
     }
     #[test]
     fn carried_value_from_slower_signal_cannot_select_unevaluated_bucket() {
@@ -752,6 +987,16 @@ mod tests {
         assert_eq!(select_one[0].refine, select_split[0].refine);
         assert_eq!(select_one[0].evidence_hash, select_split[0].evidence_hash);
         assert_eq!(select_one[0].evidence_hash.len(), 64);
+        let scope = select_one[0].scope();
+        let interval = b.request().interval;
+        assert_eq!(
+            RefinementPlan::from_batches(scope, interval, &select_one, 3)
+                .unwrap()
+                .evidence_hash(),
+            RefinementPlan::from_batches(scope, interval, &select_split, 3)
+                .unwrap()
+                .evidence_hash(),
+        );
         let mut later_close = close();
         later_close.available_at_ns -= 1;
         let changed = select(
