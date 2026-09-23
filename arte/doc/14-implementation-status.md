@@ -102,6 +102,11 @@ eligible trades and an external watermark; it does not infer empty intervals
 from silence. The live lane now owns this builder when configured and
 cross-checks exact 100 ms completed bars against the scheduler. Full lane-root
 publication and watermark/coverage acceptance are still incomplete.
+At a shared close the scheduler presents larger timeframes before the 100 ms
+bar. The exact owner now retains the just-sealed integer bar across those
+boundaries and checkpoints it. A focused unit test restores between the 1s and
+100 ms boundaries, verifies identical continuation, and rejects a trade-count
+mismatch. This does not yet integrate adaptive-noise state into the live cut.
 The live common-cut root now pins scheduler, candidate features, and
 the exact-bar/signal owner to the same pending boundary. Restore verifies the
 root and component hashes, configuration, source scope, sequence, boundary ID,

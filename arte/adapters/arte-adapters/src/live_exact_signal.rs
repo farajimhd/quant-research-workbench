@@ -3,7 +3,7 @@
 //! must be committed with the matching scheduler cut for recovery.
 use arte_core::{
     event_order::Scope,
-    exact_bars::{Builder, Mode as BarMode, INTERVAL_NS},
+    exact_bars::{Bar as ExactBar, Builder, Mode as BarMode, INTERVAL_NS},
     market_structure::scheduler::{Boundary, Kind},
     seed_storage::Object,
     strategy350_signal::{Config, Mode as SignalMode, Occurrence, State},
@@ -45,6 +45,7 @@ struct Saved {
     last_sequence: u64,
     last_boundary_id: Option<String>,
     last_evaluated_at_ns: u64,
+    last_exact_completed: Option<ExactBar>,
     bars: String,
     signal: String,
 }
@@ -66,6 +67,7 @@ pub struct Owner {
     last_sequence: u64,
     last_boundary_id: Option<String>,
     last_evaluated_at_ns: u64,
+    last_exact_completed: Option<ExactBar>,
     failed: bool,
 }
 impl Owner {
@@ -93,6 +95,7 @@ impl Owner {
             last_sequence: 0,
             last_boundary_id: None,
             last_evaluated_at_ns: 0,
+            last_exact_completed: None,
             failed: false,
         })
     }
@@ -131,6 +134,7 @@ impl Owner {
             last_sequence: self.last_sequence,
             last_boundary_id: self.last_boundary_id.clone(),
             last_evaluated_at_ns: self.last_evaluated_at_ns,
+            last_exact_completed: self.last_exact_completed.clone(),
             bars: bars.id.clone(),
             signal: signal.id.clone(),
         };
@@ -200,10 +204,26 @@ impl Owner {
             request.session_end_ns,
             SignalMode::Live,
         )?;
+        if saved.last_exact_completed.as_ref().is_some_and(|last| {
+            last.end_ns.checked_sub(last.start_ns) != Some(INTERVAL_NS)
+                || last.end_ns > bars.closed_through_ns()
+                || last.end_ns > signal.next_bucket_ns()
+                || last.price_scale != request.price_scale
+                || last.size_scale != request.size_scale
+                || bars
+                    .current()
+                    .is_some_and(|current| current.start_ns < last.end_ns)
+        }) {
+            return Err(Error::Conflict("exact signal recent bar geometry".into()));
+        }
         let mut owner = Self::from_parts(bars, signal)?;
         owner.last_sequence = saved.last_sequence;
         owner.last_boundary_id = saved.last_boundary_id;
         owner.last_evaluated_at_ns = saved.last_evaluated_at_ns;
+        owner.last_exact_completed = saved.last_exact_completed;
+        if owner.checkpoint()?.root.payload != bundle.root.payload {
+            return Err(Error::Conflict("noncanonical exact signal root".into()));
+        }
         Ok(owner)
     }
     /// Consume exactly once after the scheduler prepares a boundary. A repeat
@@ -254,13 +274,16 @@ impl Owner {
                 }
             };
             let advance = self.bars.advance(cutoff_ns)?;
+            if let Some(exact) = &advance.completed {
+                self.last_exact_completed = Some(exact.clone());
+            }
             if let Kind::Completed {
                 bar,
                 interval_ns: INTERVAL_NS,
                 ..
             } = &boundary.kind
             {
-                if advance.completed.as_ref().is_none_or(|exact| {
+                if self.last_exact_completed.as_ref().is_none_or(|exact| {
                     exact.start_ns != bar.bar.start_ns
                         || exact.end_ns != bar.bar.end_ns
                         || exact.trades != bar.bar.trades
@@ -486,6 +509,134 @@ mod tests {
             ..boundary
         };
         assert!(owner.observe(&changed).is_err());
+        assert!(owner.observe(&changed).is_err());
+    }
+    #[test]
+    fn larger_timeframe_first_keeps_exact_100ms_comparison_across_restore() {
+        let bars = Builder::new(
+            scope(),
+            BarMode::Live,
+            S,
+            S + 2_000_000_000,
+            2,
+            0,
+            "a".repeat(64),
+        )
+        .unwrap();
+        let signal = State::new_live(
+            Config {
+                minimum_move_bps: 5,
+                source_algorithm_hash: "b".repeat(64),
+            },
+            bars.configuration_hash().into(),
+            S,
+            S + 2_000_000_000,
+        )
+        .unwrap();
+        let mut owner = Owner::new(bars, signal).unwrap();
+        let trade = observation(1, S + 900_000_001, EventKind::Trade, "100", "1");
+        owner
+            .observe(&Boundary {
+                id: "trade",
+                sequence: 1,
+                evaluated_at_ns: S + 950_000_000,
+                kind: Kind::Trade {
+                    observation: &trade,
+                    eligible: true,
+                },
+            })
+            .unwrap();
+        let one_second = Completed {
+            bar: Bar {
+                start_ns: S,
+                end_ns: S + 1_000_000_000,
+                open: 100.,
+                high: 100.,
+                low: 100.,
+                close: 100.,
+                volume: 1.,
+                notional: 100.,
+                trades: 1,
+            },
+            macd: (0., 0., 0.),
+            session_vwap: 100.,
+            session_high: 100.,
+            prior_session_high: None,
+        };
+        owner
+            .observe(&Boundary {
+                id: "one-second",
+                sequence: 2,
+                evaluated_at_ns: S + 1_100_000_000,
+                kind: Kind::Completed {
+                    interval_ns: 1_000_000_000,
+                    bar: &one_second,
+                    available_at_ns: S + 1_100_000_000,
+                },
+            })
+            .unwrap();
+        let image = owner.checkpoint().unwrap();
+        let generation = "a".repeat(64);
+        let mut restored = Owner::restore(
+            &image,
+            &image.root.id,
+            Recovery {
+                scope: scope(),
+                session_start_ns: S,
+                session_end_ns: S + 2_000_000_000,
+                price_scale: 2,
+                size_scale: 0,
+                source_generation_hash: &generation,
+                signal_config: Config {
+                    minimum_move_bps: 5,
+                    source_algorithm_hash: "b".repeat(64),
+                },
+                expected_sequence: 2,
+                expected_boundary_id: Some("one-second"),
+            },
+        )
+        .unwrap();
+        let hundred_ms = Completed {
+            bar: Bar {
+                start_ns: S + 900_000_000,
+                end_ns: S + 1_000_000_000,
+                ..one_second.bar.clone()
+            },
+            ..one_second.clone()
+        };
+        let same_close = Boundary {
+            id: "hundred-ms",
+            sequence: 3,
+            evaluated_at_ns: S + 1_100_000_000,
+            kind: Kind::Completed {
+                interval_ns: INTERVAL_NS,
+                bar: &hundred_ms,
+                available_at_ns: S + 1_100_000_000,
+            },
+        };
+        owner.observe(&same_close).unwrap();
+        restored.observe(&same_close).unwrap();
+        assert_eq!(
+            owner.checkpoint().unwrap().root.id,
+            restored.checkpoint().unwrap().root.id
+        );
+        let wrong = Completed {
+            bar: Bar {
+                trades: 2,
+                ..hundred_ms.bar.clone()
+            },
+            ..hundred_ms.clone()
+        };
+        let changed = Boundary {
+            id: "wrong",
+            sequence: 4,
+            evaluated_at_ns: S + 1_200_000_000,
+            kind: Kind::Completed {
+                interval_ns: INTERVAL_NS,
+                bar: &wrong,
+                available_at_ns: S + 1_200_000_000,
+            },
+        };
         assert!(owner.observe(&changed).is_err());
     }
 }
