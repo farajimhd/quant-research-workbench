@@ -497,7 +497,7 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
     let startup_hash = request.hash().unwrap();
     let mut session = multi::Session::from_request(request, &startup_hash).unwrap();
     assert_eq!(session.startup_hash(), startup_hash);
-    assert_eq!(session.controller.controllers().len(), 2);
+    assert_eq!(session.controller.shard_count(), 2);
     assert_eq!(session.strategy.len(), 2);
     session
         .portfolio

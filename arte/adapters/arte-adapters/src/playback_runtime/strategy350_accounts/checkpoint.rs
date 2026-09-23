@@ -55,11 +55,28 @@ impl<S: Clone + Serialize> Accounts<S> {
         };
         let mut accounts = BTreeMap::new();
         for (key, slot) in &self.slots {
+            let due = run.is_due(slot.runtime.scope())?;
+            let needs = run.needs_decision(slot.runtime.scope())?;
+            let current = slot
+                .receipt
+                .as_ref()
+                .filter(|receipt| receipt.decision().input.event_id == boundary.id);
+            if (due && !needs && current.is_none())
+                || (needs && current.is_some())
+                || (!due && current.is_some())
+            {
+                return Err(Error::Conflict(
+                    "Strategy 350 owner receipt and barrier differ".into(),
+                ));
+            }
             if let Some(batch) = slot.runtime.pending_batch() {
                 if batch.records().len() != 1 {
                     return Err(Error::Invalid("Strategy 350 pending row count".into()));
                 }
                 run.validate_decision(&batch.records()[0].decode()?)?;
+            }
+            if let Some(receipt) = current {
+                run.validate_decision(receipt.decision())?;
             }
             if let Some(receipt) = &slot.receipt {
                 let input = &receipt.decision().input;
@@ -197,9 +214,14 @@ impl<S: Clone + Serialize + DeserializeOwned> Accounts<S> {
             if let Some(receipt) = current {
                 run.validate_decision(receipt.decision())?;
             }
-            if !run.needs_decision(scope)? && run.is_due(scope)? && current.is_none() {
+            let due = run.is_due(scope)?;
+            let needs = run.needs_decision(scope)?;
+            if (due && !needs && current.is_none())
+                || (needs && current.is_some())
+                || (!due && current.is_some())
+            {
                 return Err(Error::Conflict(
-                    "Strategy 350 controller receipt missing".into(),
+                    "Strategy 350 owner receipt and barrier differ".into(),
                 ));
             }
             slots.insert(

@@ -174,6 +174,10 @@ events and a later-shard active bracket plus quote. It checks earliest-boundary
 selection, confirms the later shard has not entered its execution decision view,
 and verifies no later fill is pending. A complete multi-ticker fill-order replay
 through published checkpoints remains outstanding.
+The coordinator may prepare later market heads to compare clocks, but production
+callers cannot borrow those controllers. They can read only the selected,
+fill-cleared controller. This prevents a scanner or strategy from reading a
+preloaded later ticker's state through the coordinator before its turn.
 Strategy 350 account-owned state now has a bounded content-addressed
 component checkpoint. Restore requires the selected market boundary, exact
 effective configuration hashes, and independently read decision journal rows.

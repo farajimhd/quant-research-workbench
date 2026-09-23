@@ -145,6 +145,10 @@ current versus pending decisions, and the supplied root pin. An offline
 two-ticker fixture round-trips the selected ticker's owner and rejects a wrong
 root. This component image is not a whole-run checkpoint: market, execution,
 other tickers and the shared portfolio still need one published recovery graph.
+Capture and restore also reject a current account receipt that disagrees with
+the market's due/committed barrier state. The multi-ticker coordinator exposes
+unselected controllers only in unit tests; production callers can borrow the
+selected, fill-cleared controller, not a preloaded later ticker's market state.
 The Strategy 350 historical account owner now selects its own ticker's
 consumers from a shared run manifest while requiring exact local configuration
 and state sets. A unit test covers another ticker, missing local inputs and

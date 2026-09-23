@@ -112,7 +112,14 @@ impl MultiRuntime {
         })
     }
 
-    pub fn controllers(&self) -> &[Runtime] {
+    pub fn shard_count(&self) -> usize {
+        self.controllers.len()
+    }
+
+    /// Test-only visibility for proving unselected shards cannot dispatch
+    /// execution. Production callers may inspect only the selected controller.
+    #[cfg(test)]
+    pub(crate) fn controllers(&self) -> &[Runtime] {
         &self.controllers
     }
 
