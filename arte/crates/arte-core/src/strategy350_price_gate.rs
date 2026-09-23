@@ -926,6 +926,7 @@ mod tests {
                 price: &evidence,
                 expected_price_gate_hash: gate_hash,
                 maximum_price_age_ns: 200_000_000,
+                refinement: None,
                 other_evidence_hash: &"c".repeat(64),
             },
             |_| panic!("wrong scope cannot observe account state"),
@@ -941,6 +942,7 @@ mod tests {
                 price: &evidence,
                 expected_price_gate_hash: gate_hash,
                 maximum_price_age_ns: 200_000_000,
+                refinement: None,
                 other_evidence_hash: &"c".repeat(64),
             },
             |state| {
@@ -957,8 +959,10 @@ mod tests {
         assert_eq!(
             decision.evidence_hash,
             content_hash(&(
-                "arte.strategy-350-market-decision.v1",
+                "arte.strategy-350-market-decision.v2",
+                "live-receipt",
                 evidence.fingerprint(),
+                None::<String>,
                 "c".repeat(64)
             ))
             .unwrap()
@@ -974,6 +978,7 @@ mod tests {
                 &evidence,
                 gate_hash,
                 200_000_000,
+                None,
                 &"d".repeat(64),
             )
             .is_err()
@@ -984,6 +989,7 @@ mod tests {
             &evidence,
             gate_hash,
             200_000_000,
+            None,
             &"c".repeat(64),
         )
         .unwrap();
@@ -998,7 +1004,13 @@ mod tests {
         let mut add_input = input.clone();
         add_input.event_id = "add-bar".into();
         add_input.source_sequence = 2;
+        add_input.available_at_ns = 2 * S + 100_000_000;
         add_input.evaluated_at_ns = 2 * S + 150_000_000;
+        let refinement = crate::strategy350_screen_join::test_live_selected(
+            market_scope,
+            2 * S,
+            2 * S + 100_000_000,
+        );
         let mut add_safety = safety.clone();
         add_safety.position_quantity = 1;
         let level = crate::strategy_targets::TargetLevel {
@@ -1024,6 +1036,25 @@ mod tests {
             target: 11.,
             maximum_buy_price: 10.5,
         };
+        assert!(crate::strategy350_transaction::prepare_market_decision(
+            &mut account,
+            crate::strategy350_transaction::MarketDecisionInput {
+                market_scope,
+                input: add_input.clone(),
+                safety: &add_safety,
+                price: &evidence,
+                expected_price_gate_hash: gate_hash,
+                maximum_price_age_ns: 200_000_000,
+                refinement: None,
+                other_evidence_hash: &"e".repeat(64),
+            },
+            |_| Ok(()),
+            |_| Ok(vec![crate::strategy_dispatch::Action::Add(Box::new(
+                add.clone()
+            ))]),
+        )
+        .is_err());
+        assert!(account.pending_batch().is_none());
         crate::strategy350_transaction::prepare_market_decision(
             &mut account,
             crate::strategy350_transaction::MarketDecisionInput {
@@ -1033,6 +1064,7 @@ mod tests {
                 price: &evidence,
                 expected_price_gate_hash: gate_hash,
                 maximum_price_age_ns: 200_000_000,
+                refinement: Some(&refinement),
                 other_evidence_hash: &"e".repeat(64),
             },
             |_| Ok(()),
@@ -1041,12 +1073,25 @@ mod tests {
         .unwrap();
         let add_rows = account.pending_batch().unwrap().records().to_vec();
         let add_committed = account.acknowledge(&add_rows).unwrap();
+        assert!(
+            crate::strategy350_transaction::CommittedMarketDecision::from_readback(
+                &add_committed,
+                market_scope,
+                &evidence,
+                gate_hash,
+                200_000_000,
+                None,
+                &"e".repeat(64),
+            )
+            .is_err()
+        );
         let add_proof = crate::strategy350_transaction::CommittedMarketDecision::from_readback(
             &add_committed,
             market_scope,
             &evidence,
             gate_hash,
             200_000_000,
+            Some(&refinement),
             &"e".repeat(64),
         )
         .unwrap();
@@ -1331,6 +1376,13 @@ mod tests {
         let pinned = PinnedRun::new(manifest.clone(), &manifest.hash().unwrap()).unwrap();
         let source = catalogue.bind_historical(&pinned, &prepared).unwrap();
         let proof = source.event(0, 0).unwrap();
+        let refinement = crate::strategy350_screen_join::test_historical_refinement(
+            market_scope,
+            crate::coverage::Interval {
+                start: 2 * S,
+                end: 2 * S + 100_000_000,
+            },
+        );
         assert_eq!(proof.modeled_available_at_ns(), 2 * S + 10);
         assert_eq!(proof.identity_hash().unwrap().len(), 64);
         assert!(source.event(0, 1).is_err());
@@ -1391,6 +1443,7 @@ mod tests {
                 price: &evidence,
                 source: &proof,
                 expected_price_gate_hash: &gate_hash,
+                refinement: None,
                 other_evidence_hash: &other_hash,
             },
             |_| Ok(()),
@@ -1410,6 +1463,7 @@ mod tests {
                 &evidence,
                 &proof,
                 &gate_hash,
+                None,
                 &"e".repeat(64),
             )
             .unwrap();
@@ -1427,6 +1481,7 @@ mod tests {
                 &evidence,
                 &proof,
                 &gate_hash,
+                None,
                 &"0".repeat(64),
             )
             .is_err()
@@ -1460,6 +1515,26 @@ mod tests {
             target: 11.,
             maximum_buy_price: 10.5,
         };
+        assert!(
+            crate::strategy350_transaction::prepare_historical_market_decision(
+                &mut account,
+                crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                    input: add_input.clone(),
+                    safety: &add_safety,
+                    price: &evidence,
+                    source: &proof,
+                    expected_price_gate_hash: &gate_hash,
+                    refinement: None,
+                    other_evidence_hash: &other_hash,
+                },
+                |_| Ok(()),
+                |_| Ok(vec![crate::strategy_dispatch::Action::Add(Box::new(
+                    proposal.clone()
+                ))]),
+            )
+            .is_err()
+        );
+        assert!(account.pending_batch().is_none());
         crate::strategy350_transaction::prepare_historical_market_decision(
             &mut account,
             crate::strategy350_transaction::HistoricalMarketDecisionInput {
@@ -1468,6 +1543,7 @@ mod tests {
                 price: &evidence,
                 source: &proof,
                 expected_price_gate_hash: &gate_hash,
+                refinement: Some(&refinement),
                 other_evidence_hash: &other_hash,
             },
             |_| Ok(()),
@@ -1480,12 +1556,24 @@ mod tests {
         .unwrap();
         let rows = account.pending_batch().unwrap().records().to_vec();
         let committed_add = account.acknowledge(&rows).unwrap();
+        assert!(
+            crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
+                &committed_add,
+                &evidence,
+                &proof,
+                &gate_hash,
+                None,
+                &other_hash,
+            )
+            .is_err()
+        );
         let historical_add =
             crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
                 &committed_add,
                 &evidence,
                 &proof,
                 &gate_hash,
+                Some(&refinement),
                 &"e".repeat(64),
             )
             .unwrap();
@@ -1579,6 +1667,7 @@ mod tests {
                     price: &evidence,
                     source: &ineligible_proof,
                     expected_price_gate_hash: &gate_hash,
+                    refinement: Some(&refinement),
                     other_evidence_hash: &other_hash,
                 },
                 |_| Ok(()),

@@ -5,6 +5,7 @@ use crate::{
     event_order::Scope as MarketScope,
     market_structure::scheduler::playback::sources::HistoricalEventProof,
     strategy350_price_gate::PriceEvidence,
+    strategy350_screen_join::{LiveSelectedBucket, RefinementPlan},
     strategy_dispatch::{Action, Decision, InputBoundary, Mode, Safety, StrategyKind},
     strategy_transaction::{Committed, Runtime},
     Error, Result,
@@ -21,6 +22,7 @@ pub struct MarketDecisionInput<'a> {
     pub price: &'a PriceEvidence,
     pub expected_price_gate_hash: &'a str,
     pub maximum_price_age_ns: u64,
+    pub refinement: Option<&'a LiveSelectedBucket>,
     pub other_evidence_hash: &'a str,
 }
 
@@ -32,6 +34,7 @@ pub struct HistoricalMarketDecisionInput<'a> {
     pub price: &'a PriceEvidence,
     pub source: &'a HistoricalEventProof,
     pub expected_price_gate_hash: &'a str,
+    pub refinement: Option<&'a RefinementPlan>,
     pub other_evidence_hash: &'a str,
 }
 
@@ -44,11 +47,12 @@ impl<'a> CommittedHistoricalDecision<'a> {
         price: &PriceEvidence,
         source: &HistoricalEventProof,
         expected_price_gate_hash: &str,
+        refinement: Option<&RefinementPlan>,
         other_evidence_hash: &str,
     ) -> Result<Self> {
         require_other_hash(other_evidence_hash)?;
         let decision = committed.decision();
-        let expected = historical_evidence_hash(price, source, other_evidence_hash)?;
+        let expected = historical_evidence_hash(price, source, refinement, other_evidence_hash)?;
         if decision.evidence_hash != expected {
             return Err(Error::Conflict(
                 "Strategy 350 historical committed evidence differs".into(),
@@ -60,6 +64,9 @@ impl<'a> CommittedHistoricalDecision<'a> {
             &decision.input,
             expected_price_gate_hash,
         )?;
+        if has_exposure(&decision.actions) {
+            require_historical_refinement(refinement, source)?;
+        }
         Ok(Self { committed })
     }
 
@@ -84,16 +91,77 @@ fn require_other_hash(hash: &str) -> Result<()> {
     }
     Ok(())
 }
+fn has_exposure(actions: &[Action]) -> bool {
+    actions
+        .iter()
+        .any(|action| matches!(action, Action::Enter(_) | Action::Add(_)))
+}
+fn require_historical_refinement(
+    refinement: Option<&RefinementPlan>,
+    source: &HistoricalEventProof,
+) -> Result<()> {
+    if !refinement
+        .ok_or_else(|| Error::Unready("Strategy 350 historical refinement missing".into()))?
+        .contains_replay_event(source)?
+    {
+        return Err(Error::Unready(
+            "Strategy 350 historical event was not selected for refinement".into(),
+        ));
+    }
+    Ok(())
+}
+fn require_live_refinement(
+    refinement: Option<&LiveSelectedBucket>,
+    market_scope: MarketScope,
+    input: &InputBoundary,
+) -> Result<()> {
+    let selected =
+        refinement.ok_or_else(|| Error::Unready("Strategy 350 live refinement missing".into()))?;
+    let start = selected.start_ns();
+    let end = start
+        .checked_add(crate::bar_catalogue::BASE_INTERVAL_NS)
+        .ok_or_else(|| Error::Capacity("Strategy 350 live selection clock".into()))?;
+    if !selected.needs_refinement()
+        || selected.scope() != market_scope
+        || input.event_time_ns < start
+        || input.event_time_ns >= end
+        || selected.available_at_ns() < end
+        || input.available_at_ns < selected.available_at_ns()
+        || input.evaluated_at_ns < selected.available_at_ns()
+    {
+        return Err(Error::Unready(
+            "Strategy 350 live event lacks selected completed bucket".into(),
+        ));
+    }
+    Ok(())
+}
 fn historical_evidence_hash(
     price: &PriceEvidence,
     source: &HistoricalEventProof,
+    refinement: Option<&RefinementPlan>,
     other_evidence_hash: &str,
 ) -> Result<String> {
     content_hash(&(
-        "arte.strategy-350-market-decision.v1",
+        "arte.strategy-350-market-decision.v2",
         "historical-modeled",
         price.fingerprint(),
         source.identity_hash()?,
+        refinement.map(RefinementPlan::evidence_hash),
+        other_evidence_hash,
+    ))
+}
+fn live_evidence_hash(
+    price: &PriceEvidence,
+    refinement: Option<&LiveSelectedBucket>,
+    other_evidence_hash: &str,
+) -> Result<String> {
+    content_hash(&(
+        "arte.strategy-350-market-decision.v2",
+        "live-receipt",
+        price.fingerprint(),
+        refinement
+            .map(LiveSelectedBucket::identity_hash)
+            .transpose()?,
         other_evidence_hash,
     ))
 }
@@ -110,6 +178,7 @@ pub fn prepare_historical_market_decision<S: Clone + Serialize>(
         price,
         source,
         expected_price_gate_hash,
+        refinement,
         other_evidence_hash,
     } = request;
     require_other_hash(other_evidence_hash)?;
@@ -123,14 +192,12 @@ pub fn prepare_historical_market_decision<S: Clone + Serialize>(
         ));
     }
     price.require_historical_identity(source, &scope, &input, expected_price_gate_hash)?;
-    let evidence_hash = historical_evidence_hash(price, source, other_evidence_hash)?;
+    let evidence_hash = historical_evidence_hash(price, source, refinement, other_evidence_hash)?;
     runtime.prepare_observed(input.clone(), safety, evidence_hash, observe, |state| {
         let actions = calculate(state)?;
-        if actions
-            .iter()
-            .any(|action| matches!(action, Action::Enter(_) | Action::Add(_)))
-        {
+        if has_exposure(&actions) {
             price.require_historical_decision(source, &scope, &input, expected_price_gate_hash)?;
+            require_historical_refinement(refinement, source)?;
         }
         Ok(actions)
     })
@@ -151,14 +218,11 @@ impl<'a> CommittedMarketDecision<'a> {
         price: &'a PriceEvidence,
         expected_price_gate_hash: &str,
         maximum_price_age_ns: u64,
+        refinement: Option<&LiveSelectedBucket>,
         other_evidence_hash: &str,
     ) -> Result<Self> {
         let decision = committed.decision();
-        let expected = content_hash(&(
-            "arte.strategy-350-market-decision.v1",
-            price.fingerprint(),
-            other_evidence_hash,
-        ))?;
+        let expected = live_evidence_hash(price, refinement, other_evidence_hash)?;
         if decision.evidence_hash != expected {
             return Err(Error::Conflict(
                 "Strategy 350 committed market evidence differs".into(),
@@ -171,6 +235,9 @@ impl<'a> CommittedMarketDecision<'a> {
             expected_price_gate_hash,
             maximum_price_age_ns,
         )?;
+        if has_exposure(&decision.actions) {
+            require_live_refinement(refinement, market_scope, &decision.input)?;
+        }
         Ok(Self {
             committed,
             price,
@@ -209,6 +276,7 @@ pub fn prepare_market_decision<S: Clone + Serialize>(
         price,
         expected_price_gate_hash,
         maximum_price_age_ns,
+        refinement,
         other_evidence_hash,
     } = request;
     let scope = runtime.scope().clone();
@@ -225,17 +293,10 @@ pub fn prepare_market_decision<S: Clone + Serialize>(
         ));
     }
     price.require_live_identity(market_scope, &scope, &input, expected_price_gate_hash)?;
-    let evidence_hash = content_hash(&(
-        "arte.strategy-350-market-decision.v1",
-        price.fingerprint(),
-        other_evidence_hash,
-    ))?;
+    let evidence_hash = live_evidence_hash(price, refinement, other_evidence_hash)?;
     runtime.prepare_observed(input.clone(), safety, evidence_hash, observe, |state| {
         let actions = calculate(state)?;
-        if actions
-            .iter()
-            .any(|action| matches!(action, Action::Enter(_) | Action::Add(_)))
-        {
+        if has_exposure(&actions) {
             price.require_live_decision(
                 market_scope,
                 &scope,
@@ -243,6 +304,7 @@ pub fn prepare_market_decision<S: Clone + Serialize>(
                 expected_price_gate_hash,
                 maximum_price_age_ns,
             )?;
+            require_live_refinement(refinement, market_scope, &input)?;
         }
         Ok(actions)
     })

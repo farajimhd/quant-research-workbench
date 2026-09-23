@@ -194,6 +194,30 @@ impl RefinementPlan {
     pub fn evidence_hash(&self) -> &str {
         &self.evidence_hash
     }
+    /// Test a run-pinned historical trade against the sparse screen ranges.
+    /// A false result only skips expensive Strategy 350 refinement; market
+    /// replay and V7 state must still consume the complete source.
+    pub fn contains_replay_event(
+        &self,
+        event: &crate::market_structure::scheduler::playback::sources::HistoricalEventProof,
+    ) -> Result<bool> {
+        self.contains_source_time(event.scope(), event.source_time_ns())
+    }
+    fn contains_source_time(&self, scope: crate::event_order::Scope, at: u64) -> Result<bool> {
+        if scope != self.scope || at < self.source_interval.start || at >= self.source_interval.end
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 replay event outside screen authority".into(),
+            ));
+        }
+        let index = self
+            .intervals
+            .partition_point(|interval| interval.end <= at);
+        Ok(self
+            .intervals
+            .get(index)
+            .is_some_and(|interval| at >= interval.start && at < interval.end))
+    }
 }
 
 /// A completed live bucket selected for exact event/quote refinement. This
@@ -205,6 +229,7 @@ pub struct LiveSelectedBucket {
     available_at_ns: u64,
     screen_possible: bool,
     signal_active: bool,
+    selection_identity: [u8; 32],
 }
 impl LiveSelectedBucket {
     pub fn scope(&self) -> crate::event_order::Scope {
@@ -219,6 +244,58 @@ impl LiveSelectedBucket {
     pub fn needs_refinement(&self) -> bool {
         self.screen_possible && self.signal_active
     }
+    pub fn identity_hash(&self) -> Result<String> {
+        content_hash(&(
+            "arte.strategy-350-live-selected-bucket.v1",
+            self.scope.provider,
+            self.scope.instrument,
+            self.scope.session,
+            self.start_ns,
+            self.available_at_ns,
+            self.screen_possible,
+            self.signal_active,
+            self.selection_identity,
+        ))
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_live_selected(
+    scope: crate::event_order::Scope,
+    start_ns: u64,
+    available_at_ns: u64,
+) -> LiveSelectedBucket {
+    LiveSelectedBucket {
+        scope,
+        start_ns,
+        available_at_ns,
+        screen_possible: true,
+        signal_active: true,
+        selection_identity: [0; 32],
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_historical_refinement(
+    scope: crate::event_order::Scope,
+    source_interval: Interval,
+) -> RefinementPlan {
+    RefinementPlan::from_batches(
+        scope,
+        source_interval,
+        &[SelectedBatch {
+            scope,
+            first_start_ns: source_interval.start,
+            refine: vec![
+                true;
+                ((source_interval.end - source_interval.start) / bar_catalogue::BASE_INTERVAL_NS)
+                    as usize
+            ],
+            evidence_hash: "a".repeat(64),
+        }],
+        1,
+    )
+    .unwrap()
 }
 
 /// One ticker-owned live join. Both calculations advance on the identical
@@ -227,6 +304,7 @@ pub struct StreamingJoin {
     scope: crate::event_order::Scope,
     screen: StreamingScreen,
     signal: strategy350_signal::State,
+    selection_identity: [u8; 32],
 }
 impl StreamingJoin {
     pub fn new_live(
@@ -254,6 +332,21 @@ impl StreamingJoin {
         let start_ns = identity.session_start_ns;
         let end_ns = identity.session_end_ns;
         let source_hash = identity.source_bar_hash.clone();
+        let identity_bytes = serde_json::to_vec(&(
+            "arte.strategy-350-live-selection-identity.v1",
+            scope.provider,
+            scope.instrument,
+            scope.session,
+            start_ns,
+            end_ns,
+            identity.price_scale,
+            source_hash.as_str(),
+            expected_screen_hash,
+            expected_signal_hash,
+            prior_close,
+        ))
+        .map_err(|e| Error::Serialization(e.to_string()))?;
+        let selection_identity: [u8; 32] = Sha256::digest(identity_bytes).into();
         let screen =
             StreamingScreen::new(identity, screen_config, expected_screen_hash, prior_close)?;
         let signal =
@@ -262,6 +355,7 @@ impl StreamingJoin {
             scope,
             screen,
             signal,
+            selection_identity,
         })
     }
 
@@ -299,6 +393,7 @@ impl StreamingJoin {
                 available_at_ns: signal_point.available_at_ns(),
                 screen_possible: screen_point.needs_refinement,
                 signal_active: signal_point.active(),
+                selection_identity: self.selection_identity,
             });
         }
         self.screen = screen;
@@ -703,10 +798,10 @@ mod tests {
             session: 20260922,
         };
         let source_hash = "a".repeat(64);
-        let make_join = |policy, expected_signal_hash: Option<&str>| {
+        let make_join = |policy, expected_signal_hash: Option<&str>, minimum_move_bps| {
             let signal_config = strategy350_signal::Config {
                 execution_interval: ExecutionInterval::Fixed(100_000_000),
-                minimum_move_bps: 5,
+                minimum_move_bps,
                 source_algorithm_hash: "f".repeat(64),
             };
             let signal_hash = signal_config.hash().unwrap();
@@ -727,9 +822,9 @@ mod tests {
                 policy,
             )
         };
-        assert!(make_join(WatchlistPolicy::Required, None).is_err());
-        assert!(make_join(WatchlistPolicy::NotRequired, Some(&"0".repeat(64))).is_err());
-        let mut join = make_join(WatchlistPolicy::NotRequired, None).unwrap();
+        assert!(make_join(WatchlistPolicy::Required, None, 5).is_err());
+        assert!(make_join(WatchlistPolicy::NotRequired, Some(&"0".repeat(64)), 5).is_err());
+        let mut join = make_join(WatchlistPolicy::NotRequired, None, 5).unwrap();
         let first = exact_bars::Bar {
             start_ns: S,
             end_ns: S + 100_000_000,
@@ -789,6 +884,23 @@ mod tests {
         assert_eq!(selected[1].start_ns(), S + 200_000_000);
         assert!(selected[1].needs_refinement());
         assert_eq!(selected[1].available_at_ns(), S + 300_000_000);
+        assert_eq!(selected[1].identity_hash().unwrap().len(), 64);
+        assert_ne!(
+            selected[0].identity_hash().unwrap(),
+            selected[1].identity_hash().unwrap()
+        );
+        let mut changed_config = make_join(WatchlistPolicy::NotRequired, None, 6).unwrap();
+        changed_config
+            .observe_live_advance(&first_advance, S + 100_000_000)
+            .unwrap();
+        let changed_selection = changed_config
+            .observe_live_advance(&later_advance, S + 300_000_000)
+            .unwrap();
+        assert!(changed_selection[1].needs_refinement());
+        assert_ne!(
+            selected[1].identity_hash().unwrap(),
+            changed_selection[1].identity_hash().unwrap(),
+        );
         assert!(join
             .observe_live_advance(&later_advance, S + 300_000_000)
             .is_err());
@@ -843,6 +955,20 @@ mod tests {
         assert_eq!(plan.intervals()[1].start, S + 200_000_000);
         assert_eq!(plan.intervals()[1].end, S + 300_000_000);
         assert_eq!(plan.evidence_hash().len(), 64);
+        assert!(plan.contains_source_time(scope, S).unwrap());
+        assert!(plan.contains_source_time(scope, S + 99_999_999).unwrap());
+        assert!(!plan.contains_source_time(scope, S + 100_000_000).unwrap());
+        assert!(plan.contains_source_time(scope, S + 200_000_000).unwrap());
+        assert!(plan.contains_source_time(scope, S + 300_000_000).is_err());
+        assert!(plan
+            .contains_source_time(
+                crate::event_order::Scope {
+                    instrument: 11,
+                    ..scope
+                },
+                S,
+            )
+            .is_err());
         assert!(RefinementPlan::from_batches(scope, source_interval, &selected, 1).is_err());
         assert!(RefinementPlan::from_batches(
             scope,

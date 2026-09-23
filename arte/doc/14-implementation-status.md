@@ -24,6 +24,15 @@ exact trade/quote replay, rejecting missing batches and interval-budget
 overflow. Its hash includes every source batch, including negative buckets.
 This is replay routing, not a substitute for causal event, quote, level or
 account evidence, and it is not yet connected to the runnable backtest loader.
+The plan can now test a run-pinned replay event against those ranges by SIP
+time with a half-open boundary. Strategy 350 account decisions bind the plan
+identity in historical mode and a sealed selected bucket in live mode.
+Entry/add actions fail if the event was not selected; wait/exit decisions can
+still be journaled. The live bucket identity includes the pinned screen and
+signal configurations, source bar identity and prior-close fact. The decision
+evidence domain is v2; v1 receipts are not reused. Screening remains a
+candidate filter, not order permission. Full level, quote, portfolio and
+broker readiness checks remain separate incomplete work.
 The join requires the Signal Stream and any required Watchlist to declare
 100 ms execution cadence. A slower product's carried value cannot select a
 bucket that was not evaluated at that boundary. The general computation
