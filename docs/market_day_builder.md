@@ -5,6 +5,11 @@ transferring market rows to Python. Python submits SQL, validates bounded
 metadata, and manages restart records. It does not run strategies, rebuild
 structural books, or switch Backtest consumers.
 
+The output database is `arte` by user choice. This builder still reads the
+existing `market_sip_compact` and `q_live` authorities; placing its derived
+tables in `arte` does not turn them into ARTE-native REST-ingested source data
+or authorize ARTE production consumers to bypass their separate source contract.
+
 ## Commands
 
 Run from the laptop source repository with the repository's Python environment:
@@ -34,7 +39,9 @@ copied. Supported names are QMD_CLICKHOUSE_*, REAL_LIVE_CLICKHOUSE_WRITE_*,
 CLICKHOUSE_WORKSTATION_USER/PASSWORD, and CLICKHOUSE_URL/USER/PASSWORD.
 Runtime manifests default to `D:/TradingML/runtimes/market-day`; `--runtime` must
 remain under the available runtime root. The default output database is
-`q_market_history`. Python needs `pandas_market_calendars`; interactive progress
+`arte`. Market-day output tables retain their independent `_v1` schema suffix;
+the `market-day-core-v4` string is the calculation revision, not a table version.
+Python needs `pandas_market_calendars`; interactive progress
 uses Rich, with `--progress text` for plain output.
 
 The build starts four ticker workers by default (`--workers 1` through `8`).

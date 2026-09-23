@@ -67,7 +67,7 @@ def parse_args(argv=None):
     p.add_argument("--start-date")
     p.add_argument("--end-date")
     p.add_argument("--tickers", default="", help="Comma-separated symbols; default is dated-tradable tickers with certified events")
-    p.add_argument("--database", default="q_market_history")
+    p.add_argument("--database", default="arte")
     p.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
     p.add_argument("--runtime", type=Path, default=RUNTIME / "market-day")
     p.add_argument("--max-threads", type=int, default=4)
@@ -84,6 +84,8 @@ def parse_args(argv=None):
     try:
         args.start, args.end = date_range(args)
         sql.identifier(args.database)
+        if args.database == 'q_market_history':
+            raise ValueError('q_market_history is retired; use arte')
         if args.rebuild and args.build_id:
             raise ValueError("Use --rebuild OR --build-id")
         if args.build_id and (len(args.build_id)>100 or any(c not in '0123456789abcdef-' for c in args.build_id)):

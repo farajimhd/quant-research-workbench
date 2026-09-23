@@ -37,6 +37,8 @@ class Arguments(unittest.TestCase):
     def test_single_and_inclusive_range(self):
         a=B.parse_args(['--date','2026-09-18'])
         self.assertEqual((a.start,a.end),(date(2026,9,18),date(2026,9,18)))
+        self.assertEqual(a.database,'arte')
+        self.assertEqual(S.table(a.database,'bars'),'arte.market_day_bars_v1')
         a=B.parse_args(['--start-date','2026-09-17','--end-date','2026-09-18'])
         self.assertEqual((a.end-a.start).days+1,2)
 
@@ -45,6 +47,8 @@ class Arguments(unittest.TestCase):
                      ['--start-date','2026-09-19','--end-date','2026-09-18'],['--date','bad']):
             with self.subTest(args=args),redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
                 B.parse_args(args)
+        with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+            B.parse_args(['--date','2026-09-18','--database','q_market_history'])
 
     def test_rollup_alignment(self):
         with self.assertRaises(ValueError):
