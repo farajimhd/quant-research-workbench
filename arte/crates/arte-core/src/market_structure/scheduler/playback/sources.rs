@@ -119,6 +119,9 @@ impl Catalog {
     }
 }
 impl HistoricalSource<'_> {
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
     pub fn prepared(&self) -> &Prepared {
         self.prepared
     }

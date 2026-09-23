@@ -37,7 +37,11 @@ loop and multi-day performance measurement remain open. A run-bound cursor now
 resolves selected trade positions lazily through the historical source catalog,
 returning the same modeled event proofs used by the Strategy 350 decision
 contract. It excludes quote inputs from trade proofs; quote state still follows
-the complete market replay. This is proof routing, not a running backtest.
+the complete market replay. Production cursor access now requires the same
+run ID and prepared tape hash and a matching pending trade boundary. It checks
+the exact observation, eligibility, and modeled evaluation clock before
+releasing a proof. Other boundaries do not advance the cursor. This is proof
+routing, not a running backtest.
 The plan can now test a run-pinned replay event against those ranges by SIP
 time with a half-open boundary. Strategy 350 account decisions bind the plan
 identity in historical mode and a sealed selected bucket in live mode.

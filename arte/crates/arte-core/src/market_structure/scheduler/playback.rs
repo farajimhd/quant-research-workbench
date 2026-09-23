@@ -277,6 +277,9 @@ impl Playback {
     pub fn run_id(&self) -> &str {
         &self.scheduler.run_id
     }
+    pub fn prepared_hash(&self) -> &str {
+        self.prepared.hash()
+    }
     pub fn scope(&self) -> Scope {
         self.scheduler.scope()
     }

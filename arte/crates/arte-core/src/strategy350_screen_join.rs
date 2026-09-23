@@ -107,7 +107,35 @@ impl HistoricalRefinement<'_, '_> {
     pub fn remaining(&self) -> usize {
         self.positions.len() - self.cursor
     }
-    pub fn next_trade(
+    /// A selected proof becomes visible only at the matching pending market
+    /// boundary of the same pinned run. Other boundaries leave the cursor still.
+    pub fn next_for_pending(
+        &mut self,
+        run: &crate::market_structure::scheduler::playback::accounts::Run,
+    ) -> Result<Option<crate::market_structure::scheduler::playback::sources::HistoricalEventProof>>
+    {
+        if run.run_id() != self.source.run_id()
+            || run.prepared_hash() != self.source.prepared().hash()
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 refinement playback run differs".into(),
+            ));
+        }
+        let boundary = run
+            .pending()?
+            .ok_or_else(|| Error::Unready("Strategy 350 playback boundary absent".into()))?;
+        let Some(&(frame, input)) = self.positions.get(self.cursor) else {
+            return Ok(None);
+        };
+        let proof = self.source.event(frame, input)?;
+        if !matches_pending_trade(&proof, &boundary)? {
+            return Ok(None);
+        }
+        self.cursor += 1;
+        Ok(Some(proof))
+    }
+    #[cfg(test)]
+    fn next_trade_unchecked(
         &mut self,
     ) -> Result<Option<crate::market_structure::scheduler::playback::sources::HistoricalEventProof>>
     {
@@ -118,6 +146,30 @@ impl HistoricalRefinement<'_, '_> {
         self.cursor += 1;
         Ok(Some(proof))
     }
+}
+fn matches_pending_trade(
+    proof: &crate::market_structure::scheduler::playback::sources::HistoricalEventProof,
+    boundary: &crate::market_structure::scheduler::Boundary<'_>,
+) -> Result<bool> {
+    let crate::market_structure::scheduler::Kind::Trade {
+        observation,
+        eligible,
+    } = &boundary.kind
+    else {
+        return Ok(false);
+    };
+    if &observation.key != proof.key() {
+        return Ok(false);
+    }
+    if boundary.evaluated_at_ns != proof.evaluated_at_ns()
+        || *eligible != proof.eligible()
+        || content_hash(*observation)? != proof.event_hash()
+    {
+        return Err(Error::Conflict(
+            "Strategy 350 pending trade differs from run proof".into(),
+        ));
+    }
+    Ok(true)
 }
 impl RefinementPlan {
     pub fn bind_historical<'a, 'p>(
@@ -1245,12 +1297,55 @@ mod tests {
             let mut refinement = plan.bind_historical(&source, 4).unwrap();
             assert_eq!(refinement.plan_hash(), plan.evidence_hash());
             assert_eq!(refinement.remaining(), 3);
-            let first = refinement.next_trade().unwrap().unwrap();
+            let first = refinement.next_trade_unchecked().unwrap().unwrap();
             assert_eq!(first.run_id(), "screen-backtest");
             assert_eq!(first.key().sequence, 1);
-            assert_eq!(refinement.next_trade().unwrap().unwrap().key().sequence, 2);
-            assert_eq!(refinement.next_trade().unwrap().unwrap().key().sequence, 4);
-            assert!(refinement.next_trade().unwrap().is_none());
+            let selected_observation = &prepared.frames()[0].inputs[0].observation;
+            let boundary = crate::market_structure::scheduler::Boundary {
+                id: "selected",
+                sequence: 1,
+                evaluated_at_ns: first.evaluated_at_ns(),
+                kind: crate::market_structure::scheduler::Kind::Trade {
+                    observation: selected_observation,
+                    eligible: true,
+                },
+            };
+            assert!(matches_pending_trade(&first, &boundary).unwrap());
+            let other_observation = &prepared.frames()[0].inputs[1].observation;
+            let other_boundary = crate::market_structure::scheduler::Boundary {
+                id: "other",
+                sequence: 2,
+                evaluated_at_ns: first.evaluated_at_ns(),
+                kind: crate::market_structure::scheduler::Kind::Trade {
+                    observation: other_observation,
+                    eligible: true,
+                },
+            };
+            assert!(!matches_pending_trade(&first, &other_boundary).unwrap());
+            let wrong_boundary = crate::market_structure::scheduler::Boundary {
+                evaluated_at_ns: first.evaluated_at_ns() + 1,
+                ..boundary
+            };
+            assert!(matches_pending_trade(&first, &wrong_boundary).is_err());
+            assert_eq!(
+                refinement
+                    .next_trade_unchecked()
+                    .unwrap()
+                    .unwrap()
+                    .key()
+                    .sequence,
+                2
+            );
+            assert_eq!(
+                refinement
+                    .next_trade_unchecked()
+                    .unwrap()
+                    .unwrap()
+                    .key()
+                    .sequence,
+                4
+            );
+            assert!(refinement.next_trade_unchecked().unwrap().is_none());
         }
         assert!(plan.contains_source_time(scope, S).unwrap());
         assert!(plan.contains_source_time(scope, S + 99_999_999).unwrap());

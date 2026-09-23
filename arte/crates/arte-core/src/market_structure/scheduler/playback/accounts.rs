@@ -77,6 +77,12 @@ impl Run {
     pub fn manifest_hash(&self) -> &str {
         &self.manifest_hash
     }
+    pub fn run_id(&self) -> &str {
+        self.playback.run_id()
+    }
+    pub fn prepared_hash(&self) -> &str {
+        self.playback.prepared_hash()
+    }
     pub fn scopes(&self) -> &[Scope] {
         &self.scopes
     }
