@@ -23,7 +23,14 @@ turns the full contiguous screen interval into sparse half-open ranges for
 exact trade/quote replay, rejecting missing batches and interval-budget
 overflow. Its hash includes every source batch, including negative buckets.
 This is replay routing, not a substitute for causal event, quote, level or
-account evidence, and it is not yet connected to the runnable backtest loader.
+account evidence. After a complete certified source load, the replay-source
+adapter can build a bounded, SIP-ordered index of selected trade or quote
+events. The index borrows original observations without copying payloads, so
+repeated parameter runs can reuse it. It rejects source/certificate scope,
+channel, interval, clock and budget mismatches. It does not selectively skip
+certificate pages or narrow the market/V7 replay. The runnable backtest loop
+does not yet consume this index; that integration and multi-day performance
+measurement remain open.
 The plan can now test a run-pinned replay event against those ranges by SIP
 time with a half-open boundary. Strategy 350 account decisions bind the plan
 identity in historical mode and a sealed selected bucket in live mode.

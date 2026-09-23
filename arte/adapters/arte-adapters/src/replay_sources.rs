@@ -3,7 +3,8 @@
 use arte_core::{
     acquisition::{Certificate, VerifiedCertificate, Verifier},
     event_storage::Batch,
-    events::Observation,
+    events::{EventKind, Observation},
+    strategy350_screen_join::RefinementPlan,
     Error, Result,
 };
 use futures_util::{stream, StreamExt, TryStreamExt};
@@ -40,12 +41,58 @@ pub struct Source {
     observations: Vec<Observation>,
     trade_seconds: Option<arte_core::acquisition::trade_seconds::Index>,
 }
+/// Borrowed exact-refinement view. The full certified source remains intact
+/// for market structure and V7; parameter sweeps reuse this ordered index.
+pub struct RefinementView<'a> {
+    source: &'a Source,
+    indices: Vec<usize>,
+    plan_hash: &'a str,
+}
+impl RefinementView<'_> {
+    pub fn plan_hash(&self) -> &str {
+        self.plan_hash
+    }
+    pub fn len(&self) -> usize {
+        self.indices.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+    pub fn observations(&self) -> impl Iterator<Item = &Observation> {
+        self.indices
+            .iter()
+            .map(|&index| &self.source.observations[index])
+    }
+}
 impl Source {
     pub fn certificate(&self) -> &Certificate {
         self.certificate.certificate()
     }
     pub fn observations(&self) -> &[Observation] {
         &self.observations
+    }
+    pub fn refinement_view<'a>(
+        &'a self,
+        plan: &'a RefinementPlan,
+        kind: EventKind,
+        maximum_selected: usize,
+    ) -> Result<RefinementView<'a>> {
+        let certificate = self.certificate();
+        if certificate.authority.provider != plan.scope().provider
+            || certificate.authority.instrument != plan.scope().instrument
+            || certificate.authority.kind != kind
+            || certificate.interval != plan.source_interval()
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 refinement certificate authority".into(),
+            ));
+        }
+        let indices = plan.selected_source_indices(&self.observations, kind, maximum_selected)?;
+        Ok(RefinementView {
+            source: self,
+            indices,
+            plan_hash: plan.evidence_hash(),
+        })
     }
     pub fn prove_empty_trade_seconds(
         &self,

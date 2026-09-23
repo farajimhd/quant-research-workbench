@@ -203,6 +203,55 @@ impl RefinementPlan {
     ) -> Result<bool> {
         self.contains_source_time(event.scope(), event.source_time_ns())
     }
+    /// Build a reusable sparse index after the complete historical source has
+    /// been certified. This never narrows market/V7 replay or source loading.
+    pub fn selected_source_indices(
+        &self,
+        observations: &[crate::events::Observation],
+        kind: crate::events::EventKind,
+        maximum_selected: usize,
+    ) -> Result<Vec<usize>> {
+        if maximum_selected == 0 || maximum_selected > 10_000_000 {
+            return Err(Error::Capacity(
+                "Strategy 350 refinement event budget".into(),
+            ));
+        }
+        let mut selected = Vec::new();
+        for (index, event) in observations.iter().enumerate() {
+            event.validate()?;
+            let scope = crate::event_order::Scope {
+                provider: event.key.provider,
+                instrument: event.key.instrument,
+                session: event.key.session,
+            };
+            if event.key.kind != kind
+                || event.receipt.is_some()
+                || matches!(
+                    event.payload,
+                    crate::events::Payload::Trade {
+                        correction: Some(_),
+                        ..
+                    }
+                )
+            {
+                return Err(Error::Conflict(
+                    "Strategy 350 refinement source type or clock".into(),
+                ));
+            }
+            if self.contains_source_time(scope, event.sip.ns)? {
+                if selected.len() == maximum_selected {
+                    return Err(Error::Capacity("Strategy 350 selected events".into()));
+                }
+                selected.push(index);
+            }
+        }
+        selected.sort_unstable_by(|&left, &right| {
+            let a = &observations[left];
+            let b = &observations[right];
+            (a.sip.ns, a.key.sequence, &a.key).cmp(&(b.sip.ns, b.key.sequence, &b.key))
+        });
+        Ok(selected)
+    }
     fn contains_source_time(&self, scope: crate::event_order::Scope, at: u64) -> Result<bool> {
         if scope != self.scope || at < self.source_interval.start || at >= self.source_interval.end
         {
@@ -955,6 +1004,59 @@ mod tests {
         assert_eq!(plan.intervals()[1].start, S + 200_000_000);
         assert_eq!(plan.intervals()[1].end, S + 300_000_000);
         assert_eq!(plan.evidence_hash().len(), 64);
+        let observation = |sequence: u64, at: u64| crate::events::Observation {
+            key: crate::events::EventKey {
+                provider: scope.provider,
+                instrument: scope.instrument,
+                session: scope.session,
+                kind: crate::events::EventKind::Trade,
+                sequence,
+            },
+            payload: crate::events::Payload::Trade {
+                price: crate::events::Decimal {
+                    atoms: 100,
+                    scale: 2,
+                },
+                size: crate::events::Decimal { atoms: 1, scale: 0 },
+                exchange: 1,
+                trade_id: sequence.to_string(),
+                trf: None,
+                conditions: vec![],
+                correction: None,
+            },
+            sip: crate::events::SourceTime {
+                ns: at,
+                precision_ns: 1,
+            },
+            participant: None,
+            available_at_ns: at + 1,
+            receipt: None,
+        };
+        let source = vec![
+            observation(4, S + 210_000_000),
+            observation(3, S + 110_000_000),
+            observation(2, S + 10_000_000),
+            observation(1, S + 10_000_000),
+        ];
+        assert_eq!(
+            plan.selected_source_indices(&source, crate::events::EventKind::Trade, 3)
+                .unwrap(),
+            vec![3, 2, 0]
+        );
+        assert!(plan
+            .selected_source_indices(&source, crate::events::EventKind::Trade, 2)
+            .is_err());
+        let mut live = source.clone();
+        live[0].receipt = Some(crate::events::Receipt {
+            run_id: "live".into(),
+            lane: 1,
+            sequence: 1,
+            utc_ns: live[0].available_at_ns,
+            monotonic_ns: 1,
+        });
+        assert!(plan
+            .selected_source_indices(&live, crate::events::EventKind::Trade, 3)
+            .is_err());
         assert!(plan.contains_source_time(scope, S).unwrap());
         assert!(plan.contains_source_time(scope, S + 99_999_999).unwrap());
         assert!(!plan.contains_source_time(scope, S + 100_000_000).unwrap());
