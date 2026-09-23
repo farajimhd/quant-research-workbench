@@ -130,7 +130,9 @@ def publish_retained_snapshot(client: ClickHouseHttpClient, database: str, sourc
     if int(observed["n"]) != int(evidence["n"]) or int(observed["source_hash"]) != int(evidence["source_hash"]):
         raise RuntimeError(f"{source_day}: snapshot copy failed integrity check; certificate withheld")
     if not existing or existing[0]["snapshot_id"] != snapshot_id or existing[0]['revision'] != REVISION:
-        client.execute(f"""INSERT INTO {database}.{COVERAGE} VALUES
+        client.execute(f"""INSERT INTO {database}.{COVERAGE}
+            (session_date,snapshot_id,source_universe_date,captured_at_utc,cutoff_utc,
+             available_at_utc,row_count,tradable_count,source_hash,revision,status,certified_at_utc) VALUES
             (toDate({sql_literal(session)}),{sql_literal(snapshot_id)},toDate({sql_literal(source_day)}),
              toDateTime64({sql_literal(captured.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3])},3,'UTC'),
              toDateTime64({sql_literal(cutoff.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3])},3,'UTC'),
@@ -155,7 +157,9 @@ def record_missing_sessions(client: ClickHouseHttpClient, database: str, start: 
     missing = [day for day in sessions if day not in known and session_cutoff(day) < now]
     for day in missing:
         cutoff = session_cutoff(day).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        client.execute(f"""INSERT INTO {database}.{COVERAGE} VALUES
+        client.execute(f"""INSERT INTO {database}.{COVERAGE}
+            (session_date,snapshot_id,source_universe_date,captured_at_utc,cutoff_utc,
+             available_at_utc,row_count,tradable_count,source_hash,revision,status,certified_at_utc) VALUES
             (toDate({sql_literal(day)}),'',toDate({sql_literal(day)}),
              toDateTime64('1970-01-01 00:00:00.000',3,'UTC'),
              toDateTime64({sql_literal(cutoff)},3,'UTC'),

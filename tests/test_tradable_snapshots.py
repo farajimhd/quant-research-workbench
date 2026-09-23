@@ -39,6 +39,13 @@ class SnapshotFixture(unittest.TestCase):
                 inserted_at DateTime64(3,'UTC')) ENGINE=ReplacingMergeTree(inserted_at)
                 PARTITION BY toYYYYMM(universe_date) ORDER BY (universe_date,ticker,listing_id)
                 SETTINGS storage_policy='live_market_ssd' ''')
+            client.execute(f'''CREATE TABLE {db}.{S.COVERAGE} (
+                session_date Date,snapshot_id String,source_universe_date Date,
+                captured_at_utc DateTime64(3,'UTC'),cutoff_utc DateTime64(3,'UTC'),
+                row_count UInt64,tradable_count UInt64,source_hash UInt64,
+                revision String,status LowCardinality(String),certified_at_utc DateTime64(3,'UTC'))
+                ENGINE=ReplacingMergeTree(certified_at_utc) PARTITION BY toYYYYMM(session_date)
+                ORDER BY session_date SETTINGS storage_policy='live_market_ssd' ''')
             client.execute(f'''INSERT INTO {db}.feature_tradable_universe_v1 VALUES
                 ('2026-08-29','AAA','s1','l1','sec1',1,NULL,'retained',toDateTime64('2026-08-29 02:31:14.300',3,'UTC')),
                 ('2026-08-29','BBB','s2','l2','sec2',0,'inactive_listing','retained',toDateTime64('2026-08-29 02:31:14.300',3,'UTC'))''')
