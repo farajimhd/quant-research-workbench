@@ -119,6 +119,12 @@ impl<S: StateContract> Accounts<S> {
             slot.runtime
                 .committed_state()
                 .validate_for(&slot.effective)?;
+            slot.runtime
+                .committed_state()
+                .require_owner(slot.runtime.scope())?;
+            slot.runtime
+                .committed_state()
+                .require_market_scope(run.market_scope())?;
             let due = run.is_due(slot.runtime.scope())?;
             let needs = run.needs_decision(slot.runtime.scope())?;
             let current = slot
@@ -326,6 +332,10 @@ impl<S: StateContract + DeserializeOwned> Accounts<S> {
                 rows,
             )?;
             runtime.committed_state().validate_for(&effective)?;
+            runtime.committed_state().require_owner(scope)?;
+            runtime
+                .committed_state()
+                .require_market_scope(run.market_scope())?;
             if let Some(batch) = runtime.pending_batch() {
                 if cut.is_some() {
                     return Err(Error::Conflict(

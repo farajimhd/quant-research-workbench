@@ -53,6 +53,7 @@ pub mod strategy350_initial_stop;
 pub mod strategy350_macd;
 pub mod strategy350_noise;
 pub mod strategy350_price_gate;
+pub mod strategy350_reentry;
 pub mod strategy350_screen_join;
 pub mod strategy350_session;
 pub mod strategy350_signal;

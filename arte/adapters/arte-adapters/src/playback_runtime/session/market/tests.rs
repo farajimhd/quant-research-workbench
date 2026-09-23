@@ -365,6 +365,13 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
             maximum_levels: 1_000,
             fallback_percent: 1,
         },
+        reentry: arte_core::strategy350_reentry::Config {
+            execution_interval: ExecutionInterval::Events,
+            price_scale: 2,
+            trade_policy_hash: "a".repeat(64),
+            rapid_window_ns: 10_000_000_000,
+            target_candle_ns: 1_000_000_000,
+        },
         level_book_config_hash: "1".repeat(64),
         rule_set_hash: "2".repeat(64),
         account_risk_hash: "3".repeat(64),

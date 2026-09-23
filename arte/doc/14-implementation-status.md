@@ -4813,3 +4813,18 @@ pins structural and level inputs and is bound to the effective strategy's
 initial-stop and noise configurations. Offline tests cover fallback behavior,
 stale or future inputs and the cap. This does not yet create a journaled entry,
 broker bracket or executable full evaluator. No service ran.
+
+Strategy 350 now has an event-cadence, account-owned reentry state. An actual
+entry fill starts a position. Eligible canonical trades maintain its high.
+Entry/add and exit fills maintain filled quantity; only a flat exit freezes the
+prior resistance ID, high and close clock. Any target fill blocks reentry for
+the remainder of its exact one-second candle. A recent close or the same
+resistance then requires a trade to cross the prior high from at or below it.
+The state is embedded in the concrete account journal image and checked
+against run, account, instrument, market session and effective configuration
+at playback and recovery boundaries. Offline tests cover partial target fills,
+same-resistance reentry after the rapid window and semantic recovery rejection.
+The full evaluator still must bind the proposed resistance ID and every other
+entry condition to causal evidence; external portfolio reconciliation must
+also confirm the fill-derived quantity. This is not order authority. No
+service ran.

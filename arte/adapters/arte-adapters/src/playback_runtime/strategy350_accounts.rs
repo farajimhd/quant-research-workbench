@@ -39,6 +39,8 @@ pub struct Outcome {
 pub trait StateContract: Clone + Serialize {
     fn validate_for(&self, effective: &Config) -> Result<()>;
     fn validate_hot(&self, effective: &Config) -> Result<()>;
+    fn require_owner(&self, scope: &arte_core::strategy_dispatch::Scope) -> Result<()>;
+    fn require_market_scope(&self, scope: arte_core::event_order::Scope) -> Result<()>;
 }
 impl StateContract for arte_core::strategy350_account_state::State {
     fn validate_for(&self, effective: &Config) -> Result<()> {
@@ -46,6 +48,12 @@ impl StateContract for arte_core::strategy350_account_state::State {
     }
     fn validate_hot(&self, effective: &Config) -> Result<()> {
         self.validate_quick(effective)
+    }
+    fn require_owner(&self, scope: &arte_core::strategy_dispatch::Scope) -> Result<()> {
+        arte_core::strategy350_account_state::State::require_owner(self, scope)
+    }
+    fn require_market_scope(&self, scope: arte_core::event_order::Scope) -> Result<()> {
+        arte_core::strategy350_account_state::State::require_market_scope(self, scope)
     }
 }
 
@@ -55,6 +63,12 @@ impl StateContract for u64 {
         Ok(())
     }
     fn validate_hot(&self, _effective: &Config) -> Result<()> {
+        Ok(())
+    }
+    fn require_owner(&self, _scope: &arte_core::strategy_dispatch::Scope) -> Result<()> {
+        Ok(())
+    }
+    fn require_market_scope(&self, _scope: arte_core::event_order::Scope) -> Result<()> {
         Ok(())
     }
 }
@@ -129,6 +143,7 @@ impl<S: StateContract> Accounts<S> {
                 Error::Unready("Strategy 350 initial account state missing".into())
             })?;
             state.validate_for(&effective)?;
+            state.require_owner(&scope)?;
             if slots
                 .insert(
                     key,
@@ -280,11 +295,15 @@ impl<S: StateContract> Accounts<S> {
             .ok_or_else(|| Error::Invalid("Strategy 350 account scope missing".into()))?;
         if !view.needs_decision(slot.runtime.scope())?
             || request.effective.hash()? != slot.effective.hash()?
+            || request.source.scope() != view.market_scope()
         {
             return Err(Error::Conflict(
                 "Strategy 350 account decision differs".into(),
             ));
         }
+        slot.runtime
+            .committed_state()
+            .require_market_scope(view.market_scope())?;
         if !boundary.due_for(slot.route) {
             return Err(Error::Unready(
                 "Strategy 350 decision boundary is outside declared interval".into(),
@@ -416,6 +435,13 @@ mod tests {
                 maximum_levels: 1_000,
                 fallback_percent: 1,
             },
+            reentry: arte_core::strategy350_reentry::Config {
+                execution_interval: ExecutionInterval::Events,
+                price_scale: 2,
+                trade_policy_hash: "a".repeat(64),
+                rapid_window_ns: 10_000_000_000,
+                target_candle_ns: 1_000_000_000,
+            },
             level_book_config_hash: "1".repeat(64),
             rule_set_hash: "2".repeat(64),
             account_risk_hash: "3".repeat(64),
@@ -515,7 +541,20 @@ mod tests {
             configs.insert(key.clone(), effective());
             states.insert(
                 key,
-                arte_core::strategy350_account_state::State::new(&effective(), true).unwrap(),
+                arte_core::strategy350_account_state::State::new(
+                    &effective(),
+                    true,
+                    arte_core::event_order::Scope {
+                        provider: 1,
+                        instrument: 10,
+                        session: 20260922,
+                    },
+                    account.into(),
+                    "strategy-350-offline".into(),
+                    1_000_000_000,
+                    100_000_000_000,
+                )
+                .unwrap(),
             );
         }
         let accounts = Accounts::new(&manifest, 10, configs.clone(), states.clone(), 4096).unwrap();
@@ -525,7 +564,20 @@ mod tests {
         changed.target_progress.maximum_distinct_levels += 1;
         states.insert(
             first,
-            arte_core::strategy350_account_state::State::new(&changed, true).unwrap(),
+            arte_core::strategy350_account_state::State::new(
+                &changed,
+                true,
+                arte_core::event_order::Scope {
+                    provider: 1,
+                    instrument: 10,
+                    session: 20260922,
+                },
+                "first".into(),
+                "strategy-350-offline".into(),
+                1_000_000_000,
+                100_000_000_000,
+            )
+            .unwrap(),
         );
         assert!(Accounts::new(&manifest, 10, configs, states, 4096).is_err());
     }

@@ -4,11 +4,12 @@
 use crate::{
     content_hash, execution_interval::ExecutionInterval, strategy350_gap::Config as GapConfig,
     strategy350_initial_stop::Config as InitialStopConfig,
+    strategy350_reentry::Config as ReentryConfig,
     strategy350_targets::Config as TargetProgressConfig, Error, Result,
 };
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: &str = "arte.strategy-350-effective.v4";
+pub const VERSION: &str = "arte.strategy-350-effective.v5";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,6 +24,7 @@ pub struct Config {
     pub bos_config_hash: String,
     pub target_progress: TargetProgressConfig,
     pub initial_stop: InitialStopConfig,
+    pub reentry: ReentryConfig,
     pub level_book_config_hash: String,
     pub rule_set_hash: String,
     pub account_risk_hash: String,
@@ -54,6 +56,7 @@ impl Config {
         self.gap.hash()?;
         self.target_progress.hash()?;
         self.initial_stop.hash()?;
+        self.reentry.hash()?;
         if [
             &self.signal_config_hash,
             &self.screen_config_hash,
@@ -137,6 +140,15 @@ impl Config {
         if self.initial_stop.hash()? != configuration_hash {
             return Err(Error::Conflict(
                 "Strategy 350 initial-stop configuration differs".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn require_reentry(&self, configuration_hash: &str) -> Result<()> {
+        if self.reentry.hash()? != configuration_hash {
+            return Err(Error::Conflict(
+                "Strategy 350 reentry configuration differs".into(),
             ));
         }
         Ok(())
@@ -226,6 +238,13 @@ pub(crate) fn test_config(execution_interval: ExecutionInterval) -> Config {
             maximum_levels: 1_000,
             fallback_percent: 1,
         },
+        reentry: ReentryConfig {
+            execution_interval: ExecutionInterval::Events,
+            price_scale: 2,
+            trade_policy_hash: "a".repeat(64),
+            rapid_window_ns: 10_000_000_000,
+            target_candle_ns: 1_000_000_000,
+        },
         level_book_config_hash: "1".repeat(64),
         rule_set_hash: "2".repeat(64),
         account_risk_hash: "3".repeat(64),
@@ -256,6 +275,9 @@ mod tests {
         assert_ne!(changed.hash().unwrap(), hash);
         changed = base.clone();
         changed.initial_stop.fallback_percent = 5;
+        assert_ne!(changed.hash().unwrap(), hash);
+        changed = base.clone();
+        changed.reentry.price_scale += 1;
         assert_ne!(changed.hash().unwrap(), hash);
         changed = base.clone();
         changed.watchlist_config_hash = Some("5".repeat(64));
