@@ -15,6 +15,7 @@ pub mod config;
 pub mod coverage;
 pub mod decision_orders;
 pub mod dependency_plan;
+pub mod event_boolean;
 pub mod event_order;
 pub mod event_storage;
 pub mod events;

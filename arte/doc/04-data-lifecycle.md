@@ -76,6 +76,15 @@ and streaming digest. Readback expands the changes to the complete 100 ms grid.
 An absent transition means carry forward only after the digest and coverage
 are verified. Unknown remains distinct from false. Event-cadence products need
 a separate event-evaluation record; they cannot use this sparse inference.
+The shared event-cadence Boolean builder now records an evaluation digest for
+every trade or quote boundary, including unchanged values, while retaining
+only state transitions in memory. It seals only against an independently
+supplied expected boundary count and source digest. The caller must derive
+that expectation from a verified event source or causal playback ledger;
+the builder's own observations are not independent coverage evidence.
+The source digest includes the scheduler's trade-eligibility result, so a
+different eligibility policy cannot reuse a source certificate silently.
+ClickHouse publication, readback, and a run-level producer remain unfinished.
 
 ClickHouse is the sole durable store for backtest spools, run evidence, and
 operational logs. Use compact typed records and measured compression. SQLite

@@ -90,8 +90,19 @@ grid against its certified 100 ms bar source. It preserves unknown versus
 false and enters the sparse publication preparation path. The compact-bar
 signal and Watchlist catalogue rejects event-cadence definitions:
 its dense bucket readback cannot certify that an event-driven calculation ran
-at each causal event. Event-cadence Boolean products require a separate
-event-backed contract and implementation; no implicit bar approximation is allowed.
+at each causal event. Event-cadence Boolean products use a separate
+event-backed contract; no implicit bar approximation is allowed.
+The first event-backed Boolean contract now consumes the shared scheduler's
+event boundaries with the declared `events` interval. It rejects wrong scope,
+clocks, duplicate boundary sequence and capacity overflow. Each event enters
+the source and evaluation digests even when the Boolean state does not change;
+only transitions are retained, under separate event and transition budgets.
+The half-open source interval and scope are part of the digest domain. Seal
+requires an independently supplied source
+count and digest. Offline unit tests cover matching and mismatched source
+evidence, repeated boundaries, interval bounds, budgets and wrong cadence.
+Durable ClickHouse publication,
+source-ledger binding, recovery and live/backtest producer wiring remain undone.
 The first Strategy
 350 Early Squeeze historical formula and first-occurrence session latch now
 feed that path. The formula uses exact close-ratio, trade-count, and volume
