@@ -115,6 +115,7 @@ impl HistoricalRefinement<'_, '_> {
     ) -> Result<Option<crate::market_structure::scheduler::playback::sources::HistoricalEventProof>>
     {
         if run.run_id() != self.source.run_id()
+            || run.manifest_hash() != self.source.manifest_hash()
             || run.prepared_hash() != self.source.prepared().hash()
         {
             return Err(Error::Conflict(
@@ -1299,7 +1300,17 @@ mod tests {
             assert_eq!(refinement.remaining(), 3);
             let first = refinement.next_trade_unchecked().unwrap().unwrap();
             assert_eq!(first.run_id(), "screen-backtest");
+            assert_eq!(first.manifest_hash(), pinned.hash());
             assert_eq!(first.key().sequence, 1);
+            let mut changed = manifest.clone();
+            changed.consumers[0].effective_config_hash = "5".repeat(64);
+            let changed_pinned = Pinned::new(changed.clone(), &changed.hash().unwrap()).unwrap();
+            let changed_source = catalog.bind_historical(&changed_pinned, &prepared).unwrap();
+            assert_ne!(source.manifest_hash(), changed_source.manifest_hash());
+            assert_ne!(
+                first.identity_hash().unwrap(),
+                changed_source.event(0, 0).unwrap().identity_hash().unwrap()
+            );
             let selected_observation = &prepared.frames()[0].inputs[0].observation;
             let boundary = crate::market_structure::scheduler::Boundary {
                 id: "selected",

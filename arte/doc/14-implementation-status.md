@@ -42,6 +42,12 @@ run ID and prepared tape hash and a matching pending trade boundary. It checks
 the exact observation, eligibility, and modeled evaluation clock before
 releasing a proof. Other boundaries do not advance the cursor. This is proof
 routing, not a running backtest.
+The proof identity now also binds the full pinned run manifest hash (domain
+v2). Reusing a run ID and tape with a changed strategy configuration cannot
+reuse an old proof. The playback controller exposes the cursor only through
+its decision view, after fill publication and boundary dispatch; it rejects
+runs without a Strategy 350 consumer. The full Strategy 350 evaluator and
+account fan-out are still not connected.
 The plan can now test a run-pinned replay event against those ranges by SIP
 time with a half-open boundary. Strategy 350 account decisions bind the plan
 identity in historical mode and a sealed selected bucket in live mode.

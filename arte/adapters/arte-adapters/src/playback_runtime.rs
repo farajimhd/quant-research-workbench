@@ -133,6 +133,24 @@ impl Runtime {
         }
         Ok(&self.run)
     }
+    /// Expose a selected modeled trade only after the controller has dispatched
+    /// its boundary and published all position-changing fills.
+    pub fn selected_strategy350_trade(
+        &self,
+        refinement: &mut arte_core::strategy350_screen_join::HistoricalRefinement<'_, '_>,
+    ) -> Result<
+        Option<arte_core::market_structure::scheduler::playback::sources::HistoricalEventProof>,
+    > {
+        let run = self.decision_view()?;
+        if !run.scopes().iter().any(|scope| {
+            scope.strategy_kind == arte_core::strategy_dispatch::StrategyKind::Strategy350
+        }) {
+            return Err(Error::Conflict(
+                "Strategy 350 consumer absent from playback run".into(),
+            ));
+        }
+        refinement.next_for_pending(run)
+    }
     pub async fn commit_fills(&mut self, publisher: &mut impl Publisher) -> Result<bool> {
         self.execution.commit_next(publisher).await
     }

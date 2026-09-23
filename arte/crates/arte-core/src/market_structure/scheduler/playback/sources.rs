@@ -34,6 +34,7 @@ pub struct Catalog {
 /// not turn REST acquisition time into a measured live receive timestamp.
 pub struct HistoricalEventProof {
     run_id: String,
+    manifest_hash: String,
     scope: Scope,
     key: EventKey,
     event_hash: String,
@@ -49,10 +50,14 @@ pub struct HistoricalSource<'a> {
     prepared: &'a Prepared,
     catalog_hash: String,
     run_id: String,
+    manifest_hash: String,
 }
 impl HistoricalEventProof {
     pub fn run_id(&self) -> &str {
         &self.run_id
+    }
+    pub fn manifest_hash(&self) -> &str {
+        &self.manifest_hash
     }
     pub fn scope(&self) -> Scope {
         self.scope
@@ -77,8 +82,9 @@ impl HistoricalEventProof {
     }
     pub fn identity_hash(&self) -> Result<String> {
         content_hash(&(
-            "arte.historical-event-proof.v1",
+            "arte.historical-event-proof.v2",
             self.run_id.as_str(),
+            self.manifest_hash.as_str(),
             self.prepared_hash.as_str(),
             self.catalog_hash.as_str(),
             &self.key,
@@ -115,12 +121,16 @@ impl Catalog {
             prepared,
             catalog_hash: self.hash()?,
             run_id: manifest.manifest().run_id.clone(),
+            manifest_hash: manifest.hash().into(),
         })
     }
 }
 impl HistoricalSource<'_> {
     pub fn run_id(&self) -> &str {
         &self.run_id
+    }
+    pub fn manifest_hash(&self) -> &str {
+        &self.manifest_hash
     }
     pub fn prepared(&self) -> &Prepared {
         self.prepared
@@ -148,6 +158,7 @@ impl HistoricalSource<'_> {
         }
         Ok(HistoricalEventProof {
             run_id: self.run_id.clone(),
+            manifest_hash: self.manifest_hash.clone(),
             scope: self.prepared.scope,
             key: event.key.clone(),
             event_hash: content_hash(event)?,
