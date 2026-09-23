@@ -42,11 +42,11 @@ _NEW_YORK = ZoneInfo("America/New_York")
 
 
 def market_day_boundary(session_date: date | str, boundary_ms: int) -> datetime:
-    """Decode the persisted bucket clock, whose origin is midnight New York."""
+    """Decode the persisted bucket clock, whose origin is 04:00 New York."""
     day = date.fromisoformat(session_date) if isinstance(session_date, str) else session_date
-    if not 14_400_000 <= boundary_ms <= 72_000_000:
+    if not 0 <= boundary_ms <= 57_600_000:
         raise ValueError("Market-day boundary must be within 04:00-20:00 New York")
-    return datetime.combine(day, time.min, tzinfo=_NEW_YORK) + timedelta(
+    return datetime.combine(day, time(4), tzinfo=_NEW_YORK) + timedelta(
         milliseconds=boundary_ms
     )
 

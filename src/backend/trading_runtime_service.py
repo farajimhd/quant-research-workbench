@@ -1788,6 +1788,34 @@ def historical_bar_history_before(
         row_limit=row_limit,
         full_session=full_session,
     )
+    from src.backend.arte_chart_reader import chart_page
+    persisted = chart_page(
+        session=resolved_session_date, ticker=resolved_ticker,
+        timeframe=resolved_timeframe, page_start=page_start, page_end=page_end,
+        row_limit=row_limit, stage=stage, indicator_columns=indicator_columns,
+        include_market_signals=include_market_signals,
+        include_structure=include_structure,
+        allow_persisted_bars=allow_persisted_bars, mode=mode,
+    )
+    if persisted is not None:
+        bars = persisted["bars"]
+        within_session = bool(persisted["has_more"] or has_earlier_window)
+        return {
+            "ticker": resolved_ticker, "timeframe": resolved_timeframe,
+            "history": bars, "indicators": persisted["indicators"],
+            "market_signal_events": [], "structure_events": [],
+            "structure_level_history": [],
+            "indicator_provenance": persisted["indicator_provenance"],
+            "indicators_available": bool(persisted["indicators"]),
+            "earliest_session_date": session_date_text if bars else "",
+            "has_more": within_session or bool(session_date_text),
+            "has_more_in_session": within_session,
+            "next_before": (persisted["next_before"] if persisted["has_more"]
+                            else page_start.isoformat() if has_earlier_window else ""),
+            "previous_session_before": "" if within_session else session_date_text,
+            "as_of": resolved_as_of.isoformat(), "source": persisted["source"],
+            "stage": stage,
+        }
     snapshot = qmd_product_request(
         QmdProductRequest(
             "chart",

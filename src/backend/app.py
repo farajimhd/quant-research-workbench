@@ -6374,11 +6374,21 @@ def trading_canvas_live_chart_history(
                     'indicators_available': True, 'market_signal_events': base.get('market_signal_events', []), 'structure_events': [],
                     'structure_level_history': [], 'indicator_provenance': {'authority': 'clickhouse-closing-book-1',
                     'database': build_id, 'fingerprint': controller.definition.experimental_structure_fingerprint}})
+        arte_revision = ""
+        if session_date:
+            from src.backend.arte_chart_reader import chart_revision
+            arte_revision = chart_revision(
+                date.fromisoformat(session_date), ticker, timeframe,
+                stage=stage, indicator_columns=projected_columns,
+                include_market_signals=include_market_signals,
+                include_structure=include_structure,
+                allow_persisted_bars=allow_persisted_bars, mode=mode,
+            )
         cache_key = (
             ticker, timeframe, before or "", session_date or "", as_of or "",
             before_bar or "", tuple(projected_columns or ()), allow_persisted_bars, include_market_signals,
             include_structure, stage, mode, row_limit,
-            full_session,
+            full_session, arte_revision,
         )
         return with_relative_volume(_CANVAS_CHART_HISTORY_CACHE.get_or_load(
             cache_key,
