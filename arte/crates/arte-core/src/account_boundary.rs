@@ -146,6 +146,7 @@ pub(crate) mod tests {
             account: account.into(),
             strategy_instance: "s".into(),
             strategy_kind: crate::strategy_dispatch::StrategyKind::GenericCandidate,
+            execution_interval: crate::execution_interval::ExecutionInterval::Fixed(1_000_000_000),
             instrument: 1,
             code_hash: "c".into(),
             config_hash: "f".into(),

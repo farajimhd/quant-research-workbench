@@ -817,6 +817,7 @@ mod tests {
             account: "first".into(),
             strategy_instance: "renamed-350".into(),
             strategy_kind: StrategyKind::Strategy350,
+            execution_interval: crate::execution_interval::ExecutionInterval::Fixed(100_000_000),
             instrument: 10,
             code_hash: "a".repeat(64),
             config_hash: "b".repeat(64),

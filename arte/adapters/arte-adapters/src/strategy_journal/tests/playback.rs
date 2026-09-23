@@ -412,7 +412,7 @@ fn run_configured_fixture(
         minimum_per_fill_minor: 2,
     };
     let m = Manifest {
-        schema_version: 2,
+        schema_version: 3,
         run_id: "run".into(),
         mode: Mode::Backtest,
         code_release_hash: "a".repeat(64),
@@ -438,6 +438,9 @@ fn run_configured_fixture(
             instrument: 1,
             strategy_instance: strategy.into(),
             strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
+            execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                1_000_000_000,
+            ),
             effective_config_hash: if features {
                 let config = policies::config(account);
                 let state = arte_core::candidate_features::State::new(

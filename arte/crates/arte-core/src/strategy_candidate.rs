@@ -822,6 +822,9 @@ mod tests {
                     account: "a".into(),
                     strategy_instance: "v7".into(),
                     strategy_kind: crate::strategy_dispatch::StrategyKind::GenericCandidate,
+                    execution_interval: crate::execution_interval::ExecutionInterval::Fixed(
+                        1_000_000_000,
+                    ),
                     instrument: 1,
                     code_hash: "pinned".into(),
                     config_hash: crate::candidate_runtime::configuration_hash(

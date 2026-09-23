@@ -1,5 +1,6 @@
 //! Shared Live/Paper/Backtest decision envelope and exit-first arbitration.
 //! No mode owns broker capability here. All returned actions remain domain intents.
+use crate::execution_interval::ExecutionInterval;
 use crate::strategy_lifecycle::Phase;
 use crate::{content_hash, Error, Result};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,7 @@ pub struct Scope {
     pub account: String,
     pub strategy_instance: String,
     pub strategy_kind: StrategyKind,
+    pub execution_interval: ExecutionInterval,
     pub instrument: u64,
     pub code_hash: String,
     pub config_hash: String,
@@ -133,6 +135,7 @@ impl State {
         &self.scope
     }
     pub fn new(scope: Scope) -> Result<Self> {
+        scope.execution_interval.validate()?;
         if [
             &scope.run_id,
             &scope.account,
@@ -268,7 +271,7 @@ impl State {
         })?;
         let decision_id = content_hash(&(&self.scope, &input, safety, &actions, &evidence_hash))?;
         let decision = Decision {
-            schema_version: 1,
+            schema_version: 2,
             decision_id,
             sequence,
             scope: self.scope.clone(),
@@ -294,6 +297,7 @@ mod tests {
             account: "a".into(),
             strategy_instance: "s".into(),
             strategy_kind: StrategyKind::GenericCandidate,
+            execution_interval: crate::execution_interval::ExecutionInterval::Fixed(1_000_000_000),
             instrument: 1,
             code_hash: "code".into(),
             config_hash: "config".into(),

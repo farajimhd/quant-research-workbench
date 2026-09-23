@@ -88,7 +88,7 @@ fn test_simulation_costs(run_id: &str) -> arte_core::simulation_costs::Pinned {
     };
     let hash = "a".repeat(64);
     let manifest = Manifest {
-        schema_version: 2,
+        schema_version: 3,
         run_id: run_id.into(),
         mode: Mode::Backtest,
         code_release_hash: hash.clone(),
@@ -110,6 +110,9 @@ fn test_simulation_costs(run_id: &str) -> arte_core::simulation_costs::Pinned {
                 instrument: 1,
                 strategy_instance: "s".into(),
                 strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
+                execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                    1_000_000_000,
+                ),
                 effective_config_hash: hash.clone(),
             })
             .collect(),

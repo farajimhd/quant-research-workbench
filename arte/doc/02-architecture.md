@@ -67,6 +67,9 @@ strategy may consume 100 ms bars but evaluate on every eligible event, or a
 signal stream may evaluate only at completed bar boundaries. No definition may
 inherit an interval from its source or scheduler default. The interval is part
 of the definition and plan identity. Missing or invalid intervals fail planning.
+Each run consumer also pins its strategy interval. The same value is carried
+into its account decision scope and durable journal identity; changing it
+requires a new run manifest and cannot reuse prior decisions.
 For fixed intervals, dispatch only on a completed aligned boundary that has
 not already been dispatched. Historical replay and live use the same declared
 interval; different source availability can still change which causal operands

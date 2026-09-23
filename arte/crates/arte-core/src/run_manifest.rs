@@ -2,6 +2,7 @@
 //! A manifest is not a trading permission or proof of strategy acceptance.
 use crate::{
     content_hash,
+    execution_interval::ExecutionInterval,
     strategy_dispatch::{Mode, Scope, StrategyKind},
     Error, Result,
 };
@@ -35,6 +36,7 @@ pub struct Consumer {
     pub instrument: u64,
     pub strategy_instance: String,
     pub strategy_kind: StrategyKind,
+    pub execution_interval: ExecutionInterval,
     pub effective_config_hash: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,7 +105,7 @@ impl Pinned {
 }
 impl Manifest {
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != 2
+        if self.schema_version != 3
             || !name_valid(&self.run_id)
             || self.consumers.is_empty()
             || self.consumers.len() > 100_000
@@ -148,6 +150,7 @@ impl Manifest {
             }
         }
         for consumer in &self.consumers {
+            consumer.execution_interval.validate()?;
             if !name_valid(&consumer.account)
                 || !name_valid(&consumer.strategy_instance)
                 || consumer.instrument == 0
@@ -171,7 +174,7 @@ impl Manifest {
     }
     pub fn hash(&self) -> Result<String> {
         self.validate()?;
-        content_hash(&("arte.run-manifest.v2", self))
+        content_hash(&("arte.run-manifest.v3", self))
     }
     /// Scope fields have one authority; consumers do not repeat run/mode/code pins.
     pub fn scope(&self, account: &str, instrument: u64, strategy: &str) -> Result<Scope> {
@@ -190,6 +193,7 @@ impl Manifest {
             account: consumer.account.clone(),
             strategy_instance: consumer.strategy_instance.clone(),
             strategy_kind: consumer.strategy_kind,
+            execution_interval: consumer.execution_interval,
             instrument,
             code_hash: self.code_release_hash.clone(),
             config_hash: consumer.effective_config_hash.clone(),
@@ -210,7 +214,7 @@ mod tests {
     use super::*;
     pub(super) fn manifest() -> Manifest {
         Manifest {
-            schema_version: 2,
+            schema_version: 3,
             run_id: "run-1".into(),
             mode: Mode::Backtest,
             code_release_hash: "a".repeat(64),
@@ -230,6 +234,9 @@ mod tests {
                 instrument: 1,
                 strategy_instance: "candidate".into(),
                 strategy_kind: StrategyKind::GenericCandidate,
+                execution_interval: crate::execution_interval::ExecutionInterval::Fixed(
+                    1_000_000_000,
+                ),
                 effective_config_hash: "4".repeat(64),
             }],
         }
@@ -275,6 +282,21 @@ mod tests {
         changed.consumers[0].strategy_kind = StrategyKind::Strategy350;
         assert!(changed.require_scope(&scope).is_err());
         assert_ne!(changed.hash().unwrap(), hash);
+        changed = m.clone();
+        changed.consumers[0].execution_interval = ExecutionInterval::Fixed(100_000_000);
+        assert!(changed.require_scope(&scope).is_err());
+        assert_ne!(changed.hash().unwrap(), hash);
+        changed.consumers[0].execution_interval = ExecutionInterval::Fixed(150_000_000);
+        assert!(changed.validate().is_err());
+        let mut missing_interval = serde_json::to_value(&m).unwrap();
+        missing_interval["consumers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_interval");
+        assert!(serde_json::from_value::<Manifest>(missing_interval).is_err());
+        changed = m.clone();
+        changed.schema_version = 2;
+        assert!(changed.validate().is_err());
         let mut missing_kind = serde_json::to_value(&m).unwrap();
         missing_kind["consumers"][0]
             .as_object_mut()

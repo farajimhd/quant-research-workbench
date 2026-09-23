@@ -439,7 +439,7 @@ fn playback_catalog() -> playback::sources::Catalog {
 fn account_run_manifest() -> crate::run_manifest::Manifest {
     use crate::run_manifest::{Clock, Consumer, Execution, Manifest};
     Manifest {
-        schema_version: 2,
+        schema_version: 3,
         run_id: "causal-offline-test".into(),
         mode: crate::strategy_dispatch::Mode::Backtest,
         code_release_hash: "a".repeat(64),
@@ -461,6 +461,9 @@ fn account_run_manifest() -> crate::run_manifest::Manifest {
                 instrument: 1,
                 strategy_instance: "candidate".into(),
                 strategy_kind: crate::strategy_dispatch::StrategyKind::GenericCandidate,
+                execution_interval: crate::execution_interval::ExecutionInterval::Fixed(
+                    1_000_000_000,
+                ),
                 effective_config_hash: "4".repeat(64),
             })
             .collect(),

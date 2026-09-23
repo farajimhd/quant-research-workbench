@@ -182,6 +182,7 @@ mod tests {
             account: "account".into(),
             strategy_instance: crate::strategy350_catalogue::STRATEGY.into(),
             strategy_kind: StrategyKind::Strategy350,
+            execution_interval: crate::execution_interval::ExecutionInterval::Fixed(100_000_000),
             instrument: 10,
             code_hash: "code".into(),
             config_hash: "config".into(),

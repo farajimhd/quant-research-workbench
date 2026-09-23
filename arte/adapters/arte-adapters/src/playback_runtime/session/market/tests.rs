@@ -72,7 +72,7 @@ pub(crate) fn fixture() -> (Document, Pinned, Catalog, Prepared, Bundle) {
         }],
     };
     let manifest = Manifest {
-        schema_version: 2,
+        schema_version: 3,
         run_id: "market-startup-test".into(),
         mode: strategy_dispatch::Mode::Backtest,
         code_release_hash: "a".repeat(64),
@@ -92,6 +92,9 @@ pub(crate) fn fixture() -> (Document, Pinned, Catalog, Prepared, Bundle) {
             instrument: 1,
             strategy_instance: "strategy".into(),
             strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
+            execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                1_000_000_000,
+            ),
             effective_config_hash: "f".repeat(64),
         }],
     };

@@ -223,6 +223,9 @@ mod tests {
                 instrument: 1,
                 strategy_instance: "s".into(),
                 strategy_kind: crate::strategy_dispatch::StrategyKind::GenericCandidate,
+                execution_interval: crate::execution_interval::ExecutionInterval::Fixed(
+                    1_000_000_000,
+                ),
                 code_hash: "code".into(),
                 config_hash: "config".into(),
             },

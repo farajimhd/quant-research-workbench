@@ -270,7 +270,7 @@ mod tests {
     use crate::run_manifest::{Clock, Consumer, Execution, Manifest};
     pub(super) fn fixture() -> (Portfolio, Pinned, Cut, Limits, SimulatedSettlement) {
         let manifest = Manifest {
-            schema_version: 2,
+            schema_version: 3,
             run_id: "r".into(),
             mode: Mode::Backtest,
             code_release_hash: "a".repeat(64),
@@ -290,6 +290,9 @@ mod tests {
                 instrument: 1,
                 strategy_instance: "s".into(),
                 strategy_kind: crate::strategy_dispatch::StrategyKind::GenericCandidate,
+                execution_interval: crate::execution_interval::ExecutionInterval::Fixed(
+                    1_000_000_000,
+                ),
                 effective_config_hash: "a".repeat(64),
             }],
         };

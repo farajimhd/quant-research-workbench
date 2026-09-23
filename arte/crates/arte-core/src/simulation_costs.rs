@@ -203,7 +203,7 @@ mod tests {
     }
     pub(super) fn run(cost_model_hash: String) -> Run {
         let manifest = Manifest {
-            schema_version: 2,
+            schema_version: 3,
             run_id: "r".into(),
             mode: Mode::Backtest,
             code_release_hash: "a".repeat(64),
@@ -223,6 +223,9 @@ mod tests {
                 instrument: 1,
                 strategy_instance: "s".into(),
                 strategy_kind: crate::strategy_dispatch::StrategyKind::GenericCandidate,
+                execution_interval: crate::execution_interval::ExecutionInterval::Fixed(
+                    1_000_000_000,
+                ),
                 effective_config_hash: "c".repeat(64),
             }],
         };

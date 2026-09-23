@@ -893,6 +893,9 @@ mod tests {
             instrument: 1,
             strategy_instance: "one".into(),
             strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
+            execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                1_000_000_000,
+            ),
             code_hash: "c".into(),
             config_hash: "f".into(),
         };
@@ -986,6 +989,9 @@ mod tests {
             instrument: 1,
             strategy_instance: "one".into(),
             strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
+            execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                1_000_000_000,
+            ),
             code_hash: "c".into(),
             config_hash: "f".into(),
         };
@@ -1031,6 +1037,9 @@ mod tests {
                 instrument: 1,
                 strategy_instance: "s".into(),
                 strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
+                execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                    1_000_000_000,
+                ),
                 code_hash: "code".into(),
                 config_hash: "config".into(),
             },
@@ -1457,6 +1466,9 @@ mod tests {
                 instrument: 1,
                 strategy_instance: "s".into(),
                 strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
+                execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                    1_000_000_000,
+                ),
                 code_hash: "code".into(),
                 config_hash: "config".into(),
             },

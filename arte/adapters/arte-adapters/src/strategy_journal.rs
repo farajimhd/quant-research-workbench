@@ -108,6 +108,9 @@ mod tests {
                 account: account.into(),
                 strategy_instance: "s".into(),
                 strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
+                execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                    1_000_000_000,
+                ),
                 instrument: 1,
                 code_hash: "code".into(),
                 config_hash: "config".into(),

@@ -206,7 +206,7 @@ mod tests {
             strategy_dispatch::Mode,
         };
         Manifest {
-            schema_version: 2,
+            schema_version: 3,
             run_id: "run-1".into(),
             mode: Mode::Backtest,
             code_release_hash: "a".repeat(64),
@@ -226,6 +226,9 @@ mod tests {
                 instrument: 1,
                 strategy_instance: "strategy".into(),
                 strategy_kind: arte_core::strategy_dispatch::StrategyKind::GenericCandidate,
+                execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                    1_000_000_000,
+                ),
                 effective_config_hash: "4".repeat(64),
             }],
         }

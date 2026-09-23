@@ -40,9 +40,12 @@ context or set its completion flag. They can only inspect the context returned
 by the core session builder. The live builder still starts unready; a certified
 live handover remains unimplemented, so this does not permit live entries.
 
-Run manifest schema v2 now pins a strategy kind for each account/instrument
-consumer. The kind propagates into the decision scope and journal identity. The
-generic candidate runtime rejects Strategy 350 before evaluating any boundary.
+Run manifest schema v3 pins both strategy kind and execution interval for each
+account/instrument consumer. Both propagate into the decision scope and journal
+identity. A changed interval changes the run hash and rejects a prior scope;
+missing or invalid intervals fail. Decision journal schema v2 carries the same
+interval. The generic candidate runtime rejects Strategy 350 before evaluating
+any boundary.
 The generic bracket planner rejects Strategy 350 by kind, even when the
 instance is renamed or used in another mode. Missing or changed kinds are
 rejected by the manifest contract. The current playback action path has no
