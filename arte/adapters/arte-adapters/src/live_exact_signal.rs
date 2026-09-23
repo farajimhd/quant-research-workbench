@@ -179,6 +179,47 @@ impl Owner {
     pub fn first_occurrence(&self) -> Option<Occurrence> {
         self.signal.first_occurrence()
     }
+    /// The activation bar is usable only at the scheduler cut that consumed it.
+    /// Later cuts must not reconstruct activation geometry from newer levels.
+    pub fn activation_bar_for_boundary(
+        &self,
+        boundary: &Boundary<'_>,
+    ) -> Result<Option<&ExactBar>> {
+        let Some(occurrence) = self.first_occurrence() else {
+            return Ok(None);
+        };
+        let Kind::Completed {
+            interval_ns: INTERVAL_NS,
+            bar,
+            ..
+        } = &boundary.kind
+        else {
+            return Err(Error::Unready(
+                "Strategy 350 activation bar cut has passed".into(),
+            ));
+        };
+        if self.last_boundary() != (boundary.sequence, Some(boundary.id))
+            || self.last_evaluated_at_ns != boundary.evaluated_at_ns
+            || occurrence.available_at_ns != Some(boundary.evaluated_at_ns)
+            || bar.bar.end_ns != occurrence.event_time_ns
+        {
+            return Err(Error::Unready("Strategy 350 activation cut differs".into()));
+        }
+        let exact = self
+            .last_exact_completed
+            .as_ref()
+            .ok_or_else(|| Error::Unready("Strategy 350 exact activation bar missing".into()))?;
+        if exact.end_ns != occurrence.event_time_ns
+            || exact.start_ns != bar.bar.start_ns
+            || exact.trades != bar.bar.trades
+            || exact.close <= 0
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 activation bar differs".into(),
+            ));
+        }
+        Ok(Some(exact))
+    }
     pub fn noise_distance(&self, entry_atoms: i64) -> Result<strategy350_noise::Distance> {
         self.noise.distance(entry_atoms)
     }
@@ -610,6 +651,10 @@ mod tests {
             },
         };
         assert!(owner.observe(&boundary).unwrap().is_none());
+        assert!(owner
+            .activation_bar_for_boundary(&boundary)
+            .unwrap()
+            .is_none());
         assert!(!owner.forming_macd_for_boundary(&boundary).unwrap().bullish);
         let macd = owner.forming_macd_evidence_for_boundary(&boundary).unwrap();
         assert!(!macd.outcome().bullish);
@@ -753,6 +798,25 @@ mod tests {
         let occurrence = owner.observe(&boundary).unwrap().unwrap();
         assert_eq!(occurrence.event_time_ns, S + 300_000_000);
         assert_eq!(occurrence.available_at_ns, Some(S + 310_000_000));
+        assert_eq!(
+            owner
+                .activation_bar_for_boundary(&boundary)
+                .unwrap()
+                .unwrap()
+                .close,
+            10_005
+        );
+        let late = Boundary {
+            id: "late",
+            sequence: 6,
+            evaluated_at_ns: S + 320_000_000,
+            kind: Kind::Completed {
+                interval_ns: INTERVAL_NS,
+                bar: &completed,
+                available_at_ns: S + 320_000_000,
+            },
+        };
+        assert!(owner.activation_bar_for_boundary(&late).is_err());
         assert_eq!(owner.observe(&boundary).unwrap(), Some(occurrence));
         assert_eq!(owner.last_boundary(), (5, Some("five")));
         let changed = Boundary {

@@ -13,7 +13,11 @@ transition levels between the activation price and four times that price,
 sorts by midpoint and level ID, and records only consecutive inter-level
 gaps. The value validates its geometry before hashing. Offline unit tests
 cover selection, ordering, capacity, future levels and tampering. It has not
-yet been attached to a certified activation snapshot or the account evaluator.
+yet been attached to the account evaluator. The live lane can now derive it
+from the pending exact activation bar and the V7 view at that same cut. It
+rejects a later or already acknowledged cut instead of recomputing with newer
+levels. The caller still must journal this immutable value before acknowledging
+the cut; no entry path consumes it yet.
 Its configuration declares 100 ms signal-boundary cadence and pins the level
 budget.
 The broken-high base selector is now a separate Rust calculation. It prefers

@@ -7,6 +7,7 @@ use arte_core::{
     exposure::Check,
     market::Series,
     market_structure::scheduler::{Boundary, Scheduler},
+    strategy350_gap,
     v7_stream::Level,
     Error, Result,
 };
@@ -139,6 +140,39 @@ impl Lane {
             .as_ref()
             .map(|owner| owner.first_occurrence())
             .ok_or_else(|| Error::Unready("exact signal not bound".into()))
+    }
+    /// Freeze the V7 resistance gaps at the first exact 100 ms squeeze cut.
+    /// The caller must journal this immutable result with the same pending cut
+    /// before acknowledging it. This is not an entry or order permission.
+    pub fn strategy350_activation_gap(
+        &self,
+        config: &strategy350_gap::Config,
+    ) -> Result<Option<strategy350_gap::FrozenGap>> {
+        self.available()?;
+        config.hash()?;
+        let owner = self
+            .exact_signal
+            .as_ref()
+            .ok_or_else(|| Error::Unready("exact Strategy 350 owner not bound".into()))?;
+        if owner.first_occurrence().is_none() {
+            return Ok(None);
+        }
+        let boundary = self.market.pending()?.ok_or_else(|| {
+            Error::Unready("Strategy 350 activation boundary was acknowledged".into())
+        })?;
+        let exact = owner
+            .activation_bar_for_boundary(&boundary)?
+            .ok_or_else(|| Error::Unready("Strategy 350 activation bar missing".into()))?;
+        let reference_price = arte_core::events::Decimal {
+            atoms: exact.close,
+            scale: exact.price_scale,
+        }
+        .to_f64();
+        let levels = self
+            .market
+            .state()?
+            .strategy_levels(exact.end_ns, 100_000)?;
+        strategy350_gap::freeze(&levels, reference_price, exact.end_ns, config).map(Some)
     }
     /// Exact integer Strategy 350 adaptive-distance evidence. This is not an
     /// order admission result; structural stop and bracket checks remain separate.
@@ -984,6 +1018,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(lane.first_squeeze_occurrence().unwrap(), None);
+        assert!(lane
+            .strategy350_activation_gap(&arte_core::strategy350_gap::Config {
+                execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                    100_000_000,
+                ),
+                maximum_levels: 1_000,
+            })
+            .unwrap()
+            .is_none());
         let event = Observation {
             key: EventKey {
                 provider: 1,
