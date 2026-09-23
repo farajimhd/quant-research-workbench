@@ -175,7 +175,10 @@ impl Pipeline {
             .gate
             .try_write()
             .map_err(|_| Error::Unready("market readiness writer contention".into()))?;
-        gate.transport(matches!(health, Health::Streaming));
+        // A subscription request and observed traffic are diagnostics. Massive
+        // does not supply an authenticated per-channel completeness receipt
+        // here, so neither state may arm exposure.
+        gate.transport(false);
         Ok(())
     }
 }
@@ -228,7 +231,7 @@ mod tests {
         let ready = p.readiness();
         let (input, mut frames) = mpsc::channel(2);
         input.try_send(frame()).unwrap();
-        let (_transport, health) = watch::channel(Health::Streaming);
+        let (_transport, health) = watch::channel(Health::Receiving);
         let (_stop, shutdown) = watch::channel(false);
         let (output, _read) = mpsc::channel(1);
         output.try_send(Batch::Silence(vec![])).unwrap();
@@ -287,6 +290,23 @@ mod tests {
         }
         assert!(p.readiness().check(100, |_| Ok(())).is_err());
     }
+    #[test]
+    fn subscribe_sent_and_received_traffic_do_not_certify_feed_coverage() {
+        let p = pipeline();
+        p.readiness.0.running.store(true, Ordering::Release);
+        for health in [Health::SubscriptionRequested, Health::Receiving] {
+            p.readiness.0.gate.write().unwrap().transport(true);
+            p.transport(&health).unwrap();
+            let mut gate = p.readiness.0.gate.write().unwrap();
+            for kind in [
+                arte_core::events::EventKind::Trade,
+                arte_core::events::EventKind::Quote,
+            ] {
+                gate.update(1, kind, 100, true).unwrap();
+            }
+            assert!(gate.at(100).require(1).is_err());
+        }
+    }
     #[tokio::test]
     async fn periodic_audits_block_silence_and_repeat_without_incoming_frames() {
         use std::sync::atomic::AtomicU64;
@@ -295,7 +315,7 @@ mod tests {
         let now = AtomicU64::new(100);
         let (input, mut frames) = mpsc::channel(1);
         input.try_send(frame()).unwrap();
-        let (_transport, health) = watch::channel(Health::Streaming);
+        let (_transport, health) = watch::channel(Health::Receiving);
         let (stop, shutdown) = watch::channel(false);
         let (output, mut read) = mpsc::channel(16);
         let run = p.run(
@@ -315,7 +335,12 @@ mod tests {
         );
         let observe = async {
             assert!(matches!(read.recv().await, Some(Batch::Events(_))));
-            ready.check(100, |g| g.require(1)).unwrap();
+            ready
+                .check(100, |g| {
+                    assert!(g.require(1).is_err());
+                    Ok(())
+                })
+                .unwrap();
             now.store(10_000_100, Ordering::Release);
             let mut alerts = 0;
             while alerts < 2 {

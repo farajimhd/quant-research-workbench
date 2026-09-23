@@ -2,6 +2,14 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+Massive transport health now distinguishes a subscription request from observed
+market traffic. Neither state arms the shared exposure gate. The reviewed
+provider quickstart shows auth, subscribe and data messages but does not define
+a per-channel completeness receipt; treating traffic as certified feed coverage
+would be unsafe. Ingestion and latency audits continue while new exposure stays
+blocked. A separately verified live handover/coverage authority, or a provider
+with an auditable completeness contract, is still required before Live can arm.
+
 The Strategy 350 100 ms bar/Signal Stream/optional Watchlist join now walks
 verified Boolean batches with bounded cursors. It does not materialize a
 second full-session Boolean grid. Each selected batch carries a compact hash

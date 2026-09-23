@@ -22,8 +22,10 @@ pub struct Config {
 pub enum Health {
     Connecting,
     Authenticating,
-    Subscribed,
-    Streaming,
+    /// Subscribe bytes sent; channel acceptance and completeness are unknown.
+    SubscriptionRequested,
+    /// At least one market frame arrived; not a trading-readiness certificate.
+    Receiving,
     Stopped,
     Failed,
 }
@@ -93,7 +95,7 @@ fn deliver(
 ) -> Option<ReceivedFrame> {
     match output.try_send(frame) {
         Ok(()) => {
-            health.send_replace(Health::Streaming);
+            health.send_replace(Health::Receiving);
             None
         }
         Err(mpsc::error::TrySendError::Full(frame) | mpsc::error::TrySendError::Closed(frame)) => {
@@ -244,7 +246,7 @@ async fn receive_inner(
                     .await
                     .map_err(|_| Error::Unready("stream subscription timeout".into()))?
                     .map_err(|_| Error::Unready("stream subscription failed".into()))?;
-                    health.send_replace(Health::Subscribed);
+                    health.send_replace(Health::SubscriptionRequested);
                 }
                 if kind.market {
                     if !authenticated {
@@ -316,7 +318,7 @@ mod tests {
     }
     #[test]
     fn cancellation_guard_marks_feed_failed() {
-        let (tx, rx) = watch::channel(Health::Streaming);
+        let (tx, rx) = watch::channel(Health::Receiving);
         {
             let _guard = Guard {
                 health: tx,
@@ -328,7 +330,7 @@ mod tests {
     #[test]
     fn overflow_retains_undelivered_frame_and_sets_failed_health() {
         let (tx, mut rx) = mpsc::channel(1);
-        let (health, state) = watch::channel(Health::Subscribed);
+        let (health, state) = watch::channel(Health::SubscriptionRequested);
         let frame = ReceivedFrame {
             text: "first".into(),
             utc_ns: 10,

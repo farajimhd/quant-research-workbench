@@ -15,6 +15,7 @@ implementation release. Account entitlements and live payloads still require tes
 | [Massive streaming trades](https://www.massive.com/docs/websocket/stocks/trades) | Live trade fields and timestamp precision |
 | [Massive streaming quotes](https://massive.com/docs/websocket/stocks/quotes) | Live quote fields and available clocks |
 | [Massive streaming overview](https://www.massive.com/docs/websocket/stocks/overview) | Channels, including LULD |
+| [Massive WebSocket quickstart](https://massive.com/docs/websocket/quickstart) | Connection, authentication, subscription request and market-message sequence; no documented per-channel completeness receipt in the reviewed quickstart |
 | [ClickHouse MergeTree](https://github.com/ClickHouse/ClickHouse/blob/master/docs/en/engines/table-engines/mergetree-family/mergetree.md) | Partition and sorting keys; no dense ordinal requirement |
 | [IBKR Web API](https://ibkrcampus.com/campus/ibkr-api-page/webapi-doc/) | Order replies and session-scoped suppression |
 | [IBKR submit new order](https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order) | Account-specific POST endpoint and orders object; checked during request-boundary implementation |
