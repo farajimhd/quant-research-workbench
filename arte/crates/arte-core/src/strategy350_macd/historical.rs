@@ -226,26 +226,11 @@ pub fn project(
             .trades
             .as_deref()
             .ok_or_else(|| Error::Unready("historical MACD trades missing".into()))?;
-        for slot in 0..batch.count as usize {
-            let start = (slot as u64)
-                .checked_mul(BASE_INTERVAL_NS)
-                .and_then(|offset| batch.first_start_ns.checked_add(offset))
-                .ok_or_else(|| Error::Capacity("historical MACD clock".into()))?;
-            let end = start
-                .checked_add(BASE_INTERVAL_NS)
-                .ok_or_else(|| Error::Capacity("historical MACD end".into()))?;
-            let bar = if batch.present[slot] {
-                if trades[slot] == 0 {
-                    return Err(Error::Conflict("historical MACD empty trade bar".into()));
-                }
-                Some((start, closes[slot]))
-            } else {
-                None
-            };
-            for input in source.advance_compact_close(bar, end)? {
-                state.observe_completed(input.timeframe_ns, input.end_ns, input.close)?;
-                completed.push(input);
-            }
+        for input in
+            source.advance_compact_batch(batch.first_start_ns, &batch.present, closes, trades)?
+        {
+            state.observe_completed(input.timeframe_ns, input.end_ns, input.close)?;
+            completed.push(input);
         }
     }
     if source.watermark_ns() != request.interval.end {

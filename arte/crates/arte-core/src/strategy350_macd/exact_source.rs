@@ -238,30 +238,47 @@ impl Source {
         }
         self.advance_close(bar.map(|value| (value.start_ns, value.close)), watermark_ns)
     }
-    /// A certified compact historical bar has no last-trade source timestamp.
-    /// Accept only its actual close and completed bucket clock; never invent a
-    /// trade timestamp or convert this path into live receipt evidence.
-    pub(crate) fn advance_compact_close(
+    /// Advance one certified dense compact-bar batch with a single staged
+    /// source and sparse completed output. Historical bars have no measured
+    /// trade receipt; this path must never invent one.
+    pub(crate) fn advance_compact_batch(
         &mut self,
-        bar: Option<(u64, i64)>,
-        watermark_ns: u64,
+        first_start_ns: u64,
+        present: &[bool],
+        closes: &[i64],
+        trades: &[u64],
     ) -> Result<Vec<CompletedInput>> {
-        if watermark_ns < self.watermark_ns || watermark_ns > self.session_end_ns {
-            return Err(Error::Conflict("Strategy 350 MACD watermark".into()));
+        if present.is_empty()
+            || present.len() != closes.len()
+            || present.len() != trades.len()
+            || first_start_ns != self.watermark_ns
+            || !first_start_ns.is_multiple_of(INTERVAL_NS)
+        {
+            return Err(Error::Conflict("Strategy 350 compact MACD batch".into()));
         }
-        if let Some((start_ns, close)) = bar {
-            if start_ns < self.watermark_ns
-                || start_ns < self.session_start_ns
-                || start_ns
-                    .checked_add(INTERVAL_NS)
-                    .is_none_or(|end| end > watermark_ns)
-                || !start_ns.is_multiple_of(INTERVAL_NS)
-                || close <= 0
+        let mut next = self.clone();
+        let mut output = Vec::new();
+        for (slot, (&has_bar, (&close, &trade_count))) in
+            present.iter().zip(closes.iter().zip(trades)).enumerate()
+        {
+            let start_ns = (slot as u64)
+                .checked_mul(INTERVAL_NS)
+                .and_then(|offset| first_start_ns.checked_add(offset))
+                .ok_or_else(|| Error::Capacity("Strategy 350 compact MACD clock".into()))?;
+            let end_ns = start_ns
+                .checked_add(INTERVAL_NS)
+                .ok_or_else(|| Error::Capacity("Strategy 350 compact MACD end".into()))?;
+            if end_ns > self.session_end_ns
+                || (has_bar && (close <= 0 || trade_count == 0))
+                || (!has_bar && trade_count != 0)
             {
-                return Err(Error::Conflict("Strategy 350 compact MACD close".into()));
+                return Err(Error::Conflict("Strategy 350 compact MACD slot".into()));
             }
+            next.advance_close_into(has_bar.then_some((start_ns, close)), end_ns, &mut output)?;
         }
-        self.advance_close(bar, watermark_ns)
+        output.sort_unstable_by_key(|value| (value.end_ns, value.timeframe_ns));
+        *self = next;
+        Ok(output)
     }
     fn advance_close(
         &mut self,
@@ -270,8 +287,19 @@ impl Source {
     ) -> Result<Vec<CompletedInput>> {
         let mut next = self.clone();
         let mut output = Vec::with_capacity(8);
+        next.advance_close_into(bar, watermark_ns, &mut output)?;
+        output.sort_unstable_by_key(|value| (value.end_ns, value.timeframe_ns));
+        *self = next;
+        Ok(output)
+    }
+    fn advance_close_into(
+        &mut self,
+        bar: Option<(u64, i64)>,
+        watermark_ns: u64,
+        output: &mut Vec<CompletedInput>,
+    ) -> Result<()> {
         if let Some((bar_start_ns, bar_close)) = bar {
-            next.seal_through(bar_start_ns, &mut output);
+            self.seal_through(bar_start_ns, output);
             for (index, timeframe_ns) in TIMEFRAMES_NS.into_iter().enumerate() {
                 let start_ns = bar_start_ns / timeframe_ns * timeframe_ns;
                 let end_ns = start_ns
@@ -282,7 +310,7 @@ impl Source {
                     // bucket. Never synthesize a partial completed bar.
                     continue;
                 }
-                match &mut next.buckets[index] {
+                match &mut self.buckets[index] {
                     Some(bucket) if bucket.start_ns == start_ns => {
                         bucket.close_atoms = bar_close;
                     }
@@ -299,11 +327,9 @@ impl Source {
                 }
             }
         }
-        next.seal_through(watermark_ns, &mut output);
-        output.sort_unstable_by_key(|value| (value.end_ns, value.timeframe_ns));
-        next.watermark_ns = watermark_ns;
-        *self = next;
-        Ok(output)
+        self.seal_through(watermark_ns, output);
+        self.watermark_ns = watermark_ns;
+        Ok(())
     }
     fn seal_through(&mut self, at_ns: u64, output: &mut Vec<CompletedInput>) {
         for (index, slot) in self.buckets.iter_mut().enumerate() {
@@ -390,6 +416,44 @@ mod tests {
         assert_eq!(source.identity_hash().unwrap(), before);
         assert!(source.advance(None, 121 * S).is_err());
         assert_eq!(source.watermark_ns(), 30 * S);
+    }
+    #[test]
+    fn compact_batch_matches_exact_slot_advance_and_rolls_back_on_error() {
+        let mut batched = source();
+        let mut exact = source();
+        let mut present = vec![false; 300];
+        let mut closes = vec![0; 300];
+        let mut trades = vec![0; 300];
+        for (slot, close) in [(0, 1000), (9, 1010), (10, 1020), (59, 1030), (299, 1040)] {
+            present[slot] = true;
+            closes[slot] = close;
+            trades[slot] = 1;
+        }
+        let batch_output = batched
+            .advance_compact_batch(30 * S, &present, &closes, &trades)
+            .unwrap();
+        let mut exact_output = Vec::new();
+        for slot in 0..present.len() {
+            let start = 30 * S + slot as u64 * INTERVAL_NS;
+            let exact_bar = present[slot].then(|| bar(start, closes[slot]));
+            exact_output.extend(
+                exact
+                    .advance(exact_bar.as_ref(), start + INTERVAL_NS)
+                    .unwrap(),
+            );
+        }
+        assert_eq!(batch_output, exact_output);
+        assert_eq!(batched.watermark_ns(), 60 * S);
+        let before = batched.identity_hash().unwrap();
+        let mut invalid = vec![false; 300];
+        let mut invalid_closes = vec![0; 300];
+        let invalid_trades = vec![0; 300];
+        invalid[200] = true;
+        invalid_closes[200] = 500;
+        assert!(batched
+            .advance_compact_batch(60 * S, &invalid, &invalid_closes, &invalid_trades)
+            .is_err());
+        assert_eq!(batched.identity_hash().unwrap(), before);
     }
     #[test]
     fn verified_exact_advance_pins_source_generation_and_watermark() {
