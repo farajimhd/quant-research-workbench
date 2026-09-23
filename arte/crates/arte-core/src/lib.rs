@@ -44,6 +44,7 @@ pub mod simulated_execution;
 pub mod simulation_costs;
 pub mod simulation_model;
 pub mod strategy350_bar_screen;
+pub mod strategy350_bos;
 pub mod strategy350_catalogue;
 pub mod strategy350_gap;
 pub mod strategy350_macd;

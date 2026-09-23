@@ -3,6 +3,7 @@
 //! Port reference: tests/reference/src/trading_runtime/early_squeeze_momentum.py.txt.
 use crate::{
     content_hash,
+    execution_interval::ExecutionInterval,
     strategy_targets::{valid_level, TargetLevel},
     v7_encounters::ActiveRole,
     Error, Result,
@@ -12,7 +13,28 @@ use std::collections::BTreeSet;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Config {
+    pub execution_interval: ExecutionInterval,
+    pub maximum_levels: usize,
+}
+impl Config {
+    pub fn hash(&self) -> Result<String> {
+        self.execution_interval.validate()?;
+        if self.execution_interval
+            != ExecutionInterval::Fixed(crate::bar_catalogue::BASE_INTERVAL_NS)
+            || self.maximum_levels == 0
+            || self.maximum_levels > 100_000
+        {
+            return Err(Error::Invalid("Strategy 350 gap configuration".into()));
+        }
+        content_hash(&("arte.strategy-350-frozen-gap-config.v1", self))
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FrozenGap {
+    pub configuration_hash: String,
     pub activated_at_ns: u64,
     pub reference_price: f64,
     pub ceiling: f64,
@@ -27,6 +49,14 @@ impl FrozenGap {
     }
     pub fn validate(&self) -> Result<()> {
         if self.activated_at_ns == 0
+            || !self
+                .activated_at_ns
+                .is_multiple_of(crate::bar_catalogue::BASE_INTERVAL_NS)
+            || self.configuration_hash.len() != 64
+            || !self
+                .configuration_hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             || !self.reference_price.is_finite()
             || self.reference_price <= 0.
             || !self.ceiling.is_finite()
@@ -76,7 +106,7 @@ impl FrozenGap {
     }
 }
 
-fn midpoint(level: &TargetLevel) -> Result<f64> {
+pub(crate) fn midpoint(level: &TargetLevel) -> Result<f64> {
     valid_level(level)?;
     let value = (level.geometry.lower + level.geometry.upper) / 2.;
     if !value.is_finite() || value <= 0. {
@@ -84,7 +114,7 @@ fn midpoint(level: &TargetLevel) -> Result<f64> {
     }
     Ok(value)
 }
-fn eligible(level: &TargetLevel) -> bool {
+pub(crate) fn eligible(level: &TargetLevel) -> bool {
     level.geometry.role == ActiveRole::Resistance
         || (level.geometry.role == ActiveRole::Transition
             && level.transition_from == Some(ActiveRole::Resistance))
@@ -97,13 +127,13 @@ pub fn freeze(
     levels: &[TargetLevel],
     reference_price: f64,
     activated_at_ns: u64,
-    maximum_levels: usize,
+    config: &Config,
 ) -> Result<FrozenGap> {
+    let configuration_hash = config.hash()?;
     if activated_at_ns == 0
+        || !activated_at_ns.is_multiple_of(crate::bar_catalogue::BASE_INTERVAL_NS)
         || !reference_price.is_finite()
         || reference_price <= 0.
-        || maximum_levels == 0
-        || maximum_levels > 100_000
         || levels.len() > 100_000
     {
         return Err(Error::Invalid("Strategy 350 gap activation".into()));
@@ -125,7 +155,7 @@ pub fn freeze(
             ));
         }
         if eligible(level) && reference_price < middle && middle <= ceiling {
-            if selected.len() == maximum_levels {
+            if selected.len() == config.maximum_levels {
                 return Err(Error::Capacity("Strategy 350 gap level budget".into()));
             }
             selected.push((middle, level.clone()));
@@ -149,6 +179,7 @@ pub fn freeze(
         Some(sum / gaps.len() as f64)
     };
     let result = FrozenGap {
+        configuration_hash,
         activated_at_ns,
         reference_price,
         ceiling,
@@ -165,6 +196,12 @@ mod tests {
     use super::*;
     use crate::strategy_encounters::Level;
     const S: u64 = 1_000_000_000;
+    fn config(maximum_levels: usize) -> Config {
+        Config {
+            execution_interval: ExecutionInterval::Fixed(crate::bar_catalogue::BASE_INTERVAL_NS),
+            maximum_levels,
+        }
+    }
     fn level(
         id: &str,
         middle: f64,
@@ -199,7 +236,7 @@ mod tests {
             level("first", 15., ActiveRole::Resistance, None),
             level("above", 41., ActiveRole::Resistance, None),
         ];
-        let frozen = freeze(&levels, 10., 2 * S, 5).unwrap();
+        let frozen = freeze(&levels, 10., 2 * S, &config(5)).unwrap();
         assert_eq!(
             frozen
                 .levels
@@ -214,24 +251,31 @@ mod tests {
         changed.gaps[0] = 9.;
         assert!(changed.hash().is_err());
         assert_eq!(
-            freeze(&levels, 10., 2 * S, 5).unwrap().hash().unwrap(),
+            freeze(&levels, 10., 2 * S, &config(5))
+                .unwrap()
+                .hash()
+                .unwrap(),
             frozen.hash().unwrap()
         );
-        assert!(freeze(&levels, 10., 2 * S, 2).is_err());
+        assert!(freeze(&levels, 10., 2 * S, &config(2)).is_err());
     }
     #[test]
     fn rejects_future_or_duplicate_geometry_and_missing_gap() {
         let one = level("one", 15., ActiveRole::Resistance, None);
         assert_eq!(
-            freeze(std::slice::from_ref(&one), 10., 2 * S, 1)
+            freeze(std::slice::from_ref(&one), 10., 2 * S, &config(1))
                 .unwrap()
                 .average,
             None
         );
         let mut future = one.clone();
         future.geometry.confirmed_at_ns = 3 * S;
-        assert!(freeze(&[future], 10., 2 * S, 1).is_err());
-        assert!(freeze(&[one.clone(), one], 10., 2 * S, 2).is_err());
-        assert!(freeze(&[], f64::INFINITY, 2 * S, 1).is_err());
+        assert!(freeze(&[future], 10., 2 * S, &config(1)).is_err());
+        assert!(freeze(&[one.clone(), one], 10., 2 * S, &config(2)).is_err());
+        assert!(freeze(&[], f64::INFINITY, 2 * S, &config(1)).is_err());
+        assert!(freeze(&[], 10., 2 * S + 1, &config(1)).is_err());
+        let mut wrong = config(1);
+        wrong.execution_interval = ExecutionInterval::Events;
+        assert!(freeze(&[], 10., 2 * S, &wrong).is_err());
     }
 }

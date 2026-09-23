@@ -14,6 +14,16 @@ sorts by midpoint and level ID, and records only consecutive inter-level
 gaps. The value validates its geometry before hashing. Offline unit tests
 cover selection, ordering, capacity, future levels and tampering. It has not
 yet been attached to a certified activation snapshot or the account evaluator.
+Its configuration declares 100 ms signal-boundary cadence and pins the level
+budget.
+The broken-high base selector is now a separate Rust calculation. It prefers
+the newest causally confirmed low contained by the narrowest support band;
+only if none exists does it use the highest eligible reclaimed resistance
+below the broken high. It rejects future or stale structural snapshots and
+invalid level clocks. Its typed input is not a structural-detector producer,
+so this selector alone does not establish BOS evidence or authorize an entry.
+The BOS configuration also declares event cadence and pins freshness and input
+budgets. A selection hash binds the configuration and both supplied snapshots.
 
 Historical Strategy 350 session-watch signal preparation now scans certified
 100 ms bar batches once and retains only sparse Boolean transitions. It no
