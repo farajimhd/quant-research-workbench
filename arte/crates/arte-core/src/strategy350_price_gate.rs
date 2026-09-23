@@ -54,7 +54,7 @@ impl Config {
         content_hash(&(VERSION, self))
     }
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PriceFact {
     pub value: Decimal,
     pub available_at_ns: u64,
@@ -67,6 +67,7 @@ pub enum ContextSource {
     Live,
     HistoricalRest,
 }
+#[derive(Serialize)]
 pub struct SessionContext {
     pub(crate) source: ContextSource,
     pub(crate) session: u32,
@@ -103,7 +104,7 @@ impl SessionContext {
         self.complete
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Block {
     IneligibleTrade,
     PriorCloseUnavailableOrTooHigh,
@@ -111,10 +112,71 @@ pub enum Block {
     SessionContextUnavailable,
     LateModeOutsidePriorHodZone,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Outcome {
     pub late_mode: bool,
     pub block: Option<Block>,
+}
+
+/// One ticker-shared market observation can be projected to several accounts.
+/// Historical REST acquisition time is deliberately not live availability.
+#[derive(Debug, Clone)]
+pub struct PriceEvidence {
+    scope: Scope,
+    source: ContextSource,
+    config_hash: String,
+    event_time_ns: u64,
+    live_available_at_ns: Option<u64>,
+    live_run_id: Option<String>,
+    outcome: Outcome,
+    fingerprint: String,
+}
+impl PriceEvidence {
+    pub fn outcome(&self) -> Outcome {
+        self.outcome
+    }
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+    pub fn source(&self) -> ContextSource {
+        self.source
+    }
+    pub fn live_available_at_ns(&self) -> Option<u64> {
+        self.live_available_at_ns
+    }
+    /// Final live decision binding. This is not an order or broker authorization.
+    pub fn require_live_decision(
+        &self,
+        market_scope: Scope,
+        scope: &crate::strategy_dispatch::Scope,
+        input: &crate::strategy_dispatch::InputBoundary,
+        expected_gate_hash: &str,
+        maximum_age_ns: u64,
+    ) -> Result<()> {
+        use crate::strategy_dispatch::{Mode, StrategyKind};
+        let available = self
+            .live_available_at_ns
+            .ok_or_else(|| Error::Unready("Strategy 350 live price evidence missing".into()))?;
+        if self.source != ContextSource::Live
+            || self.outcome.block.is_some()
+            || self.scope != market_scope
+            || self.config_hash != expected_gate_hash
+            || scope.strategy_kind != StrategyKind::Strategy350
+            || !matches!(scope.mode, Mode::Live | Mode::Paper)
+            || scope.instrument != self.scope.instrument
+            || self.live_run_id.as_deref() != Some(scope.run_id.as_str())
+            || input.event_time_ns < self.event_time_ns
+            || input.available_at_ns < available
+            || input.evaluated_at_ns < available
+            || maximum_age_ns == 0
+            || input.evaluated_at_ns - available >= maximum_age_ns
+        {
+            return Err(Error::Unready(
+                "Strategy 350 price evidence is not live decision authority".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 pub struct State {
@@ -231,6 +293,49 @@ impl State {
         }
         result
     }
+    /// Capture the complete causal price-gate input in one immutable identity.
+    /// The gate still advances on blocked observations; only an allowed live
+    /// outcome can later satisfy `require_live_decision`.
+    pub fn observe_evidence(
+        &mut self,
+        event: &Observation,
+        policy: &Pinned,
+        prior_close: Option<&PriceFact>,
+        context: &SessionContext,
+        evaluated_at_ns: u64,
+    ) -> Result<PriceEvidence> {
+        if (self.source == ContextSource::Live) != event.receipt.is_some() {
+            return Err(Error::Conflict(
+                "Strategy 350 evidence source and receive clock differ".into(),
+            ));
+        }
+        let outcome = self.observe(event, policy, prior_close, context, evaluated_at_ns)?;
+        let fingerprint = content_hash(&(
+            "arte.strategy-350-price-evidence.v1",
+            self.scope.provider,
+            self.scope.instrument,
+            self.scope.session,
+            self.source,
+            &self.config_hash,
+            event,
+            policy.hash(),
+            prior_close,
+            context,
+            evaluated_at_ns,
+            outcome,
+        ))?;
+        Ok(PriceEvidence {
+            scope: self.scope,
+            source: self.source,
+            config_hash: self.config_hash.clone(),
+            event_time_ns: event.sip.ns,
+            live_available_at_ns: (self.source == ContextSource::Live)
+                .then_some(event.available_at_ns),
+            live_run_id: event.receipt.as_ref().map(|receipt| receipt.run_id.clone()),
+            outcome,
+            fingerprint,
+        })
+    }
     fn update(
         &mut self,
         event: &Observation,
@@ -342,7 +447,7 @@ impl State {
 mod tests {
     use super::*;
     use crate::{
-        events::{EventKey, EventKind, SourceTime},
+        events::{EventKey, EventKind, Receipt, SourceTime},
         trade_eligibility,
     };
     use std::collections::BTreeSet;
@@ -650,6 +755,168 @@ mod tests {
         )
         .unwrap();
         assert!(historical.observe_context(&rest, 2 * S).unwrap());
+    }
+    #[test]
+    fn shared_price_evidence_binds_live_scope_config_and_age_per_account() {
+        use crate::strategy_dispatch::{InputBoundary, Mode, Scope as DecisionScope, StrategyKind};
+        let mut gate = state();
+        let mut live_event = event(2 * S, "10");
+        assert!(gate
+            .observe_evidence(
+                &live_event,
+                &policy(),
+                Some(&fact("19", S)),
+                &context(2 * S, "10", None),
+                2 * S,
+            )
+            .is_err());
+        live_event.receipt = Some(Receipt {
+            run_id: "run".into(),
+            lane: 1,
+            sequence: 1,
+            utc_ns: 2 * S,
+            monotonic_ns: 100,
+        });
+        let evidence = gate
+            .observe_evidence(
+                &live_event,
+                &policy(),
+                Some(&fact("19", S)),
+                &context(2 * S, "10", None),
+                2 * S,
+            )
+            .unwrap();
+        assert_eq!(evidence.outcome().block, None);
+        assert_eq!(evidence.live_available_at_ns(), Some(2 * S));
+        assert_eq!(evidence.fingerprint().len(), 64);
+        let market_scope = Scope {
+            provider: 1,
+            instrument: 10,
+            session: 20260922,
+        };
+        let mut decision_scope = DecisionScope {
+            run_id: "run".into(),
+            mode: Mode::Live,
+            account: "first".into(),
+            strategy_instance: "renamed-350".into(),
+            strategy_kind: StrategyKind::Strategy350,
+            instrument: 10,
+            code_hash: "a".repeat(64),
+            config_hash: "b".repeat(64),
+        };
+        let mut input = InputBoundary {
+            event_id: "completed-bar".into(),
+            event_time_ns: 2 * S,
+            available_at_ns: 2 * S,
+            evaluated_at_ns: 2 * S + 100_000_000,
+            source_sequence: 1,
+            feature_hash: "feature".into(),
+        };
+        let gate_hash = gate.configuration_hash();
+        assert!(evidence
+            .require_live_decision(
+                market_scope,
+                &decision_scope,
+                &input,
+                gate_hash,
+                200_000_000
+            )
+            .is_ok());
+        decision_scope.account = "second".into();
+        assert!(evidence
+            .require_live_decision(
+                market_scope,
+                &decision_scope,
+                &input,
+                gate_hash,
+                200_000_000
+            )
+            .is_ok());
+        decision_scope.run_id = "other-run".into();
+        assert!(evidence
+            .require_live_decision(
+                market_scope,
+                &decision_scope,
+                &input,
+                gate_hash,
+                200_000_000
+            )
+            .is_err());
+        decision_scope.run_id = "run".into();
+        assert!(evidence
+            .require_live_decision(
+                market_scope,
+                &decision_scope,
+                &input,
+                &"0".repeat(64),
+                200_000_000
+            )
+            .is_err());
+        input.evaluated_at_ns += 100_000_000;
+        assert!(evidence
+            .require_live_decision(
+                market_scope,
+                &decision_scope,
+                &input,
+                gate_hash,
+                200_000_000
+            )
+            .is_err());
+        input.evaluated_at_ns -= 100_000_000;
+        decision_scope.mode = Mode::Backtest;
+        assert!(evidence
+            .require_live_decision(
+                market_scope,
+                &decision_scope,
+                &input,
+                gate_hash,
+                200_000_000
+            )
+            .is_err());
+        decision_scope.mode = Mode::Live;
+        assert!(evidence
+            .require_live_decision(
+                Scope {
+                    session: 20260923,
+                    ..market_scope
+                },
+                &decision_scope,
+                &input,
+                gate_hash,
+                200_000_000,
+            )
+            .is_err());
+        let mut historical_context = context(2 * S, "10", None);
+        historical_context.source = ContextSource::HistoricalRest;
+        let config = config();
+        let hash = config.hash().unwrap();
+        let mut historical = State::new(
+            market_scope,
+            ContextSource::HistoricalRest,
+            S,
+            config,
+            &hash,
+        )
+        .unwrap();
+        let history_evidence = historical
+            .observe_evidence(
+                &event(2 * S, "10"),
+                &policy(),
+                Some(&fact("19", S)),
+                &historical_context,
+                2 * S,
+            )
+            .unwrap();
+        assert_eq!(history_evidence.live_available_at_ns(), None);
+        assert!(history_evidence
+            .require_live_decision(
+                market_scope,
+                &decision_scope,
+                &input,
+                gate_hash,
+                200_000_000
+            )
+            .is_err());
     }
     #[test]
     fn context_source_order_can_advance_when_receipt_time_decreases() {

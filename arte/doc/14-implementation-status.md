@@ -2,6 +2,16 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+The ticker-shared Strategy 350 price gate can now emit immutable causal
+evidence. Its fingerprint binds the exact trade, policy, prior close, session
+context, evaluation clock, source kind, configuration and outcome. A live or
+paper account decision may reuse allowed evidence only for the matching market
+scope and configuration, within a caller-pinned freshness limit. Historical
+REST evidence has no live availability clock and cannot satisfy that check.
+Live evidence requires an actual receive receipt; REST time cannot be promoted.
+This evidence is not yet included in a dedicated Strategy 350 journaled
+decision or accepted by the bracket planner; exposure remains blocked.
+
 A bounded, in-process Massive REST/WebSocket overlap auditor now compares the
 exact verified REST batch chain with captured live events by provider sequence,
 normalized payload, and SIP millisecond bucket. It rejects missing, duplicate,
