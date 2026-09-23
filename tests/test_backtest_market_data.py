@@ -125,15 +125,16 @@ class BacktestMarketDataTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SELECT-only"):
             assert_select_only("INSERT INTO arte.bars_v1 VALUES")
 
-    def test_fixed_run_cannot_bypass_blocked_preflight(self) -> None:
+    def test_fixed_definition_remains_readable_for_archived_review(self) -> None:
         from src.backend.replay_run_service import ReplayRunDefinition, RunMode
 
-        with self.assertRaisesRegex(ValueError, "not yet causally executable"):
-            ReplayRunDefinition(
-                session_date=date(2026, 8, 18), start_time=time(4),
-                mode=RunMode.BACKTEST, execution_interval="100ms",
-                market_data_plan={"token": "test", "execution_interval": {"milliseconds": 100}},
-            )
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 18), start_time=time(4),
+            mode=RunMode.BACKTEST, execution_interval="100ms",
+            market_data_plan={"token": "test", "execution_interval": {"milliseconds": 100}},
+            configuration_revision={"revision_id": "approved-test", "payload": {}},
+        )
+        self.assertEqual(definition.execution_interval, "100ms")
 
 
 if __name__ == "__main__":

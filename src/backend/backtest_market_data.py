@@ -27,6 +27,10 @@ FIXED_EXECUTION_BLOCKER = (
     "cannot be converted to synthetic quote/trade events for broker fills or V7 strategy state. "
     "A native persisted-bar strategy and liquidity-aware broker path must pass equivalence tests first."
 )
+EVENT_EXECUTION_BLOCKER = (
+    "Event-interval Backtest still prepares a run-local strategy frame spool; "
+    "Backtest must fetch persisted strategy inputs without generating them."
+)
 DEFAULT_LEDGER = Path(
     r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\build-ledger-v2.sqlite3"
 )

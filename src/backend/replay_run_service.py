@@ -449,8 +449,6 @@ class ReplayRunDefinition:
                 raise ValueError("Fixed-interval Backtest requires a certified read-only market-data plan")
             if plan_interval != str(resolved_interval.milliseconds):
                 raise ValueError("Backtest market-data plan does not match execution_interval")
-            from src.backend.backtest_market_data import FIXED_EXECUTION_BLOCKER
-            raise ValueError(FIXED_EXECUTION_BLOCKER)
         if type(self.prepare_frames_only) is not bool or (self.prepare_frames_only and self.mode != RunMode.BACKTEST):
             raise ValueError('Frame preparation only requires Backtest mode and a boolean flag')
         if not 0 <= self.minimum_p_norm <= 1:
@@ -2538,6 +2536,14 @@ class ReplayRunController:
                 self.run_dir / "journal.sqlite3",
                 synchronous="FULL" if self.definition.mode==RunMode.BACKTEST else "NORMAL",
             )
+            if self.definition.mode == RunMode.BACKTEST:
+                from src.backend.backtest_market_data import (
+                    EVENT_EXECUTION_BLOCKER, FIXED_EXECUTION_BLOCKER, ExecutionInterval,
+                )
+                interval = ExecutionInterval.parse(self.definition.execution_interval)
+                raise RuntimeError(
+                    FIXED_EXECUTION_BLOCKER if interval.kind == "fixed" else EVENT_EXECUTION_BLOCKER
+                )
             self._preparation_stage = "signal_occurrences"
             await self._publish(force=True)
             self._historical_external_signal_events = (
@@ -9800,6 +9806,16 @@ def backtest_preflight(
             "summary": FIXED_EXECUTION_BLOCKER,
             "evidence": "native_bar_strategy_and_broker_equivalence_pending",
         })
+    else:
+        from src.backend.backtest_market_data import EVENT_EXECUTION_BLOCKER
+        checks.append({
+            "id": "event_execution_contract",
+            "label": "Persisted event-interval strategy inputs",
+            "status": "blocked",
+            "required": True,
+            "summary": EVENT_EXECUTION_BLOCKER,
+            "evidence": "run_local_frame_spool_still_present",
+        })
     from src.backend.historical_signal_preparation import signal_coverage_check
     signal_check = signal_coverage_check(
         activated_signal_streams,
@@ -9919,6 +9935,7 @@ def backtest_preflight(
         and sessions
         and (execution_interval.kind == "events" or bool(market_data_plan))
         and execution_interval.kind != "fixed"
+        and execution_interval.kind != "events"
         and 1_000 <= initial_cash <= 1_000_000_000
     )
     return {
