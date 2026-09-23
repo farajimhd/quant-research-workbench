@@ -572,5 +572,222 @@ mod tests {
         };
         crate::strategy350_transaction::require_historical_macd(Some(&evidence), &proof, &input)
             .unwrap();
+        use crate::{
+            strategy350_price_gate::{
+                Config as PriceConfig, ContextSource, PriceFact, SessionContext,
+                State as PriceState,
+            },
+            strategy_dispatch::{Action, Safety},
+            trade_eligibility,
+        };
+        let policy = trade_eligibility::Policy {
+            schema_version: 1,
+            provider: 1,
+            valid_from_ns: 0,
+            valid_to_ns: u64::MAX,
+            available_at_ns: 0,
+            source_manifest_hash: "b".repeat(64),
+            allowed_conditions: Default::default(),
+            excluded_conditions: Default::default(),
+            allow_empty_conditions: true,
+        };
+        let policy_hash = policy.hash().unwrap();
+        let policy = trade_eligibility::Pinned::new(policy, &policy_hash).unwrap();
+        let price_config = PriceConfig {
+            execution_interval: ExecutionInterval::Events,
+            price_scale: 2,
+            prior_close_max_atoms: 2000,
+            purchase_min_atoms: 100,
+            late_gain_bps: 1500,
+            hod_floor_bps: 7000,
+            prior_close_source_hash: "a".repeat(64),
+            trade_policy_hash: policy_hash,
+        };
+        let price_hash = price_config.hash().unwrap();
+        let mut price_gate = PriceState::new(
+            scope,
+            ContextSource::HistoricalRest,
+            START,
+            price_config,
+            &price_hash,
+        )
+        .unwrap();
+        let prior_close = PriceFact {
+            value: Decimal {
+                atoms: 1900,
+                scale: 2,
+            },
+            available_at_ns: START,
+            source_hash: "a".repeat(64),
+            source_order: None,
+        };
+        let context = SessionContext {
+            source: ContextSource::HistoricalRest,
+            session: scope.session,
+            at_ns: event_time + 1,
+            source_order: (event_time, 1),
+            open: Decimal {
+                atoms: 900,
+                scale: 2,
+            },
+            high: Decimal {
+                atoms: 1000,
+                scale: 2,
+            },
+            prior_high: None,
+            complete: true,
+        };
+        let price_evidence = price_gate
+            .observe_evidence(
+                &observation,
+                &policy,
+                Some(&prior_close),
+                &context,
+                event_time + 1,
+            )
+            .unwrap();
+        assert!(price_evidence.outcome().block.is_none());
+        let refinement = crate::strategy350_screen_join::test_historical_refinement(
+            scope,
+            Interval {
+                start: event_time / BASE_INTERVAL_NS * BASE_INTERVAL_NS,
+                end: event_time / BASE_INTERVAL_NS * BASE_INTERVAL_NS + BASE_INTERVAL_NS,
+            },
+        );
+        let safety = Safety {
+            position_quantity: 1,
+            pending_exit_quantity: 0,
+            exit_pending: false,
+            pending_entry: false,
+            last_exit_reason: None,
+            flatten: false,
+            protective_stop_crossed: false,
+            manual_exit: false,
+            completed_macd_reversal: false,
+            setup_phase: crate::strategy_lifecycle::Phase::Building,
+            luld_buffer_reached: false,
+            encounter_exit: false,
+            early_setup_failed: false,
+            structural_exit: false,
+        };
+        let level = crate::strategy_targets::TargetLevel {
+            geometry: crate::strategy_encounters::Level {
+                id: "resistance".into(),
+                price: 10.,
+                lower: 10.,
+                upper: 10.,
+                role: crate::v7_encounters::ActiveRole::Resistance,
+                confirmed_at_ns: START,
+            },
+            historical: true,
+            transition_from: None,
+            synthetic: false,
+        };
+        let proposal = crate::strategy_adds::Proposal {
+            confirmed_at_ns: event_time,
+            tranche_index: 2,
+            tranche_count: 3,
+            broken: level,
+            threshold: 10.,
+            stop: 9.,
+            target: 11.,
+            maximum_buy_price: 10.5,
+        };
+        let mut account = crate::strategy_transaction::Runtime::new(
+            pinned.scope("first", 10, "strategy-350").unwrap(),
+            0_u64,
+            1024,
+        )
+        .unwrap();
+        let other_hash = "e".repeat(64);
+        let decision = crate::strategy350_transaction::prepare_historical_market_decision(
+            &mut account,
+            crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                input: input.clone(),
+                safety: &safety,
+                price: &price_evidence,
+                source: &proof,
+                expected_price_gate_hash: &price_hash,
+                refinement: Some(&refinement),
+                macd: Some(&evidence),
+                other_evidence_hash: &other_hash,
+            },
+            |_| Ok(()),
+            |_| Ok(vec![Action::Add(Box::new(proposal))]),
+        )
+        .unwrap();
+        assert_eq!(decision.actions.len(), 1);
+        let rows = account.pending_batch().unwrap().records().to_vec();
+        let committed = account.acknowledge(&rows).unwrap();
+        let sealed = crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
+            &committed,
+            &price_evidence,
+            &proof,
+            &price_hash,
+            Some(&refinement),
+            Some(&evidence),
+            &other_hash,
+        )
+        .unwrap();
+        assert!(
+            crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
+                &committed,
+                &price_evidence,
+                &proof,
+                &price_hash,
+                Some(&refinement),
+                None,
+                &other_hash,
+            )
+            .is_err()
+        );
+        let allocation = crate::decision_orders::Allocation {
+            account: "first".into(),
+            instrument: 10,
+            quantity: 1,
+            price_scale: 2,
+            tick: 1,
+            entry_limit: 1000,
+            deadline_ns: event_time + SECOND,
+        };
+        let bands = crate::luld::Evidence {
+            provider: 1,
+            instrument: 10,
+            session: scope.session,
+            lower: 800,
+            upper: 1200,
+            scale: 2,
+            effective_at_ns: event_time,
+            available_at_ns: event_time + 1,
+            official: true,
+        };
+        let risk = crate::orders::RiskPolicy {
+            band_provider: 1,
+            band_session: scope.session,
+            band_buffer_ticks: 3,
+            max_band_age_ns: SECOND,
+        };
+        assert!(crate::decision_orders::bracket(
+            &committed,
+            0,
+            &allocation,
+            event_time + 1,
+            true,
+            Some(&bands),
+            &risk,
+        )
+        .is_err());
+        let plan = crate::decision_orders::bracket_350_historical(
+            &sealed,
+            0,
+            &allocation,
+            event_time + 1,
+            true,
+            Some(&bands),
+            &risk,
+        )
+        .unwrap();
+        assert_eq!(plan.bracket.stop, Some(900));
+        assert_eq!(plan.bracket.target, Some(1100));
     }
 }

@@ -81,8 +81,12 @@ existing two-second historical add fixture is correctly rejected because a
 completed 30-second frame cannot exist then. A later-time offline test now
 derives bullish four-frame evidence from a certified compact product, binds a
 real prepared run proof, and passes the historical MACD admission gate. A
-positive full account decision and historical bracket-planning test remains
-to be rebuilt. The remaining typed operands are still absent, so this does not
+later-time unit path now also builds causal historical price evidence, prepares
+an account add with selected refinement, commits and reads back the journal,
+and reaches the shared bracket/LULD planner. It rejects generic unproven
+planning and omitted MACD on readback. This is an in-process fixture, not a
+runnable full-session backtest. The remaining typed operands are still absent,
+so this does not
 authorize a production backtest or live order path.
 Numerical parity with the current Python/QMD MACD initialization is unproven;
 activation must remain blocked until that comparison and an effective
