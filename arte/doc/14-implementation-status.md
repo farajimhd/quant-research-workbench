@@ -95,6 +95,12 @@ The Strategy 350 Early Squeeze signal configuration now explicitly pins its
 100 ms execution interval. Event cadence or a different fixed interval is
 rejected, and the interval participates in its configuration hash and recovery
 identity. This does not complete cadence binding for every producer.
+The live signal can now return one value and availability clock per sealed
+100 ms bucket in a coalesced exact-bar advance. A later activation does not
+retroactively mark earlier buckets active. The bounded transition commits
+state only after all buckets validate; the existing final-state call avoids
+allocating a per-bucket vector. These values are not yet joined to live
+Watchlist and screen products or used as entry authority.
 
 Execution cadence is now a required field in the new shared Rust computation
 contract. It supports real-time events or a fixed 100 ms multiple. Its identity

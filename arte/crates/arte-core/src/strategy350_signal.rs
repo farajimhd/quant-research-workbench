@@ -44,6 +44,7 @@ struct Previous {
     volume: i64,
     trades: u64,
 }
+#[derive(Clone)]
 pub struct State {
     config: Config,
     scope_hash: String,
@@ -67,6 +68,25 @@ pub struct Occurrence {
     pub event_time_ns: u64,
     /// Never inferred for historical calculation.
     pub available_at_ns: Option<u64>,
+}
+/// A completed live bucket. The result is produced only by the pinned signal
+/// state while consuming a sealed exact-bar advance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LiveEvaluation {
+    bucket_start_ns: u64,
+    active: bool,
+    available_at_ns: u64,
+}
+impl LiveEvaluation {
+    pub fn bucket_start_ns(&self) -> u64 {
+        self.bucket_start_ns
+    }
+    pub fn active(&self) -> bool {
+        self.active
+    }
+    pub fn available_at_ns(&self) -> u64 {
+        self.available_at_ns
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -223,6 +243,29 @@ impl State {
         advance: &crate::exact_bars::Advance<'_>,
         available_at_ns: u64,
     ) -> Result<bool> {
+        self.advance_with(advance, available_at_ns, |_| {})?;
+        Ok(self.first_occurrence_end_ns.is_some())
+    }
+
+    /// Preserve the state at each sealed bucket, including empty buckets.
+    /// A later occurrence cannot activate an earlier bucket in a coalesced
+    /// advance. On failure neither state nor partial output is published.
+    pub fn observe_live_advance_buckets(
+        &mut self,
+        advance: &crate::exact_bars::Advance<'_>,
+        available_at_ns: u64,
+    ) -> Result<Vec<LiveEvaluation>> {
+        let mut output = Vec::new();
+        self.advance_with(advance, available_at_ns, |point| output.push(point))?;
+        Ok(output)
+    }
+
+    fn advance_with(
+        &mut self,
+        advance: &crate::exact_bars::Advance<'_>,
+        available_at_ns: u64,
+        mut collect: impl FnMut(LiveEvaluation),
+    ) -> Result<()> {
         let sealed_ns = advance.watermark_ns / BASE_INTERVAL_NS * BASE_INTERVAL_NS;
         if self.mode != Mode::Live
             || advance.configuration_hash != self.scope_hash
@@ -231,7 +274,7 @@ impl State {
                 != self.next_bucket_ns
             || sealed_ns < self.next_bucket_ns
             || sealed_ns > self.session_end_ns
-            || (sealed_ns - self.next_bucket_ns) / BASE_INTERVAL_NS > 1_000_000
+            || (sealed_ns - self.next_bucket_ns) / BASE_INTERVAL_NS > 10_000
             || available_at_ns < sealed_ns
             || self
                 .last_available_at_ns
@@ -253,17 +296,24 @@ impl State {
                 "early-squeeze exact live advance differs".into(),
             ));
         }
-        while self.next_bucket_ns < sealed_ns {
-            let at = self.next_bucket_ns;
+        let mut next = self.clone();
+        while next.next_bucket_ns < sealed_ns {
+            let at = next.next_bucket_ns;
             let bar = advance.completed.as_ref().filter(|bar| bar.start_ns == at);
-            match bar {
+            let active = match bar {
                 Some(bar) => {
-                    self.observe_live(at, true, bar.close, bar.volume, bar.trades, available_at_ns)?
+                    next.observe_live(at, true, bar.close, bar.volume, bar.trades, available_at_ns)?
                 }
-                None => self.observe_live(at, false, 0, 0, 0, available_at_ns)?,
+                None => next.observe_live(at, false, 0, 0, 0, available_at_ns)?,
             };
+            collect(LiveEvaluation {
+                bucket_start_ns: at,
+                active,
+                available_at_ns,
+            });
         }
-        Ok(self.first_occurrence_end_ns.is_some())
+        *self = next;
+        Ok(())
     }
     fn observe_inner(
         &mut self,
@@ -601,5 +651,67 @@ mod tests {
         assert!(
             State::restore(&rehashed, &scope, config(), S, S + 400_000_000, Mode::Live).is_err()
         );
+    }
+    #[test]
+    fn coalesced_live_advance_keeps_pre_occurrence_bucket_inactive() {
+        let source_hash = "b".repeat(64);
+        let mut live = State::new_live(config(), source_hash.clone(), S, S + 400_000_000).unwrap();
+        assert!(!live
+            .observe_live(S, true, 10_000, 100, 2, S + 100_000_000)
+            .unwrap());
+        let bar = crate::exact_bars::Bar {
+            start_ns: S + 200_000_000,
+            end_ns: S + 300_000_000,
+            price_scale: 2,
+            size_scale: 0,
+            open: 10_005,
+            high: 10_005,
+            low: 10_005,
+            close: 10_005,
+            volume: 101,
+            notional: 1_010_505,
+            trades: 3,
+            last_trade_source_ns: S + 200_000_001,
+            last_trade_live_receipt_ns: Some(S + 200_000_002),
+        };
+        let advance = crate::exact_bars::Advance {
+            configuration_hash: &source_hash,
+            previous_watermark_ns: S + 100_000_000,
+            watermark_ns: S + 300_000_000,
+            completed: Some(bar),
+        };
+        let before = live.checkpoint().unwrap().id;
+        let rejected = crate::exact_bars::Advance {
+            configuration_hash: &source_hash,
+            previous_watermark_ns: S + 100_000_000,
+            watermark_ns: S + 300_000_000,
+            completed: None,
+        };
+        assert!(live
+            .observe_live_advance_buckets(&rejected, S + 299_000_000)
+            .is_err());
+        assert_eq!(live.checkpoint().unwrap().id, before);
+        let points = live
+            .observe_live_advance_buckets(&advance, S + 300_000_000)
+            .unwrap();
+        assert_eq!(
+            points,
+            vec![
+                LiveEvaluation {
+                    bucket_start_ns: S + 100_000_000,
+                    active: false,
+                    available_at_ns: S + 300_000_000,
+                },
+                LiveEvaluation {
+                    bucket_start_ns: S + 200_000_000,
+                    active: true,
+                    available_at_ns: S + 300_000_000,
+                },
+            ]
+        );
+        assert_eq!(live.first_occurrence_end_ns(), Some(S + 300_000_000));
+        assert!(live
+            .observe_live_advance_buckets(&advance, S + 300_000_000)
+            .is_err());
     }
 }
