@@ -38,6 +38,11 @@ candidate-refinement masks. It preserves buckets whose intrabar order could
 create a new HOD and subsequent qualifying pullback; it never authorizes a
 trade. Scanner/signal/Watchlist conjunction, selected-candidate event replay,
 and throughput validation remain unimplemented.
+An in-memory Boolean calculation catalogue now verifies complete dense
+readback, declared execution cadence, source-bar identity, and distinct unknown
+state. A Strategy 350 join requires aligned signal and Watchlist products and
+produces only an event-refinement mask. Calculation writers, ClickHouse tables,
+and historical signal/Watchlist algorithms are still unimplemented.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service

@@ -67,6 +67,13 @@ eligible for event refinement: bar OHLC cannot show whether a pullback followed
 that high. The same uncertainty applies when late mode first triggers inside a
 bucket. This is a bounded columnar prefix pass, not yet measured SIMD or a
 complete vectorized scanner/signal/Watchlist implementation.
+The first shared Boolean product readback now records explicit evaluation
+cadence, known/unknown state, value, source-bar identity and complete bucket
+coverage. Strategy 350 can intersect verified signal and Watchlist products
+with the bar mask only when their generation, ticker, session and grid match.
+Unknown on a bucket that otherwise needs refinement blocks the run; false is
+not treated as missing. These contracts do not yet calculate or persist the
+signal and Watchlist products in ClickHouse.
 
 The first market-time tape borrows values from complete 100 ms columnar batches.
 It dispatches only nonempty buckets, sorts equal-time ticker events by instrument,
