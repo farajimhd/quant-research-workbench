@@ -210,6 +210,11 @@ uses a fresh attempt ID, so an uncertain partial INSERT cannot duplicate a
 published result. The ledger is host-local and must be preserved with the
 runtime manifests; copying the ClickHouse tables alone does not transfer
 certification. There is no automatic garbage collection of abandoned attempts.
+Resume revalidates published output and predecessor certificates. For V5
+quote-only predecessor chains, a build-status timestamp is excluded from new
+dependency hashes; existing published indicators remain reusable only when
+their stored seed, carried price-state build, bar certificate, and technical
+output all verify. This does not require rebuilding certified ticker-days.
 Read-only plans
 write `last-plan.json` so they do not replace the failed build's `latest.json`.
 

@@ -54,6 +54,23 @@ class Arguments(unittest.TestCase):
         self.assertFalse(B.transport_compatible_resume(saved,{**current,'rules_hash':'changed'}))
         self.assertFalse(B.transport_compatible_resume({**saved,'build_id':'wrong'},current))
 
+    def test_quote_only_resume_uses_certified_seed_without_mutable_timestamp(self):
+        class Ledger:
+            def __init__(self,rows): self.rows=rows
+            def candidates(self,*_): return [dict(build_id='build',attempt_id='prior',source_hash='prior-source')]
+            def unit(self,*_): return dict(output_rows=self.rows)
+        dependencies=[dict(session_date='2026-08-20',attempt_id='bars',source_hash='bar-source')]
+        seed=dict(attempt_id='technical',mode=1,predecessor_date='2026-08-19',
+            prior_build_id='build',prior_state_hash='old-timestamp-hash')
+        technical=dict(attempt_id='technical',source_hash=B.digest([dependencies,seed['prior_state_hash'],S.VERSION]))
+        arguments=('build','2026-08-20','AACPU','2026-08-19','arte','calc','rules',
+            dependencies,{'close':1.},'build','new-stable-hash',technical,seed)
+        self.assertEqual(B.resume_technical_hash(Ledger(0),*arguments),technical['source_hash'])
+        with self.assertRaisesRegex(ValueError,'dependency changed after lineage check'):
+            B.resume_technical_hash(Ledger(1),*arguments)
+        with self.assertRaisesRegex(ValueError,'dependency changed after lineage check'):
+            B.resume_technical_hash(Ledger(0),*arguments[:-1],{**seed,'prior_build_id':'other'})
+
     def test_builder_reuses_query_connection_but_cancels_separately(self):
         with patch.dict(os.environ,{'QMD_CLICKHOUSE_URL':'http://127.0.0.1:8123'}):
             client=B.Client(B.parse_args(['--date','2026-08-18']))

@@ -664,7 +664,9 @@ def prior_indicator_state(ledger, client, db, build, day, ticker, predecessor, c
             calculation_source,rules_hash,splits,visited+(predecessor,))
         if not state or not prior_hash or prior_build!=seed['prior_build_id']:
             raise ValueError(f'{predecessor} {ticker}: carried quote-only state has no earlier price state')
-        return state,digest([predecessor,old_build,candidate,seed,prior_hash]),prior_build
+        # updated_at is build status bookkeeping, not predecessor market state.
+        stable_candidate={key:candidate[key] for key in ('build_id','attempt_id','source_hash')}
+        return state,digest([predecessor,old_build,stable_candidate,seed,prior_hash]),prior_build
     if set(by_frame)!=set(sql.FRAMES) or set(close_by_frame)!=set(sql.FRAMES):
         raise ValueError(f'{predecessor} {ticker}: incomplete prior timeframe state')
     state={frame:{**{f'ema_{p}':float(by_frame[frame][f'ema_{p}']) for p in sql.EMAS},
@@ -673,6 +675,33 @@ def prior_indicator_state(ledger, client, db, build, day, ticker, predecessor, c
     if not all(math.isfinite(value) for item in state.values() for value in item.values()):
         raise ValueError(f'{predecessor} {ticker}: nonfinite prior state')
     return state,digest([old_build,predecessor,candidate['attempt_id'],candidate['source_hash'],bars_unit,state]),old_build
+
+
+def resume_technical_hash(ledger, build, day, ticker, predecessor, database, calculation_source,
+                          rules_hash, dependencies, prior, prior_build, current_hash, technical_unit, seed_unit):
+    """Accept a V5 quote-only certificate after mutable build timestamps changed.
+
+    The stored seed binds the old dependency hash. Recheck the entire current
+    predecessor chain first, then permit that old hash only for a quote-only
+    direct predecessor with the same carried price-state build and attempt.
+    """
+    if not technical_unit or technical_unit['source_hash']==current_hash:
+        return current_hash
+    changed=f'{day} {ticker}: published technical dependency changed after lineage check'
+    if not predecessor or not prior or not seed_unit or seed_unit['attempt_id']!=technical_unit['attempt_id']:
+        raise ValueError(changed)
+    if (int(seed_unit['mode'])!=1 or seed_unit['predecessor_date']!=predecessor or
+        seed_unit['prior_build_id']!=prior_build or not seed_unit['prior_state_hash']):
+        raise ValueError(changed)
+    candidates=ledger.candidates(predecessor,ticker,build,database,calculation_source,rules_hash,sql.VERSION)
+    predecessor_unit=(ledger.unit(candidates[0]['build_id'],predecessor,ticker,'technical')
+                      if candidates else None)
+    if not predecessor_unit or int(predecessor_unit['output_rows'])!=0:
+        raise ValueError(changed)
+    old_hash=digest([dependencies,seed_unit['prior_state_hash'],sql.VERSION])
+    if old_hash!=technical_unit['source_hash']:
+        raise ValueError(changed)
+    return old_hash
 
 
 @contextmanager
@@ -774,8 +803,12 @@ def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation
             prior,prior_hash,prior_build=prior_indicator_state(ledger,client,args.database,build,day,ticker,
                 plan['predecessors'][str(day)],calculation_source,rules_hash,plan['splits'])
             dependency_hash = digest([dependencies,prior_hash,sql.VERSION])
-            technical_unit=completed(ledger,client,args.database,build,day,ticker,'technical',dependency_hash)
             seed_unit=ledger.seed(build,day,ticker)
+            technical_unit=ledger.unit(build,day,ticker,'technical')
+            resume_hash=resume_technical_hash(ledger,build,day,ticker,plan['predecessors'][str(day)],
+                args.database,calculation_source,rules_hash,dependencies,prior,prior_build,
+                dependency_hash,technical_unit,seed_unit)
+            technical_unit=completed(ledger,client,args.database,build,day,ticker,'technical',resume_hash)
             if technical_unit and seed_unit:
                 if technical_unit['attempt_id']!=seed_unit['attempt_id']:
                     raise ValueError(f'{day} {ticker}: seed and indicator attempts differ')
