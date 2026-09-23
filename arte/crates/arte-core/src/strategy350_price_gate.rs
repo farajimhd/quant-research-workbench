@@ -1402,6 +1402,15 @@ mod tests {
         evidence
             .require_historical_decision(&proof, &decision_scope, &input, &gate_hash)
             .unwrap();
+        assert!(
+            crate::strategy350_transaction::require_historical_macd(None, &proof, &input).is_err()
+        );
+        assert!(crate::strategy350_transaction::require_historical_macd(
+            Some(&macd_evidence),
+            &proof,
+            &input
+        )
+        .is_err());
         input.available_at_ns = 2 * S;
         assert!(evidence
             .require_historical_identity(&proof, &decision_scope, &input, &gate_hash)
@@ -1555,99 +1564,48 @@ mod tests {
             .is_err()
         );
         assert!(account.pending_batch().is_none());
-        crate::strategy350_transaction::prepare_historical_market_decision(
-            &mut account,
-            crate::strategy350_transaction::HistoricalMarketDecisionInput {
-                input: add_input.clone(),
-                safety: &add_safety,
-                price: &evidence,
-                source: &proof,
-                expected_price_gate_hash: &gate_hash,
-                refinement: Some(&refinement),
-                macd: None,
-                other_evidence_hash: &other_hash,
-            },
-            |_| Ok(()),
-            |_| {
-                Ok(vec![crate::strategy_dispatch::Action::Add(Box::new(
-                    proposal,
-                ))])
-            },
-        )
-        .unwrap();
-        let rows = account.pending_batch().unwrap().records().to_vec();
-        let committed_add = account.acknowledge(&rows).unwrap();
         assert!(
-            crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
-                &committed_add,
-                &evidence,
-                &proof,
-                &gate_hash,
-                None,
-                None,
-                &other_hash,
+            crate::strategy350_transaction::prepare_historical_market_decision(
+                &mut account,
+                crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                    input: add_input.clone(),
+                    safety: &add_safety,
+                    price: &evidence,
+                    source: &proof,
+                    expected_price_gate_hash: &gate_hash,
+                    refinement: Some(&refinement),
+                    macd: None,
+                    other_evidence_hash: &other_hash,
+                },
+                |_| Ok(()),
+                |_| Ok(vec![crate::strategy_dispatch::Action::Add(Box::new(
+                    proposal.clone()
+                ))]),
             )
             .is_err()
         );
-        let historical_add =
-            crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
-                &committed_add,
-                &evidence,
-                &proof,
-                &gate_hash,
-                Some(&refinement),
-                None,
-                &"e".repeat(64),
+        assert!(account.pending_batch().is_none());
+        assert!(
+            crate::strategy350_transaction::prepare_historical_market_decision(
+                &mut account,
+                crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                    input: add_input.clone(),
+                    safety: &add_safety,
+                    price: &evidence,
+                    source: &proof,
+                    expected_price_gate_hash: &gate_hash,
+                    refinement: Some(&refinement),
+                    macd: Some(&macd_evidence),
+                    other_evidence_hash: &other_hash,
+                },
+                |_| Ok(()),
+                |_| Ok(vec![crate::strategy_dispatch::Action::Add(Box::new(
+                    proposal.clone()
+                ))]),
             )
-            .unwrap();
-        let allocation = crate::decision_orders::Allocation {
-            account: "first".into(),
-            instrument: 10,
-            quantity: 1,
-            price_scale: 2,
-            tick: 1,
-            entry_limit: 1000,
-            deadline_ns: 3 * S,
-        };
-        let bands = crate::luld::Evidence {
-            provider: 1,
-            instrument: 10,
-            session: 20260922,
-            lower: 800,
-            upper: 1200,
-            scale: 2,
-            effective_at_ns: 2 * S,
-            available_at_ns: 2 * S + 10,
-            official: true,
-        };
-        let risk = crate::orders::RiskPolicy {
-            band_provider: 1,
-            band_session: 20260922,
-            band_buffer_ticks: 3,
-            max_band_age_ns: S,
-        };
-        assert!(crate::decision_orders::bracket(
-            &committed_add,
-            0,
-            &allocation,
-            add_input.evaluated_at_ns,
-            true,
-            Some(&bands),
-            &risk,
-        )
-        .is_err());
-        let plan = crate::decision_orders::bracket_350_historical(
-            &historical_add,
-            0,
-            &allocation,
-            add_input.evaluated_at_ns,
-            true,
-            Some(&bands),
-            &risk,
-        )
-        .unwrap();
-        assert_eq!(plan.bracket.stop, Some(900));
-        assert_eq!(plan.bracket.target, Some(1100));
+            .is_err()
+        );
+        assert!(account.pending_batch().is_none());
         let ineligible_prepared = Prepared::new(
             market_scope,
             "historical-explicit-clock-v1",

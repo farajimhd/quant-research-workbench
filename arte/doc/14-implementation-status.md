@@ -74,9 +74,13 @@ run-bound trade proof, completed-frame clocks and exact floating-point outputs.
 The account journal does not yet require this value as a typed operand.
 Historical Strategy 350 decision preparation and journal readback now accept
 that typed MACD evidence and bind its fingerprint to the decision hash. A
-different proof or omission at readback is rejected. The field is still
-optional, including for exposure actions; mandatory bullish-MACD admission
-and the remaining typed operands are not implemented, so this does not
+different proof or omission at readback is rejected. Entry/add actions now
+require proof-matched bullish four-frame MACD evidence at both decision
+preparation and journal readback. Wait and exit decisions may omit it. The
+existing two-second historical add fixture is correctly rejected because a
+completed 30-second frame cannot exist then. A later-time positive entry and
+historical bracket-planning test remains to be rebuilt with real completed
+frames. The remaining typed operands are still absent, so this does not
 authorize a production backtest or live order path.
 Numerical parity with the current Python/QMD MACD initialization is unproven;
 activation must remain blocked until that comparison and an effective

@@ -70,6 +70,7 @@ impl<'a> CommittedHistoricalDecision<'a> {
         )?;
         if has_exposure(&decision.actions) {
             require_historical_refinement(refinement, source)?;
+            require_historical_macd(macd, source, &decision.input)?;
         }
         Ok(Self { committed })
     }
@@ -110,6 +111,26 @@ fn require_historical_refinement(
     {
         return Err(Error::Unready(
             "Strategy 350 historical event was not selected for refinement".into(),
+        ));
+    }
+    Ok(())
+}
+pub(crate) fn require_historical_macd(
+    macd: Option<&HistoricalMacdEvidence>,
+    source: &HistoricalEventProof,
+    input: &InputBoundary,
+) -> Result<()> {
+    let macd = macd.ok_or_else(|| Error::Unready("Strategy 350 historical MACD missing".into()))?;
+    macd.require_proof(source)?;
+    let outcome = macd.outcome();
+    if !outcome.bullish
+        || outcome.event_time_ns != input.event_time_ns
+        || outcome.evaluated_at_ns != input.evaluated_at_ns
+        || outcome.event_time_ns != source.source_time_ns()
+        || outcome.evaluated_at_ns != source.evaluated_at_ns()
+    {
+        return Err(Error::Unready(
+            "Strategy 350 historical MACD blocks purchase".into(),
         ));
     }
     Ok(())
@@ -209,6 +230,7 @@ pub fn prepare_historical_market_decision<S: Clone + Serialize>(
         if has_exposure(&actions) {
             price.require_historical_decision(source, &scope, &input, expected_price_gate_hash)?;
             require_historical_refinement(refinement, source)?;
+            require_historical_macd(macd, source, &input)?;
         }
         Ok(actions)
     })
