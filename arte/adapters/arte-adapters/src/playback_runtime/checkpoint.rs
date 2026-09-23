@@ -29,13 +29,22 @@ pub(super) struct RejectionProgress {
 #[serde(deny_unknown_fields)]
 struct Root {
     version: u32,
+    mode: ImageMode,
     manifest_hash: String,
     cut: Cut,
+    local_head: String,
+    local_sequence: u64,
     playback: String,
     execution: String,
     maximum_quote_age_ns: u64,
     actions: Vec<ActionProgress>,
     targets: BTreeMap<String, super::candidate_position::TargetRecord>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ImageMode {
+    Selected,
+    Standby,
 }
 pub struct Bundle {
     pub root: Object,
@@ -79,6 +88,74 @@ impl Runtime {
         execution_limits: simulation_runtime::checkpoint::Limits,
         maximum_bytes: usize,
     ) -> Result<Self> {
+        Self::restore_image(
+            bundle,
+            expected_root,
+            manifest,
+            cut,
+            sources,
+            prepared,
+            market_request,
+            frames_per_poll,
+            maximum_consumers,
+            receipts,
+            costs,
+            execution_limits,
+            maximum_bytes,
+            ImageMode::Selected,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_standby_checkpoint(
+        bundle: &Bundle,
+        expected_root: &str,
+        manifest: &Pinned,
+        global_cut: &Cut,
+        sources: &arte_core::market_structure::scheduler::playback::sources::Catalog,
+        prepared: arte_core::market_structure::scheduler::playback::Prepared,
+        market_request: arte_core::market_structure::scheduler::checkpoint::Request<'_>,
+        frames_per_poll: usize,
+        maximum_consumers: usize,
+        costs: arte_core::simulation_costs::Pinned,
+        execution_limits: simulation_runtime::checkpoint::Limits,
+        maximum_bytes: usize,
+    ) -> Result<Self> {
+        Self::restore_image(
+            bundle,
+            expected_root,
+            manifest,
+            global_cut,
+            sources,
+            prepared,
+            market_request,
+            frames_per_poll,
+            maximum_consumers,
+            &[],
+            costs,
+            execution_limits,
+            maximum_bytes,
+            ImageMode::Standby,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn restore_image(
+        bundle: &Bundle,
+        expected_root: &str,
+        manifest: &Pinned,
+        cut: &Cut,
+        sources: &arte_core::market_structure::scheduler::playback::sources::Catalog,
+        prepared: arte_core::market_structure::scheduler::playback::Prepared,
+        market_request: arte_core::market_structure::scheduler::checkpoint::Request<'_>,
+        frames_per_poll: usize,
+        maximum_consumers: usize,
+        receipts: &[&Committed],
+        costs: arte_core::simulation_costs::Pinned,
+        execution_limits: simulation_runtime::checkpoint::Limits,
+        maximum_bytes: usize,
+        mode: ImageMode,
+    ) -> Result<Self> {
         if maximum_bytes == 0 || maximum_bytes > 64 * 1024 * 1024 || bundle.root.id != expected_root
         {
             return Err(Error::Invalid(
@@ -108,8 +185,28 @@ impl Runtime {
         bundle.root.verify()?;
         let root: Root = serde_json::from_slice(&bundle.root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
-        let context = content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), cut))?;
-        if root.version != 5
+        let scope = prepared.scope();
+        let context = match mode {
+            ImageMode::Selected => {
+                content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), cut))?
+            }
+            ImageMode::Standby => content_hash(&(
+                "arte.playback-controller-standby.v1",
+                manifest.hash(),
+                cut,
+                scope.provider,
+                scope.instrument,
+                scope.session,
+                root.local_head.as_str(),
+                root.local_sequence,
+            ))?,
+        };
+        if root.version != 6
+            || root.mode != mode
+            || (mode == ImageMode::Selected
+                && (root.local_head != cut.boundary_hash
+                    || root.local_sequence != cut.boundary_sequence))
+            || (mode == ImageMode::Standby && !root.actions.is_empty())
             || root.manifest_hash != manifest.hash()
             || root.cut != *cut
             || root.playback != bundle.playback.root.id
@@ -134,32 +231,52 @@ impl Runtime {
         let boundary = run
             .pending()?
             .ok_or_else(|| Error::Unready("controller recovery boundary missing".into()))?;
-        if boundary.id != cut.boundary_hash
-            || boundary.evaluated_at_ns != cut.at_ns
-            || run.status().acknowledged_boundaries.checked_add(1) != Some(cut.boundary_sequence)
+        if boundary.id != root.local_head
+            || boundary.sequence != root.local_sequence
+            || (mode == ImageMode::Selected
+                && (boundary.id != cut.boundary_hash
+                    || boundary.evaluated_at_ns != cut.at_ns
+                    || boundary.sequence != cut.boundary_sequence))
+            || (mode == ImageMode::Standby && boundary.evaluated_at_ns < cut.at_ns)
+            || run.status().acknowledged_boundaries.checked_add(1) != Some(boundary.sequence)
         {
             return Err(Error::Conflict("controller recovery cut differs".into()));
         }
-        let execution = simulation_runtime::Runtime::restore_checkpoint(
-            &bundle.execution,
-            &root.execution,
-            manifest,
-            cut,
-            costs,
-            execution_limits,
-        )?;
+        let execution = match mode {
+            ImageMode::Selected => simulation_runtime::Runtime::restore_checkpoint(
+                &bundle.execution,
+                &root.execution,
+                manifest,
+                cut,
+                costs,
+                execution_limits,
+            )?,
+            ImageMode::Standby => simulation_runtime::Runtime::restore_standby_checkpoint(
+                &bundle.execution,
+                &root.execution,
+                manifest,
+                cut,
+                &run,
+                costs,
+                execution_limits,
+            )?,
+        };
         execution.require_recovered_playback(&run, root.maximum_quote_age_ns)?;
         let actions = actions::Work::restore(&root.actions, receipts)?;
         let restored = Self {
             run,
             execution,
             maximum_quote_age_ns: root.maximum_quote_age_ns,
-            dispatched_boundary: Some(cut.boundary_hash.clone()),
+            dispatched_boundary: (mode == ImageMode::Selected).then(|| cut.boundary_hash.clone()),
             actions,
             targets: root.targets,
             startup_hash: None,
         };
-        restored.validate_targets(cut.at_ns)?;
+        if mode == ImageMode::Standby {
+            restored.validate_standby_targets(cut.at_ns)?;
+        } else {
+            restored.validate_targets(cut.at_ns)?;
+        }
         restored.validate_allocations()?;
         Ok(restored)
     }
@@ -197,6 +314,88 @@ impl Runtime {
         let execution = self
             .execution
             .checkpoint(manifest, cut, last_fills, execution_limits)?;
+        self.image(
+            manifest,
+            cut,
+            ImageMode::Selected,
+            &context,
+            execution,
+            maximum_bytes,
+        )
+    }
+
+    /// Preserve a preloaded later ticker without treating its market head as
+    /// globally selected or its account decisions as already evaluated.
+    pub fn checkpoint_standby(
+        &self,
+        manifest: &Pinned,
+        global_cut: &Cut,
+        last_fills: &BTreeMap<String, Fill>,
+        execution_limits: simulation_runtime::checkpoint::Limits,
+        maximum_bytes: usize,
+    ) -> Result<Bundle> {
+        if maximum_bytes == 0
+            || maximum_bytes > 64 * 1024 * 1024
+            || self.run.manifest_hash() != manifest.hash()
+            || self.dispatched_boundary.is_some()
+            || !self.actions.checkpoint()?.is_empty()
+        {
+            return Err(Error::Conflict(
+                "standby controller is not at an idle cut".into(),
+            ));
+        }
+        let boundary = self
+            .run
+            .pending()?
+            .ok_or_else(|| Error::Unready("standby controller market head missing".into()))?;
+        if boundary.evaluated_at_ns < global_cut.at_ns
+            || self.run.status().acknowledged_boundaries.checked_add(1) != Some(boundary.sequence)
+        {
+            return Err(Error::Conflict("standby controller head differs".into()));
+        }
+        self.validate_standby_targets(global_cut.at_ns)?;
+        self.validate_allocations()?;
+        let scope = self.market_scope();
+        let context = content_hash(&(
+            "arte.playback-controller-standby.v1",
+            manifest.hash(),
+            global_cut,
+            scope.provider,
+            scope.instrument,
+            scope.session,
+            boundary.id,
+            boundary.sequence,
+        ))?;
+        let execution = self.execution.checkpoint_standby(
+            manifest,
+            global_cut,
+            &self.run,
+            last_fills,
+            execution_limits,
+        )?;
+        self.image(
+            manifest,
+            global_cut,
+            ImageMode::Standby,
+            &context,
+            execution,
+            maximum_bytes,
+        )
+    }
+
+    fn image(
+        &self,
+        manifest: &Pinned,
+        cut: &Cut,
+        mode: ImageMode,
+        context: &str,
+        execution: simulation_runtime::checkpoint::Bundle,
+        maximum_bytes: usize,
+    ) -> Result<Bundle> {
+        let head = self
+            .run
+            .pending()?
+            .ok_or_else(|| Error::Unready("controller image market head missing".into()))?;
         let execution_bytes = execution
             .objects
             .values()
@@ -207,7 +406,7 @@ impl Runtime {
         let remaining = maximum_bytes
             .checked_sub(execution_bytes)
             .ok_or_else(|| Error::Capacity("controller recovery execution budget".into()))?;
-        let playback = run.checkpoint(&context, remaining)?;
+        let playback = self.run.checkpoint(context, remaining)?;
         let scheduler = &playback.playback.scheduler;
         let mut used = execution_bytes;
         for object in [
@@ -235,9 +434,12 @@ impl Runtime {
         serde_json::to_writer(
             &mut writer,
             &Root {
-                version: 5,
+                version: 6,
+                mode,
                 manifest_hash: manifest.hash().into(),
                 cut: cut.clone(),
+                local_head: head.id.into(),
+                local_sequence: head.sequence,
                 playback: playback.root.id.clone(),
                 execution: execution.root.id.clone(),
                 maximum_quote_age_ns: self.maximum_quote_age_ns,

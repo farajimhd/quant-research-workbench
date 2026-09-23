@@ -1408,7 +1408,8 @@ async fn lifecycle(target_exit: bool, cancel_unfilled: bool, scenario: Scenario)
             .checkpoint(&manifest, &cut, &last_fills, limits, 2_000_000)
             .unwrap();
         let root: serde_json::Value = serde_json::from_slice(&image.root.payload).unwrap();
-        assert_eq!(root["version"], 5);
+        assert_eq!(root["version"], 6);
+        assert_eq!(root["mode"], "selected");
         assert_eq!(root["targets"].as_object().unwrap().len(), 2);
         let context =
             content_hash(&("arte.playback-controller-cut.v1", manifest.hash(), &cut)).unwrap();

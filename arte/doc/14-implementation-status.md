@@ -4724,3 +4724,12 @@ sets, the selected head, and aggregate byte budget. The two-ticker offline
 test rejects a wrong expected root and a substituted standby strategy root.
 This graph is not a durable publication or semantic restore. It cannot
 authorize replay acknowledgement or trading. No service ran.
+
+Controller recovery schema v6 now distinguishes selected and standby images.
+A standby image retains its preloaded future market head, simulated execution
+frontier, working targets and idle action state under the selected global cut.
+Restore requires independently supplied source, prepared frames, seed,
+configuration, quote policy and cost-model evidence. It rejects using a
+standby image as a selected image. The two-ticker offline test restores and
+recaptures the standby controller with the same root. Whole-run semantic
+restore, durable readback and publication remain incomplete. No service ran.

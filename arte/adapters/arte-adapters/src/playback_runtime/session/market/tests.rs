@@ -432,11 +432,12 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         )
         .is_err());
     assert!(second_doc
+        .clone()
         .assemble_multi(
             &second_hash,
             &combined,
             &sources,
-            second_prepared,
+            second_prepared.clone(),
             &first_seed,
             &seeds,
         )
@@ -701,6 +702,77 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
             bytes: 50_000,
         },
     };
+    let standby_controller_image = standby
+        .checkpoint_standby(
+            &combined,
+            &cut,
+            &BTreeMap::new(),
+            execution_limits,
+            1_000_000,
+        )
+        .unwrap();
+    let standby_head = standby.run.pending().unwrap().unwrap();
+    let standby_context = content_hash(&(
+        "arte.playback-controller-standby.v1",
+        combined.hash(),
+        &cut,
+        standby.market_scope().provider,
+        standby.market_scope().instrument,
+        standby.market_scope().session,
+        standby_head.id,
+        standby_head.sequence,
+    ))
+    .unwrap();
+    let standby_seed_hash = second_seed.hydrate().unwrap().hash;
+    let standby_configuration_hash = standby
+        .run
+        .market()
+        .unwrap()
+        .configuration_hash()
+        .to_owned();
+    let restored_standby = crate::playback_runtime::Runtime::restore_standby_checkpoint(
+        &standby_controller_image,
+        &standby_controller_image.root.id,
+        &combined,
+        &cut,
+        &sources,
+        second_prepared.clone(),
+        arte_core::market_structure::scheduler::checkpoint::Request {
+            context_hash: &standby_context,
+            run_id: &combined.manifest().run_id,
+            seed_hash: &standby_seed_hash,
+            configuration_hash: &standby_configuration_hash,
+            quote_policy: std::sync::Arc::new(
+                arte_core::quote_state::eligibility::Pinned::new(
+                    second_doc.quote_policy.clone(),
+                    &content_hash(&second_doc.quote_policy).unwrap(),
+                )
+                .unwrap(),
+            ),
+            maximum_pending: second_doc.maximum_pending_events,
+            maximum_bytes: 1_000_000,
+        },
+        second_doc.frames_per_poll,
+        second_doc.maximum_consumers,
+        simulation_costs::Pinned::new(cost_model.clone(), &combined).unwrap(),
+        execution_limits,
+        1_000_000,
+    )
+    .unwrap();
+    assert_eq!(
+        restored_standby
+            .checkpoint_standby(
+                &combined,
+                &cut,
+                &BTreeMap::new(),
+                execution_limits,
+                1_000_000
+            )
+            .unwrap()
+            .root
+            .id,
+        standby_controller_image.root.id
+    );
     let execution_image = standby
         .execution
         .checkpoint_standby(

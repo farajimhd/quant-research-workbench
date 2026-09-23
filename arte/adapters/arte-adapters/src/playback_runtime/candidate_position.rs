@@ -31,18 +31,39 @@ impl Reconciled {
 }
 impl Runtime {
     pub(super) fn validate_targets(&self, at_ns: u64) -> Result<()> {
+        self.validate_targets_at(at_ns, false)
+    }
+    pub(super) fn validate_standby_targets(&self, at_ns: u64) -> Result<()> {
+        self.validate_targets_at(at_ns, true)
+    }
+    fn validate_targets_at(&self, at_ns: u64, standby: bool) -> Result<()> {
         let mut expected = std::collections::BTreeSet::new();
         for scope in self.run.scopes() {
             let key = arte_core::content_hash(scope)?;
             expected.insert(key.clone());
-            let position = self.owned_candidate_position(scope)?;
-            if position.position.pending_entry && !self.targets.contains_key(&key) {
+            let selected_pending = if standby {
+                None
+            } else {
+                Some(self.owned_candidate_position(scope)?.position.pending_entry)
+            };
+            let account = if standby {
+                self.execution.account_view(&scope.account)?
+            } else {
+                self.account_view(&scope.account)?
+            };
+            let pending_entry = selected_pending.unwrap_or_else(|| {
+                account.orders.iter().any(|owned| {
+                    owned.scope == scope
+                        && !owned.order.entry_cancelled
+                        && owned.order.entry_filled < owned.order.bracket.quantity
+                })
+            });
+            if pending_entry && !self.targets.contains_key(&key) {
                 return Err(Error::Unready(
                     "pending entry target provenance missing".into(),
                 ));
             }
             if let Some(record) = self.targets.get(&key) {
-                let account = self.account_view(&scope.account)?;
                 for owned in account.orders.iter().filter(|owned| owned.scope == scope) {
                     let order = owned.order;
                     if order.entry_filled > order.exit_filled
