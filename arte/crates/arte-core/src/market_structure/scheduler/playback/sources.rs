@@ -119,6 +119,9 @@ impl Catalog {
     }
 }
 impl HistoricalSource<'_> {
+    pub fn prepared(&self) -> &Prepared {
+        self.prepared
+    }
     /// Resolve the exact prepared frame/input without a source scan.
     pub fn event(&self, frame_index: usize, input_index: usize) -> Result<HistoricalEventProof> {
         let frame = self

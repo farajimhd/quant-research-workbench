@@ -33,8 +33,11 @@ does not yet consume this index. The immutable modeled playback tape now also
 exposes a bounded list of selected frame/input positions. This preserves the
 complete market/V7 tape and modeled event clocks while avoiding a full
 strategy-refinement scan on every parameter run. The executable Strategy 350
-loop, proof binding at each selected position, and multi-day performance
-measurement remain open.
+loop and multi-day performance measurement remain open. A run-bound cursor now
+resolves selected trade positions lazily through the historical source catalog,
+returning the same modeled event proofs used by the Strategy 350 decision
+contract. It excludes quote inputs from trade proofs; quote state still follows
+the complete market replay. This is proof routing, not a running backtest.
 The plan can now test a run-pinned replay event against those ranges by SIP
 time with a half-open boundary. Strategy 350 account decisions bind the plan
 identity in historical mode and a sealed selected bucket in live mode.

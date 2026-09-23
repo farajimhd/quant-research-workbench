@@ -92,7 +92,52 @@ pub struct RefinementPlan {
     intervals: Vec<Interval>,
     evidence_hash: String,
 }
+/// Lazily derives run-pinned trade proofs from a bounded sparse schedule.
+/// Quotes stay on the complete market tape and never become trade proofs.
+pub struct HistoricalRefinement<'a, 'p> {
+    source: &'a crate::market_structure::scheduler::playback::sources::HistoricalSource<'p>,
+    positions: Vec<(usize, usize)>,
+    cursor: usize,
+    plan_hash: String,
+}
+impl HistoricalRefinement<'_, '_> {
+    pub fn plan_hash(&self) -> &str {
+        &self.plan_hash
+    }
+    pub fn remaining(&self) -> usize {
+        self.positions.len() - self.cursor
+    }
+    pub fn next_trade(
+        &mut self,
+    ) -> Result<Option<crate::market_structure::scheduler::playback::sources::HistoricalEventProof>>
+    {
+        let Some(&(frame, input)) = self.positions.get(self.cursor) else {
+            return Ok(None);
+        };
+        let proof = self.source.event(frame, input)?;
+        self.cursor += 1;
+        Ok(Some(proof))
+    }
+}
 impl RefinementPlan {
+    pub fn bind_historical<'a, 'p>(
+        &self,
+        source: &'a crate::market_structure::scheduler::playback::sources::HistoricalSource<'p>,
+        maximum_selected: usize,
+    ) -> Result<HistoricalRefinement<'a, 'p>> {
+        let prepared = source.prepared();
+        let mut positions = self.selected_prepared_positions(prepared, maximum_selected)?;
+        positions.retain(|&(frame, input)| {
+            prepared.frames()[frame].inputs[input].observation.key.kind
+                == crate::events::EventKind::Trade
+        });
+        Ok(HistoricalRefinement {
+            source,
+            positions,
+            cursor: 0,
+            plan_hash: self.evidence_hash.clone(),
+        })
+    }
     pub fn from_batches(
         scope: crate::event_order::Scope,
         source_interval: Interval,
@@ -1103,6 +1148,25 @@ mod tests {
             .selected_source_indices(&live, crate::events::EventKind::Trade, 3)
             .is_err());
         let mut modeled = source.clone();
+        let mut quote = observation(5, S + 220_000_000);
+        quote.key.kind = crate::events::EventKind::Quote;
+        quote.payload = crate::events::Payload::Quote {
+            bid: crate::events::Decimal {
+                atoms: 99,
+                scale: 2,
+            },
+            ask: crate::events::Decimal {
+                atoms: 101,
+                scale: 2,
+            },
+            bid_size: crate::events::Decimal { atoms: 1, scale: 0 },
+            ask_size: crate::events::Decimal { atoms: 1, scale: 0 },
+            bid_exchange: 1,
+            ask_exchange: 1,
+            conditions: vec![],
+            indicators: vec![],
+        };
+        modeled.push(quote);
         modeled.sort_unstable_by_key(|event| (event.sip.ns, event.key.sequence));
         let prepared = crate::market_structure::scheduler::playback::Prepared::new(
             scope,
@@ -1112,26 +1176,82 @@ mod tests {
                 evaluated_at_ns: source_interval.end + 1,
                 inputs: modeled
                     .into_iter()
-                    .map(
-                        |observation| crate::market_structure::scheduler::playback::Input {
+                    .map(|observation| {
+                        let eligible = observation.key.kind == crate::events::EventKind::Trade;
+                        crate::market_structure::scheduler::playback::Input {
                             observation,
-                            eligible: true,
-                        },
-                    )
+                            eligible,
+                        }
+                    })
                     .collect(),
             }],
             crate::market_structure::scheduler::playback::Limits {
                 maximum_frames: 1,
-                maximum_events: 4,
+                maximum_events: 5,
                 maximum_serialized_bytes: 100_000,
             },
         )
         .unwrap();
         assert_eq!(
-            plan.selected_prepared_positions(&prepared, 3).unwrap(),
-            vec![(0, 0), (0, 1), (0, 3)]
+            plan.selected_prepared_positions(&prepared, 4).unwrap(),
+            vec![(0, 0), (0, 1), (0, 3), (0, 4)]
         );
-        assert!(plan.selected_prepared_positions(&prepared, 2).is_err());
+        assert!(plan.selected_prepared_positions(&prepared, 3).is_err());
+        {
+            use crate::{
+                market_structure::scheduler::playback::sources::{Catalog, Shard},
+                run_manifest::{Clock, Consumer, Execution, Manifest, Pinned},
+                strategy_dispatch::{Mode, StrategyKind},
+            };
+            let catalog = Catalog {
+                schema_version: 1,
+                authority_manifest_hash: "c".repeat(64),
+                clock: Clock::Historical,
+                shards: vec![Shard {
+                    provider: scope.provider,
+                    instrument: scope.instrument,
+                    session: scope.session,
+                    prepared_hash: prepared.hash().into(),
+                    clock_model: "historical-model".into(),
+                }],
+            };
+            let manifest = Manifest {
+                schema_version: 3,
+                run_id: "screen-backtest".into(),
+                mode: Mode::Backtest,
+                code_release_hash: "a".repeat(64),
+                source_manifest_hash: catalog.hash().unwrap(),
+                reference_manifest_hash: "b".repeat(64),
+                seed_manifest_hash: "d".repeat(64),
+                algorithm_manifest_hash: "e".repeat(64),
+                dependency_plan_hash: "f".repeat(64),
+                hardware_profile_hash: "1".repeat(64),
+                clock: Clock::Historical,
+                execution: Execution::Simulated {
+                    fill_model_hash: "2".repeat(64),
+                    cost_model_hash: "3".repeat(64),
+                },
+                consumers: vec![Consumer {
+                    account: "first".into(),
+                    instrument: scope.instrument,
+                    strategy_instance: "strategy-350".into(),
+                    strategy_kind: StrategyKind::Strategy350,
+                    execution_interval: ExecutionInterval::Fixed(100_000_000),
+                    effective_config_hash: "4".repeat(64),
+                }],
+            };
+            let pinned = Pinned::new(manifest.clone(), &manifest.hash().unwrap()).unwrap();
+            let source = catalog.bind_historical(&pinned, &prepared).unwrap();
+            let mut refinement = plan.bind_historical(&source, 4).unwrap();
+            assert_eq!(refinement.plan_hash(), plan.evidence_hash());
+            assert_eq!(refinement.remaining(), 3);
+            let first = refinement.next_trade().unwrap().unwrap();
+            assert_eq!(first.run_id(), "screen-backtest");
+            assert_eq!(first.key().sequence, 1);
+            assert_eq!(refinement.next_trade().unwrap().unwrap().key().sequence, 2);
+            assert_eq!(refinement.next_trade().unwrap().unwrap().key().sequence, 4);
+            assert!(refinement.next_trade().unwrap().is_none());
+        }
         assert!(plan.contains_source_time(scope, S).unwrap());
         assert!(plan.contains_source_time(scope, S + 99_999_999).unwrap());
         assert!(!plan.contains_source_time(scope, S + 100_000_000).unwrap());
