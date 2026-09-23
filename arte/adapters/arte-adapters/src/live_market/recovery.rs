@@ -17,6 +17,55 @@ pub struct Bundle {
     pub features: Object,
     pub signal: live_exact_signal::Bundle,
 }
+pub struct References {
+    pub scheduler: String,
+    pub features: String,
+    pub signal: String,
+    pub sequence: u64,
+    pub evaluated_at_ns: u64,
+}
+impl Bundle {
+    pub fn references(root: &Object) -> Result<References> {
+        root.verify()?;
+        if root.payload.len() > 4096 {
+            return Err(Error::Capacity("live cut root bytes".into()));
+        }
+        let saved: Root = serde_json::from_slice(&root.payload)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+        if saved.version != 1
+            || !valid_hash(&saved.context_hash)
+            || !valid_hash(&saved.scheduler)
+            || !valid_hash(&saved.features)
+            || !valid_hash(&saved.signal)
+            || saved.sequence == 0
+            || saved.boundary_id.is_empty()
+            || saved.evaluated_at_ns == 0
+        {
+            return Err(Error::Invalid("live cut references".into()));
+        }
+        Ok(References {
+            scheduler: saved.scheduler,
+            features: saved.features,
+            signal: saved.signal,
+            sequence: saved.sequence,
+            evaluated_at_ns: saved.evaluated_at_ns,
+        })
+    }
+    pub fn objects(&self) -> [&Object; 10] {
+        [
+            &self.scheduler.market,
+            &self.scheduler.trades,
+            &self.scheduler.quotes,
+            &self.scheduler.book,
+            &self.scheduler.root,
+            &self.features,
+            &self.signal.bars,
+            &self.signal.signal,
+            &self.signal.root,
+            &self.root,
+        ]
+    }
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Root {

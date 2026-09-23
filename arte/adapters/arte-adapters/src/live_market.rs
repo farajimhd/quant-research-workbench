@@ -979,6 +979,18 @@ mod tests {
             .unwrap();
         let context = "c".repeat(64);
         let cut = lane.checkpoint_pending(&context, 1_000_000).unwrap();
+        let refs = recovery::Bundle::references(&cut.root).unwrap();
+        assert_eq!(refs.scheduler, cut.scheduler.root.id);
+        assert_eq!(refs.features, cut.features.id);
+        assert_eq!(refs.signal, cut.signal.root.id);
+        assert_eq!(cut.objects().len(), 10);
+        assert_eq!(cut.objects().last().unwrap().id, cut.root.id);
+        let scheduler_refs =
+            arte_core::market_structure::scheduler::checkpoint::Bundle::references(
+                &cut.scheduler.root,
+            )
+            .unwrap();
+        assert_eq!(scheduler_refs[0], cut.scheduler.market.id);
         let market_hash = lane.market.state().unwrap().configuration_hash().to_owned();
         let generation = "a".repeat(64);
         let boundary = lane.market.pending().unwrap().unwrap();

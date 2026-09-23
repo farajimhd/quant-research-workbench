@@ -108,13 +108,13 @@ projection records the completed-bar end and leaves availability absent. Live
 evaluation requires an actual availability time no earlier than that bar end
 and keeps it distinct from the signal event time. A small immutable recovery
 object pins the source scope and formula hash at state creation, then verifies
-both before restore. The live recovery image combines the exact developing
-100 ms bar, signal state, and scheduler boundary sequence in one immutable
-root. Restore requires that exact root and boundary; an independent latest
-signal snapshot is not a valid live recovery cut. The ClickHouse adapter uses
-child objects followed by a root, rejects conflicting slots, and requires the
-approved SSD policy and actual part placement. Migration 023 is authored but
-has not been applied; no connected read/write has been tested.
+both before restore. The live recovery image joins the scheduler, candidate
+features, exact developing 100 ms bar, and signal state at one pending boundary.
+Restore requires that exact root and boundary; an independent latest signal
+snapshot is not a valid live recovery cut. The ClickHouse adapter writes
+content-addressed children before one root slot. It rejects conflicting slots
+and requires the approved SSD policy and actual part placement. Migration 023
+is authored but has not been applied; no connected read/write has been tested.
 Live dense-empty-bucket advancement and feed-continuity proof still need
 the MDE-to-signal actor; this state object alone does not authorize trading.
 The current ARTE market scheduler exposes floating-point bars. The signal
@@ -127,8 +127,9 @@ reports covered empty intervals without creating false bars. A unit test feeds
 those advances to the same Early Squeeze state across an empty bucket. No
 floating-point reconstruction is approved for parity. The live lane binds the
 builder to scheduler boundaries and can capture its in-progress state in a
-common in-memory recovery cut. ClickHouse publication of the whole lane cut
-and proof that the external watermark certifies empty intervals remain open.
+common recovery cut. The ClickHouse publication adapter is authored but remains
+unapplied and untested against a database. Proof that the external watermark
+certifies empty intervals remains open.
 
 The first market-time tape borrows values from complete 100 ms columnar batches.
 It dispatches only nonempty buckets, sorts equal-time ticker events by instrument,

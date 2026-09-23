@@ -71,9 +71,11 @@ observation requires a genuine availability clock; historical projection never
 substitutes one. The bounded immutable checkpoint pins its source scope and
 formula at state creation, verifies its content hash, and rejects clock or
 geometry mismatch on restore. The former signal-only Migration 023 was
-replaced before application. Its current schema and adapter hold a combined
-exact-bar and signal root at one scheduler boundary. In-process unit tests
-cover root hash references, boundary idempotency, and conflicting root rows.
+replaced before application. Migration 023 now holds one full live-lane root
+with scheduler, candidate-feature and exact-bar/signal children at one pending
+boundary. The adapter writes and reads back all content-addressed child objects
+before publishing the immutable root slot. In-process unit tests cover the
+common-cut roundtrip, boundary idempotency, and conflicting root rows.
 No connected ClickHouse publication or recovery has been tested. A complete
 lane/scheduler recovery root, continuous empty-bucket advancement, and feed
 coverage remain required for live use.
@@ -89,14 +91,15 @@ eligible trades and an external watermark; it does not infer empty intervals
 from silence. The live lane now owns this builder when configured and
 cross-checks exact 100 ms completed bars against the scheduler. Full lane-root
 publication and watermark/coverage acceptance are still incomplete.
-An in-memory live common-cut root now pins scheduler, candidate features, and
+The live common-cut root now pins scheduler, candidate features, and
 the exact-bar/signal owner to the same pending boundary. Restore verifies the
 root and component hashes, configuration, source scope, sequence, boundary ID,
 and evaluation time. It leaves the independent quote/LULD safety books,
 trade-policy binding, and two-channel release frontier unready, so recovery
 cannot reuse stale safety evidence. A focused offline roundtrip passed. The
-common root is not yet published in ClickHouse and does not restore broker or
-portfolio authority.
+common root has a ClickHouse adapter, but no schema was applied and no connected
+publication/readback has been run. It does not restore broker or portfolio
+authority.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service

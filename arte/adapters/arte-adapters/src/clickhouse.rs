@@ -14,9 +14,9 @@ mod compact_bars;
 mod coverage_index;
 mod eligibility_policies;
 mod event_batches;
-mod exact_signal_checkpoints;
 mod execution_checkpoints;
 mod fills;
+mod live_cut_checkpoints;
 mod order_authorizations;
 mod portfolio_checkpoints;
 mod quote_policies;
@@ -26,11 +26,9 @@ mod run_checkpoints;
 mod run_manifests;
 mod startup;
 mod trade_policies;
-pub use exact_signal_checkpoints::{
-    exact_signal_checkpoint_scope, Recovery as ExactSignalRecovery,
-};
 pub use execution_checkpoints::{execution_checkpoint_scope, ExecutionRecovery};
 pub use fills::FillPublisher;
+pub use live_cut_checkpoints::{live_cut_checkpoint_scope, Recovery as LiveCutRecovery};
 pub use order_authorizations::OrderPublisher;
 pub use portfolio_checkpoints::portfolio_checkpoint_scope;
 #[cfg(test)]

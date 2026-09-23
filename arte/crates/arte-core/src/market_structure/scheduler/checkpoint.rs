@@ -25,6 +25,18 @@ pub struct Bundle {
     pub quotes: Object,
     pub book: Object,
 }
+impl Bundle {
+    pub fn references(root: &Object) -> Result<[String; 4]> {
+        root.verify()?;
+        let saved: Root = serde_json::from_slice(&root.payload)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+        let ids = [saved.market, saved.trades, saved.quotes, saved.book];
+        if saved.version != 1 || ids.iter().any(|id| !hash_valid(id)) {
+            return Err(Error::Invalid("scheduler checkpoint references".into()));
+        }
+        Ok(ids)
+    }
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Root {
