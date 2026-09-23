@@ -13,6 +13,10 @@ use arte_core::{
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
+use std::{
+    sync::atomic::{AtomicUsize, Ordering},
+    thread,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -109,6 +113,7 @@ impl<'a> Bundle<'a> {
         &self,
         mut inputs: Vec<SelectedInput<'_>>,
         run: &Pinned,
+        workers: usize,
         maximum_per_shard: usize,
         maximum_total: usize,
     ) -> Result<Vec<SelectedIndex>> {
@@ -117,6 +122,8 @@ impl<'a> Bundle<'a> {
             || maximum_per_shard > 10_000_000
             || maximum_total == 0
             || maximum_total > 100_000_000
+            || workers == 0
+            || workers > 256
         {
             return Err(Error::Capacity("historical selected index bounds".into()));
         }
@@ -124,9 +131,7 @@ impl<'a> Bundle<'a> {
             let scope = input.plan.scope();
             key(scope.provider, scope.instrument, scope.session)
         });
-        let mut result = Vec::with_capacity(inputs.len());
-        let mut total = 0usize;
-        for (entry, input) in self.manifest.entries.iter().zip(inputs) {
+        for (entry, input) in self.manifest.entries.iter().zip(&inputs) {
             let scope = input.plan.scope();
             if key(entry.provider, entry.instrument, entry.session)
                 != key(scope.provider, scope.instrument, scope.session)
@@ -135,16 +140,22 @@ impl<'a> Bundle<'a> {
                     "historical selected index shard set".into(),
                 ));
             }
+        }
+        let total = AtomicUsize::new(0);
+        let compute = |input: &SelectedInput<'_>| -> Result<SelectedIndex> {
+            let scope = input.plan.scope();
             let source =
                 self.bind_compact_bars(input.bars, input.coverage, run, input.source_as_of_ns)?;
             let prepared = source.prepared();
             let positions = input
                 .plan
                 .selected_prepared_positions(prepared, maximum_per_shard)?;
-            total = total
-                .checked_add(positions.len())
-                .filter(|count| *count <= maximum_total)
-                .ok_or_else(|| Error::Capacity("historical selected index run budget".into()))?;
+            total
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                    used.checked_add(positions.len())
+                        .filter(|count| *count <= maximum_total)
+                })
+                .map_err(|_| Error::Capacity("historical selected index run budget".into()))?;
             let mut trade_positions = Vec::new();
             let mut quote_positions = Vec::new();
             for position in positions {
@@ -157,15 +168,45 @@ impl<'a> Bundle<'a> {
                     EventKind::Quote => quote_positions.push(position),
                 }
             }
-            result.push(SelectedIndex {
+            Ok(SelectedIndex {
                 scope: scope.into(),
                 plan_hash: input.plan.evidence_hash().into(),
                 prepared_hash: prepared.hash().into(),
                 trade_positions,
                 quote_positions,
-            });
+            })
+        };
+        if workers == 1 || inputs.len() == 1 {
+            return inputs.iter().map(compute).collect();
         }
-        Ok(result)
+        let chunk = inputs.len().div_ceil(workers.min(inputs.len()));
+        thread::scope(|thread_scope| {
+            let handles: Vec<_> = inputs
+                .chunks(chunk)
+                .map(|shard| {
+                    let compute = &compute;
+                    thread_scope
+                        .spawn(move || shard.iter().map(compute).collect::<Result<Vec<_>>>())
+                })
+                .collect();
+            let mut output = Vec::with_capacity(inputs.len());
+            let mut first_error = None;
+            for handle in handles {
+                match handle.join() {
+                    Ok(Ok(shard)) if first_error.is_none() => output.extend(shard),
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) if first_error.is_none() => first_error = Some(error),
+                    Ok(Err(_)) => {}
+                    Err(_) if first_error.is_none() => {
+                        first_error = Some(Error::Unready(
+                            "historical selected index worker panicked".into(),
+                        ))
+                    }
+                    Err(_) => {}
+                }
+            }
+            first_error.map_or(Ok(output), Err)
+        })
     }
     pub fn new(mut projections: Vec<&'a Projection>) -> Result<Self> {
         if projections.is_empty() || projections.len() > 100_000 {
@@ -333,8 +374,9 @@ mod tests {
     fn selected_index_rejects_missing_screened_shards_and_unbounded_limits() {
         let (projection, _, _, run) = fixture_for(10, "a");
         let bundle = Bundle::new(vec![&projection]).unwrap();
-        assert!(bundle.index_selected(vec![], &run, 1, 1).is_err());
-        assert!(bundle.index_selected(vec![], &run, 0, 1).is_err());
-        assert!(bundle.index_selected(vec![], &run, 1, 0).is_err());
+        assert!(bundle.index_selected(vec![], &run, 1, 1, 1).is_err());
+        assert!(bundle.index_selected(vec![], &run, 1, 0, 1).is_err());
+        assert!(bundle.index_selected(vec![], &run, 1, 1, 0).is_err());
+        assert!(bundle.index_selected(vec![], &run, 0, 1, 1).is_err());
     }
 }

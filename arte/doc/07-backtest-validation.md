@@ -136,8 +136,10 @@ trade certificate, coverage, cutoff and combined run source hash before its
 sparse plan is applied to the complete prepared tape. Trade and quote positions
 are kept separately in tape order. The index is an acceleration hint only;
 market, V7 and account replay must still advance over every prepared input.
-The current index pass is serial. Parallel index construction and a shared
-multi-ticker execution loop remain to be implemented and measured.
+Independent shards now index with a bounded worker count. Output stays in
+sorted shard order and the total selected-position budget is enforced across
+workers. Non-empty selection integration coverage, representative throughput
+measurement and a shared multi-ticker execution loop remain outstanding.
 The first shared Boolean product readback now records explicit evaluation
 cadence, known/unknown state, value, source-bar identity and complete bucket
 coverage. Strategy 350 intersects the verified signal with the bar mask. It
