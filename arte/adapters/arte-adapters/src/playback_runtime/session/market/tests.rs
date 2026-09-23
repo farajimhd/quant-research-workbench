@@ -166,14 +166,76 @@ fn portable_market_inputs_build_a_paused_run_and_empty_interval_completes() {
 fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution() {
     use crate::playback_runtime::session::{multi, Limits as SessionLimits};
     use arte_core::{
+        events::{Decimal, EventKey, EventKind, Observation, Payload, SourceTime},
         execution_interval::ExecutionInterval,
+        market_structure::scheduler::playback::Input,
         portfolio::{Account, FundingStatus, Reservation},
         simulation_costs,
         strategy350_effective::Config as Effective,
         strategy350_gap,
         strategy_dispatch::StrategyKind,
     };
-    let (mut first_doc, single, mut sources, first_prepared, first_seed) = fixture();
+    let (mut first_doc, single, mut sources, _, first_seed) = fixture();
+    let prepared_trade = |instrument: u64, sip_ns: u64| {
+        Prepared::new(
+            Scope {
+                provider: 1,
+                instrument,
+                session: 20260915,
+            },
+            "historical-fixture",
+            vec![
+                Frame {
+                    watermark_ns: sip_ns + S,
+                    evaluated_at_ns: sip_ns + S,
+                    inputs: vec![Input {
+                        observation: Observation {
+                            key: EventKey {
+                                provider: 1,
+                                instrument,
+                                session: 20260915,
+                                kind: EventKind::Trade,
+                                sequence: 1,
+                            },
+                            payload: Payload::Trade {
+                                price: Decimal {
+                                    atoms: 10,
+                                    scale: 0,
+                                },
+                                size: Decimal { atoms: 1, scale: 0 },
+                                exchange: 1,
+                                trade_id: format!("{instrument}-1"),
+                                trf: None,
+                                conditions: vec![],
+                                correction: None,
+                            },
+                            sip: SourceTime {
+                                ns: sip_ns,
+                                precision_ns: 1,
+                            },
+                            participant: None,
+                            available_at_ns: sip_ns,
+                            receipt: None,
+                        },
+                        eligible: true,
+                    }],
+                },
+                Frame {
+                    watermark_ns: 300 * S,
+                    evaluated_at_ns: 300 * S + 1,
+                    inputs: vec![],
+                },
+            ],
+            Limits {
+                maximum_frames: 2,
+                maximum_events: 1,
+                maximum_serialized_bytes: 10_000,
+            },
+        )
+        .unwrap()
+    };
+    let first_prepared = prepared_trade(1, 200 * S);
+    sources.shards[0].prepared_hash = first_prepared.hash().into();
     let bars: Vec<_> = (100..118)
         .map(|t| Candle {
             t,
@@ -204,25 +266,7 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
     )
     .unwrap();
     let second_seed = Bundle::from_seed(&second_seed).unwrap();
-    let second_prepared = Prepared::new(
-        Scope {
-            provider: 1,
-            instrument: 2,
-            session: 20260915,
-        },
-        "historical-fixture",
-        vec![Frame {
-            watermark_ns: 300 * S,
-            evaluated_at_ns: 300 * S + 1,
-            inputs: vec![],
-        }],
-        Limits {
-            maximum_frames: 1,
-            maximum_events: 1,
-            maximum_serialized_bytes: 10_000,
-        },
-    )
-    .unwrap();
+    let second_prepared = prepared_trade(2, 202 * S);
     sources.shards.push(Shard {
         provider: 1,
         instrument: 2,
@@ -404,7 +448,7 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         },
     };
     let startup_hash = request.hash().unwrap();
-    let session = multi::Session::from_request(request, &startup_hash).unwrap();
+    let mut session = multi::Session::from_request(request, &startup_hash).unwrap();
     assert_eq!(session.startup_hash(), startup_hash);
     assert_eq!(session.controller.controllers().len(), 2);
     assert_eq!(session.strategy.len(), 2);
@@ -428,6 +472,24 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         session.portfolio.funding_status("b", "reserved-a").unwrap(),
         FundingStatus::Absent
     );
+    session.controller.resume_all().unwrap();
+    let mut selected = None;
+    for _ in 0..100 {
+        let polled = session.controller.poll().unwrap();
+        if !matches!(polled, crate::playback_runtime::multi::MultiPoll::Yield) {
+            selected = Some(polled);
+            break;
+        }
+    }
+    assert!(
+        matches!(
+            selected,
+            Some(crate::playback_runtime::multi::MultiPoll::Boundary { shard: 0 })
+        ),
+        "{selected:?}"
+    );
+    assert_eq!(session.controller.selected().unwrap().unwrap().0, 0);
+    assert!(session.controller.controllers()[1].decision_view().is_err());
 }
 #[test]
 fn wrong_identity_future_evidence_and_partial_source_are_rejected() {
