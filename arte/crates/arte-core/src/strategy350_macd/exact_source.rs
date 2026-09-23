@@ -258,6 +258,7 @@ impl Source {
         }
         let mut next = self.clone();
         let mut output = Vec::new();
+        let mut batch_end_ns = first_start_ns;
         for (slot, (&has_bar, (&close, &trade_count))) in
             present.iter().zip(closes.iter().zip(trades)).enumerate()
         {
@@ -274,8 +275,12 @@ impl Source {
             {
                 return Err(Error::Conflict("Strategy 350 compact MACD slot".into()));
             }
-            next.advance_close_into(has_bar.then_some((start_ns, close)), end_ns, &mut output)?;
+            if has_bar {
+                next.advance_close_into(Some((start_ns, close)), end_ns, &mut output)?;
+            }
+            batch_end_ns = end_ns;
         }
+        next.advance_close_into(None, batch_end_ns, &mut output)?;
         output.sort_unstable_by_key(|value| (value.end_ns, value.timeframe_ns));
         *self = next;
         Ok(output)
@@ -454,6 +459,23 @@ mod tests {
             .advance_compact_batch(60 * S, &invalid, &invalid_closes, &invalid_trades)
             .is_err());
         assert_eq!(batched.identity_hash().unwrap(), before);
+        let empty = vec![false; 300];
+        let zeros = vec![0; 300];
+        let zero_trades = vec![0_u64; 300];
+        assert!(batched
+            .advance_compact_batch(60 * S, &empty, &zeros, &zero_trades)
+            .unwrap()
+            .is_empty());
+        for slot in 0..300 {
+            exact
+                .advance(None, 60 * S + (slot + 1) * INTERVAL_NS)
+                .unwrap();
+        }
+        assert_eq!(batched.watermark_ns(), exact.watermark_ns());
+        assert_eq!(
+            batched.identity_hash().unwrap(),
+            exact.identity_hash().unwrap()
+        );
     }
     #[test]
     fn verified_exact_advance_pins_source_generation_and_watermark() {
