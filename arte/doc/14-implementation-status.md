@@ -339,6 +339,12 @@ time. Each boundary also exposes the verified bar request and coverage hashes;
 mixed-provider tapes are rejected. A unit test covers one multi-instrument
 product, source identities, and equal-time ties.
 This is backtest clock plumbing, not full evaluation.
+The bar tape now has a bounded, content-addressed cursor checkpoint. It stores
+source hashes, mode, per-instrument cursors and queued boundary heads, not bar
+arrays. Restore requires an independently pinned root and the same verified
+products. Unit tests compare every remaining boundary and checkpoint hash after
+restore. Publication and a common cut with strategy, portfolio, OMS and fill
+state are still unimplemented.
 The partial Strategy 350 gate now checks ordered source time and sequence, not
 receipt order. Equal receive timestamps and out-of-order arrival times can be
 processed after the ordered lane releases them. Late mode latches before the

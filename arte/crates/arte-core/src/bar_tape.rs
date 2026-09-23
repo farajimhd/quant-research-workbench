@@ -8,8 +8,9 @@ use std::{
     cmp::Reverse,
     collections::{BTreeMap, BinaryHeap},
 };
+mod checkpoint;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Cursor {
     batch: usize,
     slot: usize,
@@ -18,10 +19,11 @@ struct Track {
     product: usize,
     instrument: u64,
     session: u32,
+    first_batch: usize,
     end_batch: usize,
     cursor: Cursor,
 }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 struct Head {
     end_ns: u64,
     instrument: u64,
@@ -124,6 +126,7 @@ impl Tape {
                     product: product_index,
                     instrument,
                     session: product.request().session,
+                    first_batch,
                     end_batch: batch_index,
                     cursor: Cursor {
                         batch: first_batch,
@@ -400,6 +403,92 @@ mod tests {
             product_for_provider(2, 20, vec![false, true, true]),
         ])
         .is_err());
+    }
+    #[test]
+    fn multi_instrument_cursor_restores_without_replaying_prior_bars() {
+        let mut uninterrupted = Tape::new_dense(vec![multi_instrument_product()]).unwrap();
+        for _ in 0..3 {
+            uninterrupted.next_boundary().unwrap().unwrap();
+        }
+        let image = uninterrupted.checkpoint(16_384).unwrap();
+        let mut restored =
+            Tape::restore_checkpoint(vec![multi_instrument_product()], &image, &image.id, 16_384)
+                .unwrap();
+        assert_eq!(image.id, restored.checkpoint(16_384).unwrap().id);
+        loop {
+            let left = uninterrupted
+                .next_boundary()
+                .unwrap()
+                .map(|view| (view.end_ns, view.instrument, view.present));
+            let right = restored
+                .next_boundary()
+                .unwrap()
+                .map(|view| (view.end_ns, view.instrument, view.present));
+            assert_eq!(left, right);
+            assert_eq!(
+                uninterrupted.checkpoint(16_384).unwrap().id,
+                restored.checkpoint(16_384).unwrap().id
+            );
+            if left.is_none() {
+                break;
+            }
+        }
+        assert!(Tape::restore_checkpoint(
+            vec![multi_instrument_product()],
+            &image,
+            &"0".repeat(64),
+            16_384,
+        )
+        .is_err());
+        assert!(Tape::restore_checkpoint(
+            vec![product(10, vec![true, false, true])],
+            &image,
+            &image.id,
+            16_384,
+        )
+        .is_err());
+        let mut altered = image.clone();
+        altered.payload.push(b' ');
+        assert!(Tape::restore_checkpoint(
+            vec![multi_instrument_product()],
+            &altered,
+            &image.id,
+            16_384,
+        )
+        .is_err());
+    }
+    #[test]
+    fn fixed_and_exhausted_tapes_restore_their_exact_mode() {
+        let mut fixed = Tape::new_fixed(
+            vec![product(10, vec![true, false, true])],
+            ExecutionInterval::Fixed(200_000_000),
+        )
+        .unwrap();
+        let image = fixed.checkpoint(4096).unwrap();
+        let mut restored = Tape::restore_checkpoint(
+            vec![product(10, vec![true, false, true])],
+            &image,
+            &image.id,
+            4096,
+        )
+        .unwrap();
+        assert!(restored.next_present().is_err());
+        assert_eq!(
+            fixed.next_boundary().unwrap().unwrap().end_ns,
+            restored.next_boundary().unwrap().unwrap().end_ns
+        );
+        assert!(fixed.is_done());
+        assert!(restored.is_done());
+        let done = fixed.checkpoint(4096).unwrap();
+        let complete = Tape::restore_checkpoint(
+            vec![product(10, vec![true, false, true])],
+            &done,
+            &done.id,
+            4096,
+        )
+        .unwrap();
+        assert!(complete.is_done());
+        assert_eq!(done.id, complete.checkpoint(4096).unwrap().id);
     }
     #[test]
     fn stable_cross_ticker_order_skips_empty_buckets() {
