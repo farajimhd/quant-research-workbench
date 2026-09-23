@@ -135,7 +135,7 @@ impl Runtime {
         journals: Journals<'_, F, D, R>,
     ) -> Result<Step>
     where
-        S: Clone + serde::Serialize,
+        S: super::strategy350_accounts::StateContract,
         F: crate::fill_journal::Publisher,
         D: crate::strategy_journal::Publisher,
         R: crate::rejection_journal::Publisher,

@@ -4789,14 +4789,17 @@ fast triples must fit within three seconds and upgrade targets from 5 to 8 to
 reject future or regressing break clocks and distinct-level budget overflow
 without partial state mutation. Momentum target rounding consumes the
 validated frozen inter-resistance average; a single-level snapshot cannot
-produce a target. These rules are not yet bound to the effective rule-set
-hash, evaluator, journal or OMS. No service ran.
+produce a target. The full evaluator and OMS do not yet consume these rules.
+No service ran.
 
-The Strategy 350 effective contract now pins the target-progression
-configuration hash and has schema v2. The target state has a bounded,
+The Strategy 350 effective contract now embeds the typed target-progression
+configuration and has schema v3. The target state has a bounded,
 content-addressed recovery image. Restore checks the image hash, configured
 mode, level budget, causal frontier, pending break geometry and the multiplier
 implied by session progress. Offline tests reject a rehashed but semantically
-altered multiplier and a different configuration. No caller yet supplies this
-state to the full Strategy 350 evaluator or includes its image in the account
-recovery graph. No service ran.
+altered multiplier and a different configuration. The concrete account state
+now owns target progression. Playback validates it against each account's
+effective contract at construction, after preparation, at checkpoint and at
+restore. Full validation is kept off the decision hot path. The target state
+is carried by the generic account journal image when that concrete type is
+used, but the executable Strategy 350 evaluator is still absent. No service ran.

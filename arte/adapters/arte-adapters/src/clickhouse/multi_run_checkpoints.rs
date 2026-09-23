@@ -19,7 +19,7 @@ use arte_core::{
     simulation_costs::{Model as CostModel, SettlementCurrency},
     Error, Result,
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, BTreeSet};
 
 const CHUNKS: &str = "multi_backtest_checkpoint_chunks_v1";
@@ -39,7 +39,9 @@ pub struct RestoreRequest<'a> {
     pub limits: &'a Limits,
 }
 impl RestoreRequest<'_> {
-    pub fn restore<S: Clone + Serialize + DeserializeOwned>(
+    pub fn restore<
+        S: crate::playback_runtime::strategy350_accounts::StateContract + DeserializeOwned,
+    >(
         &self,
         bundle: &Bundle,
     ) -> Result<Recovered<S>> {
@@ -178,7 +180,9 @@ fn require_acceptance(passed: &BTreeSet<Acceptance>) -> Result<()> {
     Ok(())
 }
 
-async fn publish_verified<S: Clone + Serialize + DeserializeOwned>(
+async fn publish_verified<
+    S: crate::playback_runtime::strategy350_accounts::StateContract + DeserializeOwned,
+>(
     store: &impl Store,
     bundle: &Bundle,
     request: &RestoreRequest<'_>,
@@ -207,14 +211,18 @@ async fn publish_verified<S: Clone + Serialize + DeserializeOwned>(
 impl ClickHouse {
     /// Returns an isolated backtest state only. Caller must not infer resume
     /// approval, broker authority or power-loss durability from this result.
-    pub async fn load_multi_backtest_checkpoint<S: Clone + Serialize + DeserializeOwned>(
+    pub async fn load_multi_backtest_checkpoint<
+        S: crate::playback_runtime::strategy350_accounts::StateContract + DeserializeOwned,
+    >(
         &self,
         request: &RestoreRequest<'_>,
     ) -> Result<Recovered<S>> {
         request.restore(&read_bundle(&Storage(self), request).await?)
     }
 
-    pub async fn publish_multi_backtest_checkpoint<S: Clone + Serialize + DeserializeOwned>(
+    pub async fn publish_multi_backtest_checkpoint<
+        S: crate::playback_runtime::strategy350_accounts::StateContract + DeserializeOwned,
+    >(
         &self,
         bundle: &Bundle,
         request: &RestoreRequest<'_>,

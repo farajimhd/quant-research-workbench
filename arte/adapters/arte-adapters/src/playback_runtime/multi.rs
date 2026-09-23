@@ -287,7 +287,7 @@ impl MultiRuntime {
     /// Capture every Strategy 350 account owner at the selected global cut.
     /// Standby market heads may be preloaded, but their account decisions must
     /// remain at their own acknowledged frontiers.
-    pub fn capture_strategy350_shards<S: Clone + serde::Serialize>(
+    pub fn capture_strategy350_shards<S: super::strategy350_accounts::StateContract>(
         &self,
         owners: &BTreeMap<u64, super::strategy350_accounts::Accounts<S>>,
         cut: &arte_core::portfolio::checkpoint::Cut,
@@ -510,7 +510,7 @@ impl MultiRuntime {
         journals: Journals<'_, F, D, R>,
     ) -> Result<Step>
     where
-        S: Clone + serde::Serialize,
+        S: super::strategy350_accounts::StateContract,
         F: crate::fill_journal::Publisher,
         D: crate::strategy_journal::Publisher,
         R: crate::rejection_journal::Publisher,

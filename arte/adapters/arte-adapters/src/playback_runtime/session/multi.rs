@@ -75,7 +75,7 @@ impl<S: Clone + Serialize> Request<'_, S> {
         ))
     }
 }
-impl<S: Clone + Serialize> Session<S> {
+impl<S: crate::playback_runtime::strategy350_accounts::StateContract> Session<S> {
     /// The expected startup hash must be pinned independently by the run
     /// launcher. Initial balances are hypothetical per-account inputs.
     pub fn from_request(mut request: Request<'_, S>, expected_hash: &str) -> Result<Self> {

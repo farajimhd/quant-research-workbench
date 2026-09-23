@@ -3,11 +3,11 @@
 //! explicit. This value contains no runtime state or broker authority.
 use crate::{
     content_hash, execution_interval::ExecutionInterval, strategy350_gap::Config as GapConfig,
-    Error, Result,
+    strategy350_targets::Config as TargetProgressConfig, Error, Result,
 };
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: &str = "arte.strategy-350-effective.v2";
+pub const VERSION: &str = "arte.strategy-350-effective.v3";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,7 +20,7 @@ pub struct Config {
     pub macd_config_hash: String,
     pub noise_config_hash: String,
     pub bos_config_hash: String,
-    pub target_progress_config_hash: String,
+    pub target_progress: TargetProgressConfig,
     pub level_book_config_hash: String,
     pub rule_set_hash: String,
     pub account_risk_hash: String,
@@ -50,6 +50,7 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         self.execution_interval.validate()?;
         self.gap.hash()?;
+        self.target_progress.hash()?;
         if [
             &self.signal_config_hash,
             &self.screen_config_hash,
@@ -57,7 +58,6 @@ impl Config {
             &self.macd_config_hash,
             &self.noise_config_hash,
             &self.bos_config_hash,
-            &self.target_progress_config_hash,
             &self.level_book_config_hash,
             &self.rule_set_hash,
             &self.account_risk_hash,
@@ -122,7 +122,7 @@ impl Config {
     }
 
     pub fn require_target_progress(&self, configuration_hash: &str) -> Result<()> {
-        if self.target_progress_config_hash != configuration_hash {
+        if self.target_progress.hash()? != configuration_hash {
             return Err(Error::Conflict(
                 "Strategy 350 target progression configuration differs".into(),
             ));
@@ -167,7 +167,10 @@ pub(crate) fn test_config(execution_interval: ExecutionInterval) -> Config {
         macd_config_hash: "d".repeat(64),
         noise_config_hash: "e".repeat(64),
         bos_config_hash: "f".repeat(64),
-        target_progress_config_hash: "4".repeat(64),
+        target_progress: TargetProgressConfig {
+            execution_interval: ExecutionInterval::Events,
+            maximum_distinct_levels: 1_000,
+        },
         level_book_config_hash: "1".repeat(64),
         rule_set_hash: "2".repeat(64),
         account_risk_hash: "3".repeat(64),
@@ -194,7 +197,7 @@ mod tests {
         changed.bos_config_hash = "4".repeat(64);
         assert_ne!(changed.hash().unwrap(), hash);
         changed = base.clone();
-        changed.target_progress_config_hash = "5".repeat(64);
+        changed.target_progress.maximum_distinct_levels += 1;
         assert_ne!(changed.hash().unwrap(), hash);
         changed = base.clone();
         changed.watchlist_config_hash = Some("5".repeat(64));
@@ -228,14 +231,14 @@ mod tests {
             execution_interval: ExecutionInterval::Events,
             maximum_distinct_levels: 1_000,
         };
-        assert!(config
-            .require_target_progress(&target_config.hash().unwrap())
-            .is_err());
-        let mut target_effective = config.clone();
-        target_effective.target_progress_config_hash = target_config.hash().unwrap();
-        target_effective
+        config
             .require_target_progress(&target_config.hash().unwrap())
             .unwrap();
+        let mut changed_target = target_config;
+        changed_target.maximum_distinct_levels += 1;
+        assert!(config
+            .require_target_progress(&changed_target.hash().unwrap())
+            .is_err());
         config
             .require_screen_inputs([0xbb; 32], [0xaa; 32], None)
             .unwrap();

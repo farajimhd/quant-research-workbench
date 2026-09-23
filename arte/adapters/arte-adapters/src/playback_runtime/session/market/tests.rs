@@ -353,7 +353,10 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         macd_config_hash: "d".repeat(64),
         noise_config_hash: "e".repeat(64),
         bos_config_hash: "f".repeat(64),
-        target_progress_config_hash: "4".repeat(64),
+        target_progress: arte_core::strategy350_targets::Config {
+            execution_interval: ExecutionInterval::Events,
+            maximum_distinct_levels: 1_000,
+        },
         level_book_config_hash: "1".repeat(64),
         rule_set_hash: "2".repeat(64),
         account_risk_hash: "3".repeat(64),

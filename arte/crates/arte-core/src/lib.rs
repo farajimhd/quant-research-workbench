@@ -43,6 +43,7 @@ pub mod session;
 pub mod simulated_execution;
 pub mod simulation_costs;
 pub mod simulation_model;
+pub mod strategy350_account_state;
 pub mod strategy350_bar_screen;
 pub mod strategy350_bos;
 pub mod strategy350_catalogue;

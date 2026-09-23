@@ -34,6 +34,31 @@ pub struct Outcome {
     pub result: Result<()>,
 }
 
+/// Production account state must prove that its calculation operands belong
+/// to the pinned effective strategy contract before journaling or recovery.
+pub trait StateContract: Clone + Serialize {
+    fn validate_for(&self, effective: &Config) -> Result<()>;
+    fn validate_hot(&self, effective: &Config) -> Result<()>;
+}
+impl StateContract for arte_core::strategy350_account_state::State {
+    fn validate_for(&self, effective: &Config) -> Result<()> {
+        self.validate(effective)
+    }
+    fn validate_hot(&self, effective: &Config) -> Result<()> {
+        self.validate_quick(effective)
+    }
+}
+
+#[cfg(test)]
+impl StateContract for u64 {
+    fn validate_for(&self, _effective: &Config) -> Result<()> {
+        Ok(())
+    }
+    fn validate_hot(&self, _effective: &Config) -> Result<()> {
+        Ok(())
+    }
+}
+
 fn restrict_actions(actions: Vec<Action>) -> Result<Vec<Action>> {
     if actions.iter().any(|action| {
         !matches!(
@@ -53,7 +78,7 @@ fn restrict_actions(actions: Vec<Action>) -> Result<Vec<Action>> {
     Ok(actions)
 }
 
-impl<S: Clone + Serialize> Accounts<S> {
+impl<S: StateContract> Accounts<S> {
     /// The maps are keyed by the exact manifest-derived strategy scope hash.
     /// This constructor never discovers a configuration or shares account state.
     pub fn new(
@@ -103,6 +128,7 @@ impl<S: Clone + Serialize> Accounts<S> {
             let state = initial_states.remove(&key).ok_or_else(|| {
                 Error::Unready("Strategy 350 initial account state missing".into())
             })?;
+            state.validate_for(&effective)?;
             if slots
                 .insert(
                     key,
@@ -268,7 +294,11 @@ impl<S: Clone + Serialize> Accounts<S> {
             &mut slot.runtime,
             request,
             observe,
-            |state| restrict_actions(calculate(state)?),
+            |state| {
+                let actions = restrict_actions(calculate(state)?)?;
+                state.validate_hot(&slot.effective)?;
+                Ok(actions)
+            },
         )?;
         Boundary::validate_decision(controller, &decision)?;
         Ok(decision)
@@ -374,7 +404,10 @@ mod tests {
             macd_config_hash: "d".repeat(64),
             noise_config_hash: "e".repeat(64),
             bos_config_hash: "f".repeat(64),
-            target_progress_config_hash: "4".repeat(64),
+            target_progress: arte_core::strategy350_targets::Config {
+                execution_interval: ExecutionInterval::Events,
+                maximum_distinct_levels: 1_000,
+            },
             level_book_config_hash: "1".repeat(64),
             rule_set_hash: "2".repeat(64),
             account_risk_hash: "3".repeat(64),
@@ -461,6 +494,32 @@ mod tests {
         let recorded = Pinned::new(recorded, &hash).unwrap();
         let (configs, states) = inputs(&recorded);
         assert!(Accounts::new(&recorded, 10, configs, states, 1024).is_err());
+    }
+
+    #[test]
+    fn concrete_target_state_must_match_each_account_effective_contract() {
+        let manifest = manifest();
+        let mut configs = BTreeMap::new();
+        let mut states = BTreeMap::new();
+        for account in ["first", "second"] {
+            let scope = manifest.scope(account, 10, "strategy-350").unwrap();
+            let key = content_hash(&scope).unwrap();
+            configs.insert(key.clone(), effective());
+            states.insert(
+                key,
+                arte_core::strategy350_account_state::State::new(&effective(), true).unwrap(),
+            );
+        }
+        let accounts = Accounts::new(&manifest, 10, configs.clone(), states.clone(), 4096).unwrap();
+        assert_eq!(accounts.scope_hashes().count(), 2);
+        let first = content_hash(&manifest.scope("first", 10, "strategy-350").unwrap()).unwrap();
+        let mut changed = effective();
+        changed.target_progress.maximum_distinct_levels += 1;
+        states.insert(
+            first,
+            arte_core::strategy350_account_state::State::new(&changed, true).unwrap(),
+        );
+        assert!(Accounts::new(&manifest, 10, configs, states, 4096).is_err());
     }
 
     #[test]

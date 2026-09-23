@@ -70,7 +70,7 @@ fn context(controller: &Playback, cut: Option<&Cut>, maximum_bytes: usize) -> Re
     }
 }
 
-impl<S: Clone + Serialize> Accounts<S> {
+impl<S: StateContract> Accounts<S> {
     pub fn checkpoint(&self, controller: &Playback, maximum_bytes: usize) -> Result<Bundle> {
         self.checkpoint_with_cut(controller, None, maximum_bytes)
     }
@@ -116,6 +116,9 @@ impl<S: Clone + Serialize> Accounts<S> {
         };
         let mut accounts = BTreeMap::new();
         for (key, slot) in &self.slots {
+            slot.runtime
+                .committed_state()
+                .validate_for(&slot.effective)?;
             let due = run.is_due(slot.runtime.scope())?;
             let needs = run.needs_decision(slot.runtime.scope())?;
             let current = slot
@@ -186,7 +189,7 @@ impl<S: Clone + Serialize> Accounts<S> {
     }
 }
 
-impl<S: Clone + Serialize + DeserializeOwned> Accounts<S> {
+impl<S: StateContract + DeserializeOwned> Accounts<S> {
     pub fn restore_checkpoint(
         bundle: &Bundle,
         expected_root: &str,
@@ -322,6 +325,7 @@ impl<S: Clone + Serialize + DeserializeOwned> Accounts<S> {
                 maximum_bytes,
                 rows,
             )?;
+            runtime.committed_state().validate_for(&effective)?;
             if let Some(batch) = runtime.pending_batch() {
                 if cut.is_some() {
                     return Err(Error::Conflict(

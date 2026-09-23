@@ -161,7 +161,7 @@ impl Bundle {
     /// Offline semantic restore from independently supplied source, startup,
     /// journal and cost evidence. No storage publication or trading authority.
     #[allow(clippy::too_many_arguments)]
-    pub fn restore<S: Clone + Serialize + DeserializeOwned>(
+    pub fn restore<S: super::super::strategy350_accounts::StateContract + DeserializeOwned>(
         &self,
         expected_root: &str,
         manifest: &Pinned,
@@ -357,7 +357,7 @@ impl MultiRuntime {
     /// Synchronous in-memory capture. Publication, readback, semantic restore
     /// and account reconciliation must precede any recovery acknowledgement.
     #[allow(clippy::too_many_arguments)]
-    pub fn capture_strategy350_graph<S: Clone + serde::Serialize>(
+    pub fn capture_strategy350_graph<S: super::super::strategy350_accounts::StateContract>(
         &self,
         owners: &BTreeMap<u64, super::super::strategy350_accounts::Accounts<S>>,
         portfolio: &mut Portfolio,
