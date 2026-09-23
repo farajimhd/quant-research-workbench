@@ -4,6 +4,7 @@ use crate::{
     content_hash,
     event_order::Scope as MarketScope,
     market_structure::scheduler::playback::sources::HistoricalEventProof,
+    strategy350_macd::historical::Evidence as HistoricalMacdEvidence,
     strategy350_price_gate::PriceEvidence,
     strategy350_screen_join::{LiveSelectedBucket, RefinementPlan},
     strategy_dispatch::{Action, Decision, InputBoundary, Mode, Safety, StrategyKind},
@@ -35,6 +36,7 @@ pub struct HistoricalMarketDecisionInput<'a> {
     pub source: &'a HistoricalEventProof,
     pub expected_price_gate_hash: &'a str,
     pub refinement: Option<&'a RefinementPlan>,
+    pub macd: Option<&'a HistoricalMacdEvidence>,
     pub other_evidence_hash: &'a str,
 }
 
@@ -48,11 +50,13 @@ impl<'a> CommittedHistoricalDecision<'a> {
         source: &HistoricalEventProof,
         expected_price_gate_hash: &str,
         refinement: Option<&RefinementPlan>,
+        macd: Option<&HistoricalMacdEvidence>,
         other_evidence_hash: &str,
     ) -> Result<Self> {
         require_other_hash(other_evidence_hash)?;
         let decision = committed.decision();
-        let expected = historical_evidence_hash(price, source, refinement, other_evidence_hash)?;
+        let expected =
+            historical_evidence_hash(price, source, refinement, macd, other_evidence_hash)?;
         if decision.evidence_hash != expected {
             return Err(Error::Conflict(
                 "Strategy 350 historical committed evidence differs".into(),
@@ -139,14 +143,19 @@ fn historical_evidence_hash(
     price: &PriceEvidence,
     source: &HistoricalEventProof,
     refinement: Option<&RefinementPlan>,
+    macd: Option<&HistoricalMacdEvidence>,
     other_evidence_hash: &str,
 ) -> Result<String> {
+    if let Some(macd) = macd {
+        macd.require_proof(source)?;
+    }
     content_hash(&(
-        "arte.strategy-350-market-decision.v2",
+        "arte.strategy-350-market-decision.v3",
         "historical-modeled",
         price.fingerprint(),
         source.identity_hash()?,
         refinement.map(RefinementPlan::evidence_hash),
+        macd.map(HistoricalMacdEvidence::fingerprint),
         other_evidence_hash,
     ))
 }
@@ -179,6 +188,7 @@ pub fn prepare_historical_market_decision<S: Clone + Serialize>(
         source,
         expected_price_gate_hash,
         refinement,
+        macd,
         other_evidence_hash,
     } = request;
     require_other_hash(other_evidence_hash)?;
@@ -192,7 +202,8 @@ pub fn prepare_historical_market_decision<S: Clone + Serialize>(
         ));
     }
     price.require_historical_identity(source, &scope, &input, expected_price_gate_hash)?;
-    let evidence_hash = historical_evidence_hash(price, source, refinement, other_evidence_hash)?;
+    let evidence_hash =
+        historical_evidence_hash(price, source, refinement, macd, other_evidence_hash)?;
     runtime.prepare_observed(input.clone(), safety, evidence_hash, observe, |state| {
         let actions = calculate(state)?;
         if has_exposure(&actions) {

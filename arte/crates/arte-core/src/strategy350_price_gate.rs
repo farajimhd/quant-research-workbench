@@ -1376,6 +1376,10 @@ mod tests {
         let pinned = PinnedRun::new(manifest.clone(), &manifest.hash().unwrap()).unwrap();
         let source = catalogue.bind_historical(&pinned, &prepared).unwrap();
         let proof = source.event(0, 0).unwrap();
+        let mut macd_cursor =
+            crate::strategy350_macd::historical::test_empty_cursor(market_scope, S, 3 * S, 0);
+        let macd_evidence = macd_cursor.preview_proof(&proof, &modeled_event).unwrap();
+        assert!(!macd_evidence.outcome().bullish);
         let refinement = crate::strategy350_screen_join::test_historical_refinement(
             market_scope,
             crate::coverage::Interval {
@@ -1444,6 +1448,7 @@ mod tests {
                 source: &proof,
                 expected_price_gate_hash: &gate_hash,
                 refinement: None,
+                macd: Some(&macd_evidence),
                 other_evidence_hash: &other_hash,
             },
             |_| Ok(()),
@@ -1464,6 +1469,7 @@ mod tests {
                 &proof,
                 &gate_hash,
                 None,
+                Some(&macd_evidence),
                 &"e".repeat(64),
             )
             .unwrap();
@@ -1482,7 +1488,20 @@ mod tests {
                 &proof,
                 &gate_hash,
                 None,
+                None,
                 &"0".repeat(64),
+            )
+            .is_err()
+        );
+        assert!(
+            crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
+                &committed,
+                &evidence,
+                &proof,
+                &gate_hash,
+                None,
+                None,
+                &other_hash,
             )
             .is_err()
         );
@@ -1525,6 +1544,7 @@ mod tests {
                     source: &proof,
                     expected_price_gate_hash: &gate_hash,
                     refinement: None,
+                    macd: None,
                     other_evidence_hash: &other_hash,
                 },
                 |_| Ok(()),
@@ -1544,6 +1564,7 @@ mod tests {
                 source: &proof,
                 expected_price_gate_hash: &gate_hash,
                 refinement: Some(&refinement),
+                macd: None,
                 other_evidence_hash: &other_hash,
             },
             |_| Ok(()),
@@ -1563,6 +1584,7 @@ mod tests {
                 &proof,
                 &gate_hash,
                 None,
+                None,
                 &other_hash,
             )
             .is_err()
@@ -1574,6 +1596,7 @@ mod tests {
                 &proof,
                 &gate_hash,
                 Some(&refinement),
+                None,
                 &"e".repeat(64),
             )
             .unwrap();
@@ -1668,6 +1691,7 @@ mod tests {
                     source: &ineligible_proof,
                     expected_price_gate_hash: &gate_hash,
                     refinement: Some(&refinement),
+                    macd: None,
                     other_evidence_hash: &other_hash,
                 },
                 |_| Ok(()),

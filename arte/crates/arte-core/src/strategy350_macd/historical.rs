@@ -24,6 +24,7 @@ pub struct Projection {
 pub struct Evidence {
     outcome: Outcome,
     fingerprint: String,
+    proof_hash: String,
 }
 impl Evidence {
     pub fn outcome(&self) -> &Outcome {
@@ -31,6 +32,14 @@ impl Evidence {
     }
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
+    }
+    pub fn require_proof(&self, proof: &HistoricalEventProof) -> Result<()> {
+        if self.proof_hash != proof.identity_hash()? {
+            return Err(Error::Conflict(
+                "historical MACD evidence proof differs".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -144,12 +153,13 @@ impl Cursor {
                 )
             })
         });
+        let proof_hash = proof.identity_hash()?;
         let fingerprint = content_hash(&(
             "arte.strategy-350-historical-macd-evidence.v1",
             self.projection.request_hash.as_str(),
             self.projection.coverage_hash.as_str(),
             self.state.config_hash(),
-            proof.identity_hash()?,
+            proof_hash.as_str(),
             outcome.event_time_ns,
             outcome.evaluated_at_ns,
             values,
@@ -158,6 +168,7 @@ impl Cursor {
         Ok(Evidence {
             outcome,
             fingerprint,
+            proof_hash,
         })
     }
 }

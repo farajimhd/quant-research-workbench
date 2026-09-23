@@ -72,6 +72,12 @@ An eligible preview now returns a private, source-bound MACD evidence value.
 Its fingerprint pins the compact request and coverage, MACD configuration,
 run-bound trade proof, completed-frame clocks and exact floating-point outputs.
 The account journal does not yet require this value as a typed operand.
+Historical Strategy 350 decision preparation and journal readback now accept
+that typed MACD evidence and bind its fingerprint to the decision hash. A
+different proof or omission at readback is rejected. The field is still
+optional, including for exposure actions; mandatory bullish-MACD admission
+and the remaining typed operands are not implemented, so this does not
+authorize a production backtest or live order path.
 Numerical parity with the current Python/QMD MACD initialization is unproven;
 activation must remain blocked until that comparison and an effective
 configuration pin are complete.
