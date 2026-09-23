@@ -214,6 +214,19 @@ impl Owner {
             },
         )
     }
+    pub fn forming_macd_evidence_for_boundary(
+        &self,
+        boundary: &Boundary<'_>,
+    ) -> Result<strategy350_macd::live::Evidence> {
+        if self.last_boundary() != (boundary.sequence, Some(boundary.id))
+            || self.last_evaluated_at_ns != boundary.evaluated_at_ns
+        {
+            return Err(Error::Unready(
+                "Strategy 350 live MACD boundary not consumed".into(),
+            ));
+        }
+        self.macd.preview_live(&self.macd_source, boundary)
+    }
     pub fn last_boundary(&self) -> (u64, Option<&str>) {
         (self.last_sequence, self.last_boundary_id.as_deref())
     }
@@ -598,6 +611,54 @@ mod tests {
         };
         assert!(owner.observe(&boundary).unwrap().is_none());
         assert!(!owner.forming_macd_for_boundary(&boundary).unwrap().bullish);
+        let macd = owner.forming_macd_evidence_for_boundary(&boundary).unwrap();
+        assert!(!macd.outcome().bullish);
+        assert_eq!(macd.run_id(), "run");
+        assert_eq!(macd.received_at_ns(), first.available_at_ns);
+        assert_eq!(macd.boundary_id(), "one");
+        assert_eq!(macd.fingerprint().len(), 64);
+        let other_boundary = Boundary {
+            id: "other",
+            sequence: 1,
+            evaluated_at_ns: boundary.evaluated_at_ns,
+            kind: Kind::Trade {
+                observation: &first,
+                eligible: true,
+            },
+        };
+        let changed_boundary = owner
+            .macd
+            .preview_live(&owner.macd_source, &other_boundary)
+            .unwrap();
+        assert_ne!(macd.fingerprint(), changed_boundary.fingerprint());
+        let mut missing_receipt = first.clone();
+        missing_receipt.receipt = None;
+        let no_receipt_boundary = Boundary {
+            id: "one",
+            sequence: 1,
+            evaluated_at_ns: boundary.evaluated_at_ns,
+            kind: Kind::Trade {
+                observation: &missing_receipt,
+                eligible: true,
+            },
+        };
+        assert!(owner
+            .macd
+            .preview_live(&owner.macd_source, &no_receipt_boundary)
+            .is_err());
+        let ineligible_boundary = Boundary {
+            id: "one",
+            sequence: 1,
+            evaluated_at_ns: boundary.evaluated_at_ns,
+            kind: Kind::Trade {
+                observation: &first,
+                eligible: false,
+            },
+        };
+        assert!(owner
+            .macd
+            .preview_live(&owner.macd_source, &ineligible_boundary)
+            .is_err());
         let image = owner.checkpoint().unwrap();
         let generation = "a".repeat(64);
         let request = |id| Recovery {

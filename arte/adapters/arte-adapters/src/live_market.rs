@@ -165,6 +165,17 @@ impl Lane {
             .ok_or_else(|| Error::Unready("exact Strategy 350 owner not bound".into()))?
             .forming_macd_for_boundary(&boundary)
     }
+    pub fn forming_macd_evidence(&self) -> Result<arte_core::strategy350_macd::live::Evidence> {
+        self.available()?;
+        let boundary = self
+            .market
+            .pending()?
+            .ok_or_else(|| Error::Unready("Strategy 350 live MACD boundary missing".into()))?;
+        self.exact_signal
+            .as_ref()
+            .ok_or_else(|| Error::Unready("exact Strategy 350 owner not bound".into()))?
+            .forming_macd_evidence_for_boundary(&boundary)
+    }
     /// Persist/audit every observation independently, including duplicate/rejected
     /// input. Eligibility comes from the pinned trade-condition policy, not health.
     pub fn ingest(&mut self, event: &AuditedEvent) -> Result<()> {
@@ -1020,6 +1031,9 @@ mod tests {
         let context = "c".repeat(64);
         let cut = lane.checkpoint_pending(&context, 1_000_000).unwrap();
         assert!(!lane.forming_macd().unwrap().bullish);
+        let macd = lane.forming_macd_evidence().unwrap();
+        assert!(!macd.outcome().bullish);
+        assert_eq!(macd.run_id(), "test");
         let refs = recovery::Bundle::references(&cut.root).unwrap();
         assert_eq!(refs.scheduler, cut.scheduler.root.id);
         assert_eq!(refs.features, cut.features.id);

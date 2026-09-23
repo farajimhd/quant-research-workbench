@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub mod checkpoint;
 pub mod exact_source;
 pub mod historical;
+pub mod live;
 
 const SECOND: u64 = 1_000_000_000;
 pub const TIMEFRAMES_NS: [u64; 4] = [SECOND, 5 * SECOND, 10 * SECOND, 30 * SECOND];

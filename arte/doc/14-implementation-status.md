@@ -100,8 +100,12 @@ verified bar advance. The historical Strategy 350 runner does not yet consume
 the projected schedule, so historical mode cannot claim the gate is connected.
 The live/paper Strategy 350 account transaction now rejects every entry/add
 after its existing price and selected-bucket checks. The live exact owner can
-calculate a four-frame MACD preview, but no sealed, account-bound live MACD
-evidence reaches that transaction or its journal readback. The former
+calculate a four-frame MACD preview. It now also emits a private live evidence
+value only for the exact consumed eligible trade boundary. The value binds the
+paired exact source, MACD configuration, complete observation and receipt,
+boundary identity, evaluation clock, and preview outputs. The market lane can
+expose it for the pending boundary, but account decisions and journal readback
+do not yet bind it. The former
 two-second live add fixture no longer claims authorization from price evidence
 alone. Wait and exit decisions remain possible; live exposure stays blocked.
 The four EMA states and sparse exact-bar buckets now have separate bounded,
