@@ -22,8 +22,13 @@ processed after the ordered lane releases them. Late mode latches before the
 purchase-price floor is applied. The gate now accepts independent causal session
 context updates. They can latch late mode without a trade decision, enforce a
 monotonic session high and source order, and fail on conflicting context. The
-eligible-trade context builder, quote/bar connection, and remaining Strategy 350
-rules are still unimplemented.
+eligible-trade context builder now exists as a bounded per-ticker Rust component.
+It derives open, high, and strictly prior high from source-ordered eligible trades.
+The trade policy hash and source order are pinned; equal availability times do
+not erase prior-event evidence. An uncertified session start cannot mark context
+complete. The source-coverage proof is still caller-supplied, and this builder
+is not wired to the live lane or bar backtest. Remaining Strategy 350 rules are
+still unimplemented.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service

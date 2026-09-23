@@ -27,6 +27,7 @@ pub struct Config {
     pub late_gain_bps: u32,
     pub hod_floor_bps: u32,
     pub prior_close_source_hash: String,
+    pub trade_policy_hash: String,
 }
 impl Config {
     pub fn hash(&self) -> Result<String> {
@@ -44,6 +45,7 @@ impl Config {
             || self.hod_floor_bps == 0
             || self.hod_floor_bps >= 10_000
             || !hash_ok(&self.prior_close_source_hash)
+            || !hash_ok(&self.trade_policy_hash)
         {
             return Err(Error::Invalid(
                 "Strategy 350 price gate configuration".into(),
@@ -57,6 +59,7 @@ pub struct PriceFact {
     pub value: Decimal,
     pub available_at_ns: u64,
     pub source_hash: String,
+    pub source_order: Option<(u64, u64)>,
 }
 pub struct SessionContext {
     pub session: u32,
@@ -217,6 +220,9 @@ impl State {
         let Payload::Trade { price, .. } = &event.payload else {
             return Err(Error::Invalid("Strategy 350 price gate needs trade".into()));
         };
+        if policy.hash() != self.config.trade_policy_hash {
+            return Err(Error::Conflict("Strategy 350 trade policy differs".into()));
+        }
         let price_atoms = price.atoms_at_scale(self.config.price_scale)?;
         if price_atoms <= 0 {
             return Err(Error::Invalid("Strategy 350 trade price".into()));
@@ -266,8 +272,11 @@ impl State {
         if self.late_mode {
             let prior_high = context.prior_high.as_ref().and_then(|fact| {
                 if fact.available_at_ns < self.session_start_ns
-                    || fact.available_at_ns >= event.available_at_ns
-                    || !hash_ok(&fact.source_hash)
+                    || fact.available_at_ns > evaluated_at_ns
+                    || fact
+                        .source_order
+                        .is_none_or(|order| order >= (event.sip.ns, event.key.sequence))
+                    || fact.source_hash != self.config.trade_policy_hash
                 {
                     return None;
                 }
@@ -310,6 +319,7 @@ mod tests {
             late_gain_bps: 1500,
             hod_floor_bps: 7000,
             prior_close_source_hash: "a".repeat(64),
+            trade_policy_hash: policy().hash().into(),
         }
     }
     fn policy() -> Pinned {
@@ -359,6 +369,14 @@ mod tests {
             value: Decimal::parse(price).unwrap(),
             available_at_ns: at,
             source_hash: "a".repeat(64),
+            source_order: None,
+        }
+    }
+    fn prior_high(price: &str, at: u64) -> PriceFact {
+        PriceFact {
+            source_order: Some((at, at)),
+            source_hash: policy().hash().into(),
+            ..fact(price, at)
         }
     }
     fn context(at: u64, high: &str, prior: Option<PriceFact>) -> SessionContext {
@@ -373,7 +391,11 @@ mod tests {
         }
     }
     fn state() -> State {
-        let c = config();
+        state_with_policy_hash(policy().hash())
+    }
+    fn state_with_policy_hash(policy_hash: &str) -> State {
+        let mut c = config();
+        c.trade_policy_hash = policy_hash.into();
         let hash = c.hash().unwrap();
         State::new(
             Scope {
@@ -450,7 +472,7 @@ mod tests {
                 &event(2 * S, "11.50"),
                 &p,
                 Some(&close),
-                &context(2 * S, "11.50", Some(fact("11.4", S))),
+                &context(2 * S, "11.50", Some(prior_high("11.4", S))),
                 2 * S
             )
             .unwrap()
@@ -463,7 +485,7 @@ mod tests {
                 &event(3 * S, "10"),
                 &p,
                 Some(&close),
-                &context(3 * S, "11.50", Some(fact("11.50", 2 * S))),
+                &context(3 * S, "11.50", Some(prior_high("11.50", 2 * S))),
                 3 * S
             )
             .unwrap()
@@ -581,7 +603,7 @@ mod tests {
         };
         let hash = rejected.hash().unwrap();
         let policy = Pinned::new(rejected, &hash).unwrap();
-        let mut state = state();
+        let mut state = state_with_policy_hash(policy.hash());
         let outcome = state
             .observe(
                 &event(2 * S, "11.50"),

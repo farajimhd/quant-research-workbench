@@ -41,6 +41,7 @@ pub mod simulation_costs;
 pub mod simulation_model;
 pub mod strategy350_catalogue;
 pub mod strategy350_price_gate;
+pub mod strategy350_session;
 pub mod strategy_adds;
 pub mod strategy_candidate;
 pub mod strategy_dispatch;
