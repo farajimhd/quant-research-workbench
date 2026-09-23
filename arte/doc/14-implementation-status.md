@@ -40,7 +40,9 @@ trade. Full scanner/signal/Watchlist calculation, selected-candidate event
 replay, and throughput validation remain unimplemented.
 An in-memory Boolean calculation catalogue now verifies complete dense
 readback, declared execution cadence, source-bar identity, and distinct unknown
-state. A Strategy 350 join requires aligned signal and Watchlist products and
+state. A Strategy 350 join requires an aligned signal product; Watchlist is
+required only under an explicit membership policy. The current source uses
+`not_required`. The join
 produces only an event-refinement mask. Sparse fixed-cadence transition storage
 is now authored in migration 022, with an offline-tested reader that verifies
 SSD policy and part placement before use, exact coverage and transition digest,

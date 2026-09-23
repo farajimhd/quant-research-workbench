@@ -1,10 +1,10 @@
-//! Conservative Strategy 350 bar, signal and Watchlist conjunction.
+//! Conservative Strategy 350 bar and signal screen with explicit Watchlist policy.
 //! The output schedules event/quote refinement; it never authorizes an order.
 use crate::{
     bar_catalogue, boolean_catalogue,
     execution_interval::ExecutableKind,
     strategy350_bar_screen::{self, ScreenBatch},
-    strategy350_catalogue::{SIGNAL, WATCHLIST},
+    strategy350_catalogue::{WatchlistPolicy, SIGNAL, WATCHLIST},
     strategy350_price_gate::PriceFact,
     Error, Result,
 };
@@ -51,7 +51,8 @@ pub fn select(
     config: &strategy350_bar_screen::Config,
     prior_close: &PriceFact,
     signal: &boolean_catalogue::Complete,
-    watchlist: &boolean_catalogue::Complete,
+    watchlist_policy: WatchlistPolicy,
+    watchlist: Option<&boolean_catalogue::Complete>,
 ) -> Result<Vec<SelectedBatch>> {
     if bar.request().instruments.len() != 1 {
         return Err(Error::Invalid(
@@ -64,12 +65,23 @@ pub fn select(
         |kind| matches!(kind, ExecutableKind::SignalStream),
         SIGNAL,
     )?;
-    aligned(
-        watchlist,
-        bar,
-        |kind| matches!(kind, ExecutableKind::Watchlist),
-        WATCHLIST,
-    )?;
+    let watchlist = match watchlist_policy {
+        WatchlistPolicy::NotRequired if watchlist.is_none() => None,
+        WatchlistPolicy::Required => {
+            let product =
+                watchlist.ok_or_else(|| Error::Unready("required Watchlist missing".into()))?;
+            aligned(
+                product,
+                bar,
+                |kind| matches!(kind, ExecutableKind::Watchlist),
+                WATCHLIST,
+            )?;
+            Some(product)
+        }
+        WatchlistPolicy::NotRequired => {
+            return Err(Error::Invalid("unused Watchlist supplied".into()))
+        }
+    };
     let instrument = bar.request().instruments[0];
     let closes = BTreeMap::from([(
         instrument,
@@ -82,10 +94,10 @@ pub fn select(
     )]);
     let screen = strategy350_bar_screen::project(bar, config, &closes)?;
     let signal_values = values(signal);
-    let watch_values = values(watchlist);
+    let watch_values = watchlist.map(values);
     let total = ((bar.request().interval.end - bar.request().interval.start)
         / bar_catalogue::BASE_INTERVAL_NS) as usize;
-    if signal_values.len() != total || watch_values.len() != total {
+    if signal_values.len() != total || watch_values.as_ref().is_some_and(|v| v.len() != total) {
         return Err(Error::Conflict("Strategy 350 Boolean grid length".into()));
     }
     let mut output = Vec::with_capacity(screen.len());
@@ -101,7 +113,10 @@ pub fn select(
         let mut refine = Vec::with_capacity(needs_refinement.len());
         for (index, bar_possible) in needs_refinement.into_iter().enumerate() {
             let (signal_known, signal_true) = signal_values[start + index];
-            let (watch_known, watch_true) = watch_values[start + index];
+            let (watch_known, watch_true) = watch_values
+                .as_ref()
+                .map(|v| v[start + index])
+                .unwrap_or((true, true));
             if bar_possible && (!signal_known || !watch_known) {
                 return Err(Error::Unready(
                     "Strategy 350 required signal or Watchlist unknown".into(),
@@ -277,7 +292,15 @@ mod tests {
             vec![true; 3],
             vec![true, false, true],
         );
-        let selected = select(&b, &config(), &close(), &signal, &watch).unwrap();
+        let selected = select(
+            &b,
+            &config(),
+            &close(),
+            &signal,
+            WatchlistPolicy::Required,
+            Some(&watch),
+        )
+        .unwrap();
         assert_eq!(selected[0].refine, vec![true, false, true]);
         let unknown = boolean(
             &b,
@@ -286,7 +309,15 @@ mod tests {
             vec![true, false, true],
             vec![true, false, true],
         );
-        assert!(select(&b, &config(), &close(), &signal, &unknown).is_err());
+        assert!(select(
+            &b,
+            &config(),
+            &close(),
+            &signal,
+            WatchlistPolicy::Required,
+            Some(&unknown)
+        )
+        .is_err());
         let wrong = boolean(
             &b,
             ExecutableKind::Watchlist,
@@ -294,6 +325,33 @@ mod tests {
             vec![true; 3],
             vec![true; 3],
         );
-        assert!(select(&b, &config(), &close(), &signal, &wrong).is_err());
+        assert!(select(
+            &b,
+            &config(),
+            &close(),
+            &signal,
+            WatchlistPolicy::Required,
+            Some(&wrong)
+        )
+        .is_err());
+        assert!(select(
+            &b,
+            &config(),
+            &close(),
+            &signal,
+            WatchlistPolicy::Required,
+            None
+        )
+        .is_err());
+        let without_watch = select(
+            &b,
+            &config(),
+            &close(),
+            &signal,
+            WatchlistPolicy::NotRequired,
+            None,
+        )
+        .unwrap();
+        assert_eq!(without_watch[0].refine, vec![true; 3]);
     }
 }

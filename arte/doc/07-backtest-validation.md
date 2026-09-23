@@ -52,8 +52,11 @@ as intraday receive times in backtest decisions. A separate causal bar/session
 projection and narrow event refinement must supply backtest context.
 
 The first typed Strategy 350 catalogue plan requests completed 100 ms bars,
-the early squeeze signal, a tradability Watchlist and reference data for
-screening. It requests raw trades and quotes only for selected candidates,
+the early squeeze signal and reference data for screening. Watchlist membership
+is requested only when the pinned activation policy requires it. Inspected
+Strategy 350 source sets `watchlist_policy=not_required`, and its activation and
+signal-dispatch paths bypass membership under that policy. The plan requests raw
+trades and quotes only for selected candidates,
 alongside forming MACD timeframes, VWAP, prior close, LULD and historical V7
 dependencies. This is a requirement plan, not a scanner evaluator or trading
 loop. Each requested product needs a pinned catalogue definition and coverage.
@@ -69,8 +72,9 @@ bucket. This is a bounded columnar prefix pass, not yet measured SIMD or a
 complete vectorized scanner/signal/Watchlist implementation.
 The first shared Boolean product readback now records explicit evaluation
 cadence, known/unknown state, value, source-bar identity and complete bucket
-coverage. Strategy 350 can intersect verified signal and Watchlist products
-with the bar mask only when their generation, ticker, session and grid match.
+coverage. Strategy 350 intersects the verified signal with the bar mask. It
+also intersects Watchlist membership only when the pinned policy requires it.
+Products must match generation, ticker, session and grid.
 Unknown on a bucket that otherwise needs refinement blocks the run; false is
 not treated as missing. These contracts do not yet calculate or persist the
 signal and Watchlist products in ClickHouse.

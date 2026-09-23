@@ -9,10 +9,16 @@ use std::collections::BTreeSet;
 
 pub const STRATEGY: &str = "arte.strategy-350.v1";
 pub const SIGNAL: &str = "price-squeeze-early";
-pub const WATCHLIST: &str = "strategy-350-tradability";
+pub const WATCHLIST: &str = "early-squeeze-momentum-v24-tradability";
 pub const LEVEL_BOOK: &str = "v7-historical-level-book";
 pub const BASE_BAR_NS: u64 = 100_000_000;
 const SECOND: u64 = 1_000_000_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WatchlistPolicy {
+    NotRequired,
+    Required,
+}
 
 #[derive(Clone, Copy)]
 pub struct Ticker {
@@ -54,14 +60,17 @@ fn requests(tickers: &[Ticker], dependencies: BTreeSet<Dependency>) -> Vec<Reque
         .collect()
 }
 
-pub fn screen_dependencies() -> BTreeSet<Dependency> {
-    [
+pub fn screen_dependencies(watchlist_policy: WatchlistPolicy) -> BTreeSet<Dependency> {
+    let mut result: BTreeSet<_> = [
         Dependency::Bars(BASE_BAR_NS),
         Dependency::MarketSignal(SIGNAL.into()),
-        Dependency::Watchlist(WATCHLIST.into()),
         Dependency::Reference,
     ]
-    .into()
+    .into();
+    if watchlist_policy == WatchlistPolicy::Required {
+        result.insert(Dependency::Watchlist(WATCHLIST.into()));
+    }
+    result
 }
 
 pub fn candidate_dependencies() -> BTreeSet<Dependency> {
@@ -91,12 +100,13 @@ pub fn candidate_dependencies() -> BTreeSet<Dependency> {
 pub fn plan_screen(
     definitions: Vec<Definition>,
     tickers: &[Ticker],
+    watchlist_policy: WatchlistPolicy,
     maximum_nodes: usize,
 ) -> Result<Plan> {
     validate_tickers(tickers)?;
     dependency_plan::build(
         definitions,
-        &requests(tickers, screen_dependencies()),
+        &requests(tickers, screen_dependencies(watchlist_policy)),
         maximum_nodes,
     )
 }
@@ -136,7 +146,7 @@ mod tests {
         }
     }
     fn definitions() -> Vec<Definition> {
-        screen_dependencies()
+        screen_dependencies(WatchlistPolicy::Required)
             .into_iter()
             .chain(candidate_dependencies())
             .collect::<BTreeSet<_>>()
@@ -157,13 +167,31 @@ mod tests {
     #[test]
     fn scanner_stage_excludes_raw_refinement_and_candidate_stage_requires_it() {
         let definitions = definitions();
-        let screen = plan_screen(definitions.clone(), &[ticker()], 100).unwrap();
+        let screen = plan_screen(
+            definitions.clone(),
+            &[ticker()],
+            WatchlistPolicy::NotRequired,
+            100,
+        )
+        .unwrap();
         let deps: BTreeSet<_> = screen
             .nodes
             .iter()
             .map(|n| n.key.dependency.clone())
             .collect();
         assert!(deps.contains(&Dependency::MarketSignal(SIGNAL.into())));
+        assert!(!deps.contains(&Dependency::Watchlist(WATCHLIST.into())));
+        let required = plan_screen(
+            definitions.clone(),
+            &[ticker()],
+            WatchlistPolicy::Required,
+            100,
+        )
+        .unwrap();
+        assert!(required
+            .nodes
+            .iter()
+            .any(|n| n.key.dependency == Dependency::Watchlist(WATCHLIST.into())));
         assert!(!deps.contains(&Dependency::Trades));
         assert!(!deps.contains(&Dependency::Quotes));
         let candidates = plan_candidates(definitions, &[ticker()], 100)
@@ -189,6 +217,12 @@ mod tests {
             .collect();
         missing.remove(&Dependency::Quotes);
         assert!(plan_candidates(missing.into_values().collect(), &[ticker()], 100).is_err());
-        assert!(plan_screen(definitions(), &[ticker(), ticker()], 100).is_err());
+        assert!(plan_screen(
+            definitions(),
+            &[ticker(), ticker()],
+            WatchlistPolicy::NotRequired,
+            100
+        )
+        .is_err());
     }
 }
