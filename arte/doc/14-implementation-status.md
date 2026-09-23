@@ -149,6 +149,12 @@ Capture and restore also reject a current account receipt that disagrees with
 the market's due/committed barrier state. The multi-ticker coordinator exposes
 unselected controllers only in unit tests; production callers can borrow the
 selected, fill-cleared controller, not a preloaded later ticker's market state.
+The lower-level multi-market runner now checkpoints all shard cursors and
+account barriers under one selected-head identity. Restore independently
+checks the catalog, prepared inputs, seed/configuration hashes, quote policies,
+journal receipts and earliest selected head. A two-shard offline round-trip
+passes. This graph excludes execution, Strategy 350 account state and portfolio;
+there is still no verified published whole-run multi-ticker cut.
 The Strategy 350 historical account owner now selects its own ticker's
 consumers from a shared run manifest while requiring exact local configuration
 and state sets. A unit test covers another ticker, missing local inputs and

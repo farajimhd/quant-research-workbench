@@ -1039,15 +1039,18 @@ fn multi_ticker_playback_preserves_global_boundary_order_and_account_barriers() 
     let pinned = crate::run_manifest::Pinned::new(manifest, &hash).unwrap();
     let make = |instrument, prepared| {
         let market = super::super::tests::runtime_for(10, instrument);
-        let scheduler = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             Ordered::new(market, 10).unwrap(),
             "causal-offline-test".into(),
         )
         .unwrap();
+        scheduler
+            .bind_quote_policy(std::sync::Arc::new(empty_quote_policy(1)))
+            .unwrap();
         Run::new(&pinned, &catalog, scheduler, prepared, 1, 1).unwrap()
     };
-    let first_run = make(1, first);
-    let second_run = make(2, second);
+    let first_run = make(1, first.clone());
+    let second_run = make(2, second.clone());
     assert!(MultiRun::new(&pinned, &catalog, vec![]).is_err());
     assert!(MultiRun::new(&pinned, &catalog, vec![make(1, prepared_playback())]).is_err());
     let mut multi = MultiRun::new(&pinned, &catalog, vec![second_run, first_run]).unwrap();
@@ -1056,9 +1059,68 @@ fn multi_ticker_playback_preserves_global_boundary_order_and_account_barriers() 
     multi.resume_all().unwrap();
     let mut prior = None;
     let mut boundaries = [0usize; 2];
+    let mut snapshot_checked = false;
     loop {
         match multi.poll().unwrap() {
             MultiPoll::Boundary { shard } => {
+                if !snapshot_checked {
+                    use playback::accounts::multi::checkpoint::RestoreShard;
+                    let image = multi.checkpoint(&pinned, &catalog, 10_000_000).unwrap();
+                    let seeds = multi
+                        .runs()
+                        .iter()
+                        .map(|run| run.market().unwrap().structure.seed_hash.clone())
+                        .collect::<Vec<_>>();
+                    let configs = multi
+                        .runs()
+                        .iter()
+                        .map(|run| run.market().unwrap().configuration_hash().to_owned())
+                        .collect::<Vec<_>>();
+                    let inputs = || {
+                        [first.clone(), second.clone()]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, prepared)| RestoreShard {
+                                prepared,
+                                seed_hash: &seeds[index],
+                                configuration_hash: &configs[index],
+                                quote_policy: std::sync::Arc::new(empty_quote_policy(1)),
+                                maximum_pending: 10,
+                                frames_per_poll: 1,
+                                maximum_consumers: 1,
+                                receipts: vec![],
+                            })
+                            .collect()
+                    };
+                    assert!(MultiRun::restore_checkpoint(
+                        &image,
+                        &"0".repeat(64),
+                        &pinned,
+                        &catalog,
+                        inputs(),
+                        10_000_000,
+                    )
+                    .is_err());
+                    let restored = MultiRun::restore_checkpoint(
+                        &image,
+                        &image.root.id,
+                        &pinned,
+                        &catalog,
+                        inputs(),
+                        10_000_000,
+                    )
+                    .unwrap();
+                    assert_eq!(restored.selected().unwrap().unwrap().0, shard);
+                    assert_eq!(
+                        restored
+                            .checkpoint(&pinned, &catalog, 10_000_000)
+                            .unwrap()
+                            .root
+                            .id,
+                        image.root.id
+                    );
+                    snapshot_checked = true;
+                }
                 let (selected, run) = multi.selected().unwrap().unwrap();
                 assert_eq!(selected, shard);
                 let boundary = run.pending().unwrap().unwrap();
@@ -1081,6 +1143,7 @@ fn multi_ticker_playback_preserves_global_boundary_order_and_account_barriers() 
         }
     }
     assert!(boundaries[0] > 0 && boundaries[1] > 0);
+    assert!(snapshot_checked);
 }
 #[test]
 fn event_boolean_source_ledger_requires_complete_pinned_playback() {

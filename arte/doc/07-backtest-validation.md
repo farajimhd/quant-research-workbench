@@ -181,6 +181,13 @@ preloaded later ticker's state through the coordinator before its turn.
 The lower-level market-only multi-run applies the same access rule: its full
 run slice is test-only, while production consumers can query shard count and
 borrow only the selected run.
+The market-only multi-run can now capture every shard's playback cursor and
+account barrier in one bounded content-addressed graph. Restore requires an
+independently pinned root, source catalog, prepared input, seed/configuration,
+quote policy and journal receipts for each shard. It verifies the restored
+selected boundary is still the earliest global head. An offline two-shard
+round-trip passes. This graph is not publishable whole-run recovery: it does
+not include simulated execution, Strategy 350 state or the shared portfolio.
 Strategy 350 account-owned state now has a bounded content-addressed
 component checkpoint. Restore requires the selected market boundary, exact
 effective configuration hashes, and independently read decision journal rows.

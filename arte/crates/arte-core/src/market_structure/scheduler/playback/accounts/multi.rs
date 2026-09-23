@@ -8,6 +8,7 @@ use crate::{
     Error, Result,
 };
 use std::collections::BTreeSet;
+pub mod checkpoint;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MultiPoll {
