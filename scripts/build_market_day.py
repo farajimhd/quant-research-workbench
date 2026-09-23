@@ -32,6 +32,9 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 
 RUNTIME = Path("D:/TradingML/runtimes")
 DEFAULT_ENV = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\secrets\.env")
+TRANSPORT_ONLY_CONTROLLER_HASHES = frozenset({
+    "994988b4804edf179707684409e3b981046bb26d78d46a7f60420499a79099b3",
+})
 
 
 def digest(value):
@@ -118,9 +121,12 @@ class Client:
         password = pick(("QMD_CLICKHOUSE_PASSWORD", "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD", "CLICKHOUSE_WORKSTATION_PASSWORD", "CLICKHOUSE_PASSWORD"))
         self.secrets = (endpoint, password)
         self.http = ClickHouseHttpClient(endpoint, user, password, timeout_seconds=args.query_timeout + 30,
+            persistent=True,
             default_query_params=dict(max_threads=args.max_threads, max_insert_threads=1,
                 max_memory_usage=int(args.max_memory_gb * 1024**3), max_execution_time=args.query_timeout,
                 max_result_rows=100000, max_result_bytes=16000000, result_overflow_mode="throw"))
+        # Cancellation must not wait behind the active persistent-query lock.
+        self.cancel_http = ClickHouseHttpClient(endpoint,user,password,timeout_seconds=30)
         self.active = None
         self.profiles = []
         self.profile_totals = {}
@@ -149,7 +155,11 @@ class Client:
 
     def cancel(self):
         if self.active:
-            self.http.execute("KILL QUERY WHERE query_id=" + sql.literal(self.active) + " SYNC")
+            self.cancel_http.execute("KILL QUERY WHERE query_id=" + sql.literal(self.active) + " SYNC")
+
+    def close(self):
+        self.http.close()
+        self.cancel_http.close()
 
     def clean_error(self, error):
         message = str(error)
@@ -243,6 +253,8 @@ class Progress:
         if error_type:
             self.current = 'interrupted' if issubclass(error_type,KeyboardInterrupt) else 'failed'
             self.failed += int(self.current=='failed')
+            with self.lock:
+                self.active.clear()
         self.stop.set()
         if self.thread: self.thread.join()
         if self.live:
@@ -539,12 +551,15 @@ def build_lock(path):
 
 def build_ticker(args, build, plan, ticker, rows, requested, calculation_source, rules_hash,
                  report, report_path, unit_log,
-                 checkpoint_clock,
+                 checkpoint_clock, worker_local,
                  state_lock, progress, stop, clients):
     """Own one ticker's chronological bars and then its requested technical days."""
-    client = Client(args)
-    with state_lock:
-        clients.append(client)
+    client = getattr(worker_local,'client',None)
+    if client is None:
+        client = Client(args)
+        worker_local.client = client
+        with state_lock:
+            clients.append(client)
 
     def mark(day, attempt, stage):
         with state_lock:
@@ -650,6 +665,17 @@ def build_ticker(args, build, plan, ticker, rows, requested, calculation_source,
             report['active'].pop(ticker,None)
 
 
+def transport_compatible_resume(saved, definition):
+    """Only the known WinError 10048 transport fix may reuse an older build."""
+    previous=saved.get('definition') if isinstance(saved,dict) else None
+    if not isinstance(previous,dict) or previous.get('controller_source') not in TRANSPORT_ONLY_CONTROLLER_HASHES:
+        return False
+    if saved.get('build_id') != digest(previous):
+        return False
+    return digest({key:value for key,value in previous.items() if key!='controller_source'}) == digest(
+        {key:value for key,value in definition.items() if key!='controller_source'})
+
+
 def run(args):
     runtime = args.runtime.resolve()
     if not RUNTIME.is_dir() or not runtime.is_relative_to(RUNTIME.resolve()):
@@ -658,7 +684,7 @@ def run(args):
     client = Client(args)
     with build_lock(RUNTIME / ('market-day-'+args.database+'.lock')):
         report = dict(status="preflight", started_at=datetime.now(timezone.utc).isoformat(), profiles=[],run_id=uuid.uuid4().hex)
-        report_path = runtime / 'latest.json'
+        report_path = runtime / ('last-plan.json' if args.plan_only else 'latest.json')
         database_ready=False
         try:
             storage_preflight(client,args.database)
@@ -685,9 +711,17 @@ def run(args):
                 build += '-' + uuid.uuid4().hex[:12]
             if args.build_id:
                 saved_path=runtime / (args.build_id+'.json')
-                if not saved_path.is_file() or json.loads(saved_path.read_text())['definition']!=json.loads(json.dumps(definition,default=str)):
+                saved=json.loads(saved_path.read_text()) if saved_path.is_file() else None
+                if not saved or saved.get('build_id')!=args.build_id or (digest(saved['definition'])!=digest(definition) and not transport_compatible_resume(saved,definition)):
                     raise ValueError('Explicit build ID has different definitions, source coverage, or runtime owner')
                 build=args.build_id
+                definition=saved['definition']
+            elif not args.rebuild and not args.plan_only and report_path.is_file():
+                prior_report=json.loads(report_path.read_text())
+                if prior_report.get('status') in ('failed','interrupted','publication_failed') and transport_compatible_resume(prior_report,definition):
+                    build=prior_report['build_id']
+                    definition=prior_report['definition']
+                    print(f'Resuming certified stages from transport-compatible build {build}',flush=True)
             report.update(build_id=build, definition=definition, status='planned',unit_log=str(runtime / (build+'.units.jsonl')),
                 seed_modes=dict(bootstrap=0,carried=0))
             existing=runtime / (build+'.json')
@@ -719,6 +753,7 @@ def run(args):
             state_lock = threading.Lock()
             stop = threading.Event()
             clients = []
+            worker_local = threading.local()
             checkpoint_clock = [time.monotonic()]
             report['active'] = {}
             with Progress(len(plan['units']),len(wanted),min(args.workers,len(by_ticker)),args.progress) as progress:
@@ -731,7 +766,7 @@ def run(args):
                         except StopIteration: return False
                         future = pool.submit(build_ticker,args,build,plan,ticker,rows,set(plan['requested']),
                             definition['calculation_source'],definition['rules_hash'],
-                            report,report_path,runtime / (build+'.units.jsonl'),checkpoint_clock,
+                            report,report_path,runtime / (build+'.units.jsonl'),checkpoint_clock,worker_local,
                             state_lock,progress,stop,clients)
                         pending[future] = ticker
                         return True
@@ -763,10 +798,16 @@ def run(args):
             return 0
         except KeyboardInterrupt:
             report['status'] = 'interrupted'
+            if 'progress' in locals():
+                report.update(completed=progress.completed,skipped=progress.skipped,
+                    bars_done=progress.bars_done,technical_done=progress.technical_done)
             print("Interrupted. Published units remain resumable; rerun the same command.",flush=True)
             return 130
         except Exception as error:
             report.update(status='failed',error=client.clean_error(error))
+            if 'progress' in locals():
+                report.update(completed=progress.completed,skipped=progress.skipped,
+                    bars_done=progress.bars_done,technical_done=progress.technical_done)
             print("Build failed: "+report['error'],file=sys.stderr,flush=True)
             return 1
         finally:
@@ -807,6 +848,9 @@ def run(args):
                 save(runtime / (report['build_id']+'.json'),report)
             if report['status']=='core_complete':
                 print(f"Core build complete: {build}\nManifest: {report_path}",flush=True)
+            for worker_client in locals().get('clients',[]):
+                worker_client.close()
+            client.close()
 
 
 def main(argv=None):

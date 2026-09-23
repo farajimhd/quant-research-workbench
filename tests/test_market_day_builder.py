@@ -20,6 +20,25 @@ from pipelines.market_sip.events import market_day_sql as S
 
 
 class Arguments(unittest.TestCase):
+    def test_transport_only_resume_requires_exact_prior_build(self):
+        previous={'controller_source':next(iter(B.TRANSPORT_ONLY_CONTROLLER_HASHES)),
+            'version':'market-day-core-v4','range':['2026-08-18'],'rules_hash':'same'}
+        saved={'definition':previous,'build_id':B.digest(previous)}
+        current={**previous,'controller_source':'new-transport-code'}
+        self.assertTrue(B.transport_compatible_resume(saved,current))
+        self.assertFalse(B.transport_compatible_resume(saved,{**current,'rules_hash':'changed'}))
+        self.assertFalse(B.transport_compatible_resume({**saved,'build_id':'wrong'},current))
+
+    def test_builder_reuses_query_connection_but_cancels_separately(self):
+        with patch.dict(os.environ,{'QMD_CLICKHOUSE_URL':'http://127.0.0.1:8123'}):
+            client=B.Client(B.parse_args(['--date','2026-08-18']))
+        try:
+            self.assertTrue(client.http.persistent)
+            self.assertFalse(client.cancel_http.persistent)
+            self.assertIsNot(client.http,client.cancel_http)
+        finally:
+            client.close()
+
     def test_text_progress_reports_durable_units_and_active_tickers(self):
         progress=B.Progress(12,2,2,'text')
         with redirect_stdout(io.StringIO()):
@@ -124,7 +143,10 @@ class ClickHouseParity(unittest.TestCase):
     def tearDownClass(cls):
         # Only the freshly generated test database can be removed.
         assert cls.db.startswith('market_day_test_') and len(cls.db)==48
-        cls.c.query('DROP DATABASE '+cls.db+' SYNC','fixture_cleanup',False)
+        try:
+            cls.c.query('DROP DATABASE '+cls.db+' SYNC','fixture_cleanup',False)
+        finally:
+            cls.c.close()
 
     def test_recursive_windows_against_sequential_reference(self):
         # Long enough to expose initialization, accumulated error and decay.

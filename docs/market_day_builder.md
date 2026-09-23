@@ -52,6 +52,9 @@ and the per-query memory limits sum to 8 GiB. Tune `--workers`, `--max-threads`,
 `--max-memory-gb`, and `--query-timeout` for the host. No automatic write retries
 or unbounded worker fan-out occurs. A worker failure stops new ticker dispatch,
 cancels active builder queries, and leaves published ticker-day stages resumable.
+Each worker reuses one persistent ClickHouse HTTP connection; cancellation uses
+a separate connection so it cannot wait behind an active query. This avoids
+exhausting Windows ephemeral ports during large ticker campaigns.
 
 Progress counts durable bars and technical ticker-days and shows active ticker
 stages. Plain text mode emits bounded snapshots; interactive mode keeps a live
@@ -157,6 +160,10 @@ prevents simultaneous local controllers; separate runtime owners get different
 build IDs. Ctrl+C cancels the active query and preserves completed units. A retry
 uses a fresh attempt ID, so an uncertain partial INSERT cannot duplicate a
 published result. There is no automatic garbage collection of abandoned attempts.
+The transport-only connection fix can resume the known failed V4 controller build
+when its plan, calculation source, rules, runtime owner and original build hash
+all match. Other controller changes still create a new build. Read-only plans
+write `last-plan.json` so they do not replace the failed build's `latest.json`.
 
 Verification checks source-day totals against continuity, ordinal uniqueness and
 bounds, source fingerprints before/after calculation, event count conservation,
