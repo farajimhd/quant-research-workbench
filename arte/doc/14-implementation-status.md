@@ -4747,8 +4747,8 @@ The schema-v2 multi-ticker graph now has an offline semantic restore path. It
 requires independent startup documents, prepared market frames, the run seed
 catalog and verified seed bundles. It also requires quote policies, strategy
 journal readbacks, the cost model and fill evidence. It restores each selected
-or standby controller and Strategy 350
-account owner, restores the shared portfolio, checks funding across all lanes,
+or standby controller and Strategy 350 account owner, restores the shared
+portfolio, checks funding across all lanes,
 then recaptures the entire graph and requires the same root. A two-ticker unit
 test restores the selected and standby lanes and rejects a substituted seed
 bundle or missing strategy-journal readback. The market configuration hash is
@@ -4756,3 +4756,11 @@ derived from the independently supplied startup document, not accepted as a
 second caller-provided value. This is backtest-only recovery. It is not
 durable ClickHouse readback, broker reconciliation, publication or permission
 to trade. No service ran.
+
+The multi-ticker graph now has a bounded, deduplicated binary archive. It
+stores unique content-addressed objects once, records each controller and
+Strategy 350 component role, and splits the archive into 1 MiB chunks under a
+small header. Hydration verifies every chunk and object hash, exact references,
+the run/cut/startup identity and graph pins. The two-ticker offline test covers
+round-trip hydration and rejects a missing chunk. No ClickHouse publication or
+power-loss durability test ran.

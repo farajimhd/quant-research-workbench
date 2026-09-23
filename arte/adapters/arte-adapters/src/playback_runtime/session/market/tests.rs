@@ -936,6 +936,39 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         recovered.portfolio.snapshot("b").unwrap().budget_minor,
         20_000
     );
+    let mut archived = crate::playback_runtime::multi::checkpoint::storage::Stored::from_bundle(
+        &graph,
+        &combined,
+        &startup_hash,
+        &cut,
+        graph_limits.maximum_bytes,
+    )
+    .unwrap();
+    let hydrated = archived
+        .hydrate(
+            &combined,
+            &startup_hash,
+            &cut,
+            &graph.root.id,
+            graph_limits.maximum_bytes,
+        )
+        .unwrap();
+    assert_eq!(hydrated.root.id, graph.root.id);
+    assert_eq!(
+        hydrated.controllers[&2].root.id,
+        standby_controller_image.root.id
+    );
+    let first_chunk = archived.chunks.keys().next().unwrap().clone();
+    archived.chunks.remove(&first_chunk);
+    assert!(archived
+        .hydrate(
+            &combined,
+            &startup_hash,
+            &cut,
+            &graph.root.id,
+            graph_limits.maximum_bytes
+        )
+        .is_err());
     let mut wrong_recovery = recovery_evidence();
     wrong_recovery.get_mut(&2).unwrap().seed = &first_seed;
     assert!(graph

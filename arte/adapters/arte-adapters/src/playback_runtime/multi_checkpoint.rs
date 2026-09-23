@@ -9,6 +9,8 @@ use arte_core::{
     strategy_transaction::Committed,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+#[path = "multi_checkpoint_storage.rs"]
+pub mod storage;
 
 pub struct Limits {
     pub maximum_bytes: usize,
