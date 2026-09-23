@@ -23,6 +23,18 @@ pub struct Status {
     pub pending_fills: usize,
     pub applied_in_pending_quote: usize,
 }
+/// Emitted only after journal readback and both account and strategy projection.
+/// The original fill is not rewritten to manufacture strategy attribution.
+#[derive(Debug, Clone)]
+pub struct CommittedFill {
+    pub fill: Fill,
+    pub owner: arte_core::strategy_dispatch::Scope,
+}
+
+#[derive(Debug, Clone)]
+pub struct FillReceipt {
+    pub fills: Vec<CommittedFill>,
+}
 pub struct Runtime {
     simulator: Simulator,
     projection: Projection,
@@ -752,8 +764,17 @@ impl Runtime {
     /// One bounded contiguous-scope batch per call. False means no work remains.
     /// Cancellation preserves the committer and exact pending quote identity.
     pub async fn commit_next(&mut self, publisher: &mut impl Publisher) -> Result<bool> {
+        Ok(self.commit_next_receipt(publisher).await?.is_some())
+    }
+
+    /// The receipt is returned only after every fill in this batch is durable
+    /// and projected. It is transient; the journal remains the recovery source.
+    pub async fn commit_next_receipt(
+        &mut self,
+        publisher: &mut impl Publisher,
+    ) -> Result<Option<FillReceipt>> {
         let Some(p) = &mut self.pending else {
-            return Ok(false);
+            return Ok(None);
         };
         if p.current.is_none() {
             let scope = Key::from_fill(&p.fills[p.applied])?;
@@ -790,6 +811,7 @@ impl Runtime {
             }
         }
         committer.commit(publisher, &mut self.projection).await?;
+        let mut receipt = FillReceipt { fills: Vec::new() };
         for fill in &p.fills[p.applied..*end] {
             let Some(owner) = self.owners.get(&fill.command_id) else {
                 // Unowned raw submissions exist only in low-level unit fixtures.
@@ -807,6 +829,10 @@ impl Runtime {
                 self.attributed.insert(id.clone(), projection);
             }
             self.attributed.get_mut(&id).unwrap().apply(owner, fill)?;
+            receipt.fills.push(CommittedFill {
+                fill: fill.clone(),
+                owner: owner.clone(),
+            });
         }
         self.cash.extend(cash);
         p.applied = *end;
@@ -814,7 +840,7 @@ impl Runtime {
         if p.applied == p.fills.len() {
             self.pending = None;
         }
-        Ok(true)
+        Ok(Some(receipt))
     }
 }
 fn validate_run(plan: &arte_core::decision_orders::Plan, run_id: &str) -> Result<()> {
@@ -1609,6 +1635,65 @@ mod tests {
             }
             Ok(batch.rows().clone())
         }
+    }
+    #[tokio::test]
+    async fn verified_receipt_preserves_fill_and_strategy_owner() {
+        use arte_core::strategy_dispatch::{Mode, Scope, StrategyKind};
+        let owner = Scope {
+            run_id: "r".into(),
+            mode: Mode::Backtest,
+            account: "a".into(),
+            instrument: 1,
+            strategy_instance: "first".into(),
+            strategy_kind: StrategyKind::GenericCandidate,
+            execution_interval: arte_core::execution_interval::ExecutionInterval::Events,
+            code_hash: "c".into(),
+            config_hash: "f".into(),
+        };
+        let simulator = Simulator::new_scoped("r", 1, 2, 2, 10000).unwrap();
+        let mut runtime = Runtime::new(simulator, Projection::new(1, 8, 8).unwrap(), 8).unwrap();
+        runtime.submit(bracket("a"), 0, 0).unwrap();
+        runtime.owners.insert("a".into(), owner.clone());
+        runtime
+            .quote(&Quote {
+                sequence: 1,
+                at_ns: 1,
+                bid: 99,
+                ask: 100,
+                bid_size: 10,
+                ask_size: 10,
+            })
+            .unwrap();
+        let mut store = Store {
+            fail: true,
+            calls: 0,
+            rows: BTreeMap::new(),
+        };
+        assert!(runtime.commit_next_receipt(&mut store).await.is_err());
+        let receipt = runtime
+            .commit_next_receipt(&mut store)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.fills.len(), 1);
+        assert_eq!(receipt.fills[0].owner, owner);
+        let fill = &receipt.fills[0].fill;
+        assert_eq!(
+            runtime
+                .position(&Key::from_fill(fill).unwrap())
+                .unwrap()
+                .quantity,
+            1
+        );
+        assert_eq!(
+            runtime.strategy_position(&owner).unwrap().unwrap().quantity,
+            1
+        );
+        assert!(runtime
+            .commit_next_receipt(&mut store)
+            .await
+            .unwrap()
+            .is_none());
     }
     #[tokio::test]
     async fn pending_quote_blocks_overtaking_and_accounts_commit_separately() {

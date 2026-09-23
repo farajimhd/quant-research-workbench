@@ -4836,3 +4836,14 @@ back into this reentry state automatically, so the caller must supply verified
 fill evidence in the observation callback or a real fill blocks subsequent
 decisions. This is not order
 authority. No service ran.
+
+The historical execution lane now returns a bounded typed fill receipt only
+after journal readback and account plus strategy-attributed projection. Each
+receipt retains the original fill and its command owner. A failed or ambiguous
+publication returns no receipt, and retry uses the same pending batch. The
+Strategy 350 boundary exposes this receipt separately from the generic
+playback progress step. An offline unit test covers ambiguous publication,
+exact retry, owner identity, both projections, and one-time receipt emission.
+The caller must still carry this receipt into the next journaled Strategy 350
+observation and bind the entry's causal trade and resistance. Receipt exposure
+alone is not an automatic fill-to-state bridge or end-to-end execution.

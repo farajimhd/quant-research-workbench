@@ -21,6 +21,12 @@ pub enum Step {
     FillsPublished {
         scope_hash: String,
     },
+    /// Only the Strategy 350 lane exports verified fill evidence for its
+    /// account-state observation boundary.
+    Strategy350FillsPublished {
+        scope_hash: String,
+        receipt: simulation_runtime::FillReceipt,
+    },
     Funding(Vec<simulation_runtime::funding::Outcome>),
     NeedsEvaluation {
         scope_hashes: Vec<String>,
@@ -169,8 +175,14 @@ impl Runtime {
                 .fills
                 .get_mut(&scope_hash)
                 .ok_or_else(|| Error::Unready("fill scope publisher missing".into()))?;
-            self.commit_fills(publisher).await?;
-            return Ok(Step::FillsPublished { scope_hash });
+            let receipt = self
+                .commit_fills_receipt(publisher)
+                .await?
+                .ok_or_else(|| Error::Conflict("expected Strategy 350 fill batch".into()))?;
+            return Ok(Step::Strategy350FillsPublished {
+                scope_hash,
+                receipt,
+            });
         }
         self.decision_view()?;
         let funding = self.reconcile_funding(

@@ -210,6 +210,12 @@ impl Runtime {
     pub async fn commit_fills(&mut self, publisher: &mut impl Publisher) -> Result<bool> {
         self.execution.commit_next(publisher).await
     }
+    pub async fn commit_fills_receipt(
+        &mut self,
+        publisher: &mut impl Publisher,
+    ) -> Result<Option<simulation_runtime::FillReceipt>> {
+        self.execution.commit_next_receipt(publisher).await
+    }
     pub fn next_fill_scope_hash(&self) -> Result<Option<String>> {
         self.execution.next_scope_hash()
     }
