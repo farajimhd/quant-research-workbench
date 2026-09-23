@@ -45,6 +45,12 @@ bounded event/quote refinement supplies those decisions, or the bar-only run
 uses an explicitly versioned approximation and reports which decisions are
 unavailable or changed. It may not claim event-level parity from bars alone.
 
+The Strategy 350 eligible-trade session builder can consume a verified full
+REST session in bounded batch order for after-close maintenance. Its acquisition
+timestamps remain historical source-provenance clocks. They cannot be reused
+as intraday receive times in backtest decisions. A separate causal bar/session
+projection and narrow event refinement must supply backtest context.
+
 The first typed Strategy 350 catalogue plan requests completed 100 ms bars,
 the early squeeze signal, a tradability Watchlist and reference data for
 screening. It requests raw trades and quotes only for selected candidates,

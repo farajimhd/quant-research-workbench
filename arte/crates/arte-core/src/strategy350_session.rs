@@ -1,9 +1,11 @@
 //! Causal Strategy 350 session open/high from eligible ordered trades only.
 //! The first trade cannot use its own high as a prior-HOD reference.
 use crate::{
+    acquisition::VerifiedCertificate,
     content_hash,
     event_order::Scope,
-    events::{Decimal, Observation, Payload},
+    event_storage::Batch,
+    events::{Decimal, EventKind, Observation, Payload},
     strategy350_price_gate::{PriceFact, SessionContext},
     trade_eligibility::Pinned,
     Error, Result,
@@ -29,7 +31,7 @@ pub struct Builder {
     excluded: u64,
 }
 impl Builder {
-    pub fn new(
+    fn new(
         scope: Scope,
         start_ns: u64,
         end_ns: u64,
@@ -78,6 +80,17 @@ impl Builder {
             seen: 0,
             excluded: 0,
         })
+    }
+    /// Streaming state starts unready until the separate live handover owner
+    /// supplies a verified continuity authority. Callers cannot set readiness.
+    pub fn new_unready(
+        scope: Scope,
+        start_ns: u64,
+        end_ns: u64,
+        price_scale: u8,
+        policy_hash: String,
+    ) -> Result<Self> {
+        Self::new(scope, start_ns, end_ns, price_scale, policy_hash, false)
     }
     pub fn configuration_hash(&self) -> &str {
         &self.configuration_hash
@@ -187,10 +200,149 @@ impl Builder {
     }
 }
 
+/// Maintenance-only replay of an already readback-verified full session. The
+/// certificate's acquisition time is not historical decision availability.
+pub struct HistoricalReplay {
+    builder: Builder,
+    verified: VerifiedCertificate,
+    page: usize,
+    batch: usize,
+    rows: u64,
+    expected_rows: u64,
+    as_of_ns: u64,
+    failed: bool,
+}
+impl HistoricalReplay {
+    pub fn new(
+        scope: Scope,
+        start_ns: u64,
+        end_ns: u64,
+        price_scale: u8,
+        policy: &Pinned,
+        verified: VerifiedCertificate,
+        as_of_ns: u64,
+    ) -> Result<Self> {
+        let cert = verified.certificate();
+        if cert.authority.provider != scope.provider
+            || cert.authority.instrument != scope.instrument
+            || cert.authority.kind != EventKind::Trade
+            || cert.interval.start != start_ns
+            || cert.interval.end != end_ns
+            || cert.published_at_ns > as_of_ns
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 historical session authority".into(),
+            ));
+        }
+        let expected_rows = cert.pages.iter().try_fold(0u64, |sum, p| {
+            sum.checked_add(p.accepted_rows - p.deduplicated_rows)
+                .ok_or_else(|| Error::Capacity("session certificate count".into()))
+        })?;
+        let mut builder = Builder::new(
+            scope,
+            start_ns,
+            end_ns,
+            price_scale,
+            policy.hash().into(),
+            true,
+        )?;
+        builder.configuration_hash =
+            content_hash(&(VERSION, builder.configuration_hash, cert.id()?))?;
+        let mut replay = Self {
+            builder,
+            verified,
+            page: 0,
+            batch: 0,
+            rows: 0,
+            expected_rows,
+            as_of_ns,
+            failed: false,
+        };
+        replay.advance_empty();
+        Ok(replay)
+    }
+    fn advance_empty(&mut self) {
+        while self.page < self.verified.certificate().pages.len()
+            && self.verified.certificate().pages[self.page]
+                .batches
+                .is_empty()
+        {
+            self.page += 1;
+        }
+    }
+    pub fn next_batch_id(&self) -> Option<&str> {
+        self.verified
+            .certificate()
+            .pages
+            .get(self.page)
+            .and_then(|p| p.batches.get(self.batch))
+            .map(String::as_str)
+    }
+    /// Callback is a maintenance calculation. It cannot submit orders or claim
+    /// a historical receive timestamp from the REST acquisition clock.
+    pub fn apply_batch(
+        &mut self,
+        batch: &Batch,
+        policy: &Pinned,
+        mut apply: impl FnMut(&Observation, &SessionContext) -> Result<()>,
+    ) -> Result<usize> {
+        if self.failed {
+            return Err(Error::Unready(
+                "historical session replay requires recovery".into(),
+            ));
+        }
+        let result = (|| {
+            if self.next_batch_id() != Some(batch.id()?.as_str())
+                || policy.hash() != self.builder.policy_hash
+            {
+                return Err(Error::Conflict(
+                    "historical session batch or policy differs".into(),
+                ));
+            }
+            let mut count = 0usize;
+            for event in batch.hydrate()? {
+                if let Some(context) = self.builder.observe(&event, policy, self.as_of_ns)? {
+                    apply(&event, &context)?;
+                }
+                count += 1;
+            }
+            self.rows = self
+                .rows
+                .checked_add(count as u64)
+                .ok_or_else(|| Error::Capacity("historical replay count".into()))?;
+            self.batch += 1;
+            if self.batch == self.verified.certificate().pages[self.page].batches.len() {
+                self.page += 1;
+                self.batch = 0;
+                self.advance_empty();
+            }
+            Ok(count)
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    pub fn finish(self) -> Result<(u64, u64, String)> {
+        if self.failed
+            || self.page != self.verified.certificate().pages.len()
+            || self.rows != self.expected_rows
+        {
+            return Err(Error::Unready(
+                "historical session replay incomplete".into(),
+            ));
+        }
+        let (seen, excluded) = self.builder.counts()?;
+        Ok((seen, excluded, self.builder.configuration_hash))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
+        acquisition::{Authority, Certificate, Page, Verifier},
+        coverage::Interval,
         events::{EventKey, EventKind, SourceTime},
         trade_eligibility,
     };
@@ -375,5 +527,75 @@ mod tests {
                 .block,
             None
         );
+    }
+    fn verified_session() -> (Batch, VerifiedCertificate) {
+        let events = [
+            event(2 * S, 5 * S, 1, "10", vec![]),
+            event(3 * S, 5 * S, 2, "11", vec![]),
+        ];
+        let batch = Batch::prepare(&events).unwrap();
+        let certificate = Certificate {
+            schema_version: 1,
+            authority: Authority {
+                provider: 1,
+                instrument: 10,
+                kind: EventKind::Trade,
+                source_revision: "test".into(),
+                contract_hash: "c".repeat(64),
+                capabilities_hash: "d".repeat(64),
+            },
+            interval: Interval {
+                start: S,
+                end: 10 * S,
+            },
+            first_request_hash: "a".repeat(64),
+            pages: vec![Page {
+                request_hash: "a".repeat(64),
+                response_hash: "b".repeat(64),
+                next_request_hash: None,
+                acquired_at_ns: 5 * S,
+                source_rows: 2,
+                accepted_rows: 2,
+                rejected_rows: 0,
+                deduplicated_rows: 0,
+                batches: vec![batch.id().unwrap()],
+                identity_checked: true,
+                ordering_checked: true,
+                interval_checked: true,
+            }],
+            published_at_ns: 6 * S,
+        };
+        let mut verifier = Verifier::new(certificate).unwrap();
+        verifier.observe(&batch).unwrap();
+        (batch, verifier.finish().unwrap())
+    }
+    #[test]
+    fn verified_full_session_replay_is_bounded_and_causal() {
+        let p = policy();
+        let (batch, verified) = verified_session();
+        let scope = Scope {
+            provider: 1,
+            instrument: 10,
+            session: 20260922,
+        };
+        let mut replay = HistoricalReplay::new(scope, S, 10 * S, 2, &p, verified, 6 * S).unwrap();
+        assert_eq!(replay.next_batch_id(), Some(batch.id().unwrap().as_str()));
+        let mut seen = Vec::new();
+        assert_eq!(
+            replay
+                .apply_batch(&batch, &p, |event, context| {
+                    seen.push((event.sip.ns, context.high.atoms, context.complete));
+                    Ok(())
+                })
+                .unwrap(),
+            2
+        );
+        assert_eq!(seen, vec![(2 * S, 1000, true), (3 * S, 1100, true)]);
+        assert_eq!(replay.next_batch_id(), None);
+        assert_eq!(replay.finish().unwrap().0, 2);
+        let (batch, verified) = verified_session();
+        let incomplete = HistoricalReplay::new(scope, S, 10 * S, 2, &p, verified, 6 * S).unwrap();
+        assert!(incomplete.finish().is_err());
+        assert_eq!(batch.observations().len(), 2);
     }
 }
