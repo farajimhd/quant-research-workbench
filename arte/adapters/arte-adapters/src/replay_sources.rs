@@ -8,6 +8,7 @@ use arte_core::{
 };
 use futures_util::{stream, StreamExt, TryStreamExt};
 use std::future::Future;
+pub mod compact_bars;
 pub mod projection;
 pub mod startup;
 

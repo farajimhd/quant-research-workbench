@@ -1,6 +1,9 @@
 //! Read sparse exact bars in bounded ranges; expand empty certified buckets in RAM.
 use super::*;
+use crate::replay_sources::compact_bars::{Prepared, Row};
 use arte_core::bar_catalogue::{Batch, Column, Complete, Coverage, Readback, Request};
+use arte_core::config::Acceptance;
+use std::collections::{BTreeMap, BTreeSet};
 
 const BARS: &str = "compact_bars_v1";
 const COVERAGE: &str = "compact_bar_coverage_v1";
@@ -25,6 +28,121 @@ fn number<T: std::str::FromStr>(row: &Value, name: &str) -> Result<T> {
         .unwrap_or_else(|| value.to_string())
         .parse::<T>()
         .map_err(|_| Error::Invalid(format!("compact bar {name} malformed")))
+}
+fn string(row: &Value, name: &str) -> Result<String> {
+    row.get(name)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Invalid(format!("compact bar {name} missing")))
+}
+fn decode_sparse(line: &str) -> Result<Row> {
+    let value: Value = serde_json::from_str(line)
+        .map_err(|_| Error::Invalid("compact bar sparse row JSON".into()))?;
+    Ok(Row {
+        provider: number(&value, "provider")?,
+        instrument: number(&value, "instrument")?,
+        session: number(&value, "session")?,
+        timeframe_ns: number(&value, "timeframe_ns")?,
+        bucket_start_ns: number(&value, "bucket_start_ns")?,
+        source_generation: string(&value, "source_generation")?,
+        calculation_hash: string(&value, "calculation_hash")?,
+        price_scale: number(&value, "price_scale")?,
+        size_scale: number(&value, "size_scale")?,
+        open_atoms: number(&value, "open_atoms")?,
+        high_atoms: number(&value, "high_atoms")?,
+        low_atoms: number(&value, "low_atoms")?,
+        close_atoms: number(&value, "close_atoms")?,
+        volume_atoms: number(&value, "volume_atoms")?,
+        notional_atoms: number(&value, "notional_atoms")?,
+        trades: number(&value, "trades")?,
+    })
+}
+fn publication_request(coverage: &Coverage) -> Result<Request> {
+    let instrument = *coverage
+        .sources
+        .keys()
+        .next()
+        .ok_or_else(|| Error::Invalid("bar publication source missing".into()))?;
+    let buckets = (coverage.interval.end - coverage.interval.start) / coverage.timeframe_ns;
+    let maximum_rows = usize::try_from(buckets)
+        .map_err(|_| Error::Capacity("bar publication bucket count".into()))?;
+    let request = Request {
+        provider: coverage.provider,
+        instruments: vec![instrument],
+        session: coverage.session,
+        interval: coverage.interval,
+        timeframe_ns: coverage.timeframe_ns,
+        source_generation: coverage.source_generation.clone(),
+        calculation_hash: coverage.calculation_hash.clone(),
+        columns: BTreeSet::from([
+            Column::Open,
+            Column::High,
+            Column::Low,
+            Column::Close,
+            Column::Volume,
+            Column::Notional,
+            Column::Trades,
+        ]),
+        maximum_rows,
+    };
+    request.validate()?;
+    Ok(request)
+}
+fn verify_prepared(prepared: &Prepared) -> Result<Request> {
+    prepared.coverage.hash()?;
+    if prepared.coverage.sources.len() != 1 {
+        return Err(Error::Invalid("bar publication ticker count".into()));
+    }
+    let request = publication_request(&prepared.coverage)?;
+    let source = prepared
+        .coverage
+        .sources
+        .get(&request.instruments[0])
+        .unwrap();
+    let mut prior = None;
+    for row in &prepared.rows {
+        if row.provider != request.provider
+            || row.instrument != request.instruments[0]
+            || row.session != request.session
+            || row.timeframe_ns != request.timeframe_ns
+            || row.source_generation != request.source_generation
+            || row.calculation_hash != request.calculation_hash
+            || row.price_scale != source.price_scale
+            || row.size_scale != source.size_scale
+            || row.bucket_start_ns < request.interval.start
+            || row.bucket_start_ns >= request.interval.end
+            || !row.bucket_start_ns.is_multiple_of(request.timeframe_ns)
+            || prior.is_some_and(|at| row.bucket_start_ns <= at)
+            || row.open_atoms <= 0
+            || row.high_atoms < row.open_atoms.max(row.close_atoms)
+            || row.low_atoms <= 0
+            || row.low_atoms > row.open_atoms.min(row.close_atoms)
+            || row.volume_atoms <= 0
+            || row.notional_atoms <= 0
+            || row.trades == 0
+        {
+            return Err(Error::Conflict(
+                "bar publication row geometry or identity".into(),
+            ));
+        }
+        prior = Some(row.bucket_start_ns);
+    }
+    if prepared.rows.len() > request.maximum_rows {
+        return Err(Error::Capacity("bar publication row count".into()));
+    }
+    Ok(request)
+}
+pub fn compact_bar_publication_scope(coverage: &Coverage) -> Result<String> {
+    coverage.hash()?;
+    arte_core::content_hash(&(
+        "arte.compact-bar-publication.v1",
+        coverage.provider,
+        coverage.session,
+        coverage.interval,
+        &coverage.source_generation,
+        &coverage.calculation_hash,
+        coverage.sources.keys().collect::<Vec<_>>(),
+    ))
 }
 fn column_name(column: Column) -> &'static str {
     match column {
@@ -154,6 +272,165 @@ fn decode_page(body: &str, request: &Request, page: Page, coverage_hash: &str) -
 }
 
 impl ClickHouse {
+    async fn read_sparse_page(&self, request: &Request, start: u64, end: u64) -> Result<Vec<Row>> {
+        let sql = query(&self.database, request, request.instruments[0], start, end)?;
+        let body = self.request(&sql, String::new()).await?;
+        let mut rows = Vec::new();
+        let mut previous = None;
+        for line in body.lines().filter(|line| !line.trim().is_empty()) {
+            if rows.len() >= PAGE_BUCKETS as usize {
+                return Err(Error::Capacity(
+                    "compact bar sparse page exceeds bound".into(),
+                ));
+            }
+            let row = decode_sparse(line)?;
+            if row.provider != request.provider
+                || row.instrument != request.instruments[0]
+                || row.session != request.session
+                || row.timeframe_ns != request.timeframe_ns
+                || row.source_generation != request.source_generation
+                || row.calculation_hash != request.calculation_hash
+                || row.bucket_start_ns < start
+                || row.bucket_start_ns >= end
+                || previous.is_some_and(|at| row.bucket_start_ns <= at)
+            {
+                return Err(Error::Conflict(
+                    "compact bar sparse page order or identity".into(),
+                ));
+            }
+            previous = Some(row.bucket_start_ns);
+            rows.push(row);
+        }
+        Ok(rows)
+    }
+    /// Publish only with a held maintenance lease and explicit extraction,
+    /// source, storage and durability acceptance. Every sparse page is compared
+    /// to exact readback before its coverage manifest becomes visible.
+    pub async fn publish_compact_bars(
+        &self,
+        prepared: &Prepared,
+        now_ns: u64,
+        passed: &BTreeSet<Acceptance>,
+        lease: &mut crate::ownership::Lease,
+    ) -> Result<String> {
+        for required in [
+            Acceptance::RepositoryExtracted,
+            Acceptance::SourceIdentity,
+            Acceptance::EventStorage,
+            Acceptance::Durability,
+        ] {
+            if !passed.contains(&required) {
+                return Err(Error::Unready(format!(
+                    "compact bar publication acceptance missing: {required:?}"
+                )));
+            }
+        }
+        let request = verify_prepared(prepared)?;
+        lease.require(&compact_bar_publication_scope(&prepared.coverage)?)?;
+        let source = prepared
+            .coverage
+            .sources
+            .get(&request.instruments[0])
+            .unwrap();
+        let verified = self.load_acquisition(&source.certificate_hash).await?;
+        let certificate = verified.certificate();
+        if certificate.id()? != source.certificate_hash
+            || request.source_generation != source.certificate_hash
+            || certificate.authority.provider != request.provider
+            || certificate.authority.instrument != request.instruments[0]
+            || certificate.authority.kind != arte_core::events::EventKind::Trade
+            || certificate.interval != request.interval
+            || certificate.published_at_ns > now_ns
+        {
+            return Err(Error::Conflict(
+                "compact bar source certificate differs".into(),
+            ));
+        }
+        self.verify_storage(BARS).await?;
+        self.verify_storage(COVERAGE).await?;
+        let mut start = request.interval.start;
+        let mut first = 0usize;
+        while start < request.interval.end {
+            let end = start
+                .saturating_add(PAGE_BUCKETS.saturating_mul(request.timeframe_ns))
+                .min(request.interval.end);
+            let next =
+                first + prepared.rows[first..].partition_point(|row| row.bucket_start_ns < end);
+            let expected = &prepared.rows[first..next];
+            let existing = self.read_sparse_page(&request, start, end).await?;
+            let mut by_start = BTreeMap::new();
+            for row in existing {
+                if by_start.insert(row.bucket_start_ns, row).is_some() {
+                    return Err(Error::Conflict("duplicate compact bar persisted".into()));
+                }
+            }
+            for row in by_start.values() {
+                if expected
+                    .binary_search_by_key(&row.bucket_start_ns, |r| r.bucket_start_ns)
+                    .is_err()
+                {
+                    return Err(Error::Conflict("unexpected compact bar persisted".into()));
+                }
+            }
+            let mut missing = Vec::new();
+            for row in expected {
+                match by_start.get(&row.bucket_start_ns) {
+                    Some(existing) if existing == row => {}
+                    Some(_) => {
+                        return Err(Error::Conflict("compact bar immutable row differs".into()))
+                    }
+                    None => missing.push(
+                        serde_json::to_value(row)
+                            .map_err(|e| Error::Serialization(e.to_string()))?,
+                    ),
+                }
+            }
+            if !missing.is_empty() {
+                self.insert(BARS, &missing).await?;
+            }
+            if self.read_sparse_page(&request, start, end).await? != expected {
+                return Err(Error::Conflict(
+                    "compact bar sparse page readback differs".into(),
+                ));
+            }
+            first = next;
+            start = end;
+        }
+        if first != prepared.rows.len() {
+            return Err(Error::Conflict("compact bar unpublished suffix".into()));
+        }
+        let mut coverage = prepared.coverage.clone();
+        coverage.published_at_ns = now_ns;
+        let hash = coverage.hash()?;
+        let payload =
+            serde_json::to_string(&coverage).map_err(|e| Error::Serialization(e.to_string()))?;
+        if let Some(existing) = self
+            .immutable_value(COVERAGE, "coverage_hash", &hash, "payload_json")
+            .await?
+        {
+            if existing != payload {
+                return Err(Error::Conflict(
+                    "compact bar coverage already differs".into(),
+                ));
+            }
+        } else {
+            self.insert(
+                COVERAGE,
+                &[serde_json::json!({"coverage_hash":hash,"payload_json":payload})],
+            )
+            .await?;
+        }
+        if self
+            .immutable_value(COVERAGE, "coverage_hash", &hash, "payload_json")
+            .await?
+            != Some(payload)
+        {
+            return Err(Error::Conflict(
+                "compact bar coverage readback differs".into(),
+            ));
+        }
+        Ok(hash)
+    }
     /// Caller pins the coverage hash obtained from the independently published
     /// catalogue. This read does not create or certify a missing source range.
     pub async fn read_compact_bars(
@@ -234,6 +511,7 @@ impl ClickHouse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arte_core::bar_catalogue::Source as BarSource;
     use arte_core::coverage::Interval;
     use std::collections::BTreeSet;
     fn request() -> Request {
@@ -274,5 +552,60 @@ mod tests {
         assert_eq!((empty.price_scale, empty.size_scale), (2, 2));
         assert_eq!(empty.present, vec![false; 3]);
         assert!(decode_page(&(body.clone() + "\n" + &body), &r, page, &"c".repeat(64)).is_err());
+    }
+    #[test]
+    fn publisher_rejects_changed_or_unordered_rows_before_io() {
+        let r = request();
+        let coverage = Coverage {
+            provider: r.provider,
+            session: r.session,
+            interval: r.interval,
+            timeframe_ns: r.timeframe_ns,
+            source_generation: r.source_generation.clone(),
+            calculation_hash: r.calculation_hash.clone(),
+            sources: BTreeMap::from([(
+                10,
+                BarSource {
+                    certificate_hash: r.source_generation.clone(),
+                    price_scale: 2,
+                    size_scale: 2,
+                },
+            )]),
+            published_at_ns: 2_000_000_000,
+        };
+        let row = Row {
+            provider: 1,
+            instrument: 10,
+            session: r.session,
+            timeframe_ns: r.timeframe_ns,
+            bucket_start_ns: r.interval.start,
+            source_generation: r.source_generation.clone(),
+            calculation_hash: r.calculation_hash.clone(),
+            price_scale: 2,
+            size_scale: 2,
+            open_atoms: 1000,
+            high_atoms: 1100,
+            low_atoms: 900,
+            close_atoms: 1050,
+            volume_atoms: 100,
+            notional_atoms: 102500,
+            trades: 1,
+        };
+        let mut prepared = Prepared {
+            coverage,
+            rows: vec![row.clone()],
+        };
+        assert!(verify_prepared(&prepared).is_ok());
+        let scope = compact_bar_publication_scope(&prepared.coverage).unwrap();
+        prepared.coverage.published_at_ns += 1;
+        assert_eq!(
+            scope,
+            compact_bar_publication_scope(&prepared.coverage).unwrap()
+        );
+        prepared.rows[0].low_atoms = 1060;
+        assert!(verify_prepared(&prepared).is_err());
+        prepared.rows[0] = row.clone();
+        prepared.rows.push(row);
+        assert!(verify_prepared(&prepared).is_err());
     }
 }

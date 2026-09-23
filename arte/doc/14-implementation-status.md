@@ -22,10 +22,16 @@ The ClickHouse reader preflights storage policy
 and part placement, reads a pinned coverage payload, projects required columns,
 pages sparse nonempty buckets, and reconstructs dense 100 ms arrays. Precision
 is pinned per ticker, including wholly empty pages. Migration 021 authors the
-sparse table and compressed coverage table; it is not applied. The source-backed
-coverage publisher and derived-bar writer, scanner/rule planner, Strategy 350
-port, and runnable bar-based backtest remain unimplemented. No throughput
-benchmark, database connection, or service test ran.
+sparse table and compressed coverage table; it is not applied. A source-backed
+materializer now consumes a verified REST trade source and the pinned condition
+policy. It sorts one ticker's trades, rejects duplicate source identities,
+accumulates exact scaled OHLCV/notional values, and leaves empty buckets sparse.
+The publisher re-verifies the source certificate, requires acceptance and an
+ownership lease, compares each persisted page before making coverage visible,
+and verifies the final manifest readback. Three focused adapter unit tests pass.
+Connected writer/readback behavior and compression remain untested. The
+scanner/rule planner, Strategy 350 port, and runnable bar-based backtest remain
+unimplemented. No throughput benchmark, database connection, or service test ran.
 No backward compatibility with obsolete strategy or storage formats is required.
 
 ## Indexed bootstrap and historical gap projection
