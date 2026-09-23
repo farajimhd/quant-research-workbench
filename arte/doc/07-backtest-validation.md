@@ -115,6 +115,12 @@ requires the approved SSD policy and actual part placement. Migration 023 is
 authored but has not been applied; no connected read/write has been tested.
 Live dense-empty-bucket advancement and feed-continuity proof still need
 the MDE-to-signal actor; this state object alone does not authorize trading.
+The current ARTE market scheduler exposes floating-point bars. The signal
+formula uses exact integer compact-bar atoms; converting those floating-point
+bars back into price/size atoms would not prove equality at the 0.05% boundary.
+Live binding therefore needs an exact compact 100 ms bar calculation from
+eligible ordered events, with certified empty intervals and the original
+availability clocks. No floating-point reconstruction is approved for parity.
 
 The first market-time tape borrows values from complete 100 ms columnar batches.
 It dispatches only nonempty buckets, sorts equal-time ticker events by instrument,
