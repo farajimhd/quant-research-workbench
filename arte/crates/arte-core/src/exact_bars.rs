@@ -35,10 +35,15 @@ pub struct Bar {
     pub last_trade_live_receipt_ns: Option<u64>,
 }
 pub struct Advance<'a> {
-    pub configuration_hash: &'a str,
-    pub previous_watermark_ns: u64,
-    pub watermark_ns: u64,
-    pub completed: Option<Bar>,
+    pub(crate) configuration_hash: &'a str,
+    pub(crate) previous_watermark_ns: u64,
+    pub(crate) watermark_ns: u64,
+    pub(crate) completed: Option<Bar>,
+}
+impl Advance<'_> {
+    pub fn completed(&self) -> Option<&Bar> {
+        self.completed.as_ref()
+    }
 }
 pub struct Builder {
     scope: Scope,

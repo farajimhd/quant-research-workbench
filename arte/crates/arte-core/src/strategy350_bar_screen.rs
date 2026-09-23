@@ -53,7 +53,7 @@ pub struct ScreenBatch {
     /// Prior completed-bar HOD; zero only before the first nonempty bucket.
     pub prior_high_atoms: Vec<i64>,
 }
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct State {
     open: i64,
     high: i64,
@@ -142,30 +142,52 @@ pub struct ScreenPoint {
 
 /// Live and historical bars use the same price-state transition as the
 /// columnar batch projector. This state has no database or broker capability.
+pub struct ScreenIdentity {
+    pub scope: crate::event_order::Scope,
+    pub session_start_ns: u64,
+    pub session_end_ns: u64,
+    pub price_scale: u8,
+    pub source: crate::exact_bars::Mode,
+    pub source_bar_hash: String,
+}
+#[derive(Clone)]
 pub struct StreamingScreen {
     scope: crate::event_order::Scope,
     next_start_ns: u64,
+    session_end_ns: u64,
     price_scale: u8,
     source: crate::exact_bars::Mode,
+    source_bar_hash: String,
     thresholds: Thresholds,
     state: State,
 }
 impl StreamingScreen {
     pub fn new(
-        scope: crate::event_order::Scope,
-        session_start_ns: u64,
-        price_scale: u8,
-        source: crate::exact_bars::Mode,
+        identity: ScreenIdentity,
         config: &Config,
         expected_config_hash: &str,
         prior_close: &PriceFact,
     ) -> Result<Self> {
+        let ScreenIdentity {
+            scope,
+            session_start_ns,
+            session_end_ns,
+            price_scale,
+            source,
+            source_bar_hash,
+        } = identity;
         if scope.provider == 0
             || scope.instrument == 0
             || !(19000101..=29991231).contains(&scope.session)
             || session_start_ns == 0
             || !session_start_ns.is_multiple_of(BASE_INTERVAL_NS)
+            || session_end_ns <= session_start_ns
+            || !session_end_ns.is_multiple_of(BASE_INTERVAL_NS)
             || price_scale > 9
+            || source_bar_hash.len() != 64
+            || !source_bar_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
             || config.hash()? != expected_config_hash
         {
             return Err(Error::Invalid(
@@ -175,18 +197,26 @@ impl StreamingScreen {
         Ok(Self {
             scope,
             next_start_ns: session_start_ns,
+            session_end_ns,
             price_scale,
             source,
+            source_bar_hash,
             thresholds: thresholds(config, prior_close, price_scale, session_start_ns)?,
             state: State::default(),
         })
     }
-    pub fn observe(
+    /// The caller of this internal primitive must already own one certified
+    /// completed or empty bucket. Live callers use `observe_live_advance`.
+    fn observe(
         &mut self,
         start_ns: u64,
         bar: Option<&crate::exact_bars::Bar>,
     ) -> Result<ScreenPoint> {
-        if start_ns != self.next_start_ns {
+        if start_ns != self.next_start_ns
+            || start_ns
+                .checked_add(BASE_INTERVAL_NS)
+                .is_none_or(|end| end > self.session_end_ns)
+        {
             return Err(Error::Conflict(
                 "Strategy 350 screen bucket gap or repeat".into(),
             ));
@@ -230,6 +260,46 @@ impl StreamingScreen {
             late_before,
             prior_high_atoms,
         })
+    }
+
+    /// Accept only a pinned exact-bar watermark advance. The upstream ordered
+    /// market owner must establish the watermark; silence is not coverage.
+    pub fn observe_live_advance(
+        &mut self,
+        advance: &crate::exact_bars::Advance<'_>,
+    ) -> Result<Vec<ScreenPoint>> {
+        let sealed_ns = advance.watermark_ns / BASE_INTERVAL_NS * BASE_INTERVAL_NS;
+        if self.source != crate::exact_bars::Mode::Live
+            || advance.configuration_hash != self.source_bar_hash
+            || advance.previous_watermark_ns > advance.watermark_ns
+            || advance.previous_watermark_ns / BASE_INTERVAL_NS * BASE_INTERVAL_NS
+                != self.next_start_ns
+            || sealed_ns < self.next_start_ns
+            || sealed_ns > self.session_end_ns
+            || (sealed_ns - self.next_start_ns) / BASE_INTERVAL_NS > 10_000
+            || advance.completed.as_ref().is_some_and(|bar| {
+                bar.start_ns < self.next_start_ns
+                    || bar.end_ns > sealed_ns
+                    || !bar.start_ns.is_multiple_of(BASE_INTERVAL_NS)
+            })
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 screen exact-bar advance identity or coverage".into(),
+            ));
+        }
+        let mut next = self.clone();
+        let mut output =
+            Vec::with_capacity(((sealed_ns - self.next_start_ns) / BASE_INTERVAL_NS) as usize);
+        while next.next_start_ns < sealed_ns {
+            let start = next.next_start_ns;
+            let bar = advance
+                .completed
+                .as_ref()
+                .filter(|bar| bar.start_ns == start);
+            output.push(next.observe(start, bar)?);
+        }
+        *self = next;
+        Ok(output)
     }
 }
 
@@ -420,14 +490,18 @@ mod tests {
             crate::exact_bars::Mode::Live,
         ] {
             let mut stream = StreamingScreen::new(
-                crate::event_order::Scope {
-                    provider: 1,
-                    instrument: 10,
-                    session: 20260922,
+                ScreenIdentity {
+                    scope: crate::event_order::Scope {
+                        provider: 1,
+                        instrument: 10,
+                        session: 20260922,
+                    },
+                    session_start_ns: S,
+                    session_end_ns: S + 6 * BASE_INTERVAL_NS,
+                    price_scale: 2,
+                    source,
+                    source_bar_hash: "a".repeat(64),
                 },
-                S,
-                2,
-                source,
                 &config(),
                 &hash,
                 &closes("19.99")[&10],
@@ -464,14 +538,18 @@ mod tests {
     fn live_stream_rejects_historical_bar_without_advancing() {
         let hash = config().hash().unwrap();
         let mut stream = StreamingScreen::new(
-            crate::event_order::Scope {
-                provider: 1,
-                instrument: 10,
-                session: 20260922,
+            ScreenIdentity {
+                scope: crate::event_order::Scope {
+                    provider: 1,
+                    instrument: 10,
+                    session: 20260922,
+                },
+                session_start_ns: S,
+                session_end_ns: S + 2 * BASE_INTERVAL_NS,
+                price_scale: 2,
+                source: crate::exact_bars::Mode::Live,
+                source_bar_hash: "a".repeat(64),
             },
-            S,
-            2,
-            crate::exact_bars::Mode::Live,
             &config(),
             &hash,
             &closes("19")[&10],
@@ -496,5 +574,105 @@ mod tests {
         let mut live = historical;
         live.last_trade_live_receipt_ns = Some(S + 2);
         assert!(stream.observe(S, Some(&live)).is_ok());
+    }
+    #[test]
+    fn live_advance_covers_empty_buckets_but_rejects_wrong_source_atomically() {
+        let source_hash = "a".repeat(64);
+        let config_hash = config().hash().unwrap();
+        let mut stream = StreamingScreen::new(
+            ScreenIdentity {
+                scope: crate::event_order::Scope {
+                    provider: 1,
+                    instrument: 10,
+                    session: 20260922,
+                },
+                session_start_ns: S,
+                session_end_ns: S + 4 * BASE_INTERVAL_NS,
+                price_scale: 2,
+                source: crate::exact_bars::Mode::Live,
+                source_bar_hash: source_hash.clone(),
+            },
+            &config(),
+            &config_hash,
+            &closes("19")[&10],
+        )
+        .unwrap();
+        let bar = crate::exact_bars::Bar {
+            start_ns: S + BASE_INTERVAL_NS,
+            end_ns: S + 2 * BASE_INTERVAL_NS,
+            price_scale: 2,
+            size_scale: 0,
+            open: 1000,
+            high: 1000,
+            low: 1000,
+            close: 1000,
+            volume: 1,
+            notional: 1000,
+            trades: 1,
+            last_trade_source_ns: S + BASE_INTERVAL_NS + 1,
+            last_trade_live_receipt_ns: Some(S + BASE_INTERVAL_NS + 2),
+        };
+        let advance = crate::exact_bars::Advance {
+            configuration_hash: &source_hash,
+            previous_watermark_ns: S,
+            watermark_ns: S + 3 * BASE_INTERVAL_NS,
+            completed: Some(bar.clone()),
+        };
+        let mut wrong = advance;
+        wrong.completed.as_mut().unwrap().last_trade_live_receipt_ns = None;
+        assert!(stream.observe_live_advance(&wrong).is_err());
+        let advance = crate::exact_bars::Advance {
+            configuration_hash: &source_hash,
+            previous_watermark_ns: S,
+            watermark_ns: S + 3 * BASE_INTERVAL_NS,
+            completed: Some(bar),
+        };
+        let points = stream.observe_live_advance(&advance).unwrap();
+        assert_eq!(points.len(), 3);
+        assert_eq!(
+            points
+                .iter()
+                .map(|p| p.needs_refinement)
+                .collect::<Vec<_>>(),
+            vec![false, true, false]
+        );
+        assert!(stream.observe_live_advance(&advance).is_err());
+    }
+    #[test]
+    fn real_exact_bar_builder_seals_an_empty_live_boundary() {
+        let scope = crate::event_order::Scope {
+            provider: 1,
+            instrument: 10,
+            session: 20260922,
+        };
+        let mut bars = crate::exact_bars::Builder::new(
+            scope,
+            crate::exact_bars::Mode::Live,
+            S,
+            S + 2 * BASE_INTERVAL_NS,
+            2,
+            0,
+            "a".repeat(64),
+        )
+        .unwrap();
+        let mut screen = StreamingScreen::new(
+            ScreenIdentity {
+                scope,
+                session_start_ns: S,
+                session_end_ns: S + 2 * BASE_INTERVAL_NS,
+                price_scale: 2,
+                source: crate::exact_bars::Mode::Live,
+                source_bar_hash: bars.configuration_hash().into(),
+            },
+            &config(),
+            &config().hash().unwrap(),
+            &closes("19")[&10],
+        )
+        .unwrap();
+        let advance = bars.advance(S + BASE_INTERVAL_NS).unwrap();
+        let points = screen.observe_live_advance(&advance).unwrap();
+        assert_eq!(points.len(), 1);
+        assert!(!points[0].needs_refinement);
+        assert_eq!(points[0].scope, scope);
     }
 }

@@ -330,7 +330,7 @@ impl Owner {
                 }
             };
             let advance = self.bars.advance(cutoff_ns)?;
-            if let Some(exact) = &advance.completed {
+            if let Some(exact) = advance.completed() {
                 self.last_exact_completed = Some(exact.clone());
                 self.source_1s.absorb(exact)?;
             }

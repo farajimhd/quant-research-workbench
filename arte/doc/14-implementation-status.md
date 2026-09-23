@@ -15,7 +15,11 @@ verified historical batch projector and a new completed-100-ms-bar streaming
 wrapper. Offline parity tests compare every bucket, including empty buckets
 and the late-mode boundary. The streaming wrapper pins market scope, prior
 close, configuration and source mode; a live bar without a receive timestamp
-is rejected before state advances. It has no direct order or database access.
+is rejected before state advances. Live empty buckets are accepted only through
+a pinned exact-bar builder advance, with bounded, atomic catch-up. Adapter code
+cannot fabricate that advance. The upstream watermark still needs certified
+feed coverage; this screen alone cannot grant live trading readiness. It has
+no direct order or database access.
 
 The ticker-shared Strategy 350 price gate can now emit immutable causal
 evidence. Its fingerprint binds the exact trade, policy, prior close, session
