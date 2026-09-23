@@ -5,10 +5,13 @@ import os
 from pathlib import Path
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 import uuid
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from services.reference_gateway import tradable_snapshots as S
+from services.reference_gateway import publication_rebuild as P
 
 
 class SessionAssignment(unittest.TestCase):
@@ -21,6 +24,21 @@ class SessionAssignment(unittest.TestCase):
         self.assertEqual(S.target_session(datetime(2026,9,7,22,0,tzinfo=UTC)),date(2026,9,8))
         self.assertEqual(S.target_session(datetime(2026,11,2,8,59,tzinfo=UTC)),date(2026,11,2))
         self.assertEqual(S.target_session(datetime(2026,11,2,9,0,tzinfo=UTC)),date(2026,11,3))
+
+    def test_gateway_targets_upcoming_session_and_certifies_it(self):
+        config=SimpleNamespace(execute=True,test_write_mode=False,
+            clickhouse_write_database='fixture',clickhouse_url='http://127.0.0.1:8123',clickhouse_user='default')
+        with patch.object(P,'target_session',return_value=date(2026,8,31)), \
+             patch.object(P.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout='ok',stderr='')) as run, \
+             patch('research.mlops.clickhouse.ClickHouseHttpClient'), \
+             patch.object(P,'publish_retained_snapshot',return_value={'session_date':'2026-08-31'}) as publish, \
+             patch.object(P,'record_missing_sessions',return_value=[]):
+            result=P.rebuild_tradable_publications(config,reason='test')
+        command=run.call_args.args[0]
+        self.assertEqual(command[command.index('--feature-date')+1],'2026-08-31')
+        self.assertEqual(result.status,'completed')
+        self.assertEqual(publish.call_args.args[2],date(2026,8,31))
+        self.assertEqual(publish.call_args.kwargs['available_at_utc'].tzinfo,UTC)
 
 
 @unittest.skipUnless(os.environ.get('MARKET_DAY_CLICKHOUSE_TEST')=='1','ClickHouse fixture is opt-in')
