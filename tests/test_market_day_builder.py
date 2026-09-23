@@ -56,6 +56,21 @@ class Arguments(unittest.TestCase):
         self.assertNotIn('\x1b[',output)
         self.assertTrue(all(len(line)<80 for line in output.splitlines()))
 
+    def test_32_workers_and_bounded_active_display(self):
+        args=B.parse_args(['--date','2026-09-18','--workers','32'])
+        self.assertEqual(args.workers,32)
+        self.assertEqual(args.max_plan_units,250000)
+        with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+            B.parse_args(['--date','2026-09-18','--workers','33'])
+        progress=B.Progress(100,100,32,'text')
+        with redirect_stdout(io.StringIO()):
+            for index in range(32):
+                progress.update(f'T{index:02d}','2026-09-18','bars')
+        output=progress.render()
+        self.assertIn('active 32',output)
+        self.assertIn('+26 other active tickers',output)
+        self.assertEqual(sum('2026-09-18  T' in line for line in output.splitlines()),6)
+
     def test_single_and_inclusive_range(self):
         a=B.parse_args(['--date','2026-09-18'])
         self.assertEqual((a.start,a.end),(date(2026,9,18),date(2026,9,18)))

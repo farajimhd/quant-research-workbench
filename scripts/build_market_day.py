@@ -34,6 +34,7 @@ RUNTIME = Path("D:/TradingML/runtimes")
 DEFAULT_ENV = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\secrets\.env")
 TRANSPORT_ONLY_CONTROLLER_HASHES = frozenset({
     "994988b4804edf179707684409e3b981046bb26d78d46a7f60420499a79099b3",
+    "3f0c616b95628e15a1055a39b49308149e7ec4ed5b4161191fd2766622db8609",
 })
 
 
@@ -74,10 +75,10 @@ def parse_args(argv=None):
     p.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
     p.add_argument("--runtime", type=Path, default=RUNTIME / "market-day")
     p.add_argument("--max-threads", type=int, default=4)
-    p.add_argument("--workers", type=int, default=4, help="Concurrent ticker workers (1-8); each uses its own bounded ClickHouse client")
+    p.add_argument("--workers", type=int, default=4, help="Concurrent ticker workers (1-32); each uses its own bounded ClickHouse client")
     p.add_argument("--max-memory-gb", type=float, default=2.)
     p.add_argument("--query-timeout", type=int, default=600)
-    p.add_argument("--max-plan-units", type=int, default=100000,
+    p.add_argument("--max-plan-units", type=int, default=250000,
         help="Bound in-memory ticker-day metadata; split larger ranges or raise explicitly")
     p.add_argument("--plan-only", action="store_true", help="Read-only coverage/storage preflight; no table creation")
     p.add_argument("--rebuild", action="store_true", help="New immutable build ID; preserve previous builds")
@@ -93,7 +94,7 @@ def parse_args(argv=None):
             raise ValueError("Use --rebuild OR --build-id")
         if args.build_id and (len(args.build_id)>100 or any(c not in '0123456789abcdef-' for c in args.build_id)):
             raise ValueError("Invalid build ID")
-        if args.max_threads < 1 or not 1 <= args.workers <= 8 or not 0 < args.max_memory_gb <= 64 or args.query_timeout < 1 or args.max_plan_units<1:
+        if args.max_threads < 1 or not 1 <= args.workers <= 32 or not 0 < args.max_memory_gb <= 64 or args.query_timeout < 1 or args.max_plan_units<1:
             raise ValueError("Invalid query resource limits")
         args.symbols = sorted(set(x.strip().upper() for x in args.tickers.split(",") if x.strip()))
         if any(len(x) > 32 or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for c in x) for x in args.symbols):
@@ -204,7 +205,9 @@ class Progress:
                 f"Indicator seeds: carried {self.carried}  bootstrap {self.bootstrap}",
                 f"Done {done}/{total}  active {len(active)}  queued {queued}  "
                 f"failed {self.failed}  elapsed {time.monotonic()-self.started:.0f}s"]
-            lines.extend(f"  {item}" for item in active[:self.workers])
+            lines.extend(f"  {item}" for item in active[:6])
+            if len(active)>6:
+                lines.append(f"  +{len(active)-6} other active tickers")
             if not active and self.current == 'building':
                 lines.append('  Waiting for next ticker or final certification')
         if self.live:
@@ -666,7 +669,7 @@ def build_ticker(args, build, plan, ticker, rows, requested, calculation_source,
 
 
 def transport_compatible_resume(saved, definition):
-    """Only the known WinError 10048 transport fix may reuse an older build."""
+    """Reuse builds across known controller-only transport and limit changes."""
     previous=saved.get('definition') if isinstance(saved,dict) else None
     if not isinstance(previous,dict) or previous.get('controller_source') not in TRANSPORT_ONLY_CONTROLLER_HASHES:
         return False
@@ -720,10 +723,10 @@ def run(args):
                 definition=saved['definition']
             elif not args.rebuild and not args.plan_only and report_path.is_file():
                 prior_report=json.loads(report_path.read_text())
-                if prior_report.get('status') in ('failed','interrupted','publication_failed') and transport_compatible_resume(prior_report,definition):
+                if prior_report.get('status') in ('failed','interrupted','publication_failed','core_complete') and transport_compatible_resume(prior_report,definition):
                     build=prior_report['build_id']
                     definition=prior_report['definition']
-                    print(f'Resuming certified stages from transport-compatible build {build}',flush=True)
+                    print(f'Resuming certified stages from compatible build {build}',flush=True)
             report.update(build_id=build, definition=definition, status='planned',unit_log=str(runtime / (build+'.units.jsonl')),
                 seed_modes=dict(bootstrap=0,carried=0))
             existing=runtime / (build+'.json')

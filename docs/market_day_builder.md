@@ -44,12 +44,15 @@ the `market-day-core-v4` string is the calculation revision, not a table version
 Python needs `pandas_market_calendars`; interactive progress
 uses Rich, with `--progress text` for plain output.
 
-The build starts four ticker workers by default (`--workers 1` through `8`).
+The build starts four ticker workers by default (`--workers 1` through `32`).
 Each worker owns one ticker's dates in chronological order and uses its own
 ClickHouse client. The per-query limits are four ClickHouse threads, 2 GiB
 memory, and 600 seconds; with four workers, up to four queries may run at once
-and the per-query memory limits sum to 8 GiB. Tune `--workers`, `--max-threads`,
-`--max-memory-gb`, and `--query-timeout` for the host. No automatic write retries
+and the per-query memory limits sum to 8 GiB. At 32 workers, the default
+per-query ceilings allow up to 64 GiB of concurrent query memory and 128
+ClickHouse threads; choose that setting only when the host has headroom. Tune
+`--workers`, `--max-threads`, `--max-memory-gb`, and `--query-timeout` for the host.
+No automatic write retries
 or unbounded worker fan-out occurs. A worker failure stops new ticker dispatch,
 cancels active builder queries, and leaves published ticker-day stages resumable.
 Each worker reuses one persistent ClickHouse HTTP connection; cancellation uses
@@ -61,7 +64,7 @@ stages. Plain text mode emits bounded snapshots; interactive mode keeps a live
 worker panel. The manifest records bounded recent query samples and aggregate
 query timings. Completed per-ticker metrics append to the build's `units.jsonl`
 in the runtime root, avoiding repeated writes of a growing report.
-Planning metadata is limited to 100,000 ticker-days by `--max-plan-units`;
+Planning metadata is limited to 250,000 ticker-days by `--max-plan-units`;
 larger requests fail explicitly rather than truncating the requested range.
 
 ## Calculation contract
