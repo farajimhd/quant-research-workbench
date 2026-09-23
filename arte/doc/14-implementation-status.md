@@ -4708,3 +4708,10 @@ other tickers use standby images bound to the same cut. The two-ticker unit test
 rejects an incomplete owner set, wrong cut and insufficient byte budget. This
 still does not publish an atomic root across market, strategy, execution and
 portfolio state. No service ran.
+
+The multi-ticker controller also captures every market scheduler and account
+barrier at the selected cut without advancing standby heads. Each shard image
+is bound to its scope, local head and the global cut. The two-ticker offline
+test covers all shards, wrong-cut rejection and byte bounds. These market
+images still need an independently verified whole-run publication root and
+restore path. No service ran.

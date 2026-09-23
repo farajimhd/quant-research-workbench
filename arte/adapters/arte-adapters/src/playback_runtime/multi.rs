@@ -9,6 +9,7 @@ use super::{
 };
 use crate::simulation_runtime;
 use arte_core::{
+    content_hash,
     execution_events::Fill,
     market_structure::scheduler::playback::{sources::Catalog, Mode, Poll},
     portfolio::Portfolio,
@@ -339,6 +340,92 @@ impl MultiRuntime {
             )?;
             if used > maximum_total_bytes || images.insert(instrument, image).is_some() {
                 return Err(Error::Capacity("multi-strategy duplicate or budget".into()));
+            }
+        }
+        Ok(images)
+    }
+
+    /// Capture every market/barrier shard without advancing any future head.
+    /// A later publisher must bind these images to the strategy, execution and
+    /// portfolio images before offering whole-run recovery.
+    pub fn capture_market_shards(
+        &self,
+        cut: &arte_core::portfolio::checkpoint::Cut,
+        maximum_total_bytes: usize,
+    ) -> Result<
+        BTreeMap<
+            u64,
+            arte_core::market_structure::scheduler::playback::accounts::checkpoint::Bundle,
+        >,
+    > {
+        if maximum_total_bytes == 0 || maximum_total_bytes > 64 * 1024 * 1024 {
+            return Err(Error::Capacity(
+                "multi-market checkpoint byte budget".into(),
+            ));
+        }
+        let (selected, controller) = self
+            .selected()?
+            .ok_or_else(|| Error::Unready("multi-market selected boundary absent".into()))?;
+        let boundary = controller
+            .decision_view()?
+            .pending()?
+            .ok_or_else(|| Error::Unready("multi-market selected head absent".into()))?;
+        if cut.boundary_hash != boundary.id
+            || cut.at_ns != boundary.evaluated_at_ns
+            || controller.status().acknowledged_boundaries.checked_add(1)
+                != Some(cut.boundary_sequence)
+        {
+            return Err(Error::Conflict("multi-market global cut differs".into()));
+        }
+        let mut images = BTreeMap::new();
+        let mut used = 0usize;
+        for (index, lane) in self.controllers.iter().enumerate() {
+            lane.actions.require_complete()?;
+            let scope = lane.market_scope();
+            let head = lane
+                .run
+                .pending()?
+                .ok_or_else(|| Error::Unready("multi-market shard head absent".into()))?;
+            if index != selected
+                && (head.evaluated_at_ns < cut.at_ns
+                    || lane.status().acknowledged_boundaries.checked_add(1) != Some(head.sequence))
+            {
+                return Err(Error::Conflict("multi-market standby head differs".into()));
+            }
+            let context = content_hash(&(
+                "arte.multi-market-shard-cut.v1",
+                lane.manifest_hash(),
+                cut,
+                scope.provider,
+                scope.instrument,
+                scope.session,
+                head.id,
+                head.sequence,
+            ))?;
+            let left = maximum_total_bytes
+                .checked_sub(used)
+                .filter(|left| *left > 0)
+                .ok_or_else(|| Error::Capacity("multi-market checkpoint byte budget".into()))?;
+            let image = lane.run.checkpoint(&context, left)?;
+            let scheduler = &image.playback.scheduler;
+            used = [
+                &image.root,
+                &image.playback.root,
+                &scheduler.root,
+                &scheduler.market,
+                &scheduler.trades,
+                &scheduler.quotes,
+                &scheduler.book,
+            ]
+            .into_iter()
+            .chain(image.barrier.iter())
+            .try_fold(used, |total, object| {
+                total
+                    .checked_add(object.payload.len())
+                    .ok_or_else(|| Error::Capacity("multi-market size overflow".into()))
+            })?;
+            if used > maximum_total_bytes || images.insert(scope.instrument, image).is_some() {
+                return Err(Error::Capacity("multi-market duplicate or budget".into()));
             }
         }
         Ok(images)

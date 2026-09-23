@@ -616,6 +616,16 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         .controller
         .capture_strategy350_shards::<u64>(&BTreeMap::new(), &cut, 200_000)
         .is_err());
+    let market_images = session
+        .controller
+        .capture_market_shards(&cut, 200_000)
+        .unwrap();
+    assert_eq!(market_images.len(), 2);
+    assert!(session
+        .controller
+        .capture_market_shards(&wrong_strategy_cut, 200_000)
+        .is_err());
+    assert!(session.controller.capture_market_shards(&cut, 1).is_err());
     let portfolio_limits = arte_core::portfolio::checkpoint::Limits {
         maximum_accounts: 2,
         maximum_reservations: 10,
