@@ -6,6 +6,7 @@ use arte_core::{
     exact_bars::{Bar as ExactBar, Builder, Mode as BarMode, INTERVAL_NS},
     market_structure::scheduler::{Boundary, Kind},
     seed_storage::Object,
+    strategy350_macd::{self, exact_source::Source as MacdSource},
     strategy350_noise::{self, Source as NoiseSource},
     strategy350_signal::{Config, Mode as SignalMode, Occurrence, State},
     Error, Result,
@@ -17,23 +18,33 @@ pub struct Bundle {
     pub bars: Object,
     pub signal: Object,
     pub noise: Object,
+    pub macd: Object,
+    pub macd_source: Object,
 }
 impl Bundle {
-    pub fn references(root: &Object) -> Result<(String, String, String)> {
+    pub fn references(root: &Object) -> Result<(String, String, String, String, String)> {
         root.verify()?;
         if root.payload.len() > 4096 {
             return Err(Error::Capacity("exact signal root bytes".into()));
         }
         let saved: Saved = serde_json::from_slice(&root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
-        if saved.version != 2
+        if saved.version != 3
             || !valid_hash(&saved.bars)
             || !valid_hash(&saved.signal)
             || !valid_hash(&saved.noise)
+            || !valid_hash(&saved.macd)
+            || !valid_hash(&saved.macd_source)
         {
             return Err(Error::Invalid("exact signal root references".into()));
         }
-        Ok((saved.bars, saved.signal, saved.noise))
+        Ok((
+            saved.bars,
+            saved.signal,
+            saved.noise,
+            saved.macd,
+            saved.macd_source,
+        ))
     }
 }
 fn valid_hash(value: &str) -> bool {
@@ -56,6 +67,8 @@ struct Saved {
     bars: String,
     signal: String,
     noise: String,
+    macd: String,
+    macd_source: String,
 }
 pub struct Recovery<'a> {
     pub scope: Scope,
@@ -66,6 +79,7 @@ pub struct Recovery<'a> {
     pub source_generation_hash: &'a str,
     pub signal_config: Config,
     pub noise_config: strategy350_noise::Config,
+    pub macd_config: strategy350_macd::Config,
     pub expected_sequence: u64,
     pub expected_boundary_id: Option<&'a str>,
 }
@@ -75,6 +89,8 @@ pub struct Owner {
     signal: State,
     noise: strategy350_noise::State,
     source_1s: NoiseSource,
+    macd: strategy350_macd::State,
+    macd_source: MacdSource,
     last_sequence: u64,
     last_boundary_id: Option<String>,
     last_evaluated_at_ns: u64,
@@ -82,7 +98,12 @@ pub struct Owner {
     failed: bool,
 }
 impl Owner {
-    pub fn new(bars: Builder, signal: State, noise: strategy350_noise::State) -> Result<Self> {
+    pub fn new(
+        bars: Builder,
+        signal: State,
+        noise: strategy350_noise::State,
+        macd_config: &strategy350_macd::Config,
+    ) -> Result<Self> {
         if !bars.is_pristine() || !signal.is_pristine() || !noise.is_pristine() {
             return Err(Error::Conflict(
                 "new exact signal owner needs session start".into(),
@@ -90,15 +111,26 @@ impl Owner {
         }
         let (start, end) = bars.session_bounds();
         let source_1s = NoiseSource::new(start, end, bars.price_scale())?;
-        Self::from_parts(bars, signal, noise, source_1s)
+        let macd = strategy350_macd::State::new(bars.scope(), start, end, macd_config)?;
+        let macd_source = MacdSource::new(
+            bars.scope(),
+            start,
+            end,
+            bars.price_scale(),
+            bars.configuration_hash().into(),
+        )?;
+        Self::from_parts(bars, signal, noise, source_1s, macd, macd_source)
     }
     fn from_parts(
         bars: Builder,
         signal: State,
         noise: strategy350_noise::State,
         source_1s: NoiseSource,
+        macd: strategy350_macd::State,
+        macd_source: MacdSource,
     ) -> Result<Self> {
         source_1s.verify()?;
+        macd.require_source(&macd_source)?;
         if bars.mode() != BarMode::Live
             || signal.mode() != SignalMode::Live
             || bars.configuration_hash() != signal.scope_hash()
@@ -110,6 +142,8 @@ impl Owner {
             || source_1s
                 .latest_absorbed_end_ns()
                 .is_some_and(|at| at > bars.closed_through_ns())
+            || macd_source.exact_bar_hash() != bars.configuration_hash()
+            || macd_source.watermark_ns() != bars.closed_through_ns()
         {
             return Err(Error::Conflict(
                 "exact signal source or clock differs".into(),
@@ -120,6 +154,8 @@ impl Owner {
             signal,
             noise,
             source_1s,
+            macd,
+            macd_source,
             last_sequence: 0,
             last_boundary_id: None,
             last_evaluated_at_ns: 0,
@@ -132,10 +168,12 @@ impl Owner {
     }
     pub fn configuration_hash(&self) -> Result<String> {
         arte_core::content_hash(&(
-            "arte.exact-signal-configuration.v1",
+            "arte.exact-signal-configuration.v2",
             self.bars.configuration_hash(),
             self.signal.config_hash()?,
             self.noise.configuration_hash(),
+            self.macd.config_hash(),
+            self.macd_source.identity_hash()?,
         ))
     }
     pub fn first_occurrence(&self) -> Option<Occurrence> {
@@ -143,6 +181,38 @@ impl Owner {
     }
     pub fn noise_distance(&self, entry_atoms: i64) -> Result<strategy350_noise::Distance> {
         self.noise.distance(entry_atoms)
+    }
+    pub fn forming_macd_for_boundary(
+        &self,
+        boundary: &Boundary<'_>,
+    ) -> Result<strategy350_macd::Outcome> {
+        if self.last_boundary() != (boundary.sequence, Some(boundary.id))
+            || self.last_evaluated_at_ns != boundary.evaluated_at_ns
+        {
+            return Err(Error::Unready(
+                "Strategy 350 MACD boundary not consumed".into(),
+            ));
+        }
+        let Kind::Trade {
+            observation,
+            eligible: true,
+        } = &boundary.kind
+        else {
+            return Err(Error::Unready(
+                "Strategy 350 MACD needs eligible trade".into(),
+            ));
+        };
+        let arte_core::events::Payload::Trade { price, .. } = &observation.payload else {
+            return Err(Error::Conflict("Strategy 350 MACD trade payload".into()));
+        };
+        self.macd.preview_trade(
+            observation.sip.ns,
+            boundary.evaluated_at_ns,
+            arte_core::events::Decimal {
+                atoms: price.atoms_at_scale(self.bars.price_scale())?,
+                scale: self.bars.price_scale(),
+            },
+        )
     }
     pub fn last_boundary(&self) -> (u64, Option<&str>) {
         (self.last_sequence, self.last_boundary_id.as_deref())
@@ -159,10 +229,12 @@ impl Owner {
         let bars = self.bars.checkpoint()?;
         let signal = self.signal.checkpoint()?;
         let noise = self.noise.checkpoint(8 * 1024 * 1024)?;
+        let macd = self.macd.checkpoint()?;
+        let macd_source = self.macd_source.checkpoint()?;
         let scope = self.bars.scope();
         let saved = Saved {
-            version: 2,
-            configuration_hash: self.bars.configuration_hash().into(),
+            version: 3,
+            configuration_hash: self.configuration_hash()?,
             scope: (scope.provider, scope.instrument, scope.session),
             last_sequence: self.last_sequence,
             last_boundary_id: self.last_boundary_id.clone(),
@@ -172,6 +244,8 @@ impl Owner {
             bars: bars.id.clone(),
             signal: signal.id.clone(),
             noise: noise.id.clone(),
+            macd: macd.id.clone(),
+            macd_source: macd_source.id.clone(),
         };
         let payload =
             serde_json::to_vec(&saved).map_err(|e| Error::Serialization(e.to_string()))?;
@@ -183,10 +257,18 @@ impl Owner {
             bars,
             signal,
             noise,
+            macd,
+            macd_source,
         })
     }
     pub fn restore(bundle: &Bundle, expected_root: &str, request: Recovery<'_>) -> Result<Self> {
-        for object in [&bundle.root, &bundle.bars, &bundle.signal] {
+        for object in [
+            &bundle.root,
+            &bundle.bars,
+            &bundle.signal,
+            &bundle.macd,
+            &bundle.macd_source,
+        ] {
             object.verify()?;
             if object.payload.len() > 4096 {
                 return Err(Error::Capacity("exact signal recovery bytes".into()));
@@ -199,7 +281,7 @@ impl Owner {
         let saved: Saved = serde_json::from_slice(&bundle.root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
         if bundle.root.id != expected_root
-            || saved.version != 2
+            || saved.version != 3
             || saved.scope
                 != (
                     request.scope.provider,
@@ -217,6 +299,8 @@ impl Owner {
             || saved.bars != bundle.bars.id
             || saved.signal != bundle.signal.id
             || saved.noise != bundle.noise.id
+            || saved.macd != bundle.macd.id
+            || saved.macd_source != bundle.macd_source.id
         {
             return Err(Error::Conflict(
                 "exact signal root or boundary differs".into(),
@@ -232,11 +316,6 @@ impl Owner {
             request.size_scale,
             request.source_generation_hash.into(),
         )?;
-        if saved.configuration_hash != bars.configuration_hash() {
-            return Err(Error::Conflict(
-                "exact signal source generation differs".into(),
-            ));
-        }
         let signal = State::restore(
             &bundle.signal,
             bars.configuration_hash(),
@@ -252,6 +331,23 @@ impl Owner {
             request.session_start_ns,
             request.session_end_ns,
             8 * 1024 * 1024,
+        )?;
+        let macd = strategy350_macd::State::restore_checkpoint(
+            &bundle.macd,
+            &bundle.macd.id,
+            request.scope,
+            request.session_start_ns,
+            request.session_end_ns,
+            &request.macd_config,
+        )?;
+        let macd_source = MacdSource::restore_checkpoint(
+            &bundle.macd_source,
+            &bundle.macd_source.id,
+            request.scope,
+            request.session_start_ns,
+            request.session_end_ns,
+            request.price_scale,
+            bars.configuration_hash().into(),
         )?;
         if saved.source_1s.session_start_ns() != request.session_start_ns
             || saved.source_1s.session_end_ns() != request.session_end_ns
@@ -272,7 +368,10 @@ impl Owner {
         }) {
             return Err(Error::Conflict("exact signal recent bar geometry".into()));
         }
-        let mut owner = Self::from_parts(bars, signal, noise, saved.source_1s)?;
+        let mut owner = Self::from_parts(bars, signal, noise, saved.source_1s, macd, macd_source)?;
+        if saved.configuration_hash != owner.configuration_hash()? {
+            return Err(Error::Conflict("exact signal configuration differs".into()));
+        }
         owner.last_sequence = saved.last_sequence;
         owner.last_boundary_id = saved.last_boundary_id;
         owner.last_evaluated_at_ns = saved.last_evaluated_at_ns;
@@ -330,6 +429,8 @@ impl Owner {
                 }
             };
             let advance = self.bars.advance(cutoff_ns)?;
+            self.macd
+                .advance_verified(&mut self.macd_source, &advance)?;
             if let Some(exact) = advance.completed() {
                 self.last_exact_completed = Some(exact.clone());
                 self.source_1s.absorb(exact)?;
@@ -480,7 +581,7 @@ mod tests {
         .unwrap();
         let noise = strategy350_noise::State::new(crate::test_noise_config(), S, S + 1_000_000_000)
             .unwrap();
-        Owner::new(bars, signal, noise).unwrap()
+        Owner::new(bars, signal, noise, &crate::test_macd_config()).unwrap()
     }
     #[test]
     fn causal_boundaries_open_exact_signal_without_false_empty_bars() {
@@ -496,6 +597,7 @@ mod tests {
             },
         };
         assert!(owner.observe(&boundary).unwrap().is_none());
+        assert!(!owner.forming_macd_for_boundary(&boundary).unwrap().bullish);
         let image = owner.checkpoint().unwrap();
         let generation = "a".repeat(64);
         let request = |id| Recovery {
@@ -513,15 +615,25 @@ mod tests {
                 source_algorithm_hash: "b".repeat(64),
             },
             noise_config: crate::test_noise_config(),
+            macd_config: crate::test_macd_config(),
             expected_sequence: 1,
             expected_boundary_id: Some(id),
         };
         let mut restored = Owner::restore(&image, &image.root.id, request("one")).unwrap();
         assert!(restored.observe(&boundary).unwrap().is_none());
         assert!(Owner::restore(&image, &image.root.id, request("wrong")).is_err());
+        let mut changed_config = request("one");
+        changed_config.macd_config.source_algorithm_hash = "f".repeat(64);
+        assert!(Owner::restore(&image, &image.root.id, changed_config).is_err());
         let mut damaged = owner.checkpoint().unwrap();
         damaged.bars.payload[0] ^= 1;
         assert!(Owner::restore(&damaged, &damaged.root.id, request("one")).is_err());
+        let mut damaged_macd = owner.checkpoint().unwrap();
+        damaged_macd.macd.payload[0] ^= 1;
+        assert!(Owner::restore(&damaged_macd, &damaged_macd.root.id, request("one")).is_err());
+        let mut damaged_source = owner.checkpoint().unwrap();
+        damaged_source.macd_source.payload[0] ^= 1;
+        assert!(Owner::restore(&damaged_source, &damaged_source.root.id, request("one")).is_err());
         let quote = observation(2, S + 200_000_000, EventKind::Quote, "100", "1");
         let boundary = Boundary {
             id: "two",
@@ -616,7 +728,7 @@ mod tests {
         .unwrap();
         let noise = strategy350_noise::State::new(crate::test_noise_config(), S, S + 2_000_000_000)
             .unwrap();
-        let mut owner = Owner::new(bars, signal, noise).unwrap();
+        let mut owner = Owner::new(bars, signal, noise, &crate::test_macd_config()).unwrap();
         let trade = observation(1, S + 900_000_001, EventKind::Trade, "100", "1");
         owner
             .observe(&Boundary {
@@ -682,6 +794,7 @@ mod tests {
                     source_algorithm_hash: "b".repeat(64),
                 },
                 noise_config: crate::test_noise_config(),
+                macd_config: crate::test_macd_config(),
                 expected_sequence: 2,
                 expected_boundary_id: Some("one-second"),
             },

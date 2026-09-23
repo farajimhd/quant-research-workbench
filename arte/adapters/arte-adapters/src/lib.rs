@@ -61,6 +61,14 @@ pub(crate) fn test_noise_config() -> arte_core::strategy350_noise::Config {
     }
 }
 #[cfg(test)]
+pub(crate) fn test_macd_config() -> arte_core::strategy350_macd::Config {
+    arte_core::strategy350_macd::Config {
+        execution_interval: arte_core::execution_interval::ExecutionInterval::Events,
+        price_scale: 2,
+        source_algorithm_hash: "d".repeat(64),
+    }
+}
+#[cfg(test)]
 fn test_fill_model() -> arte_core::simulation_model::Model {
     arte_core::simulation_model::Model {
         schema_version: 1,

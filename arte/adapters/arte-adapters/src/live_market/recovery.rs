@@ -51,7 +51,7 @@ impl Bundle {
             evaluated_at_ns: saved.evaluated_at_ns,
         })
     }
-    pub fn objects(&self) -> [&Object; 11] {
+    pub fn objects(&self) -> [&Object; 13] {
         [
             &self.scheduler.market,
             &self.scheduler.trades,
@@ -62,6 +62,8 @@ impl Bundle {
             &self.signal.bars,
             &self.signal.signal,
             &self.signal.noise,
+            &self.signal.macd,
+            &self.signal.macd_source,
             &self.signal.root,
             &self.root,
         ]

@@ -54,7 +54,7 @@ EMA primitive. A selected trade previews all four from the last completed
 states without mutating them; missing, future, or stale frames block the gate.
 The rule declares event execution cadence. Offline tests cover the four-frame
 requirement, non-compounding previews, stale input, and invalid clocks. It is
-not yet wired to live/backtest completed-bar producers or the account evaluator.
+not yet wired to the historical Strategy 350 runner or account evaluator.
 Numerical parity with the current Python/QMD MACD initialization is unproven;
 activation must remain blocked until that comparison and an effective
 configuration pin are complete.
@@ -63,14 +63,18 @@ sparse 1s/5s/10s/30s completed closes. It never reconstructs integer prices
 from the scheduler's floating-point bars or fabricates closes through a gap.
 The MACD state and this source advance atomically, with session, scale,
 watermark, and source identity checks. Offline tests cover sparse gaps and a
-fresh final bar. The source is not yet part of live common-cut recovery or the
-historical Strategy 350 runner; neither mode may claim the gate is connected.
+fresh final bar. The live exact-bar owner now advances this source from its
+verified bar advance. The historical Strategy 350 runner does not yet consume
+it, so historical mode cannot claim the gate is connected.
 The four EMA states and sparse exact-bar buckets now have separate bounded,
 content-addressed recovery images. Restore checks period alphas, finite EMA
 values, frame clocks, source generation, active bucket geometry, and canonical
 bytes. A paired-state check rejects EMA completion ahead of the exact-bar
-watermark. The two images still need one root bound to the scheduler and
-account cut; standalone image tests do not prove live recovery durability.
+watermark. The live exact-signal root now pins both images at the same pending
+scheduler cut, and the ClickHouse cut adapter includes them in root-last
+publication/readback. Offline unit tests exercise the bundle and damaged-child
+rejection. The schema was not applied and no connected ClickHouse cut was
+published or recovered. Live feed and broker safety gates remain unready.
 The plan can now test a run-pinned replay event against those ranges by SIP
 time with a half-open boundary. Strategy 350 account decisions bind the plan
 identity in historical mode and a sealed selected bucket in live mode.

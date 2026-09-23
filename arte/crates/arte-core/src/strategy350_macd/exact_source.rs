@@ -246,7 +246,9 @@ impl Source {
                     .checked_add(timeframe_ns)
                     .ok_or_else(|| Error::Capacity("Strategy 350 MACD bucket clock".into()))?;
                 if end_ns > self.session_end_ns {
-                    return Err(Error::Conflict("Strategy 350 MACD bucket session".into()));
+                    // A session shorter than this timeframe has no completed
+                    // bucket. Never synthesize a partial completed bar.
+                    continue;
                 }
                 match &mut next.buckets[index] {
                     Some(bucket) if bucket.start_ns == start_ns => {
@@ -465,5 +467,17 @@ mod tests {
             "a".repeat(64),
         )
         .is_err());
+    }
+    #[test]
+    fn short_session_never_publishes_partial_large_timeframes() {
+        let mut source = Source::new(source().scope(), S, 2 * S, 2, "a".repeat(64)).unwrap();
+        let first = bar(S, 1000);
+        assert!(source
+            .advance(Some(&first), first.end_ns)
+            .unwrap()
+            .is_empty());
+        let completed = source.advance(None, 2 * S).unwrap();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].timeframe_ns, S);
     }
 }
