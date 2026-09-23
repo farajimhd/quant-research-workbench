@@ -65,7 +65,7 @@ def parse_args(argv=None):
     p.add_argument("--date")
     p.add_argument("--start-date")
     p.add_argument("--end-date")
-    p.add_argument("--tickers", default="", help="Comma-separated symbols; default is the certified source universe")
+    p.add_argument("--tickers", default="", help="Comma-separated symbols; default is dated-tradable tickers with certified events")
     p.add_argument("--database", default="q_market_history")
     p.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
     p.add_argument("--runtime", type=Path, default=RUNTIME / "market-day")
@@ -205,6 +205,12 @@ def storage_preflight(client, db, require_tables=False):
     policies = client.query("SELECT disks FROM system.storage_policies WHERE policy_name='live_market_ssd'", "storage_policy")
     if not policies or any(row["disks"] != ["live_market_ssd"] for row in policies):
         raise ValueError("Required SSD-only live_market_ssd policy is unavailable")
+    universe = client.query("SELECT storage_policy FROM system.tables WHERE database='q_live' AND name='feature_tradable_universe_v1'", "population_policy")
+    if universe != [{'storage_policy':sql.POLICY}]:
+        raise ValueError("Dated tradable universe is absent or not on live_market_ssd")
+    misplaced_universe = client.query("SELECT disk_name FROM system.parts WHERE active AND database='q_live' AND table='feature_tradable_universe_v1' AND disk_name!='live_market_ssd' LIMIT 1", "population_parts")
+    if misplaced_universe:
+        raise ValueError("Dated tradable universe has parts outside live_market_ssd")
     rows = client.query(f"SELECT name,storage_policy FROM system.tables WHERE database={sql.literal(db)} AND startsWith(name,'market_day_')", "table_policies")
     if any(row["storage_policy"] != sql.POLICY for row in rows):
         raise ValueError("Existing market-day table has an incorrect storage policy; explicit migration required")
@@ -243,20 +249,41 @@ def source_plan(client, args):
     counts = {r['source_date']:int(r['n']) for r in totals}
     if any(counts.get(str(day))!=int(by_day[str(day)]['total_event_rows_after_filters']) for day in sessions):
         raise ValueError("Canonical day statistics and ticker continuity totals disagree")
-    coverage = []
+    populations = []
+    tradable_by_day = {}
     for day in sessions:
+        members = client.query(f"SELECT ticker,symbol_id,listing_id,security_id,source_run_id,inserted_at "
+            f"FROM q_live.feature_tradable_universe_v1 FINAL WHERE universe_date={sql.literal(day)} "
+            "AND is_tradable=1 ORDER BY ticker,symbol_id,listing_id", "dated_tradable_universe")
+        if not members or any(not row['ticker'] for row in members):
+            raise ValueError(f"Missing or invalid dated tradable universe for {day}; current membership is not a historical substitute")
+        tickers = {row['ticker'] for row in members}
+        tradable_by_day[str(day)] = tickers
+        populations.append(dict(session_date=str(day),authority='q_live.feature_tradable_universe_v1',
+            tradable_tickers=len(tickers),snapshot_rows=len(members),snapshot_hash=digest(members)))
+    coverage = []
+    for day, population in zip(sessions, populations):
         batch=client.query(f"SELECT source_date,ticker,event_count,next_ordinal,last_ordinal,first_sip_timestamp_us,last_sip_timestamp_us,build_step,updated_at FROM market_sip_compact.events_ordinal_continuity FINAL WHERE source_date={sql.literal(day)}{restriction} ORDER BY ticker", "ticker_coverage")
-        if len(coverage)+len(batch)>args.max_plan_units:
+        selected=[row for row in batch if row['ticker'] in tradable_by_day[str(day)]]
+        if args.symbols and day in requested:
+            absent=set(args.symbols)-{row['ticker'] for row in selected}
+            if absent:
+                raise ValueError(f"Requested tickers lack dated tradability or canonical events on {day}: "+','.join(sorted(absent)))
+        if not args.symbols and day in requested and not selected:
+            raise ValueError(f"No tradable tickers with certified events on {day}")
+        population['selected_ticker_days']=len(selected)
+        population['excluded_canonical_tickers']=len(batch)-len(selected) if not args.symbols else None
+        population['tradable_without_canonical_events']=(
+            len(tradable_by_day[str(day)]-{row['ticker'] for row in batch}) if not args.symbols else None)
+        if len(coverage)+len(selected)>args.max_plan_units:
             raise ValueError('Plan exceeds --max-plan-units; split the date range or explicitly raise its metadata limit')
-        coverage.extend(batch)
+        coverage.extend(selected)
     if not coverage:
         raise ValueError("No canonical ticker coverage")
     rules = client.query("SELECT token_id,modifier_int,update_high_low,update_last,update_volume FROM market_sip_compact.event_condition_token_reference WHERE source_family='trade_conditions' AND is_join_canonical=1 ORDER BY token_id", "trade_rules")
     if not rules or len({r['token_id'] for r in rules}) != len(rules):
         raise ValueError("Missing or ambiguous trade condition rules")
     present = {row['ticker'] for row in coverage}
-    if set(args.symbols)-present:
-        raise ValueError("Requested tickers have no certified coverage: " + ','.join(sorted(set(args.symbols)-present)))
     units = [row for row in coverage if date.fromisoformat(row['source_date']) in sessions]
     if len({(r['source_date'],r['ticker']) for r in units}) != len(units):
         raise ValueError("Ambiguous ticker-day continuity")
@@ -272,7 +299,8 @@ def source_plan(client, args):
         if key in actions and ratio!=(float(actions[key]['split_from']),float(actions[key]['split_to'])):
             raise ValueError('Conflicting corporate-action split ratios')
         actions[key]=row
-    return dict(sessions=list(map(str,sessions)), requested=list(map(str,requested)), stats=stats, units=units, rules=rules,
+    return dict(sessions=list(map(str,sessions)), requested=list(map(str,requested)), stats=stats,
+        population=populations,units=units,rules=rules,
         splits=list(actions.values()),
         excluded_calendar_dates=[str(first+timedelta(days=i)) for i in range((args.end-first).days+1) if first+timedelta(days=i) not in sessions])
 
@@ -428,6 +456,9 @@ def run(args):
                 indicator_set='core', calculation_source=digest(Path(sql.__file__).read_text()),
                 controller_source=digest(Path(__file__).read_text()), plan=plan, database=args.database,
                 start=str(args.start),end=str(args.end),
+                population_authority=dict(table='q_live.feature_tradable_universe_v1',
+                    membership='same-date is_tradable=1 and certified canonical ticker events',
+                    warmup='same-date tradable ticker-days only',missing_date='fail_closed'),
                 indicators=dict(ema=dict(periods=sql.EMAS,seed='first eligible close',basis='completed nonempty bars'),
                     macd=dict(fast=12,slow=26,signal=9),rsi=dict(period=14,seed='first 14 changes',reset='session'),
                     atr=dict(period=14,seed='first 14 true ranges',reset='session'),
@@ -450,7 +481,13 @@ def run(args):
             if existing.is_file():
                 report['units']=json.loads(existing.read_text()).get('units',[])
             save(report_path,report)
-            print(f"Range {args.start} through {args.end} inclusive | sessions {len(plan['requested'])} | core indicators + EMA 7/15 | policy {sql.POLICY}",flush=True)
+            selected=sum(row['selected_ticker_days'] for row in plan['population'] if row['session_date'] in plan['requested'])
+            scope=f"Range {args.start} through {args.end} inclusive | sessions {len(plan['requested'])} | tradable ticker-days {selected}"
+            if not args.symbols:
+                excluded=sum(row['excluded_canonical_tickers'] for row in plan['population'] if row['session_date'] in plan['requested'])
+                without_source=sum(row['tradable_without_canonical_events'] for row in plan['population'] if row['session_date'] in plan['requested'])
+                scope+=f" | excluded non-tradable {excluded} | tradable without canonical events {without_source}"
+            print(f"{scope} | policy {sql.POLICY}",flush=True)
             if args.plan_only:
                 print(f"Read-only plan complete: {len(plan['units'])} ticker-days including warm-up. {report_path}",flush=True)
                 return 0

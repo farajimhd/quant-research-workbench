@@ -48,6 +48,46 @@ class Arguments(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'SSD'):
             B.storage_preflight(Client(),'db')
 
+    def test_plan_selects_only_dated_tradable_ticker_days(self):
+        import pandas_market_calendars as mcal
+        start=date(2026,9,11)
+        days=[str(d.date()) for d in mcal.get_calendar('XNYS').schedule(start_date=start,end_date=date(2026,9,18)).index]
+
+        class Client:
+            def __init__(self, missing=None):
+                self.population_dates=iter(days)
+                self.coverage_dates=iter(days)
+                self.missing=missing
+
+            def query(self, query, label):
+                if label=='source_certificates':
+                    return [dict(source_date=day,total_event_rows_after_filters=2) for day in days]
+                if label=='day_coverage_totals':
+                    return [dict(source_date=day,n=2) for day in days]
+                if label=='dated_tradable_universe':
+                    day=next(self.population_dates)
+                    return [] if day==self.missing else [dict(ticker='AADX',symbol_id='symbol:aadx',
+                        listing_id='listing:aadx',security_id='security:aadx',source_run_id='dated',inserted_at=day)]
+                if label=='ticker_coverage':
+                    day=next(self.coverage_dates)
+                    return [dict(source_date=day,ticker=ticker,event_count=1) for ticker in ('AAA','AADX')]
+                if label=='trade_rules':
+                    return [dict(token_id=1,modifier_int=0,update_high_low=1,update_last=1,update_volume=1)]
+                if label=='split_references':
+                    return []
+                raise AssertionError(label)
+
+        args=B.parse_args(['--date','2026-09-18'])
+        plan=B.source_plan(Client(),args)
+        self.assertEqual({row['ticker'] for row in plan['units']},{'AADX'})
+        self.assertEqual(len(plan['units']),len(days))
+        self.assertEqual(plan['population'][-1]['excluded_canonical_tickers'],1)
+        self.assertEqual(plan['population'][-1]['selected_ticker_days'],1)
+        with self.assertRaisesRegex(ValueError,'dated tradable universe for 2026-09-14'):
+            B.source_plan(Client(missing='2026-09-14'),args)
+        with self.assertRaisesRegex(ValueError,'Requested tickers lack dated tradability'):
+            B.source_plan(Client(),B.parse_args(['--date','2026-09-18','--tickers','AAA']))
+
 
 @unittest.skipUnless(os.environ.get('MARKET_DAY_CLICKHOUSE_TEST')=='1','ClickHouse integration is opt-in')
 class ClickHouseParity(unittest.TestCase):
@@ -228,7 +268,7 @@ class ClickHouseParity(unittest.TestCase):
     def test_runnable_interruption_and_inclusive_range_resume(self):
         runtime=B.RUNTIME / 'market-day-tests' / uuid.uuid4().hex
         args=B.parse_args(['--start-date','2026-09-17','--end-date','2026-09-18',
-            '--tickers','AAA','--database',self.db,'--runtime',str(runtime),'--progress','text'])
+            '--tickers','AADX','--database',self.db,'--runtime',str(runtime),'--progress','text'])
         real=B.Client
         class InterruptOnce(real):
             def query(self,query,label='query',read=True):

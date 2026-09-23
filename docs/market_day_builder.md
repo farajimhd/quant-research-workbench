@@ -11,16 +11,24 @@ Run from the laptop source repository with the repository's Python environment:
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
-python -B scripts/build_market_day.py --date 2026-09-18 --tickers AAA --plan-only
-python -B scripts/build_market_day.py --date 2026-09-18 --tickers AAA
-python -B scripts/build_market_day.py --start-date 2026-09-17 --end-date 2026-09-18 --tickers AAA,AADX
+python -B scripts/build_market_day.py --date 2026-09-18 --tickers AADX --plan-only
+python -B scripts/build_market_day.py --date 2026-09-18 --tickers AADX
+python -B scripts/build_market_day.py --start-date 2026-09-17 --end-date 2026-09-18 --tickers AADX,AAPL
 ```
 
 Both range endpoints are **inclusive New York dates**. Do not combine `--date`
 with range arguments. Closed calendar dates are explicitly recorded as excluded;
 a range with no exchange sessions is rejected. Omit `--tickers` to select all
-certified source tickers. Missing session coverage fails preflight, including
-the seven calendar days preceding the first requested date.
+dated-tradable tickers that also have certified source events. The builder reads
+`q_live.feature_tradable_universe_v1 FINAL` with `universe_date` equal to each
+session and `is_tradable=1`. It never substitutes the latest snapshot for a
+missing historical date. Duplicate admitted listing rows collapse to one ticker
+for bar calculation; the complete dated snapshot is fingerprinted in the build.
+Requested ticker-days without dated admission or canonical events fail preflight.
+Missing source or population coverage also fails preflight for the seven calendar
+days preceding the first requested date. Earlier warm-up bars are persisted only
+on days when that ticker was tradable; a newly admitted ticker starts its EMA
+from the first available price-bearing bar, with no fabricated history.
 
 Connection settings come from environment variables or `--env-file`. The default
 file is the existing workstation secrets `.env`; credentials are never printed or
@@ -89,7 +97,8 @@ repeated per bar/event.
 ## Tables and consumer contract
 
 All five tables specify `storage_policy='live_market_ssd'`. Preflight checks the
-policy's disks and existing column definitions, and completion checks actual
+policy's disks, the dated-universe table and its active parts, and existing
+output column definitions; completion checks actual
 active-part placement. Incorrect existing placement is a hard error, not a
 setting-only repair or fallback to `default`.
 
@@ -156,7 +165,7 @@ databases, and retains local test manifests under the runtime root. It checks
 1,000 recursive samples against independent sequential formulas, prior-day seeds,
 session resets, equal-time quote/trade order, stale/outside-NBBO eligibility,
 unknown conditions, sparse rollups, abandoned attempts and corruption rejection.
-Its runnable interruption/range/resume test uses certified AAA data for
+Its runnable interruption/range/resume test uses certified, dated-tradable AADX data for
 September 17–18, 2026 plus warm-up. This is a bounded integration test, not a
 full-market campaign.
 

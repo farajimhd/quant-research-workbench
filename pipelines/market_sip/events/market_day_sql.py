@@ -11,7 +11,7 @@ import re
 from datetime import timedelta
 from pipelines.market_sip.events.trade_reporting_flags import DELAYED, REVISION as REPORTING_REVISION
 
-VERSION = "market-day-core-v2"
+VERSION = "market-day-core-v3"
 EMAS = (7, 9, 12, 15, 20, 26, 50)
 FRAMES = (100, 1000, 5000, 10000, 30000, 60000, 300000, 3600000)
 POLICY = "live_market_ssd"
