@@ -2,8 +2,8 @@
 """Build compact market bars and core indicators inside ClickHouse.
 
 --date is one New York date; --start-date/--end-date are inclusive. Only
-calendar sessions are built. Seven calendar days of bar dependencies are
-automatically included. Never starts a Backtest or changes its consumers.
+requested market sessions are built. Prior certified indicator state is reused
+when available; otherwise a first-bar seed is recorded. Never starts Backtest.
 """
 from __future__ import annotations
 
@@ -164,6 +164,7 @@ class Progress:
         self.workers = workers
         self.completed = self.skipped = self.failed = self.retried = 0
         self.bars_done = self.technical_done = 0
+        self.bootstrap = self.carried = 0
         self.active = {}
         self.current = "building"
         self.started = time.monotonic()
@@ -188,6 +189,7 @@ class Progress:
             queued = max(0, total-done-self.failed-len(active))
             lines = [f"Market day {self.current}  |  workers {self.workers}  |  live_market_ssd",
                 f"Bars {self.bars_done}/{self.bars_total}  |  Technical {self.technical_done}/{self.technical_total}",
+                f"Indicator seeds: carried {self.carried}  bootstrap {self.bootstrap}",
                 f"Done {done}/{total}  active {len(active)}  queued {queued}  "
                 f"failed {self.failed}  elapsed {time.monotonic()-self.started:.0f}s"]
             lines.extend(f"  {item}" for item in active[:self.workers])
@@ -221,6 +223,11 @@ class Progress:
             if kind == 'bars': self.bars_done += 1
             else: self.technical_done += 1
         self._text_snapshot(force=True)
+
+    def seed(self, mode):
+        with self.lock:
+            if mode == 'carried': self.carried += 1
+            else: self.bootstrap += 1
 
     def _text_snapshot(self, force=False):
         if self.live: return
@@ -256,7 +263,7 @@ def storage_preflight(client, db, require_tables=False):
     rows = client.query(f"SELECT name,storage_policy FROM system.tables WHERE database={sql.literal(db)} AND startsWith(name,'market_day_')", "table_policies")
     if any(row["storage_policy"] != sql.POLICY for row in rows):
         raise ValueError("Existing market-day table has an incorrect storage policy; explicit migration required")
-    if require_tables and len(rows) != 5:
+    if require_tables and len(rows) != 6:
         raise ValueError("Market-day table schema is incomplete")
     if rows:
         columns=client.query(f"SELECT table,name,type FROM system.columns WHERE database={sql.literal(db)} AND startsWith(table,'market_day_') ORDER BY table,position",'schema_contract')
@@ -276,9 +283,12 @@ def storage_preflight(client, db, require_tables=False):
 
 def source_plan(client, args):
     import pandas_market_calendars as mcal
-    first = args.start - timedelta(days=sql.WARMUP_DAYS)
-    sessions = [stamp.date() for stamp in mcal.get_calendar("XNYS").schedule(start_date=first, end_date=args.end).index]
-    requested = [day for day in sessions if day >= args.start]
+    first = args.start
+    calendar = mcal.get_calendar("XNYS")
+    all_sessions = [stamp.date() for stamp in calendar.schedule(start_date=first-timedelta(days=14), end_date=args.end).index]
+    sessions = [day for day in all_sessions if day >= first]
+    requested = sessions
+    predecessors = {str(day):str(all_sessions[all_sessions.index(day)-1]) if all_sessions.index(day)>0 else None for day in sessions}
     if not requested:
         raise ValueError("Requested range contains no market sessions")
     restriction = " AND ticker IN (" + ','.join(map(sql.literal,args.symbols)) + ")" if args.symbols else ""
@@ -286,7 +296,7 @@ def source_plan(client, args):
     stats = client.query(f"SELECT source_date,stats_version,source_filter_key,total_event_rows_after_filters,updated_at FROM market_sip_compact.events_source_day_stats FINAL WHERE {span} ORDER BY source_date", "source_certificates")
     by_day = {row['source_date']: row for row in stats}
     if len(by_day) != len(stats) or any(str(day) not in by_day for day in sessions):
-        raise ValueError("Missing or ambiguous canonical day coverage, including seven-day warm-up")
+        raise ValueError("Missing or ambiguous canonical day coverage for requested sessions")
     totals = client.query(f"SELECT source_date,sum(event_count) AS n FROM market_sip_compact.events_ordinal_continuity FINAL WHERE {span} GROUP BY source_date ORDER BY source_date", "day_coverage_totals")
     counts = {r['source_date']:int(r['n']) for r in totals}
     if any(counts.get(str(day))!=int(by_day[str(day)]['total_event_rows_after_filters']) for day in sessions):
@@ -341,7 +351,7 @@ def source_plan(client, args):
         if key in actions and ratio!=(float(actions[key]['split_from']),float(actions[key]['split_to'])):
             raise ValueError('Conflicting corporate-action split ratios')
         actions[key]=row
-    return dict(sessions=list(map(str,sessions)), requested=list(map(str,requested)), stats=stats,
+    return dict(sessions=list(map(str,sessions)), requested=list(map(str,requested)), predecessors=predecessors, stats=stats,
         population=populations,units=units,rules=rules,
         splits=list(actions.values()),
         excluded_calendar_dates=[str(first+timedelta(days=i)) for i in range((args.end-first).days+1) if first+timedelta(days=i) not in sessions])
@@ -372,7 +382,7 @@ def source_evidence(client, row):
 
 
 def evidence(client, db, kind, build, day, ticker, attempt):
-    key = "(sip_timestamp_us,ordinal)" if kind == 'events' else "(resolution_ms,bucket_index)"
+    key = "(sip_timestamp_us,ordinal)" if kind == 'events' else "(session_date,ticker)" if kind == 'seed' else "(resolution_ms,bucket_index)"
     return client.query(f"SELECT count() AS n,uniqExact({key}) AS unique_keys,sum(cityHash64(tuple(*))) AS hash FROM {sql.table(db,kind)} WHERE {sql.selection(build,day,ticker,attempt)}", kind+"_integrity")[0]
 
 
@@ -461,6 +471,50 @@ def validate_technical(client,db,build,day,ticker,attempt):
     return actual
 
 
+def prior_indicator_state(client, db, build, day, ticker, predecessor, calculation_source, rules_hash, splits):
+    """Load only the preceding session's certified, compatible terminal state."""
+    if not predecessor:
+        return None, None, ''
+    candidates=client.query(f"""SELECT u.build_id AS build_id,u.attempt_id AS attempt_id,u.source_hash AS source_hash
+      FROM (SELECT * FROM {sql.table(db,'units')} FINAL) u
+      INNER JOIN (SELECT * FROM {sql.table(db,'builds')} FINAL) b ON u.build_id=b.build_id
+      INNER JOIN (SELECT * FROM {sql.table(db,'units')} FINAL WHERE stage='seed' AND status='complete') s
+        ON u.build_id=s.build_id AND u.session_date=s.session_date AND u.ticker=s.ticker
+        AND u.attempt_id=s.attempt_id
+      WHERE u.session_date=toDate({sql.literal(predecessor)}) AND u.ticker={sql.literal(ticker)}
+        AND u.stage='technical' AND u.status='complete'
+        AND (b.status='core_complete' OR u.build_id={sql.literal(build)})
+        AND JSONExtractString(b.definition_json,'version')={sql.literal(sql.VERSION)}
+        AND JSONExtractString(b.definition_json,'calculation_source')={sql.literal(calculation_source)}
+        AND JSONExtractString(b.definition_json,'rules_hash')={sql.literal(rules_hash)}
+      ORDER BY (u.build_id={sql.literal(build)}) DESC,b.updated_at DESC,u.build_id DESC LIMIT 1""",'prior_state_candidate')
+    if not candidates:
+        return None, None, ''
+    candidate=candidates[0]
+    old_build=candidate['build_id']
+    old_day=date.fromisoformat(predecessor)
+    if not completed(client,db,old_build,old_day,ticker,'technical',candidate['source_hash']):
+        raise ValueError(f'{predecessor} {ticker}: missing certified prior indicator state')
+    if not completed(client,db,old_build,old_day,ticker,'seed',candidate['source_hash']):
+        raise ValueError(f'{predecessor} {ticker}: missing certified prior seed provenance')
+    bars_unit=client.query(f"SELECT attempt_id,source_hash FROM {sql.table(db,'units')} FINAL WHERE {sql.selection(old_build,old_day,ticker)} AND stage='bars' AND status='complete'",'prior_bar_unit')
+    if len(bars_unit)!=1 or not completed(client,db,old_build,old_day,ticker,'bars',bars_unit[0]['source_hash']):
+        raise ValueError(f'{predecessor} {ticker}: missing certified prior bars')
+    factor=sql.split_factor(splits,day,ticker,f'toDate({sql.literal(predecessor)})')
+    technical=client.query(f"SELECT resolution_ms,{','.join(f'ema_{p}*({factor}) AS ema_{p}' for p in sql.EMAS)},macd_signal*({factor}) AS macd_signal FROM {sql.table(db,'technical')} WHERE {sql.selection(old_build,old_day,ticker,candidate['attempt_id'])} ORDER BY resolution_ms,bucket_index DESC LIMIT 1 BY resolution_ms",'prior_technical_values')
+    closes=client.query(f"SELECT resolution_ms,close_int/10000.*({factor}) AS close FROM {sql.table(db,'bars')} WHERE {sql.selection(old_build,old_day,ticker,bars_unit[0]['attempt_id'])} AND price_valid=1 ORDER BY resolution_ms,bucket_index DESC LIMIT 1 BY resolution_ms",'prior_close_values')
+    by_frame={int(row['resolution_ms']):row for row in technical}
+    close_by_frame={int(row['resolution_ms']):float(row['close']) for row in closes}
+    if set(by_frame)!=set(sql.FRAMES) or set(close_by_frame)!=set(sql.FRAMES):
+        raise ValueError(f'{predecessor} {ticker}: incomplete prior timeframe state')
+    state={frame:{**{f'ema_{p}':float(by_frame[frame][f'ema_{p}']) for p in sql.EMAS},
+        'macd_signal':float(by_frame[frame]['macd_signal']),
+        'close':close_by_frame[frame]} for frame in sql.FRAMES}
+    if not all(math.isfinite(value) for item in state.values() for value in item.values()):
+        raise ValueError(f'{predecessor} {ticker}: nonfinite prior state')
+    return state,digest([old_build,predecessor,candidate['attempt_id'],candidate['source_hash'],bars_unit[0],state]),old_build
+
+
 @contextmanager
 def build_lock(path):
     # OS byte lock is released after crashes; the persistent lock file is safe.
@@ -481,7 +535,8 @@ def build_lock(path):
             msvcrt.locking(stream.fileno(),msvcrt.LK_UNLCK,1)
 
 
-def build_ticker(args, build, plan, ticker, rows, requested, report, report_path, unit_log,
+def build_ticker(args, build, plan, ticker, rows, requested, calculation_source, rules_hash,
+                 report, report_path, unit_log,
                  checkpoint_clock,
                  state_lock, progress, stop, clients):
     """Own one ticker's chronological bars and then its requested technical days."""
@@ -536,20 +591,56 @@ def build_ticker(args, build, plan, ticker, rows, requested, report, report_path
         for row in rows:
             if row['source_date'] not in requested or stop.is_set(): continue
             day = date.fromisoformat(row['source_date'])
-            start = day-timedelta(days=sql.WARMUP_DAYS)
             mark(day,'','indicator dependencies')
-            dependencies = client.query(f"SELECT session_date,attempt_id,source_hash,output_hash FROM {sql.table(args.database,'units')} FINAL WHERE build_id={sql.literal(build)} AND ticker={sql.literal(ticker)} AND stage='bars' AND status='complete' AND session_date BETWEEN {sql.literal(start)} AND {sql.literal(day)} ORDER BY session_date", "indicator_dependencies")
-            dependency_hash = digest(dependencies)
-            if completed(client,args.database,build,day,ticker,'technical',dependency_hash):
+            dependencies = client.query(f"SELECT session_date,attempt_id,source_hash,output_hash FROM {sql.table(args.database,'units')} FINAL WHERE {sql.selection(build,day,ticker)} AND stage='bars' AND status='complete'", "indicator_dependencies")
+            prior,prior_hash,prior_build=prior_indicator_state(client,args.database,build,day,ticker,
+                plan['predecessors'][str(day)],calculation_source,rules_hash,plan['splits'])
+            dependency_hash = digest([dependencies,prior_hash,sql.VERSION])
+            technical_unit=completed(client,args.database,build,day,ticker,'technical',dependency_hash)
+            seed_unit=completed(client,args.database,build,day,ticker,'seed',dependency_hash)
+            if technical_unit and seed_unit:
+                if technical_unit['attempt_id']!=seed_unit['attempt_id']:
+                    raise ValueError(f'{day} {ticker}: seed and indicator attempts differ')
                 progress.finish(ticker,'technical',skipped=True)
                 continue
-            attempt = str(uuid.uuid4())
-            mark(day,attempt,'EMA / MACD / RSI / ATR')
-            client.query(sql.technical_sql(args.database,build,day,ticker,attempt,start,plan['splits']),"technical",False)
-            result = validate_technical(client,args.database,build,day,ticker,attempt)
-            if result['n'] != result['unique_keys']:
-                raise ValueError(f'{day} {ticker}: duplicate indicator keys')
-            publish(client,args.database,build,day,ticker,'technical',attempt,dependency_hash,result)
+            if seed_unit and not technical_unit:
+                raise ValueError(f'{day} {ticker}: seed provenance lacks indicators')
+            attempt = technical_unit['attempt_id'] if technical_unit else str(uuid.uuid4())
+            seed_mode='carried' if prior else 'bootstrap'
+            if not technical_unit:
+                mark(day,attempt,f'EMA / MACD / RSI / ATR ({seed_mode})')
+                client.query(sql.technical_sql(args.database,build,day,ticker,attempt,prior),"technical",False)
+                result = validate_technical(client,args.database,build,day,ticker,attempt)
+                if result['n'] != result['unique_keys']:
+                    raise ValueError(f'{day} {ticker}: duplicate indicator keys')
+                publish(client,args.database,build,day,ticker,'technical',attempt,dependency_hash,result)
+            mark(day,attempt,f'publishing {seed_mode} provenance')
+            seed_values=dict(mode=int(bool(prior)),predecessor_date=plan['predecessors'][str(day)] or '',
+                prior_build_id=prior_build,prior_state_hash=prior_hash or '')
+            existing_seed=client.query(f"SELECT mode,predecessor_date,prior_build_id,prior_state_hash "
+                f"FROM {sql.table(args.database,'seed')} WHERE {sql.selection(build,day,ticker,attempt)}",'seed_resume')
+            if existing_seed:
+                if existing_seed != [seed_values]:
+                    raise ValueError(f'{day} {ticker}: ambiguous or changed seed provenance')
+            else:
+                client.query(f"INSERT INTO {sql.table(args.database,'seed')} VALUES ("
+                    f"{sql.literal(build)},toDate({sql.literal(day)}),{sql.literal(ticker)},"
+                    f"toUUID({sql.literal(attempt)}),{seed_values['mode']},"
+                    f"{sql.literal(seed_values['predecessor_date'])},"
+                    f"{sql.literal(seed_values['prior_build_id'])},"
+                    f"{sql.literal(seed_values['prior_state_hash'])})",'seed',False)
+            seed_result=evidence(client,args.database,'seed',build,day,ticker,attempt)
+            if int(seed_result['n'])!=1 or seed_result['n']!=seed_result['unique_keys']:
+                raise ValueError(f'{day} {ticker}: invalid seed provenance')
+            publish(client,args.database,build,day,ticker,'seed',attempt,dependency_hash,seed_result)
+            with state_lock:
+                report['seed_modes'][seed_mode]+=1
+                with unit_log.open('a',encoding='utf-8') as stream:
+                    stream.write(json.dumps(dict(day=str(day),ticker=ticker,stage='technical',
+                        seed_mode=seed_mode,prior_state_hash=prior_hash),sort_keys=True)+'\n')
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            progress.seed(seed_mode)
             progress.finish(ticker,'technical')
         return client
     finally:
@@ -572,11 +663,12 @@ def run(args):
             plan = source_plan(client,args)
             definition = dict(version=sql.VERSION, emas=sql.EMAS, frames=sql.FRAMES, warmup_days=sql.WARMUP_DAYS,
                 indicator_set='core', calculation_source=digest(Path(sql.__file__).read_text()),
+                rules_hash=digest(plan['rules']),seed_policy='preceding-session-certified-state-or-first-bar',
                 controller_source=digest(Path(__file__).read_text()), plan=plan, database=args.database,
                 start=str(args.start),end=str(args.end),
                 population_authority=dict(table='q_live.feature_tradable_universe_v1',
                     membership='same-date is_tradable=1 and certified canonical ticker events',
-                    warmup='same-date tradable ticker-days only',missing_date='fail_closed'),
+                    warmup='none',missing_date='fail_closed'),
                 indicators=dict(ema=dict(periods=sql.EMAS,seed='first eligible close',basis='completed nonempty bars'),
                     macd=dict(fast=12,slow=26,signal=9),rsi=dict(period=14,seed='first 14 changes',reset='session'),
                     atr=dict(period=14,seed='first 14 true ranges',reset='session'),
@@ -594,21 +686,20 @@ def run(args):
                 if not saved_path.is_file() or json.loads(saved_path.read_text())['definition']!=json.loads(json.dumps(definition,default=str)):
                     raise ValueError('Explicit build ID has different definitions, source coverage, or runtime owner')
                 build=args.build_id
-            report.update(build_id=build, definition=definition, status='planned',unit_log=str(runtime / (build+'.units.jsonl')))
+            report.update(build_id=build, definition=definition, status='planned',unit_log=str(runtime / (build+'.units.jsonl')),
+                seed_modes=dict(bootstrap=0,carried=0))
             existing=runtime / (build+'.json')
             save(report_path,report)
             selected=sum(row['selected_ticker_days'] for row in plan['population'] if row['session_date'] in plan['requested'])
-            warmup=len(plan['units'])-selected
             scope=(f"Requested {args.start} through {args.end} inclusive | sessions {len(plan['requested'])} | "
-                f"requested ticker-days {selected} | prerequisite warm-up ticker-days {warmup} "
-                f"({plan['sessions'][0]} through {plan['sessions'][-1]})")
+                f"ticker-days {selected} | prior state: preceding certified session or first-bar bootstrap")
             if not args.symbols:
                 excluded=sum(row['excluded_canonical_tickers'] for row in plan['population'] if row['session_date'] in plan['requested'])
                 without_source=sum(row['tradable_without_canonical_events'] for row in plan['population'] if row['session_date'] in plan['requested'])
                 scope+=f" | excluded non-tradable {excluded} | tradable without canonical events {without_source}"
             print(f"{scope} | policy {sql.POLICY} | workers {args.workers}",flush=True)
             if args.plan_only:
-                print(f"Read-only plan complete: {len(plan['units'])} ticker-days including warm-up. {report_path}",flush=True)
+                print(f"Read-only plan complete: {len(plan['units'])} requested ticker-days. {report_path}",flush=True)
                 return 0
             client.query(f"CREATE DATABASE IF NOT EXISTS {sql.identifier(args.database)}", "database",False)
             for statement in sql.ddl(args.database):
@@ -637,6 +728,7 @@ def run(args):
                         try: ticker, rows = next(ticker_iter)
                         except StopIteration: return False
                         future = pool.submit(build_ticker,args,build,plan,ticker,rows,set(plan['requested']),
+                            definition['calculation_source'],definition['rules_hash'],
                             report,report_path,runtime / (build+'.units.jsonl'),checkpoint_clock,
                             state_lock,progress,stop,clients)
                         pending[future] = ticker

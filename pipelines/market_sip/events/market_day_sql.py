@@ -11,11 +11,11 @@ import re
 from datetime import timedelta
 from pipelines.market_sip.events.trade_reporting_flags import DELAYED, REVISION as REPORTING_REVISION
 
-VERSION = "market-day-core-v3"
+VERSION = "market-day-core-v4"
 EMAS = (7, 9, 12, 15, 20, 26, 50)
 FRAMES = (100, 1000, 5000, 10000, 30000, 60000, 300000, 3600000)
 POLICY = "live_market_ssd"
-WARMUP_DAYS = 7
+WARMUP_DAYS = 0
 
 
 def literal(value):
@@ -58,6 +58,9 @@ def ddl(db):
             previous_close Float64, sample_count UInt64,
             avg_gain Float64, avg_loss Float64""",
             "build_id, session_date, ticker, attempt_id, resolution_ms, bucket_index"),
+        "seed": (f"""{common}, mode UInt8, predecessor_date String,
+            prior_build_id String, prior_state_hash String""",
+            "build_id, session_date, ticker, attempt_id"),
         "units": ("""build_id String, session_date Date, ticker LowCardinality(String),
             stage LowCardinality(String), attempt_id UUID, source_hash String,
             output_rows UInt64, output_hash UInt64, status LowCardinality(String),
@@ -177,12 +180,13 @@ def rollup_sql(db, build, day, ticker, attempt, parent, targets):
     GROUP BY build_id,session_date,ticker,attempt_id,target,bucket"""
 
 
-def ema(expression, period, index="n", window="w"):
+def ema(expression, period, index="n", window="w", prior=None):
     alpha = 2. / (period + 1)
     half = math.log(.5) / math.log1p(-alpha)
     # Native EMA starts at zero. Scaling just the first input establishes the
     # same first-value seed as EmaState without unstable inverse exponentials.
-    return f"exponentialMovingAverage({half:.17g})(if({index}=1,({expression})/{alpha:.17g},({expression})),{index}) OVER {window}"
+    first = expression if prior is None else f"if(has_prior,({prior})*(1-{alpha:.17g})+({expression})*{alpha:.17g},({expression}))"
+    return f"exponentialMovingAverage({half:.17g})(if({index}=1,({first})/{alpha:.17g},({expression})),{index}) OVER {window}"
 
 
 def split_factor(splits, day, ticker, date_column='b.session_date'):
@@ -194,20 +198,31 @@ def split_factor(splits, day, ticker, date_column='b.session_date'):
     return '*'.join(terms) or '1.'
 
 
-def technical_sql(db, build, day, ticker, attempt, warmup_start, splits=()):
-    factor=split_factor(splits,day,ticker)
+def technical_sql(db, build, day, ticker, attempt, prior=None):
     source = f"""SELECT b.session_date,b.resolution_ms,b.bucket_index,
-      b.close_int*({factor}) AS close_int,b.high_int*({factor}) AS high_int,b.low_int*({factor}) AS low_int
+      b.close_int,b.high_int,b.low_int
       FROM {table(db,'bars')} b
       INNER JOIN (SELECT session_date,attempt_id FROM {table(db,'units')} FINAL
         WHERE build_id={literal(build)} AND ticker={literal(ticker)} AND stage='bars' AND status='complete'
-        AND session_date BETWEEN toDate({literal(warmup_start)}) AND toDate({literal(day)})) u
+        AND session_date=toDate({literal(day)})) u
       ON b.session_date=u.session_date AND b.attempt_id=u.attempt_id
       WHERE b.build_id={literal(build)} AND b.ticker={literal(ticker)} AND b.price_valid=1 AND b.extremes_valid=1"""
-    return technical_from_source(db, build, day, ticker, attempt, source)
+    return technical_from_source(db, build, day, ticker, attempt, source, prior)
 
 
-def technical_from_source(db, build, day, ticker, attempt, source):
+def technical_from_source(db, build, day, ticker, attempt, source, prior=None):
+    prior=prior or {}
+    frames=','.join(str(frame) for frame in FRAMES)
+    has_prior=f"has([{frames}],resolution_ms)" if prior else '0'
+    def state(name):
+        values=[]
+        for frame in FRAMES:
+            value=float(prior.get(frame,{}).get(name,0.))
+            if not math.isfinite(value): raise ValueError('Nonfinite persisted indicator state')
+            values.append(f'{value:.17g}')
+        return f"transform(resolution_ms,[{frames}],[{','.join(values)}],0.)"
+    if prior and set(prior)!=set(FRAMES):
+        raise ValueError('Incomplete persisted indicator state')
     ordered = "PARTITION BY resolution_ms ORDER BY session_date,bucket_index ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
     session = "PARTITION BY resolution_ms,session_date ORDER BY bucket_index ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
     decay = 13. / 14
@@ -223,10 +238,11 @@ def technical_from_source(db, build, day, ticker, attempt, source):
       SELECT *,close_int/10000. AS close,high_int/10000. AS high,low_int/10000. AS low,
         row_number() OVER ({ordered}) AS n,
         row_number() OVER ({session}) AS k,
-        lagInFrame(close_int/10000.,1,0.) OVER ({ordered}) AS prev
+        {has_prior} AS has_prior,
+        lagInFrame(close_int/10000.,1,if(has_prior,{state('close')},0.)) OVER ({ordered}) AS prev
       FROM ({source})
     ), averages AS (
-      SELECT *,{','.join(ema('close',p)+f' AS ema_{p}' for p in EMAS)},
+      SELECT *,{','.join(ema('close',p,prior=state(f'ema_{p}') if prior else None)+f' AS ema_{p}' for p in EMAS)},
         greatest(close-prev,0.) AS gain,greatest(prev-close,0.) AS loss,
         if(prev>0,greatest(high-low,abs(high-prev),abs(low-prev)),high-low) AS tr,
         k-if(first_value(prev) OVER s>0,0,1) AS changes
@@ -238,7 +254,7 @@ def technical_from_source(db, build, day, ticker, attempt, source):
         {wilder('tr','k')} AS atr
       FROM averages WINDOW s AS ({session})
     ), signals AS (
-      SELECT *,{ema('line',9)} AS signal FROM smoothed WINDOW w AS ({ordered})
+      SELECT *,{ema('line',9,prior=state('macd_signal') if prior else None)} AS signal FROM smoothed WINDOW w AS ({ordered})
     ) SELECT {literal(build)},session_date,{literal(ticker)},toUUID({literal(attempt)}),resolution_ms,bucket_index,
       {','.join(f'ema_{p}' for p in EMAS)},line,signal,line-signal,
       if(changes<14,0.,if(al<=0,100.,100.-100./(1.+ag/al))),atr,

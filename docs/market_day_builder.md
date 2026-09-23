@@ -25,10 +25,8 @@ session and `is_tradable=1`. It never substitutes the latest snapshot for a
 missing historical date. Duplicate admitted listing rows collapse to one ticker
 for bar calculation; the complete dated snapshot is fingerprinted in the build.
 Requested ticker-days without dated admission or canonical events fail preflight.
-Missing source or population coverage also fails preflight for the seven calendar
-days preceding the first requested date. Earlier warm-up bars are persisted only
-on days when that ticker was tradable; a newly admitted ticker starts its EMA
-from the first available price-bearing bar, with no fabricated history.
+Only requested sessions need canonical and dated-population coverage. No earlier
+sessions are built automatically.
 
 Connection settings come from environment variables or `--env-file`. The default
 file is the existing workstation secrets `.env`; credentials are never printed or
@@ -48,8 +46,7 @@ and the per-query memory limits sum to 8 GiB. Tune `--workers`, `--max-threads`,
 or unbounded worker fan-out occurs. A worker failure stops new ticker dispatch,
 cancels active builder queries, and leaves published ticker-day stages resumable.
 
-Progress reports requested dates separately from their seven-calendar-day
-warm-up, counts durable bars and technical ticker-days, and shows active ticker
+Progress counts durable bars and technical ticker-days and shows active ticker
 stages. Plain text mode emits bounded snapshots; interactive mode keeps a live
 worker panel. The manifest records bounded recent query samples and aggregate
 query timings. Completed per-ticker metrics append to the build's `units.jsonl`
@@ -85,18 +82,22 @@ larger requests fail explicitly rather than truncating the requested range.
    seed adjustment. MACD signal smoothing is a dependent SQL stage. Wilder
    calculations use a 14-sample arithmetic seed and then alpha=1/14 smoothing.
 
-EMA/MACD warm-up uses the preceding seven calendar days of completed nonempty
-bars, following the existing historical EMA horizon. Prior bars initialize the
-previous close. Split references are frozen from `q_live.market_stock_split_v1`;
-prior prices are adjusted inside SQL to the requested session's split basis.
+For EMA/MACD continuity, the builder reads the preceding exchange session's
+certified terminal technical row and close from persisted ClickHouse tables.
+It prefers the current build, then a completed compatible V4 build. The state
+must match the calculation source and trade-rule hash; its published units and
+output hashes are revalidated. If no compatible state exists, that ticker-day
+uses a **first-bar bootstrap**, recorded in the runtime unit log and seed counts.
+Such a bootstrap is a defined new-series boundary, not a claim of full-history
+EMA continuity. A missing preceding session is never silently replaced by an
+older one. Split references are frozen from `q_live.market_stock_split_v1`;
+carried price and MACD states are adjusted for splits effective between sessions.
 Future splits are excluded and conflicting ratios fail closed. Persisted raw bars
-remain unadjusted. RSI/ATR reset for the requested session; RSI's first change may
-use that prior close, and ATR includes the prior-close gap. Before their seed is
-ready they publish zero with readiness=false. Flat seeded RSI is 100, matching
-the current QMD implementation. Intermediate historical RSI calculations do not
-seed the requested session. No missing bars are fabricated. A price-bearing bar
-without eligible extremes blocks technical publication rather than silently
-dropping it or inventing ATR inputs.
+remain unadjusted. RSI/ATR reset for each requested session; RSI's first change
+may use the carried prior close, and ATR includes the prior-close gap. Before
+their 14-sample seed is ready they publish zero with readiness=false. Flat seeded
+RSI is 100, matching QMD. No missing bars are fabricated. A price-bearing bar
+without eligible extremes blocks technical publication.
 
 The indicator definition, parameters, seeds, calculation source hashes, calendar,
 input certificates and price scale are stored once per build. Floating indicator
@@ -107,7 +108,7 @@ repeated per bar/event.
 
 ## Tables and consumer contract
 
-All five tables specify `storage_policy='live_market_ssd'`. Preflight checks the
+All six tables specify `storage_policy='live_market_ssd'`. Preflight checks the
 policy's disks, the dated-universe table and its active parts, and existing
 output column definitions; completion checks actual
 active-part placement. Incorrect existing placement is a hard error, not a
@@ -118,6 +119,7 @@ setting-only repair or fallback to `default`.
 | `events` | Event-cursor updates: eligibility, causal NBBO, cumulative volume/notional, execution VWAP, spread |
 | `bars` | Sparse integer OHLC, sums/counts, additive execution primitives and validity |
 | `technical` | Typed timeframe indicator values, readiness and calculation state |
+| `seed` | Per ticker-day bootstrap/carried mode, predecessor and prior-state hash |
 | `units` | Published attempt ID and source/output integrity for each ticker-day stage |
 | `builds` | Shared definition and final `core_complete` status |
 
@@ -127,6 +129,8 @@ keyed by build, instrument/session, attempt and event/bar coordinates. Failed
 attempts may retain rows, but are **never consumer-visible authority**. Consumers
 must first select a `core_complete` build, then join each product to its matching
 `units FINAL` row with status=`complete`, including the exact `attempt_id`.
+Technical consumers must additionally join the matching certified `seed` row;
+`mode=0` means first-bar bootstrap and `mode=1` means carried predecessor state.
 Reading an entire table without these predicates is incorrect.
 
 An event value is available at its canonical event cursor. A technical value is
@@ -175,16 +179,10 @@ python -B tests/test_market_day_builder.py -q
 
 The opt-in suite creates uniquely named SSD fixture databases, removes only those
 databases, and retains local test manifests under the runtime root. It checks
-1,000 recursive samples against independent sequential formulas, prior-day seeds,
-session resets, equal-time quote/trade order, stale/outside-NBBO eligibility,
+1,000 recursive samples against independent sequential formulas, carried prior
+state, session resets, equal-time quote/trade order, stale/outside-NBBO eligibility,
 unknown conditions, sparse rollups, abandoned attempts and corruption rejection.
-Its runnable interruption/range/resume test uses certified, dated-tradable AADX data for
-September 17–18, 2026 plus warm-up. This is a bounded integration test, not a
-full-market campaign.
-
-On ClickHouse 26.3.25.2, the bounded AADX September 17–18 run plus seven-day
-warm-up persisted 241,216 event updates, 145,849 bars, and 15,202 technical rows.
-The measured build phases took approximately six seconds; the complete launcher
-took approximately eight seconds. Its largest logged query used 96,109,054 bytes.
-All active output parts were on `live_market_ssd`. These are a small-symbol
-measurement, not a full-market throughput or Backtest-equivalence claim.
+Its runnable interruption/range/resume test uses certified AADX and AEG data for
+September 17–18, 2026, then builds September 18 alone from the preceding
+completed build's persisted state. This is a bounded integration test, not a
+full-market throughput or Backtest-equivalence claim.

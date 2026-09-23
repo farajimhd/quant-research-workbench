@@ -63,9 +63,7 @@ class Arguments(unittest.TestCase):
             B.storage_preflight(Client(),'db')
 
     def test_plan_selects_only_dated_tradable_ticker_days(self):
-        import pandas_market_calendars as mcal
-        start=date(2026,9,11)
-        days=[str(d.date()) for d in mcal.get_calendar('XNYS').schedule(start_date=start,end_date=date(2026,9,18)).index]
+        days=['2026-09-18']
 
         class Client:
             def __init__(self, missing=None):
@@ -95,10 +93,11 @@ class Arguments(unittest.TestCase):
         plan=B.source_plan(Client(),args)
         self.assertEqual({row['ticker'] for row in plan['units']},{'AADX'})
         self.assertEqual(len(plan['units']),len(days))
+        self.assertEqual(plan['predecessors']['2026-09-18'],'2026-09-17')
         self.assertEqual(plan['population'][-1]['excluded_canonical_tickers'],1)
         self.assertEqual(plan['population'][-1]['selected_ticker_days'],1)
-        with self.assertRaisesRegex(ValueError,'dated tradable universe for 2026-09-14'):
-            B.source_plan(Client(missing='2026-09-14'),args)
+        with self.assertRaisesRegex(ValueError,'dated tradable universe for 2026-09-18'):
+            B.source_plan(Client(missing='2026-09-18'),args)
         with self.assertRaisesRegex(ValueError,'Requested tickers lack dated tradability'):
             B.source_plan(Client(),B.parse_args(['--date','2026-09-18','--tickers','AAA']))
 
@@ -293,19 +292,44 @@ class ClickHouseParity(unittest.TestCase):
             self.assertEqual(B.run(args),130)
         with redirect_stdout(io.StringIO()):
             self.assertEqual(B.run(args),0)
+            import json
+            first_complete=json.loads((runtime/'latest.json').read_text())
+            self.assertEqual(first_complete['seed_modes'],{'bootstrap':2,'carried':2})
             self.assertEqual(B.run(args),0)
-        import json
         report=json.loads((runtime/'latest.json').read_text())
         self.assertEqual(report['status'],'core_complete')
         self.assertEqual(report['completed'],0)
-        self.assertEqual(report['skipped'],18)
+        self.assertEqual(report['skipped'],8)
+        self.assertEqual(report['seed_modes'],{'bootstrap':0,'carried':0})
         self.assertEqual(report['definition']['plan']['requested'],['2026-09-17','2026-09-18'])
         published=self.c.query(f"SELECT ticker,stage,count() AS n FROM {S.table(self.db,'units')} FINAL "
             f"WHERE build_id={S.literal(report['build_id'])} AND status='complete' "
             "GROUP BY ticker,stage ORDER BY ticker,stage",'published_parallel')
         self.assertEqual({(row['ticker'],row['stage']):int(row['n']) for row in published},
-            {('AADX','bars'):7,('AADX','events'):7,('AADX','technical'):2,
-             ('AEG','bars'):7,('AEG','events'):7,('AEG','technical'):2})
+            {('AADX','bars'):2,('AADX','events'):2,('AADX','technical'):2,('AADX','seed'):2,
+             ('AEG','bars'):2,('AEG','events'):2,('AEG','technical'):2,('AEG','seed'):2})
+        prior=self.c.query(f"SELECT ema_7 FROM {S.table(self.db,'technical')} WHERE "
+            f"build_id={S.literal(report['build_id'])} AND ticker='AADX' "
+            "AND session_date='2026-09-17' AND resolution_ms=1000 "
+            "ORDER BY bucket_index DESC LIMIT 1",'prior_ema')[0]['ema_7']
+        first=self.c.query(f"SELECT t.ema_7,b.close_int/10000. AS close FROM {S.table(self.db,'technical')} t "
+            f"INNER JOIN {S.table(self.db,'bars')} b ON t.build_id=b.build_id AND t.session_date=b.session_date "
+            "AND t.ticker=b.ticker AND t.resolution_ms=b.resolution_ms AND t.bucket_index=b.bucket_index "
+            f"WHERE t.build_id={S.literal(report['build_id'])} AND t.ticker='AADX' "
+            "AND t.session_date='2026-09-18' AND t.resolution_ms=1000 "
+            f"AND b.attempt_id=(SELECT attempt_id FROM {S.table(self.db,'units')} FINAL "
+            f"WHERE build_id={S.literal(report['build_id'])} AND ticker='AADX' "
+            "AND session_date='2026-09-18' AND stage='bars' AND status='complete') "
+            "ORDER BY t.bucket_index LIMIT 1",'carried_ema')[0]
+        self.assertAlmostEqual(first['ema_7'],prior*.75+first['close']*.25,places=8)
+        standalone=B.parse_args(['--date','2026-09-18','--tickers','AADX,AEG','--workers','2',
+            '--database',self.db,'--runtime',str(B.RUNTIME/'market-day-tests'/uuid.uuid4().hex),
+            '--progress','text'])
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(B.run(standalone),0)
+        standalone_report=json.loads((standalone.runtime/'latest.json').read_text())
+        self.assertEqual(standalone_report['seed_modes'],{'bootstrap':0,'carried':2})
+        self.assertEqual(len(standalone_report['definition']['plan']['units']),2)
 
 
 if __name__=='__main__': unittest.main()
