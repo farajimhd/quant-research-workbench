@@ -32,12 +32,15 @@ class Arguments(unittest.TestCase):
     def test_builder_reuses_query_connection_but_cancels_separately(self):
         with patch.dict(os.environ,{'QMD_CLICKHOUSE_URL':'http://127.0.0.1:8123'}):
             client=B.Client(B.parse_args(['--date','2026-08-18']))
+            controller=B.Client(B.parse_args(['--date','2026-08-18']),persistent=False)
         try:
             self.assertTrue(client.http.persistent)
             self.assertFalse(client.cancel_http.persistent)
             self.assertIsNot(client.http,client.cancel_http)
+            self.assertFalse(controller.http.persistent)
         finally:
             client.close()
+            controller.close()
 
     def test_text_progress_reports_durable_units_and_active_tickers(self):
         progress=B.Progress(12,2,2,'text')

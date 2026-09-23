@@ -105,7 +105,7 @@ def parse_args(argv=None):
 
 class Client:
     """Bounded HTTP results, no write retries, explicit cancellation identity."""
-    def __init__(self, args):
+    def __init__(self, args, *, persistent=True):
         values = {}
         if args.env_file.is_file():
             for line in args.env_file.read_text(encoding="utf-8-sig").splitlines():
@@ -121,7 +121,7 @@ class Client:
         password = pick(("QMD_CLICKHOUSE_PASSWORD", "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD", "CLICKHOUSE_WORKSTATION_PASSWORD", "CLICKHOUSE_PASSWORD"))
         self.secrets = (endpoint, password)
         self.http = ClickHouseHttpClient(endpoint, user, password, timeout_seconds=args.query_timeout + 30,
-            persistent=True,
+            persistent=persistent,
             default_query_params=dict(max_threads=args.max_threads, max_insert_threads=1,
                 max_memory_usage=int(args.max_memory_gb * 1024**3), max_execution_time=args.query_timeout,
                 max_result_rows=100000, max_result_bytes=16000000, result_overflow_mode="throw"))
@@ -681,7 +681,9 @@ def run(args):
     if not RUNTIME.is_dir() or not runtime.is_relative_to(RUNTIME.resolve()):
         raise ValueError("Runtime must be beneath the available D:/TradingML/runtimes")
     runtime.mkdir(parents=True, exist_ok=True)
-    client = Client(args)
+    # The controller is idle while ticker workers run; its server-side keepalive
+    # can expire before final certification and status publication.
+    client = Client(args, persistent=False)
     with build_lock(RUNTIME / ('market-day-'+args.database+'.lock')):
         report = dict(status="preflight", started_at=datetime.now(timezone.utc).isoformat(), profiles=[],run_id=uuid.uuid4().hex)
         report_path = runtime / ('last-plan.json' if args.plan_only else 'latest.json')
@@ -815,8 +817,11 @@ def run(args):
                 try:
                     client.query(f"INSERT INTO {sql.table(args.database,'builds')} VALUES ({sql.literal(build)},toDate({sql.literal(args.end)}),{sql.literal(json.dumps(definition,sort_keys=True,default=str))},{sql.literal(report['status'])},now64(6))",'build_status',False)
                 except Exception as error:
+                    # Preserve the triggering worker/certification error, if any.
                     # A failed publication must never be reported as success.
-                    report.update(status='publication_failed',error=client.clean_error(error))
+                    report.update(status='publication_failed',
+                        publication_error=client.clean_error(error),
+                        error=report.get('error') or client.clean_error(error))
                     save(report_path,report)
                     raise RuntimeError('Could not publish final build status; inspect latest.json') from None
             profiles=list(client.profiles)
