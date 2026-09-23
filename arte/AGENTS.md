@@ -11,6 +11,13 @@ Keep Market Data Engine (MDE) as the market-data component name.
 - Do not use parent configuration, service managers, databases, UI servers, or caches.
 - Copied source must live here. Record its origin before adaptation.
 - Follow the design index in `doc/README.md`. Flag conflicts before changing a contract.
+- Follow narrower `AGENTS.md` files below this root. Flat Rust modules are
+  governed by the `src/AGENTS.md` in their owning crate; a sibling module
+  directory's instructions do not cover the flat parent file.
+- Treat these instructions as implementation guardrails, not proof that
+  existing code complies. If code conflicts with an explicit user decision in
+  `doc/13-user-requirements-record.md`, surface the conflict and correct the
+  design or implementation inside ARTE before claiming completion.
 
 ## Data and execution
 
