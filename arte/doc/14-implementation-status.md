@@ -87,6 +87,13 @@ per-shard and total selected-bucket and interval budgets. Output order is
 stable across worker counts. One offline unit test covers ordering, duplicate
 rejection, budget rejection and effective-hash mismatch. It does not execute
 the selected events or narrow full market/V7 replay.
+The historical replay projection can now bind one verified compact-bar product
+to the same certified trade revision as its run-pinned event tape. It checks
+the bar coverage hash, trade certificate, scope, interval and source knowledge
+cutoff before returning a historical source. One offline test covers valid
+binding and mismatched certificate/cutoff. This is a single-shard link. A
+multi-ticker run still needs one combined source catalog and per-shard
+projection-manifest mapping; those are not built by this link.
 This is replay routing, not a substitute for causal event, quote, level or
 account evidence. After a complete certified source load, the replay-source
 adapter can build a bounded, SIP-ordered index of selected trade or quote
