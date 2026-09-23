@@ -13,6 +13,7 @@ const TRANSITIONS: &str = "boolean_transitions_v1";
 const COVERAGE: &str = "boolean_coverage_v1";
 const PAGE_BUCKETS: u64 = arte_core::boolean_compute::MAX_BATCH_ROWS as u64;
 const BASE: u64 = arte_core::bar_catalogue::BASE_INTERVAL_NS;
+pub mod parallel;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct TransitionRow {
@@ -769,13 +770,16 @@ mod tests {
         assert_eq!(current, Some(false));
     }
     fn bar() -> BarComplete {
+        bar_for(10)
+    }
+    fn bar_for(instrument: u64) -> BarComplete {
         let interval = Interval {
             start: 1_000_000_000,
             end: 1_200_000_000,
         };
         let request = BarRequest {
             provider: 1,
-            instruments: vec![10],
+            instruments: vec![instrument],
             session: 20260922,
             interval,
             timeframe_ns: BASE,
@@ -792,7 +796,7 @@ mod tests {
             source_generation: request.source_generation.clone(),
             calculation_hash: request.calculation_hash.clone(),
             sources: BTreeMap::from([(
-                10,
+                instrument,
                 Source {
                     certificate_hash: "c".repeat(64),
                     price_scale: 2,
@@ -805,7 +809,7 @@ mod tests {
         read.observe(BarBatch {
             request_hash: request.hash().unwrap(),
             coverage_hash: coverage.hash().unwrap(),
-            instrument: 10,
+            instrument,
             first_start_ns: interval.start,
             count: 2,
             price_scale: 2,
@@ -957,5 +961,66 @@ mod tests {
             prepare_strategy350_signal(&source, request, config, 1_000_000_000, 2_000_000_000,)
                 .is_err()
         );
+    }
+    #[test]
+    fn parallel_signal_preparation_is_bounded_and_deterministically_sorted() {
+        let first = bar_for(10);
+        let second = bar_for(11);
+        let config = arte_core::strategy350_signal::Config {
+            execution_interval: ExecutionInterval::Fixed(BASE),
+            minimum_move_bps: 5,
+            source_algorithm_hash: "a".repeat(64),
+        };
+        fn pin<'a>(
+            bars: &'a BarComplete,
+            config: &arte_core::strategy350_signal::Config,
+        ) -> parallel::Pinned<'a> {
+            let mut request = request();
+            request.instrument = bars.request().instruments[0];
+            request.interval = bars.request().interval;
+            request.source_bar_request_hash = bars.request().hash().unwrap();
+            request.source_bar_coverage_hash = bars.coverage_hash().into();
+            request.maximum_rows = 2;
+            request.definition.kind = ExecutableKind::SignalStream;
+            request.definition.id = arte_core::strategy350_catalogue::SIGNAL.into();
+            request.definition.interval = ExecutionInterval::Fixed(BASE);
+            request.definition.implementation_hash = config.hash().unwrap();
+            parallel::Pinned {
+                bars,
+                request,
+                config: config.clone(),
+                session_start_ns: 1_000_000_000,
+                published_at_ns: 2_000_000_000,
+            }
+        }
+        let parallel =
+            parallel::prepare_many(vec![pin(&second, &config), pin(&first, &config)], 2, 4)
+                .unwrap();
+        let serial =
+            parallel::prepare_many(vec![pin(&first, &config), pin(&second, &config)], 1, 4)
+                .unwrap();
+        assert_eq!(
+            parallel
+                .iter()
+                .map(|p| p.prepared.request().instrument)
+                .collect::<Vec<_>>(),
+            vec![10, 11]
+        );
+        for (left, right) in parallel.iter().zip(&serial) {
+            assert_eq!(left.prepared.rows, right.prepared.rows);
+            assert_eq!(
+                left.prepared.coverage().hash().unwrap(),
+                right.prepared.coverage().hash().unwrap()
+            );
+            assert_eq!(left.first_occurrence_end_ns, right.first_occurrence_end_ns);
+        }
+        assert!(
+            parallel::prepare_many(vec![pin(&first, &config), pin(&first, &config)], 2, 4).is_err()
+        );
+        assert!(
+            parallel::prepare_many(vec![pin(&first, &config), pin(&second, &config)], 2, 3)
+                .is_err()
+        );
+        assert!(parallel::prepare_many(vec![pin(&first, &config)], 0, 2).is_err());
     }
 }

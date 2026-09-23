@@ -8,6 +8,11 @@ longer materializes a full-session evaluation vector and a second dense grid.
 An offline unit test proves identical transition rows and coverage identity
 against the prior dense preparation path. This does not complete the runnable
 Strategy 350 backtest or live account evaluator.
+Independent ticker/session signal preparations can now run with bounded worker
+count and a preflight worst-case transition-row budget. Results are sorted by
+session, provider and instrument. Offline tests compare serial and parallel
+identity and reject duplicate scopes and insufficient budgets. This is a
+preparation primitive, not a measured multi-day backtest throughput claim.
 
 Massive transport health now distinguishes a subscription request from observed
 market traffic. Neither state arms the shared exposure gate. The reviewed

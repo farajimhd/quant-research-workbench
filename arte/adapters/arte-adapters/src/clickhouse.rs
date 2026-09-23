@@ -6,6 +6,10 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Duration;
 mod boolean_products;
+pub use boolean_products::parallel::{
+    prepare_many as prepare_strategy350_signals_many, Pinned as PinnedStrategy350Signal,
+    Projection as PreparedStrategy350Signal,
+};
 pub use boolean_products::{
     boolean_publication_scope, prepare_boolean_product, prepare_calculated_boolean_product,
     prepare_strategy350_signal, DenseBatch, Prepared as PreparedBooleanProduct,
