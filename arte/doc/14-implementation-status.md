@@ -16,6 +16,11 @@ reject any executable definition without its own validated interval.
 The completed-bar tape can now emit every 100 ms boundary or only aligned
 fixed-interval boundaries, including empty buckets. It refuses to represent
 event cadence using bars. This is backtest clock plumbing, not full evaluation.
+The partial Strategy 350 gate now checks ordered source time and sequence, not
+receipt order. Equal receive timestamps and out-of-order arrival times can be
+processed after the ordered lane releases them. Late mode latches before the
+purchase-price floor is applied. Quote/bar-driven late-mode updates outside this
+trade gate and the remaining Strategy 350 rules are still unimplemented.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service

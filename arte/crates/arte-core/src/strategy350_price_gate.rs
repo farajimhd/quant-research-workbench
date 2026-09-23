@@ -86,7 +86,9 @@ pub struct State {
     config: Config,
     config_hash: String,
     late_mode: bool,
-    last_order: Option<(u64, u64, u64)>,
+    // The ordered market lane releases by source time and provider sequence.
+    // Receive/availability time is evidence, not the event-order key.
+    last_source_order: Option<(u64, u64)>,
     failed: bool,
 }
 impl State {
@@ -111,7 +113,7 @@ impl State {
             config,
             config_hash: hash,
             late_mode: false,
-            last_order: None,
+            last_source_order: None,
             failed: false,
         })
     }
@@ -155,9 +157,9 @@ impl State {
             || event.key.session != self.scope.session
             || event.available_at_ns < self.session_start_ns
             || event.available_at_ns > evaluated_at_ns
-            || self.last_order.is_some_and(|last| {
-                (event.available_at_ns, event.sip.ns, event.key.sequence) <= last
-            })
+            || self
+                .last_source_order
+                .is_some_and(|last| (event.sip.ns, event.key.sequence) <= last)
             || event.sip.ns > event.available_at_ns
         {
             return Err(Error::Conflict(
@@ -172,7 +174,7 @@ impl State {
             return Err(Error::Invalid("Strategy 350 trade price".into()));
         }
         let eligible = policy.evaluate(event, evaluated_at_ns)?;
-        self.last_order = Some((event.available_at_ns, event.sip.ns, event.key.sequence));
+        self.last_source_order = Some((event.sip.ns, event.key.sequence));
         if !eligible {
             return Ok(Outcome {
                 late_mode: self.late_mode,
@@ -436,5 +438,60 @@ mod tests {
             )
             .is_err());
         assert!(s.late_mode().is_err());
+    }
+    #[test]
+    fn source_order_allows_equal_or_reordered_receipt_times() {
+        let p = policy();
+        let close = fact("19", S);
+        let mut state = state();
+        let mut first = event(2 * S, "10");
+        first.available_at_ns = 4 * S;
+        state
+            .observe(&first, &p, Some(&close), &context(2 * S, "10", None), 4 * S)
+            .unwrap();
+        let mut second = event(3 * S, "10");
+        second.sip.ns = first.sip.ns;
+        second.available_at_ns = first.available_at_ns;
+        state
+            .observe(
+                &second,
+                &p,
+                Some(&close),
+                &context(2 * S, "10", None),
+                4 * S,
+            )
+            .unwrap();
+        let mut third = event(4 * S, "10");
+        third.sip.ns = 3 * S;
+        third.available_at_ns = 3 * S;
+        state
+            .observe(&third, &p, Some(&close), &context(3 * S, "10", None), 4 * S)
+            .unwrap();
+        assert!(state
+            .observe(
+                &second,
+                &p,
+                Some(&close),
+                &context(2 * S, "10", None),
+                4 * S
+            )
+            .is_err());
+        assert!(state.late_mode().is_err());
+    }
+    #[test]
+    fn late_mode_latches_before_purchase_price_gate() {
+        let p = policy();
+        let mut state = state();
+        let outcome = state
+            .observe(
+                &event(2 * S, "0.99"),
+                &p,
+                Some(&fact("19", S)),
+                &context(2 * S, "11.50", None),
+                2 * S,
+            )
+            .unwrap();
+        assert_eq!(outcome.block, Some(Block::CurrentPriceBelowMinimum));
+        assert!(outcome.late_mode);
     }
 }
