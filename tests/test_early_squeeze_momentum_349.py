@@ -44,6 +44,28 @@ def test_forming_macd_is_independent_for_all_four_timeframes():
         assert preview['line'] > preview['signal']
 
 
+@pytest.mark.parametrize('timeframe,seconds', [('1s',1),('5s',5),('10s',10),('30s',30)])
+def test_forming_macd_accepts_only_verified_completed_prefix_after_sparse_gap(timeframe,seconds):
+    from datetime import datetime, timezone
+    state = {}
+    M.forming_macd(bar(100,timeframe=timeframe,line=.1),state,timeframe,False)
+    M.forming_macd(bar(100+seconds,timeframe=timeframe,line=.12),state,timeframe,False)
+    at=datetime.fromtimestamp(100+seconds,timezone.utc).isoformat()
+    samples={f'indicator.macd.{field}@{timeframe}':dict(observed_at=at,value=value)
+        for field,value in [('line',.12),('signal',.1)]}
+    trade=bar(100+seconds*3,timeframe='',price=10.1)
+    trade.source_values=samples
+    assert M.forming_macd(trade,state,timeframe,True)['kind']=='forming'
+    if timeframe == '1s':
+        trade.source_values={f'{key}:completed':value for key,value in samples.items()}
+        trade.source_values.update({key:dict(observed_at=trade.observed_at.isoformat(),
+            value=.2,sample_kind='forming') for key in samples})
+        assert M.forming_macd(trade,state,timeframe,True)['kind']=='forming'
+    trade.source_values={**samples,
+        f'indicator.macd.line@{timeframe}':dict(observed_at=at,value=.11)}
+    assert M.forming_macd(trade,state,timeframe,True)=={}
+
+
 def test_supported_bos_requires_supported_low_or_reclaimed_resistance():
     bos = dict(broken_pivot=pivot(10.5, 95, 99, 'resistance'))
     row = detector(100, pivot(9.9, 90, 94), bos['broken_pivot'])

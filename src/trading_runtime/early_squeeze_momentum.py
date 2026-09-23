@@ -77,7 +77,21 @@ def forming_macd(observation, state, timeframe, trade):
         if now > base.get('at', 0):
             state[key] = current
         return current
-    if (not trade or not 0 <= now-base.get('at', 0) < seconds+1e-6 or 'slow' not in base):
+    samples = getattr(observation, 'source_values', {}) or {}
+    suffix = ':completed' if timeframe == '1s' and (
+        samples.get('indicator.macd.line@1s', {}).get('sample_kind') == 'forming') else ''
+    line_sample = samples.get(f'indicator.macd.line@{timeframe}{suffix}', {})
+    signal_sample = samples.get(f'indicator.macd.signal@{timeframe}{suffix}', {})
+    source_at = E.stamp(line_sample.get('observed_at'))
+    completed_prefix = bool(source_at and source_at == E.stamp(signal_sample.get('observed_at'))
+        and source_at.timestamp() == base.get('at') and source_at <= observation.observed_at
+        and source_at.astimezone(H.NY).date() == observation.observed_at.astimezone(H.NY).date()
+        and line_sample.get('sample_kind') != 'forming'
+        and signal_sample.get('sample_kind') != 'forming'
+        and line_sample.get('value') == base.get('line')
+        and signal_sample.get('value') == base.get('signal'))
+    if (not trade or not (0 <= now-base.get('at', 0) < seconds+1e-6 or completed_prefix)
+            or 'slow' not in base):
         return {}
     line = 2/13*observation.price+11/13*(base['slow']+base['line'])-(2/27*observation.price+25/27*base['slow'])
     return dict(at=now, base_at=base['at'], line=line,
