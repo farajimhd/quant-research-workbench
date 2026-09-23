@@ -147,6 +147,32 @@ impl PriceEvidence {
     pub fn live_available_at_ns(&self) -> Option<u64> {
         self.live_available_at_ns
     }
+    pub fn require_live_macd(
+        &self,
+        macd: &crate::strategy350_macd::live::Evidence,
+        scope: &crate::strategy_dispatch::Scope,
+        input: &crate::strategy_dispatch::InputBoundary,
+    ) -> Result<()> {
+        if self.source != ContextSource::Live
+            || self.scope != macd.scope()
+            || self.event_key != *macd.event_key()
+            || self.event_hash.as_deref() != Some(macd.event_hash())
+            || self.live_available_at_ns != Some(macd.received_at_ns())
+            || self.live_run_id.as_deref() != Some(macd.run_id())
+            || scope.run_id != macd.run_id()
+            || scope.instrument != macd.scope().instrument
+            || input.event_id != macd.boundary_id()
+            || input.source_sequence != macd.boundary_sequence()
+            || input.event_time_ns != macd.outcome().event_time_ns
+            || input.evaluated_at_ns != macd.outcome().evaluated_at_ns
+            || input.available_at_ns < macd.received_at_ns()
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 live MACD or price event differs".into(),
+            ));
+        }
+        Ok(())
+    }
     /// Match a modeled historical replay event. This checks exact source
     /// identity and the pinned playback clock, never a live receipt delay.
     pub fn require_historical_identity(
@@ -397,9 +423,7 @@ impl State {
             source: self.source,
             config_hash: self.config_hash.clone(),
             event_key: event.key.clone(),
-            event_hash: (self.source == ContextSource::HistoricalRest)
-                .then(|| content_hash(event))
-                .transpose()?,
+            event_hash: Some(content_hash(event)?),
             event_time_ns: event.sip.ns,
             observed_available_at_ns: event.available_at_ns,
             live_available_at_ns: (self.source == ContextSource::Live)
@@ -887,6 +911,55 @@ mod tests {
             feature_hash: "feature".into(),
         };
         let gate_hash = gate.configuration_hash();
+        let macd_config = crate::strategy350_macd::Config {
+            execution_interval: ExecutionInterval::Events,
+            price_scale: 2,
+            source_algorithm_hash: "a".repeat(64),
+        };
+        let macd_state =
+            crate::strategy350_macd::State::new(market_scope, S, 3 * S, &macd_config).unwrap();
+        let macd_source = crate::strategy350_macd::exact_source::Source::new(
+            market_scope,
+            S,
+            3 * S,
+            2,
+            "a".repeat(64),
+        )
+        .unwrap();
+        let macd_boundary = crate::market_structure::scheduler::Boundary {
+            id: "completed-bar",
+            sequence: 1,
+            evaluated_at_ns: input.evaluated_at_ns,
+            kind: crate::market_structure::scheduler::Kind::Trade {
+                observation: &live_event,
+                eligible: true,
+            },
+        };
+        let macd_evidence = macd_state
+            .preview_live(&macd_source, &macd_boundary)
+            .unwrap();
+        evidence
+            .require_live_macd(&macd_evidence, &decision_scope, &input)
+            .unwrap();
+        let mut changed_trade = live_event.clone();
+        if let Payload::Trade { price, .. } = &mut changed_trade.payload {
+            price.atoms += 1;
+        }
+        let changed_boundary = crate::market_structure::scheduler::Boundary {
+            id: input.event_id.as_str(),
+            sequence: input.source_sequence,
+            evaluated_at_ns: input.evaluated_at_ns,
+            kind: crate::market_structure::scheduler::Kind::Trade {
+                observation: &changed_trade,
+                eligible: true,
+            },
+        };
+        let changed_macd = macd_state
+            .preview_live(&macd_source, &changed_boundary)
+            .unwrap();
+        assert!(evidence
+            .require_live_macd(&changed_macd, &decision_scope, &input)
+            .is_err());
         assert!(evidence
             .require_live_decision(
                 market_scope,
@@ -927,6 +1000,7 @@ mod tests {
                 expected_price_gate_hash: gate_hash,
                 maximum_price_age_ns: 200_000_000,
                 refinement: None,
+                macd: None,
                 other_evidence_hash: &"c".repeat(64),
             },
             |_| panic!("wrong scope cannot observe account state"),
@@ -943,6 +1017,7 @@ mod tests {
                 expected_price_gate_hash: gate_hash,
                 maximum_price_age_ns: 200_000_000,
                 refinement: None,
+                macd: Some(&macd_evidence),
                 other_evidence_hash: &"c".repeat(64),
             },
             |state| {
@@ -959,10 +1034,11 @@ mod tests {
         assert_eq!(
             decision.evidence_hash,
             content_hash(&(
-                "arte.strategy-350-market-decision.v2",
+                "arte.strategy-350-market-decision.v3",
                 "live-receipt",
                 evidence.fingerprint(),
                 None::<String>,
+                Some(macd_evidence.fingerprint()),
                 "c".repeat(64)
             ))
             .unwrap()
@@ -971,28 +1047,50 @@ mod tests {
         let rows = account.pending_batch().unwrap().records().to_vec();
         let committed = account.acknowledge(&rows).unwrap();
         assert_eq!(*account.committed_state(), 1);
+        let same_other_hash = "c".repeat(64);
         assert!(
             crate::strategy350_transaction::CommittedMarketDecision::from_readback(
                 &committed,
-                market_scope,
-                &evidence,
-                gate_hash,
-                200_000_000,
-                None,
-                &"d".repeat(64),
+                crate::strategy350_transaction::LiveReadback {
+                    market_scope,
+                    price: &evidence,
+                    expected_price_gate_hash: gate_hash,
+                    maximum_price_age_ns: 200_000_000,
+                    refinement: None,
+                    macd: Some(&macd_evidence),
+                    other_evidence_hash: &"d".repeat(64),
+                },
             )
             .is_err()
         );
         let authorized = crate::strategy350_transaction::CommittedMarketDecision::from_readback(
             &committed,
-            market_scope,
-            &evidence,
-            gate_hash,
-            200_000_000,
-            None,
-            &"c".repeat(64),
+            crate::strategy350_transaction::LiveReadback {
+                market_scope,
+                price: &evidence,
+                expected_price_gate_hash: gate_hash,
+                maximum_price_age_ns: 200_000_000,
+                refinement: None,
+                macd: Some(&macd_evidence),
+                other_evidence_hash: &same_other_hash,
+            },
         )
         .unwrap();
+        assert!(
+            crate::strategy350_transaction::CommittedMarketDecision::from_readback(
+                &committed,
+                crate::strategy350_transaction::LiveReadback {
+                    market_scope,
+                    price: &evidence,
+                    expected_price_gate_hash: gate_hash,
+                    maximum_price_age_ns: 200_000_000,
+                    refinement: None,
+                    macd: None,
+                    other_evidence_hash: &same_other_hash,
+                },
+            )
+            .is_err()
+        );
         assert_eq!(
             authorized
                 .require_at(input.evaluated_at_ns)
@@ -1046,6 +1144,7 @@ mod tests {
                 expected_price_gate_hash: gate_hash,
                 maximum_price_age_ns: 200_000_000,
                 refinement: None,
+                macd: None,
                 other_evidence_hash: &"e".repeat(64),
             },
             |_| Ok(()),
@@ -1065,6 +1164,7 @@ mod tests {
                 expected_price_gate_hash: gate_hash,
                 maximum_price_age_ns: 200_000_000,
                 refinement: Some(&refinement),
+                macd: None,
                 other_evidence_hash: &"e".repeat(64),
             },
             |_| Ok(()),

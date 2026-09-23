@@ -5,6 +5,7 @@ use crate::{
     event_order::Scope as MarketScope,
     market_structure::scheduler::playback::sources::HistoricalEventProof,
     strategy350_macd::historical::Evidence as HistoricalMacdEvidence,
+    strategy350_macd::live::Evidence as LiveMacdEvidence,
     strategy350_price_gate::PriceEvidence,
     strategy350_screen_join::{LiveSelectedBucket, RefinementPlan},
     strategy_dispatch::{Action, Decision, InputBoundary, Mode, Safety, StrategyKind},
@@ -24,6 +25,17 @@ pub struct MarketDecisionInput<'a> {
     pub expected_price_gate_hash: &'a str,
     pub maximum_price_age_ns: u64,
     pub refinement: Option<&'a LiveSelectedBucket>,
+    pub macd: Option<&'a LiveMacdEvidence>,
+    pub other_evidence_hash: &'a str,
+}
+
+pub struct LiveReadback<'a> {
+    pub market_scope: MarketScope,
+    pub price: &'a PriceEvidence,
+    pub expected_price_gate_hash: &'a str,
+    pub maximum_price_age_ns: u64,
+    pub refinement: Option<&'a LiveSelectedBucket>,
+    pub macd: Option<&'a LiveMacdEvidence>,
     pub other_evidence_hash: &'a str,
 }
 
@@ -183,15 +195,17 @@ fn historical_evidence_hash(
 fn live_evidence_hash(
     price: &PriceEvidence,
     refinement: Option<&LiveSelectedBucket>,
+    macd: Option<&LiveMacdEvidence>,
     other_evidence_hash: &str,
 ) -> Result<String> {
     content_hash(&(
-        "arte.strategy-350-market-decision.v2",
+        "arte.strategy-350-market-decision.v3",
         "live-receipt",
         price.fingerprint(),
         refinement
             .map(LiveSelectedBucket::identity_hash)
             .transpose()?,
+        macd.map(LiveMacdEvidence::fingerprint),
         other_evidence_hash,
     ))
 }
@@ -245,17 +259,21 @@ pub struct CommittedMarketDecision<'a> {
 }
 
 impl<'a> CommittedMarketDecision<'a> {
-    pub fn from_readback(
-        committed: &'a Committed,
-        market_scope: MarketScope,
-        price: &'a PriceEvidence,
-        expected_price_gate_hash: &str,
-        maximum_price_age_ns: u64,
-        refinement: Option<&LiveSelectedBucket>,
-        other_evidence_hash: &str,
-    ) -> Result<Self> {
+    pub fn from_readback(committed: &'a Committed, request: LiveReadback<'a>) -> Result<Self> {
+        let LiveReadback {
+            market_scope,
+            price,
+            expected_price_gate_hash,
+            maximum_price_age_ns,
+            refinement,
+            macd,
+            other_evidence_hash,
+        } = request;
         let decision = committed.decision();
-        let expected = live_evidence_hash(price, refinement, other_evidence_hash)?;
+        if let Some(macd) = macd {
+            price.require_live_macd(macd, &decision.scope, &decision.input)?;
+        }
+        let expected = live_evidence_hash(price, refinement, macd, other_evidence_hash)?;
         if decision.evidence_hash != expected {
             return Err(Error::Conflict(
                 "Strategy 350 committed market evidence differs".into(),
@@ -313,6 +331,7 @@ pub fn prepare_market_decision<S: Clone + Serialize>(
         expected_price_gate_hash,
         maximum_price_age_ns,
         refinement,
+        macd,
         other_evidence_hash,
     } = request;
     let scope = runtime.scope().clone();
@@ -329,7 +348,10 @@ pub fn prepare_market_decision<S: Clone + Serialize>(
         ));
     }
     price.require_live_identity(market_scope, &scope, &input, expected_price_gate_hash)?;
-    let evidence_hash = live_evidence_hash(price, refinement, other_evidence_hash)?;
+    if let Some(macd) = macd {
+        price.require_live_macd(macd, &scope, &input)?;
+    }
+    let evidence_hash = live_evidence_hash(price, refinement, macd, other_evidence_hash)?;
     runtime.prepare_observed(input.clone(), safety, evidence_hash, observe, |state| {
         let actions = calculate(state)?;
         if has_exposure(&actions) {

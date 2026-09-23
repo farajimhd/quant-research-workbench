@@ -105,7 +105,11 @@ value only for the exact consumed eligible trade boundary. The value binds the
 paired exact source, MACD configuration, complete observation and receipt,
 boundary identity, evaluation clock, and preview outputs. The market lane can
 expose it for the pending boundary, but account decisions and journal readback
-do not yet bind it. The former
+can now bind its exact event, receipt, scheduler boundary, and fingerprint.
+Omitting a recorded MACD value at readback or changing the trade content is
+rejected. It remains optional for non-exposure decisions, and the independent
+live exposure block remains in force because full feed continuity and all
+Strategy 350 operands are not ready. The former
 two-second live add fixture no longer claims authorization from price evidence
 alone. Wait and exit decisions remain possible; live exposure stays blocked.
 The four EMA states and sparse exact-bar buckets now have separate bounded,
