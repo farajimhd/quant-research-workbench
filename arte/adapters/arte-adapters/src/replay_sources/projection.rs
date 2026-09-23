@@ -15,6 +15,7 @@ use arte_core::{
 use serde::Serialize;
 use std::collections::BTreeMap;
 pub mod bar_link;
+pub mod bundle;
 pub mod continuity;
 
 /// A caller supplies decisions from its approved trade-condition authority. This

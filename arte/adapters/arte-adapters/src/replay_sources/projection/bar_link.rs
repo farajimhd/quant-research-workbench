@@ -9,6 +9,35 @@ use arte_core::{
     Error, Result,
 };
 
+pub(super) fn require_compact_bar_source(
+    projection: &Projection,
+    bars: &Bars,
+    coverage: &BarCoverage,
+    source_as_of_ns: u64,
+) -> Result<()> {
+    let request = bars.request();
+    let scope = projection.prepared.scope();
+    let instrument = request.instruments.first().copied();
+    if request.instruments.len() != 1
+        || instrument != Some(scope.instrument)
+        || request.provider != scope.provider
+        || request.session != scope.session
+        || projection.manifest.session != scope.session
+        || request.source_generation != projection.manifest.trade_certificate
+        || coverage.hash()? != bars.coverage_hash()
+        || coverage
+            .sources
+            .get(&scope.instrument)
+            .is_none_or(|source| source.certificate_hash != projection.manifest.trade_certificate)
+    {
+        return Err(Error::Conflict(
+            "compact bars and historical replay trade authority differ".into(),
+        ));
+    }
+    coverage.require(request, source_as_of_ns)?;
+    projection.prepared.require_interval(request.interval)
+}
+
 impl Projection {
     pub fn bind_compact_bars<'a>(
         &'a self,
@@ -17,35 +46,20 @@ impl Projection {
         run: &Pinned,
         source_as_of_ns: u64,
     ) -> Result<HistoricalSource<'a>> {
-        let request = bars.request();
-        let scope = self.prepared.scope();
-        let instrument = request.instruments.first().copied();
         if run.manifest().mode != Mode::Backtest
-            || request.instruments.len() != 1
-            || instrument != Some(scope.instrument)
-            || request.provider != scope.provider
-            || request.session != scope.session
-            || self.manifest.session != scope.session
             || self.catalog.authority_manifest_hash != self.manifest.hash()?
-            || request.source_generation != self.manifest.trade_certificate
-            || coverage.hash()? != bars.coverage_hash()
-            || coverage
-                .sources
-                .get(&scope.instrument)
-                .is_none_or(|source| source.certificate_hash != self.manifest.trade_certificate)
         {
             return Err(Error::Conflict(
                 "compact bars and historical replay trade authority differ".into(),
             ));
         }
-        coverage.require(request, source_as_of_ns)?;
-        self.prepared.require_interval(request.interval)?;
+        require_compact_bar_source(self, bars, coverage, source_as_of_ns)?;
         self.catalog.bind_historical(run, &self.prepared)
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::replay_sources::projection::{Manifest as ProjectionManifest, Policy};
     use arte_core::{
@@ -63,18 +77,24 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     fn fixture() -> (Projection, Bars, BarCoverage, Pinned) {
+        fixture_for(10, "a")
+    }
+    pub(crate) fn fixture_for(
+        instrument: u64,
+        trade_certificate: &str,
+    ) -> (Projection, Bars, BarCoverage, Pinned) {
         let interval = Interval {
             start: 1_000_000_000,
             end: 1_300_000_000,
         };
         let scope = Scope {
             provider: 1,
-            instrument: 10,
+            instrument,
             session: 20260922,
         };
         let projection_manifest = ProjectionManifest {
             version: 1,
-            trade_certificate: "a".repeat(64),
+            trade_certificate: trade_certificate.repeat(64),
             quote_certificate: "b".repeat(64),
             policy: Policy { delay_ns: 2 },
             eligibility_policy: "c".repeat(64),

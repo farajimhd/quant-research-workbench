@@ -127,8 +127,9 @@ events, including intervals the strategy screen does not select.
 Before a plan can index historical events, the replay projection must prove
 that its verified compact bars use the same certified trade revision and
 session interval as the run-pinned event tape. The one-ticker source link now
-performs that check. Multi-ticker runs require a combined source catalog with
-an explicit projection-manifest identity for each shard.
+performs that check. A combined catalog pins a projection-manifest identity
+for every ticker/session under one run source hash. Selected event positions
+must be bound through that catalog before strategy refinement can use them.
 The first shared Boolean product readback now records explicit evaluation
 cadence, known/unknown state, value, source-bar identity and complete bucket
 coverage. Strategy 350 intersects the verified signal with the bar mask. It
