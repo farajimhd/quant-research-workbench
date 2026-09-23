@@ -96,7 +96,11 @@ sorts and pins each ticker/session projection manifest under one run source
 hash. Each shard's compact bars still need the same trade certificate and
 knowledge cutoff. An offline two-shard test rejects duplicate scopes, changed
 projection authority, swapped bar coverage, and a single-shard run pin. The
-selected event-position index and shared multi-ticker execution loop remain
+bundle now indexes selected trade and quote positions only after binding every
+screened shard to the combined run catalog and its verified compact bars.
+It rejects a missing shard or excess selected-position budget. This index
+does not advance the market/V7 tape. Parallel indexing, non-empty selection
+integration coverage, and the shared multi-ticker execution loop remain
 unwired.
 This is replay routing, not a substitute for causal event, quote, level or
 account evidence. After a complete certified source load, the replay-source

@@ -4,8 +4,11 @@ use super::{bar_link::require_compact_bar_source, Projection};
 use arte_core::{
     bar_catalogue::{Complete as Bars, Coverage as BarCoverage},
     content_hash,
+    event_order::Scope,
+    events::EventKind,
     market_structure::scheduler::playback::sources::{Catalog, HistoricalSource, Shard},
     run_manifest::{Clock, Pinned},
+    strategy350_screen_join::RefinementPlan,
     strategy_dispatch::Mode,
     Error, Result,
 };
@@ -29,6 +32,42 @@ pub struct Bundle<'a> {
     projections: Vec<&'a Projection>,
     manifest: Manifest,
     catalog: Catalog,
+}
+/// Sparse strategy lookup into the complete, run-pinned historical tape.
+/// These positions must never be used to narrow market or V7 replay.
+#[derive(Clone, Serialize)]
+pub struct SelectedIndex {
+    pub scope: ScopeKey,
+    pub plan_hash: String,
+    pub prepared_hash: String,
+    pub trade_positions: Vec<(usize, usize)>,
+    pub quote_positions: Vec<(usize, usize)>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ScopeKey {
+    pub provider: u16,
+    pub instrument: u64,
+    pub session: u32,
+}
+impl From<Scope> for ScopeKey {
+    fn from(value: Scope) -> Self {
+        Self {
+            provider: value.provider,
+            instrument: value.instrument,
+            session: value.session,
+        }
+    }
+}
+impl SelectedIndex {
+    pub fn hash(&self) -> Result<String> {
+        content_hash(&("arte.historical-selected-index.v1", self))
+    }
+}
+pub struct SelectedInput<'a> {
+    pub bars: &'a Bars,
+    pub coverage: &'a BarCoverage,
+    pub plan: &'a RefinementPlan,
+    pub source_as_of_ns: u64,
 }
 fn key(provider: u16, instrument: u64, session: u32) -> (u16, u64, u32) {
     (provider, instrument, session)
@@ -63,6 +102,71 @@ impl Manifest {
     }
 }
 impl<'a> Bundle<'a> {
+    /// Require exactly one screened product per certified shard. Each product
+    /// is authority-linked before its selected trade and quote positions are
+    /// indexed. The full prepared tape remains unchanged.
+    pub fn index_selected(
+        &self,
+        mut inputs: Vec<SelectedInput<'_>>,
+        run: &Pinned,
+        maximum_per_shard: usize,
+        maximum_total: usize,
+    ) -> Result<Vec<SelectedIndex>> {
+        if inputs.len() != self.projections.len()
+            || maximum_per_shard == 0
+            || maximum_per_shard > 10_000_000
+            || maximum_total == 0
+            || maximum_total > 100_000_000
+        {
+            return Err(Error::Capacity("historical selected index bounds".into()));
+        }
+        inputs.sort_by_key(|input| {
+            let scope = input.plan.scope();
+            key(scope.provider, scope.instrument, scope.session)
+        });
+        let mut result = Vec::with_capacity(inputs.len());
+        let mut total = 0usize;
+        for (entry, input) in self.manifest.entries.iter().zip(inputs) {
+            let scope = input.plan.scope();
+            if key(entry.provider, entry.instrument, entry.session)
+                != key(scope.provider, scope.instrument, scope.session)
+            {
+                return Err(Error::Conflict(
+                    "historical selected index shard set".into(),
+                ));
+            }
+            let source =
+                self.bind_compact_bars(input.bars, input.coverage, run, input.source_as_of_ns)?;
+            let prepared = source.prepared();
+            let positions = input
+                .plan
+                .selected_prepared_positions(prepared, maximum_per_shard)?;
+            total = total
+                .checked_add(positions.len())
+                .filter(|count| *count <= maximum_total)
+                .ok_or_else(|| Error::Capacity("historical selected index run budget".into()))?;
+            let mut trade_positions = Vec::new();
+            let mut quote_positions = Vec::new();
+            for position in positions {
+                match prepared.frames()[position.0].inputs[position.1]
+                    .observation
+                    .key
+                    .kind
+                {
+                    EventKind::Trade => trade_positions.push(position),
+                    EventKind::Quote => quote_positions.push(position),
+                }
+            }
+            result.push(SelectedIndex {
+                scope: scope.into(),
+                plan_hash: input.plan.evidence_hash().into(),
+                prepared_hash: prepared.hash().into(),
+                trade_positions,
+                quote_positions,
+            });
+        }
+        Ok(result)
+    }
     pub fn new(mut projections: Vec<&'a Projection>) -> Result<Self> {
         if projections.is_empty() || projections.len() > 100_000 {
             return Err(Error::Capacity("historical projection bundle size".into()));
@@ -223,5 +327,14 @@ mod tests {
         let (mut changed, _, _, _) = fixture_for(30, "8");
         changed.manifest.trade_certificate = "0".repeat(64);
         assert!(Bundle::new(vec![&first, &changed]).is_err());
+    }
+
+    #[test]
+    fn selected_index_rejects_missing_screened_shards_and_unbounded_limits() {
+        let (projection, _, _, run) = fixture_for(10, "a");
+        let bundle = Bundle::new(vec![&projection]).unwrap();
+        assert!(bundle.index_selected(vec![], &run, 1, 1).is_err());
+        assert!(bundle.index_selected(vec![], &run, 0, 1).is_err());
+        assert!(bundle.index_selected(vec![], &run, 1, 0).is_err());
     }
 }

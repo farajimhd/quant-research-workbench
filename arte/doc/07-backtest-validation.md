@@ -130,6 +130,14 @@ session interval as the run-pinned event tape. The one-ticker source link now
 performs that check. A combined catalog pins a projection-manifest identity
 for every ticker/session under one run source hash. Selected event positions
 must be bound through that catalog before strategy refinement can use them.
+The bundle now has a bounded selected-position index. It requires one screened
+product for every certified shard. Each bar product is checked against the
+trade certificate, coverage, cutoff and combined run source hash before its
+sparse plan is applied to the complete prepared tape. Trade and quote positions
+are kept separately in tape order. The index is an acceleration hint only;
+market, V7 and account replay must still advance over every prepared input.
+The current index pass is serial. Parallel index construction and a shared
+multi-ticker execution loop remain to be implemented and measured.
 The first shared Boolean product readback now records explicit evaluation
 cadence, known/unknown state, value, source-bar identity and complete bucket
 coverage. Strategy 350 intersects the verified signal with the bar mask. It
