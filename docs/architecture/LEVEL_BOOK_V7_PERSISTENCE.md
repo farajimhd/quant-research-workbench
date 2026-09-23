@@ -60,13 +60,23 @@ and write operational results under
 `<workstation-runtime>/level-book-v7/arte-migration-v1`. `--workers` is bounded
 to 1..64; the default is at most 16. Inserts are row- and byte-bounded.
 
-One ticker is the durable work unit. Workers read its immutable daily gzip books,
-coalesce unchanged consecutive states, insert compact intervals, persist the
-terminal builder checkpoint and publish coverage last. Insert tokens and stable
-keys make retries deterministic. Completed terminal checkpoints with the same
-source-plan hash are skipped. Ctrl+C stops new admission, drains active tickers,
-writes `result.json` and exits 130. Redirected output is line-oriented JSON;
-interactive output uses a stable Rich status table.
+One ticker is the durable work unit. Spawned worker processes read its immutable
+daily gzip books, coalesce unchanged consecutive states, insert compact
+intervals, persist the terminal builder checkpoint and publish coverage last.
+Unchanged normalized states are compared before hashing so repeated full-book
+checkpoints do not pay redundant JSON serialization and SHA-256 work. The
+default process count is the maximum admitted by current CPU and free-RAM
+budgets; `--workers` can lower it. `--insert-workers` separately bounds
+ClickHouse publishers to four by default so CPU parallelism does not create an
+unbounded insert/part load.
+
+The runtime owns an exclusive `controller.lock`, preventing overlapping
+migration controllers. Insert tokens and stable keys make retries deterministic.
+Completed terminal checkpoints with the same source-plan hash are skipped.
+Ctrl+C stops new admission, drains active tickers, writes `result.json` and exits
+130. The result includes the admitted worker budget and cumulative read/verify,
+compaction, receipt and insert worker-seconds. Redirected output is line-oriented
+JSON; interactive output uses a stable Rich status table.
 
 ## Maintenance
 

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager, nullcontext
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import signal
@@ -25,7 +27,7 @@ from research.level_book.v7.campaign_store import read, verified_book
 from research.level_book.v7.clickhouse_persistence import (
     CHECKPOINT_TABLE, COVERAGE_TABLE, DATABASE, DDL, LEVELS_TABLE, POLICY,
     EXPECTED_COLUMNS, PERSISTENCE_VERSION,
-    canonical_json, compact_checkpoints, datetime64_ns, encode_rows, epoch_ns,
+    canonical_json, compact_checkpoints, datetime64_ns, epoch_ns,
     source_plan_digest,
 )
 from research.mlops.clickhouse import (
@@ -38,6 +40,78 @@ from src.runtime_paths import WORKSTATION_RUNTIME_ROOT
 DEFAULT_SOURCE = WORKSTATION_RUNTIME_ROOT / "level-book-v7" / "all-tradable-20250101-20260912-mle-v1"
 DEFAULT_RUNTIME = WORKSTATION_RUNTIME_ROOT / "level-book-v7" / "arte-migration-v1"
 STOP = threading.Event()
+GIB = 1024 ** 3
+INSERT_GATE = None
+
+
+@contextmanager
+def exclusive_controller(path: Path):
+    """Hold one cross-process controller lock for this migration runtime."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as stream:
+        stream.seek(0); stream.write(b"0"); stream.flush(); stream.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise ValueError(
+                f"Another V7 arte migration controller is active for {path.parent}"
+            ) from exc
+        yield
+
+
+def worker_budget(requested: int | None) -> dict[str, int | float]:
+    """Use real CPU parallelism while retaining RAM for ClickHouse and the OS."""
+    cpus = os.cpu_count() or 4
+    available = available_memory_bytes()
+    cpu_slots = max(1, cpus - max(2, (cpus + 7) // 8))
+    # A worker streams gzip checkpoints, but retains compact intervals and the
+    # terminal full book. Budget 1 GiB per process and reserve 25% of free RAM.
+    memory_slots = max(1, int(available * .75 // GIB))
+    maximum = min(60 if os.name == "nt" else 64, cpu_slots, memory_slots)
+    chosen = maximum if requested is None else requested
+    if not 1 <= chosen <= maximum:
+        raise ValueError(
+            f"Requested {chosen} workers; current CPU/RAM budget permits 1..{maximum}"
+        )
+    return {
+        "workers": chosen,
+        "maximum_workers": maximum,
+        "logical_cpus": cpus,
+        "available_gib": round(available / GIB, 2),
+    }
+
+
+def available_memory_bytes() -> int:
+    if os.name == "nt":
+        import ctypes
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [
+                ("length", ctypes.c_ulong), ("memory_load", ctypes.c_ulong),
+                ("total_physical", ctypes.c_ulonglong), ("available_physical", ctypes.c_ulonglong),
+                ("total_page_file", ctypes.c_ulonglong), ("available_page_file", ctypes.c_ulonglong),
+                ("total_virtual", ctypes.c_ulonglong), ("available_virtual", ctypes.c_ulonglong),
+                ("available_extended_virtual", ctypes.c_ulonglong),
+            ]
+        status = MemoryStatus(); status.length = ctypes.sizeof(status)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            raise OSError("GlobalMemoryStatusEx failed")
+        return int(status.available_physical)
+    page_size = os.sysconf("SC_PAGE_SIZE")
+    available_pages = os.sysconf("SC_AVPHYS_PAGES")
+    return int(page_size * available_pages)
+
+
+def initialize_worker(insert_gate) -> None:
+    # The controller alone interprets Ctrl+C and drains already-admitted tickers.
+    global INSERT_GATE
+    INSERT_GATE = insert_gate
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    load_env_files(discover_clickhouse_env_files(), verbose=False)
 
 
 def client(*, readonly: bool = False) -> ClickHouseHttpClient:
@@ -97,17 +171,17 @@ def preflight(c: ClickHouseHttpClient) -> None:
 
 
 def insert(c: ClickHouseHttpClient, table: str, rows: list[dict], token: str, *, batch_rows: int, batch_bytes: int) -> None:
-    pending: list[dict] = []
+    pending: list[str] = []
     size = 0
     part = 0
     for row in rows:
         encoded = canonical_json(row)
         if pending and (len(pending) >= batch_rows or size + len(encoded) > batch_bytes):
-            c.execute(f"INSERT INTO {table} SETTINGS insert_deduplication_token='{token}-{part}' FORMAT JSONEachRow\n" + encode_rows(pending))
+            c.execute(f"INSERT INTO {table} SETTINGS insert_deduplication_token='{token}-{part}' FORMAT JSONEachRow\n" + "\n".join(pending))
             pending = []; size = 0; part += 1
-        pending.append(row); size += len(encoded)
+        pending.append(encoded); size += len(encoded)
     if pending:
-        c.execute(f"INSERT INTO {table} SETTINGS insert_deduplication_token='{token}-{part}' FORMAT JSONEachRow\n" + encode_rows(pending))
+        c.execute(f"INSERT INTO {table} SETTINGS insert_deduplication_token='{token}-{part}' FORMAT JSONEachRow\n" + "\n".join(pending))
 
 
 def ticker_directories(source: Path) -> list[Path]:
@@ -125,10 +199,21 @@ def migrate_ticker(path: Path, plan_hash: str, batch_rows: int, batch_bytes: int
     ready = read(path / "ready.json") if (path / "ready.json").is_file() else {}
     ticker = str(ready.get("ticker") or source_plan["days"][0]["ticker"])
     terminal = None
+    read_seconds = 0.0
+    compact_started = time.monotonic()
     if books:
-        intervals, coverage, terminal = compact_checkpoints((verified_book(book) for book in books), plan_hash)
+        def verified_books():
+            nonlocal read_seconds
+            for book in books:
+                started = time.monotonic()
+                value = verified_book(book)
+                read_seconds += time.monotonic() - started
+                yield value
+        intervals, coverage, terminal = compact_checkpoints(verified_books(), plan_hash)
     else:
         intervals, coverage = [], []
+    compact_total_seconds = time.monotonic() - compact_started
+    receipts_started = time.monotonic()
     coverage_by_day = {row["session_date"]: row for row in coverage}
     level_count = 0
     interval_count = 0
@@ -155,45 +240,55 @@ def migrate_ticker(path: Path, plan_hash: str, batch_rows: int, batch_bytes: int
             "source_plan_hash": plan_hash, "publication_revision": stamp,
         })
     coverage.sort(key=lambda row: row["session_date"])
+    receipt_seconds = time.monotonic() - receipts_started
     if not coverage:
         return {"state": "skipped", "ticker": ticker, "reason": "no_completed_receipts"}
-    c = client()
-    token = f"{PERSISTENCE_VERSION}-{plan_hash[:12]}-{ticker.encode().hex()}"
-    insert(c, LEVELS_TABLE, intervals, token + "-levels", batch_rows=batch_rows, batch_bytes=batch_bytes)
-    now_ns = time.time_ns()
-    published_at = datetime64_ns(now_ns)
-    for row in coverage:
-        row["published_at"] = published_at
-    checkpoint_bytes = 0
-    if terminal is not None:
-        checkpoint = {
-            "ticker": ticker,
-            "session_date": terminal["session"],
-            "available_at": datetime64_ns(epoch_ns(terminal["available_at"])),
-            "checkpoint_hash": terminal["checkpoint_hash"],
-            "parent_checkpoint_hash": terminal.get("prior_checkpoint_hash") or "",
-            "source_input_hash": terminal["input_hash"],
-            "source_plan_hash": plan_hash,
-            "checkpoint_json": canonical_json(terminal),
-            "publication_revision": epoch_ns(terminal["available_at"]),
-            "row_revision": epoch_ns(terminal["available_at"]),
-            "published_at": published_at,
-        }
-        checkpoint_bytes = len(checkpoint["checkpoint_json"])
-        insert(c, CHECKPOINT_TABLE, [checkpoint], token + "-checkpoint", batch_rows=1, batch_bytes=batch_bytes)
-    # Coverage is the publication fence and is deliberately acknowledged last.
-    insert(c, COVERAGE_TABLE, coverage, token + "-coverage", batch_rows=batch_rows, batch_bytes=batch_bytes)
-    return {"state": "completed", "ticker": ticker, "sessions": len(coverage), "intervals": len(intervals), "checkpoint_bytes": checkpoint_bytes}
+    insert_started = time.monotonic()
+    with INSERT_GATE if INSERT_GATE is not None else nullcontext():
+        c = client()
+        token = f"{PERSISTENCE_VERSION}-{plan_hash[:12]}-{ticker.encode().hex()}"
+        insert(c, LEVELS_TABLE, intervals, token + "-levels", batch_rows=batch_rows, batch_bytes=batch_bytes)
+        now_ns = time.time_ns()
+        published_at = datetime64_ns(now_ns)
+        for row in coverage:
+            row["published_at"] = published_at
+        checkpoint_bytes = 0
+        if terminal is not None:
+            checkpoint = {
+                "ticker": ticker,
+                "session_date": terminal["session"],
+                "available_at": datetime64_ns(epoch_ns(terminal["available_at"])),
+                "checkpoint_hash": terminal["checkpoint_hash"],
+                "parent_checkpoint_hash": terminal.get("prior_checkpoint_hash") or "",
+                "source_input_hash": terminal["input_hash"],
+                "source_plan_hash": plan_hash,
+                "checkpoint_json": canonical_json(terminal),
+                "publication_revision": epoch_ns(terminal["available_at"]),
+                "row_revision": epoch_ns(terminal["available_at"]),
+                "published_at": published_at,
+            }
+            checkpoint_bytes = len(checkpoint["checkpoint_json"])
+            insert(c, CHECKPOINT_TABLE, [checkpoint], token + "-checkpoint", batch_rows=1, batch_bytes=batch_bytes)
+        # Coverage is the publication fence and is deliberately acknowledged last.
+        insert(c, COVERAGE_TABLE, coverage, token + "-coverage", batch_rows=batch_rows, batch_bytes=batch_bytes)
+    return {"state": "completed", "ticker": ticker, "sessions": len(coverage), "intervals": len(intervals),
+        "checkpoint_bytes": checkpoint_bytes, "timings": {
+            "read_verify_seconds": read_seconds,
+            "compact_seconds": max(0.0, compact_total_seconds - read_seconds),
+            "receipt_seconds": receipt_seconds,
+            "insert_seconds": time.monotonic() - insert_started,
+        }}
 
 
-def render(counts: dict[str, int], total: int, active: dict[str, str], started: float) -> Table:
+def render(counts: dict[str, int], total: int, active: dict[str, str], started: float, budget: dict) -> Table:
     table = Table(title="V7 → arte compact persistence", expand=True)
     table.add_column("State"); table.add_column("Count", justify="right")
     for state in ("active", "queued", "completed", "skipped", "failed"):
         table.add_row(state, str(counts.get(state, 0)))
     elapsed = max(time.monotonic() - started, 0.001)
     done = counts.get("completed", 0) + counts.get("skipped", 0) + counts.get("failed", 0)
-    table.caption = f"durable {done}/{total} tickers · {done/elapsed*60:.1f}/min · Ctrl+C stops admission and drains active tickers"
+    table.caption = (f"durable {done}/{total} tickers · {done/elapsed*60:.1f}/min · "
+        f"{budget['workers']} processes · Ctrl+C stops admission and drains active tickers")
     for slot, ticker in sorted(active.items()):
         table.add_row(f"worker {slot}", ticker)
     return table
@@ -206,6 +301,15 @@ def run(args: argparse.Namespace) -> int:
     if args.runtime.resolve() == args.source.resolve() or args.runtime.is_relative_to(REPO):
         raise ValueError("Migration runtime must be separate from source and outside the repository")
     args.runtime.mkdir(parents=True, exist_ok=True)
+    with exclusive_controller(args.runtime / "controller.lock"):
+        return run_locked(args)
+
+
+def run_locked(args: argparse.Namespace) -> int:
+    budget = worker_budget(args.workers)
+    if not 1 <= args.insert_workers <= budget["workers"]:
+        raise ValueError(f"insert-workers must be 1..{budget['workers']}")
+    budget["insert_workers"] = args.insert_workers
     plan_hash = source_plan_digest(args.source / "plan.json")
     paths = ticker_directories(args.source)
     c = client()
@@ -221,17 +325,21 @@ def run(args: argparse.Namespace) -> int:
     counts = {"queued": len(pending), "completed": len(paths) - len(pending), "active": 0, "skipped": 0, "failed": 0}
     active: dict[str, str] = {}
     failures: list[dict] = []
+    timing_sums = {name: 0.0 for name in ("read_verify_seconds", "compact_seconds", "receipt_seconds", "insert_seconds")}
     started = time.monotonic()
     signal.signal(signal.SIGINT, lambda *_: STOP.set())
     interactive = sys.stdout.isatty()
-    live = Live(render(counts, len(paths), active, started), console=Console(), refresh_per_second=2, transient=False) if interactive else None
+    live = Live(render(counts, len(paths), active, started, budget), console=Console(), refresh_per_second=2, transient=False) if interactive else None
     if live: live.start()
     try:
-        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        process_context = multiprocessing.get_context("spawn")
+        insert_gate = process_context.BoundedSemaphore(args.insert_workers)
+        with ProcessPoolExecutor(max_workers=budget["workers"], mp_context=process_context,
+                initializer=initialize_worker, initargs=(insert_gate,)) as pool:
             futures = {}
             iterator = iter(pending)
             def admit() -> None:
-                while not STOP.is_set() and len(futures) < args.workers:
+                while not STOP.is_set() and len(futures) < budget["workers"]:
                     try: path = next(iterator)
                     except StopIteration: return
                     future = pool.submit(migrate_ticker, path, plan_hash, args.batch_rows, args.batch_bytes)
@@ -243,14 +351,16 @@ def run(args: argparse.Namespace) -> int:
                 path = futures.pop(done); active.pop(path.name, None); counts["active"] -= 1
                 try:
                     result = done.result(); state = result["state"]; counts[state] = counts.get(state, 0) + 1
+                    for name, value in result.get("timings", {}).items():
+                        timing_sums[name] += value
                     if not interactive: print(json.dumps(result, sort_keys=True), flush=True)
                 except Exception as exc:
                     counts["failed"] += 1; failures.append({"path": str(path), "error": str(exc)})
                     if not interactive: print(json.dumps(failures[-1], sort_keys=True), file=sys.stderr, flush=True)
                 admit()
-                if live: live.update(render(counts, len(paths), active, started))
+                if live: live.update(render(counts, len(paths), active, started, budget))
     finally:
-        if live: live.update(render(counts, len(paths), active, started)); live.stop()
+        if live: live.update(render(counts, len(paths), active, started, budget)); live.stop()
     expected = {}
     for path in paths:
         if (path / "ready.json").is_file():
@@ -267,6 +377,7 @@ def run(args: argparse.Namespace) -> int:
     failed = bool(failures or mismatches or unexpected or misplaced)
     result = {"state": "interrupted" if STOP.is_set() else "failed" if failed else "complete", "source_plan_hash": plan_hash,
         "persistence_version": PERSISTENCE_VERSION, "counts": counts, "failures": failures, "audit": audit,
+        "worker_budget": budget, "stage_worker_seconds": timing_sums,
         "elapsed_seconds": time.monotonic() - started}
     (args.runtime / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return 130 if STOP.is_set() else 2 if failed else 0
@@ -277,11 +388,15 @@ def parse() -> argparse.Namespace:
     parser.add_argument("command", choices=("preflight", "run"))
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME)
-    parser.add_argument("--workers", type=int, default=min(16, os.cpu_count() or 4))
+    parser.add_argument("--workers", type=int, default=None,
+        help="processes (default: fastest current CPU/RAM-safe budget)")
+    parser.add_argument("--insert-workers", type=int, default=4,
+        help="maximum concurrent ClickHouse publishers (default: 4)")
     parser.add_argument("--batch-rows", type=int, default=5000)
     parser.add_argument("--batch-bytes", type=int, default=16 * 1024**2)
     args = parser.parse_args()
-    if not 1 <= args.workers <= 64 or args.batch_rows < 1 or args.batch_bytes < 1024:
+    if ((args.workers is not None and not 1 <= args.workers <= 64) or
+            not 1 <= args.insert_workers <= 16 or args.batch_rows < 1 or args.batch_bytes < 1024):
         parser.error("workers must be 1..64 and batches must be positive and bounded")
     return args
 

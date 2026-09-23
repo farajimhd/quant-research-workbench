@@ -216,7 +216,7 @@ def compact_checkpoints(checkpoints: Iterable[dict[str, Any]], source_plan_hash:
         if stamp <= previous_ns:
             raise ValueError("V7 checkpoints must be strictly ordered by availability")
         previous_ns = stamp
-        current: dict[str, tuple[dict[str, Any], str]] = {}
+        current: dict[str, dict[str, Any]] = {}
         for level in book.get("levels") or ():
             if not level.get("qualified", True):
                 continue
@@ -224,15 +224,19 @@ def compact_checkpoints(checkpoints: Iterable[dict[str, Any]], source_plan_hash:
             level_id = projection["level_id"]
             if level_id in current:
                 raise ValueError(f"Duplicate V7 level identity {level_id}")
-            current[level_id] = (projection, projection_hash(projection))
+            current[level_id] = projection
         for level_id in sorted(set(opened) - set(current)):
             intervals.append(interval_row(ticker, opened.pop(level_id), stamp))
-        for level_id, (projection, state_hash) in sorted(current.items()):
+        for level_id, projection in sorted(current.items()):
             prior = opened.get(level_id)
-            if prior is not None and prior.state_hash == state_hash:
+            # Comparing the already-normalized projection avoids serializing and
+            # hashing every unchanged level in every daily full-book checkpoint.
+            # The hash is needed only when a new interval is actually opened.
+            if prior is not None and prior.projection == projection:
                 continue
             if prior is not None:
                 intervals.append(interval_row(ticker, prior, stamp))
+            state_hash = projection_hash(projection)
             opened[level_id] = OpenInterval(
                 projection=projection,
                 state_hash=state_hash,
