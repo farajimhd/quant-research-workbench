@@ -179,7 +179,6 @@ from src.backend.qmd_gateway_client import (
     qmd_historical_scanner_snapshot,
     qmd_live_market_state,
     qmd_market_signals,
-    qmd_materialize_indicator_warmup,
     qmd_service_status,
     qmd_status,
     qmd_websocket_url,
@@ -5312,53 +5311,13 @@ async def trading_historical_preflight(payload: HistoricalPreflightRequest) -> d
 
 @app.post("/api/trading/backtest/indicator-warmup")
 async def trading_backtest_indicator_warmup(payload: IndicatorWarmupSubmit) -> dict[str, Any]:
-    session_start = datetime.combine(
-        payload.session_date,
-        datetime.min.time().replace(hour=4),
-        tzinfo=ZoneInfo("America/New_York"),
-    ).astimezone(UTC)
-    requested = [payload.ticker, *payload.tickers]
-    tickers: list[str] = []
-    for value in requested:
-        ticker = str(value or "").strip().upper()
-        if not ticker:
-            continue
-        if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
-            raise HTTPException(status_code=400, detail=f"Invalid Backtest ticker: {value}")
-        if ticker not in tickers:
-            tickers.append(ticker)
-    if not tickers:
-        raise HTTPException(status_code=400, detail="At least one Backtest ticker is required")
-    if len(tickers) > 100:
-        raise HTTPException(status_code=400, detail="Backtest supports at most 100 tickers")
-
-    semaphore = asyncio.Semaphore(4)
-
-    async def materialize(ticker: str) -> dict[str, Any]:
-        async with semaphore:
-            return await asyncio.to_thread(
-                qmd_materialize_indicator_warmup,
-                ticker=ticker,
-                session_start=session_start.isoformat(),
-                timeframe=payload.timeframe,
-                required_bars=payload.required_bars,
-            )
-
-    try:
-        results = await asyncio.gather(*(materialize(ticker) for ticker in tickers))
-    except (RuntimeError, ValueError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    if not payload.tickers:
-        return results[0]
-    ready_count = sum(result.get("status") == "ready" for result in results)
-    return {
-        "status": "ready" if ready_count == len(results) else "insufficient_history",
-        "ticker_count": len(results),
-        "ready_count": ready_count,
-        "required_bars": payload.required_bars,
-        "tickers": tickers,
-        "items": results,
-    }
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "Backtest is read-only and cannot materialize indicators. "
+            "Build and certify arte market-day products before preflight."
+        ),
+    )
 
 
 def _trading_historical_preflight_payload(
@@ -5539,6 +5498,8 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             end_time=_replay_clock_time(payload.end_time),
             initial_cash=payload.initial_cash,
             configuration_revision=configuration_revision,
+            execution_interval=str(preflight.get("execution_interval") or "events"),
+            market_data_plan=dict(preflight.get("market_data_plan") or {}),
             mode=RunMode.BACKTEST,
             simulation_profile=payload.simulation_profile,
             new_order_activation_delay_ms=payload.new_order_activation_delay_ms,

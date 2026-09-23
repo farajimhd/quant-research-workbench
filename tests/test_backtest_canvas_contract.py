@@ -35,31 +35,17 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
             controller.snapshot.assert_not_called()
             self.assertEqual(await trading_backtest_run("run-1"), controller.snapshot.return_value)
 
-    async def test_indicator_warmup_accepts_and_reports_multiple_tickers(self) -> None:
+    async def test_indicator_warmup_is_forbidden_for_read_only_backtest(self) -> None:
         request = IndicatorWarmupSubmit(
             session_date=date(2026, 7, 28),
             tickers=[" aapl ", "MSFT", "AAPL"],
         )
 
-        def warmup(*, ticker: str, **_: object) -> dict[str, object]:
-            return {
-                "bars": [{"bar_start": "2026-07-28T08:00:00Z", "close": 1.0}],
-                "cache_hit": False,
-                "fetched_events": 10,
-                "fetched_ordinal_ranges": 1,
-                "required_bars": 200,
-                "status": "ready" if ticker == "AAPL" else "insufficient_history",
-                "ticker": ticker,
-            }
+        with self.assertRaises(HTTPException) as raised:
+            await trading_backtest_indicator_warmup(request)
 
-        with patch("src.backend.app.qmd_materialize_indicator_warmup", side_effect=warmup):
-            payload = await trading_backtest_indicator_warmup(request)
-
-        self.assertEqual(payload["tickers"], ["AAPL", "MSFT"])
-        self.assertEqual(payload["ticker_count"], 2)
-        self.assertEqual(payload["ready_count"], 1)
-        self.assertEqual(payload["status"], "insufficient_history")
-        self.assertEqual([item["ticker"] for item in payload["items"]], ["AAPL", "MSFT"])
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("read-only", raised.exception.detail)
 
     def test_symbol_scoped_chart_activity_uses_consequential_run_evidence(self) -> None:
         controller = MagicMock()

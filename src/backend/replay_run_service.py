@@ -67,6 +67,7 @@ from src.backend.trading_runtime_service import (
     historical_gateway_base_url,
     historical_gateway_snapshot,
     historical_preflight,
+    historical_window_preview,
     strategy_activity_event_type,
 )
 from src.backend.trading_configuration_service import (
@@ -415,6 +416,8 @@ class ReplayRunDefinition:
     tickers: tuple[str, ...] = ()
     configuration_revision: dict[str, Any] = field(default_factory=dict)
     execution_mode: str = "strategy"
+    execution_interval: str = "events"
+    market_data_plan: dict[str, Any] = field(default_factory=dict)
     mode: RunMode = RunMode.REPLAY
     final_session_date: date | None = None
     debug_fixture: HistoricalDebugFixture | None = None
@@ -437,6 +440,15 @@ class ReplayRunDefinition:
     )
 
     def __post_init__(self) -> None:
+        from src.backend.backtest_market_data import ExecutionInterval
+        resolved_interval = ExecutionInterval.parse(self.execution_interval)
+        object.__setattr__(self, "execution_interval", resolved_interval.label)
+        if self.mode == RunMode.BACKTEST and resolved_interval.kind == "fixed":
+            plan_interval = str(self.market_data_plan.get("execution_interval", {}).get("milliseconds") or "")
+            if not self.market_data_plan.get("token"):
+                raise ValueError("Fixed-interval Backtest requires a certified read-only market-data plan")
+            if plan_interval != str(resolved_interval.milliseconds):
+                raise ValueError("Backtest market-data plan does not match execution_interval")
         if type(self.prepare_frames_only) is not bool or (self.prepare_frames_only and self.mode != RunMode.BACKTEST):
             raise ValueError('Frame preparation only requires Backtest mode and a boolean flag')
         if not 0 <= self.minimum_p_norm <= 1:
@@ -544,6 +556,8 @@ class ReplayRunDefinition:
         payload = {
             "mode": self.mode.value,
             "execution_mode": self.execution_mode,
+            "execution_interval": self.execution_interval,
+            "market_data_plan": deepcopy(self.market_data_plan),
             "session_date": self.session_date.isoformat(),
             "start_time": self.start_time.isoformat(timespec="seconds"),
             "end_time": self.end_time.isoformat(timespec="seconds"),
@@ -2616,6 +2630,13 @@ class ReplayRunController:
             await self._publish(force=True)
             await self._initialize_runtime()
             self._record_historical_watchlist_authority()
+            from src.backend.backtest_market_data import ExecutionInterval
+            if (
+                self.definition.mode == RunMode.BACKTEST
+                and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"
+            ):
+                await self._run_fixed_market_days()
+                return
             self._preparation_stage = "strategy_frames"
             await self._publish(force=True)
             frame_source = await self._load_strategy_frames()
@@ -2894,7 +2915,128 @@ class ReplayRunController:
                 try:await self._release_prepared_v7_stream(pool)
                 finally:self._prepared_v7=None
 
+    async def _run_fixed_market_days(self) -> None:
+        """Execute persisted boundaries without event replay or frame spooling."""
+        from concurrent.futures import ThreadPoolExecutor
+        from itertools import islice
+        from src.backend.backtest_market_data import (
+            MarketDayLedger, configuration_tickers, iter_market_day_rows,
+        )
+
+        configuration = self.definition.configuration_revision["payload"]
+        expected = dict(self.definition.market_data_plan)
+        sessions = [date.fromisoformat(value) for value in expected.get("sessions") or ()]
+        plan = await asyncio.to_thread(
+            MarketDayLedger().certified_plan,
+            sessions=sessions,
+            tickers=configuration_tickers(configuration, self.definition.tickers),
+            configuration=configuration,
+        )
+        if plan.token != str(expected.get("token") or ""):
+            raise ValueError("Certified Backtest market-data plan changed after preflight")
+        self._record_data_authority("fixed_market_data", {
+            **plan.payload(),
+            "database": "arte",
+            "tables": ["bars_v1", "indicators_v1", "liquidity_100ms_v1"],
+            "access": "select_only",
+            "frame_spool": False,
+        })
+        await self._prepare_session_relative_volume()
+        self._preparation_stage = "fixed_market_boundaries"
+        self._runtime_inputs_ready = True
+        self.status = "running"
+        self.current_time = self.definition.requested_start
+        await self._publish(force=True)
+        self._journal.enable_write_batching()
+
+        source = iter_market_day_rows(plan)
+        sequence = 0
+        external_index = 0
+
+        def next_packet() -> list[dict[str, Any]]:
+            return list(islice(source, 4096))
+
+        reader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="backtest-market-reader")
+        try:
+            while True:
+                packet = await asyncio.get_running_loop().run_in_executor(reader, next_packet)
+                if not packet:
+                    break
+                for row in packet:
+                    if self._stop_requested:
+                        await self._finish("stopped")
+                        return
+                    local_start = datetime.combine(
+                        date.fromisoformat(str(row["session_date"])),
+                        clock_time(4, 0), tzinfo=NEW_YORK,
+                    )
+                    at = local_start + timedelta(milliseconds=int(row["boundary_ms"]))
+                    if at > self.definition.session_end:
+                        continue
+                    ticker = _ticker(row["ticker"])
+                    resolution_ms = int(row["resolution_ms"])
+                    sequence += 1
+                    if resolution_ms == 100:
+                        if int(row.get("quote_valid") or 0):
+                            quote = QuoteEvent(
+                                ask_exchange=0, ask_price=float(row.get("ask_int") or 0) / 10_000,
+                                ask_size=float(row.get("ask_size") or 0),
+                                bid_exchange=0, bid_price=float(row.get("bid_int") or 0) / 10_000,
+                                bid_size=float(row.get("bid_size") or 0), conditions=(), indicators=(),
+                                ingest_ts=at.astimezone(UTC), sequence=sequence,
+                                source="arte.liquidity_100ms_v1", ticker=ticker, ts=at,
+                                raw={"aggregate_boundary": True, "quote_timestamp_us": int(row.get("quote_timestamp_us") or 0)},
+                            )
+                            await self._process_market_event(quote, evaluate_strategy=False)
+                        if int(row.get("price_valid") or 0) and float(row.get("execution_volume") or 0) > 0:
+                            trade = TradeEvent(
+                                conditions=(), event_id=f"fixed:{row['session_date']}:{ticker}:{row['bucket_index']}",
+                                exchange=0, ingest_ts=at.astimezone(UTC), participant_ts=None,
+                                price=float(row.get("close_int") or 0) / 10_000,
+                                sequence=sequence, size=float(row.get("execution_volume") or 0),
+                                source="arte.liquidity_100ms_v1", ticker=ticker, ts=at,
+                                raw={"aggregate_boundary": True, "price_eligible": True,
+                                     "high": float(row.get("high_int") or 0) / 10_000,
+                                     "low": float(row.get("low_int") or 0) / 10_000},
+                            )
+                            await self._process_market_event(trade, evaluate_strategy=False)
+                    while (
+                        external_index < len(self._historical_external_signal_events)
+                        and self._historical_external_signal_events[external_index].available_at <= at
+                    ):
+                        await self._process_external_signal_event(
+                            self._historical_external_signal_events[external_index]
+                        )
+                        external_index += 1
+                    self._apply_historical_watchlist_membership(at)
+                    frame = _persisted_market_day_frame(row, at=at, sequence=sequence)
+                    if at >= self.definition.requested_start:
+                        if await self._process_strategy_frame(frame):
+                            await self._after_event(at)
+                        self.processed_events += 1
+                    else:
+                        self._remember_strategy_frame(frame)
+                        self.warmup_events += 1
+                    self.current_time = at
+                    if sequence % 256 == 0:
+                        await self._publish()
+                        await asyncio.sleep(0)
+        finally:
+            close_source = getattr(source, "close", None)
+            if close_source is not None:
+                await asyncio.get_running_loop().run_in_executor(reader, close_source)
+            reader.shutdown(wait=True, cancel_futures=True)
+        await self._finish("completed")
+
     async def _market_event_batches(self):
+        from src.backend.backtest_market_data import ExecutionInterval
+        if (
+            self.definition.mode == RunMode.BACKTEST
+            and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"
+        ):
+            raise RuntimeError(
+                "Fixed-interval Backtest is forbidden from querying canonical market events"
+            )
         if self.definition.mode == RunMode.BACKTEST_DEBUG:
             fixture = self.definition.debug_fixture
             if fixture is None:
@@ -6467,6 +6609,15 @@ class ReplayRunController:
         )
 
     async def _load_strategy_frames(self) -> list[ReplayDerivedFrame] | ReplayFrameSpool:
+        from src.backend.backtest_market_data import ExecutionInterval
+        if (
+            self.definition.mode == RunMode.BACKTEST
+            and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"
+        ):
+            raise RuntimeError(
+                "Fixed-interval Backtest cannot create a ReplayFrameSpool; "
+                "it must stream certified arte products directly"
+            )
         if self.definition.mode == RunMode.BACKTEST_DEBUG:
             self._strategy_frame_cache_status = "fixture"
             fixture = self.definition.debug_fixture
@@ -8106,6 +8257,8 @@ def _definition_from_manifest(
         tickers=tuple(str(value) for value in definition.get("tickers") or ()),
         configuration_revision=deepcopy(approved),
         execution_mode=str(definition.get("execution_mode") or "strategy"),
+        execution_interval=str(definition.get("execution_interval") or "events"),
+        market_data_plan=dict(definition.get("market_data_plan") or {}),
         mode=mode,
         debug_fixture=fixture,
         simulation_profile=str(definition.get("simulation_profile") or "baseline"),
@@ -9474,13 +9627,45 @@ def backtest_preflight(
         )
     approved = configuration_revision or backtest_configuration_snapshot()
     configuration = dict(approved.get("payload") or {})
-    projection_tickers = _structural_recovery_projection_tickers(configuration, tickers)
-    base = historical_preflight(
-        mode=RunMode.BACKTEST.value,
-        anchor_date=anchor_date,
-        session_count=session_count,
-        tickers=tickers,
+    from src.backend.backtest_market_data import (
+        MarketDayLedger,
+        configuration_tickers,
+        effective_execution_interval,
+        verify_market_day_plan,
     )
+    execution_interval = effective_execution_interval(configuration)
+    projection_tickers = _structural_recovery_projection_tickers(configuration, tickers)
+    if execution_interval.kind == "events":
+        base = historical_preflight(
+            mode=RunMode.BACKTEST.value,
+            anchor_date=anchor_date,
+            session_count=session_count,
+            tickers=tickers,
+        )
+    else:
+        window = historical_window_preview(
+            mode=RunMode.BACKTEST.value,
+            anchor_date=anchor_date,
+            session_count=session_count,
+            replay_end_date=None,
+        )
+        base = {
+            "schema_version": 1,
+            "mode": RunMode.BACKTEST.value,
+            "window": window,
+            "checks": [{
+                "id": "session_window",
+                "label": "Exchange-day window",
+                "status": "ready",
+                "required": True,
+                "summary": f"{window['session_count']} sessions strictly before the anchor date.",
+                "evidence": f"{window['start']} -> {window['end']}",
+            }],
+            "strategy_run_ready": True,
+            "ready": True,
+            "coverage": {},
+            "gateway": {"source": "arte_persisted_market_day"},
+        }
     run_plan = dict(configuration.get("run_plan") or {})
     selected_signal_stream_ids = {
         str(value)
@@ -9505,6 +9690,19 @@ def backtest_preflight(
         or "any_selected"
     )
     sessions = [date.fromisoformat(value) for value in base["window"]["sessions"]]
+    market_data_plan: dict[str, Any] = {}
+    market_data_error = ""
+    if execution_interval.kind == "fixed":
+        try:
+            certified = MarketDayLedger().certified_plan(
+                sessions=sessions,
+                tickers=configuration_tickers(configuration, tickers),
+                configuration=configuration,
+            )
+            verify_market_day_plan(certified)
+            market_data_plan = certified.payload()
+        except Exception as exc:
+            market_data_error = str(exc)
     bindings = [
         dict(row)
         for row in dict(configuration.get("accounts") or {}).get("bindings") or []
@@ -9574,6 +9772,20 @@ def backtest_preflight(
         except Exception as exc:
             watchlist_error = str(exc)
     checks = list(base["checks"])
+    checks.append({
+        "id": "persisted_market_products",
+        "label": "Persisted Backtest market products",
+        "status": "ready" if execution_interval.kind == "events" or market_data_plan else "blocked",
+        "required": True,
+        "summary": (
+            "Event execution uses the canonical event authority."
+            if execution_interval.kind == "events"
+            else f"Certified read-only arte products are pinned for {len(sessions)} session(s)."
+            if market_data_plan
+            else f"Persisted bars, indicators, and liquidity are unavailable: {market_data_error}"
+        ),
+        "evidence": market_data_plan.get("token", "") if market_data_plan else market_data_error,
+    })
     from src.backend.historical_signal_preparation import signal_coverage_check
     signal_check = signal_coverage_check(
         activated_signal_streams,
@@ -9691,6 +9903,7 @@ def backtest_preflight(
         and work_ready
         and storage_ready
         and sessions
+        and (execution_interval.kind == "events" or bool(market_data_plan))
         and 1_000 <= initial_cash <= 1_000_000_000
     )
     return {
@@ -9702,6 +9915,8 @@ def backtest_preflight(
         "configuration_content_hash": approved.get("content_hash", ""),
         "configuration_label": approved.get("label", ""),
         "run_plan_id": approved.get("run_plan_id", ""),
+        "execution_interval": execution_interval.label,
+        "market_data_plan": market_data_plan,
         "available_run_plans": deepcopy(approved.get("available_run_plans") or []),
         "historical_watchlist_plans": watchlist_plans,
         "initial_cash": initial_cash,
@@ -10225,6 +10440,44 @@ def _copy_replay_frame(frame: ReplayDerivedFrame) -> ReplayDerivedFrame:
         ticker=frame.ticker,
         timeframe=frame.timeframe,
         signals=dict(frame.signals),
+    )
+
+
+def _persisted_market_day_frame(
+    row: Mapping[str, Any], *, at: datetime, sequence: int,
+) -> ReplayDerivedFrame:
+    resolution_ms = int(row["resolution_ms"])
+    timeframe = (
+        f"{resolution_ms // 3_600_000}h" if resolution_ms % 3_600_000 == 0
+        else f"{resolution_ms // 60_000}m" if resolution_ms % 60_000 == 0
+        else f"{resolution_ms // 1_000}s" if resolution_ms % 1_000 == 0
+        else f"{resolution_ms}ms"
+    )
+    start = at - timedelta(milliseconds=resolution_ms)
+    scale = 10_000.0
+    close = float(row.get("close_int") or 0) / scale
+    bar = {
+        "bar_start": start.isoformat(), "bar_end": at.isoformat(),
+        "sym": _ticker(row["ticker"]), "timeframe": timeframe,
+        "open": float(row.get("open_int") or 0) / scale,
+        "high": float(row.get("high_int") or 0) / scale,
+        "low": float(row.get("low_int") or 0) / scale,
+        "close": close, "volume": float(row.get("volume") or 0),
+        "trade_count": int(row.get("trade_count") or 0),
+        "dollar_volume": float(row.get("notional") or 0),
+    }
+    indicator = {
+        "bar_start": start.isoformat(), "bar_end": at.isoformat(),
+        "close": close, "previous_close": row.get("previous_close"),
+        "prev_close": row.get("previous_close"),
+        "macd_line": row.get("macd_line"), "macd_signal": row.get("macd_signal"),
+        "macd_histogram": row.get("macd_histogram"),
+        "rsi_14": row.get("rsi_14") if int(row.get("rsi_ready") or 0) else None,
+        "atr_14": row.get("atr_14") if int(row.get("atr_ready") or 0) else None,
+    }
+    return ReplayDerivedFrame(
+        as_of=at, bar=bar, indicator=indicator, sequence=sequence,
+        ticker=_ticker(row["ticker"]), timeframe=timeframe,
     )
 
 

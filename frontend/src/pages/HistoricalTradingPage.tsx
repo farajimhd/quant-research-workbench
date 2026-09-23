@@ -91,25 +91,6 @@ type BacktestComparison = {
 
 type BacktestPeriodPreset = "premarket" | "regular" | "after_hours" | "extended" | "custom";
 
-type IndicatorWarmup = {
-  bars: Array<{ bar_start: string; close: number }>;
-  cache_hit: boolean;
-  fetched_events: number;
-  fetched_ordinal_ranges: number;
-  required_bars: number;
-  status: "ready" | "insufficient_history";
-  ticker: string;
-};
-
-type IndicatorWarmupBatch = {
-  items: IndicatorWarmup[];
-  ready_count: number;
-  required_bars: number;
-  status: "ready" | "insufficient_history";
-  ticker_count: number;
-  tickers: string[];
-};
-
 const BACKTEST_RUN_KEY = "backtest.active-run.v1";
 
 function readSelectedRun(): string {
@@ -181,8 +162,6 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [loadingOptions, setLoadingOptions] = useState(true);
   const [optionsError, setOptionsError] = useState("");
   const [checkedSetupKey, setCheckedSetupKey] = useState("");
-  const [indicatorWarmup, setIndicatorWarmup] = useState<IndicatorWarmupBatch | null>(null);
-  const [warmingIndicators, setWarmingIndicators] = useState(false);
   const parsedTickers = useMemo(() => parseBacktestTickers(tickerInput), [tickerInput]);
   const normalizedTickers = useMemo(() => fullMarket ? [] : parsedTickers.tickers, [fullMarket, parsedTickers]);
   useEffect(() => {
@@ -269,31 +248,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
 
   useEffect(() => {
     if (selectedRunId) return;
-    if (!tickerReady || fullMarket) {
-      setIndicatorWarmup(null);
-      setWarmingIndicators(false);
-      return;
-    }
-    let cancelled = false;
-    setWarmingIndicators(true);
-    setIndicatorWarmup(null);
-    setError("");
-    const timer = window.setTimeout(() => {
-      api<IndicatorWarmupBatch>("/api/trading/backtest/indicator-warmup", {
-        body: JSON.stringify({ session_date: sessionDate, tickers: normalizedTickers, timeframe: "1s", required_bars: 200 }),
-        method: "POST",
-        timeoutMs: 240_000,
-      })
-        .then((payload) => { if (!cancelled) setIndicatorWarmup(payload); })
-        .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
-        .finally(() => { if (!cancelled) setWarmingIndicators(false); });
-    }, 450);
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [normalizedTickers, refreshKey, sessionDate, tickerReady, selectedRunId, fullMarket]);
-
-  useEffect(() => {
-    if (selectedRunId) return;
-    if (!candidateId || !selectedPlan || loadingOptions || optionsError || !tickerReady || (!fullMarket && indicatorWarmup?.status !== "ready")) {
+    if (!candidateId || !selectedPlan || loadingOptions || optionsError || !tickerReady) {
       setChecking(false);
       setPreflight(null);
       return;
@@ -338,7 +293,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [anchorDate, candidateId, endTime, indicatorWarmup?.status, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady, selectedRunId, fullMarket]);
+  }, [anchorDate, candidateId, endTime, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady, selectedRunId]);
 
   usePollingTask({
     enabled: Boolean(run && (run.work_progress?.active || !["completed", "stopped", "failed"].includes(run.status))),
@@ -523,20 +478,6 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   if (selectedRunId) return <BacktestRecoveryState error={restoreError}
     onRetry={() => { setRestoreError(""); setRestoreAttempt(value => value + 1); }} onSetup={returnToSetup} />;
 
-  const warmupCheck: HistoricalCheck = {
-    id: "indicator_warmup",
-    label: fullMarket ? "Indicator preparation" : "1-second indicator warm-up",
-    required: true,
-    status: fullMarket || indicatorWarmup?.status === "ready" ? "ready" : "blocked",
-    summary: fullMarket ? "The backend prepares causal indicator history for admitted tickers before simulation starts." : indicatorWarmup?.status === "ready"
-      ? `${indicatorWarmup.ready_count}/${indicatorWarmup.ticker_count} ticker warm-ups are ready from canonical closes.`
-      : indicatorWarmup?.status === "insufficient_history"
-        ? `${indicatorWarmup.ready_count}/${indicatorWarmup.ticker_count} ticker warm-ups are ready; ${indicatorWarmup.items.filter((item) => item.status !== "ready").map((item) => item.ticker).join(", ")} lack the required history.`
-        : warmingIndicators ? "Building bounded warm-ups from imported event ordinals…" : "Enter one or more tickers to prepare indicator history.",
-    evidence: indicatorWarmup?.status === "ready"
-      ? `${indicatorWarmup.items.reduce((total, item) => total + item.fetched_ordinal_ranges, 0)} ordinal range(s) · ${new Intl.NumberFormat("en-US").format(indicatorWarmup.items.reduce((total, item) => total + item.fetched_events, 0))} eligible trades`
-      : "market_sip_compact/q_live imported events only",
-  };
   const configurationCheck = {
     id: "selected_configuration", label: "Strategy selection", required: true,
     status: selectedPlan && !loadingOptions && !optionsError ? "ready" : "blocked",
@@ -552,17 +493,17 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         && selectedBook.start <= sessionDate && sessionDate <= selectedBook.end
         && (!requiresV7 || selectedBook.version === 'causal-level-book-v7-mle-1')
       : normalizedTickers.length > 0 && normalizedTickers.every(ticker => Boolean(v6BookFor(ticker,sessionDate,structureBooks)));
-  const launchChecks = [configurationCheck, warmupCheck, {id:'preset_books',label:fullMarket ? 'V7 coverage policy' : 'V7 book coverage',required:true,
+  const launchChecks = [configurationCheck, {id:'preset_books',label:fullMarket ? 'V7 coverage policy' : 'V7 book coverage',required:true,
     status:booksReady ? 'ready' as const : 'blocked' as const, summary:fullMarket ? 'V7 catalog available. Before strategy preparation, the backend verifies preceding-session books and logs excluded tickers.' : booksReady ? 'Matching books available.' : 'A published V7 book covering this date is required for each selected ticker.',evidence:normalizedTickers}, ...(currentPreflight ? preflight?.checks ?? [] : [])];
-  const launchReady = Boolean(booksReady && currentPreflight && selectedPlan && !loadingOptions && !optionsError && preflight?.strategy_run_ready && (fullMarket || indicatorWarmup?.status === "ready") && tickerReady && periodReady && resolvedSessionMatches);
+  const launchReady = Boolean(booksReady && currentPreflight && selectedPlan && !loadingOptions && !optionsError && preflight?.strategy_run_ready && tickerReady && periodReady && resolvedSessionMatches);
 
   return (
     <TradingModeLaunch
       actionLabel={fullMarket ? 'Run Full-market Backtest' : batchPreset ? `Run ${normalizedTickers.length} Backtests` : 'Run Backtest'}
-      actionSummary={batchPreset ? `Creates one separate portfolio run per ticker on ${sessionDate}, each with its V7 book. Every ticker uses ${startTime.slice(0,5)}–${endTime.slice(0,5)} ET.` : launchReady ? <><strong>{fullMarket ? 'The Run Plan’s signal-admitted market' : normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{selectedPlan?.strategy_revision}</strong> (candidate {preflight?.configuration_revision}).</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : warmingIndicators ? "Preparing persisted 1-second indicator warm-ups." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
+      actionSummary={batchPreset ? `Creates one separate portfolio run per ticker on ${sessionDate}, each with its V7 book. Every ticker uses ${startTime.slice(0,5)}–${endTime.slice(0,5)} ET.` : launchReady ? <><strong>{fullMarket ? 'The Run Plan’s signal-admitted market' : normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{selectedPlan?.strategy_revision}</strong> (candidate {preflight?.configuration_revision}).</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
-      checking={checking || warmingIndicators || loadingOptions}
-      checkingLabel={loadingOptions ? "Loading strategy settings…" : warmingIndicators ? "Preparing indicators…" : "Checking strategy and services…"}
+      checking={checking || loadingOptions}
+      checkingLabel={loadingOptions ? "Loading strategy settings…" : "Checking persisted market products…"}
       checks={launchChecks}
       description="Evaluate an immutable Test Candidate across a bounded historical window using the same strategy, Portfolio, OMS, and journal contracts as Paper and Live."
       error={optionsError || error}

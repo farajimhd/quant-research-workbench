@@ -70,7 +70,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 54
+CONFIGURATION_SCHEMA_VERSION = 55
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -1365,6 +1365,7 @@ def _resolve_runtime_configuration(
             "name": profile["name"],
             "profile_id": profile["profile_id"],
             "profile_revision": int(profile.get("revision") or 1),
+            "execution_interval": str(profile.get("execution_interval") or "100ms"),
             "parameters": _parameters_with_action_policies(profile, profile_rule_sets, profile_action_policies),
             "action_definitions": deepcopy(dict(model["trading_actions"]).get("definitions") or []),
             "action_policies": deepcopy(profile_action_policies),
@@ -5515,6 +5516,13 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         for row in trading_actions.get("policies") or []
     }
     for profile in profiles:
+        from src.backend.backtest_market_data import ExecutionInterval
+        try:
+            ExecutionInterval.parse(profile.get("execution_interval") or "100ms")
+        except ValueError as exc:
+            raise ValueError(
+                f"Strategy Profile {profile.get('name')} has invalid execution_interval: {exc}"
+            ) from exc
         definition = get_strategy_definition(
             str(profile.get("definition_id") or ""),
             int(profile.get("definition_revision") or 0),
@@ -6183,6 +6191,8 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         result = deepcopy(raw)
         defaults = _default_draft()
         result["schema_version"] = CONFIGURATION_SCHEMA_VERSION
+        for strategy_profile in dict(result.get("strategy") or {}).get("profiles") or []:
+            strategy_profile.setdefault("execution_interval", "100ms")
         result["trading_actions"] = deepcopy(
             result.get("trading_actions") or defaults["trading_actions"]
         )
@@ -7319,6 +7329,7 @@ def _strategy_profile(
         "editable": origin == "user",
         "protected": protected,
         "enabled": True,
+        "execution_interval": "100ms",
         "publication_status": "template" if origin == "system" else "draft",
         "derived_from_profile_id": "",
         "lifecycle": _default_strategy_lifecycle(parameters),
