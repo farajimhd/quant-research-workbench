@@ -16,6 +16,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 
 EASTERN = ZoneInfo("America/New_York")
 REVISION = "preopen-tradable-snapshot-v3"
+CARRIED_FORWARD_REVISION = "preopen-tradable-carry-forward-v1"
 SNAPSHOT_ID_REVISION = "preopen-tradable-snapshot-v2"
 SNAPSHOTS = "feature_tradable_universe_snapshot_v2"
 COVERAGE = "feature_tradable_universe_snapshot_coverage_v2"
@@ -145,6 +146,62 @@ def publish_retained_snapshot(client: ClickHouseHttpClient, database: str, sourc
                 captured_at_utc=captured.isoformat(),available_at_utc=available.isoformat())
 
 
+def publish_carried_forward_snapshot(client: ClickHouseHttpClient, database: str, day: date) -> dict:
+    """Use the latest earlier exact certificate, preserving its original availability."""
+    if session_cutoff(day) >= datetime.now(UTC):
+        raise ValueError(f"{day}: carry-forward is only for elapsed pre-open cutoffs")
+    ensure_schema(client, database)
+    current = query(client, f"SELECT status,revision FROM {database}.{COVERAGE} FINAL WHERE session_date=toDate({sql_literal(day)})")
+    if current and current[0]['status'] == 'certified':
+        raise ValueError(f"{day}: exact snapshot already certified")
+    source = query(client, f"""SELECT session_date,snapshot_id,source_universe_date,captured_at_utc,
+        available_at_utc,row_count,tradable_count,source_hash FROM {database}.{COVERAGE} FINAL
+        WHERE session_date<toDate({sql_literal(day)}) AND status='certified'
+          AND revision={sql_literal(REVISION)} ORDER BY session_date DESC LIMIT 1""")
+    if len(source) != 1:
+        raise ValueError(f"{day}: no earlier exact certified snapshot")
+    source = source[0]
+    if source['available_at_utc'] >= session_cutoff(day).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]:
+        raise ValueError(f"{day}: source was not available before target cutoff")
+    source_filter = (f"session_date=toDate({sql_literal(source['session_date'])}) "
+                     f"AND snapshot_id={sql_literal(source['snapshot_id'])}")
+    proof = query(client, f"""SELECT count() AS n,countIf(is_tradable=1) AS tradable,
+        {SOURCE_HASH.replace('inserted_at','captured_at_utc')} AS source_hash
+        FROM {database}.{SNAPSHOTS} WHERE {source_filter}""")[0]
+    if (int(proof['n']) != int(source['row_count']) or int(proof['tradable']) != int(source['tradable_count'])
+            or int(proof['source_hash']) != int(source['source_hash'])):
+        raise RuntimeError(f"{day}: source snapshot integrity failed")
+    identity = f"{CARRIED_FORWARD_REVISION}|{day}|{source['snapshot_id']}"
+    snapshot_id = hashlib.sha256(identity.encode()).hexdigest()
+    target_filter = f"session_date=toDate({sql_literal(day)}) AND snapshot_id={sql_literal(snapshot_id)}"
+    observed = query(client, f"SELECT count() AS n,{SOURCE_HASH.replace('inserted_at','captured_at_utc')} AS source_hash FROM {database}.{SNAPSHOTS} WHERE {target_filter}")[0]
+    if int(observed['n']) == 0:
+        client.execute(f"""INSERT INTO {database}.{SNAPSHOTS}
+            (session_date,snapshot_id,source_universe_date,ticker,symbol_id,listing_id,security_id,is_tradable,exclusion_reason,source_run_id,captured_at_utc)
+            SELECT toDate({sql_literal(day)}),{sql_literal(snapshot_id)},source_universe_date,
+                   ticker,symbol_id,listing_id,security_id,is_tradable,exclusion_reason,source_run_id,captured_at_utc
+            FROM {database}.{SNAPSHOTS} WHERE {source_filter}""")
+        observed = query(client, f"SELECT count() AS n,{SOURCE_HASH.replace('inserted_at','captured_at_utc')} AS source_hash FROM {database}.{SNAPSHOTS} WHERE {target_filter}")[0]
+    if int(observed['n']) != int(source['row_count']) or int(observed['source_hash']) != int(source['source_hash']):
+        raise RuntimeError(f"{day}: carried-forward copy failed integrity check")
+    if not current or current[0]['status'] != 'carried_forward' or current[0]['revision'] != CARRIED_FORWARD_REVISION:
+        client.execute(f"""INSERT INTO {database}.{COVERAGE}
+            (session_date,snapshot_id,source_universe_date,captured_at_utc,cutoff_utc,
+             available_at_utc,row_count,tradable_count,source_hash,revision,status,certified_at_utc)
+            VALUES (toDate({sql_literal(day)}),{sql_literal(snapshot_id)},
+             toDate({sql_literal(source['source_universe_date'])}),
+             toDateTime64({sql_literal(source['captured_at_utc'])},3,'UTC'),
+             toDateTime64({sql_literal(session_cutoff(day).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3])},3,'UTC'),
+             toDateTime64({sql_literal(source['available_at_utc'])},3,'UTC'),
+             {int(source['row_count'])},{int(source['tradable_count'])},{int(source['source_hash'])},
+             {sql_literal(CARRIED_FORWARD_REVISION)},'carried_forward',now64(3))""")
+    ensure_schema(client, database)
+    return dict(session_date=str(day),source_session_date=source['session_date'],
+                source_universe_date=source['source_universe_date'],snapshot_id=snapshot_id,
+                rows=int(source['row_count']),tradable=int(source['tradable_count']),
+                captured_at_utc=source['captured_at_utc'],available_at_utc=source['available_at_utc'])
+
+
 def record_missing_sessions(client: ClickHouseHttpClient, database: str, start: date, end: date) -> list[str]:
     """Persist unresolved past-session gaps without fabricating historical rows."""
     import pandas_market_calendars as mcal
@@ -152,7 +209,7 @@ def record_missing_sessions(client: ClickHouseHttpClient, database: str, start: 
     ensure_schema(client, database)
     sessions = [stamp.date() for stamp in mcal.get_calendar("XNYS").schedule(start_date=start,end_date=end).index]
     known = {date.fromisoformat(row["session_date"]) for row in query(client,
-        f"SELECT session_date FROM {database}.{COVERAGE} FINAL WHERE session_date BETWEEN toDate({sql_literal(start)}) AND toDate({sql_literal(end)}) AND revision={sql_literal(REVISION)}")}
+        f"SELECT session_date FROM {database}.{COVERAGE} FINAL WHERE session_date BETWEEN toDate({sql_literal(start)}) AND toDate({sql_literal(end)}) AND revision IN ({sql_literal(REVISION)},{sql_literal(CARRIED_FORWARD_REVISION)})")}
     now = datetime.now(UTC)
     missing = [day for day in sessions if day not in known and session_cutoff(day) < now]
     for day in missing:

@@ -23,7 +23,8 @@ sys.path.insert(0, str(ROOT))
 from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password, default_clickhouse_url, default_clickhouse_user
 from research.mlops.env import discover_env_files, load_env_files
 from services.reference_gateway.tradable_snapshots import (
-    COVERAGE, REVISION, ensure_schema, publish_retained_snapshot, query, record_missing_sessions,
+    CARRIED_FORWARD_REVISION, COVERAGE, REVISION, ensure_schema, publish_retained_snapshot,
+    publish_carried_forward_snapshot, query, record_missing_sessions,
     session_cutoff, sql_literal, target_session,
 )
 
@@ -52,7 +53,8 @@ def retained_publication_completion(run_id: str) -> datetime:
     raise ValueError(f"{run_id}: retained publication completion evidence unavailable")
 
 
-def audit(client: ClickHouseHttpClient, start: date, end: date, *, execute: bool) -> dict:
+def audit(client: ClickHouseHttpClient, start: date, end: date, *, execute: bool,
+          carry_forward_missing: bool = False) -> dict:
     import pandas_market_calendars as mcal
 
     sessions = [stamp.date() for stamp in mcal.get_calendar("XNYS").schedule(start_date=start,end_date=end).index]
@@ -95,26 +97,40 @@ def audit(client: ClickHouseHttpClient, start: date, end: date, *, execute: bool
                 # A newer certified snapshot wins; other errors remain explicit.
                 if "newer or equal certified snapshot" not in str(exc):
                     rejected.append(dict(session_date=str(day),source_date=source["universe_date"],reason=str(exc)))
+        if carry_forward_missing:
+            for day in sessions:
+                if candidates[day]:
+                    continue
+                try:
+                    publish_carried_forward_snapshot(client,"q_live",day)
+                except ValueError as exc:
+                    if "exact snapshot already certified" not in str(exc):
+                        rejected.append(dict(session_date=str(day),reason=str(exc)))
+                except RuntimeError as exc:
+                    rejected.append(dict(session_date=str(day),reason=str(exc)))
         record_missing_sessions(client,"q_live",start,end)
     coverage_exists = query(client,f"SELECT count() AS n FROM system.tables WHERE database='q_live' AND name={sql_literal(COVERAGE)}")[0]['n'] == 1
     if coverage_exists:
         availability_exists = query(client,f"SELECT count() AS n FROM system.columns WHERE database='q_live' AND table={sql_literal(COVERAGE)} AND name='available_at_utc'")[0]['n'] == 1
         available_column = "available_at_utc," if availability_exists else ""
         rows = query(client, f"SELECT session_date,snapshot_id,source_universe_date,captured_at_utc,{available_column}row_count,tradable_count,source_hash,revision,status FROM q_live.{COVERAGE} FINAL WHERE session_date BETWEEN toDate({sql_literal(start)}) AND toDate({sql_literal(end)})")
-        certificates = {date.fromisoformat(row["session_date"]):row for row in rows if row["status"]=="certified" and row['revision']==REVISION}
+        certificates = {date.fromisoformat(row["session_date"]):row for row in rows
+            if (row["status"],row['revision']) in (("certified",REVISION),("carried_forward",CARRIED_FORWARD_REVISION))}
     outcomes = []
     for day in sessions:
         source = max(candidates[day],key=lambda row:row["last_insert"]) if candidates[day] else None
         certificate = certificates.get(day)
-        status = "certified" if certificate else ("recoverable" if source else "unresolved_no_preopen_capture")
+        status = certificate['status'] if certificate else ("recoverable" if source else "unresolved_no_preopen_capture")
         outcomes.append(dict(session_date=str(day),status=status,
             source_universe_date=certificate["source_universe_date"] if certificate else source["universe_date"] if source else None,
             captured_at_utc=certificate["captured_at_utc"] if certificate else source["last_insert"] if source else None,
             available_at_utc=certificate["available_at_utc"] if certificate else source["available_at_utc"] if source else None,
-            snapshot_id=certificate["snapshot_id"] if certificate else None))
+            snapshot_id=certificate["snapshot_id"] if certificate else None,
+            revision=certificate['revision'] if certificate else None))
     return dict(start_date=str(start),end_date=str(end),execute=execute,revision=REVISION,
                 sessions=outcomes,rejected_sources=rejected,
-                counts={status:sum(row["status"]==status for row in outcomes) for status in ("certified","recoverable","unresolved_no_preopen_capture")})
+                counts={status:sum(row["status"]==status for row in outcomes) for status in
+                    ("certified","carried_forward","recoverable","unresolved_no_preopen_capture")})
 
 
 def main() -> int:
@@ -122,23 +138,28 @@ def main() -> int:
     parser.add_argument("--start-date",required=True)
     parser.add_argument("--end-date",required=True)
     parser.add_argument("--execute",action="store_true",help="Copy and certify retained pre-open snapshots on live_market_ssd")
+    parser.add_argument("--carry-forward-missing",action="store_true",
+        help="With --execute, mark missing sessions using the latest earlier exact certified list")
     args = parser.parse_args()
     start,end = date.fromisoformat(args.start_date),date.fromisoformat(args.end_date)
     if end < start:
         parser.error("--end-date precedes --start-date")
     if (end-start).days > 366:
         parser.error("Audit one year or less per run")
+    if args.carry_forward_missing and not args.execute:
+        parser.error("--carry-forward-missing requires --execute")
     if not RUNTIME.is_dir():
         raise RuntimeError("Required D:/TradingML/runtimes is unavailable")
     load_env_files(discover_env_files(ROOT))
     client=ClickHouseHttpClient(default_clickhouse_url(),default_clickhouse_user(),default_clickhouse_password())
-    report=audit(client,start,end,execute=args.execute)
+    report=audit(client,start,end,execute=args.execute,carry_forward_missing=args.carry_forward_missing)
     output=RUNTIME / "reference_gateway" / "universe_audits"
     output.mkdir(parents=True,exist_ok=True)
     path=output / (datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")+"-"+uuid.uuid4().hex[:8]+".json")
     path.write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
     print(f"Tradable snapshot audit {start}..{end} | {len(report['sessions'])} sessions | "
-          f"certified {report['counts']['certified']} recoverable {report['counts']['recoverable']} "
+          f"exact {report['counts']['certified']} carried forward {report['counts']['carried_forward']} "
+          f"recoverable {report['counts']['recoverable']} "
           f"unresolved {report['counts']['unresolved_no_preopen_capture']}")
     for row in report["sessions"]:
         print(f"  {row['session_date']}  {row['status']}  source={row['source_universe_date'] or '-'}")

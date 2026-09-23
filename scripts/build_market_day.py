@@ -81,6 +81,8 @@ def parse_args(argv=None):
     p.add_argument("--max-plan-units", type=int, default=250000,
         help="Bound in-memory ticker-day metadata; split larger ranges or raise explicitly")
     p.add_argument("--plan-only", action="store_true", help="Read-only coverage/storage preflight; no table creation")
+    p.add_argument("--allow-carried-forward-universe", action="store_true",
+        help="Explicitly permit labeled prior exact tradable lists for sessions without a pre-open capture")
     p.add_argument("--rebuild", action="store_true", help="New immutable build ID; preserve previous builds")
     p.add_argument("--build-id", help="Resume an explicit build ID printed by an earlier --rebuild")
     p.add_argument("--progress", choices=("auto", "text"), default="auto")
@@ -323,13 +325,32 @@ def source_plan(client, args):
     for day in sessions:
         certificate = client.query(f"SELECT snapshot_id,source_universe_date,captured_at_utc,available_at_utc,cutoff_utc,row_count,tradable_count,source_hash,revision,status "
             f"FROM q_live.feature_tradable_universe_snapshot_coverage_v2 FINAL WHERE session_date={sql.literal(day)}", "population_certificate")
-        if len(certificate) != 1 or certificate[0]['status'] != 'certified' or certificate[0]['revision'] != 'preopen-tradable-snapshot-v3':
+        if len(certificate) != 1:
             raise ValueError(f"Missing certified pre-open tradable universe for {day}")
         certificate = certificate[0]
+        exact = (certificate['status'],certificate['revision']) == ('certified','preopen-tradable-snapshot-v3')
+        carried = (certificate['status'],certificate['revision']) == ('carried_forward','preopen-tradable-carry-forward-v1')
+        if not exact and not (carried and args.allow_carried_forward_universe):
+            raise ValueError(f"Missing certified pre-open tradable universe for {day}; "
+                "use --allow-carried-forward-universe only if labeled reconstruction is acceptable")
         if (certificate['captured_at_utc'] >= certificate['cutoff_utc']
                 or certificate['available_at_utc'] >= certificate['cutoff_utc']
                 or certificate['available_at_utc'] < certificate['captured_at_utc']):
             raise ValueError(f"Tradable universe was captured or published after the {day} pre-open cutoff")
+        if carried:
+            origin = client.query(f"SELECT session_date,snapshot_id,source_universe_date,captured_at_utc,available_at_utc,row_count,tradable_count,source_hash "
+                f"FROM q_live.feature_tradable_universe_snapshot_coverage_v2 FINAL WHERE session_date<{sql.literal(day)} "
+                "AND status='certified' AND revision='preopen-tradable-snapshot-v3' ORDER BY session_date DESC LIMIT 1",
+                "carried_forward_origin")
+            if len(origin) != 1 or any(certificate[key] != origin[0][key] for key in
+                ('source_universe_date','captured_at_utc','available_at_utc','row_count','tradable_count','source_hash')):
+                raise ValueError(f"Carried-forward universe source integrity failed for {day}")
+            import hashlib
+            expected_id = hashlib.sha256(
+                f"preopen-tradable-carry-forward-v1|{day}|{origin[0]['snapshot_id']}".encode()).hexdigest()
+            if certificate['snapshot_id'] != expected_id:
+                raise ValueError(f"Carried-forward universe identity failed for {day}")
+            certificate['source_session_date'] = origin[0]['session_date']
         snapshot_id = certificate['snapshot_id']
         proof = client.query(f"SELECT count() AS n,countIf(is_tradable=1) AS tradable,"
             "sum(cityHash64(tuple(ticker,symbol_id,listing_id,security_id,is_tradable,exclusion_reason,source_run_id,captured_at_utc))) AS source_hash "
@@ -718,7 +739,8 @@ def run(args):
                 start=str(args.start),end=str(args.end),
                 population_authority=dict(table='q_live.feature_tradable_universe_snapshot_v2',
                     coverage='q_live.feature_tradable_universe_snapshot_coverage_v2',
-                    membership='certified pre-open is_tradable=1 and canonical ticker events',
+                    membership='certified pre-open or explicitly allowed labeled carry-forward is_tradable=1 and canonical ticker events',
+                    allow_carried_forward=args.allow_carried_forward_universe,
                     warmup='none',missing_date='fail_closed'),
                 indicators=dict(ema=dict(periods=sql.EMAS,seed='first eligible close',basis='completed nonempty bars'),
                     macd=dict(fast=12,slow=26,signal=9),rsi=dict(period=14,seed='first 14 changes',reset='session'),
@@ -757,6 +779,10 @@ def run(args):
                 without_source=sum(row['tradable_without_canonical_events'] for row in plan['population'] if row['session_date'] in plan['requested'])
                 scope+=f" | excluded non-tradable {excluded} | tradable without canonical events {without_source}"
             print(f"{scope} | policy {sql.POLICY} | workers {args.workers}",flush=True)
+            carried_days=[row for row in plan['population'] if row['certificate']['status']=='carried_forward']
+            if carried_days:
+                print("Carried-forward universe: " + ", ".join(
+                    f"{row['session_date']} from {row['certificate']['source_session_date']}" for row in carried_days),flush=True)
             if args.plan_only:
                 print(f"Read-only plan complete: {len(plan['units'])} requested ticker-days. {report_path}",flush=True)
                 return 0

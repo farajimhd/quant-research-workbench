@@ -19,6 +19,7 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 python -B scripts/build_market_day.py --date 2026-09-18 --tickers AADX --plan-only
 python -B scripts/build_market_day.py --date 2026-09-18 --tickers AADX
 python -B scripts/build_market_day.py --start-date 2026-09-17 --end-date 2026-09-18 --tickers AADX,AAPL
+python -B scripts/build_market_day.py --start-date 2026-08-19 --end-date 2026-09-18 --workers 32 --allow-carried-forward-universe --plan-only
 ```
 
 Both range endpoints are **inclusive New York dates**. Do not combine `--date`
@@ -29,7 +30,13 @@ dated-tradable tickers that also have certified source events. The builder reads
 `q_live.feature_tradable_universe_snapshot_coverage_v2` row. The snapshot must
 have been captured and published before 04:00 ET on its XNYS session date, and the builder
 checks its row count and hash before accepting `is_tradable=1` members. It never
-substitutes the latest snapshot for a missing historical session. Duplicate
+substitutes a later snapshot for a missing historical session. An explicitly
+marked carry-forward uses the latest **earlier exact certified** list. It is
+available only with `--allow-carried-forward-universe`; the builder checks its
+source certificate and copy integrity and prints each affected session. This
+causal fallback can omit tickers that became tradable after the source capture
+or include tickers that stopped being tradable. It is not an exact pre-open
+list for the missing session. Duplicate
 admitted listing rows collapse to one ticker for bar calculation; the complete
 dated snapshot and its certificate are fingerprinted in the build.
 Requested ticker-days without dated admission or canonical events fail preflight.
@@ -48,11 +55,17 @@ The read-only audit and bounded certification command is:
 ```powershell
 python -B scripts/audit_tradable_snapshots.py --start-date 2026-08-18 --end-date 2026-09-18
 python -B scripts/audit_tradable_snapshots.py --start-date 2026-08-18 --end-date 2026-09-18 --execute
+python -B scripts/audit_tradable_snapshots.py --start-date 2026-08-18 --end-date 2026-09-18 --execute --carry-forward-missing
 ```
 
 The second command copies only retained historical publications and writes
 coverage certificates on `live_market_ssd`; unresolved sessions remain recorded
-and cannot be built. It never stamps today's identity graph with a past date.
+and cannot be built. The third command copies the latest earlier exact
+certificate into missing sessions with a distinct `carried_forward` revision,
+preserving source capture and availability timestamps. It never stamps today's
+identity graph with a past date. The Aug 18–Sep 18 audit certified 12 exact
+sessions and marked 11 carried forward; the source date and status are in the
+runtime audit manifest.
 Previously built `arte` days retain their original build/population identity;
 they require a new build under the V2 authority before Backtest consumer cutover.
 

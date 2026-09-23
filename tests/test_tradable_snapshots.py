@@ -82,6 +82,14 @@ class SnapshotFixture(unittest.TestCase):
             states=S.query(client,f"SELECT session_date,status FROM {db}.{S.COVERAGE} FINAL ORDER BY session_date")
             self.assertEqual([row['status'] for row in states],
                 ['certified','unresolved_no_preopen_capture','unresolved_no_preopen_capture'])
+            carried=S.publish_carried_forward_snapshot(client,db,date(2026,9,1))
+            self.assertEqual((carried['source_session_date'],carried['rows'],carried['tradable']),('2026-08-31',2,1))
+            self.assertEqual(S.publish_carried_forward_snapshot(client,db,date(2026,9,1)),carried)
+            second=S.publish_carried_forward_snapshot(client,db,date(2026,9,2))
+            self.assertEqual(second['source_session_date'],'2026-08-31')
+            self.assertEqual(S.record_missing_sessions(client,db,date(2026,8,31),date(2026,9,2)),[])
+            states=S.query(client,f"SELECT session_date,status FROM {db}.{S.COVERAGE} FINAL ORDER BY session_date")
+            self.assertEqual([row['status'] for row in states],['certified','carried_forward','carried_forward'])
             parts=S.query(client,f"SELECT distinct disk_name FROM system.parts WHERE active AND database='{db}'")
             self.assertEqual(parts,[{'disk_name':'live_market_ssd'}])
         finally:

@@ -107,10 +107,11 @@ class Arguments(unittest.TestCase):
         days=['2026-09-18']
 
         class Client:
-            def __init__(self, missing=None):
+            def __init__(self, missing=None, carried=False):
                 self.population_dates=iter(days)
                 self.coverage_dates=iter(days)
                 self.missing=missing
+                self.carried=carried
 
             def query(self, query, label):
                 if label=='source_certificates':
@@ -118,11 +119,19 @@ class Arguments(unittest.TestCase):
                 if label=='day_coverage_totals':
                     return [dict(source_date=day,n=2) for day in days]
                 if label=='population_certificate':
-                    return [] if self.missing else [dict(snapshot_id='fixture',source_universe_date=days[0],
-                        captured_at_utc='2026-09-18 03:00:00.000',available_at_utc='2026-09-18 03:01:00.000',
+                    import hashlib
+                    snapshot_id=hashlib.sha256(f'preopen-tradable-carry-forward-v1|2026-09-18|fixture'.encode()).hexdigest() if self.carried else 'fixture'
+                    return [] if self.missing else [dict(snapshot_id=snapshot_id,source_universe_date='2026-09-17' if self.carried else days[0],
+                        captured_at_utc='2026-09-17 03:00:00.000' if self.carried else '2026-09-18 03:00:00.000',
+                        available_at_utc='2026-09-17 03:01:00.000' if self.carried else '2026-09-18 03:01:00.000',
                         cutoff_utc='2026-09-18 08:00:00.000',
                         row_count=1,tradable_count=1,source_hash=1,
-                        revision='preopen-tradable-snapshot-v3',status='certified')]
+                        revision='preopen-tradable-carry-forward-v1' if self.carried else 'preopen-tradable-snapshot-v3',
+                        status='carried_forward' if self.carried else 'certified')]
+                if label=='carried_forward_origin':
+                    return [dict(session_date='2026-09-17',snapshot_id='fixture',source_universe_date='2026-09-17',
+                        captured_at_utc='2026-09-17 03:00:00.000',available_at_utc='2026-09-17 03:01:00.000',
+                        row_count=1,tradable_count=1,source_hash=1)]
                 if label=='population_integrity':
                     return [dict(n=1,tradable=1,source_hash=1)]
                 if label=='dated_tradable_universe':
@@ -149,6 +158,11 @@ class Arguments(unittest.TestCase):
             B.source_plan(Client(missing='2026-09-18'),args)
         with self.assertRaisesRegex(ValueError,'Requested tickers lack dated tradability'):
             B.source_plan(Client(),B.parse_args(['--date','2026-09-18','--tickers','AAA']))
+        with self.assertRaisesRegex(ValueError,'allow-carried-forward-universe'):
+            B.source_plan(Client(carried=True),args)
+        carried_plan=B.source_plan(Client(carried=True),B.parse_args(
+            ['--date','2026-09-18','--allow-carried-forward-universe']))
+        self.assertEqual(carried_plan['population'][0]['certificate']['source_session_date'],'2026-09-17')
 
 
 @unittest.skipUnless(os.environ.get('MARKET_DAY_CLICKHOUSE_TEST')=='1','ClickHouse integration is opt-in')
