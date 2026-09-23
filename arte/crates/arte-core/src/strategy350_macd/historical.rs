@@ -685,6 +685,70 @@ mod tests {
         )
         .unwrap();
         let other_hash = "e".repeat(64);
+        let gap = crate::strategy350_gap::freeze(
+            &[],
+            10.,
+            event_time / 100_000_000 * 100_000_000,
+            &crate::strategy350_gap::Config {
+                execution_interval: crate::execution_interval::ExecutionInterval::Fixed(
+                    100_000_000,
+                ),
+                maximum_levels: 1_000,
+            },
+        )
+        .unwrap();
+        let future_gap = crate::strategy350_gap::freeze(
+            &[],
+            10.,
+            gap.activated_at_ns + 100_000_000,
+            &crate::strategy350_gap::Config {
+                execution_interval: crate::execution_interval::ExecutionInterval::Fixed(
+                    100_000_000,
+                ),
+                maximum_levels: 1_000,
+            },
+        )
+        .unwrap();
+        assert!(future_gap.activated_at_ns > input.event_time_ns);
+        assert!(
+            crate::strategy350_transaction::prepare_historical_market_decision(
+                &mut account,
+                crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                    input: input.clone(),
+                    safety: &safety,
+                    price: &price_evidence,
+                    source: &proof,
+                    expected_price_gate_hash: &price_hash,
+                    refinement: Some(&refinement),
+                    macd: Some(&evidence),
+                    gap: Some(&future_gap),
+                    other_evidence_hash: &other_hash,
+                },
+                |_| panic!("future gap must not observe account state"),
+                |_| panic!("future gap must not calculate"),
+            )
+            .is_err()
+        );
+        assert!(
+            crate::strategy350_transaction::prepare_historical_market_decision(
+                &mut account,
+                crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                    input: input.clone(),
+                    safety: &safety,
+                    price: &price_evidence,
+                    source: &proof,
+                    expected_price_gate_hash: &price_hash,
+                    refinement: Some(&refinement),
+                    macd: Some(&evidence),
+                    gap: None,
+                    other_evidence_hash: &other_hash,
+                },
+                |_| Ok(()),
+                |_| Ok(vec![Action::Add(Box::new(proposal.clone()))]),
+            )
+            .is_err()
+        );
+        assert!(account.pending_batch().is_none());
         let decision = crate::strategy350_transaction::prepare_historical_market_decision(
             &mut account,
             crate::strategy350_transaction::HistoricalMarketDecisionInput {
@@ -695,6 +759,7 @@ mod tests {
                 expected_price_gate_hash: &price_hash,
                 refinement: Some(&refinement),
                 macd: Some(&evidence),
+                gap: Some(&gap),
                 other_evidence_hash: &other_hash,
             },
             |_| Ok(()),
@@ -706,23 +771,71 @@ mod tests {
         let committed = account.acknowledge(&rows).unwrap();
         let sealed = crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
             &committed,
-            &price_evidence,
-            &proof,
-            &price_hash,
-            Some(&refinement),
-            Some(&evidence),
-            &other_hash,
+            crate::strategy350_transaction::HistoricalReadback {
+                price: &price_evidence,
+                source: &proof,
+                expected_price_gate_hash: &price_hash,
+                refinement: Some(&refinement),
+                macd: Some(&evidence),
+                gap: Some(&gap),
+                other_evidence_hash: &other_hash,
+            },
         )
         .unwrap();
         assert!(
             crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
                 &committed,
-                &price_evidence,
-                &proof,
-                &price_hash,
-                Some(&refinement),
-                None,
-                &other_hash,
+                crate::strategy350_transaction::HistoricalReadback {
+                    price: &price_evidence,
+                    source: &proof,
+                    expected_price_gate_hash: &price_hash,
+                    refinement: Some(&refinement),
+                    macd: None,
+                    gap: Some(&gap),
+                    other_evidence_hash: &other_hash,
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
+                &committed,
+                crate::strategy350_transaction::HistoricalReadback {
+                    price: &price_evidence,
+                    source: &proof,
+                    expected_price_gate_hash: &price_hash,
+                    refinement: Some(&refinement),
+                    macd: Some(&evidence),
+                    gap: None,
+                    other_evidence_hash: &other_hash,
+                },
+            )
+            .is_err()
+        );
+        let changed_gap = crate::strategy350_gap::freeze(
+            &[],
+            11.,
+            gap.activated_at_ns,
+            &crate::strategy350_gap::Config {
+                execution_interval: crate::execution_interval::ExecutionInterval::Fixed(
+                    100_000_000,
+                ),
+                maximum_levels: 1_000,
+            },
+        )
+        .unwrap();
+        assert!(
+            crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
+                &committed,
+                crate::strategy350_transaction::HistoricalReadback {
+                    price: &price_evidence,
+                    source: &proof,
+                    expected_price_gate_hash: &price_hash,
+                    refinement: Some(&refinement),
+                    macd: Some(&evidence),
+                    gap: Some(&changed_gap),
+                    other_evidence_hash: &other_hash,
+                },
             )
             .is_err()
         );

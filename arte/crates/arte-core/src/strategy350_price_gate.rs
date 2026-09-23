@@ -1001,6 +1001,7 @@ mod tests {
                 maximum_price_age_ns: 200_000_000,
                 refinement: None,
                 macd: None,
+                gap: None,
                 other_evidence_hash: &"c".repeat(64),
             },
             |_| panic!("wrong scope cannot observe account state"),
@@ -1018,6 +1019,7 @@ mod tests {
                 maximum_price_age_ns: 200_000_000,
                 refinement: None,
                 macd: Some(&macd_evidence),
+                gap: None,
                 other_evidence_hash: &"c".repeat(64),
             },
             |state| {
@@ -1034,11 +1036,12 @@ mod tests {
         assert_eq!(
             decision.evidence_hash,
             content_hash(&(
-                "arte.strategy-350-market-decision.v3",
+                "arte.strategy-350-market-decision.v4",
                 "live-receipt",
                 evidence.fingerprint(),
                 None::<String>,
                 Some(macd_evidence.fingerprint()),
+                None::<String>,
                 "c".repeat(64)
             ))
             .unwrap()
@@ -1058,6 +1061,7 @@ mod tests {
                     maximum_price_age_ns: 200_000_000,
                     refinement: None,
                     macd: Some(&macd_evidence),
+                    gap: None,
                     other_evidence_hash: &"d".repeat(64),
                 },
             )
@@ -1072,6 +1076,7 @@ mod tests {
                 maximum_price_age_ns: 200_000_000,
                 refinement: None,
                 macd: Some(&macd_evidence),
+                gap: None,
                 other_evidence_hash: &same_other_hash,
             },
         )
@@ -1086,6 +1091,7 @@ mod tests {
                     maximum_price_age_ns: 200_000_000,
                     refinement: None,
                     macd: None,
+                    gap: None,
                     other_evidence_hash: &same_other_hash,
                 },
             )
@@ -1145,6 +1151,7 @@ mod tests {
                 maximum_price_age_ns: 200_000_000,
                 refinement: None,
                 macd: None,
+                gap: None,
                 other_evidence_hash: &"e".repeat(64),
             },
             |_| Ok(()),
@@ -1165,6 +1172,7 @@ mod tests {
                 maximum_price_age_ns: 200_000_000,
                 refinement: Some(&refinement),
                 macd: None,
+                gap: None,
                 other_evidence_hash: &"e".repeat(64),
             },
             |_| Ok(()),
@@ -1487,6 +1495,7 @@ mod tests {
                 expected_price_gate_hash: &gate_hash,
                 refinement: None,
                 macd: Some(&macd_evidence),
+                gap: None,
                 other_evidence_hash: &other_hash,
             },
             |_| Ok(()),
@@ -1503,12 +1512,15 @@ mod tests {
         let historical =
             crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
                 &committed,
-                &evidence,
-                &proof,
-                &gate_hash,
-                None,
-                Some(&macd_evidence),
-                &"e".repeat(64),
+                crate::strategy350_transaction::HistoricalReadback {
+                    price: &evidence,
+                    source: &proof,
+                    expected_price_gate_hash: &gate_hash,
+                    refinement: None,
+                    macd: Some(&macd_evidence),
+                    gap: None,
+                    other_evidence_hash: &"e".repeat(64),
+                },
             )
             .unwrap();
         assert!(historical.require_at(input.evaluated_at_ns - 1).is_err());
@@ -1522,24 +1534,30 @@ mod tests {
         assert!(
             crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
                 &committed,
-                &evidence,
-                &proof,
-                &gate_hash,
-                None,
-                None,
-                &"0".repeat(64),
+                crate::strategy350_transaction::HistoricalReadback {
+                    price: &evidence,
+                    source: &proof,
+                    expected_price_gate_hash: &gate_hash,
+                    refinement: None,
+                    macd: None,
+                    gap: None,
+                    other_evidence_hash: &"0".repeat(64),
+                },
             )
             .is_err()
         );
         assert!(
             crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
                 &committed,
-                &evidence,
-                &proof,
-                &gate_hash,
-                None,
-                None,
-                &other_hash,
+                crate::strategy350_transaction::HistoricalReadback {
+                    price: &evidence,
+                    source: &proof,
+                    expected_price_gate_hash: &gate_hash,
+                    refinement: None,
+                    macd: None,
+                    gap: None,
+                    other_evidence_hash: &other_hash,
+                },
             )
             .is_err()
         );
@@ -1583,6 +1601,7 @@ mod tests {
                     expected_price_gate_hash: &gate_hash,
                     refinement: None,
                     macd: None,
+                    gap: None,
                     other_evidence_hash: &other_hash,
                 },
                 |_| Ok(()),
@@ -1604,6 +1623,7 @@ mod tests {
                     expected_price_gate_hash: &gate_hash,
                     refinement: Some(&refinement),
                     macd: None,
+                    gap: None,
                     other_evidence_hash: &other_hash,
                 },
                 |_| Ok(()),
@@ -1625,6 +1645,7 @@ mod tests {
                     expected_price_gate_hash: &gate_hash,
                     refinement: Some(&refinement),
                     macd: Some(&macd_evidence),
+                    gap: None,
                     other_evidence_hash: &other_hash,
                 },
                 |_| Ok(()),
@@ -1679,6 +1700,7 @@ mod tests {
                     expected_price_gate_hash: &gate_hash,
                     refinement: Some(&refinement),
                     macd: None,
+                    gap: None,
                     other_evidence_hash: &other_hash,
                 },
                 |_| Ok(()),

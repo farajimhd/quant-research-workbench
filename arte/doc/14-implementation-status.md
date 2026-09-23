@@ -17,9 +17,15 @@ yet been attached to the account evaluator. The live lane can now derive it
 from the pending exact activation bar and the V7 view at that same cut. It
 rejects a later or already acknowledged cut instead of recomputing with newer
 levels. The caller still must journal this immutable value before acknowledging
-the cut; no entry path consumes it yet.
-Its configuration declares 100 ms signal-boundary cadence and pins the level
-budget.
+the cut; the live entry path does not consume it yet.
+The shared Strategy 350 account decision now accepts a typed frozen gap. Its
+content hash is part of the versioned decision evidence in both modes.
+Historical exposure increases require the gap, and committed readback rejects
+a missing or changed value. A supplied gap must precede its decision clock.
+This does not pin the gap configuration in the run manifest, prove the live
+activation cut was durably journaled, or connect the complete entry rules.
+The frozen-gap configuration declares 100 ms signal-boundary cadence and pins
+the level budget.
 The broken-high base selector is now a separate Rust calculation. It prefers
 the newest causally confirmed low contained by the narrowest support band;
 only if none exists does it use the highest eligible reclaimed resistance

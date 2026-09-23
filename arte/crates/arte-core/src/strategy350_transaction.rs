@@ -4,6 +4,7 @@ use crate::{
     content_hash,
     event_order::Scope as MarketScope,
     market_structure::scheduler::playback::sources::HistoricalEventProof,
+    strategy350_gap::FrozenGap,
     strategy350_macd::historical::Evidence as HistoricalMacdEvidence,
     strategy350_macd::live::Evidence as LiveMacdEvidence,
     strategy350_price_gate::PriceEvidence,
@@ -26,6 +27,7 @@ pub struct MarketDecisionInput<'a> {
     pub maximum_price_age_ns: u64,
     pub refinement: Option<&'a LiveSelectedBucket>,
     pub macd: Option<&'a LiveMacdEvidence>,
+    pub gap: Option<&'a FrozenGap>,
     pub other_evidence_hash: &'a str,
 }
 
@@ -36,6 +38,7 @@ pub struct LiveReadback<'a> {
     pub maximum_price_age_ns: u64,
     pub refinement: Option<&'a LiveSelectedBucket>,
     pub macd: Option<&'a LiveMacdEvidence>,
+    pub gap: Option<&'a FrozenGap>,
     pub other_evidence_hash: &'a str,
 }
 
@@ -49,6 +52,17 @@ pub struct HistoricalMarketDecisionInput<'a> {
     pub expected_price_gate_hash: &'a str,
     pub refinement: Option<&'a RefinementPlan>,
     pub macd: Option<&'a HistoricalMacdEvidence>,
+    pub gap: Option<&'a FrozenGap>,
+    pub other_evidence_hash: &'a str,
+}
+
+pub struct HistoricalReadback<'a> {
+    pub price: &'a PriceEvidence,
+    pub source: &'a HistoricalEventProof,
+    pub expected_price_gate_hash: &'a str,
+    pub refinement: Option<&'a RefinementPlan>,
+    pub macd: Option<&'a HistoricalMacdEvidence>,
+    pub gap: Option<&'a FrozenGap>,
     pub other_evidence_hash: &'a str,
 }
 
@@ -58,17 +72,22 @@ pub struct CommittedHistoricalDecision<'a> {
 impl<'a> CommittedHistoricalDecision<'a> {
     pub fn from_readback(
         committed: &'a Committed,
-        price: &PriceEvidence,
-        source: &HistoricalEventProof,
-        expected_price_gate_hash: &str,
-        refinement: Option<&RefinementPlan>,
-        macd: Option<&HistoricalMacdEvidence>,
-        other_evidence_hash: &str,
+        request: HistoricalReadback<'_>,
     ) -> Result<Self> {
+        let HistoricalReadback {
+            price,
+            source,
+            expected_price_gate_hash,
+            refinement,
+            macd,
+            gap,
+            other_evidence_hash,
+        } = request;
         require_other_hash(other_evidence_hash)?;
         let decision = committed.decision();
+        validate_optional_gap(gap, &decision.input)?;
         let expected =
-            historical_evidence_hash(price, source, refinement, macd, other_evidence_hash)?;
+            historical_evidence_hash(price, source, refinement, macd, gap, other_evidence_hash)?;
         if decision.evidence_hash != expected {
             return Err(Error::Conflict(
                 "Strategy 350 historical committed evidence differs".into(),
@@ -83,6 +102,7 @@ impl<'a> CommittedHistoricalDecision<'a> {
         if has_exposure(&decision.actions) {
             require_historical_refinement(refinement, source)?;
             require_historical_macd(macd, source, &decision.input)?;
+            require_gap(gap, &decision.input)?;
         }
         Ok(Self { committed })
     }
@@ -112,6 +132,22 @@ fn has_exposure(actions: &[Action]) -> bool {
     actions
         .iter()
         .any(|action| matches!(action, Action::Enter(_) | Action::Add(_)))
+}
+fn require_gap(gap: Option<&FrozenGap>, input: &InputBoundary) -> Result<()> {
+    let gap = gap.ok_or_else(|| Error::Unready("Strategy 350 activation gap missing".into()))?;
+    validate_optional_gap(Some(gap), input)
+}
+fn validate_optional_gap(gap: Option<&FrozenGap>, input: &InputBoundary) -> Result<()> {
+    let Some(gap) = gap else {
+        return Ok(());
+    };
+    gap.validate()?;
+    if gap.activated_at_ns > input.event_time_ns {
+        return Err(Error::Unready(
+            "Strategy 350 activation gap follows decision".into(),
+        ));
+    }
+    Ok(())
 }
 fn require_historical_refinement(
     refinement: Option<&RefinementPlan>,
@@ -177,18 +213,23 @@ fn historical_evidence_hash(
     source: &HistoricalEventProof,
     refinement: Option<&RefinementPlan>,
     macd: Option<&HistoricalMacdEvidence>,
+    gap: Option<&FrozenGap>,
     other_evidence_hash: &str,
 ) -> Result<String> {
     if let Some(macd) = macd {
         macd.require_proof(source)?;
     }
+    if let Some(gap) = gap {
+        gap.validate()?;
+    }
     content_hash(&(
-        "arte.strategy-350-market-decision.v3",
+        "arte.strategy-350-market-decision.v4",
         "historical-modeled",
         price.fingerprint(),
         source.identity_hash()?,
         refinement.map(RefinementPlan::evidence_hash),
         macd.map(HistoricalMacdEvidence::fingerprint),
+        gap.map(FrozenGap::hash).transpose()?,
         other_evidence_hash,
     ))
 }
@@ -196,16 +237,21 @@ fn live_evidence_hash(
     price: &PriceEvidence,
     refinement: Option<&LiveSelectedBucket>,
     macd: Option<&LiveMacdEvidence>,
+    gap: Option<&FrozenGap>,
     other_evidence_hash: &str,
 ) -> Result<String> {
+    if let Some(gap) = gap {
+        gap.validate()?;
+    }
     content_hash(&(
-        "arte.strategy-350-market-decision.v3",
+        "arte.strategy-350-market-decision.v4",
         "live-receipt",
         price.fingerprint(),
         refinement
             .map(LiveSelectedBucket::identity_hash)
             .transpose()?,
         macd.map(LiveMacdEvidence::fingerprint),
+        gap.map(FrozenGap::hash).transpose()?,
         other_evidence_hash,
     ))
 }
@@ -224,6 +270,7 @@ pub fn prepare_historical_market_decision<S: Clone + Serialize>(
         expected_price_gate_hash,
         refinement,
         macd,
+        gap,
         other_evidence_hash,
     } = request;
     require_other_hash(other_evidence_hash)?;
@@ -237,14 +284,16 @@ pub fn prepare_historical_market_decision<S: Clone + Serialize>(
         ));
     }
     price.require_historical_identity(source, &scope, &input, expected_price_gate_hash)?;
+    validate_optional_gap(gap, &input)?;
     let evidence_hash =
-        historical_evidence_hash(price, source, refinement, macd, other_evidence_hash)?;
+        historical_evidence_hash(price, source, refinement, macd, gap, other_evidence_hash)?;
     runtime.prepare_observed(input.clone(), safety, evidence_hash, observe, |state| {
         let actions = calculate(state)?;
         if has_exposure(&actions) {
             price.require_historical_decision(source, &scope, &input, expected_price_gate_hash)?;
             require_historical_refinement(refinement, source)?;
             require_historical_macd(macd, source, &input)?;
+            require_gap(gap, &input)?;
         }
         Ok(actions)
     })
@@ -267,13 +316,15 @@ impl<'a> CommittedMarketDecision<'a> {
             maximum_price_age_ns,
             refinement,
             macd,
+            gap,
             other_evidence_hash,
         } = request;
         let decision = committed.decision();
+        validate_optional_gap(gap, &decision.input)?;
         if let Some(macd) = macd {
             price.require_live_macd(macd, &decision.scope, &decision.input)?;
         }
-        let expected = live_evidence_hash(price, refinement, macd, other_evidence_hash)?;
+        let expected = live_evidence_hash(price, refinement, macd, gap, other_evidence_hash)?;
         if decision.evidence_hash != expected {
             return Err(Error::Conflict(
                 "Strategy 350 committed market evidence differs".into(),
@@ -288,6 +339,7 @@ impl<'a> CommittedMarketDecision<'a> {
         )?;
         if has_exposure(&decision.actions) {
             require_live_refinement(refinement, market_scope, &decision.input)?;
+            require_gap(gap, &decision.input)?;
             return Err(Error::Unready(
                 "Strategy 350 live MACD evidence is not bound to this decision".into(),
             ));
@@ -332,6 +384,7 @@ pub fn prepare_market_decision<S: Clone + Serialize>(
         maximum_price_age_ns,
         refinement,
         macd,
+        gap,
         other_evidence_hash,
     } = request;
     let scope = runtime.scope().clone();
@@ -348,10 +401,11 @@ pub fn prepare_market_decision<S: Clone + Serialize>(
         ));
     }
     price.require_live_identity(market_scope, &scope, &input, expected_price_gate_hash)?;
+    validate_optional_gap(gap, &input)?;
     if let Some(macd) = macd {
         price.require_live_macd(macd, &scope, &input)?;
     }
-    let evidence_hash = live_evidence_hash(price, refinement, macd, other_evidence_hash)?;
+    let evidence_hash = live_evidence_hash(price, refinement, macd, gap, other_evidence_hash)?;
     runtime.prepare_observed(input.clone(), safety, evidence_hash, observe, |state| {
         let actions = calculate(state)?;
         if has_exposure(&actions) {
@@ -363,6 +417,7 @@ pub fn prepare_market_decision<S: Clone + Serialize>(
                 maximum_price_age_ns,
             )?;
             require_live_refinement(refinement, market_scope, &input)?;
+            require_gap(gap, &input)?;
             return Err(Error::Unready(
                 "Strategy 350 live MACD evidence is not bound to this decision".into(),
             ));
