@@ -3,6 +3,7 @@ use crate::{
     content_hash,
     events::Decimal,
     orders::{Bands, Bracket, RiskPolicy, Side},
+    strategy350_transaction::CommittedMarketDecision,
     strategy_dispatch::Action,
     strategy_transaction::Committed,
     Error, Result,
@@ -71,6 +72,50 @@ pub fn bracket(
 ) -> Result<Plan> {
     let decision = committed.decision();
     require_strategy_order_authority(&decision.scope)?;
+    bracket_from_decision(
+        decision,
+        action_index,
+        allocation,
+        now_ns,
+        regular,
+        bands,
+        policy,
+    )
+}
+
+/// Strategy 350 can plan only from a readback-bound price-gate decision.
+/// Cash reservation, market readiness, durable authorization and submission
+/// revalidation are separate mandatory gates downstream.
+pub fn bracket_350(
+    committed: &CommittedMarketDecision<'_>,
+    action_index: usize,
+    allocation: &Allocation,
+    now_ns: u64,
+    regular: bool,
+    bands: Option<&Bands>,
+    policy: &RiskPolicy,
+) -> Result<Plan> {
+    let decision = committed.require_at(now_ns)?;
+    bracket_from_decision(
+        decision,
+        action_index,
+        allocation,
+        now_ns,
+        regular,
+        bands,
+        policy,
+    )
+}
+
+fn bracket_from_decision(
+    decision: &crate::strategy_dispatch::Decision,
+    action_index: usize,
+    allocation: &Allocation,
+    now_ns: u64,
+    regular: bool,
+    bands: Option<&Bands>,
+    policy: &RiskPolicy,
+) -> Result<Plan> {
     if allocation.account != decision.scope.account
         || allocation.instrument != decision.scope.instrument
         || now_ns < decision.input.evaluated_at_ns

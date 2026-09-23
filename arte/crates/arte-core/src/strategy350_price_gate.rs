@@ -908,8 +908,139 @@ mod tests {
         );
         assert_eq!(*account.committed_state(), 0);
         let rows = account.pending_batch().unwrap().records().to_vec();
-        account.acknowledge(&rows).unwrap();
+        let committed = account.acknowledge(&rows).unwrap();
         assert_eq!(*account.committed_state(), 1);
+        assert!(
+            crate::strategy350_transaction::CommittedMarketDecision::from_readback(
+                &committed,
+                market_scope,
+                &evidence,
+                gate_hash,
+                200_000_000,
+                &"d".repeat(64),
+            )
+            .is_err()
+        );
+        let authorized = crate::strategy350_transaction::CommittedMarketDecision::from_readback(
+            &committed,
+            market_scope,
+            &evidence,
+            gate_hash,
+            200_000_000,
+            &"c".repeat(64),
+        )
+        .unwrap();
+        assert_eq!(
+            authorized
+                .require_at(input.evaluated_at_ns)
+                .unwrap()
+                .decision_id,
+            decision.decision_id
+        );
+        assert!(authorized.require_at(2 * S + 200_000_000).is_err());
+        let mut add_input = input.clone();
+        add_input.event_id = "add-bar".into();
+        add_input.source_sequence = 2;
+        add_input.evaluated_at_ns = 2 * S + 150_000_000;
+        let mut add_safety = safety.clone();
+        add_safety.position_quantity = 1;
+        let level = crate::strategy_targets::TargetLevel {
+            geometry: crate::strategy_encounters::Level {
+                id: "resistance".into(),
+                price: 10.,
+                lower: 10.,
+                upper: 10.,
+                role: crate::v7_encounters::ActiveRole::Resistance,
+                confirmed_at_ns: S,
+            },
+            historical: true,
+            transition_from: None,
+            synthetic: false,
+        };
+        let add = crate::strategy_adds::Proposal {
+            confirmed_at_ns: add_input.event_time_ns,
+            tranche_index: 2,
+            tranche_count: 3,
+            broken: level,
+            threshold: 10.,
+            stop: 9.,
+            target: 11.,
+            maximum_buy_price: 10.5,
+        };
+        crate::strategy350_transaction::prepare_market_decision(
+            &mut account,
+            crate::strategy350_transaction::MarketDecisionInput {
+                market_scope,
+                input: add_input,
+                safety: &add_safety,
+                price: &evidence,
+                expected_price_gate_hash: gate_hash,
+                maximum_price_age_ns: 200_000_000,
+                other_evidence_hash: &"e".repeat(64),
+            },
+            |_| Ok(()),
+            |_| Ok(vec![crate::strategy_dispatch::Action::Add(Box::new(add))]),
+        )
+        .unwrap();
+        let add_rows = account.pending_batch().unwrap().records().to_vec();
+        let add_committed = account.acknowledge(&add_rows).unwrap();
+        let add_proof = crate::strategy350_transaction::CommittedMarketDecision::from_readback(
+            &add_committed,
+            market_scope,
+            &evidence,
+            gate_hash,
+            200_000_000,
+            &"e".repeat(64),
+        )
+        .unwrap();
+        let allocation = crate::decision_orders::Allocation {
+            account: "first".into(),
+            instrument: 10,
+            quantity: 1,
+            price_scale: 2,
+            tick: 1,
+            entry_limit: 1000,
+            deadline_ns: 3 * S,
+        };
+        let band = crate::luld::Evidence {
+            provider: 1,
+            instrument: 10,
+            session: 20260922,
+            lower: 800,
+            upper: 1200,
+            scale: 2,
+            effective_at_ns: 2 * S,
+            available_at_ns: 2 * S,
+            official: true,
+        };
+        let risk = crate::orders::RiskPolicy {
+            band_provider: 1,
+            band_session: 20260922,
+            band_buffer_ticks: 3,
+            max_band_age_ns: S,
+        };
+        let plan = crate::decision_orders::bracket_350(
+            &add_proof,
+            0,
+            &allocation,
+            2 * S + 175_000_000,
+            true,
+            Some(&band),
+            &risk,
+        )
+        .unwrap();
+        assert_eq!(plan.bracket.stop, Some(900));
+        assert_eq!(plan.bracket.target, Some(1100));
+        assert!(crate::decision_orders::bracket_350(
+            &add_proof,
+            0,
+            &allocation,
+            2 * S + 200_000_000,
+            true,
+            Some(&band),
+            &risk,
+        )
+        .is_err());
         decision_scope.account = "second".into();
         assert!(evidence
             .require_live_decision(

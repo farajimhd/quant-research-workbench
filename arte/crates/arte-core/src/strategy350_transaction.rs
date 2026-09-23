@@ -5,7 +5,7 @@ use crate::{
     event_order::Scope as MarketScope,
     strategy350_price_gate::PriceEvidence,
     strategy_dispatch::{Action, Decision, InputBoundary, Mode, Safety, StrategyKind},
-    strategy_transaction::Runtime,
+    strategy_transaction::{Committed, Runtime},
     Error, Result,
 };
 use serde::Serialize;
@@ -21,6 +21,66 @@ pub struct MarketDecisionInput<'a> {
     pub expected_price_gate_hash: &'a str,
     pub maximum_price_age_ns: u64,
     pub other_evidence_hash: &'a str,
+}
+
+/// Sealed evidence for planning an exposure increase after journal readback.
+/// It is not broker submission authority and must be rechecked at order time.
+pub struct CommittedMarketDecision<'a> {
+    committed: &'a Committed,
+    price: &'a PriceEvidence,
+    maximum_price_age_ns: u64,
+}
+
+impl<'a> CommittedMarketDecision<'a> {
+    pub fn from_readback(
+        committed: &'a Committed,
+        market_scope: MarketScope,
+        price: &'a PriceEvidence,
+        expected_price_gate_hash: &str,
+        maximum_price_age_ns: u64,
+        other_evidence_hash: &str,
+    ) -> Result<Self> {
+        let decision = committed.decision();
+        let expected = content_hash(&(
+            "arte.strategy-350-market-decision.v1",
+            price.fingerprint(),
+            other_evidence_hash,
+        ))?;
+        if decision.evidence_hash != expected {
+            return Err(Error::Conflict(
+                "Strategy 350 committed market evidence differs".into(),
+            ));
+        }
+        price.require_live_decision(
+            market_scope,
+            &decision.scope,
+            &decision.input,
+            expected_price_gate_hash,
+            maximum_price_age_ns,
+        )?;
+        Ok(Self {
+            committed,
+            price,
+            maximum_price_age_ns,
+        })
+    }
+
+    pub(crate) fn require_at(&self, now_ns: u64) -> Result<&Decision> {
+        let decision = self.committed.decision();
+        let available = self
+            .price
+            .live_available_at_ns()
+            .ok_or_else(|| Error::Unready("Strategy 350 live price availability missing".into()))?;
+        if now_ns < decision.input.evaluated_at_ns
+            || now_ns < available
+            || now_ns - available >= self.maximum_price_age_ns
+        {
+            return Err(Error::Unready(
+                "Strategy 350 price evidence expired before order planning".into(),
+            ));
+        }
+        Ok(decision)
+    }
 }
 
 pub fn prepare_market_decision<S: Clone + Serialize>(
