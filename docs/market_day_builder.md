@@ -39,10 +39,21 @@ remain under the available runtime root. The default output database is
 `q_market_history`. Python needs `pandas_market_calendars`; interactive progress
 uses Rich, with `--progress text` for plain output.
 
-Default resource limits are one active ticker-day query, four ClickHouse threads,
-2 GiB query memory and 600 seconds per query. They can be changed explicitly with
-`--max-threads`, `--max-memory-gb`, and `--query-timeout`. No automatic write retries
-or unbounded worker fan-out occurs.
+The build starts four ticker workers by default (`--workers 1` through `8`).
+Each worker owns one ticker's dates in chronological order and uses its own
+ClickHouse client. The per-query limits are four ClickHouse threads, 2 GiB
+memory, and 600 seconds; with four workers, up to four queries may run at once
+and the per-query memory limits sum to 8 GiB. Tune `--workers`, `--max-threads`,
+`--max-memory-gb`, and `--query-timeout` for the host. No automatic write retries
+or unbounded worker fan-out occurs. A worker failure stops new ticker dispatch,
+cancels active builder queries, and leaves published ticker-day stages resumable.
+
+Progress reports requested dates separately from their seven-calendar-day
+warm-up, counts durable bars and technical ticker-days, and shows active ticker
+stages. Plain text mode emits bounded snapshots; interactive mode keeps a live
+worker panel. The manifest records bounded recent query samples and aggregate
+query timings. Completed per-ticker metrics append to the build's `units.jsonl`
+in the runtime root, avoiding repeated writes of a growing report.
 Planning metadata is limited to 100,000 ticker-days by `--max-plan-units`;
 larger requests fail explicitly rather than truncating the requested range.
 
@@ -147,9 +158,11 @@ The calculation reads canonical events once to produce event-derived rows and
 uses those persisted rows for bars. Integrity verification intentionally performs
 additional canonical scans. The controller does not claim a single total disk
 scan, or that the fastest all-universe implementation has been established.
-`latest.json`, per-build files and immutable `runs/*.json` retain query IDs, client
-elapsed times, and available query-log read/write/memory measurements. Query-log
-publication is asynchronous; missing metrics are explicitly marked unavailable.
+`latest.json`, per-build files and immutable `runs/*.json` retain aggregate
+client timings, recent query IDs, and available query-log read/write/memory
+measurements. Query-log publication is asynchronous; missing metrics are
+explicitly marked unavailable. A controller code change produces a new build
+identity, so stages from a prior controller revision do not silently resume.
 
 ## Validation
 

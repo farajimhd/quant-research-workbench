@@ -8,6 +8,7 @@ automatically included. Never starts a Backtest or changes its consumers.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 import hashlib
@@ -70,6 +71,7 @@ def parse_args(argv=None):
     p.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
     p.add_argument("--runtime", type=Path, default=RUNTIME / "market-day")
     p.add_argument("--max-threads", type=int, default=4)
+    p.add_argument("--workers", type=int, default=4, help="Concurrent ticker workers (1-8); each uses its own bounded ClickHouse client")
     p.add_argument("--max-memory-gb", type=float, default=2.)
     p.add_argument("--query-timeout", type=int, default=600)
     p.add_argument("--max-plan-units", type=int, default=100000,
@@ -86,7 +88,7 @@ def parse_args(argv=None):
             raise ValueError("Use --rebuild OR --build-id")
         if args.build_id and (len(args.build_id)>100 or any(c not in '0123456789abcdef-' for c in args.build_id)):
             raise ValueError("Invalid build ID")
-        if args.max_threads < 1 or not 0 < args.max_memory_gb <= 64 or args.query_timeout < 1 or args.max_plan_units<1:
+        if args.max_threads < 1 or not 1 <= args.workers <= 8 or not 0 < args.max_memory_gb <= 64 or args.query_timeout < 1 or args.max_plan_units<1:
             raise ValueError("Invalid query resource limits")
         args.symbols = sorted(set(x.strip().upper() for x in args.tickers.split(",") if x.strip()))
         if any(len(x) > 32 or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for c in x) for x in args.symbols):
@@ -119,6 +121,7 @@ class Client:
                 max_result_rows=100000, max_result_bytes=16000000, result_overflow_mode="throw"))
         self.active = None
         self.profiles = []
+        self.profile_totals = {}
 
     def query(self, query, label="query", read=True):
         query_id = "market-day-" + uuid.uuid4().hex
@@ -133,7 +136,14 @@ class Client:
             raise
         finally:
             self.active = None
-            self.profiles.append(dict(query_id=query_id, label=label, seconds=time.monotonic()-start))
+            elapsed = time.monotonic()-start
+            total = self.profile_totals.setdefault(label,dict(count=0,seconds=0.,max_seconds=0.))
+            total['count'] += 1
+            total['seconds'] += elapsed
+            total['max_seconds'] = max(total['max_seconds'],elapsed)
+            self.profiles.append(dict(query_id=query_id,label=label,seconds=elapsed))
+            if len(self.profiles)>500:
+                del self.profiles[:len(self.profiles)-500]
 
     def cancel(self):
         if self.active:
@@ -148,29 +158,41 @@ class Client:
 
 
 class Progress:
-    def __init__(self, total, mode="auto"):
-        self.total = total
+    """One durable unit is one published ticker-day stage, not one SQL query."""
+    def __init__(self, bars_total, technical_total, workers, mode="auto"):
+        self.bars_total, self.technical_total = bars_total, technical_total
+        self.workers = workers
         self.completed = self.skipped = self.failed = self.retried = 0
-        self.current = "preflight"
+        self.bars_done = self.technical_done = 0
+        self.active = {}
+        self.current = "building"
         self.started = time.monotonic()
-        self.live = None
+        self.lock = threading.Lock()
+        self.last_text = 0.
         self.stop = threading.Event()
         self.thread = None
+        self.live = None
         if mode == "auto" and sys.stdout.isatty():
             from rich.live import Live
             self.live = Live(self.render(), refresh_per_second=2)
 
     def render(self):
-        active = int(self.current not in ('finished','failed','interrupted'))
-        queued = max(0, self.total-self.completed-self.skipped-self.failed-active)
-        text = (f"Market day | {self.current}\n"
-            f"Completed {self.completed}/{self.total} | skipped {self.skipped} | active {active} | "
-            f"queued {queued} | retried {self.retried} | failed {self.failed} | elapsed {time.monotonic()-self.started:.0f}s")
+        with self.lock:
+            total = self.bars_total + self.technical_total
+            done = self.completed + self.skipped
+            active = list(self.active.values())
+            queued = max(0, total-done-self.failed-len(active))
+            lines = [f"Market day {self.current}  |  workers {self.workers}  |  live_market_ssd",
+                f"Bars {self.bars_done}/{self.bars_total}  |  Technical {self.technical_done}/{self.technical_total}",
+                f"Done {done}/{total}  active {len(active)}  queued {queued}  "
+                f"failed {self.failed}  elapsed {time.monotonic()-self.started:.0f}s"]
+            lines.extend(f"  {item}" for item in active[:self.workers])
+            if not active and self.current == 'building':
+                lines.append('  Waiting for next ticker or final certification')
         if self.live:
             from rich.panel import Panel
-            from rich.text import Text
-            return Panel(Text(text), title="ClickHouse · live_market_ssd")
-        return text
+            return Panel('\n'.join(lines), title='ClickHouse market-day build', expand=False)
+        return '\n'.join(lines)
 
     def __enter__(self):
         if self.live:
@@ -182,18 +204,34 @@ class Progress:
             self.thread.start()
         return self
 
-    def update(self, current):
-        self.current = current
-        if not self.live:
-            print(self.render(), flush=True)
+    def update(self, ticker, day, stage):
+        with self.lock:
+            self.active[ticker] = f"{day}  {ticker}  {stage}"
+        self._text_snapshot()
+
+    def finish(self, ticker, kind, skipped=False):
+        with self.lock:
+            self.active.pop(ticker, None)
+            self.skipped += int(skipped)
+            self.completed += int(not skipped)
+            if kind == 'bars': self.bars_done += 1
+            else: self.technical_done += 1
+        self._text_snapshot(force=True)
+
+    def _text_snapshot(self, force=False):
+        if self.live: return
+        now = time.monotonic()
+        if force and now-self.last_text < 10: return
+        if not force and now-self.last_text < 10: return
+        self.last_text = now
+        print(self.render(), flush=True)
 
     def __exit__(self, error_type, *_):
         if error_type:
             self.current = 'interrupted' if issubclass(error_type,KeyboardInterrupt) else 'failed'
             self.failed += int(self.current=='failed')
         self.stop.set()
-        if self.thread:
-            self.thread.join()
+        if self.thread: self.thread.join()
         if self.live:
             self.live.update(self.render())
             self.live.stop()
@@ -439,6 +477,82 @@ def build_lock(path):
             msvcrt.locking(stream.fileno(),msvcrt.LK_UNLCK,1)
 
 
+def build_ticker(args, build, plan, ticker, rows, requested, report, report_path, unit_log,
+                 checkpoint_clock,
+                 state_lock, progress, stop, clients):
+    """Own one ticker's chronological bars and then its requested technical days."""
+    client = Client(args)
+    with state_lock:
+        clients.append(client)
+
+    def mark(day, attempt, stage):
+        with state_lock:
+            report['active'][ticker] = dict(day=str(day),ticker=ticker,attempt=attempt,stage=stage)
+            if time.monotonic()-checkpoint_clock[0]>=30:
+                save(report_path,report)
+                checkpoint_clock[0]=time.monotonic()
+        progress.update(ticker,day,stage)
+
+    try:
+        for row in rows:
+            if stop.is_set(): return client
+            day = date.fromisoformat(row['source_date'])
+            mark(day,'','source verification')
+            source = source_evidence(client,row)
+            source_hash = digest([source,plan['rules'],sql.VERSION])
+            if completed(client,args.database,build,day,ticker,'bars',source_hash):
+                if not completed(client,args.database,build,day,ticker,'events',source_hash):
+                    raise ValueError(f'{day} {ticker}: published bars lack certified event indicators')
+                progress.finish(ticker,'bars',skipped=True)
+                continue
+            attempt = str(uuid.uuid4())
+            mark(day,attempt,'events / VWAP / NBBO')
+            client.query(sql.events_sql(args.database,build,day,ticker,attempt,plan['rules']),"events",False)
+            mark(day,attempt,'100ms bars')
+            client.query(sql.base_sql(args.database,build,day,ticker,attempt),"100ms",False)
+            mark(day,attempt,'fine / higher rollups')
+            client.query(sql.rollup_sql(args.database,build,day,ticker,attempt,100,(1000,5000,10000,30000)),"fine_rollup",False)
+            client.query(sql.rollup_sql(args.database,build,day,ticker,attempt,30000,(60000,300000,3600000)),"higher_rollup",False)
+            validate_bars(client,args.database,build,day,ticker,attempt)
+            metrics=validate_events(client,args.database,build,day,ticker,attempt,source)
+            if source_evidence(client,row) != source:
+                raise ValueError(f'{day} {ticker}: canonical source changed during build')
+            for stage in ('events','bars'):
+                result=evidence(client,args.database,stage,build,day,ticker,attempt)
+                if result['n'] != result['unique_keys']:
+                    raise ValueError(f'{day} {ticker}: duplicate {stage} output keys')
+                publish(client,args.database,build,day,ticker,stage,attempt,source_hash,result)
+            with state_lock:
+                with unit_log.open('a',encoding='utf-8') as stream:
+                    stream.write(json.dumps(dict(day=str(day),ticker=ticker,metrics=metrics),sort_keys=True)+'\n')
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            progress.finish(ticker,'bars')
+
+        for row in rows:
+            if row['source_date'] not in requested or stop.is_set(): continue
+            day = date.fromisoformat(row['source_date'])
+            start = day-timedelta(days=sql.WARMUP_DAYS)
+            mark(day,'','indicator dependencies')
+            dependencies = client.query(f"SELECT session_date,attempt_id,source_hash,output_hash FROM {sql.table(args.database,'units')} FINAL WHERE build_id={sql.literal(build)} AND ticker={sql.literal(ticker)} AND stage='bars' AND status='complete' AND session_date BETWEEN {sql.literal(start)} AND {sql.literal(day)} ORDER BY session_date", "indicator_dependencies")
+            dependency_hash = digest(dependencies)
+            if completed(client,args.database,build,day,ticker,'technical',dependency_hash):
+                progress.finish(ticker,'technical',skipped=True)
+                continue
+            attempt = str(uuid.uuid4())
+            mark(day,attempt,'EMA / MACD / RSI / ATR')
+            client.query(sql.technical_sql(args.database,build,day,ticker,attempt,start,plan['splits']),"technical",False)
+            result = validate_technical(client,args.database,build,day,ticker,attempt)
+            if result['n'] != result['unique_keys']:
+                raise ValueError(f'{day} {ticker}: duplicate indicator keys')
+            publish(client,args.database,build,day,ticker,'technical',attempt,dependency_hash,result)
+            progress.finish(ticker,'technical')
+        return client
+    finally:
+        with state_lock:
+            report['active'].pop(ticker,None)
+
+
 def run(args):
     runtime = args.runtime.resolve()
     if not RUNTIME.is_dir() or not runtime.is_relative_to(RUNTIME.resolve()):
@@ -476,18 +590,19 @@ def run(args):
                 if not saved_path.is_file() or json.loads(saved_path.read_text())['definition']!=json.loads(json.dumps(definition,default=str)):
                     raise ValueError('Explicit build ID has different definitions, source coverage, or runtime owner')
                 build=args.build_id
-            report.update(build_id=build, definition=definition, status='planned',units=[])
+            report.update(build_id=build, definition=definition, status='planned',unit_log=str(runtime / (build+'.units.jsonl')))
             existing=runtime / (build+'.json')
-            if existing.is_file():
-                report['units']=json.loads(existing.read_text()).get('units',[])
             save(report_path,report)
             selected=sum(row['selected_ticker_days'] for row in plan['population'] if row['session_date'] in plan['requested'])
-            scope=f"Range {args.start} through {args.end} inclusive | sessions {len(plan['requested'])} | tradable ticker-days {selected}"
+            warmup=len(plan['units'])-selected
+            scope=(f"Requested {args.start} through {args.end} inclusive | sessions {len(plan['requested'])} | "
+                f"requested ticker-days {selected} | prerequisite warm-up ticker-days {warmup} "
+                f"({plan['sessions'][0]} through {plan['sessions'][-1]})")
             if not args.symbols:
                 excluded=sum(row['excluded_canonical_tickers'] for row in plan['population'] if row['session_date'] in plan['requested'])
                 without_source=sum(row['tradable_without_canonical_events'] for row in plan['population'] if row['session_date'] in plan['requested'])
                 scope+=f" | excluded non-tradable {excluded} | tradable without canonical events {without_source}"
-            print(f"{scope} | policy {sql.POLICY}",flush=True)
+            print(f"{scope} | policy {sql.POLICY} | workers {args.workers}",flush=True)
             if args.plan_only:
                 print(f"Read-only plan complete: {len(plan['units'])} ticker-days including warm-up. {report_path}",flush=True)
                 return 0
@@ -499,56 +614,48 @@ def run(args):
             client.query(f"INSERT INTO {sql.table(args.database,'builds')} VALUES ({sql.literal(build)},toDate({sql.literal(args.end)}),{sql.literal(json.dumps(definition,sort_keys=True,default=str))},'building',now64(6))",'build_started',False)
             save(runtime / (build+'.json'),report)
             wanted = [r for r in plan['units'] if r['source_date'] in plan['requested']]
-            with Progress(len(plan['units'])+len(wanted),args.progress) as progress:
-                for row in plan['units']:
-                    day,ticker = date.fromisoformat(row['source_date']),row['ticker']
-                    progress.update(f"{day} {ticker} - source verification")
-                    source = source_evidence(client,row)
-                    source_hash = digest([source,plan['rules'],sql.VERSION])
-                    if completed(client,args.database,build,day,ticker,'bars',source_hash):
-                        if not completed(client,args.database,build,day,ticker,'events',source_hash):
-                            raise ValueError('Published bars lack certified event indicators')
-                        progress.skipped += 1
-                        continue
-                    attempt = str(uuid.uuid4())
-                    report['active'] = dict(day=str(day),ticker=ticker,attempt=attempt,stage='events')
-                    save(report_path,report)
-                    progress.update(f"{day} {ticker} - events / VWAP / NBBO")
-                    client.query(sql.events_sql(args.database,build,day,ticker,attempt,plan['rules']),"events",False)
-                    progress.update(f"{day} {ticker} - 100ms bars")
-                    client.query(sql.base_sql(args.database,build,day,ticker,attempt),"100ms",False)
-                    progress.update(f"{day} {ticker} - fine / higher rollups")
-                    client.query(sql.rollup_sql(args.database,build,day,ticker,attempt,100,(1000,5000,10000,30000)),"fine_rollup",False)
-                    client.query(sql.rollup_sql(args.database,build,day,ticker,attempt,30000,(60000,300000,3600000)),"higher_rollup",False)
-                    validate_bars(client,args.database,build,day,ticker,attempt)
-                    metrics=validate_events(client,args.database,build,day,ticker,attempt,source)
-                    report['units'].append(dict(day=str(day),ticker=ticker,metrics=metrics))
-                    if source_evidence(client,row) != source:
-                        raise ValueError("Canonical source changed during the build")
-                    for stage in ('events','bars'):
-                        result = evidence(client,args.database,stage,build,day,ticker,attempt)
-                        if result['n'] != result['unique_keys']:
-                            raise ValueError("Duplicate output keys")
-                        publish(client,args.database,build,day,ticker,stage,attempt,source_hash,result)
-                    progress.completed += 1
-                for row in wanted:
-                    day,ticker = date.fromisoformat(row['source_date']),row['ticker']
-                    start = day-timedelta(days=sql.WARMUP_DAYS)
-                    dependencies = client.query(f"SELECT session_date,attempt_id,source_hash,output_hash FROM {sql.table(args.database,'units')} FINAL WHERE build_id={sql.literal(build)} AND ticker={sql.literal(ticker)} AND stage='bars' AND status='complete' AND session_date BETWEEN {sql.literal(start)} AND {sql.literal(day)} ORDER BY session_date", "indicator_dependencies")
-                    dependency_hash = digest(dependencies)
-                    if completed(client,args.database,build,day,ticker,'technical',dependency_hash):
-                        progress.skipped += 1
-                        continue
-                    attempt = str(uuid.uuid4())
-                    report['active'] = dict(day=str(day),ticker=ticker,attempt=attempt,stage='technical')
-                    save(report_path,report)
-                    progress.update(f"{day} {ticker} - EMA / MACD / RSI / ATR")
-                    client.query(sql.technical_sql(args.database,build,day,ticker,attempt,start,plan['splits']),"technical",False)
-                    result = validate_technical(client,args.database,build,day,ticker,attempt)
-                    if result['n'] != result['unique_keys']:
-                        raise ValueError("Duplicate indicator keys")
-                    publish(client,args.database,build,day,ticker,'technical',attempt,dependency_hash,result)
-                    progress.completed += 1
+            by_ticker = {}
+            for row in plan['units']:
+                by_ticker.setdefault(row['ticker'],[]).append(row)
+            for rows in by_ticker.values():
+                rows.sort(key=lambda row:row['source_date'])
+            state_lock = threading.Lock()
+            stop = threading.Event()
+            clients = []
+            checkpoint_clock = [time.monotonic()]
+            report['active'] = {}
+            with Progress(len(plan['units']),len(wanted),min(args.workers,len(by_ticker)),args.progress) as progress:
+                with ThreadPoolExecutor(max_workers=min(args.workers,len(by_ticker)),thread_name_prefix='market-day') as pool:
+                    pending = {}
+                    ticker_iter = iter(by_ticker.items())
+                    def submit_next():
+                        if stop.is_set(): return False
+                        try: ticker, rows = next(ticker_iter)
+                        except StopIteration: return False
+                        future = pool.submit(build_ticker,args,build,plan,ticker,rows,set(plan['requested']),
+                            report,report_path,runtime / (build+'.units.jsonl'),checkpoint_clock,
+                            state_lock,progress,stop,clients)
+                        pending[future] = ticker
+                        return True
+                    for _ in range(min(args.workers,len(by_ticker))): submit_next()
+                    try:
+                        while pending:
+                            ready, _ = wait(pending,timeout=.5,return_when=FIRST_COMPLETED)
+                            for future in ready:
+                                ticker = pending.pop(future)
+                                try: future.result()
+                                except Exception as error:
+                                    stop.set()
+                                    raise RuntimeError(f'{ticker}: {error}') from error
+                                submit_next()
+                    except BaseException:
+                        stop.set()
+                        for worker_client in clients:
+                            try: worker_client.cancel()
+                            except Exception: pass
+                        for future in pending:
+                            future.cancel()
+                        raise
                 storage_preflight(client,args.database,True)
                 if source_plan(client,args) != plan:
                     raise ValueError("Source certificates or rules changed during the build")
@@ -574,6 +681,15 @@ def run(args):
                     save(report_path,report)
                     raise RuntimeError('Could not publish final build status; inspect latest.json') from None
             profiles=list(client.profiles)
+            totals=dict(client.profile_totals)
+            for worker_client in locals().get('clients',[]):
+                profiles.extend(worker_client.profiles)
+                for label, values in worker_client.profile_totals.items():
+                    aggregate=totals.setdefault(label,dict(count=0,seconds=0.,max_seconds=0.))
+                    aggregate['count']+=values['count']
+                    aggregate['seconds']+=values['seconds']
+                    aggregate['max_seconds']=max(aggregate['max_seconds'],values['max_seconds'])
+            profiles=profiles[-1000:]
             try:
                 ids=','.join(sql.literal(p['query_id']) for p in profiles)
                 measurements=client.query(f"SELECT query_id,query_duration_ms,memory_usage,read_rows,read_bytes,written_rows,written_bytes FROM system.query_log WHERE event_date>=today()-1 AND type='QueryFinish' AND query_id IN ({ids})",'query_metrics') if ids else []
@@ -584,6 +700,7 @@ def run(args):
             except Exception:
                 report['metrics_note']='Server query metrics unavailable; client elapsed times retained.'
             report['profiles'] = profiles
+            report['query_summary'] = totals
             save(report_path,report)
             runs=runtime / 'runs'
             runs.mkdir(exist_ok=True)

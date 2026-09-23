@@ -20,6 +20,20 @@ from pipelines.market_sip.events import market_day_sql as S
 
 
 class Arguments(unittest.TestCase):
+    def test_text_progress_reports_durable_units_and_active_tickers(self):
+        progress=B.Progress(12,2,2,'text')
+        with redirect_stdout(io.StringIO()):
+            progress.update('AADX','2026-09-11','100ms bars')
+            progress.update('AEG','2026-09-18','EMA / MACD / RSI / ATR')
+            progress.finish('AADX','bars')
+        output=progress.render()
+        self.assertIn('Bars 1/12',output)
+        self.assertIn('Technical 0/2',output)
+        self.assertIn('active 1',output)
+        self.assertIn('2026-09-18  AEG',output)
+        self.assertNotIn('\x1b[',output)
+        self.assertTrue(all(len(line)<80 for line in output.splitlines()))
+
     def test_single_and_inclusive_range(self):
         a=B.parse_args(['--date','2026-09-18'])
         self.assertEqual((a.start,a.end),(date(2026,9,18),date(2026,9,18)))
@@ -268,7 +282,7 @@ class ClickHouseParity(unittest.TestCase):
     def test_runnable_interruption_and_inclusive_range_resume(self):
         runtime=B.RUNTIME / 'market-day-tests' / uuid.uuid4().hex
         args=B.parse_args(['--start-date','2026-09-17','--end-date','2026-09-18',
-            '--tickers','AADX','--database',self.db,'--runtime',str(runtime),'--progress','text'])
+            '--tickers','AADX,AEG','--workers','2','--database',self.db,'--runtime',str(runtime),'--progress','text'])
         real=B.Client
         class InterruptOnce(real):
             def query(self,query,label='query',read=True):
@@ -284,8 +298,14 @@ class ClickHouseParity(unittest.TestCase):
         report=json.loads((runtime/'latest.json').read_text())
         self.assertEqual(report['status'],'core_complete')
         self.assertEqual(report['completed'],0)
-        self.assertEqual(report['skipped'],9)
+        self.assertEqual(report['skipped'],18)
         self.assertEqual(report['definition']['plan']['requested'],['2026-09-17','2026-09-18'])
+        published=self.c.query(f"SELECT ticker,stage,count() AS n FROM {S.table(self.db,'units')} FINAL "
+            f"WHERE build_id={S.literal(report['build_id'])} AND status='complete' "
+            "GROUP BY ticker,stage ORDER BY ticker,stage",'published_parallel')
+        self.assertEqual({(row['ticker'],row['stage']):int(row['n']) for row in published},
+            {('AADX','bars'):7,('AADX','events'):7,('AADX','technical'):2,
+             ('AEG','bars'):7,('AEG','events'):7,('AEG','technical'):2})
 
 
 if __name__=='__main__': unittest.main()
