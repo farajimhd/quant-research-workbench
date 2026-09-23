@@ -5,22 +5,26 @@ use crate::{
     bar_catalogue::{Column, Complete, BASE_INTERVAL_NS},
     boolean_compute::Evaluation,
     content_hash,
+    execution_interval::ExecutionInterval,
     seed_storage::Object,
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: &str = "arte.strategy-350-early-squeeze.v1";
+pub const VERSION: &str = "arte.strategy-350-early-squeeze.v2";
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub execution_interval: ExecutionInterval,
     /// Five basis points is the inspected 0.05% source rule.
     pub minimum_move_bps: u32,
     pub source_algorithm_hash: String,
 }
 impl Config {
     pub fn hash(&self) -> Result<String> {
-        if self.minimum_move_bps == 0
+        self.execution_interval.validate()?;
+        if self.execution_interval != ExecutionInterval::Fixed(BASE_INTERVAL_NS)
+            || self.minimum_move_bps == 0
             || self.minimum_move_bps > 10_000
             || self.source_algorithm_hash.len() != 64
             || !self
@@ -311,7 +315,7 @@ impl State {
     }
     pub fn checkpoint(&self) -> Result<Object> {
         let saved = Saved {
-            version: 1,
+            version: 2,
             scope_hash: self.scope_hash.clone(),
             config_hash: self.config.hash()?,
             session_start_ns: self.session_start_ns,
@@ -343,7 +347,7 @@ impl State {
         }
         let saved: Saved = serde_json::from_slice(&object.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
-        if saved.version != 1
+        if saved.version != 2
             || saved.scope_hash != scope_hash
             || saved.config_hash != config.hash()?
             || saved.session_start_ns != session_start_ns
@@ -471,6 +475,7 @@ mod tests {
     const S: u64 = 1_000_000_000;
     fn config() -> Config {
         Config {
+            execution_interval: ExecutionInterval::Fixed(BASE_INTERVAL_NS),
             minimum_move_bps: 5,
             source_algorithm_hash: "a".repeat(64),
         }
@@ -514,6 +519,12 @@ mod tests {
         assert_eq!(state.first_occurrence_end_ns(), None);
         assert!(Config {
             minimum_move_bps: 0,
+            ..config()
+        }
+        .hash()
+        .is_err());
+        assert!(Config {
+            execution_interval: ExecutionInterval::Events,
             ..config()
         }
         .hash()

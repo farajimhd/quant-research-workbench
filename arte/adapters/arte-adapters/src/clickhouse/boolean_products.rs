@@ -818,6 +818,9 @@ mod tests {
     fn first_squeeze_occurrence_prepares_latched_session_signal() {
         let source = bar();
         let config = arte_core::strategy350_signal::Config {
+            execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                100_000_000,
+            ),
             minimum_move_bps: 5,
             source_algorithm_hash: "a".repeat(64),
         };

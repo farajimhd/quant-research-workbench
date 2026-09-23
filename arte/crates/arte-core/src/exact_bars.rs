@@ -515,6 +515,9 @@ mod tests {
         .unwrap();
         let mut signal = State::new_live(
             Config {
+                execution_interval: crate::execution_interval::ExecutionInterval::Fixed(
+                    INTERVAL_NS,
+                ),
                 minimum_move_bps: 5,
                 source_algorithm_hash: "b".repeat(64),
             },
@@ -551,6 +554,9 @@ mod tests {
             .unwrap());
         let mut wrong = State::new_live(
             Config {
+                execution_interval: crate::execution_interval::ExecutionInterval::Fixed(
+                    INTERVAL_NS,
+                ),
                 minimum_move_bps: 5,
                 source_algorithm_hash: "b".repeat(64),
             },

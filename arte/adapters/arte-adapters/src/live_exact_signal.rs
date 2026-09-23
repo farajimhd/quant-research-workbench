@@ -467,6 +467,9 @@ mod tests {
         .unwrap();
         let signal = State::new_live(
             Config {
+                execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                    100_000_000,
+                ),
                 minimum_move_bps: 5,
                 source_algorithm_hash: "b".repeat(64),
             },
@@ -503,6 +506,9 @@ mod tests {
             size_scale: 0,
             source_generation_hash: &generation,
             signal_config: Config {
+                execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                    100_000_000,
+                ),
                 minimum_move_bps: 5,
                 source_algorithm_hash: "b".repeat(64),
             },
@@ -597,6 +603,9 @@ mod tests {
         .unwrap();
         let signal = State::new_live(
             Config {
+                execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                    100_000_000,
+                ),
                 minimum_move_bps: 5,
                 source_algorithm_hash: "b".repeat(64),
             },
@@ -666,6 +675,9 @@ mod tests {
                 size_scale: 0,
                 source_generation_hash: &generation,
                 signal_config: Config {
+                    execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(
+                        100_000_000,
+                    ),
                     minimum_move_bps: 5,
                     source_algorithm_hash: "b".repeat(64),
                 },

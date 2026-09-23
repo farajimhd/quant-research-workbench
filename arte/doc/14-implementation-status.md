@@ -2,6 +2,11 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+The Strategy 350 Early Squeeze signal configuration now explicitly pins its
+100 ms execution interval. Event cadence or a different fixed interval is
+rejected, and the interval participates in its configuration hash and recovery
+identity. This does not complete cadence binding for every producer.
+
 Execution cadence is now a required field in the new shared Rust computation
 contract. It supports real-time events or a fixed 100 ms multiple. Its identity
 hash changes when cadence changes. The contract covers strategy, Watchlist,
