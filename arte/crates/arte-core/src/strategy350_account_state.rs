@@ -87,6 +87,12 @@ impl State {
     pub fn reentry(&self) -> &ReentryState {
         &self.reentry
     }
+    pub fn require_projected_position(
+        &self,
+        position: Option<&crate::execution_positions::Position>,
+    ) -> Result<()> {
+        self.reentry.require_projected_position(position)
+    }
     pub fn reentry_mut(&mut self) -> &mut ReentryState {
         &mut self.reentry
     }

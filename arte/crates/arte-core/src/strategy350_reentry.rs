@@ -8,6 +8,7 @@ use crate::{
     events::{Observation, Payload},
     execution_events::{Direction, Fill, Leg},
     execution_interval::ExecutionInterval,
+    execution_positions::Position,
     trade_eligibility::Pinned,
     Error, Result,
 };
@@ -207,6 +208,22 @@ impl State {
     }
     pub fn active(&self) -> bool {
         self.active.is_some()
+    }
+    /// The fill journal's strategy-attributed projection is the position
+    /// authority. Never evaluate reentry against an unprojected fill lifecycle.
+    pub fn require_projected_position(&self, position: Option<&Position>) -> Result<()> {
+        let held = self.active.as_ref().map_or(0, |active| active.quantity);
+        let projected = position.map_or(0, |position| position.quantity);
+        if held != projected
+            || position.is_some_and(|position| {
+                position.quantity > 0 && position.direction != Some(Direction::Buy)
+            })
+        {
+            return Err(Error::Unready(
+                "Strategy 350 reentry and committed position differ".into(),
+            ));
+        }
+        Ok(())
     }
     fn fill(&self, fill: &Fill) -> Result<()> {
         fill.id()?;
@@ -540,6 +557,38 @@ mod tests {
             100 * S,
         )
         .unwrap()
+    }
+    #[test]
+    fn reentry_requires_the_committed_strategy_position() {
+        use crate::execution_positions::{Key, Projection};
+        let policy = policy();
+        let config = config(&policy);
+        let mut state = state(&config);
+        state.require_projected_position(None).unwrap();
+        let trade = event(2 * S, 1, "10");
+        state
+            .evaluate_flat_trade(&trade, &policy, 2 * S, "r1", &config)
+            .unwrap();
+        let entry = fill(3 * S, 1, Leg::Entry, Direction::Buy, 2);
+        state
+            .record_entry_fill(&entry, "r1", &trade, &policy, 2 * S, &config)
+            .unwrap();
+        assert!(state.require_projected_position(None).is_err());
+        let mut projection = Projection::new(1, 8, 8).unwrap();
+        let key = Key::from_fill(&entry).unwrap();
+        projection.apply(&entry).unwrap();
+        state
+            .require_projected_position(projection.position(&key))
+            .unwrap();
+        let exit = fill(4 * S, 2, Leg::Exit, Direction::Sell, 1);
+        projection.apply(&exit).unwrap();
+        assert!(state
+            .require_projected_position(projection.position(&key))
+            .is_err());
+        state.record_exit_fill(&exit, &config).unwrap();
+        state
+            .require_projected_position(projection.position(&key))
+            .unwrap();
     }
     #[test]
     fn target_fill_and_actual_flat_exit_control_causal_reentry() {

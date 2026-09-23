@@ -41,6 +41,10 @@ pub trait StateContract: Clone + Serialize {
     fn validate_hot(&self, effective: &Config) -> Result<()>;
     fn require_owner(&self, scope: &arte_core::strategy_dispatch::Scope) -> Result<()>;
     fn require_market_scope(&self, scope: arte_core::event_order::Scope) -> Result<()>;
+    fn require_projected_position(
+        &self,
+        position: Option<&arte_core::execution_positions::Position>,
+    ) -> Result<()>;
 }
 impl StateContract for arte_core::strategy350_account_state::State {
     fn validate_for(&self, effective: &Config) -> Result<()> {
@@ -54,6 +58,12 @@ impl StateContract for arte_core::strategy350_account_state::State {
     }
     fn require_market_scope(&self, scope: arte_core::event_order::Scope) -> Result<()> {
         arte_core::strategy350_account_state::State::require_market_scope(self, scope)
+    }
+    fn require_projected_position(
+        &self,
+        position: Option<&arte_core::execution_positions::Position>,
+    ) -> Result<()> {
+        arte_core::strategy350_account_state::State::require_projected_position(self, position)
     }
 }
 
@@ -69,6 +79,12 @@ impl StateContract for u64 {
         Ok(())
     }
     fn require_market_scope(&self, _scope: arte_core::event_order::Scope) -> Result<()> {
+        Ok(())
+    }
+    fn require_projected_position(
+        &self,
+        _position: Option<&arte_core::execution_positions::Position>,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -304,6 +320,9 @@ impl<S: StateContract> Accounts<S> {
         slot.runtime
             .committed_state()
             .require_market_scope(view.market_scope())?;
+        slot.runtime
+            .committed_state()
+            .require_projected_position(controller.strategy_position(slot.runtime.scope())?)?;
         if !boundary.due_for(slot.route) {
             return Err(Error::Unready(
                 "Strategy 350 decision boundary is outside declared interval".into(),
