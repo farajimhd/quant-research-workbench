@@ -49,6 +49,14 @@ impl Plan {
         Ok(())
     }
 }
+fn require_strategy_order_authority(scope: &crate::strategy_dispatch::Scope) -> Result<()> {
+    if scope.strategy_instance == crate::strategy350_catalogue::STRATEGY {
+        return Err(Error::Unready(
+            "Strategy 350 order requires causal price-gate decision proof".into(),
+        ));
+    }
+    Ok(())
+}
 /// The selected candidate is long-only. Do not infer a short/reversal from quantity.
 /// Entry and add plans still require cash reservation, market readiness, durable
 /// authorization and a final submission-time revalidation in OrderLedger.
@@ -62,6 +70,7 @@ pub fn bracket(
     policy: &RiskPolicy,
 ) -> Result<Plan> {
     let decision = committed.decision();
+    require_strategy_order_authority(&decision.scope)?;
     if allocation.account != decision.scope.account
         || allocation.instrument != decision.scope.instrument
         || now_ns < decision.input.evaluated_at_ns
@@ -119,6 +128,24 @@ pub fn bracket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::strategy_dispatch::{Mode, Scope};
+    #[test]
+    fn strategy_350_cannot_use_ungated_generic_order_planner() {
+        let mut scope = Scope {
+            run_id: "run".into(),
+            mode: Mode::Backtest,
+            account: "account".into(),
+            strategy_instance: crate::strategy350_catalogue::STRATEGY.into(),
+            instrument: 10,
+            code_hash: "code".into(),
+            config_hash: "config".into(),
+        };
+        assert!(require_strategy_order_authority(&scope).is_err());
+        scope.mode = Mode::Live;
+        assert!(require_strategy_order_authority(&scope).is_err());
+        scope.strategy_instance = "independent-candidate".into();
+        assert!(require_strategy_order_authority(&scope).is_ok());
+    }
     #[test]
     fn exact_conversion_never_rounds_or_overflows() {
         assert_eq!(exact_price(10.25, 2).unwrap(), 1025);
