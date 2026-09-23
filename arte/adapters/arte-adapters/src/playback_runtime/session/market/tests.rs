@@ -770,6 +770,43 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         .unwrap();
     assert_eq!(execution_images.len(), 2);
     assert_eq!(execution_images[1].root.id, execution_image.root.id);
+    let graph_limits = crate::playback_runtime::multi::checkpoint::Limits {
+        maximum_bytes: 1_000_000,
+        execution: execution_limits,
+        portfolio: portfolio_limits,
+    };
+    let mut graph = session
+        .controller
+        .capture_strategy350_graph(
+            &session.strategy,
+            &mut session.portfolio,
+            &combined,
+            &startup_hash,
+            &cut,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &graph_limits,
+        )
+        .unwrap();
+    assert_eq!(graph.markets.len(), 2);
+    assert_eq!(graph.strategies.len(), 2);
+    assert_eq!(graph.executions.len(), 2);
+    graph
+        .verify_pins(&graph.root.id, &combined, &startup_hash, &cut, 1_000_000)
+        .unwrap();
+    assert!(graph
+        .verify_pins(&"0".repeat(64), &combined, &startup_hash, &cut, 1_000_000)
+        .is_err());
+    assert!(graph
+        .verify_pins(&graph.root.id, &combined, &startup_hash, &cut, 1)
+        .is_err());
+    assert!(graph
+        .verify_pins(&graph.root.id, &combined, &"0".repeat(64), &cut, 1_000_000)
+        .is_err());
+    graph.strategies.get_mut(&2).unwrap().root = all_strategy_images[&1].root.clone();
+    assert!(graph
+        .verify_pins(&graph.root.id, &combined, &startup_hash, &cut, 1_000_000)
+        .is_err());
     session
         .controller
         .seed_test_order(

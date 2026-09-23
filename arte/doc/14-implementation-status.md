@@ -4715,3 +4715,12 @@ is bound to its scope, local head and the global cut. The two-ticker offline
 test covers all shards, wrong-cut rejection and byte bounds. These market
 images still need an independently verified whole-run publication root and
 restore path. No service ran.
+
+An unpublished multi-ticker graph now pins the shared portfolio and all
+market, Strategy 350 account, and simulated execution images under the run
+manifest, startup identity and selected cut. Capture uses one synchronous
+in-memory owner view. Pin verification checks object hashes, exact component
+sets, the selected head, and aggregate byte budget. The two-ticker offline
+test rejects a wrong expected root and a substituted standby strategy root.
+This graph is not a durable publication or semantic restore. It cannot
+authorize replay acknowledgement or trading. No service ran.

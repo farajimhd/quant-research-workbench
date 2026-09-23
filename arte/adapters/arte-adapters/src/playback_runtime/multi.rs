@@ -18,6 +18,8 @@ use arte_core::{
     Error, Result,
 };
 use std::collections::{BTreeMap, BTreeSet};
+#[path = "multi_checkpoint.rs"]
+pub mod checkpoint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MultiPoll {
