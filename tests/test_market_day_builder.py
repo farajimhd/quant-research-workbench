@@ -141,6 +141,43 @@ class ClickHouseParity(unittest.TestCase):
         self.assertEqual(bars[0]['trade_count'],4)
         B.storage_preflight(self.c,self.db,True)
 
+    def test_delayed_flag_excludes_only_flagged_trades_across_session(self):
+        # Include a quote, timely and unknown-clock trades before 04:05, and
+        # delayed trades on both sides of 04:05. Only bit 0x80 excludes trades.
+        values=[(0,0,10200,9800,20.,0),
+            (100000,1,10000,0,5.,64),
+            (200000,1,10000,0,7.,192),
+            (300000,1,10000,0,3.,0),
+            (360000000,1,10000,0,11.,192),
+            (360100000,1,10000,0,2.,64)]
+        source=' UNION ALL '.join(
+            f"SELECT toUInt64({S.bounds(self.day,'04:00:00')}+{offset}) AS sip_timestamp_us,"
+            f"toUInt64({ordinal}) AS ordinal,toUInt8({kind|6|flags}) AS event_meta,"
+            f"toUInt32({primary}) AS price_primary_int,toUInt32({secondary}) AS price_secondary_int,"
+            f"toFloat32({size}) AS size_primary,toFloat32(20) AS size_secondary,"
+            "toUInt8(0) AS condition_token_1,toUInt8(0) AS condition_token_2,"
+            "toUInt8(0) AS condition_token_3,toUInt8(0) AS condition_token_4,"
+            "toUInt8(0) AS condition_token_5"
+            for ordinal,(offset,kind,primary,secondary,size,flags) in enumerate(values))
+        self.c.query(S.events_sql(self.db,self.build,self.day,'FLAGS',self.attempt,[],source),'flag_events',False)
+        rows=self.c.query(f"SELECT ordinal,price_valid,extremes_valid,volume_valid,execution_valid,"
+            f"cumulative_volume,execution_volume FROM {S.table(self.db,'events')} "
+            "WHERE ticker='FLAGS' ORDER BY ordinal",'flag_values')
+        self.assertEqual([r['volume_valid'] for r in rows],[0,1,0,1,0,1])
+        self.assertEqual([r['price_valid'] for r in rows],[0,1,0,1,0,1])
+        self.assertEqual([r['extremes_valid'] for r in rows],[0,1,0,1,0,1])
+        self.assertEqual([r['execution_valid'] for r in rows],[0,1,0,1,0,0])
+        self.assertEqual(rows[-1]['cumulative_volume'],10)
+        self.assertEqual(rows[-1]['execution_volume'],8)
+        self.c.query(S.base_sql(self.db,self.build,self.day,'FLAGS',self.attempt),'flag_bars',False)
+        bars=self.c.query(f"SELECT sum(volume) AS volume,sum(trade_count) AS trades "
+            f"FROM {S.table(self.db,'bars')} WHERE ticker='FLAGS' AND resolution_ms=100",'flag_bar_values')[0]
+        self.assertEqual((bars['volume'],bars['trades']),(10,3))
+        metrics=B.validate_events(self.c,self.db,self.build,self.day,'FLAGS',self.attempt,
+            {'n':6,'session_events':6,'reporting_delayed_trades':2})
+        self.assertEqual(metrics['pre_0405_volume_eligible_trades'],2)
+        self.assertEqual(metrics['reporting_delayed_trades'],2)
+
     def test_prior_day_seed_and_session_reset(self):
         source="""SELECT if(number<20,toDate('2026-09-17'),toDate('2026-09-18')) AS session_date,
           toUInt32(1000) AS resolution_ms,toUInt32(14700+number%20) AS bucket_index,

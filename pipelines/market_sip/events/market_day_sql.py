@@ -9,8 +9,9 @@ from __future__ import annotations
 import math
 import re
 from datetime import timedelta
+from pipelines.market_sip.events.trade_reporting_flags import DELAYED, REVISION as REPORTING_REVISION
 
-VERSION = "market-day-core-v1"
+VERSION = "market-day-core-v2"
 EMAS = (7, 9, 12, 15, 20, 26, 50)
 FRAMES = (100, 1000, 5000, 10000, 30000, 60000, 300000, 3600000)
 POLICY = "live_market_ssd"
@@ -118,7 +119,7 @@ def events_sql(db, build, day, ticker, attempt, rules, source=None):
         arrayFilter(t->t>0,[toUInt16(condition_token_1),toUInt16(condition_token_2),
           toUInt16(condition_token_3),toUInt16(condition_token_4),toUInt16(condition_token_5)]) AS tokens,
         ({form}) AS form_ok,
-        kind=1 AND price_int>0 AND size>0 AND isFinite(size) AND local_second>=14700 AS usable,
+        kind=1 AND bitAnd(event_meta,{DELAYED})=0 AND price_int>0 AND size>0 AND isFinite(size) AS usable,
         toUInt8(usable AND {last}) AS price_valid,
         toUInt8(usable AND {high}) AS extremes_valid,
         toUInt8(usable AND {volume}) AS volume_valid,

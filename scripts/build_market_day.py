@@ -283,6 +283,9 @@ def source_evidence(client, row):
     query = f"""SELECT count() AS n,uniqExact(ordinal) AS unique_ordinals,min(ordinal) AS first_ordinal,
       max(ordinal) AS last_ordinal,min(sip_timestamp_us) AS first_us,max(sip_timestamp_us) AS last_us,
       countIf(sip_timestamp_us>={sql.bounds(day,'04:00:00')} AND sip_timestamp_us<{sql.bounds(day,'20:00:00')}) AS session_events,
+      countIf(bitAnd(event_meta,1)=1 AND bitAnd(event_meta,{sql.DELAYED})!=0
+        AND sip_timestamp_us>={sql.bounds(day,'04:00:00')}
+        AND sip_timestamp_us<{sql.bounds(day,'20:00:00')}) AS reporting_delayed_trades,
       sum(cityHash64(tuple(*))) AS hash
       FROM merge('market_sip_compact','^events_({years})$')
       WHERE ticker={sql.literal(row['ticker'])} AND event_date BETWEEN toDate({sql.literal(day)}) AND toDate({sql.literal(day+timedelta(days=1))})
@@ -354,7 +357,8 @@ def validate_events(client,db,build,day,ticker,attempt,source):
       countIf(kind=1 AND NOT volume_valid) AS volume_ineligible_trades,
       countIf(kind=1 AND NOT price_valid) AS price_ineligible_trades,
       countIf(kind=1 AND volume_valid AND NOT execution_valid) AS execution_ineligible_trades,
-      countIf(kind=1 AND sip_timestamp_us<{sql.bounds(day,'04:05:00')}) AS before_trade_cutoff,
+      countIf(kind=1 AND sip_timestamp_us<{sql.bounds(day,'04:05:00')}) AS pre_0405_trades,
+      countIf(kind=1 AND sip_timestamp_us<{sql.bounds(day,'04:05:00')} AND volume_valid=1) AS pre_0405_volume_eligible_trades,
       countIf(kind=1 AND (price_int=0 OR size<=0 OR NOT isFinite(size))) AS invalid_trade_values,
       sumIf(size,volume_valid) AS volume,sumIf(price_int/10000.*size,volume_valid) AS notional,
       countIf(volume_valid) AS trade_count,
@@ -368,6 +372,7 @@ def validate_events(client,db,build,day,ticker,attempt,source):
         if abs(float(value)-float(metrics[key]))>1e-9*max(1.,abs(float(metrics[key]))):
             raise ValueError('Event/base-bar conservation failed: '+key)
     metrics['outside_session_events']=int(source['n'])-int(source['session_events'])
+    metrics['reporting_delayed_trades']=int(source['reporting_delayed_trades'])
     return metrics
 
 
@@ -429,7 +434,8 @@ def run(args):
                     event=dict(fields=['execution_vwap','cumulative_volume','cumulative_notional','execution_volume','execution_notional','bid_int','ask_int','bid_size','ask_size','spread','nbbo_valid','quote_timestamp_us'],
                         reset='session',cursor=['sip_timestamp_us','ordinal'],max_quote_age_ms=1000)),
                 price_scale=10000,session_timezone='America/New_York',session_hours=['04:00','20:00'],
-                trade_eligibility_start='04:05',storage_policy=sql.POLICY,
+                trade_eligibility=dict(session_start='04:00',excluded_reporting_flag=sql.DELAYED,
+                    reporting_revision=sql.REPORTING_REVISION),storage_policy=sql.POLICY,
                 controller_location=digest([str(runtime),os.environ.get('COMPUTERNAME','')]))
             build = digest(definition)
             if args.rebuild:

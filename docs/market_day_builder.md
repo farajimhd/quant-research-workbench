@@ -43,7 +43,11 @@ larger requests fail explicitly rather than truncating the requested range.
 1. Read `market_sip_compact.events_YYYY` in `(sip_timestamp_us, ordinal)` order.
    Decode the two canonical integer price scales losslessly to fixed 1e-4 units.
    Apply independent last/high-low/volume condition eligibility, extended-hours
-   Form T rules, and the current derived-trade exclusion before 04:05 ET.
+   Form T rules, and the canonical delayed-trade flag (`event_meta` bit `0x80`).
+   Eligible trades from 04:00–04:05 ET are retained; a delayed trade is
+   excluded at any time of day. Trades without the delayed bit remain subject
+   to the ordinary condition and value rules, including those whose reporting
+   clock was unknown at ingestion.
 2. Carry the last valid NBBO causally through trades. Compute cumulative eligible
    volume/notional and execution-eligible volume/notional. Execution VWAP accepts
    trades inside the prevailing non-crossed NBBO using QMD's relative epsilon and
