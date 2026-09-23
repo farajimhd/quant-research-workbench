@@ -203,6 +203,55 @@ impl State {
             Some(available_at_ns),
         )
     }
+    /// Consume an exact MDE watermark advance. Only a builder with the pinned
+    /// source identity can certify empty buckets between non-empty bars.
+    pub fn observe_live_advance(
+        &mut self,
+        advance: &crate::exact_bars::Advance<'_>,
+        available_at_ns: u64,
+    ) -> Result<bool> {
+        let sealed_ns = advance.watermark_ns / BASE_INTERVAL_NS * BASE_INTERVAL_NS;
+        if self.mode != Mode::Live
+            || advance.configuration_hash != self.scope_hash
+            || advance.previous_watermark_ns > advance.watermark_ns
+            || advance.previous_watermark_ns / BASE_INTERVAL_NS * BASE_INTERVAL_NS
+                != self.next_bucket_ns
+            || sealed_ns < self.next_bucket_ns
+            || sealed_ns > self.session_end_ns
+            || (sealed_ns - self.next_bucket_ns) / BASE_INTERVAL_NS > 1_000_000
+            || available_at_ns < sealed_ns
+            || self
+                .last_available_at_ns
+                .is_some_and(|last| available_at_ns < last)
+            || advance.completed.as_ref().is_some_and(|bar| {
+                bar.start_ns < self.next_bucket_ns
+                    || bar.end_ns > sealed_ns
+                    || !bar.start_ns.is_multiple_of(BASE_INTERVAL_NS)
+                    || bar.start_ns.checked_add(BASE_INTERVAL_NS) != Some(bar.end_ns)
+                    || bar.close <= 0
+                    || bar.volume <= 0
+                    || bar.trades == 0
+                    || bar
+                        .last_trade_live_receipt_ns
+                        .is_none_or(|at| at > available_at_ns)
+            })
+        {
+            return Err(Error::Conflict(
+                "early-squeeze exact live advance differs".into(),
+            ));
+        }
+        while self.next_bucket_ns < sealed_ns {
+            let at = self.next_bucket_ns;
+            let bar = advance.completed.as_ref().filter(|bar| bar.start_ns == at);
+            match bar {
+                Some(bar) => {
+                    self.observe_live(at, true, bar.close, bar.volume, bar.trades, available_at_ns)?
+                }
+                None => self.observe_live(at, false, 0, 0, 0, available_at_ns)?,
+            };
+        }
+        Ok(self.first_occurrence_end_ns.is_some())
+    }
     fn observe_inner(
         &mut self,
         bucket_start_ns: u64,

@@ -118,9 +118,14 @@ the MDE-to-signal actor; this state object alone does not authorize trading.
 The current ARTE market scheduler exposes floating-point bars. The signal
 formula uses exact integer compact-bar atoms; converting those floating-point
 bars back into price/size atoms would not prove equality at the 0.05% boundary.
-Live binding therefore needs an exact compact 100 ms bar calculation from
-eligible ordered events, with certified empty intervals and the original
-availability clocks. No floating-point reconstruction is approved for parity.
+An exact compact 100 ms bar builder now consumes pinned-scale eligible ordered
+trades and an externally certified event-time watermark. It computes integer
+OHLC, share volume and notional, retains the real live receipt separately, and
+reports covered empty intervals without creating false bars. A unit test feeds
+those advances to the same Early Squeeze state across an empty bucket. No
+floating-point reconstruction is approved for parity. The live lane still
+needs to bind this builder to its scheduler, persist its in-progress state,
+and prove that the external watermark certifies those empty intervals.
 
 The first market-time tape borrows values from complete 100 ms columnar batches.
 It dispatches only nonempty buckets, sorts equal-time ticker events by instrument,

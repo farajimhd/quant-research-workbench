@@ -18,6 +18,7 @@ pub mod dependency_plan;
 pub mod event_order;
 pub mod event_storage;
 pub mod events;
+pub mod exact_bars;
 pub mod execution_events;
 pub mod execution_interval;
 pub mod execution_positions;

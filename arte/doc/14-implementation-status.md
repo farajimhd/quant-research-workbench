@@ -78,7 +78,11 @@ and no database was opened. The MDE live actor, continuous empty-bucket
 advancement, and feed coverage remain required for live use.
 The inspected live scheduler currently exposes floating-point bars. Feeding
 those into the exact integer signal by rounding would not establish parity at
-its threshold. An exact compact 100 ms live bar builder remains required.
+its threshold. An exact compact 100 ms bar builder now exists and drives the
+signal in an offline unit test. It requires pinned source/scales, ordered
+eligible trades and an external watermark; it does not infer empty intervals
+from silence. The live lane does not yet own this builder, persist its state,
+or prove its watermark and completed bars align with the scheduler.
 
 The user has set an active goal to finish the entire implementation. This status
 file tracks progress; an intermediate commit does not close that goal. Service
