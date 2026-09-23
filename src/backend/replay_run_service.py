@@ -418,6 +418,7 @@ class ReplayRunDefinition:
     execution_mode: str = "strategy"
     execution_interval: str = "events"
     market_data_plan: dict[str, Any] = field(default_factory=dict)
+    causal_v7_plan: dict[str, Any] = field(default_factory=dict)
     mode: RunMode = RunMode.REPLAY
     final_session_date: date | None = None
     debug_fixture: HistoricalDebugFixture | None = None
@@ -466,18 +467,29 @@ class ReplayRunDefinition:
         if not self.archived_review_only and not self.experimental_structure_book and self.debug_fixture is None and not hindsight_long:
             object.__setattr__(self, 'experimental_structure_book', 'level-book-v7')
         if self.experimental_structure_book and not self.archived_review_only:
-            from src.backend.experimental_structure_book import resolve
-            build = resolve(self.experimental_structure_book)
-            if recovery and build['version'] != 'causal-level-book-v7-mle-1':
-                raise ValueError('Structural recovery requires Level book V7')
-            if build['ticker'] != '*' and normalized_tickers != (build['ticker'],):
-                raise ValueError('Experimental level book requires a Backtest with its single covered ticker')
-            if not (build['start'] <= self.session_date.isoformat() <=
-                    (self.final_session_date or self.session_date).isoformat() <= build['end']):
-                raise ValueError('Requested sessions are outside experimental level-book coverage')
-            if self.experimental_structure_fingerprint and self.experimental_structure_fingerprint != build['fingerprint']:
-                raise ValueError('Experimental level book fingerprint changed')
-            object.__setattr__(self, 'experimental_structure_fingerprint', build['fingerprint'])
+            if self.mode == RunMode.BACKTEST and resolved_interval.kind == "fixed":
+                if self.experimental_structure_book != "level-book-v7":
+                    raise ValueError("Fixed-interval Backtest requires causal Level Book V7")
+                pinned = str(self.causal_v7_plan.get("catalog_hash") or "")
+                if self.causal_v7_plan and (
+                    self.causal_v7_plan.get("build_id") != self.market_data_plan.get("build_id")
+                    or not self.causal_v7_plan.get("token") or len(pinned) != 64
+                ):
+                    raise ValueError("Fixed-interval causal V7 plan is incomplete or mismatched")
+                object.__setattr__(self, "experimental_structure_fingerprint", pinned)
+            else:
+                from src.backend.experimental_structure_book import resolve
+                build = resolve(self.experimental_structure_book)
+                if recovery and build['version'] != 'causal-level-book-v7-mle-1':
+                    raise ValueError('Structural recovery requires Level book V7')
+                if build['ticker'] != '*' and normalized_tickers != (build['ticker'],):
+                    raise ValueError('Experimental level book requires a Backtest with its single covered ticker')
+                if not (build['start'] <= self.session_date.isoformat() <=
+                        (self.final_session_date or self.session_date).isoformat() <= build['end']):
+                    raise ValueError('Requested sessions are outside experimental level-book coverage')
+                if self.experimental_structure_fingerprint and self.experimental_structure_fingerprint != build['fingerprint']:
+                    raise ValueError('Experimental level book fingerprint changed')
+                object.__setattr__(self, 'experimental_structure_fingerprint', build['fingerprint'])
         if self.mode not in {RunMode.REPLAY, RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}:
             raise ValueError("Historical controller mode must be replay, backtest, or backtest_debug")
         if self.execution_mode not in {"manual", "strategy"}:
@@ -558,6 +570,7 @@ class ReplayRunDefinition:
             "execution_mode": self.execution_mode,
             "execution_interval": self.execution_interval,
             "market_data_plan": deepcopy(self.market_data_plan),
+            "causal_v7_plan": deepcopy(self.causal_v7_plan),
             "session_date": self.session_date.isoformat(),
             "start_time": self.start_time.isoformat(timespec="seconds"),
             "end_time": self.end_time.isoformat(timespec="seconds"),
@@ -8268,6 +8281,7 @@ def _definition_from_manifest(
         execution_mode=str(definition.get("execution_mode") or "strategy"),
         execution_interval=str(definition.get("execution_interval") or "events"),
         market_data_plan=dict(definition.get("market_data_plan") or {}),
+        causal_v7_plan=dict(definition.get("causal_v7_plan") or {}),
         mode=mode,
         debug_fixture=fixture,
         simulation_profile=str(definition.get("simulation_profile") or "baseline"),
@@ -9629,6 +9643,7 @@ def backtest_preflight(
     end_time: clock_time = clock_time(20, 0),
     tickers: tuple[str, ...] = (),
     configuration_revision: dict[str, Any] | None = None,
+    experimental_structure_book: str = "",
 ) -> dict[str, Any]:
     if not clock_time(4, 0) <= start_time < end_time <= clock_time(20, 0):
         raise ValueError(
@@ -9701,6 +9716,12 @@ def backtest_preflight(
     sessions = [date.fromisoformat(value) for value in base["window"]["sessions"]]
     market_data_plan: dict[str, Any] = {}
     market_data_error = ""
+    causal_v7_plan: dict[str, Any] = {}
+    causal_v7_error = ""
+    strategy_parameters = dict(dict(configuration.get("strategy") or {}).get("parameters") or {})
+    needs_v7 = bool(experimental_structure_book) or not bool(
+        strategy_parameters.get("hindsight_long_contract")
+    )
     if execution_interval.kind == "fixed":
         try:
             certified = MarketDayLedger().certified_plan(
@@ -9708,10 +9729,20 @@ def backtest_preflight(
                 tickers=configuration_tickers(configuration, tickers),
                 configuration=configuration,
             )
-            verify_market_day_plan(certified)
-            market_data_plan = certified.payload()
+            from src.backend.backtest_market_data import readonly_clickhouse_client
+            with closing(readonly_clickhouse_client()) as reader:
+                verify_market_day_plan(certified, reader)
+                market_data_plan = certified.payload()
+                if needs_v7:
+                    if experimental_structure_book not in {"", "level-book-v7"}:
+                        raise ValueError("Fixed-interval Backtest requires causal Level Book V7")
+                    from src.backend.causal_v7_reader import certified_plan as certified_v7_plan
+                    causal_v7_plan = certified_v7_plan(certified, None, reader).payload()
         except Exception as exc:
-            market_data_error = str(exc)
+            if market_data_plan:
+                causal_v7_error = str(exc)
+            else:
+                market_data_error = str(exc)
     bindings = [
         dict(row)
         for row in dict(configuration.get("accounts") or {}).get("bindings") or []
@@ -9795,6 +9826,20 @@ def backtest_preflight(
         ),
         "evidence": market_data_plan.get("token", "") if market_data_plan else market_data_error,
     })
+    if execution_interval.kind == "fixed" and needs_v7:
+        checks.append({
+            "id": "causal_v7_product",
+            "label": "Persisted intraday causal V7",
+            "status": "ready" if causal_v7_plan else "blocked",
+            "required": True,
+            "summary": (
+                "Pinned read-only causal V7 state and levels cover the selected ticker-days."
+                if causal_v7_plan else
+                "Causal V7 coverage is unavailable: " +
+                (causal_v7_error or market_data_error or "market-day plan is unavailable")
+            ),
+            "evidence": causal_v7_plan.get("token", "") if causal_v7_plan else causal_v7_error,
+        })
     if execution_interval.kind == "fixed":
         from src.backend.backtest_market_data import FIXED_EXECUTION_BLOCKER
         checks.append({
@@ -9948,6 +9993,7 @@ def backtest_preflight(
         "run_plan_id": approved.get("run_plan_id", ""),
         "execution_interval": execution_interval.label,
         "market_data_plan": market_data_plan,
+        "causal_v7_plan": causal_v7_plan,
         "available_run_plans": deepcopy(approved.get("available_run_plans") or []),
         "historical_watchlist_plans": watchlist_plans,
         "initial_cash": initial_cash,

@@ -984,6 +984,7 @@ class HistoricalPreflightRequest(BaseModel):
     start_time: str = "04:00:00"
     end_time: str = "20:00:00"
     tickers: list[str] = Field(default_factory=list, max_length=100)
+    experimental_structure_book: str = Field(default="", max_length=64)
 
 
 class IndicatorWarmupSubmit(BaseModel):
@@ -5335,6 +5336,7 @@ def _trading_historical_preflight_payload(
                 start_time=_replay_clock_time(payload.start_time),
                 end_time=_replay_clock_time(payload.end_time),
                 tickers=tuple(payload.tickers),
+                experimental_structure_book=payload.experimental_structure_book,
                 configuration_revision=(
                     backtest_configuration_snapshot(
                         payload.run_plan_id,
@@ -5484,6 +5486,7 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             end_time=_replay_clock_time(payload.end_time),
             configuration_revision=configuration_revision,
             tickers=tuple(payload.tickers),
+            experimental_structure_book=payload.experimental_structure_book,
         )
         if not preflight["strategy_run_ready"]:
             blockers = [str(check.get("summary") or check.get("label"))
@@ -5500,6 +5503,7 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             configuration_revision=configuration_revision,
             execution_interval=str(preflight.get("execution_interval") or "events"),
             market_data_plan=dict(preflight.get("market_data_plan") or {}),
+            causal_v7_plan=dict(preflight.get("causal_v7_plan") or {}),
             mode=RunMode.BACKTEST,
             simulation_profile=payload.simulation_profile,
             new_order_activation_delay_ms=payload.new_order_activation_delay_ms,

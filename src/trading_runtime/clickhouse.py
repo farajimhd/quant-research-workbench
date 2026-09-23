@@ -10,6 +10,7 @@ from typing import Any
 
 from src.trading_runtime.domain import BrokerEventEnvelope, OrderIntent, TradingMode, TradingStateSnapshot, json_safe
 from src.trading_runtime.journal import JournalRecord, TradingJournal
+from src.trading_runtime.journal_contract import journal_row
 from src.trading_runtime.performance import derive_trade_episodes, episodes_from_round_trips
 
 
@@ -477,18 +478,7 @@ class ClickHouseTradingSink:
 
 
 def _journal_row(record: JournalRecord) -> dict[str, Any]:
-    return {
-        "record_id": record.record_id,
-        "run_id": record.run_id,
-        "sequence": record.sequence,
-        "event_time": record.event_time.isoformat(),
-        "recorded_at": record.recorded_at.isoformat(),
-        "category": record.category,
-        "entity_type": record.entity_type,
-        "entity_id": record.entity_id,
-        "account_id": record.account_id,
-        "payload_json": json.dumps(record.payload, separators=(",", ":"), sort_keys=True, default=str),
-    }
+    return journal_row(record)
 
 
 def _specialized_rows(records: list[JournalRecord]) -> dict[str, list[dict[str, Any]]]:

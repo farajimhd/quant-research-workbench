@@ -70,12 +70,13 @@ def _rows(client: Any, sql: str) -> list[dict[str, Any]]:
             if line.strip()]
 
 
-def certified_plan(market: CertifiedMarketDayPlan, catalog_hash: str,
+def certified_plan(market: CertifiedMarketDayPlan, catalog_hash: str | None,
                    client: Any) -> CertifiedV7Plan:
     bars = {(unit.session_date, unit.ticker): unit for unit in market.units
             if unit.stage == "bars"}
-    if not bars or not catalog_hash:
-        raise ValueError("Causal V7 requires pinned market-day bars and a catalog hash")
+    if not bars:
+        raise ValueError("Causal V7 requires pinned market-day bars")
+    pinned_catalog = catalog_hash or ""
     units: list[CausalV7Unit] = []
     for day in market.sessions:
         tickers = sorted(ticker for session, ticker in bars if session == day)
@@ -91,10 +92,13 @@ def certified_plan(market: CertifiedMarketDayPlan, catalog_hash: str,
             for row in rows:
                 ticker = str(row["ticker"])
                 source = bars[(day, ticker)]
+                observed_catalog = str(row["catalog_hash"])
+                if not pinned_catalog:
+                    pinned_catalog = observed_catalog
                 if (row["status"] != "complete" or row["source_policy"] != SOURCE_POLICY
                         or str(row["source_bars_attempt"]) != source.attempt_id
                         or str(row["source_hash"]) != source.source_hash
-                        or str(row["catalog_hash"]) != catalog_hash
+                        or observed_catalog != pinned_catalog or len(observed_catalog) != 64
                         or int(row["state_rows"]) < 1 or int(row["level_rows"]) < 1
                         or any(len(str(row[field])) != 64 for field in
                                ("source_hash", "input_hash", "producer_hash"))):
@@ -106,7 +110,7 @@ def certified_plan(market: CertifiedMarketDayPlan, catalog_hash: str,
                     source_hash=source.source_hash,
                     input_hash=str(row["input_hash"]),
                     seed_checkpoint_hash=str(row["seed_checkpoint_hash"]),
-                    catalog_hash=catalog_hash,
+                    catalog_hash=pinned_catalog,
                     producer_hash=str(row["producer_hash"]),
                     state_rows=int(row["state_rows"]), state_hash=str(row["state_hash"]),
                     level_rows=int(row["level_rows"]), level_hash=str(row["level_hash"]),
@@ -140,7 +144,7 @@ def certified_plan(market: CertifiedMarketDayPlan, catalog_hash: str,
     token = _hash([{
         name: getattr(unit, name) for name in CausalV7Unit.__dataclass_fields__
     } for unit in result])
-    return CertifiedV7Plan(market.build_id, catalog_hash, result, token)
+    return CertifiedV7Plan(market.build_id, pinned_catalog, result, token)
 
 
 class CausalV7Cursor:

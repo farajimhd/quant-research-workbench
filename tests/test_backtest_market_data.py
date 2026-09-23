@@ -189,6 +189,23 @@ class BacktestMarketDataTests(unittest.TestCase):
         )
         self.assertEqual(definition.execution_interval, "100ms")
 
+    def test_fixed_v7_definition_pins_persisted_catalog_without_legacy_resolve(self) -> None:
+        from unittest.mock import patch
+        from src.backend.replay_run_service import ReplayRunDefinition, RunMode
+
+        with patch("src.backend.experimental_structure_book.resolve",
+                   side_effect=AssertionError("fixed Backtest must not resolve retrospective V7")):
+            definition = ReplayRunDefinition(
+                session_date=date(2026, 8, 18), start_time=time(4),
+                mode=RunMode.BACKTEST, execution_interval="100ms",
+                market_data_plan={"token": "market", "build_id": "build",
+                                  "execution_interval": {"milliseconds": 100}},
+                causal_v7_plan={"token": "v7", "build_id": "build",
+                                "catalog_hash": "a" * 64},
+                configuration_revision={"revision_id": "approved-test", "payload": {}},
+            )
+        self.assertEqual(definition.experimental_structure_fingerprint, "a" * 64)
+
 
 if __name__ == "__main__":
     unittest.main()
