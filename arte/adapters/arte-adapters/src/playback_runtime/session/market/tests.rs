@@ -561,6 +561,38 @@ fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution(
         boundary_hash: boundary.id.into(),
         at_ns: boundary.evaluated_at_ns,
     };
+    let standby_controller = &session.controller.controllers()[1];
+    let standby_owner = session.strategy.get(&2).unwrap();
+    let standby_image = standby_owner
+        .checkpoint_standby(standby_controller, &cut, 100_000)
+        .unwrap();
+    let standby_scope = combined.scope("b", 2, "strategy").unwrap();
+    let standby_key = content_hash(&standby_scope).unwrap();
+    let standby_restored =
+        crate::playback_runtime::strategy350_accounts::Accounts::<u64>::restore_standby_checkpoint(
+            &standby_image,
+            &standby_image.root.id,
+            standby_controller,
+            &cut,
+            BTreeMap::from([(standby_key.clone(), effective.clone())]),
+            &BTreeMap::from([(standby_key.clone(), Vec::new())]),
+            1024,
+            100_000,
+        )
+        .unwrap();
+    assert_eq!(*standby_restored.state(&standby_key).unwrap(), 2);
+    assert!(
+        crate::playback_runtime::strategy350_accounts::Accounts::<u64>::restore_checkpoint(
+            &standby_image,
+            &standby_image.root.id,
+            standby_controller,
+            BTreeMap::from([(standby_key.clone(), effective.clone())]),
+            &BTreeMap::from([(standby_key, Vec::new())]),
+            1024,
+            100_000,
+        )
+        .is_err()
+    );
     let portfolio_limits = arte_core::portfolio::checkpoint::Limits {
         maximum_accounts: 2,
         maximum_reservations: 10,

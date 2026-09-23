@@ -4691,3 +4691,12 @@ recovery is version 3 because its required state changed. All 216 Rust tests,
 formatting, static checks and source hashes pass. Full entry-frame production still
 needs admission, local swings, level mapping and explicit evaluation-clock handling.
 No service ran.
+
+Strategy 350 account-state recovery now has distinct selected and standby
+images. A standby image binds to the global selected cut while preserving its
+own preloaded market head. It rejects a pending strategy batch or a receipt
+beyond the standby shard's last acknowledged boundary. Restore requires the
+same cut, configuration, scope, journal readback, and canonical image. The
+two-ticker offline unit test exercises standby round-trip and rejects treating
+its image as selected. This is not a complete whole-run recovery publication.
+No service ran.

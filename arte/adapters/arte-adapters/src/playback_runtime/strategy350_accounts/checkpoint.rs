@@ -1,16 +1,24 @@
 //! Strategy 350 account-state graph at one dispatched market boundary.
 //! A whole-run publisher must bind this root to all market and portfolio roots.
 use super::*;
-use arte_core::{journal::Record, seed_storage::Object};
+use arte_core::{journal::Record, portfolio::checkpoint::Cut, seed_storage::Object};
 use serde::{de::DeserializeOwned, Deserialize};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Root {
     version: u32,
+    mode: Mode,
+    global_cut: Option<Cut>,
     context: String,
     configurations: BTreeMap<String, String>,
     accounts: BTreeMap<String, String>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Mode {
+    Selected,
+    Standby,
 }
 
 pub struct Bundle {
@@ -18,37 +26,90 @@ pub struct Bundle {
     pub accounts: BTreeMap<String, Object>,
 }
 
-fn context(controller: &Playback, maximum_bytes: usize) -> Result<String> {
+fn context(controller: &Playback, cut: Option<&Cut>, maximum_bytes: usize) -> Result<String> {
     if maximum_bytes == 0 || maximum_bytes > 64 * 1024 * 1024 {
         return Err(Error::Capacity(
             "Strategy 350 owner checkpoint budget".into(),
         ));
     }
-    let run = controller.decision_view()?;
+    let run = if cut.is_some() {
+        &controller.run
+    } else {
+        controller.decision_view()?
+    };
     let boundary = run
         .pending()?
         .ok_or_else(|| Error::Unready("Strategy 350 checkpoint boundary".into()))?;
-    content_hash(&(
-        "arte.strategy-350-account-owner.v1",
-        run.manifest_hash(),
-        boundary.id,
-        boundary.sequence,
-        boundary.evaluated_at_ns,
-    ))
+    if let Some(cut) = cut {
+        if boundary.evaluated_at_ns < cut.at_ns
+            || run.status().acknowledged_boundaries.checked_add(1) != Some(boundary.sequence)
+            || run.manifest_hash() != controller.manifest_hash()
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 standby boundary differs".into(),
+            ));
+        }
+        content_hash(&(
+            "arte.strategy-350-standby-owner.v1",
+            run.manifest_hash(),
+            cut,
+            run.market_scope().provider,
+            run.market_scope().instrument,
+            run.market_scope().session,
+            boundary.id,
+            boundary.sequence,
+        ))
+    } else {
+        content_hash(&(
+            "arte.strategy-350-account-owner.v1",
+            run.manifest_hash(),
+            boundary.id,
+            boundary.sequence,
+            boundary.evaluated_at_ns,
+        ))
+    }
 }
 
 impl<S: Clone + Serialize> Accounts<S> {
     pub fn checkpoint(&self, controller: &Playback, maximum_bytes: usize) -> Result<Bundle> {
+        self.checkpoint_with_cut(controller, None, maximum_bytes)
+    }
+
+    pub fn checkpoint_standby(
+        &self,
+        controller: &Playback,
+        global_cut: &Cut,
+        maximum_bytes: usize,
+    ) -> Result<Bundle> {
+        self.checkpoint_with_cut(controller, Some(global_cut), maximum_bytes)
+    }
+
+    fn checkpoint_with_cut(
+        &self,
+        controller: &Playback,
+        cut: Option<&Cut>,
+        maximum_bytes: usize,
+    ) -> Result<Bundle> {
         self.require_controller(controller)?;
-        let context = context(controller, maximum_bytes)?;
+        let context = context(controller, cut, maximum_bytes)?;
         if self.slots.len() > 4096 {
             return Err(Error::Capacity("Strategy 350 owner scope budget".into()));
         }
-        let run = controller.decision_view()?;
+        let run = if cut.is_some() {
+            &controller.run
+        } else {
+            controller.decision_view()?
+        };
         let boundary = run.pending()?.unwrap();
         let mut used = 0usize;
         let mut root = Root {
-            version: 1,
+            version: 2,
+            mode: if cut.is_some() {
+                Mode::Standby
+            } else {
+                Mode::Selected
+            },
+            global_cut: cut.cloned(),
             context,
             configurations: BTreeMap::new(),
             accounts: BTreeMap::new(),
@@ -61,15 +122,22 @@ impl<S: Clone + Serialize> Accounts<S> {
                 .receipt
                 .as_ref()
                 .filter(|receipt| receipt.decision().input.event_id == boundary.id);
-            if (due && !needs && current.is_none())
-                || (needs && current.is_some())
-                || (!due && current.is_some())
+            if (cut.is_some() && (!needs && due || current.is_some()))
+                || (cut.is_none()
+                    && ((due && !needs && current.is_none())
+                        || (needs && current.is_some())
+                        || (!due && current.is_some())))
             {
                 return Err(Error::Conflict(
                     "Strategy 350 owner receipt and barrier differ".into(),
                 ));
             }
             if let Some(batch) = slot.runtime.pending_batch() {
+                if cut.is_some() {
+                    return Err(Error::Conflict(
+                        "Strategy 350 standby has pending decision".into(),
+                    ));
+                }
                 if batch.records().len() != 1 {
                     return Err(Error::Invalid("Strategy 350 pending row count".into()));
                 }
@@ -80,9 +148,14 @@ impl<S: Clone + Serialize> Accounts<S> {
             }
             if let Some(receipt) = &slot.receipt {
                 let input = &receipt.decision().input;
-                if input.source_sequence > boundary.sequence
-                    || input.evaluated_at_ns > boundary.evaluated_at_ns
-                    || (input.source_sequence == boundary.sequence && input.event_id != boundary.id)
+                if (cut.is_some()
+                    && (input.source_sequence > run.status().acknowledged_boundaries
+                        || input.evaluated_at_ns > cut.unwrap().at_ns))
+                    || (cut.is_none()
+                        && (input.source_sequence > boundary.sequence
+                            || input.evaluated_at_ns > boundary.evaluated_at_ns
+                            || (input.source_sequence == boundary.sequence
+                                && input.event_id != boundary.id)))
                 {
                     return Err(Error::Conflict(
                         "Strategy 350 receipt exceeds checkpoint boundary".into(),
@@ -118,12 +191,58 @@ impl<S: Clone + Serialize + DeserializeOwned> Accounts<S> {
         bundle: &Bundle,
         expected_root: &str,
         controller: &Playback,
+        configurations: BTreeMap<String, Config>,
+        readbacks: &BTreeMap<String, Vec<Record>>,
+        maximum_state_bytes: usize,
+        maximum_bytes: usize,
+    ) -> Result<Self> {
+        Self::restore_with_cut(
+            bundle,
+            expected_root,
+            controller,
+            None,
+            configurations,
+            readbacks,
+            maximum_state_bytes,
+            maximum_bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_standby_checkpoint(
+        bundle: &Bundle,
+        expected_root: &str,
+        controller: &Playback,
+        global_cut: &Cut,
+        configurations: BTreeMap<String, Config>,
+        readbacks: &BTreeMap<String, Vec<Record>>,
+        maximum_state_bytes: usize,
+        maximum_bytes: usize,
+    ) -> Result<Self> {
+        Self::restore_with_cut(
+            bundle,
+            expected_root,
+            controller,
+            Some(global_cut),
+            configurations,
+            readbacks,
+            maximum_state_bytes,
+            maximum_bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn restore_with_cut(
+        bundle: &Bundle,
+        expected_root: &str,
+        controller: &Playback,
+        cut: Option<&Cut>,
         mut configurations: BTreeMap<String, Config>,
         readbacks: &BTreeMap<String, Vec<Record>>,
         maximum_state_bytes: usize,
         maximum_bytes: usize,
     ) -> Result<Self> {
-        let context = context(controller, maximum_bytes)?;
+        let context = context(controller, cut, maximum_bytes)?;
         if bundle.root.id != expected_root || bundle.accounts.len() > 4096 {
             return Err(Error::Conflict("Strategy 350 owner root or count".into()));
         }
@@ -140,7 +259,14 @@ impl<S: Clone + Serialize + DeserializeOwned> Accounts<S> {
         bundle.root.verify()?;
         let root: Root = serde_json::from_slice(&bundle.root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
-        if root.version != 1
+        if root.version != 2
+            || root.mode
+                != if cut.is_some() {
+                    Mode::Standby
+                } else {
+                    Mode::Selected
+                }
+            || root.global_cut.as_ref() != cut
             || root.context != context
             || !root.accounts.keys().eq(bundle.accounts.keys())
             || !root.accounts.keys().eq(root.configurations.keys())
@@ -151,7 +277,11 @@ impl<S: Clone + Serialize + DeserializeOwned> Accounts<S> {
         {
             return Err(Error::Conflict("Strategy 350 owner graph differs".into()));
         }
-        let run = controller.decision_view()?;
+        let run = if cut.is_some() {
+            &controller.run
+        } else {
+            controller.decision_view()?
+        };
         if run.scopes().len() != root.accounts.len() {
             return Err(Error::Conflict("Strategy 350 owner scopes differ".into()));
         }
@@ -193,6 +323,11 @@ impl<S: Clone + Serialize + DeserializeOwned> Accounts<S> {
                 rows,
             )?;
             if let Some(batch) = runtime.pending_batch() {
+                if cut.is_some() {
+                    return Err(Error::Conflict(
+                        "Strategy 350 standby has pending decision".into(),
+                    ));
+                }
                 if batch.records().len() != 1 {
                     return Err(Error::Invalid("Strategy 350 pending row count".into()));
                 }
@@ -200,9 +335,14 @@ impl<S: Clone + Serialize + DeserializeOwned> Accounts<S> {
             }
             if receipt.as_ref().is_some_and(|receipt| {
                 let input = &receipt.decision().input;
-                input.source_sequence > boundary.sequence
-                    || input.evaluated_at_ns > boundary.evaluated_at_ns
-                    || (input.source_sequence == boundary.sequence && input.event_id != boundary.id)
+                (cut.is_some()
+                    && (input.source_sequence > run.status().acknowledged_boundaries
+                        || input.evaluated_at_ns > cut.unwrap().at_ns))
+                    || (cut.is_none()
+                        && (input.source_sequence > boundary.sequence
+                            || input.evaluated_at_ns > boundary.evaluated_at_ns
+                            || (input.source_sequence == boundary.sequence
+                                && input.event_id != boundary.id)))
             }) {
                 return Err(Error::Conflict(
                     "Strategy 350 receipt exceeds recovery boundary".into(),
@@ -216,9 +356,11 @@ impl<S: Clone + Serialize + DeserializeOwned> Accounts<S> {
             }
             let due = run.is_due(scope)?;
             let needs = run.needs_decision(scope)?;
-            if (due && !needs && current.is_none())
-                || (needs && current.is_some())
-                || (!due && current.is_some())
+            if (cut.is_some() && (!needs && due || current.is_some()))
+                || (cut.is_none()
+                    && ((due && !needs && current.is_none())
+                        || (needs && current.is_some())
+                        || (!due && current.is_some())))
             {
                 return Err(Error::Conflict(
                     "Strategy 350 owner receipt and barrier differ".into(),
@@ -239,6 +381,16 @@ impl<S: Clone + Serialize + DeserializeOwned> Accounts<S> {
             slots,
         };
         restored.require_controller(controller)?;
+        if restored
+            .checkpoint_with_cut(controller, cut, maximum_bytes)?
+            .root
+            .id
+            != expected_root
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 owner image is not canonical".into(),
+            ));
+        }
         Ok(restored)
     }
 }
