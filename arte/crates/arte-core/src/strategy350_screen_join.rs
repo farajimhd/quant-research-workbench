@@ -260,6 +260,7 @@ mod tests {
     }
     fn config() -> strategy350_bar_screen::Config {
         strategy350_bar_screen::Config {
+            execution_interval: ExecutionInterval::Fixed(100_000_000),
             prior_close_source_hash: "e".repeat(64),
             prior_close_max: Decimal::parse("20").unwrap(),
             purchase_min: Decimal::parse("1").unwrap(),

@@ -2,6 +2,13 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+The Strategy 350 conservative bar screen now pins and validates its own 100 ms
+execution interval. Cadence is included in its identity; other values fail
+validation. A bare price-gate Boolean is not sufficient to authorize a
+candidate entry: the gate's ordered trade,
+availability clock, and decision/action identity still need a shared proof
+boundary before Strategy 350 can issue exposure-increasing orders.
+
 The Strategy 350 Early Squeeze signal configuration now explicitly pins its
 100 ms execution interval. Event cadence or a different fixed interval is
 rejected, and the interval participates in its configuration hash and recovery

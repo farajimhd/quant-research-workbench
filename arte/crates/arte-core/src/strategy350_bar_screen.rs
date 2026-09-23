@@ -4,16 +4,18 @@ use crate::{
     bar_catalogue::{Column, Complete, BASE_INTERVAL_NS},
     content_hash,
     events::Decimal,
+    execution_interval::ExecutionInterval,
     strategy350_price_gate::PriceFact,
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const VERSION: &str = "arte.strategy-350-bar-screen.v1";
+pub const VERSION: &str = "arte.strategy-350-bar-screen.v2";
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub execution_interval: ExecutionInterval,
     pub prior_close_source_hash: String,
     pub prior_close_max: Decimal,
     pub purchase_min: Decimal,
@@ -22,7 +24,9 @@ pub struct Config {
 }
 impl Config {
     pub fn hash(&self) -> Result<String> {
-        if self.prior_close_source_hash.len() != 64
+        self.execution_interval.validate()?;
+        if self.execution_interval != ExecutionInterval::Fixed(BASE_INTERVAL_NS)
+            || self.prior_close_source_hash.len() != 64
             || !self
                 .prior_close_source_hash
                 .bytes()
@@ -215,6 +219,7 @@ mod tests {
     }
     fn config() -> Config {
         Config {
+            execution_interval: ExecutionInterval::Fixed(BASE_INTERVAL_NS),
             prior_close_source_hash: "d".repeat(64),
             prior_close_max: Decimal::parse("20").unwrap(),
             purchase_min: Decimal::parse("1").unwrap(),
@@ -255,5 +260,13 @@ mod tests {
         assert!(project(&fixture(), &config(), &BTreeMap::new()).is_err());
         let screen = project(&fixture(), &config(), &closes("20")).unwrap();
         assert!(screen[0].needs_refinement.iter().all(|selected| !*selected));
+        for interval in [
+            ExecutionInterval::Events,
+            ExecutionInterval::Fixed(200_000_000),
+        ] {
+            let mut wrong = config();
+            wrong.execution_interval = interval;
+            assert!(project(&fixture(), &wrong, &closes("19")).is_err());
+        }
     }
 }
