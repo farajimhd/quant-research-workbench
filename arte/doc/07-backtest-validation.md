@@ -52,6 +52,12 @@ alongside forming MACD timeframes, VWAP, prior close, LULD and historical V7
 dependencies. This is a requirement plan, not a scanner evaluator or trading
 loop. Each requested product needs a pinned catalogue definition and coverage.
 
+The first market-time tape borrows values from complete 100 ms columnar batches.
+It dispatches only nonempty buckets, sorts equal-time ticker events by instrument,
+and rejects overlapping products for one instrument. Empty buckets remain in
+the verified batch arrays for rolling calculations and clock progression. The
+tape alone does not evaluate Strategy 350 or simulate orders.
+
 Historical V7 construction may consume certified completed bars and publish
 versioned level books and next-session seeds. Live V7 consumes the streaming
 market path. Both implementations must share level identity, state transitions,

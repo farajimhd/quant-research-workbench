@@ -40,6 +40,9 @@ The first typed Strategy 350 dependency planner now separates broad bar/signal
 screening from selected-candidate trade/quote refinement. It rejects missing
 product definitions and duplicate ticker scopes. Two focused unit tests pass.
 This does not evaluate scanner rules or port Strategy 350 trading behavior.
+A sealed complete-bar result now feeds a deterministic 100 ms tape. Its unit
+test checks cross-ticker ties, sparse decision dispatch and overlapping-product
+rejection. The tape is not wired to the strategy or simulated OMS yet.
 No backward compatibility with obsolete strategy or storage formats is required.
 
 ## Indexed bootstrap and historical gap projection

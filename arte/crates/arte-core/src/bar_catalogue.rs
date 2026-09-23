@@ -187,9 +187,20 @@ pub struct Readback {
 }
 
 pub struct Complete {
-    pub request_hash: String,
-    pub coverage_hash: String,
-    pub batches: Vec<Batch>,
+    request: Request,
+    coverage_hash: String,
+    batches: Vec<Batch>,
+}
+impl Complete {
+    pub fn request(&self) -> &Request {
+        &self.request
+    }
+    pub fn coverage_hash(&self) -> &str {
+        &self.coverage_hash
+    }
+    pub fn batches(&self) -> &[Batch] {
+        &self.batches
+    }
 }
 
 impl Readback {
@@ -259,7 +270,7 @@ impl Readback {
             return Err(Error::Unready("compact bar readback incomplete".into()));
         }
         Ok(Complete {
-            request_hash: self.request.hash()?,
+            request: self.request,
             coverage_hash: self.coverage_hash,
             batches: self.batches,
         })
@@ -525,7 +536,7 @@ mod tests {
         first.instrument = 10;
         readback.observe(first).unwrap();
         readback.observe(two).unwrap();
-        assert_eq!(readback.finish().unwrap().batches.len(), 2);
+        assert_eq!(readback.finish().unwrap().batches().len(), 2);
     }
     #[test]
     fn coverage_requires_exact_generation_complete_tickers_and_source_knowledge() {
