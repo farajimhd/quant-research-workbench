@@ -46,8 +46,10 @@ tick rounding, a pinned effective configuration, and order submission remain
 separate unfinished work; this result alone cannot permit an entry.
 The adaptive noise state now has a bounded immutable checkpoint. An offline
 test compares restored continuation with an uninterrupted run and rejects a
-forged internally inconsistent image. It is not yet part of the published live
-common cut, so live Strategy 350 activation must remain blocked.
+forged internally inconsistent image. The live exact owner now includes this
+image and its integer 1s source in the same common-cut graph as the scheduler,
+features, exact 100 ms builder, and signal. The ClickHouse schema remains
+unapplied; live Strategy 350 activation must remain blocked.
 The first conservative Strategy 350 100 ms bar screen now emits contiguous
 candidate-refinement masks. It preserves buckets whose intrabar order could
 create a new HOD and subsequent qualifying pullback; it never authorizes a
@@ -106,7 +108,8 @@ At a shared close the scheduler presents larger timeframes before the 100 ms
 bar. The exact owner now retains the just-sealed integer bar across those
 boundaries and checkpoints it. A focused unit test restores between the 1s and
 100 ms boundaries, verifies identical continuation, and rejects a trade-count
-mismatch. This does not yet integrate adaptive-noise state into the live cut.
+mismatch. Adaptive-noise state is now included in the live cut, but source
+coverage, effective Strategy 350 parity, and connected durability remain open.
 The live common-cut root now pins scheduler, candidate features, and
 the exact-bar/signal owner to the same pending boundary. Restore verifies the
 root and component hashes, configuration, source scope, sequence, boundary ID,

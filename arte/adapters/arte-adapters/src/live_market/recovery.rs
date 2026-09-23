@@ -51,7 +51,7 @@ impl Bundle {
             evaluated_at_ns: saved.evaluated_at_ns,
         })
     }
-    pub fn objects(&self) -> [&Object; 10] {
+    pub fn objects(&self) -> [&Object; 11] {
         [
             &self.scheduler.market,
             &self.scheduler.trades,
@@ -61,6 +61,7 @@ impl Bundle {
             &self.features,
             &self.signal.bars,
             &self.signal.signal,
+            &self.signal.noise,
             &self.signal.root,
             &self.root,
         ]
@@ -98,21 +99,11 @@ fn valid_hash(hash: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 fn total(bundle: &Bundle) -> Result<usize> {
-    [
-        &bundle.root,
-        &bundle.scheduler.root,
-        &bundle.scheduler.market,
-        &bundle.scheduler.trades,
-        &bundle.scheduler.quotes,
-        &bundle.scheduler.book,
-        &bundle.features,
-        &bundle.signal.root,
-        &bundle.signal.bars,
-        &bundle.signal.signal,
-    ]
-    .iter()
-    .try_fold(0usize, |sum, object| sum.checked_add(object.payload.len()))
-    .ok_or_else(|| Error::Capacity("live cut bytes overflow".into()))
+    bundle
+        .objects()
+        .iter()
+        .try_fold(0usize, |sum, object| sum.checked_add(object.payload.len()))
+        .ok_or_else(|| Error::Capacity("live cut bytes overflow".into()))
 }
 fn root_object(root: &Root) -> Result<Object> {
     let bytes = serde_json::to_vec(root).map_err(|e| Error::Serialization(e.to_string()))?;

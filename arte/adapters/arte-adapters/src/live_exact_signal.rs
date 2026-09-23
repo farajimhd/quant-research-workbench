@@ -6,6 +6,7 @@ use arte_core::{
     exact_bars::{Bar as ExactBar, Builder, Mode as BarMode, INTERVAL_NS},
     market_structure::scheduler::{Boundary, Kind},
     seed_storage::Object,
+    strategy350_noise::{self, Source as NoiseSource},
     strategy350_signal::{Config, Mode as SignalMode, Occurrence, State},
     Error, Result,
 };
@@ -15,19 +16,24 @@ pub struct Bundle {
     pub root: Object,
     pub bars: Object,
     pub signal: Object,
+    pub noise: Object,
 }
 impl Bundle {
-    pub fn references(root: &Object) -> Result<(String, String)> {
+    pub fn references(root: &Object) -> Result<(String, String, String)> {
         root.verify()?;
         if root.payload.len() > 4096 {
             return Err(Error::Capacity("exact signal root bytes".into()));
         }
         let saved: Saved = serde_json::from_slice(&root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
-        if saved.version != 1 || !valid_hash(&saved.bars) || !valid_hash(&saved.signal) {
+        if saved.version != 2
+            || !valid_hash(&saved.bars)
+            || !valid_hash(&saved.signal)
+            || !valid_hash(&saved.noise)
+        {
             return Err(Error::Invalid("exact signal root references".into()));
         }
-        Ok((saved.bars, saved.signal))
+        Ok((saved.bars, saved.signal, saved.noise))
     }
 }
 fn valid_hash(value: &str) -> bool {
@@ -46,8 +52,10 @@ struct Saved {
     last_boundary_id: Option<String>,
     last_evaluated_at_ns: u64,
     last_exact_completed: Option<ExactBar>,
+    source_1s: NoiseSource,
     bars: String,
     signal: String,
+    noise: String,
 }
 pub struct Recovery<'a> {
     pub scope: Scope,
@@ -57,6 +65,7 @@ pub struct Recovery<'a> {
     pub size_scale: u8,
     pub source_generation_hash: &'a str,
     pub signal_config: Config,
+    pub noise_config: strategy350_noise::Config,
     pub expected_sequence: u64,
     pub expected_boundary_id: Option<&'a str>,
 }
@@ -64,6 +73,8 @@ pub struct Recovery<'a> {
 pub struct Owner {
     bars: Builder,
     signal: State,
+    noise: strategy350_noise::State,
+    source_1s: NoiseSource,
     last_sequence: u64,
     last_boundary_id: Option<String>,
     last_evaluated_at_ns: u64,
@@ -71,19 +82,34 @@ pub struct Owner {
     failed: bool,
 }
 impl Owner {
-    pub fn new(bars: Builder, signal: State) -> Result<Self> {
-        if !bars.is_pristine() || !signal.is_pristine() {
+    pub fn new(bars: Builder, signal: State, noise: strategy350_noise::State) -> Result<Self> {
+        if !bars.is_pristine() || !signal.is_pristine() || !noise.is_pristine() {
             return Err(Error::Conflict(
                 "new exact signal owner needs session start".into(),
             ));
         }
-        Self::from_parts(bars, signal)
+        let (start, end) = bars.session_bounds();
+        let source_1s = NoiseSource::new(start, end, bars.price_scale())?;
+        Self::from_parts(bars, signal, noise, source_1s)
     }
-    fn from_parts(bars: Builder, signal: State) -> Result<Self> {
+    fn from_parts(
+        bars: Builder,
+        signal: State,
+        noise: strategy350_noise::State,
+        source_1s: NoiseSource,
+    ) -> Result<Self> {
+        source_1s.verify()?;
         if bars.mode() != BarMode::Live
             || signal.mode() != SignalMode::Live
             || bars.configuration_hash() != signal.scope_hash()
             || bars.closed_through_ns() / INTERVAL_NS * INTERVAL_NS != signal.next_bucket_ns()
+            || bars.session_bounds() != noise.session_bounds()
+            || bars.price_scale() != noise.price_scale()
+            || noise.last_end_ns().unwrap_or(bars.session_bounds().0)
+                != source_1s.last_closed_end_ns()
+            || source_1s
+                .latest_absorbed_end_ns()
+                .is_some_and(|at| at > bars.closed_through_ns())
         {
             return Err(Error::Conflict(
                 "exact signal source or clock differs".into(),
@@ -92,6 +118,8 @@ impl Owner {
         Ok(Self {
             bars,
             signal,
+            noise,
+            source_1s,
             last_sequence: 0,
             last_boundary_id: None,
             last_evaluated_at_ns: 0,
@@ -107,10 +135,14 @@ impl Owner {
             "arte.exact-signal-configuration.v1",
             self.bars.configuration_hash(),
             self.signal.config_hash()?,
+            self.noise.configuration_hash(),
         ))
     }
     pub fn first_occurrence(&self) -> Option<Occurrence> {
         self.signal.first_occurrence()
+    }
+    pub fn noise_distance(&self, entry_atoms: i64) -> Result<strategy350_noise::Distance> {
+        self.noise.distance(entry_atoms)
     }
     pub fn last_boundary(&self) -> (u64, Option<&str>) {
         (self.last_sequence, self.last_boundary_id.as_deref())
@@ -126,17 +158,20 @@ impl Owner {
         }
         let bars = self.bars.checkpoint()?;
         let signal = self.signal.checkpoint()?;
+        let noise = self.noise.checkpoint(8 * 1024 * 1024)?;
         let scope = self.bars.scope();
         let saved = Saved {
-            version: 1,
+            version: 2,
             configuration_hash: self.bars.configuration_hash().into(),
             scope: (scope.provider, scope.instrument, scope.session),
             last_sequence: self.last_sequence,
             last_boundary_id: self.last_boundary_id.clone(),
             last_evaluated_at_ns: self.last_evaluated_at_ns,
             last_exact_completed: self.last_exact_completed.clone(),
+            source_1s: self.source_1s.clone(),
             bars: bars.id.clone(),
             signal: signal.id.clone(),
+            noise: noise.id.clone(),
         };
         let payload =
             serde_json::to_vec(&saved).map_err(|e| Error::Serialization(e.to_string()))?;
@@ -147,6 +182,7 @@ impl Owner {
             root: Object::new(payload),
             bars,
             signal,
+            noise,
         })
     }
     pub fn restore(bundle: &Bundle, expected_root: &str, request: Recovery<'_>) -> Result<Self> {
@@ -156,10 +192,14 @@ impl Owner {
                 return Err(Error::Capacity("exact signal recovery bytes".into()));
             }
         }
+        bundle.noise.verify()?;
+        if bundle.noise.payload.len() > 8 * 1024 * 1024 {
+            return Err(Error::Capacity("exact signal noise recovery bytes".into()));
+        }
         let saved: Saved = serde_json::from_slice(&bundle.root.payload)
             .map_err(|e| Error::Serialization(e.to_string()))?;
         if bundle.root.id != expected_root
-            || saved.version != 1
+            || saved.version != 2
             || saved.scope
                 != (
                     request.scope.provider,
@@ -176,6 +216,7 @@ impl Owner {
                 .is_some_and(String::is_empty)
             || saved.bars != bundle.bars.id
             || saved.signal != bundle.signal.id
+            || saved.noise != bundle.noise.id
         {
             return Err(Error::Conflict(
                 "exact signal root or boundary differs".into(),
@@ -204,6 +245,21 @@ impl Owner {
             request.session_end_ns,
             SignalMode::Live,
         )?;
+        let noise = strategy350_noise::State::restore_checkpoint(
+            &bundle.noise,
+            &bundle.noise.id,
+            request.noise_config,
+            request.session_start_ns,
+            request.session_end_ns,
+            8 * 1024 * 1024,
+        )?;
+        if saved.source_1s.session_start_ns() != request.session_start_ns
+            || saved.source_1s.session_end_ns() != request.session_end_ns
+            || saved.source_1s.price_scale() != request.price_scale
+            || saved.source_1s.last_closed_end_ns() > bars.closed_through_ns()
+        {
+            return Err(Error::Conflict("exact signal noise source differs".into()));
+        }
         if saved.last_exact_completed.as_ref().is_some_and(|last| {
             last.end_ns.checked_sub(last.start_ns) != Some(INTERVAL_NS)
                 || last.end_ns > bars.closed_through_ns()
@@ -216,7 +272,7 @@ impl Owner {
         }) {
             return Err(Error::Conflict("exact signal recent bar geometry".into()));
         }
-        let mut owner = Self::from_parts(bars, signal)?;
+        let mut owner = Self::from_parts(bars, signal, noise, saved.source_1s)?;
         owner.last_sequence = saved.last_sequence;
         owner.last_boundary_id = saved.last_boundary_id;
         owner.last_evaluated_at_ns = saved.last_evaluated_at_ns;
@@ -276,6 +332,7 @@ impl Owner {
             let advance = self.bars.advance(cutoff_ns)?;
             if let Some(exact) = &advance.completed {
                 self.last_exact_completed = Some(exact.clone());
+                self.source_1s.absorb(exact)?;
             }
             if let Kind::Completed {
                 bar,
@@ -295,6 +352,18 @@ impl Owner {
             }
             self.signal
                 .observe_live_advance(&advance, boundary.evaluated_at_ns)?;
+            if let Kind::Completed {
+                bar,
+                interval_ns: 1_000_000_000,
+                ..
+            } = &boundary.kind
+            {
+                let one_second = self
+                    .source_1s
+                    .close(bar.bar.end_ns, Some(bar.bar.trades))?
+                    .ok_or_else(|| Error::Conflict("exact one-second bar missing".into()))?;
+                self.noise.observe(one_second)?;
+            }
             if let Kind::Trade {
                 observation,
                 eligible,
@@ -390,7 +459,7 @@ mod tests {
             scope(),
             BarMode::Live,
             S,
-            S + 400_000_000,
+            S + 1_000_000_000,
             2,
             0,
             "a".repeat(64),
@@ -403,10 +472,12 @@ mod tests {
             },
             bars.configuration_hash().into(),
             S,
-            S + 400_000_000,
+            S + 1_000_000_000,
         )
         .unwrap();
-        Owner::new(bars, signal).unwrap()
+        let noise = strategy350_noise::State::new(crate::test_noise_config(), S, S + 1_000_000_000)
+            .unwrap();
+        Owner::new(bars, signal, noise).unwrap()
     }
     #[test]
     fn causal_boundaries_open_exact_signal_without_false_empty_bars() {
@@ -427,7 +498,7 @@ mod tests {
         let request = |id| Recovery {
             scope: scope(),
             session_start_ns: S,
-            session_end_ns: S + 400_000_000,
+            session_end_ns: S + 1_000_000_000,
             price_scale: 2,
             size_scale: 0,
             source_generation_hash: &generation,
@@ -435,6 +506,7 @@ mod tests {
                 minimum_move_bps: 5,
                 source_algorithm_hash: "b".repeat(64),
             },
+            noise_config: crate::test_noise_config(),
             expected_sequence: 1,
             expected_boundary_id: Some(id),
         };
@@ -533,7 +605,9 @@ mod tests {
             S + 2_000_000_000,
         )
         .unwrap();
-        let mut owner = Owner::new(bars, signal).unwrap();
+        let noise = strategy350_noise::State::new(crate::test_noise_config(), S, S + 2_000_000_000)
+            .unwrap();
+        let mut owner = Owner::new(bars, signal, noise).unwrap();
         let trade = observation(1, S + 900_000_001, EventKind::Trade, "100", "1");
         owner
             .observe(&Boundary {
@@ -575,6 +649,10 @@ mod tests {
                 },
             })
             .unwrap();
+        assert_eq!(
+            owner.noise_distance(10_000).unwrap().observed_at_ns,
+            S + 1_000_000_000
+        );
         let image = owner.checkpoint().unwrap();
         let generation = "a".repeat(64);
         let mut restored = Owner::restore(
@@ -591,11 +669,16 @@ mod tests {
                     minimum_move_bps: 5,
                     source_algorithm_hash: "b".repeat(64),
                 },
+                noise_config: crate::test_noise_config(),
                 expected_sequence: 2,
                 expected_boundary_id: Some("one-second"),
             },
         )
         .unwrap();
+        assert_eq!(
+            owner.noise_distance(10_000).unwrap(),
+            restored.noise_distance(10_000).unwrap()
+        );
         let hundred_ms = Completed {
             bar: Bar {
                 start_ns: S + 900_000_000,

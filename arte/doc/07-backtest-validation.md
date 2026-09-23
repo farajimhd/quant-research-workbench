@@ -70,7 +70,11 @@ The rolling noise state now has a bounded, immutable recovery object. It pins
 the configuration and session, saves only the recent bars and bounded range
 history, and rebuilds its percentile index on restore. Restore verifies bar
 ordering, sample counts, range IDs, the latest five-bar range and canonical
-bytes. This object is not yet included in the live lane common-cut root.
+bytes. The live exact owner now projects nonempty 1s bars from integer 100 ms
+trade bars, checks the scheduler's 1s trade count, and includes the noise object
+in the same pending-boundary common-cut root. It never rounds the scheduler's
+floating-point bar into a price atom. The migration and connected readback are
+still unapplied and untested.
 
 The first typed Strategy 350 catalogue plan requests completed 100 ms bars,
 the early squeeze signal and reference data for screening. Watchlist membership

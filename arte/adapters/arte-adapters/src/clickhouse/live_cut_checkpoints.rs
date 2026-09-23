@@ -78,6 +78,7 @@ impl Recovery<'_> {
                 size_scale: source.signal.size_scale,
                 source_generation_hash: source.signal.source_generation_hash,
                 signal_config: source.signal.signal_config.clone(),
+                noise_config: source.signal.noise_config.clone(),
                 expected_sequence: source.signal.expected_sequence,
                 expected_boundary_id: source.signal.expected_boundary_id,
             },
@@ -198,7 +199,7 @@ impl ClickHouse {
         let [market_id, trades_id, quotes_id, book_id] =
             scheduler::checkpoint::Bundle::references(&scheduler_root)?;
         let signal_root = self.live_cut_object(&refs.signal, limit).await?;
-        let (bars_id, signal_id) = live_exact_signal::Bundle::references(&signal_root)?;
+        let (bars_id, signal_id, noise_id) = live_exact_signal::Bundle::references(&signal_root)?;
         let bundle = Bundle {
             root,
             scheduler: scheduler::checkpoint::Bundle {
@@ -213,6 +214,7 @@ impl ClickHouse {
                 root: signal_root,
                 bars: self.live_cut_object(&bars_id, limit).await?,
                 signal: self.live_cut_object(&signal_id, limit).await?,
+                noise: self.live_cut_object(&noise_id, limit).await?,
             },
         };
         Lane::restore_pending(&bundle, request.lane_request())

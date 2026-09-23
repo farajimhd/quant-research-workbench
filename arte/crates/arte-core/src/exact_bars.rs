@@ -127,6 +127,12 @@ impl Builder {
     pub fn scope(&self) -> Scope {
         self.scope
     }
+    pub fn session_bounds(&self) -> (u64, u64) {
+        (self.session_start_ns, self.session_end_ns)
+    }
+    pub fn price_scale(&self) -> u8 {
+        self.price_scale
+    }
     pub fn mode(&self) -> Mode {
         self.mode
     }

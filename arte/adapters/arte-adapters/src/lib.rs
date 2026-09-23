@@ -46,6 +46,20 @@ fn test_quote_policy() -> arte_core::quote_state::eligibility::Pinned {
 }
 pub mod strategy_journal;
 #[cfg(test)]
+pub(crate) fn test_noise_config() -> arte_core::strategy350_noise::Config {
+    arte_core::strategy350_noise::Config {
+        execution_interval: arte_core::execution_interval::ExecutionInterval::Fixed(1_000_000_000),
+        price_scale: 2,
+        short_multiplier_bps: 15_000,
+        session_multiplier_bps: 12_500,
+        maximum_entry_fraction_bps: 500,
+        percentile_bps: 9_000,
+        minimum_session_samples: 6,
+        maximum_session_samples: 60_000,
+        source_algorithm_hash: "c".repeat(64),
+    }
+}
+#[cfg(test)]
 fn test_fill_model() -> arte_core::simulation_model::Model {
     arte_core::simulation_model::Model {
         schema_version: 1,

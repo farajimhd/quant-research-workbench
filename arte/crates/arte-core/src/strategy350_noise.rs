@@ -1,6 +1,6 @@
 //! Strategy 350 causal adaptive-distance evidence from completed one-second bars.
 //! Shared by live and historical projection. This is not a bracket/order authority.
-use crate::{content_hash, execution_interval::ExecutionInterval, Error, Result};
+use crate::{content_hash, exact_bars, execution_interval::ExecutionInterval, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
 pub mod checkpoint;
@@ -52,6 +52,154 @@ pub struct CompletedBar {
     pub end_ns: u64,
     pub high_atoms: i64,
     pub low_atoms: i64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Developing {
+    start_ns: u64,
+    high_atoms: i64,
+    low_atoms: i64,
+    trades: u64,
+    last_100ms_end_ns: u64,
+}
+/// Exact 1s high/low projection from nonempty compact 100ms trade bars.
+/// It never creates a bar for an empty interval or rounds floating-point bars.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Source {
+    session_start_ns: u64,
+    session_end_ns: u64,
+    price_scale: u8,
+    last_closed_end_ns: u64,
+    developing: Option<Developing>,
+}
+impl Source {
+    pub fn new(session_start_ns: u64, session_end_ns: u64, price_scale: u8) -> Result<Self> {
+        if session_start_ns == 0
+            || session_start_ns >= session_end_ns
+            || !session_start_ns.is_multiple_of(SECOND)
+            || !session_end_ns.is_multiple_of(SECOND)
+            || !(1..=9).contains(&price_scale)
+        {
+            return Err(Error::Invalid("Strategy 350 noise source geometry".into()));
+        }
+        Ok(Self {
+            session_start_ns,
+            session_end_ns,
+            price_scale,
+            last_closed_end_ns: session_start_ns,
+            developing: None,
+        })
+    }
+    pub fn is_pristine(&self) -> bool {
+        self.last_closed_end_ns == self.session_start_ns && self.developing.is_none()
+    }
+    pub fn session_start_ns(&self) -> u64 {
+        self.session_start_ns
+    }
+    pub fn session_end_ns(&self) -> u64 {
+        self.session_end_ns
+    }
+    pub fn price_scale(&self) -> u8 {
+        self.price_scale
+    }
+    pub fn verify(&self) -> Result<()> {
+        Self::new(self.session_start_ns, self.session_end_ns, self.price_scale)?;
+        if self.last_closed_end_ns < self.session_start_ns
+            || self.last_closed_end_ns > self.session_end_ns
+            || !self.last_closed_end_ns.is_multiple_of(SECOND)
+            || self.developing.as_ref().is_some_and(|bucket| {
+                bucket.start_ns < self.last_closed_end_ns
+                    || bucket.start_ns >= self.session_end_ns
+                    || !bucket.start_ns.is_multiple_of(SECOND)
+                    || bucket.low_atoms <= 0
+                    || bucket.high_atoms < bucket.low_atoms
+                    || bucket.trades == 0
+                    || bucket.last_100ms_end_ns <= bucket.start_ns
+                    || bucket.last_100ms_end_ns > bucket.start_ns + SECOND
+                    || !bucket
+                        .last_100ms_end_ns
+                        .is_multiple_of(exact_bars::INTERVAL_NS)
+            })
+        {
+            return Err(Error::Conflict("Strategy 350 noise source state".into()));
+        }
+        Ok(())
+    }
+    pub fn absorb(&mut self, bar: &exact_bars::Bar) -> Result<()> {
+        self.verify()?;
+        if bar.end_ns.checked_sub(bar.start_ns) != Some(exact_bars::INTERVAL_NS)
+            || bar.start_ns < self.last_closed_end_ns
+            || bar.end_ns > self.session_end_ns
+            || bar.price_scale != self.price_scale
+            || bar.trades == 0
+            || bar.low <= 0
+            || bar.high < bar.low
+        {
+            return Err(Error::Conflict("Strategy 350 exact source bar".into()));
+        }
+        let start_ns = bar.start_ns / SECOND * SECOND;
+        if let Some(bucket) = &mut self.developing {
+            if bucket.start_ns != start_ns || bar.start_ns < bucket.last_100ms_end_ns {
+                return Err(Error::Conflict(
+                    "Strategy 350 one-second close missing".into(),
+                ));
+            }
+            bucket.high_atoms = bucket.high_atoms.max(bar.high);
+            bucket.low_atoms = bucket.low_atoms.min(bar.low);
+            bucket.trades = bucket
+                .trades
+                .checked_add(bar.trades)
+                .ok_or_else(|| Error::Capacity("Strategy 350 one-second trade count".into()))?;
+            bucket.last_100ms_end_ns = bar.end_ns;
+        } else {
+            self.developing = Some(Developing {
+                start_ns,
+                high_atoms: bar.high,
+                low_atoms: bar.low,
+                trades: bar.trades,
+                last_100ms_end_ns: bar.end_ns,
+            });
+        }
+        Ok(())
+    }
+    pub fn close(
+        &mut self,
+        end_ns: u64,
+        expected_trades: Option<u64>,
+    ) -> Result<Option<CompletedBar>> {
+        self.verify()?;
+        if end_ns <= self.last_closed_end_ns
+            || end_ns > self.session_end_ns
+            || !end_ns.is_multiple_of(SECOND)
+        {
+            return Err(Error::Conflict("Strategy 350 one-second close".into()));
+        }
+        if self.developing.as_ref().is_some_and(|bucket| {
+            bucket.start_ns + SECOND != end_ns
+                || expected_trades.is_some_and(|n| n != bucket.trades)
+        }) || self.developing.is_none() && expected_trades.is_some()
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 one-second source differs".into(),
+            ));
+        }
+        let output = self.developing.take().map(|bucket| CompletedBar {
+            end_ns,
+            high_atoms: bucket.high_atoms,
+            low_atoms: bucket.low_atoms,
+        });
+        self.last_closed_end_ns = end_ns;
+        Ok(output)
+    }
+    pub fn last_closed_end_ns(&self) -> u64 {
+        self.last_closed_end_ns
+    }
+    pub fn latest_absorbed_end_ns(&self) -> Option<u64> {
+        self.developing
+            .as_ref()
+            .map(|bucket| bucket.last_100ms_end_ns)
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Distance {
@@ -109,6 +257,15 @@ impl State {
     }
     pub fn last_end_ns(&self) -> Option<u64> {
         self.last_end_ns
+    }
+    pub fn is_pristine(&self) -> bool {
+        self.observed_bars == 0 && self.last_end_ns.is_none()
+    }
+    pub fn session_bounds(&self) -> (u64, u64) {
+        (self.session_start_ns, self.session_end_ns)
+    }
+    pub fn price_scale(&self) -> u8 {
+        self.config.price_scale
     }
     fn healthy(&self) -> Result<()> {
         if self.failed {
@@ -340,5 +497,51 @@ mod tests {
         let mut changed = config();
         changed.execution_interval = ExecutionInterval::Events;
         assert!(changed.hash().is_err());
+    }
+    #[test]
+    fn exact_hundred_ms_bars_form_only_nonempty_one_second_noise_bars() {
+        let mut source = Source::new(START, START + 3 * SECOND, 2).unwrap();
+        let exact = |start_ns, high, low, trades| exact_bars::Bar {
+            start_ns,
+            end_ns: start_ns + exact_bars::INTERVAL_NS,
+            price_scale: 2,
+            size_scale: 0,
+            open: low,
+            high,
+            low,
+            close: high,
+            volume: trades as i64,
+            notional: i128::from(high) * i128::from(trades),
+            trades,
+            last_trade_source_ns: start_ns + 1,
+            last_trade_live_receipt_ns: Some(start_ns + 2),
+        };
+        source
+            .absorb(&exact(START + 100_000_000, 1010, 990, 2))
+            .unwrap();
+        source
+            .absorb(&exact(START + 900_000_000, 1020, 995, 3))
+            .unwrap();
+        assert!(source.close(START + SECOND, Some(4)).is_err());
+        assert_eq!(
+            source.close(START + SECOND, Some(5)).unwrap(),
+            Some(CompletedBar {
+                end_ns: START + SECOND,
+                high_atoms: 1020,
+                low_atoms: 990,
+            })
+        );
+        assert_eq!(source.close(START + 2 * SECOND, None).unwrap(), None);
+        source
+            .absorb(&exact(START + 2 * SECOND, 1000, 980, 1))
+            .unwrap();
+        assert_eq!(
+            source
+                .close(START + 3 * SECOND, Some(1))
+                .unwrap()
+                .unwrap()
+                .low_atoms,
+            980
+        );
     }
 }

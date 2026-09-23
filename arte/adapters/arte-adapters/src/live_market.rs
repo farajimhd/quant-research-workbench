@@ -140,6 +140,18 @@ impl Lane {
             .map(|owner| owner.first_occurrence())
             .ok_or_else(|| Error::Unready("exact signal not bound".into()))
     }
+    /// Exact integer Strategy 350 adaptive-distance evidence. This is not an
+    /// order admission result; structural stop and bracket checks remain separate.
+    pub fn adaptive_noise_distance(
+        &self,
+        entry_atoms: i64,
+    ) -> Result<arte_core::strategy350_noise::Distance> {
+        self.available()?;
+        self.exact_signal
+            .as_ref()
+            .ok_or_else(|| Error::Unready("exact Strategy 350 owner not bound".into()))?
+            .noise_distance(entry_atoms)
+    }
     /// Persist/audit every observation independently, including duplicate/rejected
     /// input. Eligibility comes from the pinned trade-condition policy, not health.
     pub fn ingest(&mut self, event: &AuditedEvent) -> Result<()> {
@@ -930,7 +942,13 @@ mod tests {
             300 * SECOND,
         )
         .unwrap();
-        lane.bind_exact_signal(live_exact_signal::Owner::new(bars, signal).unwrap())
+        let noise = arte_core::strategy350_noise::State::new(
+            crate::test_noise_config(),
+            200 * SECOND,
+            300 * SECOND,
+        )
+        .unwrap();
+        lane.bind_exact_signal(live_exact_signal::Owner::new(bars, signal, noise).unwrap())
             .unwrap();
         assert_eq!(lane.first_squeeze_occurrence().unwrap(), None);
         let event = Observation {
@@ -983,7 +1001,7 @@ mod tests {
         assert_eq!(refs.scheduler, cut.scheduler.root.id);
         assert_eq!(refs.features, cut.features.id);
         assert_eq!(refs.signal, cut.signal.root.id);
-        assert_eq!(cut.objects().len(), 10);
+        assert_eq!(cut.objects().len(), 11);
         assert_eq!(cut.objects().last().unwrap().id, cut.root.id);
         let scheduler_refs =
             arte_core::market_structure::scheduler::checkpoint::Bundle::references(
@@ -1020,6 +1038,7 @@ mod tests {
                         minimum_move_bps: 5,
                         source_algorithm_hash: "b".repeat(64),
                     },
+                    noise_config: crate::test_noise_config(),
                     expected_sequence: 1,
                     expected_boundary_id: Some(&id),
                 },
@@ -1032,6 +1051,10 @@ mod tests {
         .unwrap();
         assert_eq!(restored.pending_boundary().unwrap().unwrap().id, id);
         assert_eq!(restored.first_squeeze_occurrence().unwrap(), None);
+        assert_eq!(
+            restored.adaptive_noise_distance(1_000).unwrap(),
+            lane.adaptive_noise_distance(1_000).unwrap()
+        );
         assert!(restored.high.is_empty());
         assert!(restored.quotes.policy_hash().is_err());
         assert!(restored.bands.latest().is_none());
@@ -1055,6 +1078,7 @@ mod tests {
                 size_scale: 0,
                 source_generation_hash: &generation,
                 signal_config: config,
+                noise_config: crate::test_noise_config(),
                 expected_sequence: boundary.sequence,
                 expected_boundary_id: Some(boundary.id),
             },
@@ -1089,6 +1113,7 @@ mod tests {
                     minimum_move_bps: 5,
                     source_algorithm_hash: "b".repeat(64),
                 },
+                noise_config: crate::test_noise_config(),
                 expected_sequence: 1,
                 expected_boundary_id: Some(&id),
             },
