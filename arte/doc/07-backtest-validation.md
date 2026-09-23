@@ -3,9 +3,11 @@
 ## Strategy 350 and bar-first backtest design
 
 Strategy 350 is the replacement candidate for the earlier starting strategy.
-Its current source is a revision of Strategy 349. It removes the duplicate
-historical Watchlist prior-close condition. The causal executor still enforces
-that condition and fails closed when the prior close is unavailable. Freeze the
+Its current source is a revision of Strategy 349. The stated intent is to
+remove a duplicate historical Watchlist prior-close condition while retaining
+the causal executor's fail-closed gate. The inspected `build()` body changes
+descriptions but does not itself remove that rule. Verify the effective
+configuration before porting or claiming parity. Freeze the
 exact copied source, dependencies, effective configuration, and hashes before
 porting. Later changes to Strategy 350 require a new pinned version and parity
 run. Candidate number 350 alone is not an approval for live orders.

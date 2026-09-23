@@ -13,6 +13,9 @@ preparation from vectorized completed 100 ms bar batches, driven by the scanner,
 data catalogue and rule sets. It requires pinned ClickHouse bars, indicators,
 historical levels, signals and Watchlist products, a validated compact bar
 contract, and compact ClickHouse-only logs and run evidence. SQLite is forbidden.
+The inspected Strategy 350 builder states a Watchlist prior-close fix but does
+not visibly remove a rule in its body. Effective-configuration confirmation is
+required before parity claims; no prior candidate compatibility path is planned.
 The first Rust compact-bar contract now defines a bounded column selection and
 100 ms grid with exact scaled integer prices, sizes and notional. It validates
 bucket values, exact request and coverage identity, source knowledge cutoff,
@@ -22,15 +25,16 @@ The ClickHouse reader preflights storage policy
 and part placement, reads a pinned coverage payload, projects required columns,
 pages sparse nonempty buckets, and reconstructs dense 100 ms arrays. Precision
 is pinned per ticker, including wholly empty pages. Migration 021 authors the
-sparse table and compressed coverage table; it is not applied. A source-backed
+sparse table and compressed coverage table; it is not applied. A single-instrument
 materializer now consumes a verified REST trade source and the pinned condition
-policy. It sorts one ticker's trades, rejects duplicate source identities,
+policy. It sorts one ticker's trades and rejects duplicate source identities.
 accumulates exact scaled OHLCV/notional values, and leaves empty buckets sparse.
 The publisher re-verifies the source certificate, requires acceptance and an
 ownership lease, compares each persisted page before making coverage visible,
 and verifies the final manifest readback. Three focused adapter unit tests pass.
 Connected writer/readback behavior and compression remain untested. The
-scanner/rule planner, Strategy 350 port, and runnable bar-based backtest remain
+multi-ticker catalogue planner, reference-pinned precision supply, Strategy 350
+port, and runnable bar-based backtest remain
 unimplemented. No throughput benchmark, database connection, or service test ran.
 No backward compatibility with obsolete strategy or storage formats is required.
 
