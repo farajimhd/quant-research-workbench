@@ -62,13 +62,36 @@ pub struct PriceFact {
     pub source_order: Option<(u64, u64)>,
 }
 pub struct SessionContext {
-    pub session: u32,
-    pub at_ns: u64,
-    pub source_order: (u64, u64),
-    pub open: Decimal,
-    pub high: Decimal,
-    pub prior_high: Option<PriceFact>,
-    pub complete: bool,
+    pub(crate) session: u32,
+    pub(crate) at_ns: u64,
+    pub(crate) source_order: (u64, u64),
+    pub(crate) open: Decimal,
+    pub(crate) high: Decimal,
+    pub(crate) prior_high: Option<PriceFact>,
+    pub(crate) complete: bool,
+}
+impl SessionContext {
+    pub fn session(&self) -> u32 {
+        self.session
+    }
+    pub fn available_at_ns(&self) -> u64 {
+        self.at_ns
+    }
+    pub fn source_order(&self) -> (u64, u64) {
+        self.source_order
+    }
+    pub fn open(&self) -> Decimal {
+        self.open
+    }
+    pub fn high(&self) -> Decimal {
+        self.high
+    }
+    pub fn prior_high(&self) -> Option<&PriceFact> {
+        self.prior_high.as_ref()
+    }
+    pub fn complete(&self) -> bool {
+        self.complete
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Block {

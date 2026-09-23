@@ -444,13 +444,13 @@ mod tests {
             .observe(&event(3 * S, 4 * S, 2, "11.50", vec![]), &p, 5 * S)
             .unwrap()
             .unwrap();
-        assert_eq!(second.prior_high.unwrap().value, scaled("10"));
+        assert_eq!(second.prior_high().unwrap().value, scaled("10"));
         let third = b
             .observe(&event(3 * S, 4 * S, 3, "10.50", vec![]), &p, 5 * S)
             .unwrap()
             .unwrap();
-        assert_eq!(third.prior_high.unwrap().value, scaled("11.50"));
-        assert_eq!(third.high, scaled("11.50"));
+        assert_eq!(third.prior_high().unwrap().value, scaled("11.50"));
+        assert_eq!(third.high(), scaled("11.50"));
         assert!(b
             .observe(&event(3 * S, 4 * S, 3, "10.50", vec![]), &p, 5 * S)
             .is_err());
@@ -460,12 +460,11 @@ mod tests {
     fn uncertified_start_never_grants_ready_context() {
         let p = policy();
         let mut b = builder(&p, false);
-        assert!(
-            !b.observe(&event(2 * S, 2 * S, 1, "10", vec![]), &p, 2 * S)
-                .unwrap()
-                .unwrap()
-                .complete
-        );
+        assert!(!b
+            .observe(&event(2 * S, 2 * S, 1, "10", vec![]), &p, 2 * S)
+            .unwrap()
+            .unwrap()
+            .complete());
     }
     #[test]
     fn builder_prior_high_feeds_gate_at_equal_availability() {
@@ -584,7 +583,7 @@ mod tests {
         assert_eq!(
             replay
                 .apply_batch(&batch, &p, |event, context| {
-                    seen.push((event.sip.ns, context.high.atoms, context.complete));
+                    seen.push((event.sip.ns, context.high().atoms, context.complete()));
                     Ok(())
                 })
                 .unwrap(),

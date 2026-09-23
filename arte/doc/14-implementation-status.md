@@ -2,6 +2,11 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+External ARTE adapters can no longer construct or mutate a Strategy 350 session
+context or set its completion flag. They can only inspect the context returned
+by the core session builder. The live builder still starts unready; a certified
+live handover remains unimplemented, so this does not permit live entries.
+
 Run manifest schema v2 now pins a strategy kind for each account/instrument
 consumer. The kind propagates into the decision scope and journal identity. The
 generic candidate runtime rejects Strategy 350 before evaluating any boundary.
