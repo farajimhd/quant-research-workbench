@@ -114,7 +114,8 @@ def _run_step_06_specs(
 
         client = ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password())
         snapshot = publish_retained_snapshot(
-            client, config.clickhouse_write_database, feature_date, expected_session=feature_date,
+            client, config.clickhouse_write_database, feature_date,
+            available_at_utc=datetime.now(UTC), expected_session=feature_date,
         )
         gaps = record_missing_sessions(client,config.clickhouse_write_database,
             feature_date-timedelta(days=45),feature_date-timedelta(days=1))

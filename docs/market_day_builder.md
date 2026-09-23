@@ -27,7 +27,7 @@ a range with no exchange sessions is rejected. Omit `--tickers` to select all
 dated-tradable tickers that also have certified source events. The builder reads
 `q_live.feature_tradable_universe_snapshot_v2` through a matching certified
 `q_live.feature_tradable_universe_snapshot_coverage_v2` row. The snapshot must
-have been captured before 04:00 ET on its XNYS session date, and the builder
+have been captured and published before 04:00 ET on its XNYS session date, and the builder
 checks its row count and hash before accepting `is_tradable=1` members. It never
 substitutes the latest snapshot for a missing historical session. Duplicate
 admitted listing rows collapse to one ticker for bar calculation; the complete
@@ -41,7 +41,8 @@ session whose 04:00 ET cutoff has not passed. Its session assignment uses the
 XNYS calendar, so an after-close Friday publication targets Monday (or the
 next exchange session), including holidays and daylight-saving changes. A
 retained V1 publication may be copied into the immutable V2 snapshot only if
-its actual `inserted_at` proves it was captured before that session's cutoff.
+its actual `inserted_at` and retained Step 06 completion record prove it was
+captured and available before that session's cutoff.
 The read-only audit and bounded certification command is:
 
 ```powershell

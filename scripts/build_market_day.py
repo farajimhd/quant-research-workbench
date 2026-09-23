@@ -321,13 +321,15 @@ def source_plan(client, args):
     populations = []
     tradable_by_day = {}
     for day in sessions:
-        certificate = client.query(f"SELECT snapshot_id,source_universe_date,captured_at_utc,cutoff_utc,row_count,tradable_count,source_hash,revision,status "
+        certificate = client.query(f"SELECT snapshot_id,source_universe_date,captured_at_utc,available_at_utc,cutoff_utc,row_count,tradable_count,source_hash,revision,status "
             f"FROM q_live.feature_tradable_universe_snapshot_coverage_v2 FINAL WHERE session_date={sql.literal(day)}", "population_certificate")
-        if len(certificate) != 1 or certificate[0]['status'] != 'certified' or certificate[0]['revision'] != 'preopen-tradable-snapshot-v2':
+        if len(certificate) != 1 or certificate[0]['status'] != 'certified' or certificate[0]['revision'] != 'preopen-tradable-snapshot-v3':
             raise ValueError(f"Missing certified pre-open tradable universe for {day}")
         certificate = certificate[0]
-        if certificate['captured_at_utc'] >= certificate['cutoff_utc']:
-            raise ValueError(f"Tradable universe was captured after the {day} pre-open cutoff")
+        if (certificate['captured_at_utc'] >= certificate['cutoff_utc']
+                or certificate['available_at_utc'] >= certificate['cutoff_utc']
+                or certificate['available_at_utc'] < certificate['captured_at_utc']):
+            raise ValueError(f"Tradable universe was captured or published after the {day} pre-open cutoff")
         snapshot_id = certificate['snapshot_id']
         proof = client.query(f"SELECT count() AS n,countIf(is_tradable=1) AS tradable,"
             "sum(cityHash64(tuple(ticker,symbol_id,listing_id,security_id,is_tradable,exclusion_reason,source_run_id,captured_at_utc))) AS source_hash "

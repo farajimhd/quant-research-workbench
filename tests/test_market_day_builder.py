@@ -119,9 +119,10 @@ class Arguments(unittest.TestCase):
                     return [dict(source_date=day,n=2) for day in days]
                 if label=='population_certificate':
                     return [] if self.missing else [dict(snapshot_id='fixture',source_universe_date=days[0],
-                        captured_at_utc='2026-09-18 03:00:00.000',cutoff_utc='2026-09-18 08:00:00.000',
+                        captured_at_utc='2026-09-18 03:00:00.000',available_at_utc='2026-09-18 03:01:00.000',
+                        cutoff_utc='2026-09-18 08:00:00.000',
                         row_count=1,tradable_count=1,source_hash=1,
-                        revision='preopen-tradable-snapshot-v2',status='certified')]
+                        revision='preopen-tradable-snapshot-v3',status='certified')]
                 if label=='population_integrity':
                     return [dict(n=1,tradable=1,source_hash=1)]
                 if label=='dated_tradable_universe':

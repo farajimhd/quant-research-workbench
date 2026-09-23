@@ -54,7 +54,8 @@ Historical market-day consumers use the separate immutable
 `feature_tradable_universe_snapshot_v2` and its
 `feature_tradable_universe_snapshot_coverage_v2` certificate. A gateway
 publication targets the next XNYS session whose 04:00 ET cutoff has not passed.
-The certificate records capture time, source run, counts, and a row hash on
+The certificate records capture and publication-completion times, source run,
+counts, and a row hash on
 `live_market_ssd`; missed sessions are recorded as unresolved. A retained V1
 publication can be certified only for the future session implied by its actual
 capture clock. The gateway cannot reconstruct old tradability by rerunning its

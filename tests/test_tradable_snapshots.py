@@ -42,9 +42,14 @@ class SnapshotFixture(unittest.TestCase):
             client.execute(f'''INSERT INTO {db}.feature_tradable_universe_v1 VALUES
                 ('2026-08-29','AAA','s1','l1','sec1',1,NULL,'retained',toDateTime64('2026-08-29 02:31:14.300',3,'UTC')),
                 ('2026-08-29','BBB','s2','l2','sec2',0,'inactive_listing','retained',toDateTime64('2026-08-29 02:31:14.300',3,'UTC'))''')
-            result=S.publish_retained_snapshot(client,db,date(2026,8,29),expected_session=date(2026,8,31))
+            available=datetime(2026,8,29,2,31,17,tzinfo=UTC)
+            with self.assertRaisesRegex(ValueError,'publication was outside'):
+                S.publish_retained_snapshot(client,db,date(2026,8,29),
+                    available_at_utc=datetime(2026,8,31,8,1,tzinfo=UTC))
+            result=S.publish_retained_snapshot(client,db,date(2026,8,29),
+                available_at_utc=available,expected_session=date(2026,8,31))
             self.assertEqual((result['session_date'],result['rows'],result['tradable']),('2026-08-31',2,1))
-            self.assertEqual(S.publish_retained_snapshot(client,db,date(2026,8,29)),result)
+            self.assertEqual(S.publish_retained_snapshot(client,db,date(2026,8,29),available_at_utc=available),result)
             cert=S.query(client,f"SELECT row_count,tradable_count,source_hash FROM {db}.{S.COVERAGE} FINAL")
             self.assertEqual((cert[0]['row_count'],cert[0]['tradable_count']),(2,1))
             gaps=S.record_missing_sessions(client,db,date(2026,8,31),date(2026,9,2))

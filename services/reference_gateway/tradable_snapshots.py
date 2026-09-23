@@ -15,7 +15,8 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 
 
 EASTERN = ZoneInfo("America/New_York")
-REVISION = "preopen-tradable-snapshot-v2"
+REVISION = "preopen-tradable-snapshot-v3"
+SNAPSHOT_ID_REVISION = "preopen-tradable-snapshot-v2"
 SNAPSHOTS = "feature_tradable_universe_snapshot_v2"
 COVERAGE = "feature_tradable_universe_snapshot_coverage_v2"
 SOURCE_COLUMNS = "ticker,symbol_id,listing_id,security_id,is_tradable,exclusion_reason,source_run_id,inserted_at"
@@ -66,11 +67,13 @@ def ensure_schema(client: ClickHouseHttpClient, database: str = "q_live") -> Non
     client.execute(f"""CREATE TABLE IF NOT EXISTS {database}.{COVERAGE} (
         session_date Date, snapshot_id String, source_universe_date Date,
         captured_at_utc DateTime64(3,'UTC'), cutoff_utc DateTime64(3,'UTC'),
+        available_at_utc DateTime64(3,'UTC'),
         row_count UInt64, tradable_count UInt64, source_hash UInt64,
         revision String, status LowCardinality(String), certified_at_utc DateTime64(3,'UTC'))
         ENGINE=ReplacingMergeTree(certified_at_utc)
         PARTITION BY toYYYYMM(session_date) ORDER BY session_date
         SETTINGS storage_policy='live_market_ssd'""")
+    client.execute(f"ALTER TABLE {database}.{COVERAGE} ADD COLUMN IF NOT EXISTS available_at_utc DateTime64(3,'UTC') DEFAULT toDateTime64('1970-01-01 00:00:00.000',3,'UTC')")
     tables = query(client, f"SELECT name,storage_policy FROM system.tables WHERE database={sql_literal(database)} AND name IN ({sql_literal(SNAPSHOTS)},{sql_literal(COVERAGE)})")
     if len(tables) != 2 or any(row["storage_policy"] != "live_market_ssd" for row in tables):
         raise RuntimeError("Snapshot tables must use live_market_ssd")
@@ -95,7 +98,7 @@ def source_evidence(client: ClickHouseHttpClient, database: str, source_day: dat
 
 
 def publish_retained_snapshot(client: ClickHouseHttpClient, database: str, source_day: date,
-                              *, expected_session: date | None = None) -> dict:
+                              *, available_at_utc: datetime, expected_session: date | None = None) -> dict:
     """Certify only a retained historical publication captured before the open."""
     ensure_schema(client, database)
     evidence = source_evidence(client, database, source_day)
@@ -104,11 +107,12 @@ def publish_retained_snapshot(client: ClickHouseHttpClient, database: str, sourc
     if expected_session is not None and session != expected_session:
         raise ValueError(f"{source_day}: captured snapshot belongs to {session}, not {expected_session}")
     cutoff = session_cutoff(session)
-    if captured >= cutoff:
-        raise ValueError(f"{source_day}: capture was after {session} pre-open cutoff")
-    identity = f"{REVISION}|{session}|{source_day}|{evidence['run_id']}|{evidence['source_hash']}"
+    available = available_at_utc.astimezone(UTC)
+    if captured >= cutoff or available >= cutoff or available < captured:
+        raise ValueError(f"{source_day}: capture or publication was outside {session} pre-open cutoff")
+    identity = f"{SNAPSHOT_ID_REVISION}|{session}|{source_day}|{evidence['run_id']}|{evidence['source_hash']}"
     snapshot_id = hashlib.sha256(identity.encode()).hexdigest()
-    existing = query(client, f"SELECT snapshot_id,captured_at_utc FROM {database}.{COVERAGE} FINAL WHERE session_date=toDate({sql_literal(session)}) AND status='certified'")
+    existing = query(client, f"SELECT snapshot_id,captured_at_utc,available_at_utc,revision FROM {database}.{COVERAGE} FINAL WHERE session_date=toDate({sql_literal(session)}) AND status='certified'")
     if existing and existing[0]["snapshot_id"] != snapshot_id:
         prior_capture = datetime.fromisoformat(existing[0]["captured_at_utc"]).replace(tzinfo=UTC)
         if prior_capture >= captured:
@@ -125,16 +129,18 @@ def publish_retained_snapshot(client: ClickHouseHttpClient, database: str, sourc
         observed = query(client, f"SELECT count() AS n,{SOURCE_HASH.replace('inserted_at','captured_at_utc')} AS source_hash FROM {database}.{SNAPSHOTS} WHERE {selected}")[0]
     if int(observed["n"]) != int(evidence["n"]) or int(observed["source_hash"]) != int(evidence["source_hash"]):
         raise RuntimeError(f"{source_day}: snapshot copy failed integrity check; certificate withheld")
-    if not existing or existing[0]["snapshot_id"] != snapshot_id:
+    if not existing or existing[0]["snapshot_id"] != snapshot_id or existing[0]['revision'] != REVISION:
         client.execute(f"""INSERT INTO {database}.{COVERAGE} VALUES
             (toDate({sql_literal(session)}),{sql_literal(snapshot_id)},toDate({sql_literal(source_day)}),
              toDateTime64({sql_literal(captured.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3])},3,'UTC'),
              toDateTime64({sql_literal(cutoff.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3])},3,'UTC'),
+             toDateTime64({sql_literal(available.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3])},3,'UTC'),
              {int(evidence['n'])},{int(evidence['tradable'])},{int(evidence['source_hash'])},
              {sql_literal(REVISION)},'certified',now64(3))""")
     ensure_schema(client, database)
     return dict(session_date=str(session),source_universe_date=str(source_day),snapshot_id=snapshot_id,
-                rows=int(evidence["n"]),tradable=int(evidence["tradable"]),captured_at_utc=captured.isoformat())
+                rows=int(evidence["n"]),tradable=int(evidence["tradable"]),
+                captured_at_utc=captured.isoformat(),available_at_utc=available.isoformat())
 
 
 def record_missing_sessions(client: ClickHouseHttpClient, database: str, start: date, end: date) -> list[str]:
@@ -144,7 +150,7 @@ def record_missing_sessions(client: ClickHouseHttpClient, database: str, start: 
     ensure_schema(client, database)
     sessions = [stamp.date() for stamp in mcal.get_calendar("XNYS").schedule(start_date=start,end_date=end).index]
     known = {date.fromisoformat(row["session_date"]) for row in query(client,
-        f"SELECT session_date FROM {database}.{COVERAGE} FINAL WHERE session_date BETWEEN toDate({sql_literal(start)}) AND toDate({sql_literal(end)})")}
+        f"SELECT session_date FROM {database}.{COVERAGE} FINAL WHERE session_date BETWEEN toDate({sql_literal(start)}) AND toDate({sql_literal(end)}) AND revision={sql_literal(REVISION)}")}
     now = datetime.now(UTC)
     missing = [day for day in sessions if day not in known and session_cutoff(day) < now]
     for day in missing:
@@ -152,6 +158,7 @@ def record_missing_sessions(client: ClickHouseHttpClient, database: str, start: 
         client.execute(f"""INSERT INTO {database}.{COVERAGE} VALUES
             (toDate({sql_literal(day)}),'',toDate({sql_literal(day)}),
              toDateTime64('1970-01-01 00:00:00.000',3,'UTC'),
-             toDateTime64({sql_literal(cutoff)},3,'UTC'),0,0,0,
+             toDateTime64({sql_literal(cutoff)},3,'UTC'),
+             toDateTime64('1970-01-01 00:00:00.000',3,'UTC'),0,0,0,
              {sql_literal(REVISION)},'unresolved_no_preopen_capture',now64(3))""")
     return [str(day) for day in missing]
