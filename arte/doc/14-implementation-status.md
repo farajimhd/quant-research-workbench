@@ -49,6 +49,14 @@ freshness again at bracket planning. The generic planner still refuses Strategy
 validator. This is not yet a complete Strategy 350 runtime: the remaining
 pinned operands, account risk, and broker path are not connected, so live
 exposure remains blocked downstream.
+Historical price evidence now has a separate proof check. A run-pinned
+historical source catalog binds a prepared playback once and resolves exact
+frame/input indices without a per-decision source scan. The proof carries the
+modeled availability clock, event content, eligibility, prepared-source and run
+identity. The Strategy 350 gate rejects mismatched source content, mode, run,
+clock or blocked eligibility without creating a live receipt. Historical
+account transaction and simulated order planning are not yet connected to this
+proof; the live-only transaction must not be used as a backtest shortcut.
 
 A bounded, in-process Massive REST/WebSocket overlap auditor now compares the
 exact verified REST batch chain with captured live events by provider sequence,

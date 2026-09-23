@@ -3,6 +3,8 @@
 use super::Prepared;
 use crate::{
     content_hash,
+    event_order::Scope,
+    events::EventKey,
     run_manifest::{Clock, Pinned},
     Error, Result,
 };
@@ -28,6 +30,66 @@ pub struct Catalog {
     /// Sorted, unique (provider, instrument, session) keys.
     pub shards: Vec<Shard>,
 }
+/// Exact modeled event from a run-pinned historical prepared input. This does
+/// not turn REST acquisition time into a measured live receive timestamp.
+pub struct HistoricalEventProof {
+    run_id: String,
+    scope: Scope,
+    key: EventKey,
+    event_hash: String,
+    source_time_ns: u64,
+    modeled_available_at_ns: u64,
+    evaluated_at_ns: u64,
+    eligible: bool,
+    prepared_hash: String,
+    catalog_hash: String,
+}
+/// Bind the run catalog once; event lookup is then indexed and bounded.
+pub struct HistoricalSource<'a> {
+    prepared: &'a Prepared,
+    catalog_hash: String,
+    run_id: String,
+}
+impl HistoricalEventProof {
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+    pub fn scope(&self) -> Scope {
+        self.scope
+    }
+    pub fn key(&self) -> &EventKey {
+        &self.key
+    }
+    pub fn event_hash(&self) -> &str {
+        &self.event_hash
+    }
+    pub fn source_time_ns(&self) -> u64 {
+        self.source_time_ns
+    }
+    pub fn modeled_available_at_ns(&self) -> u64 {
+        self.modeled_available_at_ns
+    }
+    pub fn evaluated_at_ns(&self) -> u64 {
+        self.evaluated_at_ns
+    }
+    pub fn eligible(&self) -> bool {
+        self.eligible
+    }
+    pub fn identity_hash(&self) -> Result<String> {
+        content_hash(&(
+            "arte.historical-event-proof.v1",
+            self.run_id.as_str(),
+            self.prepared_hash.as_str(),
+            self.catalog_hash.as_str(),
+            &self.key,
+            self.event_hash.as_str(),
+            self.source_time_ns,
+            self.modeled_available_at_ns,
+            self.evaluated_at_ns,
+            self.eligible,
+        ))
+    }
+}
 fn hash_valid(value: &str) -> bool {
     value.len() == 64
         && value
@@ -36,6 +98,61 @@ fn hash_valid(value: &str) -> bool {
 }
 fn key(shard: &Shard) -> (u16, u64, u32) {
     (shard.provider, shard.instrument, shard.session)
+}
+impl Catalog {
+    pub fn bind_historical<'a>(
+        &self,
+        manifest: &Pinned,
+        prepared: &'a Prepared,
+    ) -> Result<HistoricalSource<'a>> {
+        self.require(manifest, prepared)?;
+        if self.clock != Clock::Historical {
+            return Err(Error::Conflict(
+                "historical event proof requires historical clock".into(),
+            ));
+        }
+        Ok(HistoricalSource {
+            prepared,
+            catalog_hash: self.hash()?,
+            run_id: manifest.manifest().run_id.clone(),
+        })
+    }
+}
+impl HistoricalSource<'_> {
+    /// Resolve the exact prepared frame/input without a source scan.
+    pub fn event(&self, frame_index: usize, input_index: usize) -> Result<HistoricalEventProof> {
+        let frame = self
+            .prepared
+            .frames
+            .get(frame_index)
+            .ok_or_else(|| Error::Unready("historical frame missing".into()))?;
+        let input = frame
+            .inputs
+            .get(input_index)
+            .ok_or_else(|| Error::Unready("historical frame input missing".into()))?;
+        let event = &input.observation;
+        if event.receipt.is_some()
+            || event.key.kind != crate::events::EventKind::Trade
+            || event.sip.ns > event.available_at_ns
+            || event.available_at_ns > frame.evaluated_at_ns
+        {
+            return Err(Error::Conflict(
+                "historical proof source or modeled clock differs".into(),
+            ));
+        }
+        Ok(HistoricalEventProof {
+            run_id: self.run_id.clone(),
+            scope: self.prepared.scope,
+            key: event.key.clone(),
+            event_hash: content_hash(event)?,
+            source_time_ns: event.sip.ns,
+            modeled_available_at_ns: event.available_at_ns,
+            evaluated_at_ns: frame.evaluated_at_ns,
+            eligible: input.eligible,
+            prepared_hash: self.prepared.hash.clone(),
+            catalog_hash: self.catalog_hash.clone(),
+        })
+    }
 }
 impl Catalog {
     pub fn hash(&self) -> Result<String> {

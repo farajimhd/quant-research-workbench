@@ -3,7 +3,7 @@
 use crate::{
     content_hash,
     event_order::Scope,
-    events::{Decimal, Observation, Payload},
+    events::{Decimal, EventKey, Observation, Payload},
     execution_interval::ExecutionInterval,
     trade_eligibility::Pinned,
     Error, Result,
@@ -125,7 +125,10 @@ pub struct PriceEvidence {
     scope: Scope,
     source: ContextSource,
     config_hash: String,
+    event_key: EventKey,
+    event_hash: Option<String>,
     event_time_ns: u64,
+    observed_available_at_ns: u64,
     live_available_at_ns: Option<u64>,
     live_run_id: Option<String>,
     outcome: Outcome,
@@ -143,6 +146,54 @@ impl PriceEvidence {
     }
     pub fn live_available_at_ns(&self) -> Option<u64> {
         self.live_available_at_ns
+    }
+    /// Match a modeled historical replay event. This checks exact source
+    /// identity and the pinned playback clock, never a live receipt delay.
+    pub fn require_historical_identity(
+        &self,
+        proof: &crate::market_structure::scheduler::playback::sources::HistoricalEventProof,
+        scope: &crate::strategy_dispatch::Scope,
+        input: &crate::strategy_dispatch::InputBoundary,
+        expected_gate_hash: &str,
+    ) -> Result<()> {
+        use crate::strategy_dispatch::{Mode, StrategyKind};
+        if self.source != ContextSource::HistoricalRest
+            || self.scope != proof.scope()
+            || self.config_hash != expected_gate_hash
+            || scope.strategy_kind != StrategyKind::Strategy350
+            || scope.mode != Mode::Backtest
+            || scope.run_id != proof.run_id()
+            || scope.instrument != self.scope.instrument
+            || self.event_key != *proof.key()
+            || self.event_hash.as_deref() != Some(proof.event_hash())
+            || self.event_time_ns != proof.source_time_ns()
+            || self.observed_available_at_ns != proof.modeled_available_at_ns()
+            || self.live_available_at_ns.is_some()
+            || self.live_run_id.is_some()
+            || input.event_time_ns < self.event_time_ns
+            || input.available_at_ns < proof.modeled_available_at_ns()
+            || input.evaluated_at_ns < proof.evaluated_at_ns()
+        {
+            return Err(Error::Unready(
+                "Strategy 350 historical price evidence or modeled clock differs".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub fn require_historical_decision(
+        &self,
+        proof: &crate::market_structure::scheduler::playback::sources::HistoricalEventProof,
+        scope: &crate::strategy_dispatch::Scope,
+        input: &crate::strategy_dispatch::InputBoundary,
+        expected_gate_hash: &str,
+    ) -> Result<()> {
+        self.require_historical_identity(proof, scope, input, expected_gate_hash)?;
+        if !proof.eligible() || self.outcome.block.is_some() {
+            return Err(Error::Unready(
+                "Strategy 350 historical price evidence is not exposure authority".into(),
+            ));
+        }
+        Ok(())
     }
     /// Bind even blocked evidence to the exact live run before journaling it.
     pub fn require_live_identity(
@@ -345,7 +396,12 @@ impl State {
             scope: self.scope,
             source: self.source,
             config_hash: self.config_hash.clone(),
+            event_key: event.key.clone(),
+            event_hash: (self.source == ContextSource::HistoricalRest)
+                .then(|| content_hash(event))
+                .transpose()?,
             event_time_ns: event.sip.ns,
+            observed_available_at_ns: event.available_at_ns,
             live_available_at_ns: (self.source == ContextSource::Live)
                 .then_some(event.available_at_ns),
             live_run_id: event.receipt.as_ref().map(|receipt| receipt.run_id.clone()),
@@ -1176,5 +1232,161 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.block, Some(Block::IneligibleTrade));
         assert!(outcome.late_mode);
+    }
+    #[test]
+    fn historical_price_evidence_requires_exact_modeled_replay_event() {
+        use crate::{
+            market_structure::scheduler::playback::{
+                sources::{Catalog, Shard},
+                Frame, Input, Limits, Prepared,
+            },
+            run_manifest::{Clock, Consumer, Execution, Manifest, Pinned as PinnedRun},
+            strategy_dispatch::{InputBoundary, Mode, StrategyKind},
+        };
+        let market_scope = Scope {
+            provider: 1,
+            instrument: 10,
+            session: 20260922,
+        };
+        let mut modeled_event = event(2 * S, "10");
+        modeled_event.available_at_ns = 2 * S + 10;
+        let mut historical_context = context(2 * S, "10", None);
+        historical_context.source = ContextSource::HistoricalRest;
+        historical_context.at_ns = 2 * S + 10;
+        let config = config();
+        let gate_hash = config.hash().unwrap();
+        let mut gate = State::new(
+            market_scope,
+            ContextSource::HistoricalRest,
+            S,
+            config,
+            &gate_hash,
+        )
+        .unwrap();
+        let evidence = gate
+            .observe_evidence(
+                &modeled_event,
+                &policy(),
+                Some(&fact("19", S)),
+                &historical_context,
+                2 * S + 10,
+            )
+            .unwrap();
+        assert_eq!(evidence.live_available_at_ns(), None);
+        let prepared = Prepared::new(
+            market_scope,
+            "historical-explicit-clock-v1",
+            vec![Frame {
+                watermark_ns: 2 * S,
+                evaluated_at_ns: 2 * S + 10,
+                inputs: vec![Input {
+                    observation: modeled_event.clone(),
+                    eligible: true,
+                }],
+            }],
+            Limits {
+                maximum_frames: 1,
+                maximum_events: 1,
+                maximum_serialized_bytes: 4096,
+            },
+        )
+        .unwrap();
+        let catalogue = Catalog {
+            schema_version: 1,
+            authority_manifest_hash: "c".repeat(64),
+            clock: Clock::Historical,
+            shards: vec![Shard {
+                provider: 1,
+                instrument: 10,
+                session: 20260922,
+                prepared_hash: prepared.hash().into(),
+                clock_model: "historical-explicit-clock-v1".into(),
+            }],
+        };
+        let manifest = Manifest {
+            schema_version: 3,
+            run_id: "backtest-350".into(),
+            mode: Mode::Backtest,
+            code_release_hash: "a".repeat(64),
+            source_manifest_hash: catalogue.hash().unwrap(),
+            reference_manifest_hash: "b".repeat(64),
+            seed_manifest_hash: "d".repeat(64),
+            algorithm_manifest_hash: "e".repeat(64),
+            dependency_plan_hash: "f".repeat(64),
+            hardware_profile_hash: "1".repeat(64),
+            clock: Clock::Historical,
+            execution: Execution::Simulated {
+                fill_model_hash: "2".repeat(64),
+                cost_model_hash: "3".repeat(64),
+            },
+            consumers: vec![Consumer {
+                account: "first".into(),
+                instrument: 10,
+                strategy_instance: "strategy-350".into(),
+                strategy_kind: StrategyKind::Strategy350,
+                execution_interval: ExecutionInterval::Fixed(100_000_000),
+                effective_config_hash: "4".repeat(64),
+            }],
+        };
+        let pinned = PinnedRun::new(manifest.clone(), &manifest.hash().unwrap()).unwrap();
+        let source = catalogue.bind_historical(&pinned, &prepared).unwrap();
+        let proof = source.event(0, 0).unwrap();
+        assert_eq!(proof.modeled_available_at_ns(), 2 * S + 10);
+        assert_eq!(proof.identity_hash().unwrap().len(), 64);
+        assert!(source.event(0, 1).is_err());
+        let mut decision_scope = pinned.scope("first", 10, "strategy-350").unwrap();
+        let mut input = InputBoundary {
+            event_id: "modeled-trade".into(),
+            event_time_ns: 2 * S,
+            available_at_ns: 2 * S + 10,
+            evaluated_at_ns: 2 * S + 10,
+            source_sequence: 2 * S,
+            feature_hash: "feature".into(),
+        };
+        evidence
+            .require_historical_decision(&proof, &decision_scope, &input, &gate_hash)
+            .unwrap();
+        input.available_at_ns = 2 * S;
+        assert!(evidence
+            .require_historical_identity(&proof, &decision_scope, &input, &gate_hash)
+            .is_err());
+        input.available_at_ns = 2 * S + 10;
+        decision_scope.run_id = "foreign-run".into();
+        assert!(evidence
+            .require_historical_identity(&proof, &decision_scope, &input, &gate_hash)
+            .is_err());
+        decision_scope.run_id = "backtest-350".into();
+        decision_scope.mode = Mode::Live;
+        assert!(evidence
+            .require_historical_identity(&proof, &decision_scope, &input, &gate_hash)
+            .is_err());
+        assert!(evidence
+            .require_live_identity(market_scope, &decision_scope, &input, &gate_hash)
+            .is_err());
+        let mut changed = modeled_event;
+        if let Payload::Trade { price, .. } = &mut changed.payload {
+            *price = Decimal::parse("11").unwrap();
+        }
+        let changed_prepared = Prepared::new(
+            market_scope,
+            "historical-explicit-clock-v1",
+            vec![Frame {
+                watermark_ns: 2 * S,
+                evaluated_at_ns: 2 * S + 10,
+                inputs: vec![Input {
+                    observation: changed,
+                    eligible: true,
+                }],
+            }],
+            Limits {
+                maximum_frames: 1,
+                maximum_events: 1,
+                maximum_serialized_bytes: 4096,
+            },
+        )
+        .unwrap();
+        assert!(catalogue
+            .bind_historical(&pinned, &changed_prepared)
+            .is_err());
     }
 }
