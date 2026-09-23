@@ -99,8 +99,12 @@ The live signal can now return one value and availability clock per sealed
 100 ms bucket in a coalesced exact-bar advance. A later activation does not
 retroactively mark earlier buckets active. The bounded transition commits
 state only after all buckets validate; the existing final-state call avoids
-allocating a per-bucket vector. These values are not yet joined to live
-Watchlist and screen products or used as entry authority.
+allocating a per-bucket vector. A ticker-owned live join now feeds the same
+sealed advance to the screen and the signal. It checks both pinned
+configuration hashes and commits both states only after bucket alignment
+passes. Required live Watchlists are explicitly unsupported until their
+producer is wired. The output schedules exact event/quote refinement only;
+it does not certify WebSocket coverage or authorize entries.
 
 Execution cadence is now a required field in the new shared Rust computation
 contract. It supports real-time events or a fixed 100 ms multiple. Its identity

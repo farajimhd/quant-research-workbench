@@ -1,12 +1,12 @@
 //! Conservative Strategy 350 bar and signal screen with explicit Watchlist policy.
 //! The output schedules event/quote refinement; it never authorizes an order.
 use crate::{
-    bar_catalogue, boolean_catalogue, content_hash,
+    bar_catalogue, boolean_catalogue, content_hash, exact_bars,
     execution_interval::{ExecutableKind, ExecutionInterval},
-    strategy350_bar_screen::{self, ScreenBatch},
+    strategy350_bar_screen::{self, ScreenBatch, ScreenIdentity, StreamingScreen},
     strategy350_catalogue::{WatchlistPolicy, SIGNAL, WATCHLIST},
     strategy350_price_gate::PriceFact,
-    Error, Result,
+    strategy350_signal, Error, Result,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -17,6 +17,117 @@ pub struct SelectedBatch {
     pub refine: Vec<bool>,
     /// Exact verified inputs and this batch's refinement mask, not an order proof.
     pub evidence_hash: String,
+}
+
+/// A completed live bucket selected for exact event/quote refinement. This
+/// does not certify feed completeness or authorize an account decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveSelectedBucket {
+    scope: crate::event_order::Scope,
+    start_ns: u64,
+    available_at_ns: u64,
+    screen_possible: bool,
+    signal_active: bool,
+}
+impl LiveSelectedBucket {
+    pub fn scope(&self) -> crate::event_order::Scope {
+        self.scope
+    }
+    pub fn start_ns(&self) -> u64 {
+        self.start_ns
+    }
+    pub fn available_at_ns(&self) -> u64 {
+        self.available_at_ns
+    }
+    pub fn needs_refinement(&self) -> bool {
+        self.screen_possible && self.signal_active
+    }
+}
+
+/// One ticker-owned live join. Both calculations advance on the identical
+/// sealed exact-bar step; neither state commits if the other rejects it.
+pub struct StreamingJoin {
+    scope: crate::event_order::Scope,
+    screen: StreamingScreen,
+    signal: strategy350_signal::State,
+}
+impl StreamingJoin {
+    pub fn new_live(
+        identity: ScreenIdentity,
+        screen_config: &strategy350_bar_screen::Config,
+        expected_screen_hash: &str,
+        prior_close: &PriceFact,
+        signal_config: strategy350_signal::Config,
+        expected_signal_hash: &str,
+        watchlist_policy: WatchlistPolicy,
+    ) -> Result<Self> {
+        if identity.source != exact_bars::Mode::Live
+            || watchlist_policy != WatchlistPolicy::NotRequired
+        {
+            return Err(Error::Unready(
+                "Strategy 350 live join source or Watchlist producer".into(),
+            ));
+        }
+        if signal_config.hash()? != expected_signal_hash {
+            return Err(Error::Conflict(
+                "Strategy 350 live signal configuration differs".into(),
+            ));
+        }
+        let scope = identity.scope;
+        let start_ns = identity.session_start_ns;
+        let end_ns = identity.session_end_ns;
+        let source_hash = identity.source_bar_hash.clone();
+        let screen =
+            StreamingScreen::new(identity, screen_config, expected_screen_hash, prior_close)?;
+        let signal =
+            strategy350_signal::State::new_live(signal_config, source_hash, start_ns, end_ns)?;
+        Ok(Self {
+            scope,
+            screen,
+            signal,
+        })
+    }
+
+    pub fn observe_live_advance(
+        &mut self,
+        advance: &exact_bars::Advance<'_>,
+        available_at_ns: u64,
+    ) -> Result<Vec<LiveSelectedBucket>> {
+        let mut screen = self.screen.clone();
+        let mut signal = self.signal.clone();
+        let screen_points = screen.observe_live_advance(advance)?;
+        let signal_points = signal.observe_live_advance_buckets(advance, available_at_ns)?;
+        if screen_points.len() != signal_points.len() {
+            return Err(Error::Conflict(
+                "Strategy 350 live screen and signal bucket count".into(),
+            ));
+        }
+        let mut output = Vec::with_capacity(screen_points.len());
+        for (screen_point, signal_point) in screen_points.into_iter().zip(signal_points) {
+            if screen_point.scope != self.scope
+                || screen_point.source != exact_bars::Mode::Live
+                || screen_point.start_ns != signal_point.bucket_start_ns()
+                || screen_point
+                    .start_ns
+                    .checked_add(bar_catalogue::BASE_INTERVAL_NS)
+                    .is_none_or(|end| end > signal_point.available_at_ns())
+            {
+                return Err(Error::Conflict(
+                    "Strategy 350 live screen and signal bucket alignment".into(),
+                ));
+            }
+            output.push(LiveSelectedBucket {
+                scope: self.scope,
+                start_ns: screen_point.start_ns,
+                available_at_ns: signal_point.available_at_ns(),
+                screen_possible: screen_point.needs_refinement,
+                signal_active: signal_point.active(),
+            });
+        }
+        self.screen = screen;
+        self.signal = signal;
+        Ok(output)
+    }
 }
 
 struct BooleanCursor<'a> {
@@ -402,6 +513,104 @@ mod tests {
             source_hash: "e".repeat(64),
             source_order: None,
         }
+    }
+    #[test]
+    fn live_join_uses_same_sealed_advance_and_preserves_bucket_activation() {
+        let scope = crate::event_order::Scope {
+            provider: 1,
+            instrument: 10,
+            session: 20260922,
+        };
+        let source_hash = "a".repeat(64);
+        let make_join = |policy, expected_signal_hash: Option<&str>| {
+            let signal_config = strategy350_signal::Config {
+                execution_interval: ExecutionInterval::Fixed(100_000_000),
+                minimum_move_bps: 5,
+                source_algorithm_hash: "f".repeat(64),
+            };
+            let signal_hash = signal_config.hash().unwrap();
+            StreamingJoin::new_live(
+                ScreenIdentity {
+                    scope,
+                    session_start_ns: S,
+                    session_end_ns: S + 400_000_000,
+                    price_scale: 2,
+                    source: exact_bars::Mode::Live,
+                    source_bar_hash: source_hash.clone(),
+                },
+                &config(),
+                &config().hash().unwrap(),
+                &close(),
+                signal_config,
+                expected_signal_hash.unwrap_or(&signal_hash),
+                policy,
+            )
+        };
+        assert!(make_join(WatchlistPolicy::Required, None).is_err());
+        assert!(make_join(WatchlistPolicy::NotRequired, Some(&"0".repeat(64))).is_err());
+        let mut join = make_join(WatchlistPolicy::NotRequired, None).unwrap();
+        let first = exact_bars::Bar {
+            start_ns: S,
+            end_ns: S + 100_000_000,
+            price_scale: 2,
+            size_scale: 0,
+            open: 1000,
+            high: 1000,
+            low: 1000,
+            close: 1000,
+            volume: 100,
+            notional: 100_000,
+            trades: 2,
+            last_trade_source_ns: S + 1,
+            last_trade_live_receipt_ns: Some(S + 2),
+        };
+        let first_advance = exact_bars::Advance {
+            configuration_hash: &source_hash,
+            previous_watermark_ns: S,
+            watermark_ns: S + 100_000_000,
+            completed: Some(first.clone()),
+        };
+        let first_result = join
+            .observe_live_advance(&first_advance, S + 100_000_000)
+            .unwrap();
+        assert_eq!(first_result.len(), 1);
+        assert_eq!(first_result[0].scope(), scope);
+        assert!(!first_result[0].needs_refinement());
+        let later = exact_bars::Bar {
+            start_ns: S + 200_000_000,
+            end_ns: S + 300_000_000,
+            open: 1001,
+            high: 1001,
+            low: 1001,
+            close: 1001,
+            volume: 101,
+            notional: 101_101,
+            trades: 3,
+            last_trade_source_ns: S + 200_000_001,
+            last_trade_live_receipt_ns: Some(S + 200_000_002),
+            ..first
+        };
+        let later_advance = exact_bars::Advance {
+            configuration_hash: &source_hash,
+            previous_watermark_ns: S + 100_000_000,
+            watermark_ns: S + 300_000_000,
+            completed: Some(later),
+        };
+        assert!(join
+            .observe_live_advance(&later_advance, S + 299_000_000)
+            .is_err());
+        let selected = join
+            .observe_live_advance(&later_advance, S + 300_000_000)
+            .unwrap();
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].start_ns(), S + 100_000_000);
+        assert!(!selected[0].needs_refinement());
+        assert_eq!(selected[1].start_ns(), S + 200_000_000);
+        assert!(selected[1].needs_refinement());
+        assert_eq!(selected[1].available_at_ns(), S + 300_000_000);
+        assert!(join
+            .observe_live_advance(&later_advance, S + 300_000_000)
+            .is_err());
     }
     #[test]
     fn only_known_true_signal_and_watchlist_schedule_refinement() {
