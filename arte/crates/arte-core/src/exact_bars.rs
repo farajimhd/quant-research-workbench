@@ -41,6 +41,15 @@ pub struct Advance<'a> {
     pub(crate) completed: Option<Bar>,
 }
 impl Advance<'_> {
+    pub fn configuration_hash(&self) -> &str {
+        self.configuration_hash
+    }
+    pub fn previous_watermark_ns(&self) -> u64 {
+        self.previous_watermark_ns
+    }
+    pub fn watermark_ns(&self) -> u64 {
+        self.watermark_ns
+    }
     pub fn completed(&self) -> Option<&Bar> {
         self.completed.as_ref()
     }

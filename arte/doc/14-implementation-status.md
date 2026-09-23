@@ -58,6 +58,13 @@ not yet wired to live/backtest completed-bar producers or the account evaluator.
 Numerical parity with the current Python/QMD MACD initialization is unproven;
 activation must remain blocked until that comparison and an effective
 configuration pin are complete.
+An exact-bar input source now aggregates only sealed nonempty 100 ms bars into
+sparse 1s/5s/10s/30s completed closes. It never reconstructs integer prices
+from the scheduler's floating-point bars or fabricates closes through a gap.
+The MACD state and this source advance atomically, with session, scale,
+watermark, and source identity checks. Offline tests cover sparse gaps and a
+fresh final bar. The source is not yet part of live common-cut recovery or the
+historical Strategy 350 runner; neither mode may claim the gate is connected.
 The plan can now test a run-pinned replay event against those ranges by SIP
 time with a half-open boundary. Strategy 350 account decisions bind the plan
 identity in historical mode and a sealed selected bucket in live mode.
