@@ -5,6 +5,7 @@ use crate::{
     market::Macd, Error, Result,
 };
 use serde::{Deserialize, Serialize};
+pub mod checkpoint;
 pub mod exact_source;
 
 const SECOND: u64 = 1_000_000_000;
@@ -35,7 +36,8 @@ impl Config {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Frame {
     interval_ns: u64,
     last_end_ns: Option<u64>,
@@ -106,6 +108,23 @@ impl State {
     pub fn config_hash(&self) -> &str {
         &self.config_hash
     }
+    /// A restored EMA image cannot be ahead of its paired exact-bar source.
+    pub fn require_source(&self, source: &exact_source::Source) -> Result<()> {
+        if source.scope() != self.scope
+            || source.session_bounds() != (self.session_start_ns, self.session_end_ns)
+            || source.price_scale() != self.price_scale
+            || self.frames.iter().any(|frame| {
+                frame
+                    .last_end_ns
+                    .is_some_and(|end| end > source.watermark_ns())
+            })
+        {
+            return Err(Error::Conflict(
+                "Strategy 350 MACD source or completed clock differs".into(),
+            ));
+        }
+        Ok(())
+    }
     pub fn observe_completed(
         &mut self,
         timeframe_ns: u64,
@@ -139,14 +158,7 @@ impl State {
         bar: Option<&crate::exact_bars::Bar>,
         watermark_ns: u64,
     ) -> Result<Vec<exact_source::CompletedInput>> {
-        if source.scope() != self.scope
-            || source.session_bounds() != (self.session_start_ns, self.session_end_ns)
-            || source.price_scale() != self.price_scale
-        {
-            return Err(Error::Conflict(
-                "Strategy 350 MACD exact source scope".into(),
-            ));
-        }
+        self.require_source(source)?;
         let mut staged_source = source.clone();
         let completed = staged_source.advance(bar, watermark_ns)?;
         let mut staged_state = self.clone();
@@ -162,14 +174,7 @@ impl State {
         source: &mut exact_source::Source,
         advance: &crate::exact_bars::Advance<'_>,
     ) -> Result<Vec<exact_source::CompletedInput>> {
-        if source.scope() != self.scope
-            || source.session_bounds() != (self.session_start_ns, self.session_end_ns)
-            || source.price_scale() != self.price_scale
-        {
-            return Err(Error::Conflict(
-                "Strategy 350 MACD exact source scope".into(),
-            ));
-        }
+        self.require_source(source)?;
         let mut staged_source = source.clone();
         let completed = staged_source.advance_verified(advance)?;
         let mut staged_state = self.clone();
@@ -406,5 +411,16 @@ mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(source.watermark_ns(), 60 * SECOND);
+    }
+    #[test]
+    fn restored_ema_ahead_of_exact_source_is_rejected() {
+        let mut state = state();
+        state
+            .observe_completed(SECOND, 60 * SECOND, d(100))
+            .unwrap();
+        let source =
+            exact_source::Source::new(state.scope(), 30 * SECOND, 120 * SECOND, 0, "a".repeat(64))
+                .unwrap();
+        assert!(state.require_source(&source).is_err());
     }
 }

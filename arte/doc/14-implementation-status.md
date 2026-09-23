@@ -65,6 +65,12 @@ The MACD state and this source advance atomically, with session, scale,
 watermark, and source identity checks. Offline tests cover sparse gaps and a
 fresh final bar. The source is not yet part of live common-cut recovery or the
 historical Strategy 350 runner; neither mode may claim the gate is connected.
+The four EMA states and sparse exact-bar buckets now have separate bounded,
+content-addressed recovery images. Restore checks period alphas, finite EMA
+values, frame clocks, source generation, active bucket geometry, and canonical
+bytes. A paired-state check rejects EMA completion ahead of the exact-bar
+watermark. The two images still need one root bound to the scheduler and
+account cut; standalone image tests do not prove live recovery durability.
 The plan can now test a run-pinned replay event against those ranges by SIP
 time with a half-open boundary. Strategy 350 account decisions bind the plan
 identity in historical mode and a sealed selected bucket in live mode.

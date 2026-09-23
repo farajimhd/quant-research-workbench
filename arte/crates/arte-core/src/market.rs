@@ -161,6 +161,31 @@ impl Macd {
     pub fn preview(&self, close: f64) -> Result<(f64, f64, f64)> {
         self.clone().update(close)
     }
+    /// Validate a deserialized EMA image against pinned periods and presence.
+    pub fn require_checkpoint(
+        &self,
+        fast: u32,
+        slow: u32,
+        signal: u32,
+        populated: bool,
+    ) -> Result<()> {
+        let expected = Self::new(fast, slow, signal)?;
+        for (actual, expected) in [
+            (&self.fast, &expected.fast),
+            (&self.slow, &expected.slow),
+            (&self.signal, &expected.signal),
+        ] {
+            if actual.alpha.to_bits() != expected.alpha.to_bits()
+                || actual.value.is_some() != populated
+                || actual.value.is_some_and(|value| !value.is_finite())
+            {
+                return Err(Error::Conflict(
+                    "MACD checkpoint EMA parameters or value".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Completed {

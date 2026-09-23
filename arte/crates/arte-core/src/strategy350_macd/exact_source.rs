@@ -6,10 +6,14 @@ use crate::{
     event_order::Scope,
     events::Decimal,
     exact_bars::{Bar, INTERVAL_NS},
+    seed_storage::Object,
     Error, Result,
 };
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+const MAX_CHECKPOINT_BYTES: usize = 4096;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Bucket {
     start_ns: u64,
     end_ns: u64,
@@ -24,6 +28,18 @@ pub struct CompletedInput {
 #[derive(Clone)]
 pub struct Source {
     scope: Scope,
+    session_start_ns: u64,
+    session_end_ns: u64,
+    price_scale: u8,
+    exact_bar_hash: String,
+    watermark_ns: u64,
+    buckets: [Option<Bucket>; 4],
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Saved {
+    version: u32,
+    scope: (u16, u64, u32),
     session_start_ns: u64,
     session_end_ns: u64,
     price_scale: u8,
@@ -90,6 +106,96 @@ impl Source {
             self.price_scale,
             self.exact_bar_hash.as_str(),
         ))
+    }
+    pub fn checkpoint(&self) -> Result<Object> {
+        self.validate_recovery_geometry()?;
+        let payload = serde_json::to_vec(&Saved {
+            version: 1,
+            scope: (
+                self.scope.provider,
+                self.scope.instrument,
+                self.scope.session,
+            ),
+            session_start_ns: self.session_start_ns,
+            session_end_ns: self.session_end_ns,
+            price_scale: self.price_scale,
+            exact_bar_hash: self.exact_bar_hash.clone(),
+            watermark_ns: self.watermark_ns,
+            buckets: self.buckets,
+        })
+        .map_err(|error| Error::Serialization(error.to_string()))?;
+        if payload.len() > MAX_CHECKPOINT_BYTES {
+            return Err(Error::Capacity("Strategy 350 MACD source image".into()));
+        }
+        Ok(Object::new(payload))
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_checkpoint(
+        image: &Object,
+        expected_id: &str,
+        scope: Scope,
+        session_start_ns: u64,
+        session_end_ns: u64,
+        price_scale: u8,
+        exact_bar_hash: String,
+    ) -> Result<Self> {
+        image.verify()?;
+        if image.id != expected_id || image.payload.len() > MAX_CHECKPOINT_BYTES {
+            return Err(Error::Conflict(
+                "Strategy 350 MACD source image identity".into(),
+            ));
+        }
+        let saved: Saved = serde_json::from_slice(&image.payload)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        let expected = Self::new(
+            scope,
+            session_start_ns,
+            session_end_ns,
+            price_scale,
+            exact_bar_hash,
+        )?;
+        if saved.version != 1
+            || saved.scope != (scope.provider, scope.instrument, scope.session)
+            || saved.session_start_ns != session_start_ns
+            || saved.session_end_ns != session_end_ns
+            || saved.price_scale != price_scale
+            || saved.exact_bar_hash != expected.exact_bar_hash
+        {
+            return Err(Error::Conflict("Strategy 350 MACD source pin".into()));
+        }
+        let restored = Self {
+            watermark_ns: saved.watermark_ns,
+            buckets: saved.buckets,
+            ..expected
+        };
+        restored.validate_recovery_geometry()?;
+        if restored.checkpoint()?.payload != image.payload {
+            return Err(Error::Conflict(
+                "Strategy 350 MACD source noncanonical".into(),
+            ));
+        }
+        Ok(restored)
+    }
+    fn validate_recovery_geometry(&self) -> Result<()> {
+        if self.watermark_ns < self.session_start_ns || self.watermark_ns > self.session_end_ns {
+            return Err(Error::Conflict("Strategy 350 MACD source watermark".into()));
+        }
+        for (index, bucket) in self.buckets.iter().enumerate() {
+            if let Some(bucket) = bucket {
+                let timeframe_ns = TIMEFRAMES_NS[index];
+                if bucket.close_atoms <= 0
+                    || !bucket.start_ns.is_multiple_of(timeframe_ns)
+                    || bucket.end_ns.checked_sub(bucket.start_ns) != Some(timeframe_ns)
+                    || bucket.end_ns <= self.watermark_ns
+                    || bucket.end_ns > self.session_end_ns
+                    || bucket.start_ns > self.watermark_ns
+                    || bucket.end_ns <= self.session_start_ns
+                {
+                    return Err(Error::Conflict("Strategy 350 MACD source bucket".into()));
+                }
+            }
+        }
+        Ok(())
     }
     /// Bind a live/historical in-process exact-bar advance to its pinned
     /// source generation and contiguous watermark before taking any output.
@@ -310,5 +416,54 @@ mod tests {
         let advance = builder.advance(60 * S).unwrap();
         assert_eq!(pinned.advance_verified(&advance).unwrap().len(), 4);
         assert!(pinned.advance_verified(&advance).is_err());
+    }
+    #[test]
+    fn source_checkpoint_restores_sparse_buckets_and_rejects_changed_pin() {
+        let mut continuous = source();
+        let first = bar(30 * S, 1000);
+        continuous.advance(Some(&first), first.end_ns).unwrap();
+        let image = continuous.checkpoint().unwrap();
+        let mut restored = Source::restore_checkpoint(
+            &image,
+            &image.id,
+            continuous.scope(),
+            30 * S,
+            120 * S,
+            2,
+            "a".repeat(64),
+        )
+        .unwrap();
+        let later = bar(59 * S, 1100);
+        assert_eq!(
+            continuous.advance(Some(&later), 60 * S).unwrap(),
+            restored.advance(Some(&later), 60 * S).unwrap()
+        );
+        assert_eq!(
+            continuous.checkpoint().unwrap().id,
+            restored.checkpoint().unwrap().id
+        );
+        assert!(Source::restore_checkpoint(
+            &image,
+            &image.id,
+            continuous.scope(),
+            30 * S,
+            120 * S,
+            2,
+            "b".repeat(64),
+        )
+        .is_err());
+        let mut changed: serde_json::Value = serde_json::from_slice(&image.payload).unwrap();
+        changed["watermark_ns"] = (121 * S).into();
+        let changed = Object::new(serde_json::to_vec(&changed).unwrap());
+        assert!(Source::restore_checkpoint(
+            &changed,
+            &changed.id,
+            continuous.scope(),
+            30 * S,
+            120 * S,
+            2,
+            "a".repeat(64),
+        )
+        .is_err());
     }
 }
