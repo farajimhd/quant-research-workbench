@@ -4,6 +4,7 @@ use super::Runtime as Playback;
 use crate::strategy_journal::{self, accounts::Boundary, Publisher};
 use arte_core::{
     content_hash,
+    execution_interval::{ExecutableKind, ExecutionContract, Route},
     run_manifest::Pinned,
     strategy350_effective::Config,
     strategy350_transaction::{self, HistoricalMarketDecisionInput},
@@ -18,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 struct Slot<S> {
     runtime: Runtime<S>,
     effective: Config,
+    route: Route,
     receipt: Option<Committed>,
 }
 
@@ -88,6 +90,12 @@ impl<S: Clone + Serialize> Accounts<S> {
                 Error::Unready("Strategy 350 effective configuration missing".into())
             })?;
             effective.require_scope(&scope)?;
+            let route = Route::new(&ExecutionContract {
+                kind: ExecutableKind::Strategy,
+                id: scope.strategy_instance.clone(),
+                implementation_hash: scope.config_hash.clone(),
+                interval: effective.execution_interval,
+            })?;
             let state = initial_states.remove(&key).ok_or_else(|| {
                 Error::Unready("Strategy 350 initial account state missing".into())
             })?;
@@ -97,6 +105,7 @@ impl<S: Clone + Serialize> Accounts<S> {
                     Slot {
                         runtime: Runtime::new(scope, state, maximum_state_bytes)?,
                         effective,
+                        route,
                         receipt: None,
                     },
                 )
@@ -239,6 +248,11 @@ impl<S: Clone + Serialize> Accounts<S> {
         {
             return Err(Error::Conflict(
                 "Strategy 350 account decision differs".into(),
+            ));
+        }
+        if !boundary.due_for(slot.route) {
+            return Err(Error::Unready(
+                "Strategy 350 decision boundary is outside declared interval".into(),
             ));
         }
         let decision = strategy350_transaction::prepare_historical_market_decision(
@@ -410,6 +424,10 @@ mod tests {
         let (configs, states) = inputs(&manifest);
         let accounts = Accounts::new(&manifest, 10, configs.clone(), states.clone(), 1024).unwrap();
         assert_eq!(accounts.scope_hashes().count(), 2);
+        assert!(accounts
+            .slots
+            .values()
+            .all(|slot| slot.route.interval() == ExecutionInterval::Events));
         for account in ["first", "second"] {
             let scope = manifest.scope(account, 10, "strategy-350").unwrap();
             assert_eq!(

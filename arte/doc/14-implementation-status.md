@@ -140,6 +140,11 @@ The execution interval remains a required, identity-pinned field on every
 computational contract, including Signal Streams, scanner rules, indicators,
 level books, Watchlists, and named calculations. Contract validation does not
 yet prove that every live producer dispatches at its declared interval.
+Strategy 350 historical decision preparation now rejects a market boundary
+outside its pinned interval before mutating account state. The playback barrier
+still requires an explicit no-evaluation receipt for each off-interval boundary;
+until that exists, mixed or fixed-cadence Strategy 350 runs cannot advance end
+to end.
 An eligible preview now returns a private, source-bound MACD evidence value.
 Its fingerprint pins the compact request and coverage, MACD configuration,
 run-bound trade proof, completed-frame clocks and exact floating-point outputs.
