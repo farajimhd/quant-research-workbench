@@ -517,46 +517,6 @@ mod tests {
                 clock_model: "modeled-completed-macd-v1".into(),
             }],
         };
-        let manifest = Manifest {
-            schema_version: 3,
-            run_id: "later-macd-run".into(),
-            mode: Mode::Backtest,
-            code_release_hash: "a".repeat(64),
-            source_manifest_hash: catalog.hash().unwrap(),
-            reference_manifest_hash: "b".repeat(64),
-            seed_manifest_hash: "d".repeat(64),
-            algorithm_manifest_hash: "e".repeat(64),
-            dependency_plan_hash: "f".repeat(64),
-            hardware_profile_hash: "1".repeat(64),
-            clock: Clock::Historical,
-            execution: Execution::Simulated {
-                fill_model_hash: "2".repeat(64),
-                cost_model_hash: "3".repeat(64),
-            },
-            consumers: vec![Consumer {
-                account: "first".into(),
-                instrument: 10,
-                strategy_instance: "strategy-350".into(),
-                strategy_kind: StrategyKind::Strategy350,
-                execution_interval: ExecutionInterval::Events,
-                effective_config_hash: "4".repeat(64),
-            }],
-        };
-        let pinned = Pinned::new(manifest.clone(), &manifest.hash().unwrap()).unwrap();
-        let source = catalog.bind_historical(&pinned, &prepared).unwrap();
-        let proof = source.event(0, 0).unwrap();
-        let evidence = cursor.preview_proof(&proof, &observation).unwrap();
-        assert!(evidence.outcome().bullish);
-        let input = InputBoundary {
-            event_id: "later-trade".into(),
-            event_time_ns: event_time,
-            available_at_ns: event_time + 1,
-            evaluated_at_ns: event_time + 1,
-            source_sequence: 1,
-            feature_hash: "features".into(),
-        };
-        crate::strategy350_transaction::require_historical_macd(Some(&evidence), &proof, &input)
-            .unwrap();
         use crate::{
             strategy350_price_gate::{
                 Config as PriceConfig, ContextSource, PriceFact, SessionContext,
@@ -589,6 +549,48 @@ mod tests {
             trade_policy_hash: policy_hash,
         };
         let price_hash = price_config.hash().unwrap();
+        let mut effective = crate::strategy350_effective::test_config(ExecutionInterval::Events);
+        effective.price_gate_config_hash = price_hash.clone();
+        let manifest = Manifest {
+            schema_version: 3,
+            run_id: "later-macd-run".into(),
+            mode: Mode::Backtest,
+            code_release_hash: "a".repeat(64),
+            source_manifest_hash: catalog.hash().unwrap(),
+            reference_manifest_hash: "b".repeat(64),
+            seed_manifest_hash: "d".repeat(64),
+            algorithm_manifest_hash: "e".repeat(64),
+            dependency_plan_hash: "f".repeat(64),
+            hardware_profile_hash: "1".repeat(64),
+            clock: Clock::Historical,
+            execution: Execution::Simulated {
+                fill_model_hash: "2".repeat(64),
+                cost_model_hash: "3".repeat(64),
+            },
+            consumers: vec![Consumer {
+                account: "first".into(),
+                instrument: 10,
+                strategy_instance: "strategy-350".into(),
+                strategy_kind: StrategyKind::Strategy350,
+                execution_interval: ExecutionInterval::Events,
+                effective_config_hash: effective.hash().unwrap(),
+            }],
+        };
+        let pinned = Pinned::new(manifest.clone(), &manifest.hash().unwrap()).unwrap();
+        let source = catalog.bind_historical(&pinned, &prepared).unwrap();
+        let proof = source.event(0, 0).unwrap();
+        let evidence = cursor.preview_proof(&proof, &observation).unwrap();
+        assert!(evidence.outcome().bullish);
+        let input = InputBoundary {
+            event_id: "later-trade".into(),
+            event_time_ns: event_time,
+            available_at_ns: event_time + 1,
+            evaluated_at_ns: event_time + 1,
+            source_sequence: 1,
+            feature_hash: "features".into(),
+        };
+        crate::strategy350_transaction::require_historical_macd(Some(&evidence), &proof, &input)
+            .unwrap();
         let mut price_gate = PriceState::new(
             scope,
             ContextSource::HistoricalRest,
@@ -714,6 +716,7 @@ mod tests {
             crate::strategy350_transaction::prepare_historical_market_decision(
                 &mut account,
                 crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                    effective: &effective,
                     input: input.clone(),
                     safety: &safety,
                     price: &price_evidence,
@@ -733,6 +736,7 @@ mod tests {
             crate::strategy350_transaction::prepare_historical_market_decision(
                 &mut account,
                 crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                    effective: &effective,
                     input: input.clone(),
                     safety: &safety,
                     price: &price_evidence,
@@ -752,6 +756,7 @@ mod tests {
         let decision = crate::strategy350_transaction::prepare_historical_market_decision(
             &mut account,
             crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                effective: &effective,
                 input: input.clone(),
                 safety: &safety,
                 price: &price_evidence,
@@ -772,6 +777,7 @@ mod tests {
         let sealed = crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
             &committed,
             crate::strategy350_transaction::HistoricalReadback {
+                effective: &effective,
                 price: &price_evidence,
                 source: &proof,
                 expected_price_gate_hash: &price_hash,
@@ -786,6 +792,7 @@ mod tests {
             crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
                 &committed,
                 crate::strategy350_transaction::HistoricalReadback {
+                    effective: &effective,
                     price: &price_evidence,
                     source: &proof,
                     expected_price_gate_hash: &price_hash,
@@ -801,6 +808,7 @@ mod tests {
             crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
                 &committed,
                 crate::strategy350_transaction::HistoricalReadback {
+                    effective: &effective,
                     price: &price_evidence,
                     source: &proof,
                     expected_price_gate_hash: &price_hash,
@@ -828,6 +836,7 @@ mod tests {
             crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
                 &committed,
                 crate::strategy350_transaction::HistoricalReadback {
+                    effective: &effective,
                     price: &price_evidence,
                     source: &proof,
                     expected_price_gate_hash: &price_hash,

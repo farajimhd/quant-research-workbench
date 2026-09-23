@@ -4,6 +4,7 @@ use crate::{
     content_hash,
     event_order::Scope as MarketScope,
     market_structure::scheduler::playback::sources::HistoricalEventProof,
+    strategy350_effective::Config as EffectiveConfig,
     strategy350_gap::FrozenGap,
     strategy350_macd::historical::Evidence as HistoricalMacdEvidence,
     strategy350_macd::live::Evidence as LiveMacdEvidence,
@@ -19,6 +20,7 @@ use serde::Serialize;
 /// must still supply all other pinned Strategy 350 operands in `other_evidence_hash`.
 /// A blocked or stale price gate may record a wait or exit, never an exposure add.
 pub struct MarketDecisionInput<'a> {
+    pub effective: &'a EffectiveConfig,
     pub market_scope: MarketScope,
     pub input: InputBoundary,
     pub safety: &'a Safety,
@@ -32,6 +34,7 @@ pub struct MarketDecisionInput<'a> {
 }
 
 pub struct LiveReadback<'a> {
+    pub effective: &'a EffectiveConfig,
     pub market_scope: MarketScope,
     pub price: &'a PriceEvidence,
     pub expected_price_gate_hash: &'a str,
@@ -45,6 +48,7 @@ pub struct LiveReadback<'a> {
 /// The same account decision/journal envelope, with a pinned modeled replay
 /// event instead of a live receive timestamp or REST acquisition clock.
 pub struct HistoricalMarketDecisionInput<'a> {
+    pub effective: &'a EffectiveConfig,
     pub input: InputBoundary,
     pub safety: &'a Safety,
     pub price: &'a PriceEvidence,
@@ -57,6 +61,7 @@ pub struct HistoricalMarketDecisionInput<'a> {
 }
 
 pub struct HistoricalReadback<'a> {
+    pub effective: &'a EffectiveConfig,
     pub price: &'a PriceEvidence,
     pub source: &'a HistoricalEventProof,
     pub expected_price_gate_hash: &'a str,
@@ -75,6 +80,7 @@ impl<'a> CommittedHistoricalDecision<'a> {
         request: HistoricalReadback<'_>,
     ) -> Result<Self> {
         let HistoricalReadback {
+            effective,
             price,
             source,
             expected_price_gate_hash,
@@ -85,6 +91,11 @@ impl<'a> CommittedHistoricalDecision<'a> {
         } = request;
         require_other_hash(other_evidence_hash)?;
         let decision = committed.decision();
+        effective.require_scope(&decision.scope)?;
+        effective.require_price_gate(expected_price_gate_hash)?;
+        if let Some(gap) = gap {
+            effective.require_gap(gap)?;
+        }
         validate_optional_gap(gap, &decision.input)?;
         let expected =
             historical_evidence_hash(price, source, refinement, macd, gap, other_evidence_hash)?;
@@ -263,6 +274,7 @@ pub fn prepare_historical_market_decision<S: Clone + Serialize>(
     calculate: impl FnOnce(&mut S) -> Result<Vec<Action>>,
 ) -> Result<Decision> {
     let HistoricalMarketDecisionInput {
+        effective,
         input,
         safety,
         price,
@@ -275,6 +287,11 @@ pub fn prepare_historical_market_decision<S: Clone + Serialize>(
     } = request;
     require_other_hash(other_evidence_hash)?;
     let scope = runtime.scope().clone();
+    effective.require_scope(&scope)?;
+    effective.require_price_gate(expected_price_gate_hash)?;
+    if let Some(gap) = gap {
+        effective.require_gap(gap)?;
+    }
     if scope.strategy_kind != StrategyKind::Strategy350
         || scope.mode != Mode::Backtest
         || scope.instrument != source.scope().instrument
@@ -310,6 +327,7 @@ pub struct CommittedMarketDecision<'a> {
 impl<'a> CommittedMarketDecision<'a> {
     pub fn from_readback(committed: &'a Committed, request: LiveReadback<'a>) -> Result<Self> {
         let LiveReadback {
+            effective,
             market_scope,
             price,
             expected_price_gate_hash,
@@ -320,6 +338,11 @@ impl<'a> CommittedMarketDecision<'a> {
             other_evidence_hash,
         } = request;
         let decision = committed.decision();
+        effective.require_scope(&decision.scope)?;
+        effective.require_price_gate(expected_price_gate_hash)?;
+        if let Some(gap) = gap {
+            effective.require_gap(gap)?;
+        }
         validate_optional_gap(gap, &decision.input)?;
         if let Some(macd) = macd {
             price.require_live_macd(macd, &decision.scope, &decision.input)?;
@@ -376,6 +399,7 @@ pub fn prepare_market_decision<S: Clone + Serialize>(
     calculate: impl FnOnce(&mut S) -> Result<Vec<Action>>,
 ) -> Result<Decision> {
     let MarketDecisionInput {
+        effective,
         market_scope,
         input,
         safety,
@@ -388,6 +412,11 @@ pub fn prepare_market_decision<S: Clone + Serialize>(
         other_evidence_hash,
     } = request;
     let scope = runtime.scope().clone();
+    effective.require_scope(&scope)?;
+    effective.require_price_gate(expected_price_gate_hash)?;
+    if let Some(gap) = gap {
+        effective.require_gap(gap)?;
+    }
     if scope.strategy_kind != StrategyKind::Strategy350
         || !matches!(scope.mode, Mode::Live | Mode::Paper)
         || scope.instrument != market_scope.instrument

@@ -911,6 +911,11 @@ mod tests {
             feature_hash: "feature".into(),
         };
         let gate_hash = gate.configuration_hash();
+        let mut effective = crate::strategy350_effective::test_config(
+            crate::execution_interval::ExecutionInterval::Fixed(100_000_000),
+        );
+        effective.price_gate_config_hash = gate_hash.to_owned();
+        decision_scope.config_hash = effective.hash().unwrap();
         let macd_config = crate::strategy350_macd::Config {
             execution_interval: ExecutionInterval::Events,
             price_scale: 2,
@@ -990,6 +995,7 @@ mod tests {
         assert!(crate::strategy350_transaction::prepare_market_decision(
             &mut account,
             crate::strategy350_transaction::MarketDecisionInput {
+                effective: &effective,
                 market_scope: Scope {
                     session: 20260923,
                     ..market_scope
@@ -1011,6 +1017,7 @@ mod tests {
         let decision = crate::strategy350_transaction::prepare_market_decision(
             &mut account,
             crate::strategy350_transaction::MarketDecisionInput {
+                effective: &effective,
                 market_scope,
                 input: input.clone(),
                 safety: &safety,
@@ -1055,6 +1062,7 @@ mod tests {
             crate::strategy350_transaction::CommittedMarketDecision::from_readback(
                 &committed,
                 crate::strategy350_transaction::LiveReadback {
+                    effective: &effective,
                     market_scope,
                     price: &evidence,
                     expected_price_gate_hash: gate_hash,
@@ -1070,6 +1078,7 @@ mod tests {
         let authorized = crate::strategy350_transaction::CommittedMarketDecision::from_readback(
             &committed,
             crate::strategy350_transaction::LiveReadback {
+                effective: &effective,
                 market_scope,
                 price: &evidence,
                 expected_price_gate_hash: gate_hash,
@@ -1081,10 +1090,30 @@ mod tests {
             },
         )
         .unwrap();
+        let mut changed_effective = effective.clone();
+        changed_effective.gap.maximum_levels += 1;
         assert!(
             crate::strategy350_transaction::CommittedMarketDecision::from_readback(
                 &committed,
                 crate::strategy350_transaction::LiveReadback {
+                    effective: &changed_effective,
+                    market_scope,
+                    price: &evidence,
+                    expected_price_gate_hash: gate_hash,
+                    maximum_price_age_ns: 200_000_000,
+                    refinement: None,
+                    macd: Some(&macd_evidence),
+                    gap: None,
+                    other_evidence_hash: &same_other_hash,
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            crate::strategy350_transaction::CommittedMarketDecision::from_readback(
+                &committed,
+                crate::strategy350_transaction::LiveReadback {
+                    effective: &effective,
                     market_scope,
                     price: &evidence,
                     expected_price_gate_hash: gate_hash,
@@ -1143,6 +1172,7 @@ mod tests {
         assert!(crate::strategy350_transaction::prepare_market_decision(
             &mut account,
             crate::strategy350_transaction::MarketDecisionInput {
+                effective: &effective,
                 market_scope,
                 input: add_input.clone(),
                 safety: &add_safety,
@@ -1164,6 +1194,7 @@ mod tests {
         assert!(crate::strategy350_transaction::prepare_market_decision(
             &mut account,
             crate::strategy350_transaction::MarketDecisionInput {
+                effective: &effective,
                 market_scope,
                 input: add_input,
                 safety: &add_safety,
@@ -1337,6 +1368,10 @@ mod tests {
         historical_context.at_ns = 2 * S + 10;
         let config = config();
         let gate_hash = config.hash().unwrap();
+        let mut effective = crate::strategy350_effective::test_config(
+            crate::execution_interval::ExecutionInterval::Fixed(100_000_000),
+        );
+        effective.price_gate_config_hash = gate_hash.clone();
         let mut gate = State::new(
             market_scope,
             ContextSource::HistoricalRest,
@@ -1407,7 +1442,7 @@ mod tests {
                 strategy_instance: "strategy-350".into(),
                 strategy_kind: StrategyKind::Strategy350,
                 execution_interval: ExecutionInterval::Fixed(100_000_000),
-                effective_config_hash: "4".repeat(64),
+                effective_config_hash: effective.hash().unwrap(),
             }],
         };
         let pinned = PinnedRun::new(manifest.clone(), &manifest.hash().unwrap()).unwrap();
@@ -1488,6 +1523,7 @@ mod tests {
         let wait = crate::strategy350_transaction::prepare_historical_market_decision(
             &mut account,
             crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                effective: &effective,
                 input: input.clone(),
                 safety: &safety,
                 price: &evidence,
@@ -1513,6 +1549,7 @@ mod tests {
             crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
                 &committed,
                 crate::strategy350_transaction::HistoricalReadback {
+                    effective: &effective,
                     price: &evidence,
                     source: &proof,
                     expected_price_gate_hash: &gate_hash,
@@ -1535,6 +1572,7 @@ mod tests {
             crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
                 &committed,
                 crate::strategy350_transaction::HistoricalReadback {
+                    effective: &effective,
                     price: &evidence,
                     source: &proof,
                     expected_price_gate_hash: &gate_hash,
@@ -1550,6 +1588,7 @@ mod tests {
             crate::strategy350_transaction::CommittedHistoricalDecision::from_readback(
                 &committed,
                 crate::strategy350_transaction::HistoricalReadback {
+                    effective: &effective,
                     price: &evidence,
                     source: &proof,
                     expected_price_gate_hash: &gate_hash,
@@ -1594,6 +1633,7 @@ mod tests {
             crate::strategy350_transaction::prepare_historical_market_decision(
                 &mut account,
                 crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                    effective: &effective,
                     input: add_input.clone(),
                     safety: &add_safety,
                     price: &evidence,
@@ -1616,6 +1656,7 @@ mod tests {
             crate::strategy350_transaction::prepare_historical_market_decision(
                 &mut account,
                 crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                    effective: &effective,
                     input: add_input.clone(),
                     safety: &add_safety,
                     price: &evidence,
@@ -1638,6 +1679,7 @@ mod tests {
             crate::strategy350_transaction::prepare_historical_market_decision(
                 &mut account,
                 crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                    effective: &effective,
                     input: add_input.clone(),
                     safety: &add_safety,
                     price: &evidence,
@@ -1693,6 +1735,7 @@ mod tests {
             crate::strategy350_transaction::prepare_historical_market_decision(
                 &mut rejected_account,
                 crate::strategy350_transaction::HistoricalMarketDecisionInput {
+                    effective: &effective,
                     input: add_input.clone(),
                     safety: &add_safety,
                     price: &evidence,
