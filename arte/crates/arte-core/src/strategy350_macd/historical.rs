@@ -4,8 +4,10 @@
 use super::{exact_source, Config, Outcome, State};
 use crate::{
     bar_catalogue::{Column, Complete, BASE_INTERVAL_NS},
+    content_hash,
     event_order::Scope,
-    events::Decimal,
+    events::{Decimal, Observation, Payload},
+    market_structure::scheduler::playback::sources::HistoricalEventProof,
     Error, Result,
 };
 
@@ -45,6 +47,9 @@ impl Projection {
     }
 }
 impl Cursor {
+    pub fn scope(&self) -> Scope {
+        self.projection.scope
+    }
     pub fn advance_to(&mut self, clock_ns: u64) -> Result<usize> {
         if clock_ns < self.clock_ns || clock_ns > self.projection.session_end_ns {
             return Err(Error::Conflict("historical MACD replay clock".into()));
@@ -73,7 +78,7 @@ impl Cursor {
         self.clock_ns = clock_ns;
         Ok(applied)
     }
-    pub fn preview_trade(
+    fn preview_trade(
         &mut self,
         event_time_ns: u64,
         evaluated_at_ns: u64,
@@ -89,6 +94,30 @@ impl Cursor {
         self.advance_to(event_time_ns)?;
         self.state
             .preview_trade(event_time_ns, evaluated_at_ns, price)
+    }
+    /// Consume the same historical proof that selected the pending trade.
+    /// The proof supplies modeled availability; the source observation supplies
+    /// the actual trade price. Neither is a measured live receipt.
+    pub fn preview_proof(
+        &mut self,
+        proof: &HistoricalEventProof,
+        observation: &Observation,
+    ) -> Result<Outcome> {
+        let Payload::Trade { price, .. } = &observation.payload else {
+            return Err(Error::Conflict(
+                "historical MACD proof is not a trade".into(),
+            ));
+        };
+        if proof.scope() != self.scope()
+            || proof.key() != &observation.key
+            || proof.event_hash() != content_hash(observation)?
+            || proof.source_time_ns() != observation.sip.ns
+            || !proof.eligible()
+            || proof.modeled_available_at_ns() > proof.evaluated_at_ns()
+        {
+            return Err(Error::Conflict("historical MACD proof differs".into()));
+        }
+        self.preview_trade(proof.source_time_ns(), proof.evaluated_at_ns(), *price)
     }
 }
 
@@ -178,6 +207,29 @@ pub fn project(
         config: config.clone(),
         completed,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn test_empty_cursor(
+    scope: Scope,
+    session_start_ns: u64,
+    session_end_ns: u64,
+    price_scale: u8,
+) -> Cursor {
+    use crate::execution_interval::ExecutionInterval;
+    Projection {
+        scope,
+        session_start_ns,
+        session_end_ns,
+        config: Config {
+            execution_interval: ExecutionInterval::Events,
+            price_scale,
+            source_algorithm_hash: "b".repeat(64),
+        },
+        completed: Vec::new(),
+    }
+    .cursor()
+    .unwrap()
 }
 
 #[cfg(test)]

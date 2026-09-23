@@ -151,6 +151,48 @@ impl Runtime {
         }
         refinement.next_for_pending(run)
     }
+    /// Validate a selected trade's run proof and causal MACD preview before
+    /// consuming the refinement cursor. Ineligible trades never enter this
+    /// strategy calculation; the full market/V7 replay still processes them.
+    pub fn selected_strategy350_macd(
+        &self,
+        refinement: &mut arte_core::strategy350_screen_join::HistoricalRefinement<'_, '_>,
+        macd: &mut arte_core::strategy350_macd::historical::Cursor,
+    ) -> Result<
+        Option<(
+            arte_core::market_structure::scheduler::playback::sources::HistoricalEventProof,
+            Option<arte_core::strategy350_macd::Outcome>,
+        )>,
+    > {
+        let run = self.decision_view()?;
+        if !run.scopes().iter().any(|scope| {
+            scope.strategy_kind == arte_core::strategy_dispatch::StrategyKind::Strategy350
+                && scope.instrument == macd.scope().instrument
+        }) {
+            return Err(Error::Conflict("Strategy 350 MACD consumer absent".into()));
+        }
+        let Some(proof) = refinement.peek_for_pending(run)? else {
+            return Ok(None);
+        };
+        let boundary = run
+            .pending()?
+            .ok_or_else(|| Error::Unready("Strategy 350 boundary absent".into()))?;
+        let Kind::Trade { observation, .. } = boundary.kind else {
+            return Err(Error::Conflict("Strategy 350 pending trade absent".into()));
+        };
+        let outcome = if proof.eligible() {
+            Some(macd.preview_proof(&proof, observation)?)
+        } else {
+            None
+        };
+        let consumed = refinement
+            .next_for_pending(run)?
+            .ok_or_else(|| Error::Conflict("Strategy 350 proof changed".into()))?;
+        if consumed.identity_hash()? != proof.identity_hash()? {
+            return Err(Error::Conflict("Strategy 350 proof changed".into()));
+        }
+        Ok(Some((consumed, outcome)))
+    }
     pub async fn commit_fills(&mut self, publisher: &mut impl Publisher) -> Result<bool> {
         self.execution.commit_next(publisher).await
     }

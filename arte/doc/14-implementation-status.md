@@ -63,6 +63,11 @@ reaches the shared four-frame MACD state, but the runnable backtest loop does
 not yet apply those inputs at each decision boundary. The historical product
 exposes a monotonic replay cursor, not its end-of-session EMA state. The cursor
 applies only closes sealed by the current replay clock and rejects rewind.
+The playback controller can now pair a selected run-bound trade proof with a
+MACD preview. It peeks before consuming the refinement cursor, verifies the
+pending observation and modeled clock, and leaves ineligible trades without a
+MACD result. This is a typed decision-facing bridge, not the full Strategy 350
+evaluator or account action loop.
 Numerical parity with the current Python/QMD MACD initialization is unproven;
 activation must remain blocked until that comparison and an effective
 configuration pin are complete.

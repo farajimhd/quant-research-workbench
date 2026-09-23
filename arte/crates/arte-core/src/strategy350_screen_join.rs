@@ -114,6 +114,19 @@ impl HistoricalRefinement<'_, '_> {
         run: &crate::market_structure::scheduler::playback::accounts::Run,
     ) -> Result<Option<crate::market_structure::scheduler::playback::sources::HistoricalEventProof>>
     {
+        let proof = self.peek_for_pending(run)?;
+        if proof.is_some() {
+            self.cursor += 1;
+        }
+        Ok(proof)
+    }
+    /// Inspect the next selected trade without consuming its proof. A caller
+    /// can validate all calculation inputs before committing this cursor.
+    pub fn peek_for_pending(
+        &self,
+        run: &crate::market_structure::scheduler::playback::accounts::Run,
+    ) -> Result<Option<crate::market_structure::scheduler::playback::sources::HistoricalEventProof>>
+    {
         if run.run_id() != self.source.run_id()
             || run.manifest_hash() != self.source.manifest_hash()
             || run.prepared_hash() != self.source.prepared().hash()
@@ -132,7 +145,6 @@ impl HistoricalRefinement<'_, '_> {
         if !matches_pending_trade(&proof, &boundary)? {
             return Ok(None);
         }
-        self.cursor += 1;
         Ok(Some(proof))
     }
     #[cfg(test)]
@@ -1312,6 +1324,20 @@ mod tests {
                 changed_source.event(0, 0).unwrap().identity_hash().unwrap()
             );
             let selected_observation = &prepared.frames()[0].inputs[0].observation;
+            let mut macd = crate::strategy350_macd::historical::test_empty_cursor(
+                scope,
+                source_interval.start,
+                source_interval.end,
+                2,
+            );
+            let preview = macd.preview_proof(&first, selected_observation).unwrap();
+            assert_eq!(preview.event_time_ns, first.source_time_ns());
+            assert!(!preview.bullish);
+            let mut changed_observation = selected_observation.clone();
+            if let crate::events::Payload::Trade { price, .. } = &mut changed_observation.payload {
+                price.atoms += 1;
+            }
+            assert!(macd.preview_proof(&first, &changed_observation).is_err());
             let boundary = crate::market_structure::scheduler::Boundary {
                 id: "selected",
                 sequence: 1,
