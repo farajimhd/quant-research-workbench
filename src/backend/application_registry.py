@@ -1212,6 +1212,7 @@ FIELD_KNOWN_VALUES: dict[str, tuple[tuple[str, str, str], ...]] = {
     ),
     "reference.float_quality": (
         ("reported", "Reported", "A point-in-time public-float publication is available."),
+        ("estimated", "SEC estimate", "SEC public-float value converted using a historical share price; this is an estimate."),
         ("shares_outstanding_only", "Shares outstanding only", "Only outstanding-share evidence is available; float is not inferred."),
         ("unavailable", "Unavailable", "No admissible public-float evidence is available."),
     ),

@@ -98,6 +98,7 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
         tables=(
             "market_security_market_snapshot_v1",
             "market_security_float_v1",
+            "market_security_float_resolved_v1",
             "market_short_interest_v1",
             "market_short_volume_v1",
             "market_stock_split_v1",

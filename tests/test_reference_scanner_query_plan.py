@@ -22,6 +22,7 @@ class ReferenceScannerQueryPlanTests(unittest.TestCase):
         self.assertIn("FROM `q_live`.market_ipo_v1 FINAL", sql)
         self.assertIn("FROM `q_live`.market_stock_split_v1 FINAL", sql)
         self.assertIn("AS float_quality", sql)
+        self.assertIn("market_security_float_resolved_v1 FINAL", sql)
         self.assertIn("AS short_interest_pct", sql)
         self.assertIn("FROM `q_live`.market_short_volume_v1 FINAL", sql)
         self.assertIn("FROM `q_live`.market_fails_to_deliver_v1 FINAL", sql)

@@ -138,6 +138,7 @@ def reference_fact_queries(
         "corporate": corporate_events(context["symbol_id"], cutoff, database),
         "fails_to_deliver": fails_to_deliver(ticker, cutoff, database),
         "float": float_history(context["symbol_id"], cutoff, database),
+        "resolved_float": resolved_float(context["symbol_id"], cutoff, database),
         "identifiers": identifiers(
             context["issuer_id"], context["security_id"], cutoff, database
         ),
@@ -174,6 +175,24 @@ def float_history(symbol_id: str, cutoff: datetime, database: str) -> str:
         date_column=True,
         limit=40,
     )
+
+
+def resolved_float(symbol_id: str, cutoff: datetime, database: str) -> str:
+    db = quote_ident(database)
+    return f"""
+        SELECT resolution_date, resolution_kind, float_shares, float_lower_bound,
+               float_upper_bound, shares_outstanding, sec_public_float_usd,
+               sec_period_end, sec_filed_at_utc, sec_accession, price_date,
+               price_close, split_factor, rejection_reason, calculation_version,
+               source_fingerprint
+        FROM {db}.market_security_float_resolved_v1 FINAL
+        WHERE symbol_id = {sql_string(symbol_id)}
+          AND resolution_date <= toDate({sql_string(cutoff.date().isoformat())})
+          AND inserted_at <= parseDateTime64BestEffort({sql_string(cutoff.isoformat())})
+        ORDER BY resolution_date DESC, inserted_at DESC
+        LIMIT 1
+        FORMAT JSONEachRow
+    """
 
 
 def borrow(ticker: str, cutoff: datetime, database: str) -> str:

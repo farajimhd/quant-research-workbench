@@ -49,6 +49,7 @@ IMPLEMENTED_PUBLICATION_TABLES: frozenset[str] = frozenset(
     {
         "market_security_market_snapshot_v1",
         "market_security_float_v1",
+        "market_security_float_resolved_v1",
         "market_short_interest_v1",
         "market_short_volume_v1",
         "market_stock_split_v1",
@@ -76,6 +77,7 @@ PLANNED_PUBLICATION_TABLES: frozenset[str] = frozenset()
 MARKET_PUBLICATION_AUDIT_SPECS: tuple[tuple[str, str, bool], ...] = (
     ("market_security_market_snapshot_v1", "observed_at_utc", True),
     ("market_security_float_v1", "effective_date", True),
+    ("market_security_float_resolved_v1", "resolution_date", True),
     ("market_short_interest_v1", "settlement_date", True),
     ("market_short_volume_v1", "trade_date", True),
     ("market_stock_split_v1", "execution_date", True),

@@ -6,6 +6,38 @@ publication data coherent. It is not a high-frequency ingest service.
 
 ## Objectives
 
+### Resolved float publication
+
+The Reference Gateway owns `q_live.market_security_float_resolved_v1`. Its
+after-hours maintenance cycle refreshes the latest dated tradable universe at
+most every six hours, and `python -m services.reference_gateway.resolved_float`
+provides a focused backfill/reconciliation command. Each published date has
+exactly one row per tradable `symbol_id`; the builder validates the complete
+population in a `live_market_ssd` staging table before replacing that date's
+partition. A failed stage is retained for diagnosis.
+
+The resolution order is reported provider `free_float`, then a USD SEC
+`EntityPublicFloat` market value divided by a canonical unadjusted regular
+session close at or within seven calendar days before the SEC measurement date,
+then shares outstanding as an upper bound, then unavailable. SEC estimates
+require one active unique SEC bridge, one tradable class for the issuer, a
+measurement period within 520 days, and an estimate no larger than known
+shares outstanding. Subsequent splits adjust the estimate to the publication
+date. Source accession, SEC and price dates, the calculation version, and a
+source fingerprint remain with each row. `rejection_reason` records why an SEC
+estimate was not admitted. The canonical provider publication stays in
+`market_security_float_v1` and is never overwritten by an estimate.
+
+An SEC public-float value is issuer level and an approximate valuation of
+non-affiliate shares. The price conversion is an estimate, with no calibrated
+uncertainty interval. It cannot allocate an issuer disclosure across several
+share classes. SEC estimates carry low confidence; the comparable reported
+cohort has material outliers, so no calibrated interval is asserted. Shares
+outstanding is only an upper bound, never a point float.
+The gateway therefore publishes explicit bound/unavailable rows rather than
+inventing a numeric float for every ticker. Beneficial-ownership extraction
+and a calibrated statistical model are separate future source products.
+
 1. Source sync
 
    Download current reference evidence from Massive, IBKR, FINRA, SEC, and

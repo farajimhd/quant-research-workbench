@@ -7,7 +7,7 @@ import os
 import sys
 import time
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.mlops.env import load_env_files, secret_status
@@ -30,6 +30,7 @@ from services.reference_gateway.providers import MassiveReferenceClient
 from services.reference_gateway.publication_bootstrap import bootstrap_existing_publication_coverage
 from services.reference_gateway.publication_maintenance import PublicationMaintenanceResult, run_recent_publication_gap_fill
 from services.reference_gateway.publication_rebuild import rebuild_sec_market_bridge, rebuild_tradable_publications
+from services.reference_gateway.resolved_float import TABLE as RESOLVED_FLOAT_TABLE, create_table as create_resolved_float_table, publish as publish_resolved_float
 from services.reference_gateway.runtime_log import RuntimeLogger
 from services.reference_gateway.source_schedule import ensure_source_schedule_schema, record_source_schedule, schedule_decision
 from services.reference_gateway.state import collect_reference_state
@@ -313,6 +314,13 @@ def main() -> None:
         )
         logger.event("publication_coverage_bootstrap_completed", **asdict(bootstrap))
         refresh_reference_state("after_market_publication_schema")
+    if config.execute:
+        from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+
+        create_resolved_float_table(
+            ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
+            config.clickhouse_write_database,
+        )
     audit_started = time.perf_counter()
     report = run_reference_audit(config)
     record.audit = report
@@ -993,6 +1001,56 @@ def main() -> None:
         reason = "temp_mode_requires_maintenance_force" if config.test_write_mode and config.maintenance_mode != "force" else maintenance_skip_reason
         add_operation("Market publication gap fill", "skipped", reason)
         emit("market_publication_gap_fill=skipped reason=" + reason)
+    if maintenance_allowed and not config.test_write_mode:
+        from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+
+        float_client = ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password(), timeout_seconds=600)
+        float_day = float_client.execute(
+            f"SELECT max(universe_date) FROM {config.clickhouse_write_database}.feature_tradable_universe_v1 FORMAT TSV"
+        ).strip()
+        float_expected = int(float_client.execute(
+            f"SELECT uniqExact(symbol_id) FROM {config.clickhouse_write_database}.feature_tradable_universe_v1 FINAL "
+            f"WHERE universe_date=toDate('{float_day}') AND is_tradable=1 FORMAT TSV"
+        ).strip())
+        float_count = int(float_client.execute(
+            "SELECT count() FROM system.tables "
+            f"WHERE database='{config.clickhouse_write_database}' AND name='{RESOLVED_FLOAT_TABLE}' FORMAT TSV"
+        ).strip())
+        if float_count:
+            float_count = int(float_client.execute(
+                f"SELECT count() FROM {config.clickhouse_write_database}.{RESOLVED_FLOAT_TABLE} FINAL "
+                f"WHERE resolution_date=toDate('{float_day}') FORMAT TSV"
+            ).strip())
+        decision = schedule_decision(
+            float_client, config, source_name="resolved_float", scope=float_day,
+            frequency_seconds=21600, force=config.maintenance_mode == "force",
+        )
+        if decision.should_run or float_count != float_expected:
+            started = time.perf_counter()
+            add_operation("Resolve float", "running", f"universe_date={float_day}")
+            try:
+                float_result = publish_resolved_float(float_client, config.clickhouse_write_database, date.fromisoformat(float_day))
+            except Exception as exc:
+                record_source_schedule(
+                    float_client, config, source_name="resolved_float", scope=float_day,
+                    status="failed", rows_written=0, details={"error": repr(exc)}, frequency_seconds=21600,
+                )
+                update_latest_operation("Resolve float", "failed", str(exc), seconds=time.perf_counter() - started)
+                raise
+            record_source_schedule(
+                float_client, config, source_name="resolved_float", scope=float_day,
+                status="completed", rows_written=int(float_result["rows"]), details=float_result,
+                source_run_id=str(float_result["run_id"]), frequency_seconds=21600,
+            )
+            update_latest_operation(
+                "Resolve float", "completed", f"universe_date={float_day}; rows={float_result['rows']}",
+                rows=int(float_result["rows"]), seconds=time.perf_counter() - started,
+            )
+            emit("resolved_float=" + json.dumps(float_result, sort_keys=True))
+        else:
+            add_operation("Resolve float", "skipped", f"universe_date={float_day}; next_due={decision.next_due_at_utc}")
+    elif config.execute:
+        add_operation("Resolve float", "skipped", "production after-hours maintenance required")
     refresh_reference_state("final")
     record.final_status = report.status
     record.wall_seconds = time.perf_counter() - run_started

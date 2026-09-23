@@ -289,6 +289,7 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
         fundamental_rows=results.get("fundamentals", []),
         market_rows=market_rows,
         reg_sho=first(results.get("reg_sho")),
+        resolved_float_row=first(results.get("resolved_float")),
         short_interest=short_interest,
         short_volume=short_volume,
         split_rows=results.get("splits", []),
@@ -296,7 +297,7 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
     )
     warnings: list[str] = []
     if not free_float and synthesis.get("cards", [{}])[0].get("method") == "estimated":
-        warnings.append("Reported free float is unavailable; tradable supply uses a clearly labeled SEC-derived estimate and uncertainty range.")
+        warnings.append("Reported free float is unavailable; tradable supply uses a clearly labeled SEC-derived estimate.")
     elif not free_float:
         warnings.append("Free float is unavailable; shares outstanding is shown only as an upper bound and is not presented as tradable supply.")
     if borrow and not any(borrow.get(field) is not None for field in ("shortable_shares", "indicative_borrow_rate", "fee_rate")):
@@ -993,6 +994,7 @@ def synthesize_stock_facts(
     fundamental_rows: list[dict[str, Any]],
     market_rows: list[dict[str, Any]],
     reg_sho: dict[str, Any],
+    resolved_float_row: dict[str, Any] | None = None,
     short_interest: dict[str, Any],
     short_volume: dict[str, Any],
     split_rows: list[dict[str, Any]],
@@ -1003,7 +1005,17 @@ def synthesize_stock_facts(
     latest_price = first_number(first(volume_rows), "close")
     reported_float_row = first_with_number(float_rows, "free_float")
     reported_float = first_number(reported_float_row, "free_float")
-    float_estimate = estimate_tradable_shares(fundamental_rows, volume_rows, split_rows)
+    float_estimate = (
+        {
+            "value": resolved_float_row.get("float_shares"),
+            "period_end_date": resolved_float_row.get("sec_period_end"),
+            "lower_bound": resolved_float_row.get("float_lower_bound"),
+            "upper_bound": resolved_float_row.get("float_upper_bound"),
+            "method": resolved_float_row.get("calculation_version"),
+        }
+        if resolved_float_row is not None and resolved_float_row.get("resolution_kind") == "sec_market_value_implied"
+        else estimate_tradable_shares(fundamental_rows, volume_rows, split_rows) if resolved_float_row is None else {}
+    )
     estimated_float = numeric_value(float_estimate.get("value"))
     tradable_shares = reported_float or estimated_float
     float_comparison = ratio_percent(abs(reported_float - estimated_float), reported_float) if reported_float and estimated_float else None
@@ -1025,7 +1037,7 @@ def synthesize_stock_facts(
         "Tradable supply",
         reported_float or estimated_float or shares,
         "shares",
-        "Reported float" if reported_float else "Estimated range" if estimated_float else "Not established",
+        "Reported float" if reported_float else "SEC estimate" if estimated_float else "Not established",
         "positive" if reconciliation == "aligned" else "warning" if reconciliation in {"review", "single_source"} else "negative",
         "high" if reported_float and reconciliation != "divergent" else "medium" if reported_float else "low" if estimated_float else "insufficient",
         supply_method,
@@ -1038,7 +1050,7 @@ def synthesize_stock_facts(
             "reported_value": reported_float,
             "estimated_value": estimated_float,
             "shares_outstanding": shares,
-            "upper_bound": float_estimate.get("upper_bound") if not reported_float else shares,
+            "upper_bound": float_estimate.get("upper_bound") or shares,
         },
     )
 

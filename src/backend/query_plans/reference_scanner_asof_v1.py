@@ -8,7 +8,7 @@ from research.mlops.clickhouse import quote_ident, sql_string
 
 
 QUERY_PLAN_ID = "reference.scanner_asof.v1"
-QUERY_PLAN_VERSION = 4
+QUERY_PLAN_VERSION = 5
 NEW_YORK = ZoneInfo("America/New_York")
 
 
@@ -53,20 +53,22 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live", *, 
             coalesce(nullIf(i.sector, ''), nullIf(i.industry, ''), nullIf(i.sic_description, '')) AS sector,
             nullIf(i.industry, '') AS industry,
             coalesce(m.market_cap, scanner.market_cap) AS market_cap,
-            coalesce(f.shares_outstanding, m.shares_outstanding) AS shares_outstanding,
-            coalesce(f.free_float, scanner.free_float) AS float_shares,
-            nullIf(f.float_source_tag, '') AS float_source,
+            coalesce(resolved.shares_outstanding, toFloat64(f.shares_outstanding), toFloat64(m.shares_outstanding)) AS shares_outstanding,
+            coalesce(resolved.float_shares, toFloat64(f.free_float), toFloat64(scanner.free_float)) AS float_shares,
+            coalesce(nullIf(resolved.resolution_kind, ''), nullIf(f.float_source_tag, '')) AS float_source,
             multiIf(
+                resolved.resolution_kind = 'reported', 'reported',
+                resolved.resolution_kind = 'sec_market_value_implied', 'estimated',
                 coalesce(f.free_float, scanner.free_float) IS NOT NULL, 'reported',
-                coalesce(f.shares_outstanding, m.shares_outstanding) IS NOT NULL, 'shares_outstanding_only',
+                coalesce(resolved.shares_outstanding, toFloat64(f.shares_outstanding), toFloat64(m.shares_outstanding)) IS NOT NULL, 'shares_outstanding_only',
                 'unavailable'
             ) AS float_quality,
             scanner.short_pressure_label AS short_pressure,
             coalesce(si.short_interest, scanner.short_interest) AS short_interest,
-            if(coalesce(f.free_float, scanner.free_float) > 0 AND coalesce(si.short_interest, scanner.short_interest) IS NOT NULL,
-               toFloat64(coalesce(si.short_interest, scanner.short_interest)) / toFloat64(coalesce(f.free_float, scanner.free_float)) * 100, NULL) AS short_crowding_pct,
-            if(coalesce(f.free_float, scanner.free_float) > 0 AND coalesce(si.short_interest, scanner.short_interest) IS NOT NULL,
-               toFloat64(coalesce(si.short_interest, scanner.short_interest)) / toFloat64(coalesce(f.free_float, scanner.free_float)) * 100, NULL) AS short_interest_pct,
+            if(coalesce(resolved.float_shares, toFloat64(f.free_float), toFloat64(scanner.free_float)) > 0 AND coalesce(si.short_interest, scanner.short_interest) IS NOT NULL,
+               toFloat64(coalesce(si.short_interest, scanner.short_interest)) / coalesce(resolved.float_shares, toFloat64(f.free_float), toFloat64(scanner.free_float)) * 100, NULL) AS short_crowding_pct,
+            if(coalesce(resolved.float_shares, toFloat64(f.free_float), toFloat64(scanner.free_float)) > 0 AND coalesce(si.short_interest, scanner.short_interest) IS NOT NULL,
+               toFloat64(coalesce(si.short_interest, scanner.short_interest)) / coalesce(resolved.float_shares, toFloat64(f.free_float), toFloat64(scanner.free_float)) * 100, NULL) AS short_interest_pct,
             coalesce(si.days_to_cover, scanner.days_to_cover) AS days_to_cover,
             sv.short_volume AS short_volume,
             if(coalesce(sv.short_volume_ratio, scanner.short_volume_ratio) IS NULL, NULL,
@@ -201,6 +203,16 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live", *, 
             WHERE effective_date <= cutoff_date AND inserted_at <= cutoff
             GROUP BY symbol_id
         ) AS f ON f.symbol_id = u.symbol_id
+        LEFT JOIN
+        (
+            SELECT symbol_id,
+                argMax(float_shares, tuple(resolution_date, inserted_at)) AS float_shares,
+                argMax(shares_outstanding, tuple(resolution_date, inserted_at)) AS shares_outstanding,
+                argMax(resolution_kind, tuple(resolution_date, inserted_at)) AS resolution_kind
+            FROM {db}.market_security_float_resolved_v1 FINAL
+            WHERE resolution_date <= cutoff_date AND inserted_at <= cutoff
+            GROUP BY symbol_id
+        ) AS resolved ON resolved.symbol_id = u.symbol_id
         LEFT JOIN
         (
             SELECT symbol_id,
