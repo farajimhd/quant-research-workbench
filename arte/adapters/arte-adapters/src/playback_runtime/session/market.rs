@@ -21,6 +21,12 @@ use serde::{Deserialize, Serialize};
 use std::{io::Read, sync::Arc};
 
 pub const MAXIMUM_BYTES: usize = 1024 * 1024;
+#[derive(Clone, Copy)]
+enum SeedAuthority<'a> {
+    Single(&'a str),
+    Combined(&'a str),
+}
+pub mod seed_catalog;
 #[cfg(test)]
 pub(super) mod tests;
 #[derive(Clone, Serialize, Deserialize)]
@@ -89,20 +95,79 @@ impl Document {
         prepared: Prepared,
         seed: &Bundle,
     ) -> Result<Run> {
+        let seed_pin = content_hash(&seed.manifest)?;
+        self.assemble_with_pin(
+            expected_hash,
+            manifest,
+            sources,
+            prepared,
+            seed,
+            SeedAuthority::Single(&seed_pin),
+        )
+    }
+    /// A combined run pins the entire seed map. This shard must resolve to a
+    /// historical V7 seed available before its first market input.
+    pub fn assemble_multi(
+        self,
+        expected_hash: &str,
+        manifest: &Pinned,
+        sources: &Catalog,
+        prepared: Prepared,
+        seed: &Bundle,
+        seeds: &seed_catalog::RunSeedCatalog,
+    ) -> Result<Run> {
+        let start_ns = self
+            .configuration
+            .start_second
+            .checked_mul(1_000_000_000)
+            .ok_or_else(|| Error::Invalid("market startup clock overflow".into()))?;
+        seeds.require_shard(
+            manifest,
+            sources,
+            arte_core::event_order::Scope {
+                provider: self.configuration.provider,
+                instrument: self.configuration.instrument,
+                session: self.configuration.session,
+            },
+            start_ns,
+            seed,
+        )?;
+        self.assemble_with_pin(
+            expected_hash,
+            manifest,
+            sources,
+            prepared,
+            seed,
+            SeedAuthority::Combined(&seeds.hash()?),
+        )
+    }
+    fn assemble_with_pin(
+        self,
+        expected_hash: &str,
+        manifest: &Pinned,
+        sources: &Catalog,
+        prepared: Prepared,
+        seed: &Bundle,
+        seed_authority: SeedAuthority<'_>,
+    ) -> Result<Run> {
+        let seed_pin = match seed_authority {
+            SeedAuthority::Single(hash) | SeedAuthority::Combined(hash) => hash,
+        };
         if self.hash()? != expected_hash
             || self.manifest_hash != manifest.hash()
-            || content_hash(&seed.manifest)? != manifest.manifest().seed_manifest_hash
+            || seed_pin != manifest.manifest().seed_manifest_hash
         {
             return Err(Error::Conflict(
                 "market startup run or historical seed identity differs".into(),
             ));
         }
         let config = &self.configuration;
-        if manifest
-            .manifest()
-            .consumers
-            .iter()
-            .any(|c| c.instrument != config.instrument)
+        if matches!(seed_authority, SeedAuthority::Single(_))
+            && manifest
+                .manifest()
+                .consumers
+                .iter()
+                .any(|c| c.instrument != config.instrument)
         {
             return Err(Error::Conflict(
                 "market startup requires single instrument manifest".into(),

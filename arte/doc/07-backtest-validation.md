@@ -168,6 +168,13 @@ ordering; construction and multi-ticker service remain unexercised. Fresh
 session assembly and common-cut publication are still single-instrument.
 A shared portfolio and multi-shard recovery graph are required before this
 can run a multi-ticker backtest.
+A run-scoped historical V7 seed catalog now pins exactly one seed-manifest
+hash per certified source shard. Multi-shard market startup checks the whole
+catalog against the run, then checks each ticker's seed identity, prior
+session, historical producer and availability before hydrating it. An offline
+two-ticker unit test accepts separate seeds and rejects cross-ticker seed
+substitution or a missing catalog shard. This is seed selection, not the
+shared portfolio, multi-session builder or recovery graph.
 The first shared Boolean product readback now records explicit evaluation
 cadence, known/unknown state, value, source-bar identity and complete bucket
 coverage. Strategy 350 intersects the verified signal with the bar mask. It

@@ -126,6 +126,12 @@ operations. The fresh-session builder
 and publication graph still require one instrument. They do not provide a
 shared portfolio or multi-shard recovery, so this is not a runnable
 multi-ticker backtest.
+The market startup adapter now accepts a run-wide historical V7 seed catalog
+for a combined source catalog. Each shard must bind its own seed-manifest
+hash, prior session, historical producer and startup availability. A
+two-ticker unit test assembles both market runs and rejects a swapped seed
+or missing seed row. This does not assemble a shared portfolio or publish a
+multi-shard common-cut recovery graph.
 The Strategy 350 historical account owner now selects its own ticker's
 consumers from a shared run manifest while requiring exact local configuration
 and state sets. A unit test covers another ticker, missing local inputs and

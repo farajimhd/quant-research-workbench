@@ -1,3 +1,4 @@
+use super::seed_catalog::{Entry as SeedEntry, RunSeedCatalog};
 use super::*;
 use arte_core::{
     event_order::Scope,
@@ -159,6 +160,154 @@ fn portable_market_inputs_build_a_paused_run_and_empty_interval_completes() {
         }
     }
     assert_eq!(run.status().mode, Mode::Complete);
+}
+#[test]
+fn combined_run_resolves_each_historical_seed_without_cross_ticker_substitution() {
+    let (mut first_doc, single, mut sources, first_prepared, first_seed) = fixture();
+    let bars: Vec<_> = (100..118)
+        .map(|t| Candle {
+            t,
+            open: 10.,
+            high: 11.,
+            low: 9.,
+            close: 10.,
+            volume: 1.,
+        })
+        .collect();
+    let second_seed = build(
+        &bars,
+        &[],
+        SourceCertificate {
+            instrument: 2,
+            ticker: "OTHER".into(),
+            session: 20260914,
+            start_second: 100,
+            end_second: 120,
+            source_generation: "offline".into(),
+            input_hash: input_hash(&bars, &[]).unwrap(),
+            certified_at_second: 121,
+        },
+        None,
+        &SeedPolicy::default(),
+        &SplitAdjustment::default(),
+        121,
+    )
+    .unwrap();
+    let second_seed = Bundle::from_seed(&second_seed).unwrap();
+    let second_prepared = Prepared::new(
+        Scope {
+            provider: 1,
+            instrument: 2,
+            session: 20260915,
+        },
+        "historical-fixture",
+        vec![Frame {
+            watermark_ns: 300 * S,
+            evaluated_at_ns: 300 * S + 1,
+            inputs: vec![],
+        }],
+        Limits {
+            maximum_frames: 1,
+            maximum_events: 1,
+            maximum_serialized_bytes: 10_000,
+        },
+    )
+    .unwrap();
+    sources.shards.push(Shard {
+        provider: 1,
+        instrument: 2,
+        session: 20260915,
+        prepared_hash: second_prepared.hash().into(),
+        clock_model: "historical-fixture".into(),
+    });
+    let seeds = RunSeedCatalog {
+        schema_version: 1,
+        entries: vec![
+            SeedEntry {
+                provider: 1,
+                instrument: 1,
+                session: 20260915,
+                seed_manifest_hash: content_hash(&first_seed.manifest).unwrap(),
+            },
+            SeedEntry {
+                provider: 1,
+                instrument: 2,
+                session: 20260915,
+                seed_manifest_hash: content_hash(&second_seed.manifest).unwrap(),
+            },
+        ],
+    };
+    let mut combined = single.manifest().clone();
+    combined.source_manifest_hash = sources.hash().unwrap();
+    combined.seed_manifest_hash = seeds.hash().unwrap();
+    let mut other = combined.consumers[0].clone();
+    other.instrument = 2;
+    other.account = "b".into();
+    combined.consumers.push(other);
+    let combined_hash = combined.hash().unwrap();
+    let combined = Pinned::new(combined, &combined_hash).unwrap();
+    first_doc.manifest_hash = combined.hash().into();
+    let mut second_doc = first_doc.clone();
+    second_doc.configuration.instrument = 2;
+    let first_hash = first_doc.hash().unwrap();
+    let second_hash = second_doc.hash().unwrap();
+    let first_run = first_doc
+        .clone()
+        .assemble_multi(
+            &first_hash,
+            &combined,
+            &sources,
+            first_prepared.clone(),
+            &first_seed,
+            &seeds,
+        )
+        .unwrap();
+    let second_run = second_doc
+        .clone()
+        .assemble_multi(
+            &second_hash,
+            &combined,
+            &sources,
+            second_prepared.clone(),
+            &second_seed,
+            &seeds,
+        )
+        .unwrap();
+    assert_eq!(first_run.market_scope().instrument, 1);
+    assert_eq!(second_run.market_scope().instrument, 2);
+    assert!(first_doc
+        .clone()
+        .assemble_multi(
+            &first_hash,
+            &combined,
+            &sources,
+            first_prepared.clone(),
+            &second_seed,
+            &seeds,
+        )
+        .is_err());
+    let mut missing = seeds.clone();
+    missing.entries.pop();
+    assert!(first_doc
+        .assemble_multi(
+            &first_hash,
+            &combined,
+            &sources,
+            first_prepared,
+            &first_seed,
+            &missing,
+        )
+        .is_err());
+    assert!(second_doc
+        .assemble_multi(
+            &second_hash,
+            &combined,
+            &sources,
+            second_prepared,
+            &first_seed,
+            &seeds,
+        )
+        .is_err());
 }
 #[test]
 fn wrong_identity_future_evidence_and_partial_source_are_rejected() {
