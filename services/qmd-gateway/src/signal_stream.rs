@@ -9,6 +9,8 @@ use ring::digest::{digest, SHA256};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex};
@@ -125,6 +127,7 @@ struct SignalStreamStore {
     pending_delivery: VecDeque<Value>,
     squeeze_episodes: HashMap<String, SqueezeEpisode>,
     squeeze_last_prices: HashMap<String, f64>,
+    unresolved_append: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -138,6 +141,14 @@ struct SqueezeEpisode {
 }
 
 impl SharedSignalStreamStore {
+    async fn persist_pending(&self, pending: &[Value]) -> Result<(), String> {
+        if let Err(error) = insert_with_exact_readback(&self.writer, pending).await {
+            self.inner.lock().await.unresolved_append = Some(error.clone());
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub async fn new(config: GatewayConfig) -> Result<Self, String> {
         let history_url = config
             .qmd_history_gateway_url
@@ -160,6 +171,7 @@ impl SharedSignalStreamStore {
         request: SignalStreamConfigurationRequest,
     ) -> Result<SignalStreamSnapshot, String> {
         let _mutation = self.mutation.lock().await;
+        ensure_append_resolved(&*self.inner.lock().await)?;
         validate_configuration(&request)?;
         let needs_hydration = {
             let store = self.inner.lock().await;
@@ -215,6 +227,7 @@ impl SharedSignalStreamStore {
         request: SignalStreamEvaluateRequest,
     ) -> Result<SignalStreamSnapshot, String> {
         let _mutation = self.mutation.lock().await;
+        ensure_append_resolved(&*self.inner.lock().await)?;
         let mut recovery = self.recovery.lock().await;
         let recovering = recovery.active && recovery.status == "recovering";
         let recovery_snapshot = recovery_value(&recovery);
@@ -378,7 +391,7 @@ impl SharedSignalStreamStore {
         let pending = assign_sequences(&store, pending);
         drop(store);
         drop(recovery);
-        self.writer.insert(&pending).await?;
+        self.persist_pending(&pending).await?;
         let recovery_snapshot = self.recovery_snapshot().await;
         let mut store = self.inner.lock().await;
         store.states = next_states;
@@ -443,6 +456,7 @@ impl SharedSignalStreamStore {
         row["market.last_price"] = json!(close);
         let _mutation = self.mutation.lock().await;
         let mut store = self.inner.lock().await;
+        ensure_append_resolved(&store)?;
         let Some(configuration) = store.configuration.clone() else {
             return Ok(Vec::new());
         };
@@ -467,9 +481,13 @@ impl SharedSignalStreamStore {
             store.squeeze_last_prices.insert(ticker.to_string(), close);
             return Ok(Vec::new());
         }
+        let mut staged = stage_squeeze_ticker(&store, ticker);
         let Some((episode, move_pct, emit_roles)) = advance_squeeze_episode(
-            &mut store, &episode_streams, &rules, ticker, at, open, close, &row,
-        ) else { return Ok(Vec::new()); };
+            &mut staged, &episode_streams, &rules, ticker, at, open, close, &row,
+        ) else {
+            apply_squeeze_ticker(&mut store, &mut staged, ticker);
+            return Ok(Vec::new());
+        };
         drop(store);
 
         if let Some(snapshot) = market.ticker_snapshot_at(ticker, at).await {
@@ -514,8 +532,9 @@ impl SharedSignalStreamStore {
         let store = self.inner.lock().await;
         let pending = assign_sequences(&store, pending);
         drop(store);
-        self.writer.insert(&pending).await?;
+        self.persist_pending(&pending).await?;
         let mut store = self.inner.lock().await;
+        apply_squeeze_ticker(&mut store, &mut staged, ticker);
         for event in &pending {
             append_occurrence(&mut store, event.clone());
             store.pending_delivery.push_back(event.clone());
@@ -529,6 +548,7 @@ impl SharedSignalStreamStore {
     ) -> Result<SignalStreamSnapshot, String> {
         let _mutation = self.mutation.lock().await;
         let store = self.inner.lock().await;
+        ensure_append_resolved(&store)?;
         let configuration = store
             .configuration
             .clone()
@@ -583,7 +603,7 @@ impl SharedSignalStreamStore {
         }
         let pending = assign_sequences(&store, pending);
         drop(store);
-        self.writer.insert(&pending).await?;
+        self.persist_pending(&pending).await?;
         let recovery_snapshot = self.recovery_snapshot().await;
         let mut store = self.inner.lock().await;
         for occurrence in &pending {
@@ -819,6 +839,7 @@ impl SharedSignalStreamStore {
         let _mutation = self.mutation.lock().await;
         let mut recovery = self.recovery.lock().await;
         let mut store = self.inner.lock().await;
+        ensure_append_resolved(&store)?;
         let rules = configuration
             .rule_sets
             .iter()
@@ -935,7 +956,7 @@ impl SharedSignalStreamStore {
         let pending = assign_sequences(&store, pending);
         drop(store);
         drop(recovery);
-        self.writer.insert(&pending).await?;
+        self.persist_pending(&pending).await?;
         let mut store = self.inner.lock().await;
         let inserted_count = pending.len();
         for occurrence in pending {
@@ -1034,6 +1055,32 @@ struct CanonicalSqueezePrevious {
     event_count: u64,
     local_date: String,
     size_sum: f64,
+}
+
+// Stage only this ticker: cloning the whole store on every 100 ms observation
+// would copy the bounded occurrence history and every active episode.
+fn stage_squeeze_ticker(store: &SignalStreamStore, ticker: &str) -> SignalStreamStore {
+    let mut staged = SignalStreamStore::default();
+    if let Some(episode) = store.squeeze_episodes.get(ticker) {
+        staged.squeeze_episodes.insert(ticker.to_string(), episode.clone());
+    }
+    if let Some(price) = store.squeeze_last_prices.get(ticker) {
+        staged.squeeze_last_prices.insert(ticker.to_string(), *price);
+    }
+    staged
+}
+
+fn apply_squeeze_ticker(store: &mut SignalStreamStore, staged: &mut SignalStreamStore, ticker: &str) {
+    if let Some(episode) = staged.squeeze_episodes.remove(ticker) {
+        store.squeeze_episodes.insert(ticker.to_string(), episode);
+    } else {
+        store.squeeze_episodes.remove(ticker);
+    }
+    if let Some(price) = staged.squeeze_last_prices.remove(ticker) {
+        store.squeeze_last_prices.insert(ticker.to_string(), price);
+    } else {
+        store.squeeze_last_prices.remove(ticker);
+    }
 }
 
 /// No database writes, live configuration changes or unbounded event retention.
@@ -1951,10 +1998,73 @@ fn datetime_value(value: &Value, key: &str) -> Option<DateTime<Utc>> {
     string(value, key)?.parse::<DateTime<Utc>>().ok()
 }
 
+fn ensure_append_resolved(store: &SignalStreamStore) -> Result<(), String> {
+    match &store.unresolved_append {
+        Some(error) => Err(format!("QMD Signal Stream append is unresolved: {error}")),
+        None => Ok(()),
+    }
+}
+
+type WriterFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+
+trait OccurrencePersistence {
+    fn append<'a>(&'a self, rows: &'a [Value]) -> WriterFuture<'a, ()>;
+    fn read_exact<'a>(&'a self, rows: &'a [Value]) -> WriterFuture<'a, Vec<Value>>;
+}
+
+async fn insert_with_exact_readback<W: OccurrencePersistence>(
+    writer: &W,
+    pending: &[Value],
+) -> Result<(), String> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let mut identities = HashSet::new();
+    let session = string(&pending[0], "session_key")
+        .ok_or_else(|| "Signal occurrence has no session_key".to_string())?;
+    for row in pending {
+        let id = string(row, "event_id")
+            .ok_or_else(|| "Signal occurrence has no event_id".to_string())?;
+        let sequence = row.get("sequence").and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .ok_or_else(|| "Signal occurrence has no positive sequence".to_string())?;
+        if string(row, "session_key") != Some(session) || !identities.insert((id, sequence)) {
+            return Err("Signal occurrence batch has mixed sessions or duplicate identity".to_string());
+        }
+    }
+    match writer.append(pending).await {
+        Ok(()) => Ok(()),
+        Err(append_error) => {
+            let actual = writer.read_exact(pending).await.map_err(|read_error| format!(
+                "Signal occurrence append outcome unresolved ({append_error}); exact readback failed: {read_error}"
+            ))?;
+            if actual.len() != pending.len()
+                || pending.iter().any(|expected| actual.iter().filter(|row| *row == expected).count() != 1)
+            {
+                return Err(format!(
+                    "Signal occurrence append outcome unresolved ({append_error}); exact readback did not match all {} rows",
+                    pending.len()
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
 #[derive(Clone)]
 struct SignalStreamClickHouseWriter {
     client: Client,
     config: GatewayConfig,
+}
+
+impl OccurrencePersistence for SignalStreamClickHouseWriter {
+    fn append<'a>(&'a self, rows: &'a [Value]) -> WriterFuture<'a, ()> {
+        Box::pin(self.insert(rows))
+    }
+
+    fn read_exact<'a>(&'a self, rows: &'a [Value]) -> WriterFuture<'a, Vec<Value>> {
+        Box::pin(self.load_exact_rows(rows))
+    }
 }
 
 impl SignalStreamClickHouseWriter {
@@ -2046,6 +2156,34 @@ impl SignalStreamClickHouseWriter {
             .collect()
     }
 
+    async fn load_exact_rows(&self, rows: &[Value]) -> Result<Vec<Value>, String> {
+        let mut found = Vec::new();
+        for chunk in rows.chunks(256) {
+            let session = string(&chunk[0], "session_key")
+                .ok_or_else(|| "Signal occurrence has no session_key".to_string())?;
+            let ids = chunk.iter().map(|row| {
+                string(row, "event_id")
+                    .map(|id| format!("'{}'", escape_sql(id)))
+                    .ok_or_else(|| "Signal occurrence has no event_id".to_string())
+            }).collect::<Result<Vec<_>, _>>()?.join(",");
+            let sql = format!(
+                "SELECT payload_json FROM {table} FINAL WHERE session_key='{session}' AND event_id IN ({ids}) FORMAT JSONEachRow",
+                table = self.config.signal_stream_table,
+                session = escape_sql(session),
+            );
+            let text = self.query(&sql, true).await?;
+            for line in text.lines().filter(|line| !line.trim().is_empty()) {
+                let envelope: Value = serde_json::from_str(line)
+                    .map_err(|error| format!("Signal occurrence readback envelope invalid: {error}"))?;
+                let payload = envelope.get("payload_json").and_then(Value::as_str)
+                    .ok_or_else(|| "Signal occurrence readback has no payload_json".to_string())?;
+                found.push(serde_json::from_str(payload)
+                    .map_err(|error| format!("Signal occurrence readback payload invalid: {error}"))?);
+            }
+        }
+        Ok(found)
+    }
+
     fn create_table_sql(&self) -> String {
         format!(
             r#"CREATE TABLE IF NOT EXISTS {table} (
@@ -2106,6 +2244,95 @@ fn escape_sql(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FakeOccurrenceWriter {
+        append_result: Result<(), String>,
+        readback: Result<Vec<Value>, String>,
+    }
+
+    impl OccurrencePersistence for FakeOccurrenceWriter {
+        fn append<'a>(&'a self, _rows: &'a [Value]) -> WriterFuture<'a, ()> {
+            Box::pin(async { self.append_result.clone() })
+        }
+
+        fn read_exact<'a>(&'a self, _rows: &'a [Value]) -> WriterFuture<'a, Vec<Value>> {
+            Box::pin(async { self.readback.clone() })
+        }
+    }
+
+    fn test_pending() -> Vec<Value> {
+        vec![json!({
+            "session_key": "2026-08-17", "event_id": "early-1", "sequence": 7,
+            "signal_stream_id": "price-squeeze-early", "ticker": "ABC",
+            "event_time": "2026-08-17T15:00:00Z", "squeeze_anchor_price": 10.0
+        })]
+    }
+
+    #[tokio::test]
+    async fn exact_readback_accepts_acknowledged_or_ambiguously_committed_append() {
+        let pending = test_pending();
+        for append_result in [Ok(()), Err("response lost".to_string())] {
+            let writer = FakeOccurrenceWriter { append_result, readback: Ok(pending.clone()) };
+            assert!(insert_with_exact_readback(&writer, &pending).await.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_readback_fails_closed_on_absent_or_conflicting_append() {
+        let pending = test_pending();
+        let conflicting = vec![json!({
+            "session_key": "2026-08-17", "event_id": "early-1", "sequence": 7,
+            "signal_stream_id": "price-squeeze-early", "ticker": "ABC",
+            "event_time": "2026-08-17T15:00:00Z", "squeeze_anchor_price": 11.0
+        })];
+        for readback in [Ok(Vec::new()), Ok(conflicting), Err("read unavailable".to_string())] {
+            let writer = FakeOccurrenceWriter {
+                append_result: Err("append failed".to_string()), readback,
+            };
+            assert!(insert_with_exact_readback(&writer, &pending).await.is_err());
+        }
+
+        let mut two_rows = pending.clone();
+        let mut milestone = pending[0].clone();
+        milestone["event_id"] = json!("milestone-1");
+        milestone["sequence"] = json!(8);
+        milestone["signal_stream_id"] = json!("price-squeeze-5m");
+        two_rows.push(milestone);
+        let writer = FakeOccurrenceWriter {
+            append_result: Err("partial append".to_string()),
+            readback: Ok(pending),
+        };
+        assert!(insert_with_exact_readback(&writer, &two_rows).await.is_err());
+    }
+
+    #[test]
+    fn squeeze_episode_state_is_not_advanced_without_append_acknowledgment() {
+        let at = "2026-08-17T15:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let streams = vec![json!({
+            "signal_stream_id": "price-squeeze-early",
+            "episode_role": "start",
+            "inclusion_rule_sets": ["early"]
+        })];
+        let rules = HashMap::from([("early".to_string(), json!({
+            "operator": "all",
+            "conditions": [{"left_source_id": "impulse", "comparator": "greater_than", "value": 0}]
+        }))]);
+        let mut store = SignalStreamStore::default();
+        store.squeeze_last_prices.insert("ABC".to_string(), 10.0);
+        let mut staged = stage_squeeze_ticker(&store, "ABC");
+        let event = advance_squeeze_episode(
+            &mut staged, &streams, &rules, "ABC", at, 10.0, 10.1,
+            &json!({"impulse": 1}),
+        );
+        assert!(event.is_some());
+        // A failed or ambiguous append must not mutate the live episode state.
+        assert!(!store.squeeze_episodes.contains_key("ABC"));
+        assert_eq!(store.squeeze_last_prices["ABC"], 10.0);
+
+        apply_squeeze_ticker(&mut store, &mut staged, "ABC");
+        assert!(store.squeeze_episodes.contains_key("ABC"));
+        assert_eq!(store.squeeze_last_prices["ABC"], 10.1);
+    }
 
     #[test]
     fn evaluates_typed_rule_conditions_from_data_field_rows() {
