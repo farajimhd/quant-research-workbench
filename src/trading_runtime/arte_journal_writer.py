@@ -25,7 +25,9 @@ from src.trading_runtime.arte_journal_schema import TABLES, journal_permission_p
 from src.trading_runtime.journal_contract import canonical_json
 
 if TYPE_CHECKING:
-    from src.trading_runtime.arte_portfolio_snapshot import PreparedPortfolioSnapshot
+    from src.trading_runtime.arte_portfolio_snapshot import (
+        CapturedPortfolioSnapshot, PreparedPortfolioSnapshot,
+    )
 
 
 _CONTRACTS = {table.name: table for table in TABLES}
@@ -1669,7 +1671,8 @@ class ArteJournalWriter:
         self._run_id = run_id
         self._max_events_per_commit = max_events_per_commit
         self._queue: Queue[
-            tuple[TypedJournalBatch | PreparedPortfolioSnapshot, Future[str]] | None
+            tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot,
+                  Future[str]] | None
         ] = Queue(maxsize=capacity)
         self._submission_lock = Lock()
         self._error: BaseException | None = None
@@ -1714,8 +1717,33 @@ class ArteJournalWriter:
                 raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
         return receipt
 
+    def submit_captured_portfolio_snapshot(
+        self, captured: CapturedPortfolioSnapshot,
+    ) -> Future[str]:
+        """Queue a cheap immutable actor capture; normalize only on this worker."""
+        from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
+
+        if not isinstance(captured, CapturedPortfolioSnapshot):
+            raise TypeError("Portfolio journal submission requires a frozen capture")
+        with self._submission_lock:
+            if self._closed:
+                raise RuntimeError("Typed journal writer is closed")
+            if self._error is not None:
+                raise RuntimeError("Typed journal writer failed") from self._error
+            if captured.run_id != self._run_id:
+                raise ValueError("Typed journal writer cannot mix runs")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((captured, receipt))
+            except Full as exc:
+                raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
+        return receipt
+
     def _run(self) -> None:
-        held: tuple[TypedJournalBatch | PreparedPortfolioSnapshot, Future[str]] | None = None
+        held: tuple[
+            TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot,
+            Future[str],
+        ] | None = None
         while True:
             item = held if held is not None else self._queue.get()
             held = None
@@ -1749,10 +1777,13 @@ class ArteJournalWriter:
                     committed_id = publish_typed_batch(self._client, batch)
                 else:
                     from src.trading_runtime.arte_portfolio_snapshot import (
+                        CapturedPortfolioSnapshot, prepare_captured_portfolio_snapshot,
                         publish_prepared_portfolio_snapshot,
                     )
-                    committed_id = publish_prepared_portfolio_snapshot(
-                        self._client, group[0][0])
+                    snapshot = group[0][0]
+                    if isinstance(snapshot, CapturedPortfolioSnapshot):
+                        snapshot = prepare_captured_portfolio_snapshot(snapshot)
+                    committed_id = publish_prepared_portfolio_snapshot(self._client, snapshot)
                 for _, receipt in group:
                     if receipt.cancelled():
                         continue

@@ -2050,6 +2050,24 @@ class PortfolioManagementEngine:
             },
         )
 
+    def capture_recovery_snapshot(self, account_id: str, *, state_revision: int,
+                                  snapshot_at: datetime):
+        """Cheap immutable handoff for the future ClickHouse recovery lane.
+
+        The actor owns its mutable maps while this method runs. Relational
+        projection and all ClickHouse I/O remain on the background writer.
+        """
+        from src.trading_runtime.arte_portfolio_snapshot import capture_portfolio_snapshot
+
+        state = self._state(account_id)
+        return capture_portfolio_snapshot(
+            run_id=self.run_id, state_revision=state_revision,
+            snapshot_at=snapshot_at, state=state,
+            reservations=self.reservations.values(),
+            allocations=self.allocations.values(),
+            reconciliation=self.differences.values(),
+        )
+
     def _restore(self) -> None:
         for account_id, payload in self.journal.portfolio_states().items():
             state = self.states.get(account_id)

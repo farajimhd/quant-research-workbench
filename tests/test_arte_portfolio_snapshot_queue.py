@@ -11,6 +11,9 @@ from src.trading_runtime import arte_portfolio_snapshot as snapshot_module
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, JournalQueueFull, TypedJournalBatch,
 )
+from src.trading_runtime.portfolio import (
+    PortfolioAccountProfile, PortfolioAccountState, PortfolioReservation,
+)
 
 
 def _prepared(revision: int = 1):
@@ -108,3 +111,46 @@ def test_snapshot_persistence_failure_poisons_ordered_lane(monkeypatch) -> None:
         release.set()
         with pytest.raises(RuntimeError, match="did not drain durably"):
             writer.close()
+
+
+def test_actor_capture_normalizes_only_on_worker_and_ignores_later_mutation(monkeypatch) -> None:
+    profile = PortfolioAccountProfile(
+        account_key="key", account_id="account-id", mode="live",
+        account_class="cash", policy=snapshot_module.PortfolioPolicy(),
+    )
+    state = PortfolioAccountState(profile=profile)
+    state.pending_entry_requests["intent-1"] = {
+        "request_id": "intent-1", "ticker": "AAA", "assignment_id": "a",
+        "requested_at": "2026-08-18T12:00:00+00:00",
+        "last_validated_at": "2026-08-18T12:00:00+00:00",
+        "reasons": ["broker_stale"],
+    }
+    at = datetime(2026, 8, 18, 12, tzinfo=timezone.utc)
+    hold = PortfolioReservation(
+        reservation_id="r1", decision_id="d1", intent_id="intent-1",
+        account_key="key", account_id="account-id", strategy_id="s",
+        assignment_id="a", ticker="AAA", action="enter_long", quantity=1,
+        remaining_quantity=1, reference_price=5, reserved_notional=5,
+        reserved_planned_risk=1, created_at=at,
+    )
+    captured = snapshot_module.capture_portfolio_snapshot(
+        run_id="live-run", state_revision=1, snapshot_at=at, state=state,
+        reservations=(hold,), allocations=(), reconciliation=(),
+    )
+    state.pending_entry_requests["intent-1"]["reasons"].append("late_reason")
+    state.pending_entry_requests.clear()
+    seen = []
+
+    def publish(_client, prepared):
+        seen.append(prepared)
+        return "state-hash"
+
+    monkeypatch.setattr(snapshot_module, "publish_prepared_portfolio_snapshot", publish)
+    writer = _writer(monkeypatch)
+    try:
+        assert writer.submit_captured_portfolio_snapshot(captured).result(timeout=5) == "state-hash"
+        assert len(seen) == 1
+        assert seen[0].rows.request_reasons[0]["reason"] == "broker_stale"
+        assert len(seen[0].rows.reservations) == 1
+    finally:
+        writer.close()

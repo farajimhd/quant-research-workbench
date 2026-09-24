@@ -6,12 +6,12 @@ it never serializes an unknown dict into a catchall column.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from src.trading_runtime.arte_portfolio_policy import (
     _policy_rows, load_portfolio_policy, publish_portfolio_policy,
@@ -22,7 +22,7 @@ from src.trading_runtime.arte_journal_writer import (
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.portfolio import (
     PortfolioAllocationLot, PortfolioReconciliationDifference,
-    PortfolioControlMode, PortfolioReservation, PortfolioSyncState,
+    PortfolioAccountState, PortfolioControlMode, PortfolioReservation, PortfolioSyncState,
     PortfolioPolicy, portfolio_policy_from_payload,
 )
 
@@ -82,6 +82,113 @@ class PreparedPortfolioSnapshot:
                      "reservations", "allocations", "reconciliation"):
             if any(not isinstance(row, MappingProxyType) for row in getattr(self.rows, name)):
                 raise ValueError("Prepared portfolio snapshot must own immutable rows")
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedPortfolioSnapshot:
+    """Cheap actor-thread capture; frozen domain rows normalize on the worker."""
+
+    run_id: str
+    account_id: str
+    state_revision: int
+    snapshot_at: datetime
+    account_key: str
+    control_mode: str
+    sync_state: str
+    broker_snapshot_id: str
+    observed_at: datetime | None
+    stale_reason: str
+    peak_net_liquidation: float
+    realized_pnl_baseline: float | None
+    selected_policy: PortfolioPolicy | None
+    disabled_strategies: tuple[str, ...]
+    commands: tuple[Mapping[str, Any], ...]
+    requests: tuple[tuple[str, Mapping[str, Any]], ...]
+    reservations: tuple[PortfolioReservation, ...]
+    allocations: tuple[PortfolioAllocationLot, ...]
+    reconciliation: tuple[PortfolioReconciliationDifference, ...]
+
+
+def capture_portfolio_snapshot(
+    *, run_id: str, state_revision: int, snapshot_at: datetime,
+    state: PortfolioAccountState,
+    reservations: Iterable[PortfolioReservation],
+    allocations: Iterable[PortfolioAllocationLot],
+    reconciliation: Iterable[PortfolioReconciliationDifference],
+) -> CapturedPortfolioSnapshot:
+    """Capture references to frozen lots plus small copied mutable controls."""
+    if (not run_id or type(state_revision) is not int or state_revision < 1
+            or snapshot_at.tzinfo is None):
+        raise ValueError("Portfolio capture needs a causal writer identity")
+    account_id = state.profile.account_id
+    account_key = state.profile.account_key
+    commands = []
+    for raw in state.pending_operational_commands:
+        if not isinstance(raw, Mapping) or any(
+            value is not None and not isinstance(value, (str, int, float, bool, datetime))
+            for value in raw.values()
+        ):
+            raise ValueError("Portfolio command capture contains mutable nested data")
+        commands.append(MappingProxyType(dict(raw)))
+    requests = []
+    for request_id, raw in state.pending_entry_requests.items():
+        if not isinstance(raw, Mapping) or not isinstance(raw.get("reasons"), list):
+            raise ValueError("Portfolio request capture is not typed")
+        if (any(value is not None and not isinstance(value, (str, int, float, bool, datetime))
+                for key, value in raw.items() if key != "reasons")
+                or any(not isinstance(reason, str) for reason in raw["reasons"])):
+            raise ValueError("Portfolio request capture contains mutable nested data")
+        frozen = {**raw, "reasons": tuple(raw["reasons"])}
+        requests.append((request_id, MappingProxyType(frozen)))
+    held = tuple(row for row in reservations if row.account_id == account_id)
+    lots = tuple(row for row in allocations if row.account_id == account_id)
+    differences = tuple(row for row in reconciliation if row.account_key == account_key)
+    if (any(type(row) is not PortfolioReservation for row in held)
+            or any(type(row) is not PortfolioAllocationLot for row in lots)
+            or any(type(row) is not PortfolioReconciliationDifference for row in differences)):
+        raise ValueError("Portfolio capture rows must be frozen domain models")
+    return CapturedPortfolioSnapshot(
+        run_id, account_id, state_revision, snapshot_at, account_key,
+        state.control_mode.value, state.sync_state.value, state.snapshot_id,
+        state.observed_at, state.stale_reason, state.peak_net_liquidation,
+        state.realized_pnl_baseline, state.policy_override,
+        tuple(sorted(state.disabled_strategy_allocations)), tuple(commands),
+        tuple(sorted(requests, key=lambda item: item[0])), held, lots,
+        differences,
+    )
+
+
+def prepare_captured_portfolio_snapshot(
+    captured: CapturedPortfolioSnapshot,
+) -> PreparedPortfolioSnapshot:
+    """Worker-thread normalization of a stable actor-thread capture."""
+    state = {
+        "account_key": captured.account_key,
+        "control_mode": captured.control_mode,
+        "sync_state": captured.sync_state,
+        "snapshot_id": captured.broker_snapshot_id,
+        "observed_at": captured.observed_at,
+        "stale_reason": captured.stale_reason,
+        "peak_net_liquidation": captured.peak_net_liquidation,
+        "realized_pnl_baseline": captured.realized_pnl_baseline,
+        "selected_policy": ({**asdict(captured.selected_policy),
+                             "identity": captured.selected_policy.identity}
+                            if captured.selected_policy is not None else None),
+        "disabled_strategy_allocations": list(captured.disabled_strategies),
+        "pending_operational_commands": [dict(row) for row in captured.commands],
+        "pending_entry_requests": {
+            key: {**row, "reasons": list(row["reasons"])}
+            for key, row in captured.requests
+        },
+        "reservations": [asdict(row) for row in captured.reservations],
+        "allocations": [asdict(row) for row in captured.allocations],
+        "reconciliation": [asdict(row) for row in captured.reconciliation],
+    }
+    return prepare_portfolio_snapshot(
+        run_id=captured.run_id, account_id=captured.account_id,
+        state_revision=captured.state_revision, snapshot_at=captured.snapshot_at,
+        state=state,
+    )
 
 
 _SNAPSHOT_FAMILIES = (
