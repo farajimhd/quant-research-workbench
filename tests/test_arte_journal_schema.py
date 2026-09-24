@@ -148,6 +148,7 @@ def test_preflight_requires_exact_layout_and_actual_ssd_parts() -> None:
     class Catalog:
         def __init__(self) -> None:
             self.wrong_disk = False
+            self.unindexed_part = False
 
         def execute(self, sql: str) -> str:
             if "FROM system.storage_policies" in sql:
@@ -166,8 +167,12 @@ def test_preflight_requires_exact_layout_and_actual_ssd_parts() -> None:
                          "type": "bloom_filter", "expr": "batch_id", "granularity": 1}
                         for table in TABLES if "batch_id" in dict(table.columns)]
             elif "FROM system.parts" in sql:
-                rows = ([{"table": TABLES[0].name, "disk_name": "default"}]
-                        if self.wrong_disk else [])
+                if "secondary_indices_compressed_bytes=0" in sql:
+                    rows = ([{"table": "trading_event_v1", "name": "part-1"}]
+                            if self.unindexed_part else [])
+                else:
+                    rows = ([{"table": TABLES[0].name, "disk_name": "default"}]
+                            if self.wrong_disk else [])
             else:
                 raise AssertionError(sql)
             return "\n".join(json.dumps(row) for row in rows)
@@ -176,6 +181,10 @@ def test_preflight_requires_exact_layout_and_actual_ssd_parts() -> None:
     storage_preflight(client)
     client.wrong_disk = True
     with pytest.raises(ValueError, match="outside live_market_ssd"):
+        storage_preflight(client)
+    client.wrong_disk = False
+    client.unindexed_part = True
+    with pytest.raises(ValueError, match="without materialized batch indexes"):
         storage_preflight(client)
 
 

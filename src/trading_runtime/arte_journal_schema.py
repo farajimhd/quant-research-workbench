@@ -877,6 +877,13 @@ def storage_preflight(client: Any) -> None:
         "LIMIT 1 FORMAT JSONEachRow")
     if bad_parts:
         raise ValueError("Typed journal has active parts outside live_market_ssd")
+    indexed_names = ",".join(f"'{name}'" for name in sorted(indexed))
+    missing_index_parts = _rows(client,
+        "SELECT table,name FROM system.parts WHERE database='arte' "
+        f"AND table IN ({indexed_names}) AND active "
+        "AND secondary_indices_compressed_bytes=0 LIMIT 1 FORMAT JSONEachRow")
+    if missing_index_parts:
+        raise ValueError("Typed journal has active parts without materialized batch indexes")
 
 
 def journal_permission_preflight(client: Any) -> None:
