@@ -455,3 +455,60 @@ def load_session_activations(client: Any, *, session_date: date,
     return tuple(load_activation(client, session_date=session_date,
                                  run_plan_id=run_plan_id, ticker=ticker, event_id=event_id)
                  for event_id in sorted(event_ids))
+
+
+def load_day_activations(client: Any, *, session_date: date,
+                         page_size: int = 1024) -> tuple[dict[str, Any], ...]:
+    """Discover and audit every current-day activation, including orphan rows.
+
+    This is a control-plane cold-start read. It does not authorize order
+    admission; the caller must also restore the execution fence and reconcile
+    the broker before acting on any recovered watch.
+    """
+    if (type(session_date) is not date or type(page_size) is not int
+            or not 1 <= page_size <= 4096):
+        raise ValueError("Activation day inventory requires a date and bounded page")
+    day = session_date.isoformat()
+    identities: set[tuple[str, str]] = set()
+    for name in _ACTIVATION_CONTRACTS:
+        after = ("", "", "")
+        while True:
+            where = (f"run_id={_literal(ACTIVATION_RUN_ID)} "
+                     f"AND session_date={_literal(day)}")
+            if after != ("", "", ""):
+                cursor = ",".join(_literal(value) for value in after)
+                where += f" AND (run_plan_id,ticker,event_id)>({cursor})"
+            response = client.execute(
+                "SELECT DISTINCT run_plan_id,ticker,event_id "
+                f"FROM arte.{name} WHERE {where} "
+                "ORDER BY run_plan_id,ticker,event_id "
+                f"LIMIT {page_size} FORMAT JSONEachRow")
+            rows = tuple(json.loads(line) for line in response.splitlines() if line.strip())
+            if len(rows) > page_size:
+                raise RuntimeError("Activation day inventory exceeded its page limit")
+            if not rows:
+                break
+            previous = after
+            for row in rows:
+                if (set(row) != {"run_plan_id", "ticker", "event_id"}
+                        or any(not isinstance(row[key], str) or not row[key]
+                               for key in ("run_plan_id", "ticker", "event_id"))):
+                    raise RuntimeError("Activation day inventory returned an invalid identity")
+                identity = (row["run_plan_id"], row["ticker"], row["event_id"])
+                if identity <= previous:
+                    raise RuntimeError("Activation day inventory is not ordered")
+                identities.add(identity[:2])
+                if len(identities) > 100_000:
+                    raise RuntimeError("Activation day inventory exceeds its identity bound")
+                previous = identity
+            after = previous
+            if len(rows) < page_size:
+                break
+    restored = []
+    for run_plan_id, ticker in sorted(identities):
+        matches = load_session_activations(client, session_date=session_date,
+                                           run_plan_id=run_plan_id, ticker=ticker)
+        if len(matches) != 1:
+            raise RuntimeError("Activation day has zero or multiple committed watches for one plan/ticker")
+        restored.append(matches[0])
+    return tuple(restored)

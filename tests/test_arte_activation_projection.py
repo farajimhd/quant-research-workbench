@@ -7,7 +7,8 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from src.trading_runtime.arte_activation_projection import (
-    ACTIVATION_TABLES, _sealed, load_activation, load_session_activations, prepare_activation_rows,
+    ACTIVATION_TABLES, _sealed, load_activation, load_day_activations,
+    load_session_activations, prepare_activation_rows,
     project_activation, publish_activation, restore_activation,
 )
 from src.trading_runtime.strategy_activation import strategy_observation_from_signal_occurrence
@@ -61,6 +62,19 @@ class _MemoryClient:
             return "\n".join(json.dumps({"event_id": row["event_id"]})
                              for row in self.rows[name]
                              if all(str(row[key]) == value for key, value in identity.items()))
+        if sql.startswith("SELECT DISTINCT run_plan_id,ticker,event_id FROM arte."):
+            name = sql.split("arte.", 1)[1].split(" ", 1)[0]
+            identity = dict(re.findall(r"(run_id|session_date)='([^']*)'", sql))
+            cursor_match = re.search(
+                r"\(run_plan_id,ticker,event_id\)>\('([^']*)','([^']*)','([^']*)'\)", sql)
+            after = cursor_match.groups() if cursor_match else ("", "", "")
+            limit = int(re.search(r"LIMIT ([0-9]+)", sql).group(1))
+            values = sorted({(row["run_plan_id"], row["ticker"], row["event_id"])
+                             for row in self.rows[name]
+                             if all(str(row[key]) == value for key, value in identity.items())
+                             and (row["run_plan_id"], row["ticker"], row["event_id"]) > after})
+            return "\n".join(json.dumps(dict(zip(("run_plan_id", "ticker", "event_id"), key)))
+                             for key in values[:limit])
         raise AssertionError(sql)
 
 
@@ -232,6 +246,47 @@ class ActivationProjectionTests(unittest.TestCase):
         client.rows["trading_activation_evidence_v1"].append(_sealed(orphan))
         with self.assertRaisesRegex(RuntimeError, "lacks a committed fence"):
             load_session_activations(client, **query)
+
+    def test_day_inventory_pages_and_audits_every_committed_watch(self) -> None:
+        client = _MemoryClient()
+        _publish(client, project_activation(_delivery()))
+        second = _delivery()
+        second["run_plan_id"] = "plan-2"
+        second["delivery_id"] = "plan-2:event-2"
+        second["event_id"] = "event-2"
+        second["ticker"] = "OTHER"
+        second["occurrence"]["event_id"] = "event-2"
+        second["occurrence"]["signal_id"] = "event-2"
+        second["occurrence"]["ticker"] = "OTHER"
+
+        class AnyKeeper:
+            def portfolio_admission_lease_is_current(self, resource_id, *, owner_id, epoch):
+                return (resource_id == "activation:2026-08-21:plan-2:OTHER"
+                        and owner_id == "worker-1" and epoch == 1)
+
+        _publish(client, project_activation(second), AnyKeeper())
+        recovered = load_day_activations(client, session_date=date(2026, 8, 21),
+                                         page_size=1)
+        self.assertEqual([(row["run_plan_id"], row["ticker"]) for row in recovered],
+                         [("plan-1", "SUGP"), ("plan-2", "OTHER")])
+        orphan = dict(client.rows["trading_activation_evidence_v1"][0])
+        orphan["event_id"] = "orphan"
+        orphan.pop("content_hash")
+        client.rows["trading_activation_evidence_v1"].append(_sealed(orphan))
+        with self.assertRaisesRegex(RuntimeError, "lacks a committed fence"):
+            load_day_activations(client, session_date=date(2026, 8, 21), page_size=1)
+
+    def test_day_inventory_rejects_two_watch_heads_for_one_plan_ticker(self) -> None:
+        client = _MemoryClient()
+        _publish(client, project_activation(_delivery()))
+        second = _delivery()
+        second["delivery_id"] = "plan-1:event-2"
+        second["event_id"] = "event-2"
+        second["occurrence"]["event_id"] = "event-2"
+        second["occurrence"]["signal_id"] = "event-2"
+        _publish(client, project_activation(second))
+        with self.assertRaisesRegex(RuntimeError, "multiple committed watches"):
+            load_day_activations(client, session_date=date(2026, 8, 21), page_size=1)
 
 
 if __name__ == "__main__":
