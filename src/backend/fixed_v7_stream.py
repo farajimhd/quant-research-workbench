@@ -94,6 +94,10 @@ class FixedV7Cache:
             raise ValueError("V7 seed plan does not cover the certified ticker population")
         self._streams: dict[str, FixedV7Stream] = {}
 
+    def has_stream(self, ticker: str) -> bool:
+        """True after this session's private book has been loaded and caught up."""
+        return ticker in self._streams
+
     def _boundary_ms(self, at: datetime) -> int:
         if at.tzinfo is None:
             raise ValueError("V7 Backtest boundary requires a timezone")

@@ -4333,9 +4333,19 @@ class ReplayRunController:
         fixed_v7 = getattr(self, "_fixed_v7_caches", {}).get(
             frame.as_of.astimezone(NEW_YORK).date().isoformat())
         if fixed_v7 is not None:
-            indicator = {**indicator, **await asyncio.to_thread(
-                fixed_v7.context, frame.ticker, as_of=frame.as_of,
-                price=float(frame.bar.get("close") or 0))}
+            price = float(frame.bar.get("close") or 0)
+            # Only the first lookup needs ClickHouse seed/catch-up I/O.  The
+            # replay loop owns resident books and advances them at completed
+            # second boundaries, so a thread handoff on every 100 ms frame
+            # adds latency without providing concurrency or safety.
+            if fixed_v7.has_stream(frame.ticker):
+                v7_context = fixed_v7.context(
+                    frame.ticker, as_of=frame.as_of, price=price)
+            else:
+                v7_context = await asyncio.to_thread(
+                    fixed_v7.context, frame.ticker, as_of=frame.as_of,
+                    price=price)
+            indicator = {**indicator, **v7_context}
         elif self.definition.mode == RunMode.BACKTEST and self.definition.causal_v7_plan:
             raise RuntimeError("Fixed Backtest cannot fall back to a disk-backed V7 cursor")
         elif self.definition.experimental_structure_book:

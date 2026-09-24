@@ -99,8 +99,10 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds():
     client = Client()
     cache = FixedV7Cache(market_plan=market, seed_plan=v7,
                          session=date(2026, 8, 18), client=client)
+    assert not cache.has_stream("TEST")
     before = datetime(2026, 8, 18, 4, 5, 0, 100000, tzinfo=NY)
     assert cache.context("TEST", as_of=before, price=10.0)["qmd_structure_unified_levels"] == []
+    assert cache.has_stream("TEST")
     assert cache._streams["TEST"].engine.bars_processed == 0
     completed = datetime(2026, 8, 18, 4, 5, 1, tzinfo=NY)
     cache.advance_seconds([bar], at=completed)
