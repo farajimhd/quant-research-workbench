@@ -177,6 +177,42 @@ def _insert(client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: 
     )
 
 
+def publish_typed_run(client: Any, run: Mapping[str, Any]) -> str:
+    """Publish one immutable run identity before accepting its journal rows."""
+    expected_columns = {column for column, _ in _CONTRACTS["trading_run_v1"].columns}
+    if set(run) != expected_columns:
+        raise ValueError("Typed run has missing or extra columns")
+    run_id = str(run["run_id"])
+    interval = run["evaluation_interval_ms"]
+    if (not run_id or run["mode"] not in {"live", "paper", "replay", "backtest", "integration_test"}
+            or (interval is not None and (not isinstance(interval, int)
+                                          or interval < 100 or interval % 100))):
+        raise ValueError("Typed run identity or evaluation interval is invalid")
+    for field in ("configuration_hash", "code_hash"):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(run[field])):
+            raise ValueError(f"Typed run {field} must be a SHA-256 digest")
+    wire = _wire_row("trading_run_v1", run)
+    columns = ",".join(column for column, _ in _CONTRACTS["trading_run_v1"].columns)
+    query = (f"SELECT {columns} FROM arte.trading_run_v1 "
+             f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
+    existing = _rows(client, query)
+    if existing and (len(existing) != 1 or existing[0] != wire):
+        raise RuntimeError("Typed run identity conflicts with existing publication")
+    if not existing:
+        _insert(client, "trading_run_v1", (run,), f"run:{run_id}")
+        if _rows(client, query) != [wire]:
+            raise RuntimeError("Typed run identity was not durably published")
+    return run_id
+
+
+def _verify_run_identity(client: Any, run_id: str) -> None:
+    rows = _rows(client,
+        "SELECT run_id FROM arte.trading_run_v1 "
+        f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
+    if rows != [{"run_id": run_id}]:
+        raise RuntimeError("Typed journal run identity is missing or duplicated")
+
+
 def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
     existing = _rows(client,
@@ -284,13 +320,15 @@ def load_committed_prefix(client: Any, run_id: str) -> CommittedPrefix | None:
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 
-    def __init__(self, client: Any, *, capacity: int = 8) -> None:
+    def __init__(self, client: Any, *, run_id: str, capacity: int = 8) -> None:
         if capacity < 1:
             raise ValueError("Journal queue capacity must be positive")
         # Startup/control-plane validation, before a publication thread exists.
         # Never attempt to create tables or repair misplaced parts here.
         storage_preflight(client)
+        _verify_run_identity(client, run_id)
         self._client = client
+        self._run_id = run_id
         self._queue: Queue[tuple[TypedJournalBatch, Future[str]] | None] = Queue(maxsize=capacity)
         self._error: BaseException | None = None
         self._closed = False
@@ -303,6 +341,8 @@ class ArteJournalWriter:
             raise RuntimeError("Typed journal writer is closed")
         if self._error is not None:
             raise RuntimeError("Typed journal writer failed") from self._error
+        if batch.run_id != self._run_id:
+            raise ValueError("Typed journal writer cannot mix runs")
         receipt: Future[str] = Future()
         try:
             self._queue.put_nowait((batch, receipt))

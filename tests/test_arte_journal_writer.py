@@ -10,7 +10,7 @@ import pytest
 from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, JournalQueueFull, TypedJournalBatch, load_committed_prefix,
-    publish_typed_batch, typed_row,
+    publish_typed_batch, publish_typed_run, typed_row,
 )
 
 
@@ -45,6 +45,15 @@ def batch() -> TypedJournalBatch:
                              1, 1, "bucket-1", "running", (event,))
 
 
+def run_row() -> dict:
+    return {
+        "run_id": RUN, "run_month": "2026-08-01", "mode": "backtest",
+        "evaluation_interval_ms": 100, "session_date": "2026-08-18",
+        "configuration_hash": "a" * 64, "code_hash": "b" * 64,
+        "market_plan_token": "certified-build", "started_at": "2026-08-18T08:00:00+00:00",
+    }
+
+
 class MemoryClient:
     def __init__(self) -> None:
         self.tables: dict[str, list[dict]] = {}
@@ -63,7 +72,8 @@ class MemoryClient:
             run_id = sql.split("WHERE run_id='", 1)[1].split("'", 1)[0]
             matching = [row for row in self.tables.get(name, []) if row["run_id"] == run_id]
             descending = "ORDER BY last_sequence DESC" in sql
-            matching.sort(key=lambda row: row["last_sequence"], reverse=descending)
+            if "ORDER BY last_sequence" in sql:
+                matching.sort(key=lambda row: row["last_sequence"], reverse=descending)
             return "\n".join(json.dumps({column: row[column] for column in columns})
                              for row in (matching[:1] if "LIMIT 1" in sql else matching))
         batch_id = sql.split("batch_id=toUUID('", 1)[1].split("')", 1)[0]
@@ -83,6 +93,16 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     prefix = load_committed_prefix(client, RUN)
     assert prefix is not None
     assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
+
+
+def test_run_identity_is_immutable_and_uses_typed_rows() -> None:
+    client = MemoryClient()
+    row = run_row()
+    assert publish_typed_run(client, row) == RUN
+    assert publish_typed_run(client, row) == RUN
+    assert client.inserts == ["trading_run_v1"]
+    with pytest.raises(RuntimeError, match="conflicts"):
+        publish_typed_run(client, {**row, "code_hash": "c" * 64})
 
 
 def test_typed_publication_detects_conflicting_readback() -> None:
@@ -119,7 +139,8 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
 
     monkeypatch.setattr(writer_module, "publish_typed_batch", stalled)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
-    journal = ArteJournalWriter(object(), capacity=1)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=1)
     try:
         first = journal.submit(batch())
         assert entered.wait(5)
