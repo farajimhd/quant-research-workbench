@@ -2175,6 +2175,9 @@ def _policy_payload(policy: PortfolioPolicy) -> dict[str, Any]:
 
 def portfolio_policy_from_payload(payload: Mapping[str, Any]) -> PortfolioPolicy:
     valid = set(PortfolioPolicy.__dataclass_fields__)
+    unknown = set(payload) - valid - {"identity"}
+    if unknown:
+        raise ValueError(f"Portfolio policy has unknown fields: {sorted(unknown)}")
     normalized = {key: value for key, value in payload.items() if key in valid}
     for tuple_field in (
         "allowed_security_types",
@@ -2185,7 +2188,10 @@ def portfolio_policy_from_payload(payload: Mapping[str, Any]) -> PortfolioPolicy
     ):
         if tuple_field in normalized:
             normalized[tuple_field] = tuple(str(item) for item in normalized[tuple_field])
-    return PortfolioPolicy(**normalized)
+    policy = PortfolioPolicy(**normalized)
+    if "identity" in payload and payload["identity"] != policy.identity:
+        raise ValueError("Portfolio policy identity differs from its fields")
+    return policy
 
 
 def narrow_policy_for_account_class(

@@ -21,6 +21,7 @@ from src.trading_runtime.portfolio import (
     PortfolioGroupPolicy,
     PortfolioManagementEngine,
     PortfolioPolicy,
+    portfolio_policy_from_payload,
 )
 from src.trading_runtime.portfolio_config import (
     configured_portfolio_profiles,
@@ -32,6 +33,16 @@ from src.trading_runtime.signals import CapitalRequest, StrategyIntent
 
 RUNTIME_ROOT = Path(r"D:\TradingML\runtimes\quant-research-workbench\test-temp")
 TEST_RUNTIME_ROOT = RUNTIME_ROOT / "portfolio_tests"
+
+
+class PortfolioPolicyRecoveryTests(unittest.TestCase):
+    def test_rejects_unmodeled_or_conflicting_fields(self) -> None:
+        payload = {"policy_id": "test", "revision": 2, "identity": "test@2"}
+        self.assertEqual(portfolio_policy_from_payload(payload).identity, "test@2")
+        with self.assertRaisesRegex(ValueError, "unknown fields"):
+            portfolio_policy_from_payload({**payload, "new_risk_limit": 1})
+        with self.assertRaisesRegex(ValueError, "identity differs"):
+            portfolio_policy_from_payload({**payload, "identity": "other@2"})
 
 
 def summary(account_id: str, *, equity: float = 100_000, available: float = 80_000, at: datetime | None = None) -> AccountSummary:
