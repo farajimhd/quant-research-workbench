@@ -595,6 +595,19 @@ def _canonical_typed_content(
         elif base in {"String", "LowCardinality(String)", "FixedString(64)"}:
             if not isinstance(value, str):
                 raise ValueError(f"{name}.{column} is not a string")
+            # A String column is not an escape hatch for an unmodelled JSON
+            # object or array. JSONEachRow below is only the wire format.
+            candidate = value.lstrip()
+            if candidate.startswith(("{", "[")):
+                try:
+                    decoded = json.loads(candidate)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                else:
+                    if isinstance(decoded, (dict, list)):
+                        raise ValueError(
+                            f"{name}.{column} requires normalized typed rows, not JSON text"
+                        )
             canonical[column] = value
         else:
             raise ValueError(f"Unsupported typed journal field {name}.{column}: {kind}")

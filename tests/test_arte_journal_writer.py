@@ -69,6 +69,15 @@ def test_typed_hash_uses_stored_utc_representation() -> None:
     )
 
 
+@pytest.mark.parametrize("encoded", ['{"nested":1}', '  ["unmodelled"]'])
+def test_typed_journal_rejects_json_hidden_in_string_column(encoded: str) -> None:
+    source = {key: value for key, value in batch().events[0].items()
+              if key != "content_hash"}
+    source["entity_id"] = encoded
+    with pytest.raises(ValueError, match="normalized typed rows"):
+        typed_row("trading_event_v1", source)
+
+
 def test_event_partition_must_match_utc_event_month() -> None:
     source = dict(batch().events[0])
     source["event_month"] = "2026-07-01"
