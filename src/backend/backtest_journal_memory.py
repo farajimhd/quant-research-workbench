@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
+from copy import deepcopy
 from threading import RLock
 from typing import Any, Iterable
 from uuid import uuid4
@@ -36,6 +37,7 @@ class BacktestMemoryJournal:
         self._order_states: dict[str, dict[str, Any]] = {}
         self._assignments: dict[str, dict[str, Any]] = {}
         self._leases: dict[str, dict[str, Any]] = {}
+        self._campaign_ownership: dict[tuple[str, str], dict[str, Any]] = {}
         self._evidence: dict[str, str] = {}
         self._lock = RLock()
         self._closed = False
@@ -229,6 +231,43 @@ class BacktestMemoryJournal:
                 return True
             return False
 
+    def acquire_campaign_session_ownership(self, resource_id: str, *, session_key: str,
+                                           owner_id: str, state: str) -> dict[str, Any] | None:
+        if not resource_id or not session_key or not owner_id:
+            raise ValueError("Campaign ownership requires resource, session, and owner")
+        if state not in {"reserved", "confirmed"}:
+            raise ValueError("Campaign ownership state must be reserved or confirmed")
+        key = (resource_id, session_key)
+        with self._lock:
+            self._require_open()
+            prior = self._campaign_ownership.get(key)
+            if prior is not None and prior["owner_id"] != owner_id:
+                return None
+            row = {
+                "resource_id": resource_id, "session_key": session_key,
+                "owner_id": owner_id,
+                "state": "confirmed" if prior and prior["state"] == "confirmed" else state,
+                "epoch": int(prior["epoch"]) + 1 if prior else 1,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._campaign_ownership[key] = row
+            return {name: row[name] for name in ("resource_id", "session_key", "owner_id", "state", "epoch")}
+
+    def campaign_session_ownership(self, resource_id: str, *, session_key: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._campaign_ownership.get((resource_id, session_key))
+            return dict(row) if row is not None else None
+
+    def release_campaign_session_reservation(self, resource_id: str, *, session_key: str,
+                                             owner_id: str) -> bool:
+        key = (resource_id, session_key)
+        with self._lock:
+            row = self._campaign_ownership.get(key)
+            if row is None or row["owner_id"] != owner_id or row["state"] != "reserved":
+                return False
+            del self._campaign_ownership[key]
+            return True
+
     def save_order_management_state(self, group_id: str, *, run_id: str,
                                     account_id: str, state: dict[str, Any]) -> None:
         if not group_id or not account_id or run_id != self.run_id:
@@ -243,6 +282,60 @@ class BacktestMemoryJournal:
             return []
         return sorted((dict(row) for row in self._order_states.values()),
                       key=lambda row: row["updated_at"])
+
+    def save_strategy_assignment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.save_strategy_assignments([payload])[0]
+
+    def save_strategy_assignments(self, payloads: Iterable[dict[str, Any]], *,
+                                  return_rows: bool = True) -> list[dict[str, Any]]:
+        prepared = []
+        now = datetime.now(timezone.utc).isoformat()
+        for raw in payloads:
+            payload = dict(raw)
+            assignment_id = str(payload.get("assignment_id") or "").strip()
+            if not assignment_id:
+                raise ValueError("assignment_id is required")
+            row = {
+                "assignment_id": assignment_id,
+                "strategy_id": str(payload.get("strategy_id") or ""),
+                "strategy_revision": int(payload.get("strategy_revision") or 0),
+                "account_id": str(payload.get("account_id") or ""),
+                "ticker": str(payload.get("ticker") or "").upper(),
+                "conid": int(payload.get("conid") or 0),
+                "status": str(payload.get("status") or ""),
+                "permissions": deepcopy(payload.get("permissions") or {}),
+                "parameters": deepcopy(payload.get("parameters") or {}),
+                "state": deepcopy(payload.get("state") or {}),
+                "source": str(payload.get("source") or "order_entry"),
+                "created_at": str(payload.get("created_at") or now),
+                "updated_at": str(payload.get("updated_at") or now),
+            }
+            canonical_json(row)
+            prepared.append(row)
+        with self._lock:
+            self._require_open()
+            for row in prepared:
+                prior = self._assignments.get(row["assignment_id"])
+                if prior is not None:
+                    row = {**prior, **{name: row[name] for name in
+                        ("status", "permissions", "parameters", "state", "updated_at")}}
+                self._assignments[row["assignment_id"]] = row
+            if not return_rows:
+                return []
+            return [deepcopy(self._assignments[row["assignment_id"]]) for row in prepared]
+
+    def strategy_assignment(self, assignment_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._assignments.get(assignment_id)
+            return deepcopy(row) if row is not None else None
+
+    def strategy_assignments(self, *, account_id: str = "", ticker: str = "",
+                             active_only: bool = False) -> list[dict[str, Any]]:
+        rows = [row for row in self._assignments.values()
+                if (not account_id or row["account_id"] == account_id)
+                and (not ticker or row["ticker"] == ticker.upper())
+                and (not active_only or row["status"] not in {"disabled", "completed", "error"})]
+        return [deepcopy(row) for row in sorted(rows, key=lambda row: row["updated_at"], reverse=True)]
 
     def reference_json(self, value: Any) -> dict[str, str]:
         raw = canonical_json(value)
