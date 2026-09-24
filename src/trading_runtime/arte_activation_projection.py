@@ -336,6 +336,20 @@ def _insert(client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: 
         f"insert_deduplication_token={_literal(token)} FORMAT JSONEachRow\n{body}")
 
 
+def _require_first_watch_identity(client: Any, identity: Mapping[str, str]) -> None:
+    """Reject a second event for a plan/ticker, including unfinished attempts."""
+    where = " AND ".join(f"{key}={_literal(identity[key])}" for key in (
+        "run_id", "session_date", "run_plan_id", "ticker"))
+    for name in _ACTIVATION_CONTRACTS:
+        response = client.execute(
+            f"SELECT DISTINCT event_id FROM arte.{name} WHERE {where} "
+            "LIMIT 2 FORMAT JSONEachRow")
+        rows = tuple(json.loads(line) for line in response.splitlines() if line.strip())
+        if (len(rows) > 1 or any(set(row) != {"event_id"}
+                                  or row["event_id"] != identity["event_id"] for row in rows)):
+            raise RuntimeError("Activation plan/ticker already has another event identity")
+
+
 def publish_activation(client: Any, projected: ActivationProjection, *,
                        keeper: Any, owner_id: str, epoch: int) -> str:
     """Publish validated families, verify readback, then publish a late fence.
@@ -357,6 +371,8 @@ def publish_activation(client: Any, projected: ActivationProjection, *,
         ):
             raise RuntimeError("Activation Keeper claim is no longer current")
 
+    require_claim()
+    _require_first_watch_identity(client, identity)
     require_claim()
     existing = _verify_rows(client, identity, require_commit=False)
     require_claim()

@@ -56,6 +56,12 @@ class _MemoryClient:
             identity = dict(re.findall(r"(run_id|session_date|run_plan_id|ticker|event_id)='([^']*)'", sql))
             return "\n".join(json.dumps(row) for row in self.rows[name]
                              if all(str(row[key]) == value for key, value in identity.items()))
+        if sql.startswith("SELECT DISTINCT event_id FROM arte."):
+            name = sql.split("arte.", 1)[1].split(" ", 1)[0]
+            identity = dict(re.findall(r"(run_id|session_date|run_plan_id|ticker)='([^']*)'", sql))
+            values = sorted({row["event_id"] for row in self.rows[name]
+                             if all(str(row[key]) == value for key, value in identity.items())})
+            return "\n".join(json.dumps({"event_id": value}) for value in values[:2])
         if sql.startswith("SELECT event_id FROM arte."):
             name = sql.split("arte.", 1)[1].split(" ", 1)[0]
             identity = dict(re.findall(r"(run_id|session_date|run_plan_id|ticker)='([^']*)'", sql))
@@ -284,9 +290,33 @@ class ActivationProjectionTests(unittest.TestCase):
         second["event_id"] = "event-2"
         second["occurrence"]["event_id"] = "event-2"
         second["occurrence"]["signal_id"] = "event-2"
-        _publish(client, project_activation(second))
+        conflicting = _MemoryClient()
+        _publish(conflicting, project_activation(second))
+        for name, rows in conflicting.rows.items():
+            client.rows[name].extend(rows)
         with self.assertRaisesRegex(RuntimeError, "multiple committed watches"):
             load_day_activations(client, session_date=date(2026, 8, 21), page_size=1)
+
+    def test_second_activation_or_partial_identity_is_rejected_before_insert(self) -> None:
+        client = _MemoryClient()
+        _publish(client, project_activation(_delivery()))
+        second = _delivery()
+        second["delivery_id"] = "plan-1:event-2"
+        second["event_id"] = "event-2"
+        second["occurrence"]["event_id"] = "event-2"
+        second["occurrence"]["signal_id"] = "event-2"
+        before = len(client.inserts)
+        with self.assertRaisesRegex(RuntimeError, "another event identity"):
+            _publish(client, project_activation(second))
+        self.assertEqual(len(client.inserts), before)
+
+        partial = _MemoryClient()
+        partial.rows["trading_activation_evidence_v1"].append(
+            prepare_activation_rows(project_activation(_delivery()))[
+                "trading_activation_evidence_v1"][0])
+        with self.assertRaisesRegex(RuntimeError, "another event identity"):
+            _publish(partial, project_activation(second))
+        self.assertFalse(partial.inserts)
 
 
 if __name__ == "__main__":
