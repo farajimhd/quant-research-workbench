@@ -373,7 +373,10 @@ def test_runtime_config_and_accounts_require_a_verified_context_fence() -> None:
         load_typed_run_context(client, RUN)
     publish_typed_run_context(client, run_id=RUN, config=run_context(),
                               account_ids=("DU1", "DU2"))
-    assert load_typed_run_context(client, RUN)["account_ids"] == ("DU1", "DU2")
+    recovered = load_typed_run_context(client, RUN)
+    assert recovered["account_ids"] == ("DU1", "DU2")
+    assert recovered["mode"] == run_row()["mode"]
+    assert recovered["configuration_hash"] == run_row()["configuration_hash"]
     assert client.inserts[-1] == "trading_run_context_commit_v1"
     before = len(client.inserts)
     publish_typed_run_context(client, run_id=RUN, config=run_context(),

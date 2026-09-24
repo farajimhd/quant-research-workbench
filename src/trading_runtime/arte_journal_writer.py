@@ -853,6 +853,13 @@ def load_typed_run_context(client: Any, run_id: str) -> dict[str, Any]:
         raise RuntimeError("Typed run context differs from its committed fence")
     return {key: config[key] for key in _RUN_CONFIG_FIELDS} | {
         "run_id": run_id, "run_month": month,
+        "mode": str(parents[0]["mode"]),
+        "evaluation_interval_ms": parents[0]["evaluation_interval_ms"],
+        "session_date": parents[0]["session_date"],
+        "configuration_hash": str(parents[0]["configuration_hash"]),
+        "code_hash": str(parents[0]["code_hash"]),
+        "market_plan_token": str(parents[0]["market_plan_token"]),
+        "started_at": str(parents[0]["started_at"]),
         "account_ids": tuple(str(row["account_id"]) for row in accounts),
     }
 
