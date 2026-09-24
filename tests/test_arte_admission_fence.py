@@ -47,6 +47,7 @@ class Client:
         self.events: list[dict] = []
         self.snapshots: list[dict] = []
         self.order: list[str] = []
+        self.snapshot_corrupt = False
 
     def insert(self, name: str, rows, token: str) -> None:
         assert name == "trading_admission_fence_v1"
@@ -105,6 +106,14 @@ def install_fakes(monkeypatch, client: Client, *, fail_snapshot: bool = False) -
 
     monkeypatch.setattr(admission, "publish_typed_batch", publish_events)
     monkeypatch.setattr(admission, "publish_prepared_portfolio_snapshot", publish_snapshot)
+
+    def load_snapshot(_client, **identity):
+        assert identity == {"run_id": RUN, "account_id": "DU1", "state_revision": 1}
+        if client.snapshot_corrupt:
+            raise RuntimeError("Portfolio snapshot content differs from its fence")
+        return {"state_hash": client.snapshots[0]["state_hash"]} if client.snapshots else None
+
+    monkeypatch.setattr(admission, "load_portfolio_snapshot", load_snapshot)
 
 
 def test_persistent_admission_fence_commits_last_and_recovers() -> None:
@@ -167,6 +176,16 @@ def test_startup_rejects_missing_latest_recovery_commit() -> None:
         admission.publish_fenced_admission(client, batch(), captured())
         client.snapshots.clear()
         with pytest.raises(RuntimeError, match="missing or conflicting commits"):
+            admission.verify_no_incomplete_admissions(client, RUN)
+
+
+def test_startup_rejects_corrupt_snapshot_beneath_matching_commit() -> None:
+    client = Client()
+    with pytest.MonkeyPatch.context() as patch:
+        install_fakes(patch, client)
+        admission.publish_fenced_admission(client, batch(), captured())
+        client.snapshot_corrupt = True
+        with pytest.raises(RuntimeError, match="content differs from its fence"):
             admission.verify_no_incomplete_admissions(client, RUN)
 
 

@@ -17,7 +17,7 @@ from src.trading_runtime.arte_journal_writer import (
     publish_typed_batch, typed_row,
 )
 from src.trading_runtime.arte_portfolio_snapshot import (
-    CapturedPortfolioSnapshot, prepare_captured_portfolio_snapshot,
+    CapturedPortfolioSnapshot, load_portfolio_snapshot, prepare_captured_portfolio_snapshot,
     publish_prepared_portfolio_snapshot,
 )
 from src.trading_runtime.journal_contract import canonical_json
@@ -105,6 +105,10 @@ def _verify_committed_sources(client: Any, row: Mapping[str, Any]) -> None:
             or int(events[0]["last_sequence"]) != int(row["last_sequence"])
             or str(snapshots[0]["state_hash"]) != str(row["snapshot_hash"])):
         raise RuntimeError("Admission fence references missing or conflicting commits")
+    snapshot = load_portfolio_snapshot(
+        client, run_id=run_id, account_id=account_id, state_revision=revision)
+    if snapshot is None or snapshot["state_hash"] != row["snapshot_hash"]:
+        raise RuntimeError("Admission fence references invalid portfolio recovery state")
 
 
 def load_fenced_admission(client: Any, *, run_id: str, account_id: str,
