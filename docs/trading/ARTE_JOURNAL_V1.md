@@ -91,6 +91,31 @@ run. Review uses the same committed prefix without running strategy code.
 
 ## Cutover gate
 
+### Verified live-source mapping still required
+
+The current runtime records fills from `ibkr_schema.Execution.to_cpapi()` in
+`runtime.py` and `order_management.py`, while broker reconciliation uses the
+distinct `domain.Execution` canonical model from `ibkr_normalizer.py`.
+`trading_execution_v1` currently covers the canonical trade and decision-quality
+measures, but an execution projection is not complete merely because those
+columns exist. Before switching either producer, map and test:
+
+- the source execution ID, order reference, broker order ID, source and receipt
+  clocks, instrument identity/currency, side, quantity, price, venue, and the
+  added cumulative/average/net/liquidity/decision-quality measures;
+- commission and its status/currency as a separate typed event linked by
+  execution ID, including later broker revisions;
+- source-only broker attributes and instrument/provider identifiers, either as
+  named typed columns/child rows or as explicitly non-authoritative fields
+  justified by an audited source contract. No generic JSON or key/value
+  escape hatch is allowed.
+
+The live producer's `raw` map and strategy signal/intent `metadata` can contain
+additional nested evidence. Until every authoritative member has an explicit
+typed representation and a losslessness test, these categories must remain
+unmapped and the ClickHouse runtime cutover must fail closed. The installed
+table alone is not evidence of complete live-event coverage.
+
 Before a new mode uses this authority, verify: schema, SSD policy and actual
 parts; writer/reader grants; all runtime state families mapped without JSON;
 idempotent retries; interrupted multi-table publication; conflicting retries;
