@@ -404,6 +404,8 @@ def portfolio_management_command(
             "disabled_strategy_allocations": state["disabled_strategy_allocations"],
         }
     elif normalized in {"resume_entries", "kill_entries", "emergency_flatten"}:
+        if detail:
+            raise ValueError(f"{normalized} does not accept unmodeled command details")
         if normalized != "resume_entries":
             state["control_mode"] = PortfolioControlMode.REDUCE_ONLY.value
         pending = list(state.get("pending_operational_commands") or ())
@@ -413,7 +415,6 @@ def portfolio_management_command(
                 "command_id": command_id,
                 "command": normalized,
                 "reason": reason,
-                "detail": detail,
                 "status": "pending",
             }
         )

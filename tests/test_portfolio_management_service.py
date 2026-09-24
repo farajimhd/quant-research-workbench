@@ -248,12 +248,24 @@ class PortfolioManagementServiceTests(unittest.TestCase):
             states["MARGIN1"]["pending_operational_commands"][-1]["command"],
             "resume_entries",
         )
+        self.assertEqual(
+            set(states["MARGIN1"]["pending_operational_commands"][-1]),
+            {"command_id", "command", "reason", "status"},
+        )
         self.assertEqual(flattened["control_mode"], "reduce_only")
         self.assertEqual(states["CASH1"]["control_mode"], "reduce_only")
         self.assertEqual(
             states["CASH1"]["pending_operational_commands"][-1]["command"],
             "emergency_flatten",
         )
+
+    def test_runtime_command_rejects_unmodeled_detail_before_state_change(self) -> None:
+        before = trading_journal().portfolio_states()
+        with self.assertRaisesRegex(ValueError, "unmodeled command details"):
+            portfolio_management_command(
+                "cash", "emergency_flatten", detail={"opaque": {"x": 1}},
+            )
+        self.assertEqual(trading_journal().portfolio_states(), before)
 
     def test_policy_and_strategy_controls_are_durable_and_capability_narrowed(self) -> None:
         selected = portfolio_management_command(
