@@ -1,5 +1,6 @@
 """Native completed-liquidity-bucket execution, without synthetic tape events."""
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,6 +9,7 @@ from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
+from tests.test_trading_runtime import quote
 
 
 START = datetime(2026, 8, 18, 14, 0, tzinfo=timezone.utc)
@@ -54,6 +56,35 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         fills = await self.broker.on_liquidity_bar(bar(at, ask_size=8), at=at)
         self.assertEqual([(fill.price, fill.size) for fill in fills], [(10.0, 8.0)])
         self.assertEqual(await self.broker.match_current_orders("AAPL", at), [])
+
+    async def test_unambiguous_quote_only_bucket_matches_event_fill(self):
+        at = START + timedelta(milliseconds=100)
+        snapshot = bar(at, ask_size=8, quote_age_us=0)
+        snapshot.update(event_count=1, first_event_us=snapshot["last_event_us"],
+                        price_valid=0, extremes_valid=0, close_int=0,
+                        low_int=0, high_int=0, execution_volume=0)
+        await self.order("MKT", quantity=5)
+        bar_fills = await self.broker.on_liquidity_bar(snapshot, at=at)
+
+        event_broker = SimulatedBrokerAdapter(
+            ["TEST"], self.broker.config, mode=RunMode.BACKTEST, initial_time=START)
+        await event_broker.initialize()
+        await event_broker.place_orders("TEST", [OrderRequest(
+            acctId="TEST", conid=265598, cOID="event-order", ticker="AAPL",
+            orderType="MKT", side="BUY", quantity=5)])
+        event_at = at - timedelta(microseconds=1)
+        event_fills = await event_broker.on_market_event(replace(
+            quote(bid=9.99, ask=10.0, ask_size=8),
+            ts=event_at, ingest_ts=event_at))
+        self.assertEqual([(fill.price, fill.size) for fill in bar_fills],
+                         [(fill.price, fill.size) for fill in event_fills])
+
+    async def test_event_at_boundary_belongs_to_next_bucket(self):
+        at = START + timedelta(milliseconds=100)
+        invalid = bar(at)
+        invalid["last_event_us"] = int(at.timestamp() * 1_000_000)
+        with self.assertRaisesRegex(ValueError, "completed bucket"):
+            await self.broker.on_liquidity_bar(invalid, at=at)
 
     async def test_order_from_current_bucket_waits_until_next_bucket(self):
         first = START + timedelta(milliseconds=100)

@@ -185,3 +185,95 @@ class SavedBacktestReview:
             'presentation_sequence': self.sequence, 'strategy_activity': [],
             'strategy_activity_page': {'complete': False, 'next_offset': 0},
             'strategy_activity_deferred': True}
+
+
+class ClickHouseSavedBacktestReview(SavedBacktestReview):
+    """Saved Backtest view backed only by a verified ClickHouse journal fence."""
+
+    def __init__(self, run_dir):
+        from src.backend.backtest_journal_clickhouse import verify_run_identity
+        from src.backend.backtest_journal_reader import BacktestJournalReader
+        from src.backend.backtest_market_data import readonly_clickhouse_client
+        from src.backend.replay_run_service import RESTART_CHECKPOINT_SCHEMA_VERSION
+
+        self.run_dir, self.run_id = run_dir, run_dir.name
+        manifest = json.loads((run_dir / 'manifest.json').read_text(encoding='utf-8'))
+        if manifest.get('journal_backend') != 'arte_clickhouse_v1':
+            raise ValueError('Saved Backtest does not name the ClickHouse journal authority')
+        definition = dict(manifest.get('definition') or {})
+        run = dict(manifest.get('run') or {})
+        if (definition.get('mode') != 'backtest'
+                or run.get('status') not in {'completed', 'stopped', 'failed', 'paused'}
+                or run.get('run_id') != self.run_id):
+            raise ValueError('Only terminal or paused ClickHouse Backtests can be reviewed')
+        approved = json.loads((run_dir / 'approved-configuration.json').read_text(encoding='utf-8'))
+        if (str(approved.get('revision_id') or '') != str(definition.get('configuration_revision_id') or '')
+                or str(approved.get('content_hash') or '') != str(definition.get('configuration_content_hash') or '')):
+            raise ValueError('Historical approved configuration identity changed')
+        self._run = {**definition, **run, 'runtime_ready': True, 'review_only': True}
+        self.status = self._run['status']
+        self.current_time = datetime.fromisoformat(self._run['current_time'])
+        self.created_at = datetime.fromisoformat(self._run['created_at'])
+        self.updated_at = datetime.fromisoformat(self._run['updated_at'])
+        self.processed_events = int(self._run['processed_events'])
+        client = readonly_clickhouse_client()
+        try:
+            verify_run_identity(
+                client, run_id=self.run_id, definition=definition,
+                configuration_hash=str(approved['content_hash']))
+            self._journal = BacktestJournalReader(client, self.run_id)
+            checkpoint = self._journal.checkpoint
+            state = dict((checkpoint or {}).get('state') or {})
+            if (checkpoint is not None and self.status in {'completed', 'stopped', 'failed'}
+                    and checkpoint.get('status') != self.status):
+                raise ValueError('Saved Backtest terminal status lacks a matching ClickHouse fence')
+            failed = self.status == 'failed'
+            missing_financial_state = failed and not state
+            if not missing_financial_state and (
+                    int(state.get('schema_version') or 0) != RESTART_CHECKPOINT_SCHEMA_VERSION
+                    or not isinstance(state.get('broker'), dict)
+                    or (not state.get('complete') and not failed)):
+                raise ValueError('Saved Backtest lacks a complete ClickHouse recovery checkpoint')
+            identity = dict(state.get('identity') or {})
+            expected = dict(run_id=self.run_id, mode='backtest',
+                configuration_revision_id=definition.get('configuration_revision_id'),
+                configuration_content_hash=definition.get('configuration_content_hash'))
+            if not missing_financial_state and any(identity.get(key) != value for key, value in expected.items()):
+                raise ValueError('Historical review checkpoint identity changed')
+            self._broker_state = None if missing_financial_state else dict(state['broker'])
+            if (self._broker_state is not None and
+                    list(identity.get('account_ids') or []) != list(self._broker_state.get('account_ids') or [])):
+                raise ValueError('Historical review checkpoint account identity changed')
+            self.session_relative_volume_artifacts = dict(
+                dict(state.get('controller') or {}).get('session_relative_volume_artifacts') or {})
+            self.sequence = self._journal.sequence
+        except BaseException:
+            client.close()
+            raise
+        if missing_financial_state or not state.get('complete'):
+            self._run['checkpoint'] = {**dict(self._run.get('checkpoint') or {}),
+                                       'resume_supported': False}
+            self._run['review_warning'] = (
+                'No broker checkpoint was saved; financial results are unavailable.'
+                if missing_financial_state else
+                'Saved broker results at failure; resume is unavailable.')
+        self._run['presentation_sequence'] = self.sequence
+        self._run['presentation_as_of'] = self.current_time.isoformat()
+        strategy = dict(dict(approved.get('payload') or {}).get('strategy') or {})
+        self.definition = SimpleNamespace(
+            session_date=definition.get('session_date', ''),
+            experimental_structure_book=definition.get('experimental_structure_book', ''),
+            experimental_structure_fingerprint=definition.get('experimental_structure_fingerprint', ''),
+            configuration_revision={'payload': {'strategy': strategy}},
+        )
+        self._canvas_task = None
+        self._subscribers = set()
+
+    def signal_stream_snapshot(self, *, as_of=None, **options):
+        from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
+        approved = json.loads((self.run_dir / 'approved-configuration.json').read_text(
+            encoding='utf-8'))
+        return SIGNAL_STREAM_RUNTIME.snapshot(
+            self._journal, run_id=self.run_id,
+            as_of=min(as_of, self.current_time) if as_of else self.current_time,
+            configuration=dict(approved.get('payload') or {}), **options)

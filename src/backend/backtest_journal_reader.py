@@ -58,6 +58,18 @@ def _utc_timestamp(value: str) -> datetime:
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
 
 
+def _record(row: dict[str, Any]) -> JournalRecord:
+    return JournalRecord(
+        record_id=str(row["record_id"]), run_id=str(row["run_id"]),
+        sequence=int(row["sequence"]),
+        event_time=_utc_timestamp(row["event_time"]),
+        recorded_at=_utc_timestamp(row["recorded_at"]),
+        category=str(row["category"]), entity_type=str(row["entity_type"]),
+        entity_id=str(row["entity_id"]), account_id=str(row["account_id"]),
+        payload=json.loads(row["payload_json"]),
+    )
+
+
 class BacktestJournalReader:
     """A stable, verified committed prefix; staged events never reach review."""
 
@@ -81,6 +93,60 @@ class BacktestJournalReader:
             if len(self.batch_ids) != len(set(self.batch_ids)):
                 raise ValueError("Backtest journal publisher repeated a committed batch")
         self._blobs: dict[str, str] = {}
+
+    def close(self) -> None:
+        self.client.close()
+
+    def _select_records(self, filters: list[str], *, limit: int,
+                        offset: int = 0, ascending: bool = False,
+                        sequence_order: bool = False) -> list[JournalRecord]:
+        if not self.batch_ids:
+            return []
+        scope = [
+            f"run_id=toUUID({_literal(self.run_id)})",
+            "batch_id IN (" + ",".join(f"toUUID({_literal(value)})" for value in self.batch_ids) + ")",
+            f"sequence<={self.sequence}",
+            *filters,
+        ]
+        direction = "ASC" if ascending else "DESC"
+        order = (f"sequence {direction}" if sequence_order else
+                 f"event_time {direction},recorded_at {direction},sequence {direction}")
+        rows = _rows(self.client,
+            "SELECT toString(record_id) AS record_id,toString(run_id) AS run_id,"
+            "sequence,event_time,recorded_at,category,entity_type,entity_id,"
+            "account_id,payload_json FROM arte.bt_event_v1 WHERE "
+            + " AND ".join(scope)
+            + f" ORDER BY {order} "
+            + f"LIMIT {max(1, int(limit))} OFFSET {max(0, int(offset))} FORMAT JSONEachRow")
+        return [_record(row) for row in rows]
+
+    def protection_records(self, run_id: str, after_sequence: int = 0) -> list[JournalRecord]:
+        if str(UUID(run_id)) != self.run_id:
+            return []
+        return self._select_records([
+            "category='protection'", f"sequence>{int(after_sequence)}",
+        ], limit=max(1, self.sequence), ascending=True, sequence_order=True)
+
+    def signal_stream_records(
+        self, *, run_id: str = "", signal_stream_id: str = "",
+        from_time: datetime | None = None, as_of: datetime | None = None,
+        limit: int = 10_000,
+    ) -> list[JournalRecord]:
+        if run_id and str(UUID(run_id)) != self.run_id:
+            return []
+        filters = ["category='market_discovery_signal'",
+                   "entity_type='signal_occurrence'"]
+        if signal_stream_id:
+            filters.append("JSONExtractString(payload_json,'signal_stream_id')="
+                           + _literal(signal_stream_id))
+        for name, value, operator in (("from_time", from_time, ">="),
+                                      ("as_of", as_of, "<=")):
+            if value is not None:
+                if value.tzinfo is None:
+                    raise ValueError(f"Backtest journal {name} must be timezone-aware")
+                filters.append("event_time" + operator + "parseDateTime64BestEffort("
+                               + _literal(value.astimezone(timezone.utc).isoformat()) + ")")
+        return self._select_records(filters, limit=min(max(1, int(limit)), 50_000))
 
     def _fetch_blob(self, digest: str) -> str | None:
         if digest in self._blobs:
@@ -151,16 +217,8 @@ class BacktestJournalReader:
                 + " ORDER BY event_time DESC,recorded_at DESC,sequence DESC "
                 + f"LIMIT {page_size} OFFSET {scan_offset} FORMAT JSONEachRow")
             for row in rows:
-                payload = json.loads(row["payload_json"])
-                record = JournalRecord(
-                    record_id=str(row["record_id"]), run_id=str(row["run_id"]),
-                    sequence=int(row["sequence"]),
-                    event_time=_utc_timestamp(row["event_time"]),
-                    recorded_at=_utc_timestamp(row["recorded_at"]),
-                    category=str(row["category"]), entity_type=str(row["entity_type"]),
-                    entity_id=str(row["entity_id"]), account_id=str(row["account_id"]),
-                    payload=payload,
-                )
+                record = _record(row)
+                payload = record.payload
                 if consequential_only and not _consequential(record):
                     continue
                 if skip:

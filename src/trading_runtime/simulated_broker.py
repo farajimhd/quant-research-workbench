@@ -793,7 +793,7 @@ class SimulatedBrokerAdapter:
         bucket_start = at - timedelta(milliseconds=100)
         boundary_us = int(at.timestamp() * 1_000_000)
         last_us = int(row.get("last_event_us") or 0)
-        if last_us < int(bucket_start.timestamp() * 1_000_000) or last_us > boundary_us:
+        if last_us < int(bucket_start.timestamp() * 1_000_000) or last_us >= boundary_us:
             raise ValueError("Broker liquidity events must belong to the completed bucket")
         first_us = int(row.get("first_event_us") or last_us)
         if first_us > last_us or first_us < int(bucket_start.timestamp() * 1_000_000):

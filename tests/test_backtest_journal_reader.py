@@ -44,7 +44,11 @@ class Client:
         offset = int(re.search(r"OFFSET ([0-9]+)", sql).group(1))
         rows = [row for row in self.rows if row["batch_id"] == BATCH
                 and row["sequence"] <= maximum]
-        rows.sort(key=lambda row: row["sequence"], reverse=True)
+        if "category='protection'" in sql:
+            rows = [row for row in rows if row["category"] == "protection"]
+        if "category='market_discovery_signal'" in sql:
+            rows = [row for row in rows if row["category"] == "market_discovery_signal"]
+        rows.sort(key=lambda row: row["sequence"], reverse="ORDER BY sequence ASC" not in sql)
         return "\n".join(json.dumps(row) for row in rows[offset:offset + limit])
 
 
@@ -112,3 +116,21 @@ def test_consequential_projection_matches_wait_and_protection_rules():
                                  {"actions": [{"type": "replace"}]}))
     assert not _consequential(record("order_management", "protection_reconciliation",
                                      {"actions": []}))
+
+
+def test_saved_reader_reuses_committed_prefix_for_protection_and_signals(monkeypatch):
+    monkeypatch.setattr(reader_module, "load_fenced_checkpoint", lambda _client, _run: {
+        "sequence": 2, "batch_ids": (BATCH,),
+    })
+    client = Client()
+    protection = _row(1, BATCH, "")
+    protection["category"] = "protection"
+    signal = _row(2, BATCH, "")
+    signal.update(category="market_discovery_signal", entity_type="signal_occurrence")
+    signal["payload_json"] = json.dumps({"signal_stream_id": "s", "ticker": "AAPL"})
+    client.rows = [signal, protection, _row(3, STAGED, "")]
+    reader = BacktestJournalReader(client, RUN)
+    assert [row.sequence for row in reader.protection_records(RUN)] == [1]
+    assert [row.sequence for row in reader.signal_stream_records(
+        run_id=RUN, signal_stream_id="s", limit=1)] == [2]
+    assert all("toUUID('" + STAGED + "')" not in query for query in client.queries)

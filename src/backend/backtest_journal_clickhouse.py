@@ -368,6 +368,27 @@ def publish_run(client: Any, *, run_id: str, run_date: date,
     return identity
 
 
+def verify_run_identity(client: Any, *, run_id: str,
+                        definition: Mapping[str, Any],
+                        configuration_hash: str) -> None:
+    """Reject a saved definition that differs from the immutable run row."""
+    normalized = str(UUID(run_id))
+    expected_definition = sha256(canonical_json(definition).encode("utf-8")).hexdigest()
+    rows = _rows(client,
+        "SELECT definition_hash,configuration_hash,market_plan_token,"
+        "v7_plan_token,code_hash,contract_version FROM arte.bt_run_v1 "
+        f"WHERE run_id=toUUID({_literal(normalized)}) FORMAT JSONEachRow")
+    if not rows:
+        raise ValueError("Backtest ClickHouse run identity is missing")
+    for row in rows:
+        if (str(row["definition_hash"]) != expected_definition
+                or str(row["configuration_hash"]) != configuration_hash
+                or str(row["market_plan_token"]) != str(dict(definition.get("market_data_plan") or {}).get("token") or "")
+                or str(row["v7_plan_token"]) != str(dict(definition.get("causal_v7_plan") or {}).get("token") or "")
+                or str(row["contract_version"]) != VERSION):
+            raise ValueError("Saved Backtest definition differs from its ClickHouse run identity")
+
+
 def _verify_events(client: Any, batch: JournalBatch) -> None:
     rows = _rows(client,
         "SELECT sequence,toString(record_id) AS record_id,"

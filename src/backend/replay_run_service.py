@@ -8078,10 +8078,18 @@ class ReplayRunService:
             raise ValueError("Historical run directory escaped the runtime root")
         manifest_path = run_dir / "manifest.json"
         journal_path = run_dir / "journal.sqlite3"
-        if not manifest_path.is_file() or not journal_path.is_file():
+        if not manifest_path.is_file():
             raise KeyError(run_id)
-        from src.backend.backtest_review import SavedBacktestReview
-        controller = await asyncio.to_thread(SavedBacktestReview, run_dir)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        backend = str(manifest.get("journal_backend") or "sqlite_v1")
+        if backend == "arte_clickhouse_v1":
+            from src.backend.backtest_review import ClickHouseSavedBacktestReview
+            controller = await asyncio.to_thread(ClickHouseSavedBacktestReview, run_dir)
+        elif backend == "sqlite_v1" and journal_path.is_file():
+            from src.backend.backtest_review import SavedBacktestReview
+            controller = await asyncio.to_thread(SavedBacktestReview, run_dir)
+        else:
+            raise KeyError(run_id)
         try:
             await self._admit(controller)
         except BaseException:
