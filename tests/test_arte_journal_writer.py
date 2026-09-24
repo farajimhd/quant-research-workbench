@@ -72,6 +72,13 @@ class MemoryClient:
             return ""
         assert sql.startswith("SELECT ")
         self.selects.append(sql)
+        if "groupArray((toString(batch_id),toString(record_id)," in sql:
+            ids = set(re.findall(r"toUUID\('([0-9a-f-]+)'\)", sql))
+            names = re.findall(r"FROM arte\.([a-z0-9_]+) WHERE batch_id IN", sql)
+            return json.dumps({name: [
+                [row["batch_id"], row["record_id"], row["content_hash"]]
+                for row in self.tables.get(name, []) if row["batch_id"] in ids
+            ] for name in names})
         if "groupArray((toString(record_id),toString(content_hash)))" in sql:
             batch_id = sql.split("batch_id=toUUID('", 1)[1].split("'", 1)[0]
             names = re.findall(r"FROM arte\.([a-z0-9_]+) WHERE batch_id=", sql)
@@ -117,6 +124,36 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     assert len(client.selects) == 9
     assert prefix is not None
     assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
+
+
+def test_recovery_groups_batches_but_verifies_each_fence() -> None:
+    client = MemoryClient()
+    ids = ["00000000-0000-0000-0000-000000000031",
+           "00000000-0000-0000-0000-000000000032",
+           "00000000-0000-0000-0000-000000000033"]
+    for index, batch_id in enumerate(ids):
+        event = dict(batch().events[0])
+        event.pop("content_hash")
+        event.update(batch_id=batch_id, sequence=index + 1,
+                     record_id=f"00000000-0000-0000-0000-{index + 31:012d}")
+        item = TypedJournalBatch(
+            RUN, date(2026, 8, 1), ATTEMPT, batch_id,
+            ids[index - 1] if index else ZERO,
+            index + 1, index + 1, f"bucket-{index + 1}",
+            "completed" if index == 2 else "running", (event,),
+        )
+        publish_typed_batch(client, item)
+    client.selects.clear()
+    prefix = load_committed_prefix(client, RUN)
+    assert prefix is not None and prefix.last_sequence == 3
+    assert len(client.selects) == 2
+    client.tables["trading_commit_v1"][0]["event_count"] = 0
+    with pytest.raises(RuntimeError, match="not contiguous"):
+        load_committed_prefix(client, RUN)
+    client.tables["trading_commit_v1"][0]["event_count"] = 1
+    client.tables["trading_event_v1"][1]["content_hash"] = "0" * 64
+    with pytest.raises(RuntimeError, match="differs from committed fence"):
+        load_committed_prefix(client, RUN)
 
 
 def test_order_command_and_transition_have_typed_durable_fences() -> None:

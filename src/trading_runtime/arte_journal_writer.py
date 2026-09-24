@@ -310,6 +310,36 @@ def _family_identities(client: Any, batch_id: str) -> dict[str, list[tuple[str, 
     }
 
 
+def _family_identities_many(
+    client: Any, batch_ids: tuple[str, ...],
+) -> dict[str, dict[str, list[tuple[str, str]]]]:
+    """Bounded recovery readback, retaining each batch's independent fence."""
+    if not batch_ids or len(set(batch_ids)) != len(batch_ids):
+        raise ValueError("Recovery needs distinct committed batch identities")
+    ids = ",".join(f"toUUID({_literal(str(UUID(value)))})" for value in batch_ids)
+    selects = [
+        "(SELECT groupArray((toString(batch_id),toString(record_id),"
+        "toString(content_hash))) "
+        f"FROM arte.{name} WHERE batch_id IN ({ids})) AS {name}"
+        for name, _, _, _ in _FAMILIES
+    ]
+    response = _rows(client, "SELECT " + ",".join(selects) + " FORMAT JSONEachRow")
+    names = {name for name, _, _, _ in _FAMILIES}
+    if len(response) != 1 or set(response[0]) != names:
+        raise RuntimeError("Typed journal grouped recovery readback is incomplete")
+    result = {batch_id: {name: [] for name in names} for batch_id in batch_ids}
+    for name in names:
+        for batch_id, record_id, digest in response[0][name]:
+            normalized = str(UUID(str(batch_id)))
+            if normalized not in result:
+                raise RuntimeError("Typed journal recovery returned an unexpected batch")
+            result[normalized][name].append((str(UUID(str(record_id))), str(digest)))
+    for families in result.values():
+        for identities in families.values():
+            identities.sort()
+    return result
+
+
 def _insert(client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: str) -> None:
     if name not in _CONTRACTS:
         raise ValueError("Journal writer cannot insert outside typed journal tables")
@@ -472,14 +502,10 @@ def load_committed_prefix(client: Any, run_id: str) -> CommittedPrefix | None:
         if (str(commit["run_id"]) != run_id
                 or str(UUID(str(commit["prior_batch_id"]))) != prior_id
                 or int(commit["first_sequence"]) != prior_sequence + 1
-                or int(commit["last_sequence"]) < int(commit["first_sequence"])):
+                or int(commit["last_sequence"]) < int(commit["first_sequence"])
+                or int(commit["event_count"]) != (
+                    int(commit["last_sequence"]) - int(commit["first_sequence"]) + 1)):
             raise RuntimeError("Typed journal commit chain is not contiguous")
-        identities = _family_identities(client, batch_id)
-        for name, _, count_key, hash_key in _FAMILIES:
-            rows = identities[name]
-            digest = sha256(canonical_json(rows).encode("utf-8")).hexdigest()
-            if len(rows) != int(commit[count_key]) or digest != str(commit[hash_key]):
-                raise RuntimeError(f"Typed journal {name} differs from committed fence")
         if commit["status"] not in {"running", "completed", "stopped", "failed"}:
             raise RuntimeError("Typed journal commit has invalid status")
         if batch_ids and prior_status != "running":
@@ -488,9 +514,32 @@ def load_committed_prefix(client: Any, run_id: str) -> CommittedPrefix | None:
         prior_sequence = int(commit["last_sequence"])
         prior_status = str(commit["status"])
         batch_ids.append(batch_id)
+    chunk: list[dict[str, Any]] = []
+    row_budget = 0
+    for commit in commits:
+        expected_rows = sum(int(commit[count_key]) for _, _, count_key, _ in _FAMILIES)
+        if chunk and (len(chunk) >= 32 or row_budget + expected_rows > 50_000):
+            _verify_recovery_chunk(client, chunk)
+            chunk = []
+            row_budget = 0
+        chunk.append(commit)
+        row_budget += expected_rows
+    if chunk:
+        _verify_recovery_chunk(client, chunk)
     return CommittedPrefix(run_id, prior_sequence, prior_id,
                            str(commits[-1]["source_cursor"]),
                            str(commits[-1]["status"]), tuple(batch_ids))
+
+
+def _verify_recovery_chunk(client: Any, commits: list[dict[str, Any]]) -> None:
+    batch_ids = tuple(str(UUID(str(commit["batch_id"]))) for commit in commits)
+    actual = _family_identities_many(client, batch_ids)
+    for commit, batch_id in zip(commits, batch_ids):
+        for name, _, count_key, hash_key in _FAMILIES:
+            rows = actual[batch_id][name]
+            digest = sha256(canonical_json(rows).encode("utf-8")).hexdigest()
+            if len(rows) != int(commit[count_key]) or digest != str(commit[hash_key]):
+                raise RuntimeError(f"Typed journal {name} differs from committed fence")
 
 
 class ArteJournalWriter:
