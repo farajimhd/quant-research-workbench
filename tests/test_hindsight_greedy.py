@@ -304,20 +304,24 @@ def test_runnable_builder_resume_stop_and_corrupt_source(tmp_path, monkeypatch):
     args = ["build", "--phase1", str(source)]
     assert main(args) == 0
     output = next((tmp_path/"hindsight-greedy"/"2026-08-21").iterdir())
-    tensor = pl.read_parquet(output/'market_action_values.parquet')
-    assert tensor.height == 2*2*57601
-    assert tensor['time_us'].is_sorted()
-    assert tensor.select('listing_index','ticker','side').unique().sort('listing_index','side').to_dicts() == [
+    holding = pl.read_parquet(output/'market_hold_values.parquet')
+    opening = pl.read_parquet(output/'market_open_values.parquet')
+    assert holding.height == 2*2*57601
+    assert holding['time_us'].is_sorted() and opening['time_us'].is_sorted()
+    assert opening.height <= holding.height and opening['can_open'].all()
+    assert holding.select('listing_index','ticker','side').unique().sort('listing_index','side').to_dicts() == [
         dict(listing_index=0,ticker='B',side='long'),dict(listing_index=0,ticker='B',side='short'),
         dict(listing_index=1,ticker='C',side='long'),dict(listing_index=1,ticker='C',side='short')]
-    one_second = tensor.filter(pl.col('time_us') == left+1_000_000)
-    assert one_second.height == 4
-    assert one_second.filter(pl.col('side') == 'long')['open_value_per_share'].to_list() == pytest.approx(
-        [one_second.filter((pl.col('ticker') == 'B') & (pl.col('side') == 'long'))['open_value_per_share'][0]]*2)
-    assert read(output/'complete.json')['tensor']['rows'] == tensor.height
+    assert read(output/'complete.json')['tensor']['rows'] == holding.height
+    assert read(output/'complete.json')['tensor']['opening']['rows'] == opening.height
     from src.market_engine.hindsight_market_values import MarketValues
     with MarketValues(output) as market:
-        assert market.at(left+1_000_000).height == 4
+        one_second = market.at(left+1_000_000)
+        assert one_second.height == 4
+        assert one_second.filter(pl.col('side') == 'long')['open_value_per_share'].to_list() == pytest.approx(
+            [one_second.filter((pl.col('ticker') == 'B') & (pl.col('side') == 'long'))['open_value_per_share'][0]]*2)
+        later = market.at(left+4_000_000)
+        assert later['hold_value_available'].is_not_null().all()
         assert market.at(left+2_000_000).select('ticker','side').n_unique() == 4
         with pytest.raises(ValueError,match='absent'):
             market.at(left-1_000_000)

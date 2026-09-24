@@ -11,7 +11,7 @@ from typing import Mapping
 
 import polars as pl
 
-VERSION = "hindsight-greedy-fractional-v4"
+VERSION = "hindsight-greedy-fractional-v5"
 MODES = {"long": ("long",), "short": ("short",), "long_short": ("long", "short")}
 DEFAULT_HALF_LIFE_BARS = 30.0
 

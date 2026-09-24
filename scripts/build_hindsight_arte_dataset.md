@@ -134,10 +134,12 @@ Outputs live under `runtime/hindsight-arte/<configuration-hash>/`. Each session
 has a Phase 1 directory compatible with the shared Phase 2 compiler. Phase 2
 outputs remain under `runtime/hindsight-greedy/`; their paths and market-wide
 available/unavailable counts are recorded in the campaign `summary.json`.
-Each Phase 2 root publishes `market_action_values.parquet`, containing all
-tickers and both directions at every decision second. Its listing index is the
-order in the Phase 2 plan. The three root mode tables are greedy projections;
-they do not replace the complete action-value tensor.
+Each Phase 2 root publishes a complete market-wide holding/closing grid in
+`market_hold_values.parquet` and sparse eligible openings in
+`market_open_values.parquet`. Their listing index is the order in the Phase 2
+plan. The `MarketValues` reader reconstructs every ticker and direction at a
+decision second. The three root mode tables are greedy projections; they do
+not replace the full action-value contract.
 Phase 1 summaries retain terminal and missing-price counts per ticker/side.
 Every decision grid includes the terminal 20:00 row. Where a current price
 exists, terminal targets close the former end-of-session target gaps. Missing
@@ -198,8 +200,10 @@ The V4 entry-boundary canary on the same two tickers makes SUGP long wait throug
 Its long-only market choice is wait for all 21 seconds from 04:00:01 through
 04:00:21; combined mode can still choose a short in that interval. Remaining
 profit from opening SUGP long falls from $0.0452/share at 04:00:22 to $0.0152
-at 04:00:23. The complete time-ordered market tensor retains 230,404 distinct
-time/listing/direction rows. Sixty-five focused tests passed. This canary does
+at 04:00:23. The V4 market tensor retained 230,404 distinct
+time/listing/direction rows. Its V5 sparse-opening rebuild retained all 230,404
+holding rows and 60,634 opening rows; the two files totaled 20,424,225 bytes
+versus 23,036,441 bytes for the V4 file. Sixty-five focused tests passed. This canary does
 not establish full-market sort throughput or fillability.
 
 The Phase 2 V2 canary with the 30-bar half-life passed on the same source/date/

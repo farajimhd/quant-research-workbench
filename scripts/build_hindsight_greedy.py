@@ -205,13 +205,14 @@ def compile_listing(listing, source, root, plan):
 
 
 def publish_market_values(root, plan):
-    """Publish all alternatives as one bounded-memory market tensor table."""
-    path = root / 'market_action_values.parquet'
-    temporary = path.with_suffix('.parquet.tmp')
-    ordered = path.with_suffix('.parquet.ordered.tmp')
+    """Publish a complete holding grid and sparse opening alternatives."""
+    holding_path = root / 'market_hold_values.parquet'
+    opening_path = root / 'market_open_values.parquet'
+    temporary = root / 'market_coefficients.parquet.tmp'
     expected_rows = 2 * 57601 * len(plan['selected'])
     writer = None
     rows = 0
+    opening_rows = 0
     try:
         for index, listing in enumerate(plan['selected']):
             if STOP or (root/'STOP').exists():
@@ -238,38 +239,52 @@ def publish_market_values(root, plan):
                     write_statistics=True)
             writer.write_table(batch, row_group_size=57601)
             rows += frame.height
+            opening_rows += frame['can_open'].sum()
         if writer is None or rows != expected_rows:
             raise ValueError('Market tensor row count mismatch')
     finally:
         if writer is not None:
             writer.close()
-    # External streaming sort transposes listing-major worker output into time
-    # slices. A row group covers about 30 seconds of the entire market.
+    # Keep every holding/closing state, including unavailable values and terminal
+    # rows. Only opening rows are sparse; absence means entry is prohibited.
     rows_per_second = 2 * len(plan['selected'])
     group_rows = min(360_000,rows_per_second*30)
+    opening_fields = ('can_open','value_available','open_value_available','entry_price',
+        'capital_per_share','open_profit_per_share','open_value_per_share',
+        'open_value_per_dollar')
+    keys = ('time_us','listing_index','side')
+    source = pl.scan_parquet(temporary)
+    holding_fields = [c for c in source.collect_schema().names() if c not in opening_fields]
+    products = ((holding_path,source.select(holding_fields),expected_rows),
+        (opening_path,source.filter(pl.col('can_open')).select(*keys,*opening_fields),opening_rows))
+    artifacts = {}
     try:
-        pl.scan_parquet(temporary).sort('time_us','listing_index','side').sink_parquet(
-            ordered,compression='zstd',row_group_size=group_rows,maintain_order=True)
+        for path, frame, expected in products:
+            ordered = path.with_suffix('.parquet.ordered.tmp')
+            frame.sort(*keys).sink_parquet(ordered,compression='zstd',
+                row_group_size=group_rows,maintain_order=True)
+            if STOP or (root/'STOP').exists():
+                raise InterruptedError('Market tensor publication interrupted')
+            actual = pq.ParquetFile(ordered).metadata.num_rows
+            if actual != expected:
+                raise ValueError('Market tensor row count mismatch')
+            if path.exists():
+                if file_hash(path) != file_hash(ordered):
+                    raise ValueError('Existing market tensor differs from rebuilt output')
+                ordered.unlink()
+            else:
+                ordered.replace(path)
+            artifacts[path.name] = dict(file=path.name,rows=actual,file_hash=file_hash(path))
     finally:
         temporary.unlink(missing_ok=True)
-    if STOP or (root/'STOP').exists():
-        ordered.unlink(missing_ok=True)
-        raise InterruptedError('Market tensor publication interrupted')
-    if pq.ParquetFile(ordered).metadata.num_rows != expected_rows:
-        ordered.unlink(missing_ok=True)
-        raise ValueError('Ordered market tensor row count mismatch')
-    if path.exists():
-        if file_hash(path) != file_hash(ordered):
-            ordered.unlink()
-            raise ValueError('Existing market tensor differs from rebuilt output')
-        ordered.unlink()
-    else:
-        ordered.replace(path)
-    return dict(file=path.name, rows=rows, listing_count=len(plan['selected']),
+        for path,_,_ in products:
+            path.with_suffix('.parquet.ordered.tmp').unlink(missing_ok=True)
+    return dict(rows=rows, holding=artifacts[holding_path.name],
+        opening=artifacts[opening_path.name],listing_count=len(plan['selected']),
         time_count=57601, side_count=2, resolution_count=1,
         axis_order=['macd_resolution_seconds','time_us','listing_index','side'],
         physical_order=['time_us','listing_index','side'],row_group_target_rows=group_rows,
-        listing_index_source='plan.selected order', file_hash=file_hash(path))
+        missing_opening='can_open_false',listing_index_source='plan.selected order')
 
 
 def run_build(args, console):
@@ -294,7 +309,7 @@ def run_build(args, console):
                 sizes="fractional", modes=list(MODES),
                 short_policy="100% synthetic reserve; proceeds locked; no broker margin claim",
                 semantics="Local greedy values; no future reallocations; exact size coefficients",
-                market_tensor='market_action_values.parquet; full candidate axis; root winners are projections',
+                market_tensor='market_hold_values.parquet full grid plus market_open_values.parquet sparse entries',
                 polars_version=pl.__version__,
                 code_hashes={p: sha256((REPO / p).read_text(encoding="utf-8").replace("\r\n", "\n").encode()).hexdigest()
                              for p in ("scripts/build_hindsight_greedy.py", "src/market_engine/hindsight_greedy.py", "src/market_engine/hindsight_market_values.py", "src/market_engine/hindsight_batch.py")})
@@ -351,7 +366,8 @@ def run_build(args, console):
                     parquet(root / f"{mode}.parquet", policy)
                 completion = dict(plan_hash=plan["plan_hash"], listing_count=len(results),
                     tensor=tensor,files={**{f"{mode}.parquet": file_hash(root / f"{mode}.parquet") for mode in MODES},
-                        tensor['file']:tensor['file_hash']})
+                        tensor['holding']['file']:tensor['holding']['file_hash'],
+                        tensor['opening']['file']:tensor['opening']['file_hash']})
             state = "complete" if success else "failed" if counts["failed"] else "interrupted"
             write(root / "summary.json", dict(status=state, counts=counts, results=results,
                                                market_tensor=tensor if success else None,
@@ -360,7 +376,7 @@ def run_build(args, console):
                 queued=len(plan["selected"])-len(results), retries=0), immutable=False)
             if success:
                 write(root / "complete.json", completion)
-                console.print(f"Market values: {tensor['rows']:,} rows across {tensor['listing_count']:,} listings | {tensor['file']}")
+                console.print(f"Market values: {tensor['holding']['rows']:,} holding rows + {tensor['opening']['rows']:,} opening rows across {tensor['listing_count']:,} listings")
             console.print(f"Result: {state}. Rerun to reuse verified listings; failures are never skipped.")
             return 0 if success else 2
     finally:

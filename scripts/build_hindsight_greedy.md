@@ -4,8 +4,9 @@ For `hindsight-phase1-arte-price-action-v2`, `v3`, and `v4` inputs, the compiler
 `valuation_basis=price_action`: current completed trade close and future swing
 high/low prices, with no quotes or spread. Phase 2's optional per-share cost is
 still applied, and its fractional allocation/discount formulas are unchanged.
-Here `can_open`/`can_close` indicate an available reference price, not executable
-liquidity. The quote-based descriptions below apply to legacy Phase 1 datasets.
+Here `can_open` requires both an available reference price and an active MACD
+entry; `can_close` requires an available reference price. Neither claims
+executable liquidity. The quote-based descriptions below apply to legacy Phase 1 datasets.
 V3 adds forced liquidation at 19:58 ET. V4 also carries the selected MACD
 episode entry time: `can_open` stays false while that entry is in the future,
 and when no active swing remains. Holding values are still calculated for an
@@ -117,7 +118,8 @@ Outputs belong under the configured runtime root:
 ```text
 hindsight-greedy/<date>/<configuration-and-source-hash>/
   plan.json
-  market_action_values.parquet
+  market_hold_values.parquet
+  market_open_values.parquet
   listings/<identity>/coefficients.parquet
   listings/<identity>/{long,short,long_short}.parquet
   listings/<identity>/ready.json
@@ -125,19 +127,20 @@ hindsight-greedy/<date>/<configuration-and-source-hash>/
   progress.json, summary.json, complete.json
 ```
 
-`market_action_values.parquet` is the published market-wide Phase 2 tensor in
-long, columnar form. Its logical axes are MACD resolution, decision time, stable
-`listing_index` (the order of `plan.selected`), and direction. Every listing and
-both directions have a row at each of the 57,601 decision seconds. All opening,
-holding, price, target, duration and availability columns remain available;
-`wait` is the zero-allocation choice when evaluating those rows. Per-listing
-checkpoint rows are externally sorted into market-wide time order and published
-in row groups covering about 30 decision seconds. The completion marker records
-the shape, physical order and file hash.
-`MarketValues` verifies the certificate once, then reads one time slice using
-Parquet row-group timestamps and caches the active group. The `evaluate` command
-uses this market-wide reader. Any external-sort spill goes under the required
-runtime root.
+The market-wide Phase 2 values use two time-ordered Parquet tables. Their logical
+axes are MACD resolution, decision time, stable `listing_index` (the order of
+`plan.selected`), and direction. `market_hold_values.parquet` has every listing
+and both directions at each of the 57,601 decision seconds, retaining holding,
+closing, target, status, and availability values even when an entry is forbidden.
+`market_open_values.parquet` contains only rows where `can_open=true`, retaining
+all opening prices, capital, profit, and value coefficients. Missing from the
+opening table means opening is forbidden, **not** that holding/closing data is
+missing or that a market-wide policy must wait. `MarketValues` verifies both
+file hashes and row counts, reads their time slices using row-group statistics,
+and reconstructs the full action table. On non-opening rows, opening prices and
+capital are null in the reconstructed table. The `evaluate` command uses this
+reader. Row groups target about 30 decision seconds; external-sort spill stays
+under the runtime root. The completion marker certifies both files.
 The per-listing files are restart checkpoints; a consumer comparing or splitting
 capital among tickers should read the root tensor, not just the winners below.
 
@@ -194,7 +197,8 @@ remaining cash, resulting holdings, missing-value reasons and realized P&L.
 ## Complexity, interruption and validation
 
 For N listings and T seconds, coefficient creation and incremental market
-aggregation are O(N*T). The market-wide tensor adds an external time sort;
+aggregation are O(N*T). The holding grid and sparse opening table each require
+an external time sort;
 its worst-case comparison work is O(N*T*log(N*T)) and may spill to runtime disk.
 Working memory remains bounded by one listing plus streaming sort buffers and
 small manifests; no full N-by-T frame is loaded.
