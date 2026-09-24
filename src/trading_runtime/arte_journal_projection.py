@@ -9,11 +9,14 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
+from hashlib import sha256
 import re
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from src.trading_runtime.arte_journal_writer import TypedJournalBatch
+from src.trading_runtime.arte_journal_writer import (
+    CommittedPrefix, TypedJournalBatch, _canonical_typed_content, _literal, _rows,
+)
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.ibkr_client import _execution as parse_ibkr_execution
 from src.trading_runtime.ibkr_schema import Execution, OrderRequest
@@ -148,6 +151,45 @@ def backtest_cursor_batch(
         record.sequence, record.sequence, source_cursor, "running", (event,),
         backtest_cursors=(cursor,),
     )
+
+
+def load_latest_backtest_cursor(client: Any, prefix: CommittedPrefix) -> dict[str, Any] | None:
+    """Read the latest cursor from a previously verified committed prefix."""
+    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+        raise ValueError("Backtest cursor recovery requires a verified prefix")
+    rows = _rows(client,
+        "SELECT c.*,e.sequence AS event_sequence,e.category AS event_category,"
+        "e.entity_type AS event_entity_type,e.entity_id AS event_entity_id "
+        "FROM arte.trading_backtest_cursor_v1 AS c "
+        "INNER JOIN arte.trading_event_v1 AS e "
+        "ON c.run_id=e.run_id AND c.batch_id=e.batch_id AND c.record_id=e.record_id "
+        f"WHERE c.run_id={_literal(prefix.run_id)} "
+        f"AND e.sequence<={int(prefix.last_sequence)} "
+        "AND c.batch_id IN (SELECT batch_id FROM arte.trading_commit_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND last_sequence<={int(prefix.last_sequence)}) "
+        "ORDER BY e.sequence DESC LIMIT 2 FORMAT JSONEachRow")
+    if not rows:
+        return None
+    if (len(rows) > 1
+            and int(rows[0]["event_sequence"]) == int(rows[1]["event_sequence"])):
+        raise RuntimeError("Backtest cursor recovery has an ambiguous latest row")
+    row = dict(rows[0])
+    sequence = int(row.pop("event_sequence"))
+    category, entity_type = row.pop("event_category"), row.pop("event_entity_type")
+    entity_id = row.pop("event_entity_id")
+    if ((category, entity_type) != ("checkpoint", "market_boundary")
+            or entity_id != f"{row['session_date']}:{int(row['boundary_ms'])}"
+            or sequence > prefix.last_sequence
+            or str(row["batch_id"]) not in prefix.batch_ids):
+        raise RuntimeError("Backtest cursor recovery differs from its event")
+    content = {key: value for key, value in row.items() if key != "content_hash"}
+    canonical = _canonical_typed_content(
+        "trading_backtest_cursor_v1", content, stored_utc=True)
+    digest = sha256(canonical_json(canonical).encode("utf-8")).hexdigest()
+    if digest != str(row["content_hash"]):
+        raise RuntimeError("Backtest cursor recovery differs from its hash")
+    return {**canonical, "event_sequence": sequence}
 
 
 def runtime_lifecycle_batch(

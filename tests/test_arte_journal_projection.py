@@ -3,10 +3,12 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
+import src.trading_runtime.arte_journal_projection as projection_module
 
 from src.trading_runtime.arte_journal_projection import (
     backtest_cursor_batch, broker_fill_batch, broker_fill_details, commission_revision_batch,
-    order_command_batch, project_journal_record, strategy_signal_batch,
+    load_latest_backtest_cursor, order_command_batch, project_journal_record,
+    strategy_signal_batch,
 )
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import (
@@ -49,7 +51,7 @@ def test_shared_record_projection_is_typed_and_rejects_unknown_payloads() -> Non
         project_journal_record(record, **identity)
 
 
-def test_backtest_cursor_is_normalized_and_causal() -> None:
+def test_backtest_cursor_is_normalized_and_causal(monkeypatch) -> None:
     record = JournalRecord(
         "00000000-0000-0000-0000-000000000023", "backtest-1", 1,
         AT, AT, "checkpoint", "market_boundary", "2026-08-18:300000", "",
@@ -70,7 +72,17 @@ def test_backtest_cursor_is_normalized_and_causal() -> None:
     assert publish_typed_batch(client, batch) == identity["batch_id"]
     assert client.inserts == ["trading_event_v1", "trading_backtest_cursor_v1",
                               "trading_commit_v1"]
-    assert load_committed_prefix(client, record.run_id).last_sequence == 1
+    prefix = load_committed_prefix(client, record.run_id)
+    assert prefix is not None and prefix.last_sequence == 1
+    def joined(_client, sql):
+        assert "INNER JOIN arte.trading_event_v1" in sql
+        return [{**client.tables["trading_backtest_cursor_v1"][0],
+                 "event_sequence": 1, "event_category": "checkpoint",
+                 "event_entity_type": "market_boundary",
+                 "event_entity_id": record.entity_id}]
+    monkeypatch.setattr(projection_module, "_rows", joined)
+    assert load_latest_backtest_cursor(client, prefix)["market_sequence"] == 700
+    monkeypatch.undo()
     client.tables["trading_backtest_cursor_v1"][0]["market_sequence"] = 701
     with pytest.raises(RuntimeError, match="differs from its hash"):
         load_committed_prefix(client, record.run_id)
