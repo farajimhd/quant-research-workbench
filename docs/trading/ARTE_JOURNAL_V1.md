@@ -170,6 +170,12 @@ settings, manual/single-group flags, operator/referrer, strategy, and parent
 broker-order identity. It rejects nonempty `raw` and `strategyParameters`;
 strategy-originated orders commonly carry nested canonical metadata, so the
 live OMS command gate is **not** enabled by this projection alone.
+A separate typed `trading_order_command_context_v1` child row links a command
+to its strategy intent, OMS group, and policy version without changing or
+rehashing older command rows. Publication requires that the intent be in the
+same batch or exactly one earlier committed intent for the run/account. The
+journal-only two-batch ClickHouse test and SSD placement check passed; this
+link does not yet encode the remaining nested OMS strategy evidence.
 
 Before a new mode uses this authority, verify: schema, SSD policy and actual
 parts; writer/reader grants; all runtime state families mapped without JSON;

@@ -686,10 +686,52 @@ def _verify_commission_links(
             raise RuntimeError("Commission revision requires one committed execution")
 
 
+def _verify_order_context_links(
+    client: Any, batch: TypedJournalBatch,
+    families: tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
+) -> None:
+    by_family = dict(families)
+    same_batch = {
+        (str(row["account_id"]), str(row["intent_id"]))
+        for row in by_family["trading_strategy_intent_v1"]
+    }
+    required = {
+        (str(row["account_id"]), str(row["strategy_intent_id"]))
+        for row in by_family["trading_order_command_context_v1"]
+    } - same_batch
+    if not required:
+        return
+    intent_ids = ",".join(_literal(value) for value in sorted({value for _, value in required}))
+    candidates = _rows(client,
+        "SELECT account_id,intent_id,batch_id FROM arte.trading_strategy_intent_v1 "
+        f"WHERE run_id={_literal(batch.run_id)} AND intent_id IN ({intent_ids}) "
+        "FORMAT JSONEachRow")
+    relevant = [row for row in candidates
+                if (str(row["account_id"]), str(row["intent_id"])) in required]
+    batch_ids = {str(UUID(str(row["batch_id"]))) for row in relevant}
+    committed: set[str] = set()
+    if batch_ids:
+        ids = ",".join(f"toUUID({_literal(value)})" for value in sorted(batch_ids))
+        fences = _rows(client,
+            "SELECT batch_id FROM arte.trading_commit_v1 "
+            f"WHERE run_id={_literal(batch.run_id)} AND batch_id IN ({ids}) "
+            "FORMAT JSONEachRow")
+        committed = {str(UUID(str(row["batch_id"]))) for row in fences}
+        if len(fences) != len(committed):
+            raise RuntimeError("Strategy intent has duplicated commit fences")
+    for key in required:
+        matching = [row for row in relevant
+                    if (str(row["account_id"]), str(row["intent_id"])) == key
+                    and str(UUID(str(row["batch_id"]))) in committed]
+        if len(matching) != 1:
+            raise RuntimeError("Order command requires one committed strategy intent")
+
+
 def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
     families = _sealed_families(batch)
     _verify_commission_links(client, batch, families)
+    _verify_order_context_links(client, batch, families)
     existing = _rows(client,
         f"SELECT {','.join(_COMMIT_COLUMNS)} "
         "FROM arte.trading_commit_v1 "

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import fields, replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from math import nan
 from uuid import uuid4
@@ -15,12 +15,14 @@ from src.trading_runtime.arte_intent_projection import (
 from src.trading_runtime.arte_journal_writer import (
     load_committed_prefix, publish_typed_batch,
 )
+from src.trading_runtime.arte_journal_projection import order_command_batch
 from src.trading_runtime.execution_policies import (
     ExecutionEnvelope, ExecutionPolicy, ExecutionPolicyName,
     ProtectionProfile, ProtectionSlice, StopRule, StopRuleType,
     StopOrderType, StructuralAnchor, TrailingRule, TrailingRuleType,
 )
 from src.trading_runtime.signals import CapitalRequest, StrategyIntent
+from src.trading_runtime.ibkr_schema import OrderRequest
 from tests.test_arte_journal_writer import MemoryClient
 
 
@@ -180,3 +182,32 @@ def test_intent_and_slice_publish_as_fence_verified_typed_rows():
         load_committed_prefix(client, run_id)
     with pytest.raises(RuntimeError, match="committed hash"):
         load_committed_strategy_intent_page(client, prefix)
+
+
+def test_order_context_can_link_to_prior_committed_intent():
+    run_id, attempt_id = "live:linked", str(uuid4())
+    first_id, second_id = str(uuid4()), str(uuid4())
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    month = date(2026, 8, 1)
+    first = strategy_intent_batch(
+        intent(ticker="TEST"), run_id=run_id, run_month=month,
+        account_id="DU1", attempt_id=attempt_id, batch_id=first_id,
+        prior_batch_id="00000000-0000-0000-0000-000000000000", sequence=1,
+        source_cursor="intent", run_status="running", recorded_at=at,
+    )
+    request = OrderRequest(acctId="DU1", conid=123, cOID="client-1",
+                           ticker="TEST", orderType="LMT", side="BUY",
+                           quantity=5, price=12.5)
+    second = order_command_batch(
+        request, run_id=run_id, run_month=month, attempt_id=attempt_id,
+        batch_id=second_id, prior_batch_id=first_id, sequence=2,
+        source_cursor="order", run_status="completed", command_id="cmd-1",
+        created_at=at, recorded_at=at, strategy_id="strategy-1",
+        strategy_revision=1, strategy_intent_id="intent-1",
+        order_group_id="group-1", policy_version="policy-1",
+    )
+    client = MemoryClient()
+    publish_typed_batch(client, first)
+    publish_typed_batch(client, second)
+    prefix = load_committed_prefix(client, run_id)
+    assert prefix is not None and prefix.last_sequence == 2

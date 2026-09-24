@@ -9,11 +9,14 @@ from src.trading_runtime.arte_journal_projection import (
     order_command_batch, strategy_signal_batch,
 )
 from src.trading_runtime.arte_journal_schema import TABLES
-from src.trading_runtime.arte_journal_writer import TypedJournalBatch, _sealed_families
+from src.trading_runtime.arte_journal_writer import (
+    TypedJournalBatch, _sealed_families, publish_typed_batch,
+)
 from src.trading_runtime.ibkr_client import _execution
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.signals import StrategySignal
+from tests.test_arte_journal_writer import MemoryClient
 
 
 AT = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
@@ -52,6 +55,10 @@ def test_simple_order_command_preserves_every_broker_instruction() -> None:
     assert set(context) == columns["trading_order_command_context_v1"] - {"content_hash"}
     assert context["parent_record_id"] == contextual.order_commands[0]["record_id"]
     assert dict(_sealed_families(contextual))["trading_order_command_context_v1"]
+    client = MemoryClient()
+    with pytest.raises(RuntimeError, match="one committed strategy intent"):
+        publish_typed_batch(client, contextual)
+    assert client.inserts == []
     with pytest.raises(ValueError, match="unique typed command parent"):
         _sealed_families(replace(
             contextual, order_contexts=({**context, "account_id": "wrong"},),
