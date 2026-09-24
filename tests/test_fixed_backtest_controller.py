@@ -24,6 +24,27 @@ DAY = "2026-08-18"
 RUN = "00000000-0000-0000-0000-000000000001"
 
 
+def test_backtest_start_rejects_before_legacy_journal_or_disk_write(tmp_path, monkeypatch):
+    from src.backend import backtest_journal_clickhouse, replay_run_service
+    from src.backend.backtest_market_data import FIXED_EXECUTION_BLOCKER
+
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(
+        archived_review_only=False, mode=RunMode.BACKTEST,
+        execution_interval="100ms",
+    )
+    controller._task = None
+    controller.run_dir = tmp_path / "must-not-exist"
+    monkeypatch.setattr(backtest_journal_clickhouse, "publish_run", lambda *_a, **_k:
+                        (_ for _ in ()).throw(AssertionError("retired bt_* write")))
+    monkeypatch.setattr(replay_run_service, "TradingJournal", lambda *_a, **_k:
+                        (_ for _ in ()).throw(AssertionError("SQLite opened")))
+    with pytest.raises(RuntimeError, match="Fixed-interval Backtest remains blocked") as exc:
+        asyncio.run(controller.start())
+    assert str(exc.value) == FIXED_EXECUTION_BLOCKER
+    assert not controller.run_dir.exists()
+
+
 def test_fixed_registry_resume_uses_verified_clickhouse_fence_without_sqlite(monkeypatch, tmp_path):
     from src.backend import backtest_journal_clickhouse, backtest_market_data, replay_run_service
 
