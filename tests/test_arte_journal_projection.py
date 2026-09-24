@@ -44,6 +44,20 @@ def test_simple_order_command_preserves_every_broker_instruction() -> None:
     assert detail["broker_strategy"] == "broker-algo"
     assert dict(_sealed_families(batch))["trading_order_command_v1"]
     assert order_command_batch(request, **args).events[0]["record_id"] == batch.events[0]["record_id"]
+    contextual = order_command_batch(
+        request, **args, strategy_intent_id="intent-1",
+        order_group_id="group-1", policy_version="policy-1",
+    )
+    context = dict(contextual.order_contexts[0])
+    assert set(context) == columns["trading_order_command_context_v1"] - {"content_hash"}
+    assert context["parent_record_id"] == contextual.order_commands[0]["record_id"]
+    assert dict(_sealed_families(contextual))["trading_order_command_context_v1"]
+    with pytest.raises(ValueError, match="unique typed command parent"):
+        _sealed_families(replace(
+            contextual, order_contexts=({**context, "account_id": "wrong"},),
+        ))
+    with pytest.raises(ValueError, match="context must be complete"):
+        order_command_batch(request, **args, strategy_intent_id="intent-1")
     with pytest.raises(ValueError, match="unmodeled nested"):
         order_command_batch(replace(request, raw={"canonical_metadata": {"action": "enter_long"}}),
                             **args)

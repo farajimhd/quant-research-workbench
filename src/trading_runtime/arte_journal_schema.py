@@ -251,6 +251,19 @@ TABLES = (
         "toYYYYMM(event_month)", "account_id, run_id, command_id, record_id",
     ),
     TableContract(
+        "trading_order_command_context_v1",
+        (
+            ("record_id", "UUID"), ("parent_record_id", "UUID"),
+            ("run_id", "String"), ("event_month", "Date"),
+            ("batch_id", "UUID"), ("account_id", "String"),
+            ("strategy_intent_id", "String"), ("order_group_id", "String"),
+            ("policy_version", "String"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)",
+        "run_id, account_id, parent_record_id, record_id",
+    ),
+    TableContract(
         "trading_order_transition_v1",
         (
             ("record_id", "UUID"),
@@ -439,6 +452,8 @@ TABLES = (
             ("intent_slice_count", "UInt32"),
             ("intent_hash", "FixedString(64)"),
             ("intent_slice_hash", "FixedString(64)"),
+            ("order_context_count", "UInt32"),
+            ("order_context_hash", "FixedString(64)"),
             ("source_cursor", "String"),
             ("status", "LowCardinality(String)"),
             ("committed_at", "DateTime64(6, 'UTC')"),
@@ -468,6 +483,19 @@ def intent_schema_upgrade_ddl() -> tuple[str, ...]:
         f"intent_hash FixedString(64) DEFAULT '{empty_hash}' AFTER intent_slice_count",
         "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
         f"intent_slice_hash FixedString(64) DEFAULT '{empty_hash}' AFTER intent_hash",
+    )
+
+
+def order_context_upgrade_ddl() -> tuple[str, ...]:
+    """Add a typed command-to-strategy link without rewriting old commands."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_order_command_context_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "order_context_count UInt32 DEFAULT 0 AFTER intent_slice_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"order_context_hash FixedString(64) DEFAULT '{empty_hash}' AFTER order_context_count",
     )
 
 

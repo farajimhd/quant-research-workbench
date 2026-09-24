@@ -156,6 +156,8 @@ def order_command_batch(
     sequence: int, source_cursor: str, run_status: str,
     command_id: str, created_at: datetime, recorded_at: datetime,
     strategy_id: str = "", strategy_revision: int = 0,
+    strategy_intent_id: str = "", order_group_id: str = "",
+    policy_version: str = "",
 ) -> TypedJournalBatch:
     """Capture one simple broker command losslessly before external dispatch.
 
@@ -168,6 +170,10 @@ def order_command_batch(
             or created_at.tzinfo is None or recorded_at.tzinfo is None
             or strategy_revision < 0):
         raise ValueError("Order command identity or time is incomplete")
+    if any((strategy_intent_id, order_group_id, policy_version)) and not all(
+        (strategy_intent_id, order_group_id, policy_version)
+    ):
+        raise ValueError("Strategy order command context must be complete")
     at = created_at.astimezone(timezone.utc).isoformat()
     received = recorded_at.astimezone(timezone.utc).isoformat()
     event_month = created_at.astimezone(timezone.utc).strftime("%Y-%m-01")
@@ -207,10 +213,19 @@ def order_command_batch(
         "broker_strategy": request.strategy or "",
         "parent_broker_order_id": request.parentId or "",
     }
+    context = ({
+        "record_id": str(uuid5(NAMESPACE_URL, f"{record_id}:strategy-context")),
+        "parent_record_id": record_id, "run_id": run_id,
+        "event_month": event_month, "batch_id": batch_id,
+        "account_id": request.acctId,
+        "strategy_intent_id": strategy_intent_id,
+        "order_group_id": order_group_id,
+        "policy_version": policy_version,
+    },) if strategy_intent_id else ()
     return TypedJournalBatch(
         run_id, run_month, attempt_id, batch_id, prior_batch_id,
         sequence, sequence, source_cursor, run_status, (event,),
-        order_commands=(detail,),
+        order_commands=(detail,), order_contexts=context,
     )
 
 

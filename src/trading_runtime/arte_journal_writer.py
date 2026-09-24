@@ -34,6 +34,8 @@ _FAMILIES = (
     ("trading_execution_v1", "executions", "execution_count", "execution_hash"),
     ("trading_commission_v1", "commissions", "commission_count", "commission_hash"),
     ("trading_order_command_v1", "order_commands", "order_command_count", "order_command_hash"),
+    ("trading_order_command_context_v1", "order_contexts", "order_context_count",
+     "order_context_hash"),
     ("trading_order_transition_v1", "order_transitions", "order_transition_count",
      "order_transition_hash"),
     ("trading_account_snapshot_v1", "account_snapshots", "account_snapshot_count",
@@ -102,6 +104,7 @@ class TypedJournalBatch:
     executions: tuple[Mapping[str, Any], ...] = ()
     commissions: tuple[Mapping[str, Any], ...] = ()
     order_commands: tuple[Mapping[str, Any], ...] = ()
+    order_contexts: tuple[Mapping[str, Any], ...] = ()
     order_transitions: tuple[Mapping[str, Any], ...] = ()
     account_snapshots: tuple[Mapping[str, Any], ...] = ()
     position_snapshots: tuple[Mapping[str, Any], ...] = ()
@@ -154,6 +157,7 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
             record_id = str(UUID(str(row["record_id"])))
             child_family = name in {
                 "trading_signal_source_v1", "trading_intent_protection_slice_v1",
+                "trading_order_command_context_v1",
             }
             parent_id = (str(UUID(str(row["parent_record_id"])))
                          if child_family else record_id)
@@ -196,7 +200,8 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
     details_by_record: dict[str, str] = {}
     for name, rows in result:
         if name in {"trading_event_v1", "trading_signal_source_v1",
-                    "trading_intent_protection_slice_v1"}:
+                    "trading_intent_protection_slice_v1",
+                    "trading_order_command_context_v1"}:
             continue
         for row in rows:
             record_id = str(UUID(str(row["record_id"])))
@@ -242,6 +247,18 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 != list(range(len(child_rows)))
                 or len({str(row["slice_id"]) for row in child_rows}) != len(child_rows)):
             raise ValueError("Protection slices do not match the typed intent count")
+    context_parents: set[str] = set()
+    for row in by_family["trading_order_command_context_v1"]:
+        parent_id = str(UUID(str(row["parent_record_id"])))
+        parent = events_by_id[parent_id]
+        if (details_by_record.get(parent_id) != "trading_order_command_v1"
+                or parent_id in context_parents
+                or str(row["account_id"]) != str(parent["account_id"])
+                or not str(row["strategy_intent_id"])
+                or not str(row["order_group_id"])
+                or not str(row["policy_version"])):
+            raise ValueError("Order command context lacks a unique typed command parent")
+        context_parents.add(parent_id)
     return tuple(result)
 
 
