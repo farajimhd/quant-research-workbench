@@ -51,6 +51,20 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
             orderType=kind, side=side, quantity=quantity, price=price, auxPrice=stop,
         )])
 
+    async def test_ticker_quote_checkpoint_is_not_derivable_from_conid_index(self):
+        observed = replace(quote(bid=9.99, ask=10.0),
+                           raw={}, ingest_ts=START, ts=START)
+        self.assertEqual(self.broker.observe_market_event(observed), 0)
+        state = self.broker.checkpoint_state()
+        self.assertEqual(state["quotes"], {})
+        self.assertIn("AAPL", state["quotes_by_ticker"])
+        restored = SimulatedBrokerAdapter(
+            ["TEST"], self.broker.config, mode=RunMode.BACKTEST,
+            initial_time=START)
+        await restored.initialize()
+        restored.restore_checkpoint_state(state)
+        self.assertEqual(restored.checkpoint_state(), state)
+
     async def test_market_order_uses_completed_quote_and_displayed_size(self):
         await self.order("MKT", quantity=30)
         at = START + timedelta(milliseconds=100)
