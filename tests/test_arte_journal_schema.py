@@ -3,7 +3,7 @@ import json
 import pytest
 
 from src.trading_runtime.arte_journal_schema import (
-    TABLES, BATCH_LOOKUP_INDEX, batch_lookup_index_upgrade_ddl,
+    TABLES, TableContract, BATCH_LOOKUP_INDEX, batch_lookup_index_upgrade_ddl,
     batch_lookup_index_materialize_ddl,
     intent_decision_upgrade_ddl,
     portfolio_policy_schema_upgrade_ddl, POLICY_ALLOWED_FIELDS,
@@ -33,6 +33,16 @@ def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
         assert len({name for name, _ in table.columns}) == len(table.columns)
         if "batch_id" in dict(table.columns):
             assert f"INDEX {BATCH_LOOKUP_INDEX} batch_id TYPE bloom_filter(0.01) GRANULARITY 1" in statement
+
+
+@pytest.mark.parametrize("column,kind", [
+    ("payload_json", "String"), ("checkpoint_blob", "String"),
+    ("details", "JSON"), ("facts", "Map(String, String)"),
+    ("raw_bytes", "String"),
+])
+def test_journal_schema_rejects_unstructured_persistence(column: str, kind: str) -> None:
+    with pytest.raises(ValueError, match="normalized typed contract"):
+        TableContract("invalid_v1", ((column, kind),), "x", "x")
 
 
 def test_batch_readback_index_upgrade_only_targets_typed_journal_tables() -> None:

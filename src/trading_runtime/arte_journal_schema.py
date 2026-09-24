@@ -53,6 +53,20 @@ class TableContract:
     partition: str
     order: str
 
+    def __post_init__(self) -> None:
+        # Journal evidence must have an explicit relational contract. Reject
+        # catchall payloads at definition time, not only in a schema test.
+        forbidden_types = re.compile(
+            r"\b(?:JSON|Object|Dynamic|Variant|Array|Map|Tuple|AggregateFunction)\s*(?:\(|$)",
+            re.IGNORECASE,
+        )
+        forbidden_names = re.compile(r"(?:^|_)(?:json|blob|payload|raw_bytes)(?:_|$)", re.IGNORECASE)
+        if len({name for name, _ in self.columns}) != len(self.columns):
+            raise ValueError(f"Duplicate journal columns: {self.name}")
+        for name, kind in self.columns:
+            if forbidden_names.search(name) or forbidden_types.search(kind):
+                raise ValueError(f"Journal column requires a normalized typed contract: {self.name}.{name}")
+
     def ddl(self) -> str:
         columns = ",\n    ".join(f"{name} {kind}" for name, kind in self.columns)
         if any(name == "batch_id" for name, _ in self.columns):
