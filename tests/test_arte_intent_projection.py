@@ -216,6 +216,20 @@ def test_order_context_can_link_to_prior_committed_intent():
     contexts = load_committed_order_context_page(client, prefix, commands)
     assert len(contexts) == 1
     assert next(iter(contexts.values()))["strategy_intent_id"] == "intent-1"
+    # A crashed publication may leave fact rows without a commit fence.
+    # They must be filtered in ClickHouse before LIMIT and uniqueness checks.
+    unfenced_id = str(uuid4())
+    for table in ("trading_event_v1", "trading_order_command_v1",
+                  "trading_order_command_context_v1", "trading_strategy_intent_v1"):
+        clone = dict(client.tables[table][-1])
+        clone["batch_id"] = unfenced_id
+        client.tables[table].append(clone)
+    assert len(load_committed_order_command_page(client, prefix)) == 1
+    assert len(load_committed_order_context_page(client, prefix, commands)) == 1
+    for table in ("trading_event_v1", "trading_order_command_v1",
+                  "trading_order_command_context_v1", "trading_strategy_intent_v1"):
+        client.tables[table] = [row for row in client.tables[table]
+                                if row["batch_id"] != unfenced_id]
     intent_event = client.tables["trading_event_v1"][0]
     intent_event["sequence"] = 3
     with pytest.raises(RuntimeError, match="earlier committed event"):

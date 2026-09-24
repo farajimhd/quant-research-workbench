@@ -864,6 +864,15 @@ def _verify_recovery_chunk(client: Any, commits: list[dict[str, Any]]) -> None:
                 raise RuntimeError(f"Typed journal {name} differs from committed fence")
 
 
+def _committed_batch_filter(prefix: CommittedPrefix) -> str:
+    """Exclude interrupted fact inserts before page LIMIT or duplicate checks."""
+    return (
+        "AND batch_id IN (SELECT batch_id FROM arte.trading_commit_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND last_sequence<={int(prefix.last_sequence)}) "
+    )
+
+
 def load_committed_order_command_page(
     client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
@@ -884,6 +893,7 @@ def load_committed_order_command_page(
         f"AND sequence>{int(after_sequence)} "
         f"AND sequence<={int(prefix.last_sequence)} "
         "AND category='order_management' AND entity_type='order_command' "
+        f"{_committed_batch_filter(prefix)}"
         f"ORDER BY sequence LIMIT {int(limit)} FORMAT JSONEachRow")
     if not events:
         return ()
@@ -897,7 +907,8 @@ def load_committed_order_command_page(
     ids_sql = ",".join(f"toUUID({_literal(value)})" for value in ids)
     details = _rows(client, f"SELECT {names} FROM arte.trading_order_command_v1 "
                     f"WHERE run_id={_literal(prefix.run_id)} "
-                    f"AND record_id IN ({ids_sql}) FORMAT JSONEachRow")
+                    f"AND record_id IN ({ids_sql}) "
+                    f"{_committed_batch_filter(prefix)}FORMAT JSONEachRow")
     if len(details) != len(events):
         raise RuntimeError("Committed command page has missing or duplicate details")
     by_id = {str(UUID(str(row["record_id"]))): row for row in details}
@@ -941,6 +952,7 @@ def load_committed_order_context_page(
         f"SELECT {columns} FROM arte.trading_order_command_context_v1 "
         f"WHERE run_id={_literal(prefix.run_id)} "
         f"AND parent_record_id IN ({ids}) "
+        f"{_committed_batch_filter(prefix)}"
         f"LIMIT {len(commands) + 1} FORMAT JSONEachRow")
     if len(rows) > len(commands):
         raise RuntimeError("Committed order context page has excess rows")
@@ -977,6 +989,7 @@ def load_committed_order_context_page(
             "FROM arte.trading_strategy_intent_v1 "
             f"WHERE run_id={_literal(prefix.run_id)} "
             f"AND account_id IN ({accounts}) AND intent_id IN ({intent_ids}) "
+            f"{_committed_batch_filter(prefix)}"
             f"LIMIT {len(contexts) + 1} FORMAT JSONEachRow")
         if len(candidates) > len(contexts):
             raise RuntimeError("Strategy command has ambiguous intent candidates")
@@ -995,6 +1008,7 @@ def load_committed_order_context_page(
             "FROM arte.trading_event_v1 "
             f"WHERE run_id={_literal(prefix.run_id)} "
             f"AND record_id IN ({source_ids}) "
+            f"{_committed_batch_filter(prefix)}"
             f"LIMIT {len(candidates) + 1} FORMAT JSONEachRow")
         by_source = {str(UUID(str(row["record_id"]))): row for row in sources}
         if len(sources) != len(candidates) or len(by_source) != len(candidates):
@@ -1031,6 +1045,7 @@ def load_committed_order_transition_page(
         f"AND sequence>{int(after_sequence)} "
         f"AND sequence<={int(prefix.last_sequence)} "
         "AND category='order_management' AND entity_type='order_transition' "
+        f"{_committed_batch_filter(prefix)}"
         f"ORDER BY sequence LIMIT {int(limit)} FORMAT JSONEachRow")
     if not events:
         return ()
@@ -1044,7 +1059,8 @@ def load_committed_order_transition_page(
     ids_sql = ",".join(f"toUUID({_literal(value)})" for value in ids)
     details = _rows(client, f"SELECT {names} FROM arte.trading_order_transition_v1 "
                     f"WHERE run_id={_literal(prefix.run_id)} "
-                    f"AND record_id IN ({ids_sql}) FORMAT JSONEachRow")
+                    f"AND record_id IN ({ids_sql}) "
+                    f"{_committed_batch_filter(prefix)}FORMAT JSONEachRow")
     if len(details) != len(events):
         raise RuntimeError("Committed transition page has missing or duplicate details")
     by_id = {str(UUID(str(row["record_id"]))): row for row in details}

@@ -203,6 +203,20 @@ class MemoryClient:
             if "AND record_id IN (" in sql:
                 values = set(re.findall(r"toUUID\('([0-9a-f-]+)'\)", sql))
                 matching = [row for row in matching if row["record_id"] in values]
+            if "AND parent_record_id IN (" in sql:
+                values = set(re.findall(r"toUUID\('([0-9a-f-]+)'\)",
+                                        sql.split("AND parent_record_id IN (", 1)[1]))
+                matching = [row for row in matching if row["parent_record_id"] in values]
+            for field in ("account_id", "intent_id"):
+                marker = f"AND {field} IN ("
+                if marker in sql:
+                    values = set(re.findall(r"'([^']+)'", sql.split(marker, 1)[1].split(")", 1)[0]))
+                    matching = [row for row in matching if row[field] in values]
+            if "AND batch_id IN (SELECT batch_id FROM arte.trading_commit_v1 " in sql:
+                bound = int(re.search(r"AND last_sequence<=(\d+)", sql).group(1))
+                committed = {row["batch_id"] for row in self.tables.get("trading_commit_v1", [])
+                             if row["run_id"] == run_id and int(row["last_sequence"]) <= bound}
+                matching = [row for row in matching if row["batch_id"] in committed]
             if "AND batch_id=toUUID('" in sql:
                 value = sql.split("AND batch_id=toUUID('", 1)[1].split("'", 1)[0]
                 matching = [row for row in matching if row["batch_id"] == value]
