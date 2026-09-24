@@ -11,7 +11,7 @@ from typing import Mapping
 
 import polars as pl
 
-VERSION = "hindsight-greedy-fractional-v3"
+VERSION = "hindsight-greedy-fractional-v4"
 MODES = {"long": ("long",), "short": ("short",), "long_short": ("long", "short")}
 DEFAULT_HALF_LIFE_BARS = 30.0
 
@@ -64,8 +64,14 @@ def coefficients(frame: pl.DataFrame, gamma: float | None = None,
             (pl.col('quote_valid') & (pl.col('ask_size') >= 1) & (pl.col('bid_size') >= 1))).fill_null(False)
         new_ok = (observation_ok & ~terminal & (entry > 0) & (capital > 0)
                   & entry.is_finite() & capital.is_finite()).fill_null(False)
+        if price_only and 'long_entry_us' in frame.columns:
+            new_ok = new_ok & (pl.col(f'{side}_status') == 'available')
         hold = pl.col(f"{side}_hold_seconds")
-        future_ok = ((pl.col(f"{side}_status") == "available") & ~terminal
+        future_status = (pl.col(f'{side}_status').is_in(
+            ('available','waiting_for_macd_entry','no_active_macd_swing'))
+            if price_only and 'long_entry_us' in frame.columns else
+            (pl.col(f'{side}_status') == 'available'))
+        future_ok = (future_status & ~terminal
                      & hold.is_finite() & (hold > 0) & target.is_finite()
                      & target_observation.is_finite() & (target_observation > 0)).fill_null(False)
         available = future_ok & new_ok
@@ -75,6 +81,8 @@ def coefficients(frame: pl.DataFrame, gamma: float | None = None,
             "time_us", "ticker", "listing_id", pl.lit(side).alias("side"),
             pl.col(f"{side}_status").alias("phase1_status"),
             pl.col(f"{side}_target_us").alias("target_us"),
+            (pl.col(f'{side}_entry_us') if f'{side}_entry_us' in frame.columns else
+                pl.lit(None,dtype=pl.Int64)).alias('target_entry_us'),
             pl.col(f"{side}_target_id").alias("target_id"),
             pl.col(f"{side}_available_us").alias("label_available_us"),
             observation_ok.alias("can_close"), new_ok.alias("can_open"),
@@ -92,6 +100,8 @@ def coefficients(frame: pl.DataFrame, gamma: float | None = None,
         ).with_columns(
             (pl.col("open_value_per_share") / pl.col("capital_per_share")).alias("open_value_per_dollar"),
             pl.when(terminal).then(pl.lit('session_liquidation'))
+            .when(pl.col('phase1_status').is_in(('waiting_for_macd_entry','no_active_macd_swing')))
+            .then(pl.col('phase1_status'))
             .when(~pl.col("can_open")).then(pl.lit('current_price_or_cost_unavailable' if price_only else 'current_quote_or_cost_unavailable'))
             .when(~pl.col("value_available") & (pl.col("phase1_status") == "available"))
             .then(pl.lit("invalid_target_or_duration"))

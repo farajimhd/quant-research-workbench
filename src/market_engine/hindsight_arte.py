@@ -3,7 +3,7 @@ import polars as pl
 
 from src.market_engine.hindsight_phase1 import bounds
 
-VERSION = 'hindsight-phase1-arte-price-action-v3'
+VERSION = 'hindsight-phase1-arte-price-action-v4'
 LIQUIDATION_SECONDS_BEFORE_CLOSE = 120
 
 
@@ -94,10 +94,11 @@ def decision_values(day, bars, selected_targets, *, liquidation_us=None):
     for side,sign in (('long',1),('short',-1)):
         selected = [p for p in selected_targets if p['direction'] == side]
         data = pl.DataFrame({f'{side}_target_us':[round(p['exit_time']*1e6) for p in selected],
+            f'{side}_entry_us':[round(p['entry_time']*1e6) for p in selected],
             f'{side}_target_id':[p['position_number'] for p in selected],
             f'{side}_available_us':[round(p['label_available_at']*1e6) for p in selected],
             f'{side}_target_price':[p['exit_price'] for p in selected]},schema={
-                f'{side}_target_us':pl.Int64,f'{side}_target_id':pl.Int64,
+                f'{side}_target_us':pl.Int64,f'{side}_entry_us':pl.Int64,f'{side}_target_id':pl.Int64,
                 f'{side}_available_us':pl.Int64,f'{side}_target_price':pl.Float64}).sort(f'{side}_target_us')
         grid = grid.with_columns((pl.col('time_us')+1).alias('_next')).join_asof(
             data,left_on='_next',right_on=f'{side}_target_us',strategy='forward').drop('_next')
@@ -105,15 +106,20 @@ def decision_values(day, bars, selected_targets, *, liquidation_us=None):
             fallback = pl.col(f'{side}_target_us').is_null()
             grid = grid.with_columns(
                 pl.when(fallback).then(pl.lit(liquidation_us)).otherwise(pl.col(f'{side}_target_us')).alias(f'{side}_target_us'),
+                pl.when(fallback).then(pl.lit(None,dtype=pl.Int64)).otherwise(pl.col(f'{side}_entry_us')).alias(f'{side}_entry_us'),
                 pl.when(fallback).then(pl.lit(0)).otherwise(pl.col(f'{side}_target_id')).alias(f'{side}_target_id'),
                 pl.when(fallback).then(pl.lit(liquidation_us)).otherwise(pl.col(f'{side}_available_us')).alias(f'{side}_available_us'),
                 pl.when(fallback).then(pl.lit(terminal_price,dtype=pl.Float64)).otherwise(pl.col(f'{side}_target_price')).alias(f'{side}_target_price'),
                 pl.when(fallback).then(pl.lit('session_liquidation')).otherwise(pl.lit('macd_swing')).alias(f'{side}_target_kind'))
         grid = grid.with_columns(
-            ((pl.col(f'{side}_target_price')-pl.col('decision_price'))*sign).alias(f'{side}_gross_profit'),
+            pl.when((pl.col(f'{side}_target_id') == 0) |
+                    ((pl.col(f'{side}_target_id') > 0) & (pl.col('time_us') >= pl.col(f'{side}_entry_us'))))
+                .then((pl.col(f'{side}_target_price')-pl.col('decision_price'))*sign).alias(f'{side}_gross_profit'),
             ((pl.col(f'{side}_target_us')-pl.col('time_us'))/1e6).alias(f'{side}_hold_seconds'),
             pl.when(pl.col(f'{side}_target_id').is_null()).then(pl.lit('no_future_macd_target'))
                 .when(~pl.col('price_valid')).then(pl.lit('current_price_unavailable'))
+                .when(pl.col(f'{side}_target_id') == 0).then(pl.lit('no_active_macd_swing'))
+                .when(pl.col('time_us') < pl.col(f'{side}_entry_us')).then(pl.lit('waiting_for_macd_entry'))
                 .otherwise(pl.lit('available')).alias(f'{side}_status'))
         if liquidation_us is not None:
             grid = grid.with_columns(

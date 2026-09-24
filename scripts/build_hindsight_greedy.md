@@ -1,12 +1,16 @@
 # Greedy fractional action-value labels
 
-For `hindsight-phase1-arte-price-action-v2` and `v3` inputs, the compiler explicitly uses
+For `hindsight-phase1-arte-price-action-v2`, `v3`, and `v4` inputs, the compiler explicitly uses
 `valuation_basis=price_action`: current completed trade close and future swing
 high/low prices, with no quotes or spread. Phase 2's optional per-share cost is
 still applied, and its fractional allocation/discount formulas are unchanged.
 Here `can_open`/`can_close` indicate an available reference price, not executable
 liquidity. The quote-based descriptions below apply to legacy Phase 1 datasets.
-V3 adds forced liquidation at 19:58 ET. Terminal coefficients cannot open new
+V3 adds forced liquidation at 19:58 ET. V4 also carries the selected MACD
+episode entry time: `can_open` stays false while that entry is in the future,
+and when no active swing remains. Holding values are still calculated for an
+existing position when a future target or terminal liquidation price exists.
+Terminal coefficients cannot open new
 positions, and the state evaluator requires all existing holdings to be closed.
 Flat-state tables retain a terminal flag and select wait after liquidation.
 Mandatory full liquidation can settle with negative cash: the evaluator preserves
@@ -126,9 +130,14 @@ long, columnar form. Its logical axes are MACD resolution, decision time, stable
 `listing_index` (the order of `plan.selected`), and direction. Every listing and
 both directions have a row at each of the 57,601 decision seconds. All opening,
 holding, price, target, duration and availability columns remain available;
-`wait` is the zero-allocation choice when evaluating those rows. It is written
-in bounded per-listing Parquet row groups, so the physical row order is listing
-then direction/time. The completion marker records the shape and file hash.
+`wait` is the zero-allocation choice when evaluating those rows. Per-listing
+checkpoint rows are externally sorted into market-wide time order and published
+in row groups covering about 30 decision seconds. The completion marker records
+the shape, physical order and file hash.
+`MarketValues` verifies the certificate once, then reads one time slice using
+Parquet row-group timestamps and caches the active group. The `evaluate` command
+uses this market-wide reader. Any external-sort spill goes under the required
+runtime root.
 The per-listing files are restart checkpoints; a consumer comparing or splitting
 capital among tickers should read the root tensor, not just the winners below.
 
@@ -185,13 +194,15 @@ remaining cash, resulting holdings, missing-value reasons and realized P&L.
 ## Complexity, interruption and validation
 
 For N listings and T seconds, coefficient creation and incremental market
-aggregation are O(N*T) expected time for hash grouping. Ordered input is preserved;
-there is no per-listing sort or cross-market join. Working memory is O(T) plus one
-listing's input/output and small manifests; no full N-by-T frame is loaded.
+aggregation are O(N*T). The market-wide tensor adds an external time sort;
+its worst-case comparison work is O(N*T*log(N*T)) and may spill to runtime disk.
+Working memory remains bounded by one listing plus streaming sort buffers and
+small manifests; no full N-by-T frame is loaded.
 Disk output is O(N*T). There is no cross-product of tickers or action sizes.
 An in-memory action evaluation costs O(H+K), where H is held positions and K is
 changed positions. Reading and verifying a whole market snapshot costs more
-I/O; the inspection command is not a production latency path.
+I/O; the inspection command is not a production latency path. Full-market sort
+time and temporary-disk requirements still need measurement.
 
 Immutable plans include source and code hashes. Each listing is published with
 file checksums and can be reused. Rerunning retries failed listings, never skips

@@ -28,6 +28,7 @@ from rich.table import Table
 from scripts.build_hindsight_phase1 import exclusive
 from src.market_engine.hindsight_phase1 import bounds, digest
 from src.market_engine.hindsight_greedy import VERSION, MODES, Position, ActionTable, coefficients, discount_policy
+from src.market_engine.hindsight_market_values import MarketValues
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
 from src.market_engine.hindsight_batch import ordered_jobs, worker_budget
@@ -134,12 +135,12 @@ def phase1_plan(root):
         raise ValueError("Duplicate Phase 1 ticker")
     if not plan["selected"] or complete["rows"] != 57601 * len(plan["selected"]):
         raise ValueError("Empty or incomplete Phase 1 decision grid")
-    if plan["version"] not in ("hindsight-phase1-macd-v1", "hindsight-phase1-arte-100ms-v1", "hindsight-phase1-arte-price-action-v2", "hindsight-phase1-arte-price-action-v3"):
+    if plan["version"] not in ("hindsight-phase1-macd-v1", "hindsight-phase1-arte-100ms-v1", "hindsight-phase1-arte-price-action-v2", "hindsight-phase1-arte-price-action-v3", "hindsight-phase1-arte-price-action-v4"):
         raise ValueError("Unsupported Phase 1 version")
-    expected_basis = 'price_action' if plan['version'] in ('hindsight-phase1-arte-price-action-v2','hindsight-phase1-arte-price-action-v3') else 'quotes'
+    expected_basis = 'price_action' if plan['version'] in ('hindsight-phase1-arte-price-action-v2','hindsight-phase1-arte-price-action-v3','hindsight-phase1-arte-price-action-v4') else 'quotes'
     if plan.get('valuation_basis','quotes') != expected_basis:
         raise ValueError('Phase 1 valuation basis does not match its version')
-    if plan['version'] == 'hindsight-phase1-arte-price-action-v3':
+    if plan['version'] in ('hindsight-phase1-arte-price-action-v3','hindsight-phase1-arte-price-action-v4'):
         if plan.get('liquidation_us') != bounds(date.fromisoformat(plan['date']))[1]-120_000_000:
             raise ValueError('Phase 1 liquidation boundary must be 19:58 ET')
     return plan
@@ -171,6 +172,18 @@ def compile_listing(listing, source, root, plan):
             or frame["ticker"].unique().to_list() != [listing["ticker"]]
             or frame["listing_id"].unique().to_list() != [listing["listing_id"]]):
             raise ValueError("Phase 1 grid or identity mismatch")
+        if plan['phase1_version'] == 'hindsight-phase1-arte-price-action-v4':
+            for side in ('long','short'):
+                required = {f'{side}_entry_us',f'{side}_target_id',f'{side}_status'}
+                if not required <= set(frame.columns):
+                    raise ValueError('Phase 1 V4 entry eligibility fields missing')
+                invalid = frame.filter(
+                    ((pl.col(f'{side}_status') == 'available') &
+                     ((pl.col(f'{side}_entry_us') > pl.col('time_us')) | (pl.col(f'{side}_target_id') <= 0))) |
+                    ((pl.col(f'{side}_status') == 'waiting_for_macd_entry') &
+                     (pl.col(f'{side}_entry_us') <= pl.col('time_us'))))
+                if invalid.height:
+                    raise ValueError('Phase 1 V4 entry eligibility disagrees with target entry')
         cutoff = plan.get('liquidation_us')
         if cutoff is not None:
             if not frame['session_terminal'].equals(frame['time_us'] >= cutoff) or any(
@@ -195,6 +208,7 @@ def publish_market_values(root, plan):
     """Publish all alternatives as one bounded-memory market tensor table."""
     path = root / 'market_action_values.parquet'
     temporary = path.with_suffix('.parquet.tmp')
+    ordered = path.with_suffix('.parquet.ordered.tmp')
     expected_rows = 2 * 57601 * len(plan['selected'])
     writer = None
     rows = 0
@@ -229,16 +243,32 @@ def publish_market_values(root, plan):
     finally:
         if writer is not None:
             writer.close()
+    # External streaming sort transposes listing-major worker output into time
+    # slices. A row group covers about 30 seconds of the entire market.
+    rows_per_second = 2 * len(plan['selected'])
+    group_rows = min(360_000,rows_per_second*30)
+    try:
+        pl.scan_parquet(temporary).sort('time_us','listing_index','side').sink_parquet(
+            ordered,compression='zstd',row_group_size=group_rows,maintain_order=True)
+    finally:
+        temporary.unlink(missing_ok=True)
+    if STOP or (root/'STOP').exists():
+        ordered.unlink(missing_ok=True)
+        raise InterruptedError('Market tensor publication interrupted')
+    if pq.ParquetFile(ordered).metadata.num_rows != expected_rows:
+        ordered.unlink(missing_ok=True)
+        raise ValueError('Ordered market tensor row count mismatch')
     if path.exists():
-        if file_hash(path) != file_hash(temporary):
-            temporary.unlink()
+        if file_hash(path) != file_hash(ordered):
+            ordered.unlink()
             raise ValueError('Existing market tensor differs from rebuilt output')
-        temporary.unlink()
+        ordered.unlink()
     else:
-        temporary.replace(path)
+        ordered.replace(path)
     return dict(file=path.name, rows=rows, listing_count=len(plan['selected']),
         time_count=57601, side_count=2, resolution_count=1,
         axis_order=['macd_resolution_seconds','time_us','listing_index','side'],
+        physical_order=['time_us','listing_index','side'],row_group_target_rows=group_rows,
         listing_index_source='plan.selected order', file_hash=file_hash(path))
 
 
@@ -253,7 +283,9 @@ def run_build(args, console):
     if not math.isfinite(args.cost_per_share) or args.cost_per_share < 0:
         raise ValueError("cost-per-share must be finite and nonnegative")
     runtime = required_runtime()
+    os.environ['POLARS_TEMP_DIR'] = str(runtime)
     plan = dict(version=VERSION, phase1_root=str(source), phase1_plan_hash=original["plan_hash"],
+                phase1_version=original['version'],
                 valuation_basis=original.get('valuation_basis','quotes'),
                 liquidation_us=original.get('liquidation_us'),
                 date=original["date"], scope=original["scope"], selected=original["selected"],
@@ -265,7 +297,7 @@ def run_build(args, console):
                 market_tensor='market_action_values.parquet; full candidate axis; root winners are projections',
                 polars_version=pl.__version__,
                 code_hashes={p: sha256((REPO / p).read_text(encoding="utf-8").replace("\r\n", "\n").encode()).hexdigest()
-                             for p in ("scripts/build_hindsight_greedy.py", "src/market_engine/hindsight_greedy.py", "src/market_engine/hindsight_batch.py")})
+                             for p in ("scripts/build_hindsight_greedy.py", "src/market_engine/hindsight_greedy.py", "src/market_engine/hindsight_market_values.py", "src/market_engine/hindsight_batch.py")})
     plan["plan_hash"] = digest(plan)
     root = runtime / "hindsight-greedy" / plan["date"] / plan["plan_hash"][:16]
     root.mkdir(parents=True, exist_ok=True)
@@ -377,17 +409,8 @@ def run_evaluate(args, console):
         raise ValueError("Incomplete greedy dataset")
     verify_files(root, complete["files"])
     request = read(args.request)
-    rows = []
-    for listing in plan["selected"]:
-        folder = root / "listings" / digest(listing)[:20]
-        ready = read(folder / "ready.json")
-        if ready["plan_hash"] != plan["plan_hash"]:
-            raise ValueError("Listing plan mismatch")
-        verify_files(folder, ready["files"])
-        rows.extend(pl.scan_parquet(folder / "coefficients.parquet")
-                    .filter(pl.col("time_us") == request["time_us"]).collect().to_dicts())
-    if len(rows) != 2 * len(plan["selected"]):
-        raise ValueError("Requested timestamp is not present for every listing")
+    with MarketValues(root) as values:
+        rows = values.at(request['time_us']).to_dicts()
     state = ActionTable(rows, [Position(**p) for p in request.get("positions", [])], mode=args.mode)
     report = dict(plan_hash=plan["plan_hash"], request=request, state=state.describe(), actions=[
         dict(name=a["name"], changes=a["changes"], result=state.evaluate(a["changes"]))

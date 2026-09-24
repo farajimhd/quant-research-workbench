@@ -152,9 +152,9 @@ def test_price_labels_use_extremum_not_exit_close_and_keep_negative_values():
     from src.market_engine.hindsight_greedy import coefficients
     left,right = bounds(DAY)
     bars = bar_frame([(left+100000,9.,11.),(left+1100000,10.,30.)])
-    targets = [dict(direction='long',exit_time=(left+1100000)/1e6,exit_price=30.,position_number=1,
+    targets = [dict(direction='long',entry_time=(left+100000)/1e6,exit_time=(left+1100000)/1e6,exit_price=30.,position_number=1,
                     label_available_at=(left+3000000)/1e6),
-               dict(direction='short',exit_time=(left+1100000)/1e6,exit_price=12.,position_number=2,
+               dict(direction='short',entry_time=(left+100000)/1e6,exit_time=(left+1100000)/1e6,exit_price=12.,position_number=2,
                     label_available_at=(left+3000000)/1e6)]
     values = labels.decision_values(DAY,bars,targets).with_columns(pl.lit('A').alias('ticker'),pl.lit('A-id').alias('listing_id'))
     current = values.filter(pl.col('time_us') == left+1000000)
@@ -171,6 +171,37 @@ def test_price_labels_use_extremum_not_exit_close_and_keep_negative_values():
     assert values['long_status'][-1] == 'no_future_macd_target'
 
 
+def test_future_macd_entry_is_wait_until_completed_decision_and_then_profit_decays():
+    from src.market_engine.hindsight_greedy import coefficients
+    from scripts.build_hindsight_greedy import summarize_listing, flat_policy
+    left,_ = bounds(DAY)
+    bars = bar_frame([(left+100000,3.4,3.4),(left+7000000,3.2,3.2),
+        (left+21500000,3.29,3.29),(left+22000000,3.3,3.3),
+        (left+23000000,3.34,3.34),(left+64800000,3.3552,3.3552)])
+    target = dict(direction='long',entry_time=(left+21500000)/1e6,
+        exit_time=(left+64800000)/1e6,exit_price=3.3552,position_number=2,
+        label_available_at=(left+77000000)/1e6)
+    frame = labels.decision_values(DAY,bars,[target],liquidation_us=labels.liquidation_time(DAY)).with_columns(
+        pl.lit('SUGP').alias('ticker'),pl.lit('listing:SUGP').alias('listing_id'))
+    before = frame.filter(pl.col('time_us')==left+21000000)
+    assert before['long_status'][0] == 'waiting_for_macd_entry'
+    assert before['long_gross_profit'][0] is None
+    assert before['long_entry_us'][0] == left+21500000
+    values = coefficients(frame,valuation_basis='price_action')
+    before_value = values.filter((pl.col('time_us')==left+21000000)&(pl.col('side')=='long'))
+    assert before_value['phase1_status'][0] == 'waiting_for_macd_entry'
+    assert not before_value['can_open'][0] and not before_value['open_value_available'][0]
+    assert before_value['hold_value_available'][0]  # An older holding still has a future value.
+    assert flat_policy(summarize_listing(before_value,'long'))['chosen_action'][0] == 'wait'
+    at_entry = values.filter((pl.col('time_us')==left+22000000)&(pl.col('side')=='long'))
+    assert at_entry['can_open'][0] and at_entry['open_profit_per_share'][0] == pytest.approx(.0552)
+    assert at_entry['target_entry_us'][0] == left+21500000
+    later = values.filter((pl.col('time_us')==left+23000000)&(pl.col('side')=='long'))
+    assert later['open_profit_per_share'][0] == pytest.approx(.0152)
+    after_exit = values.filter((pl.col('time_us')==left+65000000)&(pl.col('side')=='long'))
+    assert not after_exit['can_open'][0] and after_exit['phase1_status'][0] == 'no_active_macd_swing'
+
+
 def test_liquidation_at_1958_prices_losses_without_future_bars_and_forces_flat():
     from src.market_engine.hindsight_greedy import coefficients, ActionTable, Position
     from scripts.build_hindsight_greedy import summarize_listing, flat_policy
@@ -178,7 +209,7 @@ def test_liquidation_at_1958_prices_losses_without_future_bars_and_forces_flat()
     cutoff = labels.liquidation_time(DAY)
     assert cutoff == right-120000000
     bars = bar_frame([(left+100000,10.,10.),(cutoff,8.,8.),(cutoff+100000,100.,100.)])
-    late_target = dict(direction='long',exit_time=(cutoff+100000)/1e6,exit_price=100.,position_number=1,
+    late_target = dict(direction='long',entry_time=(cutoff-1000000)/1e6,exit_time=(cutoff+100000)/1e6,exit_price=100.,position_number=1,
                        label_available_at=right/1e6)
     f = labels.decision_values(DAY,bars,[late_target],liquidation_us=cutoff).with_columns(
         pl.lit('A').alias('ticker'),pl.lit('A-id').alias('listing_id'))

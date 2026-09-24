@@ -27,7 +27,7 @@ It does not start services or alter source tables.
 
 ## Meaning of the new version
 
-`hindsight-phase1-arte-price-action-v3` uses price-action labels and forced
+`hindsight-phase1-arte-price-action-v4` uses price-action labels and forced
 liquidation at **19:58 ET**, 120 seconds before the extended session's 20:00 close.
 Prior datasets remain immutable and retain their versions.
 
@@ -46,6 +46,13 @@ Prior datasets remain immutable and retain their versions.
 - Long gross labels equal the future swing high minus the decision price;
   short gross labels equal the decision price minus the future swing low.
   Targets use their selected high/low, not the close of the target bar.
+  The selected episode's completed 100 ms entry timestamp is retained. Opening
+  is `waiting_for_macd_entry` until the first one-second decision at or after
+  that timestamp. During an active episode, remaining profit is recomputed
+  from each decision price, retaining negative outcomes. After the exit and
+  before another selected entry, opening returns to wait. A terminal fallback
+  supplies a liquidation value for existing holdings but does not create a new
+  entry opportunity.
   No bid/ask, spread, quote-age, depth, fillability or transaction-cost condition
   changes Phase 1 labels. Negative values are retained.
 - MACD intervals and swing selection stop at 19:58. When no qualifying target
@@ -70,8 +77,9 @@ Prior datasets remain immutable and retain their versions.
 - Phase 2 explicitly records `valuation_basis=price_action` for this version.
   Its coefficients use the same decision/target prices, without inventing
   bid/ask fields. Optional Phase 2 costs remain explicit. These are price-action
-  values, not executable returns; `can_open`/`can_close` mean that a current
-  reference price exists under the comparison model, not that an order can fill.
+  values, not executable returns; `can_open` now additionally requires the
+  selected MACD entry to have occurred. `can_close` means a current reference
+  price exists, not that an order can fill.
   Legacy Phase 1 versions still use their original quote-based Phase 2 contract.
 - At and after 19:58, `session_terminal=true` and `can_open=false`. The portfolio
   action evaluator rejects holding, partial liquidation or opening a new position;
@@ -184,6 +192,15 @@ AAPL 309.5259 and SUGP 1.55 from completed bars available by 19:58. Real coeffic
 artifacts rejected holding and accepted complete liquidation at the cutoff.
 Fifty-two focused tests passed, including negative terminal outcomes, sparse
 terminal prices, no post-cutoff influence and daylight-saving time behavior.
+
+The V4 entry-boundary canary on the same two tickers makes SUGP long wait through
+04:00:21 ET and permits opening at 04:00:22, after its 04:00:21.5 selected entry.
+Its long-only market choice is wait for all 21 seconds from 04:00:01 through
+04:00:21; combined mode can still choose a short in that interval. Remaining
+profit from opening SUGP long falls from $0.0452/share at 04:00:22 to $0.0152
+at 04:00:23. The complete time-ordered market tensor retains 230,404 distinct
+time/listing/direction rows. Sixty-five focused tests passed. This canary does
+not establish full-market sort throughput or fillability.
 
 The Phase 2 V2 canary with the 30-bar half-life passed on the same source/date/
 tickers in 11.5 seconds including preflight. All three modes had 57,601 available

@@ -306,6 +306,7 @@ def test_runnable_builder_resume_stop_and_corrupt_source(tmp_path, monkeypatch):
     output = next((tmp_path/"hindsight-greedy"/"2026-08-21").iterdir())
     tensor = pl.read_parquet(output/'market_action_values.parquet')
     assert tensor.height == 2*2*57601
+    assert tensor['time_us'].is_sorted()
     assert tensor.select('listing_index','ticker','side').unique().sort('listing_index','side').to_dicts() == [
         dict(listing_index=0,ticker='B',side='long'),dict(listing_index=0,ticker='B',side='short'),
         dict(listing_index=1,ticker='C',side='long'),dict(listing_index=1,ticker='C',side='short')]
@@ -314,6 +315,12 @@ def test_runnable_builder_resume_stop_and_corrupt_source(tmp_path, monkeypatch):
     assert one_second.filter(pl.col('side') == 'long')['open_value_per_share'].to_list() == pytest.approx(
         [one_second.filter((pl.col('ticker') == 'B') & (pl.col('side') == 'long'))['open_value_per_share'][0]]*2)
     assert read(output/'complete.json')['tensor']['rows'] == tensor.height
+    from src.market_engine.hindsight_market_values import MarketValues
+    with MarketValues(output) as market:
+        assert market.at(left+1_000_000).height == 4
+        assert market.at(left+2_000_000).select('ticker','side').n_unique() == 4
+        with pytest.raises(ValueError,match='absent'):
+            market.at(left-1_000_000)
     assert main(args) == 0
     assert read(output/"summary.json")["counts"] == dict(completed=0, reused=2, failed=0)
     (output/"STOP").touch()

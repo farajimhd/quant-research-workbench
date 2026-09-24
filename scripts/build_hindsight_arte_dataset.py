@@ -40,7 +40,8 @@ SOURCES = ('scripts/build_hindsight_arte_dataset.py','src/market_engine/hindsigh
     'src/market_engine/hindsight_arte_source.py','src/market_engine/hindsight_phase1.py',
     'src/market_engine/hindsight_batch.py','scripts/build_hindsight_phase1.py',
     'scripts/build_hindsight_dataset.py','scripts/build_hindsight_greedy.py',
-    'src/market_engine/hindsight_greedy.py','src/market_engine/hindsight_phase1_source.py',
+    'src/market_engine/hindsight_greedy.py','src/market_engine/hindsight_market_values.py',
+    'src/market_engine/hindsight_phase1_source.py',
     'src/market_engine/level_book_store.py','pipelines/market_sip/events/market_day_sql.py')
 
 
