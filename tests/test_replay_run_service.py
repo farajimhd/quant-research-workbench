@@ -1586,6 +1586,22 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
             self.assertEqual(projected["two"]["members"][0]["ticker"], "AAPL")
             self.assertEqual(projected["two"]["members"][0]["ibkr_conid"], 265598)
 
+    def test_fixed_controller_never_materializes_watchlist_timeline(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 10), start_time=time(9, 30),
+            mode=RunMode.BACKTEST, configuration_revision=approved_configuration(),
+            execution_interval="1s",
+            market_data_plan={"token": "fixture", "execution_interval": {"milliseconds": 1000}},
+        )
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "src.backend.replay_run_service._historical_watchlist_membership_timeline_from_plans"
+        ) as materialize:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            controller._historical_watchlist_plans = [{"watchlist_id": "one"}]
+            with self.assertRaisesRegex(ValueError, "persisted-product reader"):
+                asyncio.run(controller._prepare_historical_watchlist_timeline())
+            materialize.assert_not_called()
+
     def test_resolves_first_clock_and_each_later_weekday_session_boundary(self) -> None:
         approved = approved_configuration()
         with patch(
@@ -2659,7 +2675,10 @@ class BacktestPreflightTests(unittest.TestCase):
                 self.assertFalse(result["strategy_run_ready"])
                 self.assertEqual(next(row for row in result["checks"]
                                       if row["id"] == "fixed_execution_contract")["status"], "blocked")
-                materialize.assert_called_once_with([{"plan_hash": "unchanged"}], projection_tickers=expected)
+                materialize.assert_not_called()
+                check = next(row for row in result["checks"] if row["id"] == "strategy_assignments")
+                self.assertEqual(check["status"], "blocked")
+                self.assertIn("persisted-product reader", check["summary"])
 
     def test_structural_preflight_empty_tickers_cannot_expand_to_whole_market(self):
         approved = approved_configuration()

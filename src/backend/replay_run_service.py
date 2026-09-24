@@ -6619,6 +6619,14 @@ class ReplayRunController:
         return self._historical_watchlist_cache
 
     def _historical_watchlist_timeline(self) -> list[dict[str, Any]]:
+        from src.backend.backtest_market_data import ExecutionInterval
+        if (self.definition.mode == RunMode.BACKTEST
+                and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"
+                and self._historical_watchlist_plans):
+            raise ValueError(
+                "Fixed Backtest Watchlist requires a certified persisted-product reader; "
+                "QMD historical materialization is not an allowed execution source"
+            )
         if self._historical_watchlist_timeline_cache is None:
             fixture = self.definition.debug_fixture
             shared = self.definition.historical_watchlist_cache
@@ -6675,6 +6683,14 @@ class ReplayRunController:
 
     async def _prepare_historical_watchlist_timeline(self) -> None:
         """Materialize historical universe authority without blocking the API loop."""
+        from src.backend.backtest_market_data import ExecutionInterval
+        if (self.definition.mode == RunMode.BACKTEST
+                and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"
+                and self._historical_watchlist_plans):
+            raise ValueError(
+                "Fixed Backtest Watchlist requires a certified persisted-product reader; "
+                "QMD historical materialization is not an allowed execution source"
+            )
         if self._historical_watchlist_timeline_cache is not None:
             return
         await asyncio.to_thread(self._historical_watchlist_timeline)
@@ -10317,6 +10333,11 @@ def backtest_preflight(
         source_native_activation and watchlist_policy == "not_required"
     ):
         try:
+            if execution_interval.kind == "fixed":
+                raise ValueError(
+                    "Fixed Backtest Watchlist requires a certified persisted-product reader; "
+                    "QMD historical materialization is not an allowed execution source"
+                )
             watchlist_plans = _historical_watchlist_plans_for_configuration(
                 approved,
                 tickers=tickers,
