@@ -33,6 +33,7 @@ from src.market_engine import hindsight_arte as labels
 from src.market_engine import hindsight_arte_source as source_api
 from scripts.build_hindsight_phase1 import exclusive, file_hash, verified
 from scripts.build_hindsight_greedy import parquet
+from src.market_engine.hindsight_greedy import discount_policy
 from scripts.build_hindsight_dataset import STOP, phase2_process
 
 SOURCES = ('scripts/build_hindsight_arte_dataset.py','src/market_engine/hindsight_arte.py',
@@ -108,6 +109,7 @@ def phase1(day, source, listings, population, root, args, console, code):
         lookback_seconds=args.lookback_seconds,code_hashes={k:v for k,v in code.items() if 'greedy' not in k},
         polars_version=pl.__version__,target_clock='completed_100ms_bar_end',
         valuation_basis='price_action',
+        macd_resolution_seconds=1.,
         liquidation_us=labels.liquidation_time(day),
         liquidation_seconds_before_close=labels.LIQUIDATION_SECONDS_BEFORE_CLOSE,
         session_close='20:00 America/New_York',
@@ -176,11 +178,14 @@ def main(argv=None):
     parser.add_argument('--workers',type=int,default=None)
     parser.add_argument('--query-threads',type=int,choices=range(1,5),default=2)
     parser.add_argument('--lookback-seconds',type=int,choices=range(31),default=2)
-    parser.add_argument('--gamma',type=float,default=.99)
+    discount_options = parser.add_mutually_exclusive_group()
+    discount_options.add_argument('--half-life-bars',type=float,help='Discount half-life in MACD bars; default 30')
+    discount_options.add_argument('--gamma',type=float,default=None,help='Explicit per-second discount override')
     parser.add_argument('--cost-per-share',type=float,default=0.)
     args = parser.parse_args(argv)
-    if not math.isfinite(args.gamma) or not 0 < args.gamma <= 1 or not math.isfinite(args.cost_per_share) or args.cost_per_share < 0:
-        parser.error('gamma must be in (0,1]; cost must be finite and nonnegative')
+    discount = discount_policy(1.,half_life_bars=args.half_life_bars,gamma=args.gamma)
+    if not math.isfinite(args.cost_per_share) or args.cost_per_share < 0:
+        parser.error('cost must be finite and nonnegative')
     if args.date and (args.start or args.end):
         parser.error('Use --date OR --start and --end')
     if not args.date and not (args.start and args.end):
@@ -223,7 +228,7 @@ def main(argv=None):
     plan = dict(version=labels.VERSION,source_build_id=source['build_id'],source_definition_hash=source['definition_hash'],
         source_units_hash=digest(source['units']),
         dates=list(map(str,days)),tickers=args.tickers,lookback_seconds=args.lookback_seconds,
-        gamma=args.gamma,cost_per_share=args.cost_per_share,code_hashes=code,polars_version=pl.__version__)
+        discount_policy=discount,cost_per_share=args.cost_per_share,code_hashes=code,polars_version=pl.__version__)
     plan['plan_hash'] = digest(plan)
     root = runtime/'hindsight-arte'/plan['plan_hash'][:20]
     root.mkdir(parents=True,exist_ok=True)
@@ -247,7 +252,8 @@ def main(argv=None):
                     folder = p1.parent
                     handoff = folder/'phase2-location.json'
                     command = ['scripts/build_hindsight_greedy.py','build','--phase1',str(p1),'--workers',str(args.workers),
-                        '--gamma',str(args.gamma),'--cost-per-share',str(args.cost_per_share),'--result-file',str(handoff)]
+                        '--cost-per-share',str(args.cost_per_share),'--result-file',str(handoff)]
+                    command += ['--gamma',str(args.gamma)] if args.gamma is not None else ['--half-life-bars',str(discount['half_life_bars'])]
                     last = [0.]
                     def progress(message):
                         if monotonic()-last[0] > 10:

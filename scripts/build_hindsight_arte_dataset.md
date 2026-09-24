@@ -80,6 +80,16 @@ Prior datasets remain immutable and retain their versions.
   20:00, with a terminal flag on its final 121 rows. Post-cutoff rows do not
   represent additional trading opportunities. This is a labeling/evaluation
   rule; the builder does not place real broker orders.
+  Mandatory full liquidation preserves negative cash and reports insolvency and
+  the cash deficit when losses exceed the synthetic reserve.
+
+Phase 2 defaults to a discount half-life of **30 MACD bars**, configurable with
+`--half-life-bars`. This reader currently uses 1-second MACD, so the default is
+30 seconds: a profit at 30 seconds receives 50% weight, at 60 seconds 25%.
+The compiler scales the half-life using the source plan's MACD resolution;
+it does not infer a horizon from future episode lengths. `--gamma` is a mutually
+exclusive per-second override. The saved plan records the resolved policy.
+Opening and holding value availability are calculated independently.
 
 ## Certification and population
 
@@ -170,3 +180,10 @@ AAPL 309.5259 and SUGP 1.55 from completed bars available by 19:58. Real coeffic
 artifacts rejected holding and accepted complete liquidation at the cutoff.
 Fifty-two focused tests passed, including negative terminal outcomes, sparse
 terminal prices, no post-cutoff influence and daylight-saving time behavior.
+
+The Phase 2 V2 canary with the 30-bar half-life passed on the same source/date/
+tickers in 11.5 seconds including preflight. All three modes had 57,601 available
+market-policy rows and zero unavailable rows, including known wait rows.
+Sixty-four focused tests passed, including insolvent mandatory liquidation,
+independent hold eligibility, negative after-cost targets and resolution scaling.
+Account trajectories and portfolio funding redesign remain Phase 3 work.

@@ -26,7 +26,7 @@ from rich.table import Table
 
 from scripts.build_hindsight_phase1 import exclusive
 from src.market_engine.hindsight_phase1 import bounds, digest
-from src.market_engine.hindsight_greedy import VERSION, MODES, Position, ActionTable, coefficients
+from src.market_engine.hindsight_greedy import VERSION, MODES, Position, ActionTable, coefficients, discount_policy
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
 from src.market_engine.hindsight_batch import ordered_jobs, worker_budget
@@ -196,8 +196,8 @@ def run_build(args, console):
     source = args.phase1.resolve()
     original = phase1_plan(source)
     # Validate configuration even if source is empty or all outputs are reused.
-    if not 0 < args.gamma <= 1 or not math.isfinite(args.gamma):
-        raise ValueError("gamma must be in (0, 1]")
+    discount = discount_policy(original.get('macd_resolution_seconds',1.),
+        half_life_bars=getattr(args,'half_life_bars',None),gamma=args.gamma)
     if not math.isfinite(args.cost_per_share) or args.cost_per_share < 0:
         raise ValueError("cost-per-share must be finite and nonnegative")
     runtime = required_runtime()
@@ -205,7 +205,8 @@ def run_build(args, console):
                 valuation_basis=original.get('valuation_basis','quotes'),
                 liquidation_us=original.get('liquidation_us'),
                 date=original["date"], scope=original["scope"], selected=original["selected"],
-                gamma_per_second=args.gamma, cost_per_share_per_transaction=args.cost_per_share,
+                gamma_per_second=discount['gamma_per_second'], discount_policy=discount,
+                cost_per_share_per_transaction=args.cost_per_share,
                 sizes="fractional", modes=list(MODES),
                 short_policy="100% synthetic reserve; proceeds locked; no broker margin claim",
                 semantics="Local greedy values; no future reallocations; exact size coefficients",
@@ -220,7 +221,7 @@ def run_build(args, console):
         if not result_file.is_relative_to(runtime.resolve()):raise ValueError('result-file must be under runtime root')
         write(result_file,dict(root=str(root),plan_hash=plan['plan_hash']),immutable=False)
     console.print(f"Greedy labels | {plan['date']} | {len(plan['selected']):,} listings | {plan['scope']}")
-    console.print(f"gamma={args.gamma}/second | fractional sizes | long, short, long+short")
+    console.print(f"Discount: {discount['mode']} | half-life {discount['half_life_seconds']} seconds | gamma={discount['gamma_per_second']:.9g}/second")
     console.print("Output: " + str(root), soft_wrap=True)
     workers=worker_budget(getattr(args,"workers",None))
     console.print(f"Workers: {workers}; bounded compilation, deterministic market reduction")
@@ -291,6 +292,7 @@ def report_table(report):
     table = Table(title=f"Greedy action values | {report['state']['mode']}")
     for title in ("Action", "Share changes", "Future $", "Discounted $", "vs Hold $"):
         table.add_column(title)
+    settlements = []
     for item in report["actions"]:
         result = item["result"]
         def amount(key):
@@ -299,6 +301,10 @@ def report_table(report):
         changes = ", ".join(f"{k} {v:+.4g}" for k, v in item["changes"].items()) or "hold / wait"
         table.add_row(item["name"], changes, amount("undiscounted_future_profit"),
                       amount("discounted_future_value"), amount("delta_vs_hold"))
+        if result.get('settlement_status') == 'insolvent':
+            settlements.append(f"{item['name']}: insolvent after liquidation; cash deficit ${result['cash_deficit']:.4f}")
+    if settlements:
+        table.caption = '; '.join(settlements)
     return table
 
 
@@ -367,7 +373,9 @@ def main(argv=None):
     build.add_argument("--phase1", required=True, type=Path)
     build.add_argument("--workers",type=int,default=None)
     build.add_argument('--result-file',type=Path)
-    build.add_argument("--gamma", type=float, default=.99, help="Discount per second, default 0.99")
+    discount = build.add_mutually_exclusive_group()
+    discount.add_argument('--half-life-bars',type=float,help='Discount half-life in MACD bars; default 30')
+    discount.add_argument("--gamma", type=float, default=None, help="Explicit per-second discount override")
     build.add_argument("--cost-per-share", type=float, default=0, help="Per transaction, included in prices; default 0")
     evaluate = commands.add_parser("evaluate", help="Score explicit joint actions from a state/request JSON")
     evaluate.add_argument("--dataset", required=True, type=Path)
@@ -376,7 +384,7 @@ def main(argv=None):
     example = commands.add_parser("example", help="Reproduce the B/D action-size table offline")
     example.add_argument("--gamma", type=float, default=.99)
     args = parser.parse_args(argv)
-    if hasattr(args, "gamma") and (not math.isfinite(args.gamma) or not 0 < args.gamma <= 1):
+    if getattr(args, 'gamma', None) is not None and (not math.isfinite(args.gamma) or not 0 < args.gamma <= 1):
         parser.error("gamma must be finite and in (0, 1]")
     return {"build": run_build, "evaluate": run_evaluate, "example": run_example}[args.command](args, Console())
 

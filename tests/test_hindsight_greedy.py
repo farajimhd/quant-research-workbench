@@ -132,6 +132,77 @@ def test_short_release_locks_sale_proceeds_and_no_double_count():
     assert closed["realized_pnl_now"] == 2
 
 
+def test_forced_insolvent_short_liquidation_records_deficit_without_refunding():
+    row = illustrative_row('S',25,0,0,1,'short')
+    row.update(can_open=False,session_terminal=True,value_available=False)
+    state = ActionTable([row],[Position('S','short',1,10,10)],mode='short')
+    closed = state.evaluate({'S:short':-1})
+    assert closed['feasible'] and closed['settlement_status'] == 'insolvent'
+    assert closed['cash_after'] == -5 and closed['cash_deficit'] == 5
+    assert closed['realized_pnl_now'] == -15 and closed['resulting_shares']['S:short'] == 0
+    assert closed['discounted_future_value'] == 0
+    assert not state.evaluate({})['feasible']
+    assert not state.evaluate({'S:short':-.5})['feasible']
+    assert not state.evaluate({'S:short':1})['feasible']
+    assert not state.evaluate({'S:short':-2})['feasible']
+    assert state.cash == 0  # No capital injection or state mutation.
+    output = StringIO()
+    Console(file=output,width=100,color_system=None).print(report_table(dict(state=state.describe(),actions=[
+        dict(name='Liquidate',changes={'S:short':-1},result=closed)])))
+    assert 'insolvent' in output.getvalue() and '$5.0000' in output.getvalue()
+    row['session_terminal'] = False
+    assert not ActionTable([row],[Position('S','short',1,10,10)],mode='short').evaluate({'S:short':-1})['feasible']
+
+
+def test_hold_value_does_not_require_new_entry_and_does_not_enter_market_ranking():
+    frame = phase1_rows().with_columns(pl.lit(.05).alias('decision_price'),pl.lit(True).alias('price_valid'),
+        pl.lit(.02).alias('long_target_price'),pl.lit(.02).alias('short_target_price'))
+    values = coefficients(frame,1,.1,valuation_basis='price_action').filter(pl.col('side') == 'short')
+    row = values.row(0,named=True)
+    assert not row['can_open'] and not row['open_value_available'] and not row['value_available']
+    assert row['can_close'] and row['hold_value_available']
+    assert row['open_value_per_share'] is None
+    assert row['hold_value_per_share'] == pytest.approx(.03)
+    state = ActionTable([row],[Position('B','short',1,1,1)],mode='short')
+    assert state.evaluate({})['discounted_future_value'] == pytest.approx(.03)
+    assert state.evaluate({'B:short':-.5})['discounted_future_value'] == pytest.approx(.015)
+    assert state.evaluate({'B:short':-1})['feasible']
+    assert not state.evaluate({'B:short':.5})['feasible']
+    assert flat_policy(summarize(values,'short'))['chosen_action'].to_list() == ['wait']*3
+    unknown = coefficients(frame.with_columns(pl.lit('no_future_macd_target').alias('short_status')),
+                           1,.1,valuation_basis='price_action').filter(pl.col('side') == 'short').row(0,named=True)
+    assert not unknown['hold_value_available']
+
+
+def test_negative_after_cost_target_remains_a_known_loss():
+    frame = phase1_rows().with_columns(pl.lit(.05).alias('decision_price'),pl.lit(True).alias('price_valid'),
+        pl.lit(.02).alias('long_target_price'),pl.lit(.02).alias('short_target_price'))
+    row = coefficients(frame,1,.1,valuation_basis='price_action').filter(pl.col('side') == 'long').row(0,named=True)
+    assert row['open_value_available'] and row['hold_value_available']
+    assert row['open_profit_per_share'] == pytest.approx(-.23)
+    assert row['hold_profit_per_share'] == pytest.approx(-.03)
+
+
+@pytest.mark.parametrize('resolution',[.1,1.,5.,60.])
+def test_discount_scales_with_macd_resolution_not_realized_episode_length(resolution):
+    from src.market_engine.hindsight_greedy import discount_policy
+    policy = discount_policy(resolution)
+    assert policy['half_life_bars'] == 30 and policy['half_life_seconds'] == 30*resolution
+    frame = phase1_rows().with_columns(pl.lit(30*resolution).alias('long_hold_seconds'),
+                                     pl.lit(60*resolution).alias('short_hold_seconds'))
+    result = coefficients(frame,macd_resolution_seconds=resolution)
+    assert result.filter(pl.col('side') == 'long')['discount'].to_list() == pytest.approx([.5]*3)
+    assert result.filter(pl.col('side') == 'short')['discount'].to_list() == pytest.approx([.25]*3)
+    assert discount_policy(resolution,gamma=.99)['gamma_per_second'] == .99
+
+
+@pytest.mark.parametrize('kwargs',[{'half_life_bars':0},{'half_life_bars':float('nan')},
+    {'half_life_bars':30,'gamma':.99},{'macd_resolution_seconds':0},{'macd_resolution_seconds':float('inf')}])
+def test_invalid_discount_configuration_fails(kwargs):
+    from src.market_engine.hindsight_greedy import discount_policy
+    with pytest.raises(ValueError): discount_policy(**kwargs)
+
+
 def test_three_modes_and_reversal_require_close_of_other_side():
     rows = [illustrative_row("B", 10, 3, 4, .99, side) for side in ("long", "short")]
     for mode, keys in [("long", {"B:long"}), ("short", {"B:short"}), ("long_short", {"B:long", "B:short"})]:

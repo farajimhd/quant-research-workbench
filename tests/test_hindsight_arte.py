@@ -137,7 +137,10 @@ def test_runnable_phase1_phase2_and_resume(tmp_path,monkeypatch):
     assert plan['valuation_basis'] == 'price_action' and plan['version'] == labels.VERSION
     output = pl.read_parquet(next((p1/'listings').glob('*/opportunities.parquet')))
     assert not any('quote' in c or c in ('bid','ask') for c in output.columns)
-    assert read(__import__('pathlib').Path(summary['results'][0]['phase2_root'])/'plan.json')['valuation_basis'] == 'price_action'
+    p2plan = read(__import__('pathlib').Path(summary['results'][0]['phase2_root'])/'plan.json')
+    assert p2plan['valuation_basis'] == 'price_action'
+    assert p2plan['discount_policy']['half_life_bars'] == 30
+    assert p2plan['discount_policy']['half_life_seconds'] == 30
     assert runner.main(args) == 0
     p1 = root/'days'/str(DAY)/'phase1'
     assert read(p1/'summary.json')['counts']['reused'] == 1

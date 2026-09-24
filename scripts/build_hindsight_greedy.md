@@ -9,6 +9,9 @@ liquidity. The quote-based descriptions below apply to legacy Phase 1 datasets.
 V3 adds forced liquidation at 19:58 ET. Terminal coefficients cannot open new
 positions, and the state evaluator requires all existing holdings to be closed.
 Flat-state tables retain a terminal flag and select wait after liquidation.
+Mandatory full liquidation can settle with negative cash: the evaluator preserves
+the loss and reports `settlement_status=insolvent` and `cash_deficit`. It does not
+inject cash. Other actions remain subject to the existing funding constraints.
 
 For both phases across multiple dates, see [the dataset campaign](build_hindsight_dataset.md).
 The standalone `build` also accepts `--workers`; compilation is bounded and
@@ -33,11 +36,18 @@ The build requires `complete.json` from Phase 1. Substitute a completed canary
 directory to validate a subset; its canary scope is retained. Missing completion,
 source hashes, exact dense time grids or listing identity fail explicitly.
 
-Defaults: fractional shares, `--gamma 0.99` **per second**, and
+Defaults: fractional shares, `--half-life-bars 30` **MACD bars**, and
 `--cost-per-share 0` per transaction. Costs, if configured, are incorporated once
 into entry and exit prices. A positive cost uses ask+cost / bid-cost for a long,
 and bid-cost / ask+cost for a short. Prices already include the bid/ask spread.
 Time remains exact to microseconds when discounting Phase 1 targets.
+The discount is `0.5 ** (remaining_seconds / (30 * macd_resolution_seconds))`:
+30 seconds at 1-second MACD resolution, or 150 seconds at 5-second resolution.
+The compiler reads the resolution from the Phase 1 plan; supported older plans
+without this field use their original 1-second resolution. `--gamma` remains an
+explicit per-second override, mutually exclusive with `--half-life-bars`.
+Plans record the resolved policy and effective gamma. The illustrative `example`
+command retains its explicit 0.99 gamma for reproducibility.
 
 Three order modes are generated: `long`, `short`, and `long_short`. They share
 coefficients instead of storing duplicate market data. The combined mode allows
@@ -84,6 +94,10 @@ total_future_value = baseline + action_increment
 Retained shares are not charged the entry spread again. Profit accrued before
 the decision is excluded from future value; realized P&L from reductions is
 reported separately. A short uses the opposite price-difference sign.
+`open_value_available` and `hold_value_available` are independent: inability to
+open a new position does not erase a known value for an existing holding.
+Legacy `value_available` continues to describe opening/ranking availability.
+After-cost negative target proceeds remain known losses, not missing outcomes.
 
 These piecewise-linear formulas represent **every fractional joint action**,
 including arbitrary partial reductions funding multiple purchases. No list of
