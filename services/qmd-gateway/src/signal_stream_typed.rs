@@ -4,6 +4,7 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use ring::digest::{digest, SHA256};
+use serde::Serialize;
 use serde_json::{json, Map, Number, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -29,8 +30,7 @@ pub const FIELD_CATALOG_SQL: &str = r#"CREATE TABLE q_live.signal_stream_field_c
     schema_version UInt16, configuration_revision String, signal_stream_id String,
     field_instance_id FixedString(64), column_id String, source_id String,
     value_type LowCardinality(String), interval_id String, aggregation_id String,
-    source_path String, provenance String, query_plan_id String, available_at_contract String,
-    catalog_sha256 FixedString(64)
+    source_path String, provenance String, query_plan_id String, available_at_contract String
 ) ENGINE = MergeTree
 PARTITION BY tuple()
 ORDER BY (configuration_revision, signal_stream_id, field_instance_id)
@@ -59,7 +59,7 @@ PARTITION BY session_key
 ORDER BY (session_key, sequence, event_id)
 SETTINGS storage_policy = 'live_market_ssd'"#;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FieldBinding {
     pub stream_id: String,
     pub column_id: String,
@@ -74,7 +74,7 @@ pub struct FieldBinding {
     pub field_instance_id: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum ScalarValue {
     Float(f64),
     Int(i64),
@@ -84,13 +84,13 @@ pub enum ScalarValue {
     Time(DateTime<Utc>),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FieldEvidence {
     pub field_instance_id: String,
     pub value: ScalarValue,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SqueezeEvidence {
     pub episode_id: String,
     pub role: String,
@@ -101,7 +101,7 @@ pub struct SqueezeEvidence {
     pub high_water_pct: f64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TypedOccurrence {
     pub session_key: String,
     pub sequence: u64,
