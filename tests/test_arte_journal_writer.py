@@ -38,7 +38,7 @@ def batch() -> TypedJournalBatch:
         "batch_id": BATCH, "record_id": RECORD, "sequence": 1,
         "event_time": "2026-08-18T08:05:00+00:00",
         "recorded_at": "2026-08-18T08:05:01+00:00",
-        "category": "execution", "entity_type": "fill", "entity_id": "fill-1",
+        "category": "run_state", "entity_type": "lifecycle", "entity_id": "run-1",
         "account_id": "DU1", "correlation_id": "c1", "causation_id": "k1",
     })
     return TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
@@ -195,6 +195,20 @@ def test_typed_publication_rejects_orphan_rows_in_empty_family() -> None:
     assert "trading_commit_v1" not in client.inserts
 
 
+def test_event_details_are_required_and_unmapped_events_fail_closed() -> None:
+    original = batch()
+    base = dict(original.events[0])
+    base.pop("content_hash")
+    for category, entity_type in (("execution", "fill"),
+                                  ("order_management", "order_command"),
+                                  ("strategy_decision", "signal")):
+        event = {**base, "category": category, "entity_type": entity_type}
+        item = TypedJournalBatch(RUN, original.run_month, ATTEMPT, BATCH, ZERO,
+                                 1, 1, "bucket-1", "running", (event,))
+        with pytest.raises(ValueError, match="required typed detail|no typed contract"):
+            publish_typed_batch(MemoryClient(), item)
+
+
 def test_typed_publication_rejects_out_of_order_prefix() -> None:
     client = MemoryClient()
     item = batch()
@@ -272,5 +286,5 @@ def test_submission_snapshot_is_immutable_and_hashing_stays_off_caller(monkeypat
         pending = TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
                                     1, 1, "bucket-1", "running", (source,))
     source["entity_id"] = "changed-after-submit"
-    assert pending.events[0]["entity_id"] == "fill-1"
+    assert pending.events[0]["entity_id"] == "run-1"
     assert publish_typed_batch(MemoryClient(), pending) == BATCH

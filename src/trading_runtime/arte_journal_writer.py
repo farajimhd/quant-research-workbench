@@ -37,6 +37,15 @@ _FAMILIES = (
      "position_snapshot_hash"),
 )
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
+_EVENT_DETAILS = {
+    ("run_state", "lifecycle"): None,
+    ("execution", "fill"): "trading_execution_v1",
+    ("execution", "commission"): "trading_commission_v1",
+    ("order_management", "order_command"): "trading_order_command_v1",
+    ("order_management", "order_transition"): "trading_order_transition_v1",
+    ("snapshot", "portfolio"): "trading_account_snapshot_v1",
+    ("snapshot", "position"): "trading_position_snapshot_v1",
+}
 _COMMIT_COLUMNS = tuple(name for name, _ in _CONTRACTS["trading_commit_v1"].columns
                         if name not in ("run_month", "committed_at"))
 
@@ -129,6 +138,22 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
     for row in by_family["trading_position_snapshot_v1"]:
         if (str(row["account_id"]), str(row["snapshot_id"])) not in account_snapshots:
             raise ValueError("Position snapshot lacks its complete account snapshot")
+    details_by_record: dict[str, str] = {}
+    for name, rows in result:
+        if name == "trading_event_v1":
+            continue
+        for row in rows:
+            record_id = str(UUID(str(row["record_id"])))
+            if record_id in details_by_record:
+                raise ValueError("Journal event has multiple typed detail families")
+            details_by_record[record_id] = name
+    for event in by_family["trading_event_v1"]:
+        key = (str(event["category"]), str(event["entity_type"]))
+        if key not in _EVENT_DETAILS:
+            raise ValueError(f"Journal event has no typed contract: {key}")
+        record_id = str(UUID(str(event["record_id"])))
+        if details_by_record.get(record_id) != _EVENT_DETAILS[key]:
+            raise ValueError("Journal event lacks its required typed detail")
     return tuple(result)
 
 
