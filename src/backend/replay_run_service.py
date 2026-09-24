@@ -4210,7 +4210,6 @@ class ReplayRunController:
             # fields and scanning assignments for hundreds of unrelated
             # tickers while preserving the causal VWAP history needed if this
             # ticker is admitted later.
-            self._remember_strategy_frame(frame)
             self._frame_cursor = {
                 "as_of": frame.as_of.astimezone(UTC).isoformat(),
                 "ticker": frame.ticker,
@@ -4231,7 +4230,6 @@ class ReplayRunController:
             # and event/session sourced. Before it passes, higher-frequency
             # veto evaluation cannot authorize an entry and only creates
             # redundant wait decisions.
-            self._remember_strategy_frame(frame)
             self._frame_cursor = {
                 "as_of": frame.as_of.astimezone(UTC).isoformat(),
                 "ticker": frame.ticker,
