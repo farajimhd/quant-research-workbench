@@ -130,13 +130,14 @@ def test_journal_principal_cannot_write_market_or_change_schema() -> None:
               "structural_level_coverage_v7", "structural_level_observations_v7",
               "structural_levels_v7"}
     journal = {table.name for table in TABLES}
+    unrelated = "unrelated_operator_table_v1"
 
     class Grants:
         extra_grant = ""
 
         def execute(self, sql: str) -> str:
             if "FROM system.tables" in sql:
-                return "\n".join(json.dumps({"name": name}) for name in sorted(market | journal))
+                return "\n".join(json.dumps({"name": name}) for name in sorted(market | journal | {unrelated}))
             if sql.startswith("CHECK GRANT "):
                 privilege, scope = sql.removeprefix("CHECK GRANT ").split(" ON ")
                 if sql == self.extra_grant:
@@ -151,6 +152,7 @@ def test_journal_principal_cannot_write_market_or_change_schema() -> None:
     client = Grants()
     journal_permission_preflight(client)
     for grant in ("CHECK GRANT INSERT ON arte.bars_v1",
+                  "CHECK GRANT INSERT ON arte.unrelated_operator_table_v1",
                   "CHECK GRANT INSERT ON arte.*",
                   "CHECK GRANT CREATE TABLE ON arte.*",
                   "CHECK GRANT DROP TABLE ON arte.bars_v1",

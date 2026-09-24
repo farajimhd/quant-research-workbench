@@ -16,6 +16,10 @@ action. Trading and Backtest accounts can only insert their own journal rows
 and select required market and journal rows. They cannot create tables or
 insert/update/delete any `arte` market product. Startup checks the table policy
 and actual part placement before admitting a run.
+The journal principal needs SELECT on the typed journal and required market
+products only. Grant preflight audits every discovered `arte` table for
+forbidden INSERT or mutation rights, but does not require SELECT on unrelated
+operator-owned tables.
 
 The shared typed-journal client uses `TRADING_JOURNAL_CLICKHOUSE_URL`,
 `TRADING_JOURNAL_CLICKHOUSE_USER`, and `TRADING_JOURNAL_CLICKHOUSE_PASSWORD`.

@@ -738,9 +738,10 @@ def journal_permission_preflight(client: Any) -> None:
     for privilege in ("CREATE TABLE", "INSERT", "ALTER", "DROP TABLE", "TRUNCATE"):
         if allowed(privilege, "arte.*"):
             raise ValueError(f"Journal principal has broad arte {privilege} authority")
+    readable = journal | market
     for name in sorted(tables):
         target = f"arte.{name}"
-        if not allowed("SELECT", target):
+        if name in readable and not allowed("SELECT", target):
             raise ValueError(f"Journal principal cannot read {target}")
         if allowed("ALTER", target) or allowed("DROP TABLE", target) or allowed("TRUNCATE", target):
             raise ValueError(f"Journal principal may alter or remove {target}")
