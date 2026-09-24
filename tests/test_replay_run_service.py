@@ -1707,6 +1707,33 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
 
 
 class ReplayRunServiceCapacityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_blocked_backtest_launch_cannot_create_run_local_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = ReplayRunService(runtime_root=root)
+            for interval, plan in (
+                ("events", {}),
+                ("100ms", {"token": "certified", "execution_interval": {"milliseconds": 100}}),
+            ):
+                with self.subTest(interval=interval):
+                    approved = approved_configuration()
+                    approved["payload"]["strategy"]["parameters"]["hindsight_long_contract"] = True
+                    definition = ReplayRunDefinition(
+                        session_date=date(2026, 8, 18), start_time=time(4),
+                        mode=RunMode.BACKTEST, execution_interval=interval,
+                        tickers=("AAPL",),
+                        market_data_plan=plan,
+                        configuration_revision=approved,
+                    )
+                    controller = ReplayRunController(definition, runtime_root=root)
+                    with self.assertRaisesRegex(RuntimeError, "Backtest"):
+                        await controller.start()
+                    self.assertFalse(controller.run_dir.exists())
+                    with self.assertRaisesRegex(RuntimeError, "Backtest"):
+                        await service.create(definition)
+                    self.assertEqual(service._runs, {})
+                    self.assertEqual(list(root.iterdir()), [])
+
     async def test_evicts_only_the_oldest_terminal_resident_run(self) -> None:
         service = ReplayRunService(
             runtime_root=Path(tempfile.gettempdir()),

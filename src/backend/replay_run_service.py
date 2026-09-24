@@ -1078,6 +1078,14 @@ class ReplaySignalEvent:
     ticker: str
 
 
+def _backtest_launch_blocker(definition: ReplayRunDefinition) -> str:
+    from src.backend.backtest_market_data import (
+        EVENT_EXECUTION_BLOCKER, FIXED_EXECUTION_BLOCKER, ExecutionInterval,
+    )
+    interval = ExecutionInterval.parse(definition.execution_interval)
+    return FIXED_EXECUTION_BLOCKER if interval.kind == "fixed" else EVENT_EXECUTION_BLOCKER
+
+
 class ReplayRunController:
     """One durable event-time Replay run over the shared trading runtime."""
 
@@ -1284,6 +1292,8 @@ class ReplayRunController:
             raise ValueError('Archived runs are read-only; create a new V7 run')
         if self._task is not None:
             return
+        if self.definition.mode == RunMode.BACKTEST:
+            raise RuntimeError(_backtest_launch_blocker(self.definition))
         self.run_dir.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(self._write_approved_configuration)
         self._write_manifest()
@@ -8175,6 +8185,9 @@ class ReplayRunService:
 
     async def create(self, definition: ReplayRunDefinition) -> ReplayRunController:
         controller = ReplayRunController(definition, runtime_root=self.runtime_root)
+        if definition.mode == RunMode.BACKTEST:
+            # Reject before admission; start() independently protects direct callers.
+            raise RuntimeError(_backtest_launch_blocker(definition))
         await self._admit(controller)
         await controller.start()
         return controller

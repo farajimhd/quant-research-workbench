@@ -222,3 +222,8 @@ live command acknowledgment before send; broker reconciliation; Backtest
 continuous/resumed equality; and cold restart after deletion of run-local
 files. Until those checks pass, the existing live runtime must not be switched
 to an incomplete journal and the fixed Backtest execution guard stays closed.
+Normal Backtest launch also checks the guard before creating a run directory,
+approved-configuration file, or manifest. This protects direct controller and
+service callers as well as UI preflight; it is removed only with a verified
+disk-free typed runtime cutover. Backtest Debug remains a separate legacy
+fixture path and is not evidence that normal Backtest is cut over.
