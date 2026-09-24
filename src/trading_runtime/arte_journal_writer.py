@@ -1783,6 +1783,46 @@ class ArteJournalWriter:
                 raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
         return receipt
 
+    def submit_admission(
+        self, batch: TypedJournalBatch, captured: CapturedPortfolioSnapshot,
+    ) -> Future[str]:
+        """Atomically queue an admission's events, recovery image, and fence.
+
+        Only the barrier receipt is exposed: its success means both earlier
+        publications were acknowledged. The realtime caller never waits for
+        capacity or network I/O and must retain its Keeper claim on failure.
+        """
+        from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
+
+        if not isinstance(batch, TypedJournalBatch) or not isinstance(
+            captured, CapturedPortfolioSnapshot
+        ):
+            raise TypeError("Admission requires typed events and a frozen portfolio capture")
+        if batch.run_id != self._run_id or captured.run_id != self._run_id:
+            raise ValueError("Typed admission cannot mix runs")
+        if (not captured.account_id or type(captured.state_revision) is not int
+                or captured.state_revision < 1
+                or not isinstance(captured.snapshot_at, datetime)
+                or captured.snapshot_at.tzinfo is None
+                or any(str(event["account_id"]) not in {"", captured.account_id}
+                       for event in batch.events)
+                or not any(str(event["account_id"]) == captured.account_id
+                           for event in batch.events)):
+            raise ValueError("Typed admission requires one causal account recovery image")
+        with self._submission_lock:
+            if self._closed:
+                raise RuntimeError("Typed journal writer is closed")
+            if self._error is not None:
+                raise RuntimeError("Typed journal writer failed") from self._error
+            if self._queue.maxsize - self._queue.qsize() < 3:
+                raise JournalQueueFull("Typed admission needs three queue slots; stop admission")
+            barrier: Future[str] = Future()
+            self._queue.put_nowait((batch, Future()))
+            self._queue.put_nowait((captured, Future()))
+            self._queue.put_nowait((_DurabilityBarrier(), barrier))
+            self._accepted_writes = True
+        return barrier
+
     def _run(self) -> None:
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot

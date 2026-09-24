@@ -11,6 +11,7 @@ from uuid import UUID
 import pytest
 
 from src.trading_runtime import arte_journal_writer as writer_module
+from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
 from src.trading_runtime.arte_journal_projection import (
     broker_fill_batch, commission_revision_batch, runtime_lifecycle_batch,
     operational_fault_batch,
@@ -120,6 +121,15 @@ def batch() -> TypedJournalBatch:
     })
     return TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
                              1, 1, "bucket-1", "running", (event,))
+
+
+def captured() -> CapturedPortfolioSnapshot:
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    return CapturedPortfolioSnapshot(
+        RUN, "DU1", 1, at, "primary", "enabled", "synchronized",
+        "broker-snapshot-1", at, "", 1000.0, None, None,
+        (), (), (), (), (), (),
+    )
 
 
 def run_row() -> dict:
@@ -838,6 +848,53 @@ def test_ordered_barrier_receipt_waits_for_prior_commit_without_blocking_submit(
         journal.close()
 
 
+def test_admission_queues_events_snapshot_and_barrier_as_one_unit(monkeypatch) -> None:
+    from src.trading_runtime import arte_portfolio_snapshot as snapshot_module
+
+    published = []
+
+    def publish_events(_client, item):
+        published.append("events")
+        return item.batch_id
+
+    def publish_snapshot(_client, prepared):
+        assert isinstance(prepared, snapshot_module.PreparedPortfolioSnapshot)
+        published.append("portfolio")
+        return "s" * 64
+
+    monkeypatch.setattr(writer_module, "publish_typed_batch", publish_events)
+    monkeypatch.setattr(snapshot_module, "publish_prepared_portfolio_snapshot", publish_snapshot)
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=3)
+    try:
+        receipt = journal.submit_admission(batch(), captured())
+        assert receipt.result(timeout=5) == "s" * 64
+        assert published == ["events", "portfolio"]
+    finally:
+        journal.close()
+
+
+def test_admission_rejects_insufficient_queue_capacity_without_partial_enqueue(monkeypatch) -> None:
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
+    try:
+        with pytest.raises(JournalQueueFull, match="three queue slots"):
+            journal.submit_admission(batch(), captured())
+        with pytest.raises(ValueError, match="one causal account"):
+            journal.submit_admission(batch(), replace(captured(), account_id="other"))
+        with pytest.raises(ValueError, match="one causal account"):
+            journal.submit_admission(batch(), replace(captured(), state_revision=0))
+        with pytest.raises(ValueError, match="prior journal write"):
+            journal.submit_barrier()
+        assert journal._queue.empty()
+    finally:
+        journal.close()
+
+
 def test_ordered_barrier_propagates_prior_publication_failure(monkeypatch) -> None:
     entered, release = Event(), Event()
 
@@ -868,6 +925,7 @@ def test_ordered_barrier_propagates_prior_publication_failure(monkeypatch) -> No
 
 def test_keeper_claim_stays_held_until_typed_writer_barrier(monkeypatch) -> None:
     from src.trading_runtime.keeper_receipts import KeeperReceiptSupervisor
+    from src.trading_runtime import arte_portfolio_snapshot as snapshot_module
 
     entered, release = Event(), Event()
     released = Event()
@@ -889,20 +947,22 @@ def test_keeper_claim_stays_held_until_typed_writer_barrier(monkeypatch) -> None
             return True
 
     monkeypatch.setattr(writer_module, "publish_typed_batch", stalled)
+    monkeypatch.setattr(snapshot_module, "publish_prepared_portfolio_snapshot",
+                        lambda _client, _prepared: "s" * 64)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
-    journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=3)
     supervisor = KeeperReceiptSupervisor(Coordinator())
     try:
-        journal.submit(batch())
+        barrier = journal.submit_admission(batch(), captured())
         assert entered.wait(5)
         completion = supervisor.watch(({
             "resource_id": "portfolio-account:DU1", "owner_id": RUN, "epoch": 1,
-        },), journal.submit_barrier())
+        },), barrier)
         assert not completion.done() and not released.is_set()
         release.set()
-        assert completion.result(timeout=5) == BATCH
+        assert completion.result(timeout=5) == "s" * 64
         assert released.is_set()
     finally:
         release.set()
