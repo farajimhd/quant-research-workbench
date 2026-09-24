@@ -230,6 +230,9 @@ def project_journal_record(
     batch_id: str, prior_batch_id: str, source_cursor: str,
     expected_config: dict[str, Any] | None = None,
     expected_mode: str | None = None,
+    fixed_market_parent_plan: Any | None = None,
+    fixed_market_execution_plan: Any | None = None,
+    expected_market_start: datetime | None = None,
 ) -> TypedJournalBatch:
     """Strict shared entry point for existing live/Backtest journal records.
 
@@ -255,6 +258,101 @@ def project_journal_record(
         return intent_decision_batch(record, **identity)
     if kind == ("checkpoint", "market_boundary"):
         return backtest_cursor_batch(record, **identity)
+    if kind == ("data_authority", "source_revision"):
+        if (fixed_market_parent_plan is None
+                or fixed_market_execution_plan is None
+                or expected_market_start is None):
+            raise ValueError("Fixed market authority requires pinned parent/execution plans")
+        from src.backend.backtest_fixed_market_authority import project_fixed_market_authority
+        projected = project_fixed_market_authority(
+            record, parent_plan=fixed_market_parent_plan,
+            execution_plan=fixed_market_execution_plan,
+            expected_event_time=expected_market_start,
+        )
+        if record.recorded_at.tzinfo is None:
+            raise ValueError("Fixed market authority recorded time is naive")
+        month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+        event = {
+            "run_id": record.run_id, "event_month": month,
+            "attempt_id": attempt_id, "batch_id": batch_id,
+            "record_id": record.record_id, "sequence": record.sequence,
+            "event_time": projected.source_event_time.isoformat(),
+            "recorded_at": record.recorded_at.astimezone(timezone.utc).isoformat(),
+            "category": record.category, "entity_type": record.entity_type,
+            "entity_id": record.entity_id, "account_id": "",
+            "correlation_id": str(record.payload.get("correlation_id") or ""),
+            "causation_id": str(record.payload.get("causation_id") or ""),
+        }
+        detail = {
+            "record_id": record.record_id, "run_id": record.run_id,
+            "event_month": month, "batch_id": batch_id, "account_id": "",
+            "execution_plan_token": projected.execution_plan_token,
+            "parent_market_plan_token": projected.parent_market_plan_token,
+        }
+        return TypedJournalBatch(
+            record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+            record.sequence, record.sequence, source_cursor, "running", (event,),
+            backtest_market_authorities=(detail,),
+        )
+    if kind == ("strategy_decision", "signal"):
+        from dataclasses import fields
+        payload = dict(record.payload)
+        signal_fields = {field.name for field in fields(StrategySignal)}
+        required = signal_fields | {"strategy_id", "strategy_revision"}
+        if set(payload) - {"correlation_id", "causation_id"} != required:
+            raise ValueError("Strategy signal record has missing or unmodeled fields")
+        event_time = payload["event_time"]
+        if isinstance(event_time, str):
+            event_time = datetime.fromisoformat(event_time)
+        if (not isinstance(event_time, datetime) or event_time.tzinfo is None
+                or record.event_time.tzinfo is None
+                or event_time.astimezone(timezone.utc)
+                != record.event_time.astimezone(timezone.utc)
+                or payload["signal_id"] != record.entity_id
+                or type(payload["strategy_revision"]) is not int
+                or payload["strategy_revision"] < 0
+                or not isinstance(payload["strategy_id"], str)
+                or not payload["strategy_id"]):
+            raise ValueError("Strategy signal record identity is invalid")
+        signal_values = {key: payload[key] for key in signal_fields}
+        signal_values["event_time"] = event_time
+        metadata = payload["metadata"]
+        common_metadata = {"assignment_id", "reference_price", "status",
+                           "reason_code", "reason_detail", "correlation_id",
+                           "causation_id"}
+        if not isinstance(metadata, dict) or set(metadata) not in (set(), common_metadata):
+            raise ValueError("Backtest signal metadata lacks a concrete typed catalog")
+        if metadata and (any(not isinstance(metadata[key], str) or not metadata[key]
+                             for key in common_metadata - {"reference_price"})
+                         or metadata["reason_code"] != payload["reason"]
+                         or metadata["correlation_id"] != payload.get("correlation_id")
+                         or metadata["causation_id"] != payload.get("causation_id")):
+            raise ValueError("Backtest signal decision metadata is invalid")
+        if (any(not isinstance(payload.get(key), str) for key in (
+                "signal_id", "signal_type", "ticker", "action", "direction",
+                "reason", "working_timeframe", "strategy_id"))
+                or not isinstance(payload["ticker"], str)
+                or payload["ticker"] != payload["ticker"].upper()
+                or not isinstance(payload["source_signal_ids"], (tuple, list))
+                or not isinstance(payload["metadata"], dict)
+                or any(not isinstance(payload.get(key), str) for key in (
+                    "correlation_id", "causation_id") if key in payload)):
+            raise ValueError("Backtest signal fields require exact typed values")
+        signal = StrategySignal(**signal_values)
+        return strategy_signal_batch(
+            signal, run_id=record.run_id, run_month=run_month,
+            account_id=record.account_id,
+            strategy_id=payload["strategy_id"],
+            strategy_revision=payload["strategy_revision"],
+            attempt_id=attempt_id, batch_id=batch_id,
+            prior_batch_id=prior_batch_id, sequence=record.sequence,
+            source_cursor=source_cursor, run_status="running",
+            recorded_at=record.recorded_at, record_id=record.record_id,
+            correlation_id=str(payload.get("correlation_id") or ""),
+            causation_id=str(payload.get("causation_id") or ""),
+            persist_metadata_nodes=False,
+            decision_metadata=metadata or None,
+        )
     if kind == ("resource_lease", "prepared_v7_stream"):
         return prepared_v7_lease_batch(record, **identity)
     raise ValueError(
@@ -1176,6 +1274,11 @@ def strategy_signal_batch(
     attempt_id: str, batch_id: str, prior_batch_id: str,
     sequence: int, source_cursor: str, run_status: str,
     recorded_at: datetime,
+    record_id: str | None = None,
+    correlation_id: str = "",
+    causation_id: str = "",
+    persist_metadata_nodes: bool = True,
+    decision_metadata: Mapping[str, Any] | None = None,
 ) -> TypedJournalBatch:
     """Project a signal only when every source and evidence field is represented."""
     if not signal.signal_id or not signal.ticker or not strategy_id or not account_id:
@@ -1191,7 +1294,7 @@ def strategy_signal_batch(
     at = signal.event_time.astimezone(timezone.utc).isoformat()
     received = recorded_at.astimezone(timezone.utc).isoformat()
     month = signal.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
-    record_id = str(uuid5(NAMESPACE_URL,
+    record_id = record_id or str(uuid5(NAMESPACE_URL,
         f"{run_id}:{batch_id}:{strategy_id}:{signal.signal_id}:signal"))
     event = {
         "run_id": run_id, "event_month": month, "attempt_id": attempt_id,
@@ -1199,11 +1302,16 @@ def strategy_signal_batch(
         "event_time": at, "recorded_at": received,
         "category": "strategy_decision", "entity_type": "signal",
         "entity_id": signal.signal_id, "account_id": account_id,
-        "correlation_id": "", "causation_id": "",
+        "correlation_id": correlation_id, "causation_id": causation_id,
     }
-    evidence_nodes = project_signal_evidence_nodes(
+    if not persist_metadata_nodes and signal.metadata and decision_metadata is None:
+        raise ValueError("Backtest signal metadata lacks a concrete typed catalog")
+    if decision_metadata is not None and dict(decision_metadata) != signal.metadata:
+        raise ValueError("Strategy signal decision metadata differs from its source")
+    evidence_nodes = (project_signal_evidence_nodes(
         signal.metadata, run_id=run_id, event_month=month,
         batch_id=batch_id, parent_record_id=record_id)
+        if persist_metadata_nodes else ())
     detail = {
         "record_id": record_id, "run_id": run_id, "event_month": month,
         "batch_id": batch_id, "account_id": account_id,
@@ -1219,6 +1327,14 @@ def strategy_signal_batch(
                                if signal.invalidation_price is not None else None),
         "source_signal_count": len(signal.source_signal_ids),
         "evidence_node_count": len(evidence_nodes),
+        "decision_assignment_id": (decision_metadata["assignment_id"]
+                                   if decision_metadata is not None else None),
+        "decision_reference_price": (_exact_decimal(decision_metadata["reference_price"])
+                                     if decision_metadata is not None else None),
+        "decision_status": (decision_metadata["status"]
+                            if decision_metadata is not None else None),
+        "decision_reason_detail": (decision_metadata["reason_detail"]
+                                   if decision_metadata is not None else None),
         "source_event_time": at,
     }
     sources = tuple({
@@ -1234,3 +1350,33 @@ def strategy_signal_batch(
         signals=(detail,), signal_sources=sources,
         signal_evidence_nodes=evidence_nodes,
     )
+
+
+def recover_common_signal_decision_metadata(
+    event: Mapping[str, Any], detail: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Rebuild the compact Backtest metadata from typed detail and envelope."""
+    names = ("decision_assignment_id", "decision_reference_price",
+             "decision_status", "decision_reason_detail")
+    values = tuple(detail.get(name) for name in names)
+    if all(value is None for value in values):
+        return {}
+    if (any(value is None for value in values)
+            or event.get("record_id") != detail.get("record_id")
+            or any(not isinstance(value, str) or not value for value in (
+                detail["decision_assignment_id"], detail["decision_status"],
+                detail["decision_reason_detail"], detail.get("reason"),
+                event.get("correlation_id"), event.get("causation_id")))):
+        raise ValueError("Typed Backtest signal decision metadata is incomplete")
+    price = float(detail["decision_reference_price"])
+    if _exact_decimal(price) != detail["decision_reference_price"]:
+        raise ValueError("Typed Backtest signal reference price cannot round-trip")
+    return {
+        "assignment_id": detail["decision_assignment_id"],
+        "reference_price": price,
+        "status": detail["decision_status"],
+        "reason_code": detail["reason"],
+        "reason_detail": detail["decision_reason_detail"],
+        "correlation_id": event["correlation_id"],
+        "causation_id": event["causation_id"],
+    }

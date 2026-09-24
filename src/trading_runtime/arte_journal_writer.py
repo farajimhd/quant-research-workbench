@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 _CONTRACTS = {table.name: table for table in TABLES}
 _FAMILIES = (
     ("trading_event_v1", "events", "event_count", "event_hash"),
+    ("trading_strategy_assignment_command_v1", "assignment_commands",
+     "assignment_command_count", "assignment_command_hash"),
     ("trading_run_transition_v1", "run_transitions", "run_transition_count",
      "run_transition_hash"),
     ("trading_operational_fault_v1", "operational_faults", "operational_fault_count",
@@ -86,6 +88,8 @@ _FAMILIES = (
      "intent_slice_hash"),
     ("trading_backtest_cursor_v1", "backtest_cursors", "backtest_cursor_count",
      "backtest_cursor_hash"),
+    ("trading_backtest_market_authority_v1", "backtest_market_authorities",
+     "backtest_market_authority_count", "backtest_market_authority_hash"),
     ("trading_backtest_progress_v1", "backtest_progress",
      "backtest_progress_count", "backtest_progress_hash"),
     ("trading_prepared_v7_lease_v1", "prepared_v7_leases",
@@ -101,8 +105,10 @@ _EVENT_DETAILS = {
     ("risk", "risk_snapshot"): "trading_operational_fault_v1",
     ("risk", "continuous_risk_state"): "trading_account_risk_state_v1",
     ("strategy_decision", "signal"): "trading_strategy_signal_v1",
+    ("strategy", "strategy_assignment_command"): "trading_strategy_assignment_command_v1",
     ("strategy", "strategy_intent"): "trading_strategy_intent_v1",
     ("checkpoint", "market_boundary"): "trading_backtest_cursor_v1",
+    ("data_authority", "source_revision"): "trading_backtest_market_authority_v1",
     ("resource_lease", "prepared_v7_stream"): "trading_prepared_v7_lease_v1",
     ("strategy_decision", "intent_rejection"): "trading_intent_decision_v1",
     ("strategy_decision", "intent_deferral"): "trading_intent_decision_v1",
@@ -158,6 +164,7 @@ class TypedJournalBatch:
     source_cursor: str
     status: str
     events: tuple[Mapping[str, Any], ...]
+    assignment_commands: tuple[Mapping[str, Any], ...] = ()
     run_transitions: tuple[Mapping[str, Any], ...] = ()
     operational_faults: tuple[Mapping[str, Any], ...] = ()
     account_risk_states: tuple[Mapping[str, Any], ...] = ()
@@ -187,6 +194,7 @@ class TypedJournalBatch:
     intents: tuple[Mapping[str, Any], ...] = ()
     intent_slices: tuple[Mapping[str, Any], ...] = ()
     backtest_cursors: tuple[Mapping[str, Any], ...] = ()
+    backtest_market_authorities: tuple[Mapping[str, Any], ...] = ()
     backtest_progress: tuple[Mapping[str, Any], ...] = ()
     prepared_v7_leases: tuple[Mapping[str, Any], ...] = ()
 
@@ -311,6 +319,17 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
         record_id = str(UUID(str(event["record_id"])))
         if details_by_record.get(record_id) != _EVENT_DETAILS[key]:
             raise ValueError("Journal event lacks its required typed detail")
+    for authority in by_family["trading_backtest_market_authority_v1"]:
+        parent = events_by_id[str(UUID(str(authority["record_id"]))) ]
+        if (parent["category"] != "data_authority"
+                or parent["entity_type"] != "source_revision"
+                or parent["entity_id"] != "fixed_market_data"
+                or parent["account_id"] or authority["account_id"]
+                or not re.fullmatch(r"[0-9a-f]{64}",
+                                    str(authority["execution_plan_token"]))
+                or not re.fullmatch(r"[0-9a-f]{64}",
+                                    str(authority["parent_market_plan_token"]))):
+            raise ValueError("Fixed market authority differs from its journal event")
     for lease in by_family["trading_prepared_v7_lease_v1"]:
         parent = events_by_id[str(UUID(str(lease["record_id"]))) ]
         if (parent["category"] != "resource_lease"
@@ -995,6 +1014,9 @@ def _verify_run_identity(client: Any, run_id: str) -> dict[str, Any]:
     context = load_typed_run_context(client, run_id)
     from src.trading_runtime.arte_admission_fence import verify_no_incomplete_admissions
     verify_no_incomplete_admissions(client, run_id)
+    if context.get("mode") in {"live", "paper"}:
+        from src.trading_runtime.arte_portfolio_sync import verify_no_incomplete_portfolio_syncs
+        verify_no_incomplete_portfolio_syncs(client, run_id)
     return context
 
 

@@ -549,9 +549,10 @@ class PortfolioManagementEngine:
                     or any(row.account != account_id for row in (open_orders or []))):
                 raise ValueError("Typed broker snapshot has mixed accounts or naive time")
             async with authority.claim(self.run_id, account_id) as lease:
-                if not authority.claim_is_current(lease):
+                if not await asyncio.to_thread(authority.claim_is_current, lease):
                     raise RuntimeError("Typed broker snapshot claim is stale")
-                revision = authority.next_revision(self.run_id, account_id, lease)
+                revision = await asyncio.to_thread(
+                    authority.next_revision, self.run_id, account_id, lease)
                 if type(revision) is not int or revision < 1:
                     raise RuntimeError("Typed broker snapshot revision is invalid")
                 before_differences = dict(self.differences)
@@ -592,17 +593,18 @@ class PortfolioManagementEngine:
                     candidate.sync_state = PortfolioSyncState.SYNCHRONIZED
                     candidate.stale_reason = ""
                     from src.trading_runtime.arte_portfolio_snapshot import capture_portfolio_snapshot
-                    captured = capture_portfolio_snapshot(
+                    captured = await asyncio.to_thread(
+                        capture_portfolio_snapshot,
                         run_id=self.run_id, state_revision=revision,
                         snapshot_at=now, state=candidate,
-                        reservations=self.reservations.values(),
-                        allocations=self.allocations.values(),
-                        reconciliation=candidate_differences.values())
+                        reservations=tuple(self.reservations.values()),
+                        allocations=tuple(self.allocations.values()),
+                        reconciliation=tuple(candidate_differences.values()))
                     publication_attempted = True
                     receipt = await authority.publish(records, captured, lease)
                     if (receipt.run_id != self.run_id or receipt.account_id != account_id
                             or receipt.state_revision != revision
-                            or not authority.claim_is_current(lease)):
+                            or not await asyncio.to_thread(authority.claim_is_current, lease)):
                         raise RuntimeError("Typed broker snapshot receipt differs")
                     self.states[account_id] = candidate
                     self.by_key[candidate.profile.account_key] = candidate

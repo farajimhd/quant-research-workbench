@@ -230,6 +230,15 @@ TABLES = (
         "toYYYYMM(sync_month)", "run_id, account_id, state_revision",
     ),
     TableContract(
+        "trading_portfolio_sync_snapshot_marker_v1",
+        (("run_id", "String"), ("sync_month", "Date"),
+         ("account_id", "String"), ("state_revision", "UInt64"),
+         ("batch_id", "UUID"), ("snapshot_id", "String"),
+         ("captured_at", "DateTime64(6, 'UTC')"),
+         ("content_hash", "FixedString(64)")),
+        "toYYYYMM(sync_month)", "run_id, account_id, state_revision",
+    ),
+    TableContract(
         "trading_backtest_snapshot_anchor_v1",
         (("run_id", "String"), ("anchor_month", "Date"),
          ("account_id", "String"), ("state_revision", "UInt64"),
@@ -412,6 +421,22 @@ TABLES = (
         "toYYYYMM(event_month)", "run_id, parent_record_id, ordinal, record_id",
     ),
     TableContract(
+        "trading_strategy_assignment_command_v1",
+        (
+            ("record_id", "UUID"), ("run_id", "String"),
+            ("event_month", "Date"), ("batch_id", "UUID"),
+            ("account_id", "String"), ("assignment_id", "String"),
+            ("strategy_id", "String"), ("strategy_revision", "UInt32"),
+            ("ticker", "LowCardinality(String)"),
+            ("command", "LowCardinality(String)"),
+            ("status", "LowCardinality(String)"),
+            ("updated_at", "DateTime64(6, 'UTC')"),
+            ("source_event_time", "DateTime64(9, 'UTC')"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, assignment_id, record_id",
+    ),
+    TableContract(
         "trading_strategy_signal_v1",
         (
             ("record_id", "UUID"),
@@ -433,6 +458,10 @@ TABLES = (
             ("invalidation_price", "Nullable(Decimal(38, 10))"),
             ("source_signal_count", "UInt16"),
             ("evidence_node_count", "UInt32"),
+            ("decision_assignment_id", "Nullable(String)"),
+            ("decision_reference_price", "Nullable(Decimal(38, 10))"),
+            ("decision_status", "Nullable(String)"),
+            ("decision_reason_detail", "Nullable(String)"),
             ("source_event_time", "DateTime64(9, 'UTC')"),
             ("content_hash", "FixedString(64)"),
         ),
@@ -950,6 +979,16 @@ TABLES = (
         "toYYYYMM(event_month)", "run_id, parent_record_id, ordinal, record_id",
     ),
     TableContract(
+        "trading_backtest_market_authority_v1",
+        (("record_id", "UUID"), ("run_id", "String"),
+         ("event_month", "Date"), ("batch_id", "UUID"),
+         ("account_id", "String"),
+         ("execution_plan_token", "FixedString(64)"),
+         ("parent_market_plan_token", "FixedString(64)"),
+         ("content_hash", "FixedString(64)")),
+        "toYYYYMM(event_month)", "run_id, event_month, record_id",
+    ),
+    TableContract(
         "trading_backtest_cursor_v1",
         (("record_id", "UUID"), ("run_id", "String"),
          ("event_month", "Date"), ("batch_id", "UUID"),
@@ -1000,6 +1039,7 @@ TABLES = (
             ("first_sequence", "UInt64"),
             ("last_sequence", "UInt64"),
             ("event_count", "UInt32"),
+            ("assignment_command_count", "UInt32"),
             ("signal_count", "UInt32"),
             ("signal_evidence_node_count", "UInt32"),
             ("signal_source_count", "UInt32"),
@@ -1010,6 +1050,7 @@ TABLES = (
             ("account_snapshot_count", "UInt32"),
             ("position_snapshot_count", "UInt32"),
             ("event_hash", "FixedString(64)"),
+            ("assignment_command_hash", "FixedString(64)"),
             ("signal_hash", "FixedString(64)"),
             ("signal_evidence_node_hash", "FixedString(64)"),
             ("signal_source_hash", "FixedString(64)"),
@@ -1025,6 +1066,8 @@ TABLES = (
             ("intent_slice_hash", "FixedString(64)"),
             ("backtest_cursor_count", "UInt32"),
             ("backtest_cursor_hash", "FixedString(64)"),
+            ("backtest_market_authority_count", "UInt32"),
+            ("backtest_market_authority_hash", "FixedString(64)"),
             ("backtest_progress_count", "UInt32"),
             ("backtest_progress_hash", "FixedString(64)"),
             ("prepared_v7_lease_count", "UInt32"),
@@ -1123,6 +1166,20 @@ def schema_ddl() -> tuple[str, ...]:
     return tuple(table.ddl() for table in TABLES)
 
 
+def strategy_assignment_command_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only additive typed assignment-command table and commit proof."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_strategy_assignment_command_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "assignment_command_count UInt32 DEFAULT 0 AFTER event_count",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"assignment_command_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER event_hash",
+    )
+
+
 def backtest_cursor_upgrade_ddl() -> tuple[str, ...]:
     """Operator-only additive typed Backtest cursor and commit-fence fields."""
     by_name = {table.name: table for table in TABLES}
@@ -1134,6 +1191,20 @@ def backtest_cursor_upgrade_ddl() -> tuple[str, ...]:
         "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
         f"backtest_cursor_hash FixedString(64) DEFAULT '{empty_hash}' "
         "AFTER backtest_cursor_count",
+    )
+
+
+def backtest_market_authority_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only typed fixed-market authority and commit proof."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_backtest_market_authority_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "backtest_market_authority_count UInt32 DEFAULT 0 AFTER backtest_cursor_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"backtest_market_authority_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER backtest_market_authority_count",
     )
 
 
@@ -1181,6 +1252,37 @@ def strategy_signal_evidence_upgrade_ddl() -> tuple[str, ...]:
     )
 
 
+def strategy_signal_decision_upgrade_ddl(client: Any) -> tuple[str, ...]:
+    """Operator-only DDL, available only for a quiesced, empty signal table.
+
+    Adding even nullable columns changes the canonical content hash of older
+    signal rows. A nonempty table requires a versioned family and reader.
+    The operator must keep journal writers stopped through installation.
+    """
+    rows = _rows(client,
+        "SELECT count() AS row_count FROM arte.trading_strategy_signal_v1 "
+        "FORMAT JSONEachRow")
+    if (len(rows) != 1 or type(rows[0].get("row_count")) not in (int, str)
+            or not str(rows[0]["row_count"]).isdigit()
+            or int(rows[0]["row_count"]) != 0):
+        raise ValueError(
+            "Strategy signal decision columns require an empty, quiesced table; "
+            "nonempty history needs a versioned schema and reader"
+        )
+    names = (
+        ("decision_assignment_id", "Nullable(String)"),
+        ("decision_reference_price", "Nullable(Decimal(38, 10))"),
+        ("decision_status", "Nullable(String)"),
+        ("decision_reason_detail", "Nullable(String)"),
+    )
+    return tuple(
+        "ALTER TABLE arte.trading_strategy_signal_v1 ADD COLUMN IF NOT EXISTS "
+        f"{name} {kind} DEFAULT NULL AFTER "
+        f"{'evidence_node_count' if index == 0 else names[index - 1][0]}"
+        for index, (name, kind) in enumerate(names)
+    )
+
+
 def backtest_snapshot_anchor_upgrade_ddl() -> str:
     """Operator-only causal link between terminal events and account state."""
     return next(table.ddl() for table in TABLES
@@ -1210,6 +1312,7 @@ def portfolio_reconciliation_event_upgrade_ddl() -> tuple[str, ...]:
     return (
         by_name["trading_portfolio_reconciliation_event_v1"].ddl(),
         by_name["trading_portfolio_sync_fence_v1"].ddl(),
+        by_name["trading_portfolio_sync_snapshot_marker_v1"].ddl(),
         "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
         "portfolio_reconciliation_event_count UInt32 DEFAULT 0 "
         "AFTER portfolio_reservation_event_hash",

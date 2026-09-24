@@ -12,6 +12,7 @@ import pytest
 
 from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
+from src.trading_runtime.arte_assignment_command_projection import assignment_command_batch
 from src.trading_runtime.arte_journal_projection import (
     broker_fill_batch, commission_revision_batch, runtime_lifecycle_batch,
     operational_fault_batch,
@@ -525,9 +526,43 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     assert len(client.tables["trading_commit_v1"]) == 1
     assert not any("payload_json" in row for rows in client.tables.values() for row in rows)
     prefix = load_committed_prefix(client, RUN)
-    assert len(client.selects) == 40
+    assert len(client.selects) == 42
     assert prefix is not None
     assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
+
+
+def test_assignment_command_shared_family_cold_prefix_readback() -> None:
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    saved = {
+        "assignment_id": RUN, "account_id": "DU1", "ticker": "ABC",
+        "strategy_id": "early-squeeze", "strategy_revision": 24,
+        "status": "paused", "state": {}, "updated_at": at.isoformat(),
+    }
+    record = JournalRecord(
+        RECORD, RUN, 1, at, at, "strategy", "strategy_assignment_command",
+        RUN, "DU1", {
+            "event": "assignment_command", "command": "pause",
+            "assignment_id": RUN, "strategy_id": "early-squeeze",
+            "strategy_revision": 24, "ticker": "ABC", "status": "paused",
+            "detail": {},
+        },
+    )
+    item = assignment_command_batch(
+        record, saved, run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
+        batch_id=BATCH, prior_batch_id=ZERO, source_cursor="assignment:1",
+    )
+    client = MemoryClient()
+    assert publish_typed_batch(client, item) == BATCH
+    assert client.inserts == [
+        "trading_event_v1", "trading_strategy_assignment_command_v1",
+        "trading_commit_v1",
+    ]
+    prefix = load_committed_prefix(client, RUN)
+    assert prefix is not None and prefix.last_sequence == 1
+    assert client.tables["trading_strategy_assignment_command_v1"][0]["command"] == "pause"
+    client.tables["trading_strategy_assignment_command_v1"][0]["status"] = "disabled"
+    with pytest.raises(RuntimeError):
+        load_committed_prefix(client, RUN)
 
 
 def test_recovery_groups_batches_but_verifies_each_fence() -> None:
@@ -550,7 +585,7 @@ def test_recovery_groups_batches_but_verifies_each_fence() -> None:
     client.selects.clear()
     prefix = load_committed_prefix(client, RUN)
     assert prefix is not None and prefix.last_sequence == 3
-    assert len(client.selects) == 33
+    assert len(client.selects) == 35
     client.tables["trading_commit_v1"][0]["event_count"] = 0
     with pytest.raises(RuntimeError, match="not contiguous"):
         load_committed_prefix(client, RUN)

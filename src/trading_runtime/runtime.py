@@ -758,6 +758,18 @@ class TradingRuntime:
             else:
                 decision_key = (account_id, signal.ticker.upper())
                 self._last_wait_decision_signatures.pop(decision_key, None)
+            payload = {
+                **signal.payload(),
+                "strategy_id": self.config.strategy_id,
+                "strategy_revision": self.config.strategy_revision,
+            }
+            for lineage_key in ("correlation_id", "causation_id"):
+                if lineage_key in signal.metadata:
+                    identity = signal.metadata[lineage_key]
+                    if (not isinstance(identity, str) or not identity
+                            or payload.get(lineage_key, identity) != identity):
+                        raise ValueError("Strategy signal lineage conflicts with its journal envelope")
+                    payload[lineage_key] = identity
             self.journal.append(
                 run_id=self.run_id,
                 category="strategy_decision",
@@ -765,11 +777,7 @@ class TradingRuntime:
                 entity_id=signal.signal_id,
                 account_id=account_id,
                 event_time=signal.event_time,
-                payload={
-                    **signal.payload(),
-                    "strategy_id": self.config.strategy_id,
-                    "strategy_revision": self.config.strategy_revision,
-                },
+                payload=payload,
             )
 
     async def _authorize_entry_reprice(self, intent: StrategyIntent, account_id: str, price: float, remaining: float) -> bool:

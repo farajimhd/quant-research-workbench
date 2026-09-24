@@ -24,7 +24,7 @@ from src.trading_runtime.portfolio import PortfolioPolicy
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 60
+    assert len(statements) == len(TABLES) == 63
     assert any(table.name == "trading_strategy_signal_evidence_node_v1" for table in TABLES)
     upgrade = backtest_cursor_upgrade_ddl()
     assert len(upgrade) == 3
@@ -94,7 +94,7 @@ def test_portfolio_policy_catalog_covers_all_fields_without_json() -> None:
 
 def test_portfolio_snapshot_is_normalized_and_fenced() -> None:
     statements = portfolio_snapshot_schema_upgrade_ddl()
-    assert len(statements) == 14
+    assert len(statements) == 15
     assert all("live_market_ssd" in sql and "PARTITION BY" in sql
                for sql in statements)
     names = {sql.split("arte.", 1)[1].split(" ", 1)[0] for sql in statements}
@@ -106,11 +106,11 @@ def test_portfolio_snapshot_is_normalized_and_fenced() -> None:
 
 def test_portfolio_reconciliation_upgrade_has_late_fence_and_commit_proof() -> None:
     statements = portfolio_reconciliation_event_upgrade_ddl()
-    assert len(statements) == 4
+    assert len(statements) == 5
     assert all("live_market_ssd" in sql and "toYYYYMM(" in sql
-               for sql in statements[:2])
-    assert "portfolio_reconciliation_event_count" in statements[2]
-    assert "portfolio_reconciliation_event_hash" in statements[3]
+               for sql in statements[:3])
+    assert "portfolio_reconciliation_event_count" in statements[3]
+    assert "portfolio_reconciliation_event_hash" in statements[4]
 
 
 def test_shared_event_and_execution_contract_uses_lossless_identifiers() -> None:
