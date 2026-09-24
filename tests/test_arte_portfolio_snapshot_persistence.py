@@ -9,7 +9,7 @@ import pytest
 
 from src.trading_runtime.arte_portfolio_snapshot import (
     load_latest_portfolio_snapshot, load_portfolio_snapshot,
-    project_portfolio_snapshot,
+    load_run_portfolio_snapshots, project_portfolio_snapshot, _snapshot_rows,
     publish_portfolio_snapshot,
 )
 from src.trading_runtime.portfolio import PortfolioReservation
@@ -150,3 +150,44 @@ def test_latest_snapshot_rejects_stale_publication_and_corrupt_head() -> None:
             row["peak_net_liquidation"] = "999.000000000000000000"
     with pytest.raises(RuntimeError, match="content differs"):
         load_latest_portfolio_snapshot(client, run_id="live-run", account_id="account-id")
+
+
+def test_unfenced_partial_snapshot_is_invisible_and_retry_completes() -> None:
+    client = SnapshotClient()
+    partial = _snapshot_rows("live-run", "account-id", 1, "2026-08-01",
+                             project_portfolio_snapshot("account-id", _state()))
+    client.tables["trading_portfolio_snapshot_v1"] = [partial["trading_portfolio_snapshot_v1"][0]]
+    assert load_latest_portfolio_snapshot(client, run_id="live-run", account_id="account-id") is None
+    digest = _publish(client)
+    assert load_latest_portfolio_snapshot(
+        client, run_id="live-run", account_id="account-id")["state_hash"] == digest
+    assert client.inserts[0] != "trading_portfolio_snapshot_v1"
+
+
+def test_duplicate_fence_and_missing_child_fail_recovery() -> None:
+    client = SnapshotClient()
+    _publish(client)
+    client.tables["trading_portfolio_snapshot_commit_v1"].append(
+        dict(client.tables["trading_portfolio_snapshot_commit_v1"][0]))
+    with pytest.raises(RuntimeError, match="duplicate commit fences"):
+        load_latest_portfolio_snapshot(client, run_id="live-run", account_id="account-id")
+    client.tables["trading_portfolio_snapshot_commit_v1"].pop()
+    client.tables["trading_portfolio_disabled_strategy_v1"].pop()
+    with pytest.raises(RuntimeError, match="fence count"):
+        load_latest_portfolio_snapshot(client, run_id="live-run", account_id="account-id")
+
+
+def test_run_recovery_requires_every_pinned_account(monkeypatch) -> None:
+    from src.trading_runtime import arte_journal_writer
+
+    client = SnapshotClient()
+    _publish(client)
+    monkeypatch.setattr(arte_journal_writer, "load_typed_run_context",
+                        lambda _client, _run_id: {"account_ids": ("account-id", "missing")})
+    with pytest.raises(RuntimeError, match="missing"):
+        load_run_portfolio_snapshots(client, run_id="live-run")
+    monkeypatch.setattr(arte_journal_writer, "load_typed_run_context",
+                        lambda _client, _run_id: {"account_ids": ("account-id",)})
+    recovered = load_run_portfolio_snapshots(client, run_id="live-run")
+    assert set(recovered) == {"account-id"}
+    assert recovered["account-id"]["state"]["account_key"] == "account-key"

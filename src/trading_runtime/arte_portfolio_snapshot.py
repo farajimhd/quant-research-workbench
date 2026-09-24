@@ -501,3 +501,18 @@ def load_latest_portfolio_snapshot(
         return None
     return load_portfolio_snapshot(client, run_id=run_id, account_id=account_id,
                                    state_revision=revision)
+
+
+def load_run_portfolio_snapshots(client: Any, *, run_id: str) -> dict[str, dict[str, Any]]:
+    """Recover every pinned account, rejecting absent or corrupt state."""
+    from src.trading_runtime.arte_journal_writer import load_typed_run_context
+
+    context = load_typed_run_context(client, run_id)
+    result = {}
+    for account_id in context["account_ids"]:
+        snapshot = load_latest_portfolio_snapshot(client, run_id=run_id,
+                                                  account_id=account_id)
+        if snapshot is None:
+            raise RuntimeError(f"Portfolio recovery lacks a committed account: {account_id}")
+        result[account_id] = snapshot
+    return result
