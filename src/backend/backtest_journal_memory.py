@@ -105,6 +105,11 @@ class BacktestMemoryJournal:
                 raise ValueError("Journal publication cursor is outside the unfenced prefix")
             return list(self._records[start:])
 
+    @property
+    def pending_record_count(self) -> int:
+        with self._lock:
+            return len(self._records) - self._fenced_sequence
+
     def mark_fenced(self, sequence: int) -> None:
         """Release pending capacity only after ClickHouse confirms its fence."""
         with self._lock:

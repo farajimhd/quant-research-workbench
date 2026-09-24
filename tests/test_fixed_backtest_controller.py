@@ -2,6 +2,7 @@
 import asyncio
 from datetime import date, datetime, time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -49,6 +50,25 @@ def test_fixed_signal_loader_never_prepares_missing_occurrences(monkeypatch):
         "historical_occurrence_artifact"] = "unprepared"
     with pytest.raises(occurrences.HistoricalSignalCoverageUnavailable):
         asyncio.run(controller._load_source_native_signal_events())
+
+
+def test_fixed_journal_fences_at_completed_boundary_before_buffer_fills():
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller._journal = BacktestMemoryJournal(run_id=RUN, max_pending_records=2)
+    at = datetime(2026, 8, 18, 4, 0, 0, 100000, tzinfo=NY)
+    controller._journal.append(run_id=RUN, category="test", entity_type="frame",
+                               entity_id="first", event_time=at, payload={})
+    controller._source_cursor = {"session_date": DAY, "boundary_ms": 100}
+    controller._flush_passive_market_events = lambda: None
+    controller._next_action_after_sequence = None
+    controller._step_until = None
+    controller._fast_forward_until = None
+    controller._publish = AsyncMock()
+    controller._save_restart_checkpoint_responsive = AsyncMock()
+    controller._restart_checkpoint_interval_events = lambda: None
+    asyncio.run(controller._after_event(at))
+    controller._save_restart_checkpoint_responsive.assert_awaited_once_with(at)
 
 
 def _row(ticker, boundary_ms, resolution_ms):

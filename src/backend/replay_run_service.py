@@ -5991,6 +5991,15 @@ class ReplayRunController:
             self.status = "paused"
             transport_boundary = True
         await self._publish(force=transport_boundary)
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        if (isinstance(self._journal, BacktestMemoryJournal)
+                and self._journal.pending_record_count >= self._journal.max_pending_records // 2
+                and bool(self._source_cursor)):
+            # Fence only after a complete market boundary. This prevents the
+            # bounded writer buffer from filling in a long all-ticker run and
+            # makes the resulting source cursor recoverable before playback
+            # continues. The worker performs ClickHouse I/O off the event loop.
+            await self._save_restart_checkpoint_responsive(event_time)
         checkpoint_interval = self._restart_checkpoint_interval_events()
         if checkpoint_interval is not None:
             event_bucket = self.processed_events // checkpoint_interval
