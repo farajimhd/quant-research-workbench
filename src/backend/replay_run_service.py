@@ -10565,28 +10565,19 @@ def backtest_preflight(
             "required": True,
         }
     )
-    storage_ready = False
-    storage_evidence = str(backtest_runtime_root())
-    try:
-        root = backtest_runtime_root()
-        root.mkdir(parents=True, exist_ok=True)
-        probe = root / f".backtest-preflight-{uuid4().hex}.tmp"
-        probe.write_text("ready", encoding="utf-8")
-        probe.unlink()
-        storage_ready = True
-    except OSError as exc:
-        storage_evidence = str(exc)
     checks.append(
         {
             "id": "runtime_storage",
-            "label": "Backtest runtime storage",
-            "status": "ready" if storage_ready else "blocked",
+            "label": "Disk-free Backtest journal",
+            "status": "blocked",
             "summary": (
-                "Run manifests use the external runtime root; ClickHouse journal durability is checked separately."
-                if storage_ready
-                else "The external Backtest runtime root is not writable."
+                "Fixed Backtest still has run-local manifest and journal paths; "
+                "typed ClickHouse state and recovery must replace them before execution."
+                if execution_interval.kind == "fixed"
+                else "Event Backtest still uses run-local state and journal paths; "
+                     "disk-free execution is not implemented."
             ),
-            "evidence": storage_evidence,
+            "evidence": "no preflight disk probe or run-local journal fallback",
             "required": True,
         }
     )

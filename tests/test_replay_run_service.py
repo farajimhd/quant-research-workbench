@@ -2655,7 +2655,7 @@ class BacktestPreflightTests(unittest.TestCase):
 
     @patch("src.backend.replay_run_service.backtest_runtime_root")
     @patch("src.backend.replay_run_service.historical_preflight")
-    def test_preflight_pins_configuration_accounts_and_external_storage(
+    def test_preflight_pins_configuration_and_blocks_run_local_storage(
         self,
         historical,
         runtime_root,
@@ -2699,7 +2699,9 @@ class BacktestPreflightTests(unittest.TestCase):
         self.assertEqual(checks["clickhouse_journal"]["status"], "blocked")
         self.assertNotIn("arte.bt_", checks["clickhouse_journal"]["evidence"])
         self.assertEqual(checks["simulated_accounts"]["status"], "ready")
-        self.assertEqual(checks["runtime_storage"]["status"], "ready")
+        self.assertEqual(checks["runtime_storage"]["status"], "blocked")
+        self.assertIn("run-local", checks["runtime_storage"]["summary"])
+        runtime_root.assert_not_called()
         self.assertIn(
             "every configured intraday refresh clock",
             checks["strategy_assignments"]["evidence"],
