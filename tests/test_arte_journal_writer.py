@@ -335,6 +335,13 @@ def test_order_command_and_transition_have_typed_durable_fences() -> None:
     assert transitions[0]["sequence"] == 2
     assert transitions[0]["status"] == "submitted"
     assert load_committed_order_transition_page(client, prefix, after_sequence=2) == ()
+    unfenced_id = "00000000-0000-0000-0000-000000000099"
+    for name in ("trading_event_v1", "trading_order_transition_v1"):
+        clone = dict(client.tables[name][-1])
+        clone["batch_id"] = unfenced_id
+        client.tables[name].append(clone)
+    assert len(load_committed_order_transition_page(client, prefix, limit=1)) == 1
+    assert load_committed_order_transition_page(client, prefix, after_sequence=2) == ()
     client.tables["trading_order_command_v1"][0]["account_id"] = "wrong"
     with pytest.raises(RuntimeError, match="event envelope"):
         load_committed_order_command_page(client, prefix)

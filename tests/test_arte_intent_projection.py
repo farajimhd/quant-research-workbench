@@ -172,6 +172,17 @@ def test_intent_and_slice_publish_as_fence_verified_typed_rows():
     assert recovered[0].intent == intent(protection_profile=profile)
     assert recovered[0].account_id == "DU1"
     assert load_committed_strategy_intent_page(client, prefix, after_sequence=1) == ()
+    unfenced_id = str(uuid4())
+    for name in ("trading_event_v1", "trading_strategy_intent_v1",
+                 "trading_intent_protection_slice_v1"):
+        clone = dict(client.tables[name][0])
+        clone["batch_id"] = unfenced_id
+        client.tables[name].append(clone)
+    assert len(load_committed_strategy_intent_page(client, prefix, limit=1)) == 1
+    for name in ("trading_event_v1", "trading_strategy_intent_v1",
+                 "trading_intent_protection_slice_v1"):
+        client.tables[name] = [row for row in client.tables[name]
+                               if row["batch_id"] != unfenced_id]
     # ClickHouse JSONEachRow may render fixed-scale decimals without zeros.
     client.tables["trading_strategy_intent_v1"][0]["quantity"] = "5"
     client.tables["trading_intent_protection_slice_v1"][0]["quantity_fraction"] = "1"

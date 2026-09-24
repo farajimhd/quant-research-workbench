@@ -413,12 +413,12 @@ def load_committed_strategy_intent_page(
     if expected_slices:
         child_columns = ",".join(column for column, _ in
                                  _CONTRACTS["trading_intent_protection_slice_v1"].columns)
-            slices = _rows(client,
-                f"SELECT {child_columns} FROM arte.trading_intent_protection_slice_v1 "
-                f"WHERE run_id={_literal(prefix.run_id)} "
-                f"AND parent_record_id IN ({ids_sql}) "
-                f"{_committed_batch_filter(prefix)}"
-                f"LIMIT {max_slices + 1} FORMAT JSONEachRow")
+        slices = _rows(client,
+            f"SELECT {child_columns} FROM arte.trading_intent_protection_slice_v1 "
+            f"WHERE run_id={_literal(prefix.run_id)} "
+            f"AND parent_record_id IN ({ids_sql}) "
+            f"{_committed_batch_filter(prefix)}"
+            f"LIMIT {max_slices + 1} FORMAT JSONEachRow")
     if len(slices) != expected_slices:
         raise RuntimeError("Committed intent page has missing or excess slices")
     by_parent: dict[str, list[dict[str, Any]]] = {}
