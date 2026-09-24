@@ -47,7 +47,7 @@ def test_fixed_signal_loader_never_prepares_missing_occurrences(monkeypatch):
         asyncio.run(controller._load_source_native_signal_events())
     controller.definition.configuration_revision["payload"]["signal_activation"]["signal_streams"][0][
         "historical_occurrence_artifact"] = "unprepared"
-    with pytest.raises(ValueError, match="cannot prepare historical signal occurrence artifacts"):
+    with pytest.raises(occurrences.HistoricalSignalCoverageUnavailable):
         asyncio.run(controller._load_source_native_signal_events())
 
 

@@ -7584,22 +7584,25 @@ class ReplayRunController:
             async with permits:
                 if stream.get("historical_occurrence_artifact"):
                     if fixed_backtest:
-                        raise ValueError(
-                            "Fixed Backtest cannot prepare historical signal occurrence artifacts"
+                        loaded = await asyncio.to_thread(
+                            historical_source_native_signal_occurrences, stream,
+                            start=self.definition.requested_start,
+                            end=self.definition.session_end,
                         )
-                    from src.backend.historical_signal_preparation import prepared_signal_occurrences
+                    else:
+                        from src.backend.historical_signal_preparation import prepared_signal_occurrences
 
-                    def progress(status):
-                        self._signal_preparation = status
-                        self._preparation_stage = status["stage"]
-                        self._preparation_completed_units = int(status.get("completed") or 0)
-                        self._preparation_total_units = int(status.get("total") or 0)
-                        self.updated_at = datetime.now(UTC)
+                        def progress(status):
+                            self._signal_preparation = status
+                            self._preparation_stage = status["stage"]
+                            self._preparation_completed_units = int(status.get("completed") or 0)
+                            self._preparation_total_units = int(status.get("total") or 0)
+                            self.updated_at = datetime.now(UTC)
 
-                    loaded = await prepared_signal_occurrences(
-                        stream, start=self.definition.requested_start, end=self.definition.session_end,
-                        progress=progress, stopped=lambda: self._stop_requested,
-                    )
+                        loaded = await prepared_signal_occurrences(
+                            stream, start=self.definition.requested_start, end=self.definition.session_end,
+                            progress=progress, stopped=lambda: self._stop_requested,
+                        )
                 else:
                     from src.backend.historical_signal_occurrence_service import HistoricalSignalCoverageUnavailable
                     try:
@@ -10186,6 +10189,14 @@ def backtest_preflight(
         end=datetime.combine(sessions[-1], end_time, tzinfo=NEW_YORK),
     ) if sessions else {"id": "historical_signal_coverage", "label": "Historical signal coverage",
                         "status": "blocked", "required": True, "summary": "No sessions selected"}
+    if execution_interval.kind == "fixed" and int(
+        dict(signal_check.get("evidence") or {}).get("preparation_sessions") or 0
+    ):
+        signal_check = {
+            **signal_check,
+            "status": "blocked",
+            "summary": "Fixed Backtest requires already certified signal sessions; preparation during execution is forbidden.",
+        }
     checks.append(signal_check)
     try:
         version_check = runtime_version_check(
