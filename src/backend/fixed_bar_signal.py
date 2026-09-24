@@ -56,6 +56,27 @@ def validate_stream(stream: Mapping[str, Any], activation: Mapping[str, Any]) ->
         raise ValueError("Fixed bar Early Squeeze thresholds differ from the saved rule set")
 
 
+def candidate_projection_tickers(
+    configuration: Mapping[str, Any], occurrences: list[Mapping[str, Any]],
+    *, has_core_signal_plans: bool = False,
+) -> tuple[str, ...] | None:
+    """Only the sole source-native stream may narrow later market computation.
+
+    The scanner still evaluates the complete certified universe. This is a
+    necessary-condition prune, never early activation or a trading decision.
+    """
+    run_plan = dict(configuration.get("run_plan") or {})
+    streams = [row for row in dict(configuration.get("signal_activation") or {}).get("signal_streams") or ()
+               if bool(row.get("enabled", True))]
+    if (has_core_signal_plans or configuration.get("assignments")
+            or len(streams) != 1 or streams[0].get("signal_stream_id") != STREAM_ID
+            or list(run_plan.get("signal_stream_ids") or ()) != [STREAM_ID]
+            or dict(run_plan.get("activation") or {}).get("watchlist_policy") != "not_required"):
+        return None
+    return tuple(sorted({str(row.get("ticker") or "").upper() for row in occurrences
+                         if str(row.get("ticker") or "").strip()}))
+
+
 def first_squeeze_sql(plan: CertifiedMarketDayPlan, *, through_boundary_ms: int) -> str:
     if (type(through_boundary_ms) is not int or not 0 < through_boundary_ms <= 57_600_000
             or through_boundary_ms % 100):

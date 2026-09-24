@@ -4,7 +4,7 @@ from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
 )
 from src.backend.fixed_bar_signal import (
-    CONTRACT, first_squeeze_sql, load_first_squeeze_occurrences,
+    CONTRACT, candidate_projection_tickers, first_squeeze_sql, load_first_squeeze_occurrences,
     validate_stream,
 )
 
@@ -83,3 +83,17 @@ def test_first_squeeze_contract_change_fails_closed():
     else:
         raise AssertionError("Changed signal threshold was accepted")
     assert "UNION ALL" not in first_squeeze_sql(_plan(), through_boundary_ms=19_800_000)
+
+
+def test_candidate_projection_requires_sole_source_native_admission():
+    stream, activation = _contract()
+    activation["signal_streams"] = [stream]
+    configuration = {"assignments": [], "signal_activation": activation,
+                     "run_plan": {"signal_stream_ids": ["price-squeeze-early"],
+                                  "activation": {"watchlist_policy": "not_required"}}}
+    occurrences = [{"ticker": "ABCD"}, {"ticker": "XYZ"}]
+    assert candidate_projection_tickers(configuration, occurrences) == ("ABCD", "XYZ")
+    assert candidate_projection_tickers(configuration, occurrences,
+                                        has_core_signal_plans=True) is None
+    configuration["assignments"] = [{"ticker": "OTHER"}]
+    assert candidate_projection_tickers(configuration, occurrences) is None

@@ -91,6 +91,9 @@ def certified_seed_plan(market: Any, client: Any) -> CertifiedSeedPlan:
     units: list[dict[str, Any]] = []
     plan_hashes: set[str] = set()
     policies: set[str] = set()
+    missing_coverage: list[str] = []
+    duplicate_coverage = 0
+    unexpected_coverage: list[str] = []
     for day in market.sessions:
         session = date.fromisoformat(day)
         tickers = sorted(ticker for unit_day, ticker in bars if unit_day == day)
@@ -103,7 +106,10 @@ def certified_seed_plan(market: Any, client: Any) -> CertifiedSeedPlan:
                 "ORDER BY ticker,available_at DESC LIMIT 1 BY ticker FORMAT JSONEachRow")
             found = {str(row["ticker"]): row for row in rows}
             if len(rows) != len(batch) or set(found) != set(batch):
-                raise ValueError(f"V7 prior coverage is missing or duplicated for {day}")
+                missing_coverage.extend(f"{day}:{ticker}" for ticker in sorted(set(batch) - set(found)))
+                unexpected_coverage.extend(f"{day}:{ticker}" for ticker in sorted(set(found) - set(batch)))
+                duplicate_coverage += len(rows) - len(found)
+                continue
             for ticker in batch:
                 row = found[ticker]
                 _validate_coverage(row, ticker=ticker, session=session)
@@ -114,6 +120,12 @@ def certified_seed_plan(market: Any, client: Any) -> CertifiedSeedPlan:
                     "ticker", "session_date", "available_at", "source_checkpoint_hash",
                     "source_plan_hash", "level_count", "observation_count", "input_policy")}
                     | {"backtest_session": day})
+    if missing_coverage or duplicate_coverage or unexpected_coverage:
+        raise ValueError(
+            "V7 prior coverage is missing or duplicated: "
+            f"missing={len(missing_coverage)} {missing_coverage[:32]}, "
+            f"duplicates={duplicate_coverage}, unexpected={unexpected_coverage[:32]}"
+        )
     if len(plan_hashes) != 1 or len(next(iter(plan_hashes))) != 64:
         raise ValueError("V7 prior seeds mix source campaigns")
     if len(policies) > 1:

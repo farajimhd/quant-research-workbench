@@ -151,6 +151,27 @@ class CertifiedMarketDayPlan:
         }
 
 
+def project_market_day_plan(
+    plan: CertifiedMarketDayPlan, tickers: Sequence[str],
+) -> CertifiedMarketDayPlan:
+    """Restrict computation to proven possible participants, retaining a parent pin."""
+    selected = tuple(sorted({str(ticker).strip().upper() for ticker in tickers if str(ticker).strip()}))
+    if not selected or not set(selected).issubset(plan.tickers):
+        raise ValueError("Market-day projection must be a nonempty subset of the certified plan")
+    units = tuple(unit for unit in plan.units if unit.ticker in selected)
+    expected = {(day, ticker, stage) for day in plan.sessions for ticker in selected
+                for stage in MARKET_DAY_STAGES}
+    if {(unit.session_date, unit.ticker, unit.stage) for unit in units} != expected:
+        raise ValueError("Projected market-day plan has incomplete pinned products")
+    return CertifiedMarketDayPlan(
+        execution_interval=plan.execution_interval,
+        build_id=plan.build_id, definition_hash=plan.definition_hash,
+        sessions=plan.sessions, tickers=selected, units=units,
+        required_resolutions_ms=plan.required_resolutions_ms,
+        token=_stable_hash({"parent_token": plan.token, "tickers": selected}),
+    )
+
+
 def _stable_hash(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()

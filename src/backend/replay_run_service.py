@@ -3083,6 +3083,7 @@ class ReplayRunController:
             market_day_boundary,
         )
         from src.backend.fixed_v7_stream import FixedV7Cache
+        from src.backend.fixed_bar_signal import candidate_projection_tickers
         from src.backend.structural_v7_seed import certified_seed_plan
 
         configuration = self.definition.configuration_revision["payload"]
@@ -3093,6 +3094,15 @@ class ReplayRunController:
                 + ", ".join(evidence_gaps)
             )
         plan = await self._fixed_certified_market_plan()
+        projection_tickers = candidate_projection_tickers(
+            configuration,
+            [event.occurrence for event in self._historical_external_signal_events],
+            has_core_signal_plans=bool(getattr(self, "_historical_core_signal_plans", ())),
+        )
+        execution_plan = plan
+        if projection_tickers:
+            from src.backend.backtest_market_data import project_market_day_plan
+            execution_plan = project_market_day_plan(plan, projection_tickers)
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
         if not isinstance(self._journal, BacktestMemoryJournal):
             raise RuntimeError("Fixed Backtest requires its ClickHouse-only journal adapter")
@@ -3103,7 +3113,7 @@ class ReplayRunController:
         if self.definition.causal_v7_plan:
             v7_reader = readonly_clickhouse_client()
             try:
-                v7_seeds = await asyncio.to_thread(certified_seed_plan, plan, v7_reader)
+                v7_seeds = await asyncio.to_thread(certified_seed_plan, execution_plan, v7_reader)
                 pinned_v7 = self.definition.causal_v7_plan
                 if (v7_seeds.token != pinned_v7.get("token")
                         or v7_seeds.catalog_hash != pinned_v7.get("catalog_hash")
@@ -3115,7 +3125,10 @@ class ReplayRunController:
         try:
             self._fixed_v7_caches = {}
             self._record_data_authority("fixed_market_data", {
-                **plan.payload(),
+                **execution_plan.payload(),
+                "parent_market_plan_token": plan.token,
+                "scanner_ticker_count": len(plan.tickers),
+                "execution_ticker_count": len(execution_plan.tickers),
                 "database": "arte",
                 "tables": ["bars_v1", "indicators_v1", "liquidity_100ms_v1"],
                 "access": "select_only",
@@ -3133,7 +3146,7 @@ class ReplayRunController:
             raise
 
         through_boundary_ms = self._fixed_through_boundary_ms()
-        source = iter_market_day_rows(plan, through_boundary_ms=through_boundary_ms)
+        source = iter_market_day_rows(execution_plan, through_boundary_ms=through_boundary_ms)
         groups = iter_market_time_groups(iter_market_boundary_groups(source))
         sequence = int(self._source_cursor.get("sequence") or 0)
         boundary_count = 0
@@ -3168,7 +3181,7 @@ class ReplayRunController:
                         self._fixed_vwap_by_ticker = {}
                     if v7_seeds is not None and day not in self._fixed_v7_caches:
                         self._fixed_v7_caches[day] = FixedV7Cache(
-                            market_plan=plan, seed_plan=v7_seeds,
+                            market_plan=execution_plan, seed_plan=v7_seeds,
                             session=date.fromisoformat(day), client=v7_reader)
                     if self._resume_state is not None and self._source_cursor:
                         saved_day = str(self._source_cursor.get("session_date") or "")
@@ -10085,7 +10098,7 @@ def backtest_preflight(
             with closing(readonly_clickhouse_client()) as reader:
                 verify_market_day_plan(certified, reader)
                 market_data_plan = certified.payload()
-                if needs_v7:
+                if needs_v7 and not activated_signal_streams:
                     if experimental_structure_book not in {"", "level-book-v7"}:
                         raise ValueError("Fixed-interval Backtest requires causal Level Book V7")
                     from src.backend.structural_v7_seed import certified_seed_plan
@@ -10259,6 +10272,7 @@ def backtest_preflight(
         end=datetime.combine(sessions[-1], end_time, tzinfo=NEW_YORK),
     ) if sessions else {"id": "historical_signal_coverage", "label": "Historical signal coverage",
                         "status": "blocked", "required": True, "summary": "No sessions selected"}
+    bar_signals = None
     if execution_interval.kind == "fixed" and activated_signal_streams:
         from src.backend.fixed_bar_signal import (
             STREAM_ID as FIXED_BAR_STREAM_ID, load_first_squeeze_occurrences,
@@ -10298,6 +10312,39 @@ def backtest_preflight(
                 "summary": "Fixed Backtest has an unsupported native Signal Stream without certified persisted coverage.",
                 "evidence": "unsupported_fixed_native_stream",
             }
+    if (execution_interval.kind == "fixed" and needs_v7 and market_data_plan
+            and activated_signal_streams and signal_check["status"] == "ready"):
+        from src.backend.fixed_bar_signal import candidate_projection_tickers
+        projection_tickers = candidate_projection_tickers(
+            configuration, bar_signals["occurrences"] if bar_signals else [])
+        if bar_signals is not None:
+            try:
+                from src.backend.backtest_market_data import (
+                    project_market_day_plan, readonly_clickhouse_client,
+                )
+                from src.backend.structural_v7_seed import certified_seed_plan
+                projected = (project_market_day_plan(certified, projection_tickers)
+                             if projection_tickers else certified)
+                with closing(readonly_clickhouse_client()) as reader:
+                    causal_v7_plan = certified_seed_plan(projected, reader).payload()
+                causal_v7_plan["market_projection_token"] = projected.token
+                causal_v7_plan["parent_market_plan_token"] = certified.token
+                causal_v7_error = ""
+            except Exception as exc:
+                causal_v7_plan = {}
+                causal_v7_error = str(exc)
+            v7_check = next(row for row in checks if row["id"] == "causal_v7_seed")
+            v7_check["status"] = "ready" if causal_v7_plan else "blocked"
+            v7_check["summary"] = (
+                f"Pinned provisional V1 seeds cover {len(projected.tickers)} selected tickers; "
+                "the complete tradable universe was scanned before this computation prune."
+                if causal_v7_plan and causal_v7_plan.get("provisional") else
+                f"Pinned V7 seeds cover {len(projected.tickers)} selected tickers."
+                if causal_v7_plan else
+                f"V7 prior coverage is incomplete: {causal_v7_error}"
+            )
+            v7_check["evidence"] = (
+                causal_v7_plan.get("token", "") if causal_v7_plan else causal_v7_error)
     signal_evidence = signal_check.get("evidence")
     if (execution_interval.kind == "fixed"
             and isinstance(signal_evidence, Mapping)

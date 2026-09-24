@@ -104,6 +104,17 @@ def test_batched_preflight_pins_prior_filtered_seed():
     assert "LIMIT 1 BY ticker" in client.queries[0]
 
 
+def test_seed_preflight_reports_all_missing_tickers():
+    client = Client()
+    market = SimpleNamespace(build_id="market", sessions=("2026-08-18",),
+        units=tuple(SimpleNamespace(session_date="2026-08-18", ticker=ticker,
+                                    stage="bars") for ticker in ("TEST", "ABSENT1", "ABSENT2")))
+    with pytest.raises(ValueError, match="missing=2") as error:
+        certified_seed_plan(market, client)
+    assert "2026-08-18:ABSENT1" in str(error.value)
+    assert "2026-08-18:ABSENT2" in str(error.value)
+
+
 def test_split_evidence_is_as_of_and_rejects_conflicting_actions():
     class Splits:
         def __init__(self):

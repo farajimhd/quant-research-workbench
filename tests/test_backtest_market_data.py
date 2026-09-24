@@ -14,6 +14,7 @@ from src.backend.backtest_market_data import (
     assert_select_only,
     market_day_boundary,
     market_day_source_sqls,
+    project_market_day_plan,
     iter_market_boundary_groups,
     iter_market_day_rows,
     iter_market_time_groups,
@@ -45,6 +46,18 @@ class _CorruptReadClient(_ReadClient):
 
 
 class BacktestMarketDataTests(unittest.TestCase):
+    def test_projection_preserves_parent_attempts_and_changes_token(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self._ledger(Path(directory)).certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+        projected = project_market_day_plan(plan, ["SUGP"])
+        self.assertEqual(projected.units, plan.units)
+        self.assertNotEqual(projected.token, plan.token)
+        with self.assertRaisesRegex(ValueError, "nonempty subset"):
+            project_market_day_plan(plan, ["OTHER"])
+
     def test_full_universe_stream_has_bounded_large_query_settings(self) -> None:
         with patch.dict("os.environ", {
             "BACKTEST_CLICKHOUSE_URL": "http://localhost:8123",
