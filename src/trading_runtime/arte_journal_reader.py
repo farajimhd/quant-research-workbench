@@ -48,6 +48,8 @@ def load_typed_event_page(
         f"AND last_sequence<={prefix.last_sequence}) "
         f"ORDER BY sequence LIMIT {limit} FORMAT JSONEachRow")
     if not events:
+        if after_sequence < prefix.last_sequence:
+            raise RuntimeError("Typed event page is missing committed rows")
         return ()
     allowed_batches = set(prefix.batch_ids)
     by_family: dict[str, set[str]] = {}
@@ -57,7 +59,7 @@ def load_typed_event_page(
         event = _verified_row("trading_event_v1", raw)
         sequence = int(event["sequence"])
         record_id = str(UUID(str(event["record_id"])))
-        if (event["run_id"] != prefix.run_id or sequence <= previous
+        if (event["run_id"] != prefix.run_id or sequence != previous + 1
                 or sequence > prefix.last_sequence
                 or str(UUID(str(event["batch_id"]))) not in allowed_batches):
             raise RuntimeError("Typed event page differs from its committed prefix")
@@ -69,6 +71,8 @@ def load_typed_event_page(
         if family is not None:
             by_family.setdefault(family, set()).add(record_id)
         sealed_events.append((record_id, event, family))
+    if len(events) < limit and previous != prefix.last_sequence:
+        raise RuntimeError("Typed event page ends before the committed prefix")
     details: dict[tuple[str, str], dict[str, Any]] = {}
     for family, identities in by_family.items():
         columns = ",".join(column for column, _ in _CONTRACTS[family].columns)

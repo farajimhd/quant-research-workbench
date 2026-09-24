@@ -43,3 +43,54 @@ def test_typed_reader_loads_fenced_event_and_rejects_missing_detail() -> None:
     client.tables["trading_run_transition_v1"].clear()
     with pytest.raises(RuntimeError, match="missing or duplicate"):
         load_typed_event_page(client, prefix)
+
+
+def test_typed_reader_rejects_missing_committed_event() -> None:
+    record = JournalRecord(
+        "00000000-0000-0000-0000-000000000093", RUN, 1, AT, AT,
+        "lifecycle", "run", RUN, "", {"status": "running", "config": {"mode": "live"}},
+    )
+    batch = runtime_lifecycle_batch(
+        record, run_month=date(2026, 8, 1),
+        attempt_id="00000000-0000-0000-0000-000000000091",
+        batch_id="00000000-0000-0000-0000-000000000092",
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        source_cursor="start", expected_config={"mode": "live"},
+    )
+    client = MemoryClient()
+    publish_typed_batch(client, batch)
+    prefix = load_committed_prefix(client, RUN)
+    assert prefix is not None
+    client.tables["trading_event_v1"].clear()
+    with pytest.raises(RuntimeError, match="missing committed rows"):
+        load_typed_event_page(client, prefix)
+
+
+def test_typed_reader_rejects_gap_and_truncated_final_page() -> None:
+    client = MemoryClient()
+    prior = "00000000-0000-0000-0000-000000000000"
+    for sequence in (1, 2):
+        record = JournalRecord(
+            f"00000000-0000-0000-0000-{sequence:012d}", RUN, sequence,
+            AT, AT, "lifecycle", "run", RUN, "",
+            {"status": "running", "config": {"mode": "live"}},
+        )
+        batch_id = f"00000000-0000-0000-0001-{sequence:012d}"
+        batch = runtime_lifecycle_batch(
+            record, run_month=date(2026, 8, 1),
+            attempt_id="00000000-0000-0000-0000-000000000091",
+            batch_id=batch_id, prior_batch_id=prior,
+            source_cursor=f"cursor-{sequence}", expected_config={"mode": "live"},
+        )
+        publish_typed_batch(client, batch)
+        prior = batch_id
+    prefix = load_committed_prefix(client, RUN)
+    assert prefix is not None and prefix.last_sequence == 2
+    events = client.tables["trading_event_v1"]
+    first = events.pop(0)
+    with pytest.raises(RuntimeError, match="committed prefix"):
+        load_typed_event_page(client, prefix)
+    events.insert(0, first)
+    events.pop()
+    with pytest.raises(RuntimeError, match="ends before the committed prefix"):
+        load_typed_event_page(client, prefix)
