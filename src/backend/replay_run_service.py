@@ -2651,6 +2651,31 @@ class ReplayRunController:
             if self._journal is not None:
                 self._journal.close()
 
+    async def _fixed_certified_market_plan(self):
+        from src.backend.backtest_market_data import MarketDayLedger, configuration_tickers
+
+        cached = getattr(self, "_fixed_market_plan", None)
+        if cached is not None:
+            return cached
+        configuration = self.definition.configuration_revision["payload"]
+        expected = dict(self.definition.market_data_plan)
+        sessions = [date.fromisoformat(value) for value in expected.get("sessions") or ()]
+        plan = await asyncio.to_thread(
+            MarketDayLedger().certified_plan, sessions=sessions,
+            tickers=configuration_tickers(configuration, self.definition.tickers),
+            configuration=configuration,
+        )
+        if plan.token != str(expected.get("token") or ""):
+            raise ValueError("Certified Backtest market-data plan changed after preflight")
+        self._fixed_market_plan = plan
+        return plan
+
+    def _fixed_through_boundary_ms(self) -> int:
+        end_clock = self.definition.session_end.astimezone(NEW_YORK)
+        return int((
+            end_clock - datetime.combine(end_clock.date(), clock_time(4), tzinfo=NEW_YORK)
+        ).total_seconds() * 1_000)
+
     async def _run_engine(self) -> None:
         try:
             if self.status == "created":
@@ -3052,7 +3077,7 @@ class ReplayRunController:
         from concurrent.futures import ThreadPoolExecutor
         from itertools import islice
         from src.backend.backtest_market_data import (
-            MarketDayLedger, configuration_tickers, iter_market_boundary_groups,
+            iter_market_boundary_groups,
             iter_market_time_groups,
             iter_market_day_rows, readonly_clickhouse_client,
             market_day_boundary,
@@ -3067,16 +3092,7 @@ class ReplayRunController:
                 "Persisted 100ms products cannot reproduce event-derived strategy evidence: "
                 + ", ".join(evidence_gaps)
             )
-        expected = dict(self.definition.market_data_plan)
-        sessions = [date.fromisoformat(value) for value in expected.get("sessions") or ()]
-        plan = await asyncio.to_thread(
-            MarketDayLedger().certified_plan,
-            sessions=sessions,
-            tickers=configuration_tickers(configuration, self.definition.tickers),
-            configuration=configuration,
-        )
-        if plan.token != str(expected.get("token") or ""):
-            raise ValueError("Certified Backtest market-data plan changed after preflight")
+        plan = await self._fixed_certified_market_plan()
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
         if not isinstance(self._journal, BacktestMemoryJournal):
             raise RuntimeError("Fixed Backtest requires its ClickHouse-only journal adapter")
@@ -3116,10 +3132,7 @@ class ReplayRunController:
                 await asyncio.to_thread(v7_reader.close)
             raise
 
-        end_clock = self.definition.session_end.astimezone(NEW_YORK)
-        through_boundary_ms = int((
-            end_clock - datetime.combine(end_clock.date(), clock_time(4), tzinfo=NEW_YORK)
-        ).total_seconds() * 1_000)
+        through_boundary_ms = self._fixed_through_boundary_ms()
         source = iter_market_day_rows(plan, through_boundary_ms=through_boundary_ms)
         groups = iter_market_time_groups(iter_market_boundary_groups(source))
         sequence = int(self._source_cursor.get("sequence") or 0)
@@ -7592,10 +7605,30 @@ class ReplayRunController:
             self.definition.mode == RunMode.BACKTEST
             and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"
         )
+        fixed_bar_plan = (
+            await self._fixed_certified_market_plan()
+            if fixed_backtest and any(
+                stream.get("signal_stream_id") == "price-squeeze-early"
+                for stream in streams
+            ) else None
+        )
 
         async def load_stream(stream: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
             async with permits:
-                if stream.get("historical_occurrence_artifact"):
+                if fixed_bar_plan is not None and stream.get("signal_stream_id") == "price-squeeze-early":
+                    from src.backend.backtest_market_data import readonly_clickhouse_client
+                    from src.backend.fixed_bar_signal import load_first_squeeze_occurrences
+
+                    def read_completed_bar_signals():
+                        with closing(readonly_clickhouse_client(market_stream=True)) as reader:
+                            return load_first_squeeze_occurrences(
+                                fixed_bar_plan, stream=stream, activation=activation,
+                                through_boundary_ms=self._fixed_through_boundary_ms(),
+                                client=reader,
+                            )
+
+                    loaded = await asyncio.to_thread(read_completed_bar_signals)
+                elif stream.get("historical_occurrence_artifact"):
                     if fixed_backtest:
                         loaded = await asyncio.to_thread(
                             historical_source_native_signal_occurrences, stream,
@@ -10226,9 +10259,49 @@ def backtest_preflight(
         end=datetime.combine(sessions[-1], end_time, tzinfo=NEW_YORK),
     ) if sessions else {"id": "historical_signal_coverage", "label": "Historical signal coverage",
                         "status": "blocked", "required": True, "summary": "No sessions selected"}
-    if execution_interval.kind == "fixed" and int(
-        dict(signal_check.get("evidence") or {}).get("preparation_sessions") or 0
-    ):
+    if execution_interval.kind == "fixed" and activated_signal_streams:
+        from src.backend.fixed_bar_signal import (
+            STREAM_ID as FIXED_BAR_STREAM_ID, load_first_squeeze_occurrences,
+        )
+        if (len(activated_signal_streams) == 1
+                and activated_signal_streams[0].get("signal_stream_id") == FIXED_BAR_STREAM_ID):
+            try:
+                if not market_data_plan:
+                    raise ValueError("Certified persisted bar plan is unavailable")
+                from src.backend.backtest_market_data import readonly_clickhouse_client
+                through_boundary_ms = int((
+                    datetime.combine(sessions[-1], end_time, tzinfo=NEW_YORK)
+                    - datetime.combine(sessions[-1], clock_time(4), tzinfo=NEW_YORK)
+                ).total_seconds() * 1_000)
+                with closing(readonly_clickhouse_client(market_stream=True)) as reader:
+                    bar_signals = load_first_squeeze_occurrences(
+                        certified, stream=activated_signal_streams[0],
+                        activation=dict(configuration.get("signal_activation") or {}),
+                        through_boundary_ms=through_boundary_ms, client=reader,
+                    )
+                count = len(bar_signals["occurrences"])
+                signal_check = {
+                    **signal_check, "status": "ready",
+                    "summary": f"{count} causal Early Squeeze ticker-session occurrence(s) certified from pinned 100ms bars; no signal product is created.",
+                    "evidence": bar_signals["authority"],
+                }
+            except Exception as exc:
+                signal_check = {
+                    **signal_check, "status": "blocked",
+                    "summary": f"Completed-bar Early Squeeze cannot be certified: {exc}",
+                    "evidence": str(exc),
+                }
+        elif any(not stream.get("historical_occurrence_artifact")
+                 for stream in activated_signal_streams):
+            signal_check = {
+                **signal_check, "status": "blocked",
+                "summary": "Fixed Backtest has an unsupported native Signal Stream without certified persisted coverage.",
+                "evidence": "unsupported_fixed_native_stream",
+            }
+    signal_evidence = signal_check.get("evidence")
+    if (execution_interval.kind == "fixed"
+            and isinstance(signal_evidence, Mapping)
+            and int(signal_evidence.get("preparation_sessions") or 0)):
         signal_check = {
             **signal_check,
             "status": "blocked",

@@ -1,6 +1,6 @@
 """Controller-level fixed-boundary ordering without an event replay source."""
 import asyncio
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
@@ -69,6 +69,45 @@ def test_fixed_journal_fences_at_completed_boundary_before_buffer_fills():
     controller._restart_checkpoint_interval_events = lambda: None
     asyncio.run(controller._after_event(at))
     controller._save_restart_checkpoint_responsive.assert_awaited_once_with(at)
+
+
+def test_fixed_signal_loader_uses_pinned_bars_without_event_fallback(monkeypatch):
+    from src.backend import fixed_bar_signal, historical_signal_occurrence_service
+
+    at = datetime(2026, 8, 18, 4, 5, 0, 100000, tzinfo=NY)
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, execution_interval="100ms", tickers=(),
+        configuration_revision={"payload": {"signal_activation": {
+            "signal_streams": [{"signal_stream_id": "price-squeeze-early",
+                                "occurrence_source": "qmd_squeeze_episode",
+                                "enabled": True}]}}},
+        requested_start=at, session_end=at + timedelta(minutes=5),
+    )
+    controller._journal = BacktestMemoryJournal(run_id=RUN)
+    controller._fixed_certified_market_plan = AsyncMock(return_value=object())
+    controller._fixed_through_boundary_ms = lambda: 600_000
+    authorities = []
+    controller._record_data_authority = lambda key, value: authorities.append((key, value))
+    class Reader:
+        def close(self):
+            pass
+    monkeypatch.setattr(market_data, "readonly_clickhouse_client", lambda **_kwargs: Reader())
+    monkeypatch.setattr(fixed_bar_signal, "load_first_squeeze_occurrences", lambda *_args, **_kwargs: {
+        "occurrences": [{"event_id": "bar-signal-1", "signal_stream_id": "price-squeeze-early",
+                         "ticker": "AAPL", "available_at": at.isoformat(),
+                         "last_price": 10., "squeeze_move_pct": 0.1}],
+        "authority": {"authority": fixed_bar_signal.CONTRACT, "row_count": 1},
+    })
+    monkeypatch.setattr(historical_signal_occurrence_service,
+                        "historical_source_native_signal_occurrences",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                            AssertionError("event occurrence fallback used")))
+    events = asyncio.run(controller._load_source_native_signal_events())
+    assert len(events) == 1 and events[0].ticker == "AAPL"
+    assert authorities[0][1]["authority"] == fixed_bar_signal.CONTRACT
+    assert controller._journal.latest_sequence(RUN) == 1
 
 
 def _row(ticker, boundary_ms, resolution_ms):

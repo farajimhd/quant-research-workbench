@@ -1,0 +1,156 @@
+"""Read-only, completed-bar Early Squeeze admission for fixed Backtests.
+
+The approved 100 ms impulse is evaluated in ClickHouse over the pinned bar
+attempts. Only its first causal start per ticker-session is returned; no event
+stream, producer job, or signal artifact is created by Backtest.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from datetime import timedelta
+from typing import Any, Mapping
+
+from src.backend.backtest_market_data import (
+    CertifiedMarketDayPlan, _literal, _unit_map, assert_select_only,
+    market_day_boundary,
+)
+
+
+CONTRACT = "arte-completed-100ms-squeeze-start-v1"
+RULE_ID = "watchlist-squeeze-early-impulse-100ms"
+STREAM_ID = "price-squeeze-early"
+_CONDITIONS = {
+    ("price_change_1_bar_pct", "greater_or_equal", 0.05),
+    ("trade_count_change", "greater_than", 0.0),
+    ("volume_change", "greater_than", 0.0),
+}
+
+
+def validate_stream(stream: Mapping[str, Any], activation: Mapping[str, Any]) -> None:
+    """Fail closed if the saved scanner contract no longer matches this SQL."""
+    if (stream.get("signal_stream_id") != STREAM_ID
+            or stream.get("occurrence_source") != "qmd_squeeze_episode"
+            or stream.get("episode_role") != "start"
+            or int(stream.get("episode_ttl_ms") or 0) != 300_000
+            or list(stream.get("inclusion_rule_sets") or []) != [RULE_ID]
+            or stream.get("exclusion_rule_sets")
+            or stream.get("trigger_policy") != "false_to_true"
+            or stream.get("rearm_policy") != "after_false"
+            or int(stream.get("cooldown_ms") or 0) != 0):
+        raise ValueError("Fixed bar Early Squeeze stream differs from the supported saved contract")
+    rules = [row for row in activation.get("rule_sets") or ()
+             if row.get("rule_set_id") == RULE_ID]
+    if len(rules) != 1 or rules[0].get("operator") != "all":
+        raise ValueError("Fixed bar Early Squeeze rule set is missing or changed")
+    actual = set()
+    for condition in rules[0].get("conditions") or ():
+        interval = condition.get("left_interval") or {}
+        if (condition.get("enabled") is False or condition.get("right_source_id")
+                or interval != {"value": 100, "unit": "milliseconds"}):
+            raise ValueError("Fixed bar Early Squeeze condition uses unsupported evidence")
+        actual.add((condition.get("left_source_id"), condition.get("comparator"),
+                    float(condition.get("value"))))
+    if actual != _CONDITIONS or len(rules[0].get("conditions") or ()) != len(_CONDITIONS):
+        raise ValueError("Fixed bar Early Squeeze thresholds differ from the saved rule set")
+
+
+def first_squeeze_sql(plan: CertifiedMarketDayPlan, *, through_boundary_ms: int) -> str:
+    if (type(through_boundary_ms) is not int or not 0 < through_boundary_ms <= 57_600_000
+            or through_boundary_ms % 100):
+        raise ValueError("Squeeze boundary must be a positive completed 100ms clock")
+    bars = _unit_map(plan, "bars")
+    if not bars or set(bars) != {(day, ticker) for day in plan.sessions for ticker in plan.tickers}:
+        raise ValueError("Squeeze scan requires every pinned ticker-day bar attempt")
+    attempts = ",".join(
+        f"(toDate({_literal(day)}),{_literal(ticker)},toUUID({_literal(unit.attempt_id)}))"
+        for (day, ticker), unit in sorted(bars.items())
+    )
+    return assert_select_only(f"""
+      WITH ordered AS (
+        SELECT session_date,ticker,bucket_index,open_int,close_int,volume,trade_count,
+          lagInFrame(close_int,1,toUInt64(0)) OVER w AS previous_close_int,
+          lagInFrame(volume,1,0.) OVER w AS previous_volume,
+          lagInFrame(trade_count,1,toUInt64(0)) OVER w AS previous_trade_count
+        FROM arte.bars_v1
+        WHERE build_id={_literal(plan.build_id)}
+          AND (session_date,ticker,attempt_id) IN ({attempts})
+          AND resolution_ms=100 AND price_valid=1
+          AND bucket_index<{through_boundary_ms // 100}
+        WINDOW w AS (PARTITION BY session_date,ticker ORDER BY bucket_index
+                     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+      ), candidates AS (
+        SELECT *,row_number() OVER (PARTITION BY session_date,ticker
+                                    ORDER BY bucket_index) AS candidate_number
+        FROM ordered
+        WHERE previous_close_int>0
+          AND (toFloat64(close_int)/previous_close_int-1)*100>=0.05
+          AND trade_count>previous_trade_count AND volume>previous_volume
+      )
+      SELECT session_date,ticker,bucket_index,open_int,close_int,volume,trade_count,
+        previous_close_int,previous_volume,previous_trade_count
+      FROM candidates WHERE candidate_number=1
+      ORDER BY session_date,ticker FORMAT JSONEachRow
+    """)
+
+
+def load_first_squeeze_occurrences(
+    plan: CertifiedMarketDayPlan, *, stream: Mapping[str, Any],
+    activation: Mapping[str, Any], through_boundary_ms: int, client: Any,
+) -> dict[str, Any]:
+    validate_stream(stream, activation)
+    query = first_squeeze_sql(plan, through_boundary_ms=through_boundary_ms)
+    rows = list(client.iter_json_each_row(query))
+    maximum = int(stream.get("maximum_events") or 0)
+    if maximum > 0 and len(rows) > maximum:
+        raise ValueError("Completed-bar squeeze occurrences exceed the saved stream limit")
+    seen: set[tuple[str, str]] = set()
+    occurrences: list[dict[str, Any]] = []
+    for row in rows:
+        day, ticker = str(row["session_date"]), str(row["ticker"])
+        bucket = int(row["bucket_index"])
+        key = (day, ticker)
+        close_int, previous_int = int(row["close_int"]), int(row["previous_close_int"])
+        volume, previous_volume = float(row["volume"]), float(row["previous_volume"])
+        trades, previous_trades = int(row["trade_count"]), int(row["previous_trade_count"])
+        if (key in seen or day not in plan.sessions or ticker not in plan.tickers
+                or not 0 <= bucket < through_boundary_ms // 100
+                or close_int <= 0 or previous_int <= 0
+                or not math.isfinite(volume) or not math.isfinite(previous_volume)
+                or (close_int / previous_int - 1) * 100 < 0.05
+                or volume <= previous_volume or trades <= previous_trades):
+            raise ValueError("Completed-bar squeeze query returned invalid or duplicate evidence")
+        seen.add(key)
+        at = market_day_boundary(day, (bucket + 1) * 100)
+        price, anchor = close_int / 10_000, previous_int / 10_000
+        move = (price / anchor - 1) * 100
+        identity = f"{plan.token}:{STREAM_ID}:{day}:{ticker}:{bucket}"
+        event_id = hashlib.sha256(identity.encode()).hexdigest()
+        expires = at + timedelta(milliseconds=300_000)
+        occurrences.append({
+            "event_id": event_id, "signal_stream_id": STREAM_ID, "ticker": ticker,
+            "event_time": at.isoformat(), "effective_at": at.isoformat(),
+            "available_at": at.isoformat(), "last_price": price,
+            "squeeze_episode_id": event_id, "squeeze_episode_role": "start",
+            "squeeze_episode_started_at": at.isoformat(),
+            "squeeze_expires_at": expires.isoformat(),
+            "squeeze_anchor_price": anchor, "squeeze_move_pct": move,
+            "squeeze_high_water_pct": max(0., move),
+            "source_authority": CONTRACT,
+            "evidence": {
+                "price_change_1_bar_pct": move,
+                "trade_count_change": trades - previous_trades,
+                "volume_change": volume - previous_volume,
+            },
+        })
+    body = json.dumps(occurrences, sort_keys=True, separators=(",", ":"))
+    return {
+        "occurrences": occurrences,
+        "authority": {
+            "authority": CONTRACT, "market_plan_token": plan.token,
+            "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
+            "row_count": len(occurrences),
+            "content_hash": hashlib.sha256(body.encode()).hexdigest(),
+        },
+    }
