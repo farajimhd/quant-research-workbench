@@ -770,6 +770,12 @@ class SimulatedBrokerAdapter:
             return []
         return await self._match_orders(event, fill_time=event.ts)
 
+    def completed_liquidity_quote(self, ticker: str) -> QuoteEvent | None:
+        """Latest valid completed-boundary quote, never a replayed tape event."""
+        if not self._bar_mode:
+            raise RuntimeError("Completed liquidity quotes require bar-mode execution")
+        return self._quotes_by_ticker.get(ticker.upper())
+
     async def on_liquidity_bar(
         self, row: Mapping[str, Any], *, at: datetime,
     ) -> list[Execution]:

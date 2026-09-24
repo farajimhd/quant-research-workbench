@@ -94,10 +94,15 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
                           low_int=0, high_int=0, execution_volume=0)
         fills = await self.broker.on_liquidity_bar(quote_only, at=first)
         self.assertEqual(sum(fill.size for fill in fills), 5)
+        completed = self.broker.completed_liquidity_quote("AAPL")
+        self.assertIsNotNone(completed)
+        self.assertEqual(completed.source, "arte.liquidity_100ms_v1")
+        self.assertEqual(completed.ts, first)
         second = first + timedelta(milliseconds=100)
         no_quote = bar(second)
         no_quote.update(quote_valid=0, quote_timestamp_us=0)
         await self.broker.on_liquidity_bar(no_quote, at=second)
+        self.assertIsNone(self.broker.completed_liquidity_quote("AAPL"))
         await self.order("MKT", quantity=3, oid="next")
         restored = SimulatedBrokerAdapter(
             ["TEST"], self.broker.config, mode=RunMode.BACKTEST, initial_time=START)
@@ -127,7 +132,9 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
                 await runtime.initialize()
                 await self.order("MKT", quantity=5)
                 at = START + timedelta(milliseconds=100)
-                await runtime.process_liquidity_bar(bar(at), at=at)
+                quote = await runtime.process_liquidity_bar(bar(at), at=at)
+                self.assertIsNotNone(quote)
+                self.assertEqual(quote.ts, at)
                 self.assertEqual(runtime.processed_events, 1)
                 self.assertEqual(sum(record.category == "execution" and
                     record.entity_type == "fill" for record in

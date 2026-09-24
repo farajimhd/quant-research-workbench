@@ -362,7 +362,7 @@ class TradingRuntime:
 
     async def process_liquidity_bar(
         self, row: Mapping[str, Any], *, at: datetime,
-    ) -> None:
+    ) -> QuoteEvent | None:
         """Advance broker execution from one completed persisted liquidity bucket.
 
         Strategy evaluation is a separate, later step at the configured bar
@@ -415,6 +415,7 @@ class TradingRuntime:
             f"{at.astimezone(timezone.utc).isoformat()}|"
             f"{ticker}|{int(row.get('bucket_index') or 0)}|liquidity_bar"
         )
+        return self.broker.completed_liquidity_quote(ticker)
 
     def process_passive_market_event(self, event: MarketEvent) -> None:
         """Advance market state when no order can match and strategy evaluation is external."""

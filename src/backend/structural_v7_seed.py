@@ -9,6 +9,7 @@ from datetime import date, datetime, time, timezone
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+from math import isfinite
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -134,6 +135,37 @@ def preceding_coverage(client: Any, *, ticker: str, session: date) -> dict[str, 
     row = rows[0]
     _validate_coverage(row, ticker=ticker, session=session)
     return row
+
+
+def split_evidence(client: Any, *, ticker: str, seed_session: date,
+                   session: date) -> list[dict[str, Any]]:
+    """Read split actions known at 04:00 ET, between seed and target session."""
+    if seed_session >= session:
+        raise ValueError("V7 split evidence requires a preceding seed session")
+    rows = _rows(client,
+        "SELECT execution_date,split_from,split_to,inserted_at "
+        "FROM q_live.market_stock_split_v1 FINAL "
+        f"WHERE provider_ticker={_literal(ticker)} "
+        f"AND execution_date>toDate({_literal(seed_session.isoformat())}) "
+        f"AND execution_date<=toDate({_literal(session.isoformat())}) "
+        f"AND inserted_at<=toDateTime64({_literal(_cutoff(session))},9,'UTC') "
+        "ORDER BY execution_date,inserted_at FORMAT JSONEachRow")
+    unique: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        day = str(row["execution_date"])
+        from_value = float(row["split_from"])
+        to_value = float(row["split_to"])
+        if (not all(isfinite(value) and value > 0 for value in (from_value, to_value))
+                or not seed_session < date.fromisoformat(day) <= session):
+            raise ValueError(f"Invalid causal V7 split evidence for {ticker} on {day}")
+        previous = unique.get(day)
+        if previous is not None and (from_value, to_value) != (
+            float(previous["split_from"]), float(previous["split_to"])
+        ):
+            raise ValueError(f"Conflicting causal V7 split ratios for {ticker} on {day}")
+        if previous is None or str(row["inserted_at"]) > str(previous["inserted_at"]):
+            unique[day] = dict(row)
+    return [unique[day] for day in sorted(unique)]
 
 
 def load_seed(client: Any, *, ticker: str, session: date,

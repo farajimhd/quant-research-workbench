@@ -6,7 +6,7 @@ import pytest
 from types import SimpleNamespace
 
 from src.backend.structural_v7_seed import (
-    _band_hash, certified_seed_plan, load_seed, preceding_coverage,
+    _band_hash, certified_seed_plan, load_seed, preceding_coverage, split_evidence,
 )
 from src.market_engine.derived_trade_policy import POLICY
 from src.market_engine.streaming_level_book import EXTRACTION_VERSION, StreamingLevelBook
@@ -102,3 +102,26 @@ def test_batched_preflight_pins_prior_filtered_seed():
     assert plan.payload()["unit_count"] == 1
     assert plan.payload()["catalog_hash"] == "b" * 64
     assert "LIMIT 1 BY ticker" in client.queries[0]
+
+
+def test_split_evidence_is_as_of_and_rejects_conflicting_actions():
+    class Splits:
+        def __init__(self):
+            self.query = ""
+            self.rows = [dict(execution_date="2026-08-18", split_from=1, split_to=2,
+                              inserted_at="2026-08-17 20:00:00.000000000")]
+
+        def execute(self, sql):
+            self.query = sql
+            return "\n".join(json.dumps(row) for row in self.rows)
+
+    client = Splits()
+    rows = split_evidence(client, ticker="TEST", seed_session=date(2026, 8, 17),
+                          session=date(2026, 8, 18))
+    assert len(rows) == 1
+    assert "inserted_at<=toDateTime64" in client.query
+    assert "q_live.market_stock_split_v1 FINAL" in client.query
+    client.rows.append({**client.rows[0], "split_to": 3})
+    with pytest.raises(ValueError, match="Conflicting"):
+        split_evidence(client, ticker="TEST", seed_session=date(2026, 8, 17),
+                       session=date(2026, 8, 18))

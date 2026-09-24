@@ -2940,9 +2940,11 @@ class ReplayRunController:
         from src.backend.backtest_market_data import (
             MarketDayLedger, configuration_tickers, iter_market_boundary_groups,
             iter_market_time_groups,
-            iter_market_day_rows,
+            iter_market_day_rows, readonly_clickhouse_client,
             market_day_boundary,
         )
+        from src.backend.fixed_v7_stream import FixedV7Cache
+        from src.backend.structural_v7_seed import certified_seed_plan
 
         configuration = self.definition.configuration_revision["payload"]
         expected = dict(self.definition.market_data_plan)
@@ -2955,25 +2957,47 @@ class ReplayRunController:
         )
         if plan.token != str(expected.get("token") or ""):
             raise ValueError("Certified Backtest market-data plan changed after preflight")
-        self._record_data_authority("fixed_market_data", {
-            **plan.payload(),
-            "database": "arte",
-            "tables": ["bars_v1", "indicators_v1", "liquidity_100ms_v1"],
-            "access": "select_only",
-            "frame_spool": False,
-        })
-        await self._prepare_session_relative_volume()
-        self._preparation_stage = "fixed_market_boundaries"
-        self._runtime_inputs_ready = True
-        self.status = "running"
-        self.current_time = self.definition.requested_start
-        await self._publish(force=True)
-        self._journal.enable_write_batching()
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        if not isinstance(self._journal, BacktestMemoryJournal):
+            raise RuntimeError("Fixed Backtest requires its ClickHouse-only journal adapter")
+        if self._resume_state is not None and self._source_cursor and not self._source_cursor.get("session_date"):
+            raise ValueError("Fixed Backtest checkpoint lacks a persisted market boundary cursor")
+        v7_reader = None
+        v7_seeds = None
+        if self.definition.causal_v7_plan:
+            v7_reader = readonly_clickhouse_client()
+            try:
+                v7_seeds = await asyncio.to_thread(certified_seed_plan, plan, v7_reader)
+                pinned_v7 = self.definition.causal_v7_plan
+                if (v7_seeds.token != pinned_v7.get("token")
+                        or v7_seeds.catalog_hash != pinned_v7.get("catalog_hash")
+                        or v7_seeds.provisional != pinned_v7.get("provisional")):
+                    raise ValueError("Certified causal V7 seed plan changed after preflight")
+            except BaseException:
+                v7_reader.close()
+                raise
+        try:
+            self._fixed_v7_caches = {}
+            self._record_data_authority("fixed_market_data", {
+                **plan.payload(),
+                "database": "arte",
+                "tables": ["bars_v1", "indicators_v1", "liquidity_100ms_v1"],
+                "access": "select_only",
+                "frame_spool": False,
+            })
+            await self._prepare_session_relative_volume()
+            self._preparation_stage = "fixed_market_boundaries"
+            self._runtime_inputs_ready = True
+            self.status = "running"
+            self.current_time = self.definition.requested_start
+            await self._publish(force=True)
+        except BaseException:
+            if v7_reader is not None:
+                await asyncio.to_thread(v7_reader.close)
+            raise
 
         source = iter_market_day_rows(plan)
         groups = iter_market_time_groups(iter_market_boundary_groups(source))
-        if self._resume_state is not None and self._source_cursor and not self._source_cursor.get("session_date"):
-            raise ValueError("Fixed Backtest checkpoint lacks a persisted market boundary cursor")
         sequence = int(self._source_cursor.get("sequence") or 0)
         boundary_count = 0
         external_index = 0
@@ -3002,6 +3026,10 @@ class ReplayRunController:
                     at = market_day_boundary(day, boundary_ms)
                     if at > self.definition.session_end:
                         continue
+                    if v7_seeds is not None and day not in self._fixed_v7_caches:
+                        self._fixed_v7_caches[day] = FixedV7Cache(
+                            market_plan=plan, seed_plan=v7_seeds,
+                            session=date.fromisoformat(day), client=v7_reader)
                     if self._resume_state is not None and self._source_cursor:
                         saved_day = str(self._source_cursor.get("session_date") or "")
                         saved_boundary = int(self._source_cursor.get("boundary_ms") or 0)
@@ -3012,7 +3040,13 @@ class ReplayRunController:
                     for _ticker_value, by_resolution in ticker_groups:
                         liquidity_row = by_resolution.get(100)
                         if liquidity_row is not None:
-                            await self._runtime.process_liquidity_bar(liquidity_row, at=at)
+                            completed_quote = await self._runtime.process_liquidity_bar(
+                                liquidity_row, at=at)
+                            ticker = _ticker(_ticker_value)
+                            if completed_quote is None:
+                                self._quotes.pop(ticker, None)
+                            else:
+                                self._quotes[ticker] = completed_quote
                     while (
                         external_index < len(self._historical_external_signal_events)
                         and self._historical_external_signal_events[external_index].available_at <= at
@@ -3023,13 +3057,21 @@ class ReplayRunController:
                         external_index += 1
                     self._apply_historical_watchlist_membership(at)
                     prepared_groups = []
+                    completed_seconds = []
                     for _ticker_value, by_resolution in ticker_groups:
                         sequence += 1
                         prepared_groups.append((by_resolution, sequence))
+                        if day in self._fixed_v7_caches and 1_000 in by_resolution:
+                            completed_seconds.append(by_resolution[1_000])
+                    if completed_seconds:
+                        await asyncio.to_thread(
+                            self._fixed_v7_caches[day].advance_seconds,
+                            completed_seconds, at=at)
+                    for by_resolution, frame_sequence in prepared_groups:
                         for resolution, auxiliary in sorted(by_resolution.items()):
                             if resolution != evaluation_ms and int(auxiliary.get("price_valid") or 0):
                                 self._remember_strategy_frame(_persisted_market_day_frame(
-                                    auxiliary, at=at, sequence=sequence))
+                                    auxiliary, at=at, sequence=frame_sequence))
                     for by_resolution, frame_sequence in prepared_groups:
                         evaluation_row = by_resolution.get(evaluation_ms)
                         if evaluation_row is None or not int(evaluation_row.get("price_valid") or 0):
@@ -3054,6 +3096,8 @@ class ReplayRunController:
             if close_source is not None:
                 await asyncio.get_running_loop().run_in_executor(reader, close_source)
             reader.shutdown(wait=True, cancel_futures=True)
+            if v7_reader is not None:
+                await asyncio.to_thread(v7_reader.close)
         await self._finish("completed")
 
     async def _market_event_batches(self):
@@ -3131,6 +3175,12 @@ class ReplayRunController:
             yield batch.events
 
     async def _prepare_v7_coverage(self) -> None:
+        if self.definition.mode == RunMode.BACKTEST:
+            from src.backend.backtest_market_data import ExecutionInterval
+            if ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed":
+                if self.definition.experimental_structure_book and not self.definition.causal_v7_plan:
+                    raise ValueError("Fixed Backtest lacks a certified typed V7 seed plan")
+                return
         if (self.definition.mode == RunMode.BACKTEST_DEBUG
                 or not (self.definition.experimental_structure_book or '').startswith('level-book-v7')
                 or self.definition.execution_mode != 'strategy'):
@@ -3862,7 +3912,8 @@ class ReplayRunController:
             from src.trading_runtime.vwap_resistance_ladder import observe_market
             if not eligible_trade_time(frame.as_of.timestamp()-.1):
                 return
-            snapshot = await self._experimental_structure_snapshot(frame.ticker, frame.as_of, 'frame')
+            snapshot = await ReplayRunController._fixed_or_experimental_structure_snapshot(self,
+                frame.ticker, frame.as_of, price=float(frame.bar.get('close') or 0))
             stream = self._candle_detector_states.setdefault(frame.ticker, {})
             market = stream.setdefault('structural_recovery', {})
             saved = dict(market.get('historical_hod_observation', {}))
@@ -3886,11 +3937,23 @@ class ReplayRunController:
             if not self.definition.experimental_structure_book:
                 raise ValueError('Structural strategy requires an explicitly selected certified V6 swing book')
             if not getattr(self, '_recovery_book_identity', None):
-                build = resolve(self.definition.experimental_structure_book)
-                if build['version'] not in BOOK_VERSIONS:
-                    raise ValueError('Structural recovery requires Level book V7')
-                self._recovery_book_identity = {k:build[k] for k in ('id','fingerprint','version')}
-            snapshot = await self._experimental_structure_snapshot(frame.ticker, frame.as_of, 'frame')
+                if (getattr(self.definition, 'mode', None) == RunMode.BACKTEST
+                        and getattr(self.definition, 'causal_v7_plan', None)):
+                    from src.market_engine.streaming_level_book import VERSION as V7_VERSION
+                    if V7_VERSION not in BOOK_VERSIONS:
+                        raise ValueError('Structural recovery does not accept the pinned V7 engine')
+                    self._recovery_book_identity = {
+                        'id': 'arte-typed-v7-seed',
+                        'fingerprint': self.definition.causal_v7_plan['token'],
+                        'version': V7_VERSION,
+                    }
+                else:
+                    build = resolve(self.definition.experimental_structure_book)
+                    if build['version'] not in BOOK_VERSIONS:
+                        raise ValueError('Structural recovery requires Level book V7')
+                    self._recovery_book_identity = {k:build[k] for k in ('id','fingerprint','version')}
+            snapshot = await ReplayRunController._fixed_or_experimental_structure_snapshot(self,
+                frame.ticker, frame.as_of, price=float(frame.bar.get('close') or 0))
             end = frame.as_of.timestamp()
             bar = dict(time=end-1, end=end, **{k:frame.bar[k] for k in ('open','high','low','close')},
                        volume=frame.bar.get('volume'))
@@ -3912,7 +3975,8 @@ class ReplayRunController:
                 from src.trading_runtime.historical_hod import observe_frame
                 market['historical_hod_observation'] = observe_frame(frame,
                     saved.get('historical_hod_observation', {}), parameters,
-                    dict(snapshot, session_high=self._experimental_session_high(frame.ticker,frame.as_of)))
+                    dict(snapshot, session_high=snapshot.get('qmd_structure_session_high')
+                         or self._experimental_session_high(frame.ticker, frame.as_of)))
             if parameters.get('vwap_ladder', {}).get('allow_retest_stop_fallback') or parameters.get('vwap_ladder', {}).get('require_late_retest'):
                 from src.trading_runtime.resistance_zones import observe_retests
                 from src.trading_runtime.vwap_resistance_ladder import levels
@@ -3926,7 +3990,8 @@ class ReplayRunController:
                 from src.trading_runtime.early_squeeze_breakout import observe_context
                 market['early_squeeze_context'] = observe_context(SimpleNamespace(
                     observed_at=frame.as_of, price=bar['close'],
-                    structural_session_high=self._experimental_session_high(frame.ticker, frame.as_of),
+                    structural_session_high=snapshot.get('qmd_structure_session_high')
+                    or self._experimental_session_high(frame.ticker, frame.as_of),
                     structural_support_levels=(), structural_transition_levels=(),
                     structural_resistance_levels=snapshot['unified_levels']), saved.get('early_squeeze_context', {}))
                 if 'fast_squeeze_context' in saved:
@@ -3945,7 +4010,8 @@ class ReplayRunController:
         parameters = self._candle_detector_parameters
         levels = frame.indicator.get('qmd_structure_unified_levels') or []
         if self.definition.experimental_structure_book:
-            snapshot = await self._experimental_structure_snapshot(frame.ticker, frame.as_of, 'frame')
+            snapshot = await ReplayRunController._fixed_or_experimental_structure_snapshot(self,
+                frame.ticker, frame.as_of, price=float(frame.bar.get('close') or 0))
             levels = snapshot['unified_levels']
         observation = StrategyObservation(ticker=frame.ticker, observed_at=frame.as_of,
             price=float(frame.bar['close']), bar_open=frame.bar['open'],
@@ -4042,8 +4108,17 @@ class ReplayRunController:
         await self._ensure_bar_gpt_features(frame.as_of)
         quote = self._quotes.get(frame.ticker)
         indicator = frame.indicator
-        if self.definition.experimental_structure_book:
-            snapshot = await self._experimental_structure_snapshot(frame.ticker, frame.as_of, 'frame')
+        fixed_v7 = getattr(self, "_fixed_v7_caches", {}).get(
+            frame.as_of.astimezone(NEW_YORK).date().isoformat())
+        if fixed_v7 is not None:
+            indicator = {**indicator, **await asyncio.to_thread(
+                fixed_v7.context, frame.ticker, as_of=frame.as_of,
+                price=float(frame.bar.get("close") or 0))}
+        elif self.definition.mode == RunMode.BACKTEST and self.definition.causal_v7_plan:
+            raise RuntimeError("Fixed Backtest cannot fall back to a disk-backed V7 cursor")
+        elif self.definition.experimental_structure_book:
+            snapshot = await ReplayRunController._fixed_or_experimental_structure_snapshot(self,
+                frame.ticker, frame.as_of, price=float(frame.bar.get('close') or 0))
             from src.backend.experimental_structure_book import context
             indicator = {**indicator, **context(snapshot, float(frame.bar.get('close') or 0)),
                          'qmd_structure_session_high': self._experimental_session_high(frame.ticker, frame.as_of),
@@ -4081,7 +4156,8 @@ class ReplayRunController:
             # exact frozen observation instead of copying the entire book twice.
             levels=indicator['qmd_structure_unified_levels']
             prepared_structure['qmd_structure_unified_levels'] = (
-                levels if getattr(self,'_prepared_v7',None) is not None else deepcopy(levels))
+                levels if (getattr(self,'_prepared_v7',None) is not None or fixed_v7 is not None)
+                else deepcopy(levels))
         elif isinstance(indicator.get("qmd_structure_unified_level_delta"), Mapping):
             current_levels = {
                 (int(row.get("side") or 0), str(row.get("unified_level_id") or "")): dict(row)
@@ -4105,7 +4181,8 @@ class ReplayRunController:
             ]
         structural_indicator = {**prepared_structure, **indicator}
         unified_levels = tuple(
-            row if getattr(self,'_prepared_v7',None) is not None else dict(row)
+            row if (getattr(self,'_prepared_v7',None) is not None or fixed_v7 is not None)
+            else dict(row)
             for row in structural_indicator.get("qmd_structure_unified_levels") or ()
             if isinstance(row, Mapping)
         )
@@ -4785,6 +4862,26 @@ class ReplayRunController:
         started = time.perf_counter()
         await asyncio.gather(*(prepare(ticker, times) for ticker, times in groups.items()))
         self._record_stage_time('structure_prefetch', started)
+
+    async def _fixed_or_experimental_structure_snapshot(self, ticker, as_of, *, price: float):
+        cache = getattr(self, '_fixed_v7_caches', {}).get(
+            as_of.astimezone(NEW_YORK).date().isoformat())
+        if cache is None:
+            if (getattr(self.definition, 'mode', None) == RunMode.BACKTEST
+                    and getattr(self.definition, 'causal_v7_plan', None)):
+                raise RuntimeError("Fixed Backtest cannot fall back to a disk-backed V7 cursor")
+            return await self._experimental_structure_snapshot(ticker, as_of, 'frame')
+        context = await asyncio.to_thread(cache.context, ticker, as_of=as_of, price=price)
+        return {
+            'unified_levels': context['qmd_structure_unified_levels'],
+            'qmd_structure_session_high': context['qmd_structure_session_high'],
+            'as_of': as_of.timestamp(),
+            'max_input_timestamp': context['v7_max_input_timestamp'],
+            'book_version': context['qmd_level_book_version'],
+            'version': context['qmd_level_book_version'],
+            'input_policy': context['v7_input_policy'],
+            'seed_input_policy': context['v7_seed_input_policy'],
+        }
 
     async def _experimental_structure_snapshot(self, ticker, as_of, lane, sequence=None):
         from src.backend.experimental_structure_book import NormalizedBookCursor as BookCursor
