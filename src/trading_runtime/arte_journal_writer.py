@@ -31,6 +31,10 @@ _FAMILIES = (
     ("trading_order_command_v1", "order_commands", "order_command_count", "order_command_hash"),
     ("trading_order_transition_v1", "order_transitions", "order_transition_count",
      "order_transition_hash"),
+    ("trading_account_snapshot_v1", "account_snapshots", "account_snapshot_count",
+     "account_snapshot_hash"),
+    ("trading_position_snapshot_v1", "position_snapshots", "position_snapshot_count",
+     "position_snapshot_hash"),
 )
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 _COMMIT_COLUMNS = tuple(name for name, _ in _CONTRACTS["trading_commit_v1"].columns
@@ -57,6 +61,8 @@ class TypedJournalBatch:
     commissions: tuple[Mapping[str, Any], ...] = ()
     order_commands: tuple[Mapping[str, Any], ...] = ()
     order_transitions: tuple[Mapping[str, Any], ...] = ()
+    account_snapshots: tuple[Mapping[str, Any], ...] = ()
+    position_snapshots: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.run_id or self.first_sequence < 1 or self.last_sequence < self.first_sequence:
@@ -113,6 +119,16 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 raise ValueError(f"{name} has an incorrect content hash")
             sealed.append({**content, "content_hash": digest})
         result.append((name, tuple(sealed)))
+    by_family = dict(result)
+    account_snapshots = {
+        (str(row["account_id"]), str(row["snapshot_id"]))
+        for row in by_family["trading_account_snapshot_v1"]
+    }
+    if len(account_snapshots) != len(by_family["trading_account_snapshot_v1"]):
+        raise ValueError("Journal batch repeated an account snapshot identity")
+    for row in by_family["trading_position_snapshot_v1"]:
+        if (str(row["account_id"]), str(row["snapshot_id"])) not in account_snapshots:
+            raise ValueError("Position snapshot lacks its complete account snapshot")
     return tuple(result)
 
 

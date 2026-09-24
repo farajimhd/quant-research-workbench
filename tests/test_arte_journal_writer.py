@@ -128,6 +128,42 @@ def test_order_command_and_transition_have_typed_durable_fences() -> None:
     assert load_committed_prefix(client, RUN).last_sequence == 2
 
 
+def test_position_snapshot_requires_account_snapshot_in_same_batch() -> None:
+    base = dict(batch().events[0])
+    base.pop("content_hash")
+    account_id = "00000000-0000-0000-0000-000000000015"
+    position_id = "00000000-0000-0000-0000-000000000016"
+    events = ({**base, "record_id": account_id, "sequence": 1,
+               "category": "snapshot", "entity_type": "portfolio"},
+              {**base, "record_id": position_id, "sequence": 2,
+               "category": "snapshot", "entity_type": "position"})
+    common = {"run_id": RUN, "event_month": "2026-08-01", "batch_id": BATCH,
+              "snapshot_id": "snapshot-1", "account_id": "DU1",
+              "source_event_time": "2026-08-18T08:05:00+00:00"}
+    account = {**common, "record_id": account_id, "currency": "USD",
+               "net_liquidation": "1000.0000000000", "total_cash_value": "900.0000000000",
+               "buying_power": "900.0000000000", "gross_position_value": "100.0000000000",
+               "available_funds": "800.0000000000", "excess_liquidity": "700.0000000000",
+               "snapshot_complete": 1}
+    position = {**common, "record_id": position_id, "conid": 123,
+                "ticker": "TEST", "currency": "USD", "asset_class": "STK",
+                "quantity": "10.0000000000", "market_price": "10.0000000000",
+                "market_value": "100.0000000000", "average_cost": "9.0000000000",
+                "average_price": "9.0000000000", "realized_pnl": "0.0000000000",
+                "unrealized_pnl": "10.0000000000"}
+    item = TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
+                             1, 2, "bucket-2", "completed", events,
+                             account_snapshots=(account,), position_snapshots=(position,))
+    client = MemoryClient()
+    assert publish_typed_batch(client, item) == BATCH
+    assert load_committed_prefix(client, RUN).last_sequence == 2
+    orphan = TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
+                               1, 2, "bucket-2", "completed", events,
+                               position_snapshots=(position,))
+    with pytest.raises(ValueError, match="lacks its complete account snapshot"):
+        publish_typed_batch(MemoryClient(), orphan)
+
+
 def test_run_identity_is_immutable_and_uses_typed_rows() -> None:
     client = MemoryClient()
     row = run_row()
