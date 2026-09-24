@@ -15,6 +15,7 @@ import json
 import re
 from queue import Full, Queue
 from threading import Thread
+from types import MappingProxyType
 from typing import Any, Mapping
 from uuid import UUID
 
@@ -53,37 +54,55 @@ class TypedJournalBatch:
             raise ValueError("Journal batch requires a source cursor and valid status")
         for value in (self.attempt_id, self.batch_id, self.prior_batch_id):
             UUID(value)
-        if len(self.events) != self.last_sequence - self.first_sequence + 1:
-            raise ValueError("Journal batch must cover a contiguous event sequence")
-        sequences = [int(row["sequence"]) for row in self.events]
-        if sequences != list(range(self.first_sequence, self.last_sequence + 1)):
-            raise ValueError("Journal event sequence is not contiguous")
-        event_ids = {str(UUID(str(row["record_id"]))) for row in self.events}
-        if len(event_ids) != len(self.events):
-            raise ValueError("Journal batch repeated an event identity")
-        for name, rows in self.families():
-            allowed = {column for column, _ in _CONTRACTS[name].columns}
-            identities: set[str] = set()
-            for row in rows:
-                if set(row) != allowed:
-                    raise ValueError(f"{name} has missing or extra typed columns")
-                if str(row["run_id"]) != self.run_id or str(UUID(str(row["batch_id"]))) != self.batch_id:
-                    raise ValueError(f"{name} mixed runs or batches")
-                record_id = str(UUID(str(row["record_id"])))
-                if name != "trading_event_v1" and record_id not in event_ids:
-                    raise ValueError(f"{name} has no parent journal event")
-                if name == "trading_event_v1" and str(UUID(str(row["attempt_id"]))) != self.attempt_id:
-                    raise ValueError("Journal event mixed attempts")
-                if record_id in identities:
-                    raise ValueError(f"{name} has duplicate record identities")
-                identities.add(record_id)
-                digest = str(row["content_hash"])
-                content = {key: value for key, value in row.items() if key != "content_hash"}
-                if digest != sha256(canonical_json(content).encode("utf-8")).hexdigest():
-                    raise ValueError(f"{name} has an incorrect content hash")
+        # Copy only the small typed row envelopes at submission. Full schema
+        # checks, JSON wire serialization, and hashing happen on the writer.
+        for family in ("events", "executions", "commissions"):
+            object.__setattr__(self, family, tuple(
+                MappingProxyType(dict(row)) for row in getattr(self, family)
+            ))
 
     def families(self) -> tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...]:
         return tuple(zip(_FACTS, (self.events, self.executions, self.commissions)))
+
+
+def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
+    """Validate and hash the immutable snapshot on the persistence lane."""
+    if len(batch.events) != batch.last_sequence - batch.first_sequence + 1:
+        raise ValueError("Journal batch must cover a contiguous event sequence")
+    sequences = [int(row["sequence"]) for row in batch.events]
+    if sequences != list(range(batch.first_sequence, batch.last_sequence + 1)):
+        raise ValueError("Journal event sequence is not contiguous")
+    event_ids = {str(UUID(str(row["record_id"]))) for row in batch.events}
+    if len(event_ids) != len(batch.events):
+        raise ValueError("Journal batch repeated an event identity")
+    result: list[tuple[str, tuple[dict[str, Any], ...]]] = []
+    for name, rows in batch.families():
+        allowed = {column for column, _ in _CONTRACTS[name].columns}
+        identities: set[str] = set()
+        sealed: list[dict[str, Any]] = []
+        for row in rows:
+            if set(row) not in (allowed, allowed - {"content_hash"}):
+                raise ValueError(f"{name} has missing or extra typed columns")
+            if str(row["run_id"]) != batch.run_id or str(UUID(str(row["batch_id"]))) != batch.batch_id:
+                raise ValueError(f"{name} mixed runs or batches")
+            record_id = str(UUID(str(row["record_id"])))
+            if name != "trading_event_v1" and record_id not in event_ids:
+                raise ValueError(f"{name} has no parent journal event")
+            if name == "trading_event_v1" and str(UUID(str(row["attempt_id"]))) != batch.attempt_id:
+                raise ValueError("Journal event mixed attempts")
+            if record_id in identities:
+                raise ValueError(f"{name} has duplicate record identities")
+            identities.add(record_id)
+            content = {key: value for key, value in row.items() if key != "content_hash"}
+            if any(isinstance(value, (Mapping, list, tuple, bytearray))
+                   for value in content.values()):
+                raise ValueError(f"{name} contains an opaque or mutable value")
+            digest = sha256(canonical_json(content).encode("utf-8")).hexdigest()
+            if "content_hash" in row and str(row["content_hash"]) != digest:
+                raise ValueError(f"{name} has an incorrect content hash")
+            sealed.append({**content, "content_hash": digest})
+        result.append((name, tuple(sealed)))
+    return tuple(result)
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +234,7 @@ def _verify_run_identity(client: Any, run_id: str) -> None:
 
 def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
+    families = _sealed_families(batch)
     existing = _rows(client,
         "SELECT run_id,attempt_id,batch_id,prior_batch_id,first_sequence,last_sequence,"
         "event_count,execution_count,commission_count,event_hash,execution_hash,commission_hash,"
@@ -231,7 +251,7 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
         if expected_prior != (batch.prior_batch_id, batch.first_sequence - 1):
             raise RuntimeError("Typed journal batch does not extend the committed prefix")
     hashes: dict[str, str] = {}
-    for name, rows in batch.families():
+    for name, rows in families:
         hashes[name] = sha256(canonical_json(_identity(rows)).encode("utf-8")).hexdigest()
         if rows and not _verify_family(client, name, batch.batch_id, rows):
             _insert(client, name, rows, f"{batch.batch_id}:{name}")

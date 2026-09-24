@@ -156,10 +156,24 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
         journal.close()
 
 
-def test_invalid_family_row_is_rejected_before_enqueue() -> None:
+def test_invalid_family_row_is_rejected_before_publication() -> None:
     item = batch()
     altered = dict(item.events[0])
     altered["payload_json"] = "{}"
+    invalid = TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
+                                1, 1, "bucket-1", "running", (altered,))
     with pytest.raises(ValueError, match="typed columns"):
-        TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
-                          1, 1, "bucket-1", "running", (altered,))
+        publish_typed_batch(MemoryClient(), invalid)
+
+
+def test_submission_snapshot_is_immutable_and_hashing_stays_off_caller(monkeypatch) -> None:
+    source = dict(batch().events[0])
+    source.pop("content_hash")
+    with monkeypatch.context() as patch:
+        patch.setattr(writer_module, "canonical_json", lambda _value: (_ for _ in ()).throw(
+            AssertionError("serialization occurred on caller")))
+        pending = TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
+                                    1, 1, "bucket-1", "running", (source,))
+    source["entity_id"] = "changed-after-submit"
+    assert pending.events[0]["entity_id"] == "fill-1"
+    assert publish_typed_batch(MemoryClient(), pending) == BATCH
