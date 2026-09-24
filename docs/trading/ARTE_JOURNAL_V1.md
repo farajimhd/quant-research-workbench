@@ -134,6 +134,12 @@ revisions. It excludes unfenced inserts before pagination and checks each typed
 detail against its event's batch, account, execution identity, and source time.
 This is recovery evidence, not yet a live broker reconciliation or runtime
 cutover.
+Run start/finish records have a typed `trading_run_transition_v1` detail with
+status and nullable processed-event count. The start projection verifies its
+source config against the separately fenced typed run context, rather than
+persisting another config copy. The detail count and hash join the same commit
+fence; cold paging excludes unfenced transitions. This maps lifecycle evidence
+only, not the remaining strategy/OMS state.
 
 ## Cutover gate
 

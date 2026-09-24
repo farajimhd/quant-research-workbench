@@ -112,6 +112,21 @@ TABLES = (
         "toYYYYMM(event_month)", "run_id, attempt_id, sequence, record_id",
     ),
     TableContract(
+        "trading_run_transition_v1",
+        (
+            ("record_id", "UUID"),
+            ("run_id", "String"),
+            ("event_month", "Date"),
+            ("batch_id", "UUID"),
+            ("account_id", "String"),
+            ("status", "LowCardinality(String)"),
+            ("processed_events", "Nullable(UInt64)"),
+            ("source_event_time", "DateTime64(9, 'UTC')"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, source_event_time, record_id",
+    ),
+    TableContract(
         "trading_strategy_signal_v1",
         (
             ("record_id", "UUID"),
@@ -583,6 +598,8 @@ TABLES = (
             ("oms_cancel_oca_hash", "FixedString(64)"),
             ("intent_use_count", "UInt32"),
             ("intent_use_hash", "FixedString(64)"),
+            ("run_transition_count", "UInt32"),
+            ("run_transition_hash", "FixedString(64)"),
             ("source_cursor", "String"),
             ("status", "LowCardinality(String)"),
             ("committed_at", "DateTime64(6, 'UTC')"),
@@ -670,6 +687,19 @@ def intent_use_upgrade_ddl() -> tuple[str, ...]:
         "intent_use_count UInt32 DEFAULT 0 AFTER oms_cancel_oca_hash",
         "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
         f"intent_use_hash FixedString(64) DEFAULT '{empty_hash}' AFTER intent_use_count",
+    )
+
+
+def run_transition_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only typed lifecycle detail and additive fence fields."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_run_transition_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "run_transition_count UInt32 DEFAULT 0 AFTER intent_use_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"run_transition_hash FixedString(64) DEFAULT '{empty_hash}' AFTER run_transition_count",
     )
 
 

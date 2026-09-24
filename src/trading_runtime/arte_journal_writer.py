@@ -28,6 +28,8 @@ from src.trading_runtime.journal_contract import canonical_json
 _CONTRACTS = {table.name: table for table in TABLES}
 _FAMILIES = (
     ("trading_event_v1", "events", "event_count", "event_hash"),
+    ("trading_run_transition_v1", "run_transitions", "run_transition_count",
+     "run_transition_hash"),
     ("trading_strategy_signal_v1", "signals", "signal_count", "signal_hash"),
     ("trading_signal_source_v1", "signal_sources", "signal_source_count",
      "signal_source_hash"),
@@ -59,7 +61,10 @@ _FAMILIES = (
 )
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 _EVENT_DETAILS = {
+    # Legacy journal-only test marker; runtime lifecycle records use the
+    # normalized (lifecycle, run) detail below.
     ("run_state", "lifecycle"): None,
+    ("lifecycle", "run"): "trading_run_transition_v1",
     ("strategy_decision", "signal"): "trading_strategy_signal_v1",
     ("strategy_decision", "intent"): "trading_strategy_intent_v1",
     ("execution", "fill"): "trading_execution_v1",
@@ -111,6 +116,7 @@ class TypedJournalBatch:
     source_cursor: str
     status: str
     events: tuple[Mapping[str, Any], ...]
+    run_transitions: tuple[Mapping[str, Any], ...] = ()
     signals: tuple[Mapping[str, Any], ...] = ()
     signal_sources: tuple[Mapping[str, Any], ...] = ()
     executions: tuple[Mapping[str, Any], ...] = ()
@@ -237,6 +243,17 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
         record_id = str(UUID(str(event["record_id"])))
         if details_by_record.get(record_id) != _EVENT_DETAILS[key]:
             raise ValueError("Journal event lacks its required typed detail")
+    for transition in by_family["trading_run_transition_v1"]:
+        parent = events_by_id[str(UUID(str(transition["record_id"])))]
+        if (parent["category"] != "lifecycle" or parent["entity_type"] != "run"
+                or parent["entity_id"] != batch.run_id
+                or parent["account_id"]
+                or transition["account_id"]
+                or transition["status"] not in {"running", "completed", "stopped", "failed"}
+                or _datetime_wire(transition["source_event_time"], 9)
+                != _datetime_wire(parent["event_time"], 9)
+                or (transition["status"] == "running") != (transition["processed_events"] is None)):
+            raise ValueError("Run transition differs from its lifecycle event")
     sources_by_parent: dict[str, list[dict[str, Any]]] = {}
     for row in by_family["trading_signal_source_v1"]:
         parent_id = str(UUID(str(row["parent_record_id"])))
@@ -1279,6 +1296,58 @@ def load_committed_execution_page(
         client, prefix, "fill", "trading_execution_v1",
         after_sequence=after_sequence, limit=limit,
     )
+
+
+def load_committed_run_transition_page(
+    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    limit: int = 500,
+) -> tuple[dict[str, Any], ...]:
+    """Read normalized run status from a fully verified committed prefix."""
+    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+        raise ValueError("Run transition recovery requires a verified committed prefix")
+    if after_sequence < 0 or not 1 <= limit <= 1000:
+        raise ValueError("Run transition page bounds are invalid")
+    events = _rows(client,
+        "SELECT record_id,batch_id,sequence,event_month,account_id,event_time,entity_id "
+        "FROM arte.trading_event_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND sequence>{int(after_sequence)} "
+        f"AND sequence<={int(prefix.last_sequence)} "
+        "AND category='lifecycle' AND entity_type='run' "
+        f"{_committed_batch_filter(prefix)}"
+        f"ORDER BY sequence LIMIT {int(limit)} FORMAT JSONEachRow")
+    if not events:
+        return ()
+    ids = tuple(str(UUID(str(row["record_id"]))) for row in events)
+    if len(set(ids)) != len(ids):
+        raise RuntimeError("Committed lifecycle page repeated an event identity")
+    if any(str(UUID(str(row["batch_id"]))) not in prefix.batch_ids for row in events):
+        raise RuntimeError("Lifecycle page contains an unfenced event")
+    columns = ",".join(column for column, _ in _CONTRACTS["trading_run_transition_v1"].columns)
+    ids_sql = ",".join(f"toUUID({_literal(value)})" for value in ids)
+    details = _rows(client, f"SELECT {columns} FROM arte.trading_run_transition_v1 "
+                    f"WHERE run_id={_literal(prefix.run_id)} "
+                    f"AND record_id IN ({ids_sql}) "
+                    f"{_committed_batch_filter(prefix)}FORMAT JSONEachRow")
+    if len(details) != len(events):
+        raise RuntimeError("Committed lifecycle page has missing or duplicate details")
+    by_id = {str(UUID(str(row["record_id"]))): row for row in details}
+    if set(by_id) != set(ids):
+        raise RuntimeError("Committed lifecycle page details differ from events")
+    result = []
+    prior = after_sequence
+    for event in events:
+        sequence = int(event["sequence"])
+        detail = by_id[str(UUID(str(event["record_id"])))]
+        if (sequence <= prior or event["entity_id"] != prefix.run_id
+                or event["account_id"] or detail["account_id"]
+                or str(UUID(str(detail["batch_id"]))) != str(UUID(str(event["batch_id"])))
+                or detail["event_month"] != event["event_month"]
+                or detail["source_event_time"] != event["event_time"]):
+            raise RuntimeError("Committed lifecycle page differs from its event envelope")
+        prior = sequence
+        result.append({"sequence": sequence, **detail})
+    return tuple(result)
 
 
 def load_committed_commission_page(

@@ -17,6 +17,7 @@ from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.ibkr_client import _execution as parse_ibkr_execution
 from src.trading_runtime.ibkr_schema import Execution, OrderRequest
+from src.trading_runtime.journal_contract import JournalRecord, canonical_json
 from src.trading_runtime.signals import StrategySignal
 
 
@@ -34,6 +35,61 @@ _MEASURE_SCALE = Decimal("0.000000000000000001")
 class FillDetails:
     execution: dict[str, Any]
     commission: dict[str, Any] | None
+
+
+def runtime_lifecycle_batch(
+    record: JournalRecord, *, run_month: date, attempt_id: str,
+    batch_id: str, prior_batch_id: str, source_cursor: str,
+    expected_config: dict[str, Any] | None = None,
+) -> TypedJournalBatch:
+    """Project the runtime's start/finish record without persisting config twice."""
+    if (record.category, record.entity_type, record.entity_id, record.account_id) != (
+        "lifecycle", "run", record.run_id, "",
+    ):
+        raise ValueError("Run lifecycle record identity is invalid")
+    if record.event_time.tzinfo is None or record.recorded_at.tzinfo is None:
+        raise ValueError("Run lifecycle timestamps must be timezone-aware")
+    payload = dict(record.payload)
+    status = payload.get("status")
+    if status not in {"running", "completed", "stopped", "failed"}:
+        raise ValueError("Run lifecycle status is invalid")
+    common = {"status", "correlation_id", "causation_id"}
+    if status == "running":
+        if set(payload) - common != {"config"} or expected_config is None:
+            raise ValueError("Run start lacks its pinned typed configuration")
+        if canonical_json(payload["config"]) != canonical_json(expected_config):
+            raise ValueError("Run start configuration differs from the typed run context")
+        processed_events = None
+    else:
+        if set(payload) - common != {"processed_events"}:
+            raise ValueError("Run finish has unmodeled lifecycle evidence")
+        processed_events = payload["processed_events"]
+        if type(processed_events) is not int or processed_events < 0:
+            raise ValueError("Run finish processed-event count is invalid")
+    at = record.event_time.astimezone(timezone.utc).isoformat()
+    received = record.recorded_at.astimezone(timezone.utc).isoformat()
+    event_month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+    event = {
+        "run_id": record.run_id, "event_month": event_month,
+        "attempt_id": attempt_id, "batch_id": batch_id,
+        "record_id": record.record_id, "sequence": record.sequence,
+        "event_time": at, "recorded_at": received,
+        "category": "lifecycle", "entity_type": "run",
+        "entity_id": record.run_id, "account_id": "",
+        "correlation_id": str(payload.get("correlation_id") or ""),
+        "causation_id": str(payload.get("causation_id") or ""),
+    }
+    transition = {
+        "record_id": record.record_id, "run_id": record.run_id,
+        "event_month": event_month, "batch_id": batch_id,
+        "account_id": "", "status": status,
+        "processed_events": processed_events, "source_event_time": at,
+    }
+    return TypedJournalBatch(
+        record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        record.sequence, record.sequence, source_cursor, status, (event,),
+        run_transitions=(transition,),
+    )
 
 
 def _exact_decimal(value: float | Decimal, scale: Decimal = _SCALE) -> str:

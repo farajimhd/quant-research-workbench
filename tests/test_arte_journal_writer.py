@@ -10,12 +10,16 @@ from uuid import UUID
 import pytest
 
 from src.trading_runtime import arte_journal_writer as writer_module
-from src.trading_runtime.arte_journal_projection import broker_fill_batch, commission_revision_batch
+from src.trading_runtime.arte_journal_projection import (
+    broker_fill_batch, commission_revision_batch, runtime_lifecycle_batch,
+)
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.ibkr_client import _execution
+from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, JournalQueueFull, TypedJournalBatch, load_committed_prefix,
     load_committed_commission_page, load_committed_execution_page,
+    load_committed_run_transition_page,
     load_committed_order_command_page, load_committed_order_transition_page,
     load_typed_run_context, publish_typed_batch, publish_typed_run,
     publish_typed_run_context, typed_row,
@@ -118,6 +122,50 @@ def run_context() -> dict:
         "safety_supervisor_enabled": True, "checkpoint_interval_events": 100,
         "write_progress_checkpoints": True,
     }
+
+
+def test_runtime_lifecycle_is_normalized_and_fence_verified() -> None:
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    common = dict(record_id=RECORD, run_id=RUN, sequence=1,
+                  event_time=at, recorded_at=at, category="lifecycle",
+                  entity_type="run", entity_id=RUN, account_id="")
+    record = JournalRecord(**common, payload={"status": "running", "config": run_context()})
+    item = runtime_lifecycle_batch(
+        record, run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
+        batch_id=BATCH, prior_batch_id=ZERO, source_cursor="start",
+        expected_config=run_context(),
+    )
+    client = MemoryClient()
+    publish_typed_batch(client, item)
+    prefix = load_committed_prefix(client, RUN)
+    assert prefix is not None
+    page = load_committed_run_transition_page(client, prefix)
+    assert len(page) == 1 and page[0]["status"] == "running"
+    assert page[0]["processed_events"] is None
+    assert load_committed_run_transition_page(client, prefix, after_sequence=1) == ()
+    for name in ("trading_event_v1", "trading_run_transition_v1"):
+        clone = dict(client.tables[name][0])
+        clone["batch_id"] = "00000000-0000-0000-0000-000000000099"
+        client.tables[name].append(clone)
+    assert len(load_committed_run_transition_page(client, prefix)) == 1
+    finished = JournalRecord(**common, payload={"status": "completed", "processed_events": 42})
+    terminal = runtime_lifecycle_batch(
+        finished, run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
+        batch_id=BATCH, prior_batch_id=ZERO, source_cursor="finish",
+    )
+    assert terminal.run_transitions[0]["processed_events"] == 42
+    with pytest.raises(ValueError, match="unmodeled lifecycle evidence"):
+        runtime_lifecycle_batch(JournalRecord(**common, payload={
+            "status": "completed", "processed_events": 42, "state_json": "{}",
+        }), run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
+            batch_id=BATCH, prior_batch_id=ZERO, source_cursor="finish")
+    with pytest.raises(ValueError, match="differs from the typed run context"):
+        runtime_lifecycle_batch(record, run_month=date(2026, 8, 1),
+            attempt_id=ATTEMPT, batch_id=BATCH, prior_batch_id=ZERO,
+            source_cursor="start", expected_config={**run_context(), "strategy_revision": 99})
+    client.tables["trading_run_transition_v1"][0]["status"] = "completed"
+    with pytest.raises(RuntimeError, match="row content differs from its hash"):
+        load_committed_prefix(client, RUN)
 
 
 def test_runtime_config_and_accounts_require_a_verified_context_fence() -> None:
@@ -251,7 +299,7 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     assert len(client.tables["trading_commit_v1"]) == 1
     assert not any("payload_json" in row for rows in client.tables.values() for row in rows)
     prefix = load_committed_prefix(client, RUN)
-    assert len(client.selects) == 26
+    assert len(client.selects) == 27
     assert prefix is not None
     assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
 
@@ -276,7 +324,7 @@ def test_recovery_groups_batches_but_verifies_each_fence() -> None:
     client.selects.clear()
     prefix = load_committed_prefix(client, RUN)
     assert prefix is not None and prefix.last_sequence == 3
-    assert len(client.selects) == 19
+    assert len(client.selects) == 20
     client.tables["trading_commit_v1"][0]["event_count"] = 0
     with pytest.raises(RuntimeError, match="not contiguous"):
         load_committed_prefix(client, RUN)
