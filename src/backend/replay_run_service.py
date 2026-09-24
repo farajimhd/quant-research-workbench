@@ -1256,6 +1256,8 @@ class ReplayRunController:
         self._signal_field_projection = None
         self._signal_catalogs = None
         self._source_cursor: dict[str, Any] = {}
+        self._fixed_vwap_day: str | None = None
+        self._fixed_vwap_by_ticker: dict[str, float] = {}
         self._frame_cursor: dict[str, Any] = {}
         self._stage_timings = {}
         self._processed_frames = 0
@@ -2057,6 +2059,10 @@ class ReplayRunController:
                 "processed_events": self.processed_events,
                 "warmup_events": self.warmup_events,
                 "source_cursor": deepcopy(self._source_cursor),
+                **({"fixed_vwap_day": self._fixed_vwap_day,
+                    "fixed_vwap_by_ticker": dict(self._fixed_vwap_by_ticker)}
+                   if self.definition.mode == RunMode.BACKTEST and
+                   str(self.definition.execution_interval) != "events" else {}),
                 "frame_cursor": deepcopy(self._frame_cursor),
                 "processed_frames": self._processed_frames,
                 "experimental_session_highs": deepcopy(getattr(self, "_experimental_session_highs", {})),
@@ -3043,8 +3049,6 @@ class ReplayRunController:
 
     async def _run_fixed_market_days(self) -> None:
         """Execute persisted boundaries without event replay or frame spooling."""
-        from src.backend.backtest_market_data import FIXED_EXECUTION_BLOCKER
-        raise RuntimeError(FIXED_EXECUTION_BLOCKER)
         from concurrent.futures import ThreadPoolExecutor
         from itertools import islice
         from src.backend.backtest_market_data import (
@@ -3136,6 +3140,9 @@ class ReplayRunController:
                     at = market_day_boundary(day, boundary_ms)
                     if at > self.definition.session_end:
                         continue
+                    if day != self._fixed_vwap_day:
+                        self._fixed_vwap_day = day
+                        self._fixed_vwap_by_ticker = {}
                     if v7_seeds is not None and day not in self._fixed_v7_caches:
                         self._fixed_v7_caches[day] = FixedV7Cache(
                             market_plan=plan, seed_plan=v7_seeds,
@@ -3150,9 +3157,14 @@ class ReplayRunController:
                     for _ticker_value, by_resolution in ticker_groups:
                         liquidity_row = by_resolution.get(100)
                         if liquidity_row is not None:
+                            ticker = _ticker(_ticker_value)
+                            execution_vwap = float(liquidity_row.get("execution_vwap") or 0)
+                            if not math.isfinite(execution_vwap) or execution_vwap < 0:
+                                raise ValueError("Persisted liquidity bar has an invalid execution VWAP")
+                            if execution_vwap > 0:
+                                self._fixed_vwap_by_ticker[ticker] = execution_vwap
                             completed_quote = await self._runtime.process_liquidity_bar(
                                 liquidity_row, at=at)
-                            ticker = _ticker(_ticker_value)
                             if completed_quote is None:
                                 self._quotes.pop(ticker, None)
                             else:
@@ -3181,12 +3193,17 @@ class ReplayRunController:
                         for resolution, auxiliary in sorted(by_resolution.items()):
                             if resolution != evaluation_ms and int(auxiliary.get("price_valid") or 0):
                                 self._remember_strategy_frame(_persisted_market_day_frame(
-                                    auxiliary, at=at, sequence=frame_sequence))
+                                    auxiliary, at=at, sequence=frame_sequence,
+                                    execution_vwap=self._fixed_vwap_by_ticker.get(
+                                        _ticker(auxiliary["ticker"]))))
                     for by_resolution, frame_sequence in prepared_groups:
                         evaluation_row = by_resolution.get(evaluation_ms)
                         if evaluation_row is None or not int(evaluation_row.get("price_valid") or 0):
                             continue
-                        frame = _persisted_market_day_frame(evaluation_row, at=at, sequence=frame_sequence)
+                        frame = _persisted_market_day_frame(
+                            evaluation_row, at=at, sequence=frame_sequence,
+                            execution_vwap=self._fixed_vwap_by_ticker.get(
+                                _ticker(evaluation_row["ticker"])))
                         if at >= self.definition.requested_start:
                             await self._process_strategy_frame(frame)
                             self.processed_events += 1
@@ -3640,6 +3657,17 @@ class ReplayRunController:
         self._luld_previous_closes = deepcopy(controller.get('luld_previous_closes') or {})
         self.warmup_events = int(controller.get("warmup_events") or 0)
         self._source_cursor = dict(controller.get("source_cursor") or {})
+        self._fixed_vwap_day = controller.get("fixed_vwap_day")
+        self._fixed_vwap_by_ticker = {
+            _ticker(ticker): float(value)
+            for ticker, value in dict(controller.get("fixed_vwap_by_ticker") or {}).items()
+        }
+        if any(not math.isfinite(value) or value <= 0
+               for value in self._fixed_vwap_by_ticker.values()):
+            raise ValueError("Fixed Backtest checkpoint contains invalid execution VWAP")
+        if (self._fixed_vwap_by_ticker and
+                self._fixed_vwap_day != self._source_cursor.get("session_date")):
+            raise ValueError("Fixed Backtest checkpoint VWAP session differs from its market cursor")
         self._frame_cursor = dict(controller.get("frame_cursor") or {})
         self._processed_frames = int(controller.get("processed_frames") or 0)
         from src.market_engine.derived_trade_policy import POLICY
@@ -10762,6 +10790,7 @@ def _copy_replay_frame(frame: ReplayDerivedFrame) -> ReplayDerivedFrame:
 
 def _persisted_market_day_frame(
     row: Mapping[str, Any], *, at: datetime, sequence: int,
+    execution_vwap: float | None = None,
 ) -> ReplayDerivedFrame:
     resolution_ms = int(row["resolution_ms"])
     timeframe = (
@@ -10773,6 +10802,10 @@ def _persisted_market_day_frame(
     start = at - timedelta(milliseconds=resolution_ms)
     scale = 10_000.0
     close = float(row.get("close_int") or 0) / scale
+    vwap = float(execution_vwap if execution_vwap is not None else
+                 row.get("execution_vwap") or 0)
+    if not math.isfinite(vwap) or vwap < 0:
+        raise ValueError("Persisted Backtest frame has invalid execution VWAP")
     bar = {
         "bar_start": start.isoformat(), "bar_end": at.isoformat(),
         "sym": _ticker(row["ticker"]), "timeframe": timeframe,
@@ -10791,6 +10824,7 @@ def _persisted_market_day_frame(
         "macd_histogram": row.get("macd_histogram"),
         "rsi_14": row.get("rsi_14") if int(row.get("rsi_ready") or 0) else None,
         "atr_14": row.get("atr_14") if int(row.get("atr_ready") or 0) else None,
+        "execution_vwap": vwap if vwap > 0 else None,
     }
     return ReplayDerivedFrame(
         as_of=at, bar=bar, indicator=indicator, sequence=sequence,

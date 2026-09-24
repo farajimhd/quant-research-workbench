@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from src.trading_runtime.ibkr_schema import OrderRequest
+from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
@@ -172,3 +173,26 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
                     journal.records(runtime.run_id)), 1)
             finally:
                 journal.close()
+
+    async def test_runtime_records_bar_fill_with_clickhouse_only_buffer(self):
+        class NoopStrategy:
+            strategy_id = "bar-test"
+            revision = 1
+            automatic = True
+
+        run_id = "00000000-0000-0000-0000-000000000123"
+        journal = BacktestMemoryJournal(run_id=run_id)
+        runtime = TradingRuntime(
+            RunConfig(RunMode.BACKTEST, "bar-test", 1, ("TEST",), START.date(),
+                      run_id=run_id, safety_supervisor_enabled=False,
+                      write_progress_checkpoints=False),
+            self.broker, NoopStrategy(), journal,
+        )
+        await runtime.initialize()
+        await self.order("MKT", quantity=5)
+        at = START + timedelta(milliseconds=100)
+        await runtime.process_liquidity_bar(bar(at), at=at)
+        assert sum(record.category == "execution" and record.entity_type == "fill"
+                   for record in journal.records(run_id)) == 1
+        assert journal.latest_sequence(run_id) > 0
+        journal.close()
