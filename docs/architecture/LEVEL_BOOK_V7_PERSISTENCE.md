@@ -9,18 +9,22 @@ as causal confirmations and does not rerun historical V7.
 
 The permanent ClickHouse authority is in the existing `arte` database:
 
-- `arte.structural_levels_v7` stores coalesced retrospective closing states as
+- `arte.structural_levels_v7` stores qualified and unqualified candidate closing states as
   half-open `[valid_from, valid_to)` intervals. `valid_from` is the checkpoint's
   session-end availability timestamp. A role, geometry, lifecycle or fit change
   closes the preceding interval and opens a successor. Disappearance only sets
   the preceding interval's `valid_to`; there is no removal row. Role-transition
   ancestry and mixture parent identity are retained explicitly.
+- `arte.structural_level_observations_v7` stores typed observation-to-level
+  assignments as half-open intervals. An observation identity is derived from
+  its six source fields and duplicate occurrence index. Reassignment after a
+  partition split closes the old assignment; unchanged observations are not
+  republished each session. `resolved_at` is the causal confirmation time;
+  assignment `valid_from` is the retrospective checkpoint availability time.
 - `arte.structural_level_coverage_v7` is the publication fence and session audit.
-  It is written only after a ticker's level intervals and terminal checkpoint
-  have been acknowledged. Empty and missing coverage remain distinct.
-- `arte.structural_level_builder_checkpoint_v7` retains the latest complete V7
-  engine checkpoint per ticker so certified later source days can advance without
-  rebuilding history. Historical daily files remain immutable migration evidence.
+  It is written only after both level and observation intervals have been
+  acknowledged. Empty and missing coverage remain distinct. Historical daily
+  files remain immutable migration evidence and producer restart authority.
 
 All timestamps use `DateTime64(9, 'UTC')`. Existing V7 inputs have completed-bar
 second resolution; nanosecond storage preserves exact values without claiming
@@ -28,7 +32,7 @@ subsecond observation precision. A future streaming producer may publish finer
 timestamps under this schema only when its source and algorithm support them.
 
 The table name carries the V7 contract identity. No `book_version` column exists.
-The migration contract identity is `arte-structural-levels-v7-1`; changing the
+The migration contract identity is `arte-structural-levels-v7-2`; changing the
 physical or semantic mapping requires a new identity and compatible migration.
 All tables explicitly use `live_market_ssd`; preflight validates the policy and
 actual active-part placement before any insert.
@@ -57,12 +61,14 @@ python -B scripts/migrate_level_book_v7_to_clickhouse.py run
 Defaults read the frozen campaign at
 `<workstation-runtime>/level-book-v7/all-tradable-20250101-20260912-mle-v1`
 and write operational results under
-`<workstation-runtime>/level-book-v7/arte-migration-v1`. `--workers` is bounded
-to 1..64; the default is at most 16. Inserts are row- and byte-bounded.
+`<workstation-runtime>/level-book-v7/arte-migration-v2`. `--workers` is bounded
+to 1..64; the default follows the current CPU/free-RAM budget. Inserts are
+row- and byte-bounded.
 
 One ticker is the durable work unit. Spawned worker processes read its immutable
-daily gzip books, coalesce unchanged consecutive states, insert compact
-intervals, persist the terminal builder checkpoint and publish coverage last.
+daily gzip books, coalesce unchanged consecutive level and observation states,
+insert compact intervals and publish coverage last. Unqualified candidates are
+included so a prior-session streaming seed can be reconstructed.
 Unchanged normalized states are compared before hashing so repeated full-book
 checkpoints do not pay redundant JSON serialization and SHA-256 work. The
 default process count is the maximum admitted by current CPU and free-RAM
@@ -72,7 +78,10 @@ unbounded insert/part load.
 
 The runtime owns an exclusive `controller.lock`, preventing overlapping
 migration controllers. Insert tokens and stable keys make retries deterministic.
-Completed terminal checkpoints with the same source-plan hash are skipped.
+Completed coverage with the same source-plan hash is skipped.
+The migration rejects a different source-plan hash already present in these
+tables; mixing filtered and unfiltered V7 campaigns would make as-of reads
+ambiguous.
 Ctrl+C stops new admission, drains active tickers, writes `result.json` and exits
 130. The result includes the admitted worker budget and cumulative read/verify,
 compaction, receipt and insert worker-seconds. Redirected output is line-oriented
@@ -80,9 +89,11 @@ JSON; interactive output uses a stable Rich status table.
 
 ## Maintenance
 
-After a canonical SIP day is certified, the updater must restore each ticker's
-latest compatible builder checkpoint, advance ordered completed bars, publish
-changed level intervals, replace the terminal checkpoint and publish coverage
-last. Source, condition, split, algorithm and numerical identities must remain
-compatible. A changed historical source resumes from the last compatible
-predecessor rather than relabeling the current checkpoint.
+After a canonical SIP day is certified, a future incremental producer must
+restore the latest compatible typed seed or the retained historical daily book,
+advance ordered completed bars, publish changed level and observation intervals,
+then publish coverage last. Backtest may only read these tables; it computes
+intraday V7 in memory and may not write market products. Source, condition,
+split, algorithm and numerical identities must remain compatible. A changed
+historical source resumes from the last compatible predecessor rather than
+relabeling the current checkpoint.

@@ -10,7 +10,9 @@ def level(level_id="a", role="resistance", price=10.0):
         upper=price+.2, resolution=.01, coverage=.8, degrees_of_freedom=4, scale_at_floor=False)
     return dict(id=level_id, role=role, role_segments=[dict(start=1, role=role)], origin_session="2026-01-01",
         price=price, lower=price-.2, upper=price+.2, association_radius=.5, fit=fit,
-        observations=[1, 2, 3], qualified=True, historical=True)
+        observations=[dict(price=price + i * .01, resolution=.01, at=10 + i,
+            resolved_at=20 + i, role=role, session="2026-01-01") for i in range(3)],
+        qualified=True, historical=True)
 
 
 def book(session, stamp, levels, checkpoint):
@@ -29,13 +31,14 @@ def test_retrospective_states_coalesce_and_role_change_closes_prior():
         book("2026-01-02", 200, [level()], "two"),
         book("2026-01-03", 300, [level(role="support")], "three"),
     ]
-    intervals, coverage, terminal = compact_checkpoints(checkpoints, "f" * 64)
+    intervals, observations, coverage = compact_checkpoints(checkpoints, "f" * 64)
     assert len(intervals) == 2
     assert intervals[0]["role"] == "resistance"
     assert intervals[0]["valid_from"].endswith("00:01:40.000000000")
     assert intervals[0]["valid_to"].endswith("00:05:00.000000000")
     assert intervals[1]["role"] == "support" and intervals[1]["valid_to"] is None
-    assert len(coverage) == 3 and terminal["checkpoint_hash"] == "three"
+    assert len(coverage) == 3 and coverage[-1]["source_checkpoint_hash"] == "three"
+    assert len(observations) == 6  # role changes make a new observation identity
 
 
 def test_unchanged_projection_is_not_rehashed(monkeypatch):
@@ -43,7 +46,8 @@ def test_unchanged_projection_is_not_rehashed(monkeypatch):
     original = persistence.projection_hash
     def counted(value):
         nonlocal calls
-        calls += 1
+        if "level_id" in value:
+            calls += 1
         return original(value)
     monkeypatch.setattr(persistence, "projection_hash", counted)
     intervals, _, _ = compact_checkpoints([
@@ -69,6 +73,25 @@ def test_schema_uses_arte_nanoseconds_and_no_book_version_column():
     assert "DateTime64(9, 'UTC')" in ddl
     assert "book_version" not in ddl
     assert "storage_policy = 'live_market_ssd'" in ddl
+    assert "arte.structural_level_observations_v7" in ddl
+    assert "checkpoint_json" not in ddl
+
+
+def test_candidates_and_observation_assignment_changes_are_preserved():
+    first = level()
+    first["qualified"] = False
+    second = level("b")
+    second["observations"] = first["observations"]
+    intervals, observations, coverage = compact_checkpoints([
+        book("2026-01-01", 100, [first], "one"),
+        book("2026-01-02", 200, [second], "two"),
+    ], "f" * 64)
+    assert {row["level_id"] for row in intervals} == {"a", "b"}
+    assert intervals[0]["lifecycle"] == "candidate"
+    assert coverage[0]["level_count"] == 1
+    assert len(observations) == 6
+    assert {row["level_id"] for row in observations} == {"a", "b"}
+    assert all(row["valid_to"] is not None for row in observations[:3])
 
 
 def test_worker_budget_is_bounded_by_cpu_and_memory(monkeypatch):

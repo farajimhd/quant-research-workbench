@@ -25,7 +25,7 @@ from rich.table import Table
 from research.level_book.v7.campaign import discover_clickhouse_env_files, load_env_files
 from research.level_book.v7.campaign_store import read, verified_book
 from research.level_book.v7.clickhouse_persistence import (
-    CHECKPOINT_TABLE, COVERAGE_TABLE, DATABASE, DDL, LEVELS_TABLE, POLICY,
+    OBSERVATIONS_TABLE, COVERAGE_TABLE, DATABASE, DDL, LEVELS_TABLE, POLICY,
     EXPECTED_COLUMNS, PERSISTENCE_VERSION,
     canonical_json, compact_checkpoints, datetime64_ns, epoch_ns,
     source_plan_digest,
@@ -38,7 +38,7 @@ from src.backend.swing_book_source import session_bounds
 from src.runtime_paths import WORKSTATION_RUNTIME_ROOT
 
 DEFAULT_SOURCE = WORKSTATION_RUNTIME_ROOT / "level-book-v7" / "all-tradable-20250101-20260912-mle-v1"
-DEFAULT_RUNTIME = WORKSTATION_RUNTIME_ROOT / "level-book-v7" / "arte-migration-v1"
+DEFAULT_RUNTIME = WORKSTATION_RUNTIME_ROOT / "level-book-v7" / "arte-migration-v2"
 STOP = threading.Event()
 GIB = 1024 ** 3
 INSERT_GATE = None
@@ -130,10 +130,13 @@ def preflight(c: ClickHouseHttpClient) -> None:
     policy = query(c, f"SELECT disks FROM system.storage_policies WHERE policy_name='{POLICY}'")
     if policy != [{"disks": [POLICY]}]:
         raise ValueError(f"Required SSD-only {POLICY} policy is unavailable")
+    legacy = query(c, f"SELECT name FROM system.tables WHERE database='{DATABASE}' AND name='structural_level_builder_checkpoint_v7'")
+    if legacy:
+        raise ValueError("Legacy V7 JSON checkpoint table still exists; retire it before running V2 migration")
     for statement in DDL:
         c.execute(statement)
     tables = query(c, f"SELECT name,engine,partition_key,sorting_key,storage_policy FROM system.tables WHERE database='{DATABASE}' ORDER BY name")
-    expected = {name.split(".", 1)[1] for name in (LEVELS_TABLE, COVERAGE_TABLE, CHECKPOINT_TABLE)}
+    expected = {name.split(".", 1)[1] for name in (LEVELS_TABLE, COVERAGE_TABLE, OBSERVATIONS_TABLE)}
     found = {row["name"] for row in tables if row["name"] in expected}
     if found != expected or any(row["storage_policy"] != POLICY for row in tables if row["name"] in expected):
         raise ValueError("V7 ClickHouse table policy or schema is incomplete")
@@ -146,12 +149,12 @@ def preflight(c: ClickHouseHttpClient) -> None:
     required_layouts = {
         "structural_levels_v7": ("ReplacingMergeTree", "cityHash64(ticker) % 64", "ticker, level_id, valid_from"),
         "structural_level_coverage_v7": ("ReplacingMergeTree", "toYYYYMM(session_date)", "ticker, session_date"),
-        "structural_level_builder_checkpoint_v7": ("ReplacingMergeTree", "", "ticker"),
+        "structural_level_observations_v7": ("ReplacingMergeTree", "cityHash64(ticker) % 64", "ticker, observation_id, valid_from"),
     }
     if layouts != required_layouts:
         raise ValueError(f"V7 ClickHouse engine, partition or ordering differs from {PERSISTENCE_VERSION}")
     critical_types = {(row["table"], row["name"]): row["type"] for row in query(c,
-        f"SELECT table,name,type FROM system.columns WHERE database='{DATABASE}' AND table IN ({','.join(repr(x) for x in sorted(expected))}) AND name IN ('valid_from','valid_to','available_at','published_at','state_hash','source_plan_hash')")}
+        f"SELECT table,name,type FROM system.columns WHERE database='{DATABASE}' AND table IN ({','.join(repr(x) for x in sorted(expected))}) AND name IN ('valid_from','valid_to','available_at','published_at','state_hash','source_plan_hash','band_config_hash','observation_id','at','resolved_at')")}
     required_types = {
         ("structural_levels_v7", "valid_from"): "DateTime64(9, 'UTC')",
         ("structural_levels_v7", "valid_to"): "Nullable(DateTime64(9, 'UTC'))",
@@ -159,9 +162,12 @@ def preflight(c: ClickHouseHttpClient) -> None:
         ("structural_level_coverage_v7", "available_at"): "DateTime64(9, 'UTC')",
         ("structural_level_coverage_v7", "published_at"): "DateTime64(9, 'UTC')",
         ("structural_level_coverage_v7", "source_plan_hash"): "FixedString(64)",
-        ("structural_level_builder_checkpoint_v7", "available_at"): "DateTime64(9, 'UTC')",
-        ("structural_level_builder_checkpoint_v7", "published_at"): "DateTime64(9, 'UTC')",
-        ("structural_level_builder_checkpoint_v7", "source_plan_hash"): "FixedString(64)",
+        ("structural_level_coverage_v7", "band_config_hash"): "FixedString(64)",
+        ("structural_level_observations_v7", "observation_id"): "FixedString(64)",
+        ("structural_level_observations_v7", "valid_from"): "DateTime64(9, 'UTC')",
+        ("structural_level_observations_v7", "valid_to"): "Nullable(DateTime64(9, 'UTC'))",
+        ("structural_level_observations_v7", "at"): "DateTime64(9, 'UTC')",
+        ("structural_level_observations_v7", "resolved_at"): "DateTime64(9, 'UTC')",
     }
     if critical_types != required_types:
         raise ValueError(f"V7 ClickHouse timestamp or digest types differ from {PERSISTENCE_VERSION}")
@@ -198,7 +204,6 @@ def migrate_ticker(path: Path, plan_hash: str, batch_rows: int, batch_bytes: int
     source_plan = read(path / "source-plan.json")
     ready = read(path / "ready.json") if (path / "ready.json").is_file() else {}
     ticker = str(ready.get("ticker") or source_plan["days"][0]["ticker"])
-    terminal = None
     read_seconds = 0.0
     compact_started = time.monotonic()
     if books:
@@ -209,9 +214,9 @@ def migrate_ticker(path: Path, plan_hash: str, batch_rows: int, batch_bytes: int
                 value = verified_book(book)
                 read_seconds += time.monotonic() - started
                 yield value
-        intervals, coverage, terminal = compact_checkpoints(verified_books(), plan_hash)
+        intervals, observations, coverage = compact_checkpoints(verified_books(), plan_hash)
     else:
-        intervals, coverage = [], []
+        intervals, observations, coverage = [], [], []
     compact_total_seconds = time.monotonic() - compact_started
     receipts_started = time.monotonic()
     coverage_by_day = {row["session_date"]: row for row in coverage}
@@ -248,31 +253,15 @@ def migrate_ticker(path: Path, plan_hash: str, batch_rows: int, batch_bytes: int
         c = client()
         token = f"{PERSISTENCE_VERSION}-{plan_hash[:12]}-{ticker.encode().hex()}"
         insert(c, LEVELS_TABLE, intervals, token + "-levels", batch_rows=batch_rows, batch_bytes=batch_bytes)
+        insert(c, OBSERVATIONS_TABLE, observations, token + "-observations", batch_rows=batch_rows, batch_bytes=batch_bytes)
         now_ns = time.time_ns()
         published_at = datetime64_ns(now_ns)
         for row in coverage:
             row["published_at"] = published_at
-        checkpoint_bytes = 0
-        if terminal is not None:
-            checkpoint = {
-                "ticker": ticker,
-                "session_date": terminal["session"],
-                "available_at": datetime64_ns(epoch_ns(terminal["available_at"])),
-                "checkpoint_hash": terminal["checkpoint_hash"],
-                "parent_checkpoint_hash": terminal.get("prior_checkpoint_hash") or "",
-                "source_input_hash": terminal["input_hash"],
-                "source_plan_hash": plan_hash,
-                "checkpoint_json": canonical_json(terminal),
-                "publication_revision": epoch_ns(terminal["available_at"]),
-                "row_revision": epoch_ns(terminal["available_at"]),
-                "published_at": published_at,
-            }
-            checkpoint_bytes = len(checkpoint["checkpoint_json"])
-            insert(c, CHECKPOINT_TABLE, [checkpoint], token + "-checkpoint", batch_rows=1, batch_bytes=batch_bytes)
         # Coverage is the publication fence and is deliberately acknowledged last.
         insert(c, COVERAGE_TABLE, coverage, token + "-coverage", batch_rows=batch_rows, batch_bytes=batch_bytes)
     return {"state": "completed", "ticker": ticker, "sessions": len(coverage), "intervals": len(intervals),
-        "checkpoint_bytes": checkpoint_bytes, "timings": {
+        "observation_intervals": len(observations), "timings": {
             "read_verify_seconds": read_seconds,
             "compact_seconds": max(0.0, compact_total_seconds - read_seconds),
             "receipt_seconds": receipt_seconds,
@@ -314,6 +303,10 @@ def run_locked(args: argparse.Namespace) -> int:
     paths = ticker_directories(args.source)
     c = client()
     preflight(c)
+    other_plans = query(client(readonly=True),
+        f"SELECT DISTINCT source_plan_hash FROM {COVERAGE_TABLE} WHERE source_plan_hash!='{plan_hash}' LIMIT 1")
+    if other_plans:
+        raise ValueError("V7 arte tables already contain another source plan; mixing campaigns is forbidden")
     prior = {row["ticker"]: row["last_session"] for row in query(client(readonly=True),
         f"SELECT ticker,max(session_date) AS last_session FROM {COVERAGE_TABLE} FINAL WHERE source_plan_hash='{plan_hash}' GROUP BY ticker")}
     def complete(path: Path) -> bool:
@@ -371,7 +364,7 @@ def run_locked(args: argparse.Namespace) -> int:
     mismatches = [{"ticker": ticker, "expected": session, "actual": actual.get(ticker)}
         for ticker, session in sorted(expected.items()) if actual.get(ticker) != session]
     unexpected = sorted(set(actual) - set(expected))
-    misplaced = query(client(readonly=True), f"SELECT table,disk_name,count() AS parts FROM system.parts WHERE active AND database='{DATABASE}' AND table IN ('structural_levels_v7','structural_level_coverage_v7','structural_level_builder_checkpoint_v7') AND disk_name!='{POLICY}' GROUP BY table,disk_name")
+    misplaced = query(client(readonly=True), f"SELECT table,disk_name,count() AS parts FROM system.parts WHERE active AND database='{DATABASE}' AND table IN ('structural_levels_v7','structural_level_coverage_v7','structural_level_observations_v7') AND disk_name!='{POLICY}' GROUP BY table,disk_name")
     audit = {"expected_tickers": len(expected), "published_tickers": len(actual), "coverage_mismatches": len(mismatches),
         "mismatch_examples": mismatches[:20], "unexpected_tickers": unexpected[:20], "misplaced_parts": misplaced}
     failed = bool(failures or mismatches or unexpected or misplaced)
