@@ -163,8 +163,11 @@ class TypedJournalBatch:
     def __post_init__(self) -> None:
         if not self.run_id or self.first_sequence < 1 or self.last_sequence < self.first_sequence:
             raise ValueError("Journal batch has invalid run or sequence identity")
-        if not self.source_cursor or self.status not in {"running", "completed", "stopped", "failed"}:
+        if (not isinstance(self.source_cursor, str) or not self.source_cursor
+                or self.status not in {"running", "completed", "stopped", "failed"}):
             raise ValueError("Journal batch requires a source cursor and valid status")
+        if self.source_cursor.lstrip().startswith(("{", "[")):
+            raise ValueError("Journal source cursor requires normalized typed fields, not JSON")
         for value in (self.attempt_id, self.batch_id, self.prior_batch_id):
             UUID(value)
         # Copy only the small typed row envelopes at submission. Full schema

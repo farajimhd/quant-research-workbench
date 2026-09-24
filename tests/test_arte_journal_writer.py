@@ -123,6 +123,11 @@ def batch() -> TypedJournalBatch:
                              1, 1, "bucket-1", "running", (event,))
 
 
+def test_opaque_backtest_cursor_is_rejected_before_queue_submission() -> None:
+    with pytest.raises(ValueError, match="normalized typed fields"):
+        replace(batch(), source_cursor='{"market":{"boundary_ms":100},"frame":{}}')
+
+
 def captured() -> CapturedPortfolioSnapshot:
     at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
     return CapturedPortfolioSnapshot(
