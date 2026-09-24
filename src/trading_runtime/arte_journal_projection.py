@@ -16,6 +16,7 @@ from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.ibkr_client import _execution as parse_ibkr_execution
 from src.trading_runtime.ibkr_schema import Execution
+from src.trading_runtime.signals import StrategySignal
 
 
 _SOURCE_FIELDS = frozenset({
@@ -25,6 +26,7 @@ _SOURCE_FIELDS = frozenset({
     "commission", "currency", "exchange",
 })
 _SCALE = Decimal("0.0000000001")
+_MEASURE_SCALE = Decimal("0.000000000000000001")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,10 +35,10 @@ class FillDetails:
     commission: dict[str, Any] | None
 
 
-def _exact_decimal(value: float | Decimal) -> str:
+def _exact_decimal(value: float | Decimal, scale: Decimal = _SCALE) -> str:
     try:
         decimal = Decimal(str(value))
-        quantized = decimal.quantize(_SCALE)
+        quantized = decimal.quantize(scale)
     except (InvalidOperation, ValueError) as exc:
         raise ValueError("Broker number cannot fit Decimal(38, 10)") from exc
     if not decimal.is_finite() or decimal != quantized:
@@ -199,4 +201,67 @@ def commission_revision_batch(
         run_id, run_month, attempt_id, batch_id, prior_batch_id,
         sequence, sequence, source_cursor, run_status, (event,),
         commissions=(detail,),
+    )
+
+
+def strategy_signal_batch(
+    signal: StrategySignal, *, run_id: str, run_month: date,
+    account_id: str, strategy_id: str, strategy_revision: int,
+    attempt_id: str, batch_id: str, prior_batch_id: str,
+    sequence: int, source_cursor: str, run_status: str,
+    recorded_at: datetime,
+) -> TypedJournalBatch:
+    """Project a signal only when every source and evidence field is represented."""
+    if signal.metadata:
+        raise ValueError("Strategy signal metadata has no typed evidence contract")
+    if not signal.signal_id or not signal.ticker or not strategy_id or not account_id:
+        raise ValueError("Strategy signal identity is incomplete")
+    if not (-1 <= signal.score <= 1 and 0 <= signal.confidence <= 1):
+        raise ValueError("Strategy signal score or confidence is out of range")
+    if (len(signal.source_signal_ids) > 65535
+            or any(not isinstance(source, str) or not source
+                   for source in signal.source_signal_ids)):
+        raise ValueError("Strategy signal sources are invalid")
+    if signal.event_time.tzinfo is None or recorded_at.tzinfo is None:
+        raise ValueError("Strategy signal timestamps must be timezone-aware")
+    at = signal.event_time.astimezone(timezone.utc).isoformat()
+    received = recorded_at.astimezone(timezone.utc).isoformat()
+    month = signal.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+    record_id = str(uuid5(NAMESPACE_URL,
+        f"{run_id}:{batch_id}:{strategy_id}:{signal.signal_id}:signal"))
+    event = {
+        "run_id": run_id, "event_month": month, "attempt_id": attempt_id,
+        "batch_id": batch_id, "record_id": record_id, "sequence": sequence,
+        "event_time": at, "recorded_at": received,
+        "category": "strategy_decision", "entity_type": "signal",
+        "entity_id": signal.signal_id, "account_id": account_id,
+        "correlation_id": "", "causation_id": "",
+    }
+    detail = {
+        "record_id": record_id, "run_id": run_id, "event_month": month,
+        "batch_id": batch_id, "account_id": account_id,
+        "strategy_id": strategy_id, "strategy_revision": strategy_revision,
+        "signal_id": signal.signal_id, "signal_type": signal.signal_type,
+        "ticker": signal.ticker.upper(),
+        "action": str(getattr(signal.action, "value", signal.action)),
+        "direction": str(getattr(signal.direction, "value", signal.direction)),
+        "score": _exact_decimal(signal.score, _MEASURE_SCALE),
+        "confidence": _exact_decimal(signal.confidence, _MEASURE_SCALE),
+        "reason": signal.reason, "working_timeframe": signal.working_timeframe,
+        "invalidation_price": (_exact_decimal(signal.invalidation_price)
+                               if signal.invalidation_price is not None else None),
+        "source_signal_count": len(signal.source_signal_ids),
+        "source_event_time": at,
+    }
+    sources = tuple({
+        "record_id": str(uuid5(NAMESPACE_URL,
+            f"{record_id}:source:{ordinal}:{source_id}")),
+        "run_id": run_id, "event_month": month, "batch_id": batch_id,
+        "parent_record_id": record_id, "source_ordinal": ordinal,
+        "source_signal_id": source_id,
+    } for ordinal, source_id in enumerate(signal.source_signal_ids))
+    return TypedJournalBatch(
+        run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        sequence, sequence, source_cursor, run_status, (event,),
+        signals=(detail,), signal_sources=sources,
     )

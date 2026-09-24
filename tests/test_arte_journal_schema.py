@@ -7,7 +7,7 @@ from src.trading_runtime.arte_journal_schema import TABLES, schema_ddl, storage_
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 9
+    assert len(statements) == len(TABLES) == 11
     for table, statement in zip(TABLES, statements):
         assert f"CREATE TABLE IF NOT EXISTS arte.{table.name}" in statement
         assert "ENGINE = MergeTree" in statement
@@ -35,6 +35,8 @@ def test_shared_event_and_execution_contract_uses_lossless_identifiers() -> None
     assert columns["trading_execution_v1"]["liquidation_trade"] == "UInt8"
     assert columns["trading_commission_v1"]["commission"] == "Decimal(38, 10)"
     assert columns["trading_commission_v1"]["time_authority"] == "LowCardinality(String)"
+    assert columns["trading_strategy_signal_v1"]["score"] == "Decimal(38, 18)"
+    assert columns["trading_signal_source_v1"]["parent_record_id"] == "UUID"
 
 
 def test_preflight_requires_exact_layout_and_actual_ssd_parts() -> None:

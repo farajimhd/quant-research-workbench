@@ -6,11 +6,13 @@ import pytest
 
 from src.trading_runtime.arte_journal_projection import (
     broker_fill_batch, broker_fill_details, commission_revision_batch,
+    strategy_signal_batch,
 )
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch, _sealed_families
 from src.trading_runtime.ibkr_client import _execution
 from src.trading_runtime.domain import CommissionEvent
+from src.trading_runtime.signals import StrategySignal
 
 
 AT = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
@@ -148,3 +150,39 @@ def test_later_commission_is_a_separate_typed_revision() -> None:
         )
     with pytest.raises(ValueError, match="unmodeled source fields"):
         commission_revision_batch(replace(report, raw={"unknown": 1}), **args)
+
+
+def test_signal_sources_are_normalized_without_dropping_metadata() -> None:
+    signal = StrategySignal(
+        "signal-1", "breakout", "TEST", AT, "enter_long", "bullish",
+        0.75, 0.9, "entry_ready", ("source-a", "source-b"), "100ms",
+        9.5,
+    )
+    args = dict(
+        run_id="live:DU1", run_month=date(2026, 8, 1), account_id="DU1",
+        strategy_id="strategy-1", strategy_revision=7,
+        attempt_id="00000000-0000-0000-0000-000000000004",
+        batch_id="00000000-0000-0000-0000-000000000005",
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        sequence=1, source_cursor="signal-1", run_status="running",
+        recorded_at=AT,
+    )
+    batch = strategy_signal_batch(signal, **args)
+    sealed = dict(_sealed_families(batch))
+    assert len(sealed["trading_strategy_signal_v1"]) == 1
+    assert [row["source_signal_id"] for row in sealed["trading_signal_source_v1"]] == [
+        "source-a", "source-b"
+    ]
+    assert batch.signals[0]["score"] == "0.750000000000000000"
+    with pytest.raises(ValueError, match="no typed evidence contract"):
+        strategy_signal_batch(replace(signal, metadata={"unmapped": 1}), **args)
+    with pytest.raises(ValueError, match="out of range"):
+        strategy_signal_batch(replace(signal, confidence=1.1), **args)
+    invalid = TypedJournalBatch(
+        batch.run_id, batch.run_month, batch.attempt_id, batch.batch_id,
+        batch.prior_batch_id, 1, 1, batch.source_cursor, batch.status,
+        batch.events, signals=batch.signals,
+        signal_sources=(batch.signal_sources[0],),
+    )
+    with pytest.raises(ValueError, match="do not match"):
+        _sealed_families(invalid)

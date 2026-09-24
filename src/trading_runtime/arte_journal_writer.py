@@ -26,6 +26,9 @@ from src.trading_runtime.journal_contract import canonical_json
 _CONTRACTS = {table.name: table for table in TABLES}
 _FAMILIES = (
     ("trading_event_v1", "events", "event_count", "event_hash"),
+    ("trading_strategy_signal_v1", "signals", "signal_count", "signal_hash"),
+    ("trading_signal_source_v1", "signal_sources", "signal_source_count",
+     "signal_source_hash"),
     ("trading_execution_v1", "executions", "execution_count", "execution_hash"),
     ("trading_commission_v1", "commissions", "commission_count", "commission_hash"),
     ("trading_order_command_v1", "order_commands", "order_command_count", "order_command_hash"),
@@ -39,6 +42,7 @@ _FAMILIES = (
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 _EVENT_DETAILS = {
     ("run_state", "lifecycle"): None,
+    ("strategy_decision", "signal"): "trading_strategy_signal_v1",
     ("execution", "fill"): "trading_execution_v1",
     ("execution", "commission"): "trading_commission_v1",
     ("order_management", "order_command"): "trading_order_command_v1",
@@ -66,6 +70,8 @@ class TypedJournalBatch:
     source_cursor: str
     status: str
     events: tuple[Mapping[str, Any], ...]
+    signals: tuple[Mapping[str, Any], ...] = ()
+    signal_sources: tuple[Mapping[str, Any], ...] = ()
     executions: tuple[Mapping[str, Any], ...] = ()
     commissions: tuple[Mapping[str, Any], ...] = ()
     order_commands: tuple[Mapping[str, Any], ...] = ()
@@ -113,12 +119,15 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
             if str(row["run_id"]) != batch.run_id or str(UUID(str(row["batch_id"]))) != batch.batch_id:
                 raise ValueError(f"{name} mixed runs or batches")
             record_id = str(UUID(str(row["record_id"])))
-            if name != "trading_event_v1" and record_id not in event_ids:
+            parent_id = (str(UUID(str(row["parent_record_id"])))
+                         if name == "trading_signal_source_v1" else record_id)
+            if name != "trading_event_v1" and parent_id not in event_ids:
                 raise ValueError(f"{name} has no parent journal event")
             if name != "trading_event_v1":
-                parent = events_by_id[record_id]
-                if (str(row["account_id"]) != str(parent["account_id"])
-                        or str(row["event_month"]) != str(parent["event_month"])):
+                parent = events_by_id[parent_id]
+                if (str(row["event_month"]) != str(parent["event_month"])
+                        or (name != "trading_signal_source_v1"
+                            and str(row["account_id"]) != str(parent["account_id"]))):
                     raise ValueError(f"{name} differs from its parent event identity")
             if name == "trading_event_v1" and str(UUID(str(row["attempt_id"]))) != batch.attempt_id:
                 raise ValueError("Journal event mixed attempts")
@@ -146,7 +155,7 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
             raise ValueError("Position snapshot lacks its complete account snapshot")
     details_by_record: dict[str, str] = {}
     for name, rows in result:
-        if name == "trading_event_v1":
+        if name in {"trading_event_v1", "trading_signal_source_v1"}:
             continue
         for row in rows:
             record_id = str(UUID(str(row["record_id"])))
@@ -160,6 +169,21 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
         record_id = str(UUID(str(event["record_id"])))
         if details_by_record.get(record_id) != _EVENT_DETAILS[key]:
             raise ValueError("Journal event lacks its required typed detail")
+    sources_by_parent: dict[str, list[dict[str, Any]]] = {}
+    for row in by_family["trading_signal_source_v1"]:
+        parent_id = str(UUID(str(row["parent_record_id"])))
+        if details_by_record.get(parent_id) != "trading_strategy_signal_v1":
+            raise ValueError("Signal source lacks a typed strategy signal")
+        if not str(row["source_signal_id"]):
+            raise ValueError("Signal source identity is empty")
+        sources_by_parent.setdefault(parent_id, []).append(row)
+    for signal in by_family["trading_strategy_signal_v1"]:
+        signal_id = str(UUID(str(signal["record_id"])))
+        source_rows = sources_by_parent.get(signal_id, [])
+        if (len(source_rows) != int(signal["source_signal_count"])
+                or sorted(int(row["source_ordinal"]) for row in source_rows)
+                != list(range(len(source_rows)))):
+            raise ValueError("Signal sources do not match the typed signal count")
     return tuple(result)
 
 
