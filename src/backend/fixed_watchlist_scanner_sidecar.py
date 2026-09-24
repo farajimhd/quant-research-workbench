@@ -236,7 +236,7 @@ def load_scanner_boundary(
     client: Any, boundary_id: str, *, market_plan_token: str,
     source_revision_token: str, boundary_at: datetime,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
-    """Read a producer-owned completed boundary, never QMD-build on miss."""
+    """Diagnostic CH-only read; not Backtest admission without Keeper proof."""
     if (_HEX.fullmatch(boundary_id) is None
             or _HEX.fullmatch(market_plan_token) is None
             or not source_revision_token or boundary_at.tzinfo is None):
