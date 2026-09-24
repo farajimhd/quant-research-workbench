@@ -144,8 +144,13 @@ The live runtime's broker-disconnect and risk-refresh-failure records share
 `trading_operational_fault_v1`: the envelope identifies the source, and one
 typed detail carries status, error text, frozen-entry flag, and source clock.
 Unknown fields fail projection, and both fault types are covered by the commit
-fence and cold-read checks. Continuous account-risk evaluations and recovery
-state still require separate normalized contracts.
+fence and cold-read checks. Continuous account-risk evaluations now have a
+staged typed state with ten named producer metrics, protection coverage,
+enforcement state, and one ordered child row per reason. The projector rejects
+source fields or metrics not explicitly mapped. Both families join the commit
+fence, and a bounded cold reader reconstructs the ordered reasons. This is not
+yet a runtime cutover: wider portfolio authority, campaign ownership, and OMS
+recovery state remain incomplete.
 
 ## Cutover gate
 

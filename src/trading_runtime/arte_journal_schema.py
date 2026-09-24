@@ -143,6 +143,50 @@ TABLES = (
         "toYYYYMM(event_month)", "run_id, source_event_time, record_id",
     ),
     TableContract(
+        "trading_account_risk_state_v1",
+        (
+            ("record_id", "UUID"),
+            ("run_id", "String"),
+            ("event_month", "Date"),
+            ("batch_id", "UUID"),
+            ("account_id", "String"),
+            ("account_key", "String"),
+            ("state", "LowCardinality(String)"),
+            ("enforced", "UInt8"),
+            ("net_liquidation", "Decimal(38, 18)"),
+            ("available_funds", "Decimal(38, 18)"),
+            ("buying_power", "Decimal(38, 18)"),
+            ("gross_exposure", "Decimal(38, 18)"),
+            ("net_exposure", "Decimal(38, 18)"),
+            ("reserved_notional", "Decimal(38, 18)"),
+            ("open_risk", "Decimal(38, 18)"),
+            ("daily_loss", "Decimal(38, 18)"),
+            ("drawdown", "Decimal(38, 18)"),
+            ("position_count", "UInt32"),
+            ("protection_required", "Decimal(38, 18)"),
+            ("protection_coverage", "Decimal(38, 18)"),
+            ("internal_reaction_ms", "Nullable(Decimal(38, 18))"),
+            ("reason_count", "UInt16"),
+            ("source_event_time", "DateTime64(9, 'UTC')"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, account_id, source_event_time, record_id",
+    ),
+    TableContract(
+        "trading_account_risk_reason_v1",
+        (
+            ("record_id", "UUID"),
+            ("run_id", "String"),
+            ("event_month", "Date"),
+            ("batch_id", "UUID"),
+            ("parent_record_id", "UUID"),
+            ("ordinal", "UInt16"),
+            ("reason", "String"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, parent_record_id, ordinal, record_id",
+    ),
+    TableContract(
         "trading_strategy_signal_v1",
         (
             ("record_id", "UUID"),
@@ -618,6 +662,10 @@ TABLES = (
             ("run_transition_hash", "FixedString(64)"),
             ("operational_fault_count", "UInt32"),
             ("operational_fault_hash", "FixedString(64)"),
+            ("account_risk_state_count", "UInt32"),
+            ("account_risk_state_hash", "FixedString(64)"),
+            ("account_risk_reason_count", "UInt32"),
+            ("account_risk_reason_hash", "FixedString(64)"),
             ("source_cursor", "String"),
             ("status", "LowCardinality(String)"),
             ("committed_at", "DateTime64(6, 'UTC')"),
@@ -731,6 +779,24 @@ def operational_fault_upgrade_ddl() -> tuple[str, ...]:
         "operational_fault_count UInt32 DEFAULT 0 AFTER run_transition_hash",
         "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
         f"operational_fault_hash FixedString(64) DEFAULT '{empty_hash}' AFTER operational_fault_count",
+    )
+
+
+def account_risk_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only normalized account risk metrics and ordered reasons."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_account_risk_state_v1"].ddl(),
+        by_name["trading_account_risk_reason_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "account_risk_state_count UInt32 DEFAULT 0 AFTER operational_fault_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"account_risk_state_hash FixedString(64) DEFAULT '{empty_hash}' AFTER account_risk_state_count",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "account_risk_reason_count UInt32 DEFAULT 0 AFTER account_risk_state_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"account_risk_reason_hash FixedString(64) DEFAULT '{empty_hash}' AFTER account_risk_reason_count",
     )
 
 

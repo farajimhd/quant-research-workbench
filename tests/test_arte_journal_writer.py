@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict, fields, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 import json
@@ -13,15 +14,19 @@ from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_journal_projection import (
     broker_fill_batch, commission_revision_batch, runtime_lifecycle_batch,
     operational_fault_batch,
+    account_risk_batch,
 )
+from src.trading_runtime import arte_journal_projection as projection_module
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.ibkr_client import _execution
 from src.trading_runtime.journal_contract import JournalRecord
+from src.trading_runtime.risk_supervisor import AccountRiskState, RiskEvaluation
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, JournalQueueFull, TypedJournalBatch, load_committed_prefix,
     load_committed_commission_page, load_committed_execution_page,
     load_committed_run_transition_page,
     load_committed_operational_fault_page,
+    load_committed_account_risk_page,
     load_committed_order_command_page, load_committed_order_transition_page,
     load_typed_run_context, publish_typed_batch, publish_typed_run,
     publish_typed_run_context, typed_row,
@@ -218,6 +223,68 @@ def test_broker_and_risk_faults_share_one_normalized_fenced_family() -> None:
         load_committed_prefix(client, RUN)
 
 
+def test_account_risk_metrics_and_reasons_are_fenced_and_recoverable() -> None:
+    assert {field.name for field in fields(RiskEvaluation)} == projection_module._RISK_SOURCE_FIELDS
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    metrics = {key: 1.25 for key in (
+        "net_liquidation", "available_funds", "buying_power", "gross_exposure",
+        "net_exposure", "reserved_notional", "open_risk", "daily_loss",
+        "drawdown",
+    )}
+    metrics["position_count"] = 2.0
+    evaluation = RiskEvaluation(
+        "DU1", "primary", AccountRiskState.ENTRIES_PAUSED,
+        ("broker_disconnected", "daily_loss_warning"), metrics, at,
+        protection_required=100.5, protection_coverage=100.5,
+        internal_reaction_ms=12.5,
+    )
+    record = JournalRecord(RECORD, RUN, 1, at, at, "risk",
+        "continuous_risk_state", "DU1", "DU1", asdict(evaluation))
+    item = account_risk_batch(record, run_month=date(2026, 8, 1),
+        attempt_id=ATTEMPT, batch_id=BATCH, prior_batch_id=ZERO,
+        source_cursor="risk-1", expected_mode="live")
+    assert item.account_risk_states[0]["position_count"] == 2
+    assert item.account_risk_states[0]["daily_loss"] == "1.250000000000000000"
+    oversized = replace(item, account_risk_states=({
+        **item.account_risk_states[0],
+        "net_liquidation": "100000000000000000000.000000000000000000",
+    },))
+    with pytest.raises(ValueError, match="exceeds decimal width"):
+        writer_module._sealed_families(oversized)
+    client = MemoryClient()
+    publish_typed_batch(client, item)
+    prefix = load_committed_prefix(client, RUN)
+    assert prefix is not None
+    recovered = load_committed_account_risk_page(client, prefix)
+    assert len(recovered) == 1
+    assert recovered[0]["reasons"] == evaluation.reasons
+    assert load_committed_account_risk_page(client, prefix, after_sequence=1) == ()
+    disabled = replace(evaluation, state=AccountRiskState.NORMAL)
+    disabled_record = JournalRecord(RECORD, RUN, 1, at, at, "risk",
+        "continuous_risk_state", "DU1", "DU1", {
+            **asdict(disabled), "enforced": False, "mode": "replay",
+        })
+    disabled_batch = account_risk_batch(disabled_record,
+        run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
+        batch_id=BATCH, prior_batch_id=ZERO, source_cursor="risk-disabled",
+        expected_mode="replay")
+    assert disabled_batch.account_risk_states[0]["enforced"] == 0
+    with pytest.raises(ValueError, match="differs from its run mode"):
+        account_risk_batch(disabled_record, run_month=date(2026, 8, 1),
+            attempt_id=ATTEMPT, batch_id=BATCH, prior_batch_id=ZERO,
+            source_cursor="risk-disabled", expected_mode="live")
+    with pytest.raises(ValueError, match="fixed producer contract"):
+        account_risk_batch(JournalRecord(RECORD, RUN, 1, at, at, "risk",
+            "continuous_risk_state", "DU1", "DU1", {
+                **asdict(evaluation), "metrics": {**metrics, "unknown": 1.0},
+            }), run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
+            batch_id=BATCH, prior_batch_id=ZERO, source_cursor="risk-1",
+            expected_mode="live")
+    client.tables["trading_account_risk_reason_v1"][0]["reason"] = "tampered"
+    with pytest.raises(RuntimeError, match="row content differs from its hash"):
+        load_committed_prefix(client, RUN)
+
+
 def test_runtime_config_and_accounts_require_a_verified_context_fence() -> None:
     client = MemoryClient()
     publish_typed_run(client, run_row())
@@ -358,7 +425,7 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     assert len(client.tables["trading_commit_v1"]) == 1
     assert not any("payload_json" in row for rows in client.tables.values() for row in rows)
     prefix = load_committed_prefix(client, RUN)
-    assert len(client.selects) == 28
+    assert len(client.selects) == 30
     assert prefix is not None
     assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
 
@@ -383,7 +450,7 @@ def test_recovery_groups_batches_but_verifies_each_fence() -> None:
     client.selects.clear()
     prefix = load_committed_prefix(client, RUN)
     assert prefix is not None and prefix.last_sequence == 3
-    assert len(client.selects) == 21
+    assert len(client.selects) == 23
     client.tables["trading_commit_v1"][0]["event_count"] = 0
     with pytest.raises(RuntimeError, match="not contiguous"):
         load_committed_prefix(client, RUN)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from datetime import date, datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 import re
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -29,6 +29,15 @@ _SOURCE_FIELDS = frozenset({
 })
 _SCALE = Decimal("0.0000000001")
 _MEASURE_SCALE = Decimal("0.000000000000000001")
+_RISK_METRICS = (
+    "net_liquidation", "available_funds", "buying_power", "gross_exposure",
+    "net_exposure", "reserved_notional", "open_risk", "daily_loss",
+    "drawdown", "position_count",
+)
+_RISK_SOURCE_FIELDS = frozenset({
+    "account_id", "account_key", "state", "reasons", "metrics", "observed_at",
+    "protection_required", "protection_coverage", "internal_reaction_ms",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,14 +148,106 @@ def operational_fault_batch(
     )
 
 
+def account_risk_batch(
+    record: JournalRecord, *, run_month: date, attempt_id: str,
+    batch_id: str, prior_batch_id: str, source_cursor: str,
+    expected_mode: str,
+) -> TypedJournalBatch:
+    """Project the fixed risk metric set and ordered reasons without a map column."""
+    if (record.category != "risk" or record.entity_type != "continuous_risk_state"
+            or not record.account_id or record.entity_id != record.account_id
+            or record.event_time.tzinfo is None or record.recorded_at.tzinfo is None):
+        raise ValueError("Continuous risk record identity or time is invalid")
+    payload = dict(record.payload)
+    if not _RISK_SOURCE_FIELDS.issubset(payload) or set(payload) - _RISK_SOURCE_FIELDS - {
+        "enforced", "mode", "correlation_id", "causation_id",
+    }:
+        raise ValueError("Continuous risk record has unmodeled fields")
+    enforced = "enforced" not in payload
+    if not enforced and (payload["enforced"] is not False
+                         or payload.get("mode") != expected_mode
+                         or payload["state"] != "normal"):
+        raise ValueError("Disabled risk evaluation differs from its run mode")
+    if enforced and "mode" in payload:
+        raise ValueError("Enforced risk evaluation has unexpected mode evidence")
+    if (payload["account_id"] != record.account_id
+            or not isinstance(payload["account_key"], str)
+            or not payload["account_key"]
+            or payload["state"] not in {"normal", "entries_paused", "reduce_only",
+                                        "emergency_exit", "reconciling", "fully_blocked"}):
+        raise ValueError("Continuous risk account or state is invalid")
+    observed_at = payload["observed_at"]
+    if not isinstance(observed_at, datetime) or observed_at.tzinfo is None:
+        raise ValueError("Continuous risk observation time is invalid")
+    if observed_at.astimezone(timezone.utc) != record.event_time.astimezone(timezone.utc):
+        raise ValueError("Continuous risk observation differs from event time")
+    metrics = payload["metrics"]
+    if not isinstance(metrics, dict) or set(metrics) != set(_RISK_METRICS):
+        raise ValueError("Continuous risk metrics differ from the fixed producer contract")
+    count = metrics["position_count"]
+    if (isinstance(count, bool) or not isinstance(count, (int, float))
+            or not float(count).is_integer() or not 0 <= count < 2**32):
+        raise ValueError("Continuous risk position count is invalid")
+    reasons = payload["reasons"]
+    if (not isinstance(reasons, (tuple, list)) or len(reasons) > 65535
+            or any(not isinstance(reason, str) or not reason for reason in reasons)
+            or len(set(reasons)) != len(reasons)):
+        raise ValueError("Continuous risk reasons are invalid")
+    at = record.event_time.astimezone(timezone.utc).isoformat()
+    received = record.recorded_at.astimezone(timezone.utc).isoformat()
+    event_month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+    event = {
+        "run_id": record.run_id, "event_month": event_month,
+        "attempt_id": attempt_id, "batch_id": batch_id,
+        "record_id": record.record_id, "sequence": record.sequence,
+        "event_time": at, "recorded_at": received,
+        "category": "risk", "entity_type": "continuous_risk_state",
+        "entity_id": record.account_id, "account_id": record.account_id,
+        "correlation_id": str(payload.get("correlation_id") or ""),
+        "causation_id": str(payload.get("causation_id") or ""),
+    }
+    state = {
+        "record_id": record.record_id, "run_id": record.run_id,
+        "event_month": event_month, "batch_id": batch_id,
+        "account_id": record.account_id, "account_key": payload["account_key"],
+        "state": str(payload["state"]), "enforced": int(enforced),
+        **{key: _exact_decimal(metrics[key], _MEASURE_SCALE)
+           for key in _RISK_METRICS if key != "position_count"},
+        "position_count": int(count),
+        "protection_required": _exact_decimal(payload["protection_required"], _MEASURE_SCALE),
+        "protection_coverage": _exact_decimal(payload["protection_coverage"], _MEASURE_SCALE),
+        "internal_reaction_ms": (
+            _exact_decimal(payload["internal_reaction_ms"], _MEASURE_SCALE)
+            if payload["internal_reaction_ms"] is not None else None
+        ),
+        "reason_count": len(reasons), "source_event_time": at,
+    }
+    reason_rows = tuple({
+        "record_id": str(uuid5(NAMESPACE_URL,
+            f"{record.record_id}:risk-reason:{ordinal}:{reason}")),
+        "run_id": record.run_id, "event_month": event_month,
+        "batch_id": batch_id, "parent_record_id": record.record_id,
+        "ordinal": ordinal, "reason": reason,
+    } for ordinal, reason in enumerate(reasons))
+    return TypedJournalBatch(
+        record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        record.sequence, record.sequence, source_cursor, "running", (event,),
+        account_risk_states=(state,), account_risk_reasons=reason_rows,
+    )
+
+
 def _exact_decimal(value: float | Decimal, scale: Decimal = _SCALE) -> str:
     try:
-        decimal = Decimal(str(value))
-        quantized = decimal.quantize(scale)
+        with localcontext() as context:
+            context.prec = 50
+            decimal = Decimal(str(value))
+            quantized = decimal.quantize(scale)
     except (InvalidOperation, ValueError) as exc:
-        raise ValueError("Broker number cannot fit Decimal(38, 10)") from exc
+        raise ValueError("Number cannot fit typed Decimal(38) precision") from exc
     if not decimal.is_finite() or decimal != quantized:
-        raise ValueError("Broker number cannot fit Decimal(38, 10) losslessly")
+        raise ValueError("Number cannot fit typed Decimal(38) losslessly")
+    if quantized.copy_abs() >= Decimal(10) ** (38 + scale.as_tuple().exponent):
+        raise ValueError("Number exceeds typed Decimal(38) width")
     return format(quantized, "f")
 
 

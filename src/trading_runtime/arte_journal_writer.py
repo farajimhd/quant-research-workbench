@@ -32,6 +32,10 @@ _FAMILIES = (
      "run_transition_hash"),
     ("trading_operational_fault_v1", "operational_faults", "operational_fault_count",
      "operational_fault_hash"),
+    ("trading_account_risk_state_v1", "account_risk_states", "account_risk_state_count",
+     "account_risk_state_hash"),
+    ("trading_account_risk_reason_v1", "account_risk_reasons", "account_risk_reason_count",
+     "account_risk_reason_hash"),
     ("trading_strategy_signal_v1", "signals", "signal_count", "signal_hash"),
     ("trading_signal_source_v1", "signal_sources", "signal_source_count",
      "signal_source_hash"),
@@ -69,6 +73,7 @@ _EVENT_DETAILS = {
     ("lifecycle", "run"): "trading_run_transition_v1",
     ("broker", "connection_state"): "trading_operational_fault_v1",
     ("risk", "risk_snapshot"): "trading_operational_fault_v1",
+    ("risk", "continuous_risk_state"): "trading_account_risk_state_v1",
     ("strategy_decision", "signal"): "trading_strategy_signal_v1",
     ("strategy_decision", "intent"): "trading_strategy_intent_v1",
     ("execution", "fill"): "trading_execution_v1",
@@ -122,6 +127,8 @@ class TypedJournalBatch:
     events: tuple[Mapping[str, Any], ...]
     run_transitions: tuple[Mapping[str, Any], ...] = ()
     operational_faults: tuple[Mapping[str, Any], ...] = ()
+    account_risk_states: tuple[Mapping[str, Any], ...] = ()
+    account_risk_reasons: tuple[Mapping[str, Any], ...] = ()
     signals: tuple[Mapping[str, Any], ...] = ()
     signal_sources: tuple[Mapping[str, Any], ...] = ()
     executions: tuple[Mapping[str, Any], ...] = ()
@@ -189,6 +196,7 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 "trading_order_command_context_v1", "trading_oms_order_state_v1",
                 "trading_oms_broker_binding_v1", "trading_oms_warning_v1",
                 "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1",
+                "trading_account_risk_reason_v1",
             }
             parent_id = (str(UUID(str(row["parent_record_id"])))
                          if child_family else record_id)
@@ -234,7 +242,8 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                     "trading_intent_protection_slice_v1",
                     "trading_order_command_context_v1", "trading_oms_order_state_v1",
                     "trading_oms_broker_binding_v1", "trading_oms_warning_v1",
-                    "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1"}:
+                    "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1",
+                    "trading_account_risk_reason_v1"}:
             continue
         for row in rows:
             record_id = str(UUID(str(row["record_id"])))
@@ -272,6 +281,32 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 or _datetime_wire(fault["source_event_time"], 9)
                 != _datetime_wire(parent["event_time"], 9)):
             raise ValueError("Operational fault differs from its broker or risk event")
+    risk_states = {
+        str(UUID(str(row["record_id"]))): row
+        for row in by_family["trading_account_risk_state_v1"]
+    }
+    reasons_by_parent: dict[str, list[dict[str, Any]]] = {}
+    for reason in by_family["trading_account_risk_reason_v1"]:
+        parent_id = str(UUID(str(reason["parent_record_id"])))
+        if parent_id not in risk_states or not str(reason["reason"]):
+            raise ValueError("Account risk reason lacks its typed state")
+        reasons_by_parent.setdefault(parent_id, []).append(reason)
+    for risk_id, state in risk_states.items():
+        parent = events_by_id[risk_id]
+        reasons = reasons_by_parent.get(risk_id, [])
+        if (parent["category"] != "risk" or parent["entity_type"] != "continuous_risk_state"
+                or parent["entity_id"] != state["account_id"]
+                or not state["account_id"] or not state["account_key"]
+                or state["state"] not in {"normal", "entries_paused", "reduce_only",
+                                       "emergency_exit", "reconciling", "fully_blocked"}
+                or state["enforced"] not in {0, 1}
+                or (state["enforced"] == 0 and state["state"] != "normal")
+                or _datetime_wire(state["source_event_time"], 9)
+                != _datetime_wire(parent["event_time"], 9)
+                or len(reasons) != int(state["reason_count"])
+                or sorted(int(row["ordinal"]) for row in reasons) != list(range(len(reasons)))
+                or len({str(row["reason"]) for row in reasons}) != len(reasons)):
+            raise ValueError("Account risk state or reasons differ from its event")
     sources_by_parent: dict[str, list[dict[str, Any]]] = {}
     for row in by_family["trading_signal_source_v1"]:
         parent_id = str(UUID(str(row["parent_record_id"])))
@@ -487,7 +522,10 @@ def _canonical_typed_content(
         elif base.startswith("DateTime64(6"):
             canonical[column] = _datetime_wire(value, 6, stored_utc=stored_utc)
         elif base.startswith("Decimal("):
-            scale = int(base.rsplit(",", 1)[1].rstrip(") "))
+            decimal_type = re.fullmatch(r"Decimal\((\d+),\s*(\d+)\)", base)
+            if decimal_type is None:
+                raise ValueError(f"Unsupported typed decimal {name}.{column}: {base}")
+            precision, scale = map(int, decimal_type.groups())
             try:
                 with localcontext() as context:
                     context.prec = 50
@@ -497,6 +535,8 @@ def _canonical_typed_content(
                 raise ValueError(f"{name}.{column} is not a valid decimal") from exc
             if not number.is_finite() or number != quantized:
                 raise ValueError(f"{name}.{column} loses decimal precision")
+            if quantized.copy_abs() >= Decimal(10) ** (precision - scale):
+                raise ValueError(f"{name}.{column} exceeds decimal width")
             canonical[column] = format(quantized, f".{scale}f")
         elif base.startswith("UInt"):
             if isinstance(value, bool) or not str(value).isdigit():
@@ -1426,6 +1466,85 @@ def load_committed_operational_fault_page(
         prior = sequence
         result.append({"sequence": sequence, "category": event["category"],
                        "entity_type": event["entity_type"], **detail})
+    return tuple(result)
+
+
+def load_committed_account_risk_page(
+    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    limit: int = 250,
+) -> tuple[dict[str, Any], ...]:
+    """Cold-read typed account risk metrics with bounded ordered reasons."""
+    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+        raise ValueError("Account risk recovery requires a verified committed prefix")
+    if after_sequence < 0 or not 1 <= limit <= 500:
+        raise ValueError("Account risk page bounds are invalid")
+    events = _rows(client,
+        "SELECT record_id,batch_id,sequence,event_month,account_id,event_time,entity_id "
+        "FROM arte.trading_event_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND sequence>{int(after_sequence)} "
+        f"AND sequence<={int(prefix.last_sequence)} "
+        "AND category='risk' AND entity_type='continuous_risk_state' "
+        f"{_committed_batch_filter(prefix)}"
+        f"ORDER BY sequence LIMIT {int(limit)} FORMAT JSONEachRow")
+    if not events:
+        return ()
+    ids = tuple(str(UUID(str(row["record_id"]))) for row in events)
+    if len(set(ids)) != len(ids):
+        raise RuntimeError("Committed account risk page repeated an event identity")
+    if any(str(UUID(str(row["batch_id"]))) not in prefix.batch_ids for row in events):
+        raise RuntimeError("Account risk page contains an unfenced event")
+    ids_sql = ",".join(f"toUUID({_literal(value)})" for value in ids)
+    columns = ",".join(column for column, _ in _CONTRACTS["trading_account_risk_state_v1"].columns)
+    details = _rows(client, f"SELECT {columns} FROM arte.trading_account_risk_state_v1 "
+                    f"WHERE run_id={_literal(prefix.run_id)} "
+                    f"AND record_id IN ({ids_sql}) "
+                    f"{_committed_batch_filter(prefix)}FORMAT JSONEachRow")
+    if len(details) != len(events):
+        raise RuntimeError("Committed account risk page has missing or duplicate details")
+    by_id = {str(UUID(str(row["record_id"]))): row for row in details}
+    if set(by_id) != set(ids):
+        raise RuntimeError("Committed account risk details differ from events")
+    child_budget = sum(int(row["reason_count"]) for row in details)
+    if child_budget > 10_000:
+        raise ValueError("Account risk reason page exceeds bound; lower the state limit")
+    reason_columns = ",".join(column for column, _ in
+                              _CONTRACTS["trading_account_risk_reason_v1"].columns)
+    reasons = _rows(client, f"SELECT {reason_columns} FROM arte.trading_account_risk_reason_v1 "
+                    f"WHERE run_id={_literal(prefix.run_id)} "
+                    f"AND parent_record_id IN ({ids_sql}) "
+                    f"{_committed_batch_filter(prefix)}"
+                    f"LIMIT {child_budget + 1} FORMAT JSONEachRow")
+    if len(reasons) != child_budget:
+        raise RuntimeError("Committed account risk reasons have missing or excess rows")
+    by_parent: dict[str, list[dict[str, Any]]] = {}
+    for reason in reasons:
+        parent_id = str(UUID(str(reason["parent_record_id"])))
+        parent = by_id.get(parent_id)
+        if (parent is None
+                or str(UUID(str(reason["batch_id"]))) != str(UUID(str(parent["batch_id"])))
+                or reason["event_month"] != parent["event_month"]):
+            raise RuntimeError("Committed account risk reason differs from its state")
+        by_parent.setdefault(parent_id, []).append(reason)
+    result = []
+    prior = after_sequence
+    for event in events:
+        sequence = int(event["sequence"])
+        risk_id = str(UUID(str(event["record_id"])))
+        detail = by_id[risk_id]
+        children = sorted(by_parent.get(risk_id, []), key=lambda row: int(row["ordinal"]))
+        if (sequence <= prior or event["entity_id"] != event["account_id"]
+                or detail["account_id"] != event["account_id"]
+                or str(UUID(str(detail["batch_id"]))) != str(UUID(str(event["batch_id"])))
+                or detail["event_month"] != event["event_month"]
+                or detail["source_event_time"] != event["event_time"]
+                or len(children) != int(detail["reason_count"])
+                or [int(row["ordinal"]) for row in children] != list(range(len(children)))
+                or len({row["reason"] for row in children}) != len(children)):
+            raise RuntimeError("Committed account risk page differs from its event or reasons")
+        prior = sequence
+        result.append({"sequence": sequence, **detail,
+                       "reasons": tuple(row["reason"] for row in children)})
     return tuple(result)
 
 
