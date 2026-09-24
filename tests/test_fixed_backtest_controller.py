@@ -251,3 +251,58 @@ def test_fixed_controller_applies_all_liquidity_before_any_strategy_frame(monkey
     ]
     assert controller.processed_events == 4
     assert events[-1] == ("finish", "completed", "")
+
+
+def test_fixed_resume_does_not_redeliver_committed_source_signals(monkeypatch):
+    plan = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "build", "definition", (DAY,),
+        ("AAPL",), (), (100, 1000), "pinned-token")
+    monkeypatch.setattr(market_data, "MarketDayLedger",
+                        lambda: SimpleNamespace(certified_plan=lambda **_kwargs: plan))
+    monkeypatch.setattr(market_data, "iter_market_day_rows",
+                        lambda _plan, **_kwargs: iter([
+                            _row("AAPL", 100, 100), _row("AAPL", 200, 100)]))
+    start = datetime.combine(date(2026, 8, 18), time(4), tzinfo=NY)
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(
+        configuration_revision={"payload": {"assignments": []}},
+        market_data_plan={"token": "pinned-token", "sessions": [DAY]},
+        causal_v7_plan={}, tickers=("AAPL",), requested_start=start,
+        session_end=start + timedelta(seconds=1))
+    controller._journal = BacktestMemoryJournal(run_id=RUN)
+    controller._resume_state = {}
+    controller._source_cursor = {"session_date": DAY, "boundary_ms": 100, "sequence": 1}
+    controller._fixed_vwap_day = DAY
+    controller._fixed_vwap_by_ticker = {}
+    controller._historical_external_signal_events = [
+        SimpleNamespace(available_at=start + timedelta(milliseconds=value),
+                        occurrence={"ticker": "AAPL"})
+        for value in (100, 200)]
+    controller._quotes = {}
+    controller._stop_requested = False
+    controller.processed_events = 0
+    controller.warmup_events = 0
+    delivered = []
+
+    class Runtime:
+        async def process_liquidity_bar(self, _row, *, at):
+            return SimpleNamespace(ts=at)
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    controller._runtime = Runtime()
+    controller._record_data_authority = lambda *_args: None
+    controller._prepare_session_relative_volume = no_op
+    controller._publish = no_op
+    controller._wait_until_active = no_op
+    controller._after_event = no_op
+    controller._finish = no_op
+    controller._apply_historical_watchlist_membership = lambda _at: None
+    controller._process_strategy_frame = no_op
+    controller._process_external_signal_event = lambda event: (
+        delivered.append(event.available_at) or no_op())
+
+    asyncio.run(controller._run_fixed_market_days())
+
+    assert delivered == [start + timedelta(milliseconds=200)]

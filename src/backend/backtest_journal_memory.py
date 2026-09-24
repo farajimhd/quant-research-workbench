@@ -100,6 +100,8 @@ class BacktestMemoryJournal:
             for record in result:
                 if record.category == "market_discovery_signal":
                     self._signal_records.append(record)
+                    self._by_identity.setdefault(
+                        (record.category, record.entity_type, record.entity_id), record)
                 if record.category == "protection":
                     self._protection_records.append(record)
             return result

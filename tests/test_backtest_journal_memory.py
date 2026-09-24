@@ -73,6 +73,17 @@ def test_acknowledged_batches_release_memory_without_reusing_sequences():
     assert journal._by_identity == {}
 
 
+def test_signal_idempotence_survives_fence_without_retaining_all_decisions():
+    journal = BacktestMemoryJournal(run_id=RUN_ID)
+    signal = dict(_entry("signal"), category="market_discovery_signal")
+    original = journal.append_many([signal])[0]
+    journal.mark_fenced(original.sequence)
+    replayed, inserted = journal.append_once_many([signal])[0]
+    assert not inserted and replayed.record_id == original.record_id
+    assert journal._records == []
+    assert len(journal._by_identity) == 1
+
+
 def test_campaign_ownership_matches_live_reserve_confirm_release_contract():
     journal = BacktestMemoryJournal(run_id=RUN_ID)
     key = dict(resource_id="book:AAPL", session_key="2026-08-18")

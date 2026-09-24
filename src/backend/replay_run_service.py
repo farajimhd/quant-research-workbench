@@ -3193,6 +3193,14 @@ class ReplayRunController:
         sequence = int(self._source_cursor.get("sequence") or 0)
         boundary_count = 0
         external_index = 0
+        if self._resume_state is not None and self._source_cursor:
+            resumed_at = market_day_boundary(
+                str(self._source_cursor["session_date"]),
+                int(self._source_cursor.get("boundary_ms") or 0),
+            )
+            while (external_index < len(self._historical_external_signal_events)
+                   and self._historical_external_signal_events[external_index].available_at <= resumed_at):
+                external_index += 1
         evaluation_ms = int(plan.execution_interval.milliseconds or 100)
 
         def next_packet() -> list[tuple[str, int, list[tuple[str, dict[int, Mapping[str, Any]]]]]]:
