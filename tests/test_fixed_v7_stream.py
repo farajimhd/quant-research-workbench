@@ -9,6 +9,7 @@ import pytest
 from src.backend.fixed_v7_stream import FixedV7Cache, FixedV7Stream
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit
 from src.backend.structural_v7_seed import CertifiedSeedPlan
+from src.backend.structural_v7_seed import load_seed
 from src.backend.replay_run_service import ReplayRunController, RunMode
 from src.market_engine.historical_level_checkpoint import digest
 from src.market_engine.reaction_band import CONFIG
@@ -44,6 +45,19 @@ def test_completed_second_advances_causally_from_empty_seed():
         stream.context(as_of=before)
     with pytest.raises(ValueError, match="strictly increasing"):
         stream.update_second(row, at=at)
+
+
+def test_private_typed_seed_transfers_observation_ownership_without_default_mutation():
+    from tests.test_structural_v7_seed import Client
+
+    shared = load_seed(Client(), ticker="TEST", session=date(2026, 8, 18))
+    copied = FixedV7Stream(shared, ticker="TEST", session=date(2026, 8, 18))
+    assert copied.engine.rows[0]["observations"] is not shared["levels"][0]["observations"]
+
+    private = load_seed(Client(), ticker="TEST", session=date(2026, 8, 18))
+    consumed = FixedV7Stream(private, ticker="TEST", session=date(2026, 8, 18),
+                             consume_seed=True)
+    assert consumed.engine.rows[0]["observations"] is private["levels"][0]["observations"]
 
 
 def test_lazy_v7_cache_replays_only_completed_pinned_seconds():

@@ -20,7 +20,7 @@ from src.market_engine.v7_qmd import projection
 
 class FixedV7Stream:
     def __init__(self, seed: Mapping[str, Any], *, ticker: str, session: date,
-                 splits: Sequence[dict[str, Any]] = ()) -> None:
+                 splits: Sequence[dict[str, Any]] = (), consume_seed: bool = False) -> None:
         start, end = session_bounds(session.isoformat())
         if float(seed["available_at"]) > start.timestamp():
             raise ValueError("V7 seed was not available at the session opening")
@@ -30,7 +30,7 @@ class FixedV7Stream:
                       for item in splits)
         self.engine = StreamingLevelBook(dict(seed), ticker=ticker,
             session=session.isoformat(), start=start.timestamp(), end=end.timestamp(),
-            split_factor=factor, split_evidence=splits)
+            split_factor=factor, split_evidence=splits, consume_prior=consume_seed)
         self._last_projection_revision = -1
         self._levels: list[dict[str, Any]] = []
         self._latest_completed_second = start.timestamp()
@@ -130,7 +130,8 @@ class FixedV7Cache:
             splits = split_evidence(self.client, ticker=ticker,
                                     seed_session=date.fromisoformat(seed["session"]),
                                     session=self.session)
-            stream = FixedV7Stream(seed, ticker=ticker, session=self.session, splits=splits)
+            stream = FixedV7Stream(seed, ticker=ticker, session=self.session,
+                                   splits=splits, consume_seed=True)
             for row in iter_persisted_v7_seconds(
                 self.market_plan, session_date=self.session.isoformat(), ticker=ticker,
                 through_boundary_ms=boundary_ms, client=self.client,

@@ -17,7 +17,7 @@ EXTRACTION_VERSION='historical-session-reaction-mle-1'
 
 
 class StreamingLevelBook:
-    def __init__(self,prior,*,ticker,session,start,end,split_factor=1.,split_evidence=(),settings=Settings(),discovery_prominence=None,coverage=.8):
+    def __init__(self,prior,*,ticker,session,start,end,split_factor=1.,split_evidence=(),settings=Settings(),discovery_prominence=None,coverage=.8,consume_prior=False):
         if prior.get('checkpoint_hash')!=digest({k:v for k,v in prior.items() if k!='checkpoint_hash'}):raise ValueError('Prior book integrity mismatch')
         if prior['ticker']!=ticker or prior['session']>=session or prior['available_at']>start:raise ValueError('Prior book must precede the streaming session')
         if prior.get('source_extraction_version')!=EXTRACTION_VERSION:raise ValueError('Streaming requires the rebuilt MLE band book')
@@ -37,7 +37,11 @@ class StreamingLevelBook:
             row=dict(id=old['id'],lower=float(old['lower']*split_factor),upper=float(old['upper']*split_factor),price=float(old['price']*split_factor),
                 historical=old.get('qualified',True),origin_session=old['origin_session'],qualified=old.get('qualified',True),role=role,segments=[],
                 events=[],last_contact=-1.,armed=True,side=None,created_at=start,proposal_at=None)
-            row['observations']=deepcopy(old['observations']);row['fit']=deepcopy(old['fit'])
+            # A freshly decoded, private Backtest seed may transfer its large
+            # observation arrays to the streaming book. Other callers retain
+            # the historical copy-on-input contract by default.
+            row['observations']=(old['observations'] if consume_prior else deepcopy(old['observations']))
+            row['fit']=(old['fit'] if consume_prior else deepcopy(old['fit']))
             row['transition_from'] = old.get('transition_from') or next((s['role'] for s in reversed(old['role_segments']) if s['role'] in ('support','resistance')),None)
             row['association_radius']=old['association_radius']*split_factor
             for o in row['observations']:
