@@ -4,10 +4,11 @@ from datetime import date, datetime, time
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
 import src.backend.backtest_market_data as market_data
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
-from src.backend.replay_run_service import ReplayRunController, _fixed_market_evidence_gaps
+from src.backend.replay_run_service import ReplayRunController, RunMode, _fixed_market_evidence_gaps
 
 
 NY = ZoneInfo("America/New_York")
@@ -23,6 +24,31 @@ def test_fixed_market_rejects_event_only_strategy_evidence():
                            "setup_minimum_session_relative_volume": 1.5},
     }}]}) == ("market_pressure", "quote_geometry", "session_relative_volume", "trade_volume")
     assert _fixed_market_evidence_gaps({"assignments": []}) == ()
+
+
+def test_fixed_signal_loader_never_prepares_missing_occurrences(monkeypatch):
+    from src.backend import historical_signal_occurrence_service as occurrences
+
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, execution_interval="100ms",
+        configuration_revision={"payload": {"signal_activation": {
+            "signal_streams": [{"signal_stream_id": "early",
+                                "occurrence_source": "qmd_squeeze_episode",
+                                "enabled": True}]}}},
+        requested_start=datetime(2026, 8, 18, 4, tzinfo=NY),
+        session_end=datetime(2026, 8, 18, 9, 30, tzinfo=NY),
+    )
+    controller._journal = object()
+    def unavailable(*_args, **_kwargs):
+        raise occurrences.HistoricalSignalCoverageUnavailable("missing coverage")
+    monkeypatch.setattr(occurrences, "historical_source_native_signal_occurrences", unavailable)
+    with pytest.raises(occurrences.HistoricalSignalCoverageUnavailable):
+        asyncio.run(controller._load_source_native_signal_events())
+    controller.definition.configuration_revision["payload"]["signal_activation"]["signal_streams"][0][
+        "historical_occurrence_artifact"] = "unprepared"
+    with pytest.raises(ValueError, match="cannot prepare historical signal occurrence artifacts"):
+        asyncio.run(controller._load_source_native_signal_events())
 
 
 def _row(ticker, boundary_ms, resolution_ms):

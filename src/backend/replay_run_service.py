@@ -7574,10 +7574,19 @@ class ReplayRunController:
             return []
 
         permits = asyncio.Semaphore(replay_history_fetch_concurrency())
+        from src.backend.backtest_market_data import ExecutionInterval
+        fixed_backtest = (
+            self.definition.mode == RunMode.BACKTEST
+            and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"
+        )
 
         async def load_stream(stream: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
             async with permits:
                 if stream.get("historical_occurrence_artifact"):
+                    if fixed_backtest:
+                        raise ValueError(
+                            "Fixed Backtest cannot prepare historical signal occurrence artifacts"
+                        )
                     from src.backend.historical_signal_preparation import prepared_signal_occurrences
 
                     def progress(status):
@@ -7599,6 +7608,8 @@ class ReplayRunController:
                             start=self.definition.requested_start, end=self.definition.session_end,
                         )
                     except HistoricalSignalCoverageUnavailable:
+                        if fixed_backtest:
+                            raise
                         parameters = self.definition.configuration_revision['payload'].get('strategy', {}).get('parameters', {})
                         if parameters.get('early_squeeze_breakout_contract') not in ('early-squeeze-r1-fixed-trail-v6', 'early-squeeze-r1-100ms-v7', 'early-squeeze-r1-100ms-v8', 'early-squeeze-r1-price-gap-v9', 'early-squeeze-r1-price-high-v10', 'early-squeeze-r1-price-episode-v11', 'early-squeeze-r1-price-resistance-ceiling-v12', 'early-squeeze-r1-price-broken-resistance-ceiling-v13', 'early-squeeze-r1-price-green-close-ceiling-v14', 'early-squeeze-r1-price-macd-1s-episode-reentry-v15', 'early-squeeze-r1-price-dual-macd-reentry-v16', 'early-squeeze-r1-price-episode-target-continuity-v17', 'early-squeeze-r1-price-forming-episode-v18', 'early-squeeze-r1-price-confirmed-breakout-v19', 'early-squeeze-r1-price-volatility-chop-v20', 'early-squeeze-r1-price-midpoint-execution-v21', 'early-squeeze-consistent-1s-resistance-v22', 'early-squeeze-structural-1s-resistance-v23', 'early-squeeze-momentum-v24'):
                             raise
