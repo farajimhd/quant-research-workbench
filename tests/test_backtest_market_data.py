@@ -14,6 +14,7 @@ from src.backend.backtest_market_data import (
     market_day_boundary,
     market_day_rows_sql,
     iter_market_boundary_groups,
+    iter_market_time_groups,
     verify_market_day_plan,
     _stable_hash,
 )
@@ -137,6 +138,26 @@ class BacktestMarketDataTests(unittest.TestCase):
             list(iter_market_boundary_groups([rows[0], rows[0]]))
         with self.assertRaisesRegex(ValueError, "not in causal order"):
             list(iter_market_boundary_groups([rows[1], rows[0]]))
+
+    def test_time_group_waits_for_all_tickers_at_completed_boundary(self) -> None:
+        rows = [
+            {"session_date": "2026-08-18", "boundary_ms": 100, "ticker": "AAPL", "resolution_ms": 100},
+            {"session_date": "2026-08-18", "boundary_ms": 100, "ticker": "MSFT", "resolution_ms": 100},
+            {"session_date": "2026-08-18", "boundary_ms": 200, "ticker": "AAPL", "resolution_ms": 100},
+        ]
+        time_groups = list(iter_market_time_groups(iter_market_boundary_groups(rows)))
+        self.assertEqual([group[1] for group in time_groups], [100, 200])
+        self.assertEqual([ticker for ticker, _ in time_groups[0][2]], ["AAPL", "MSFT"])
+        with self.assertRaisesRegex(ValueError, "not in causal order"):
+            list(iter_market_time_groups([
+                ("2026-08-18", 200, "AAPL", {}),
+                ("2026-08-18", 100, "AAPL", {}),
+            ]))
+        with self.assertRaisesRegex(ValueError, "Duplicate ticker"):
+            list(iter_market_time_groups([
+                ("2026-08-18", 100, "AAPL", {}),
+                ("2026-08-18", 100, "AAPL", {}),
+            ]))
 
     def test_missing_stage_fails_catalogue_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -545,6 +545,30 @@ def iter_market_boundary_groups(
         yield (*key, group)
 
 
+def iter_market_time_groups(
+    groups: Iterable[tuple[str, int, str, dict[int, Mapping[str, Any]]]],
+) -> Iterator[tuple[str, int, list[tuple[str, dict[int, Mapping[str, Any]]]]]]:
+    """Collect all tickers at one completed boundary before strategy evaluation."""
+    key: tuple[str, int] | None = None
+    at_boundary: list[tuple[str, dict[int, Mapping[str, Any]]]] = []
+    seen_tickers: set[str] = set()
+    for day, boundary_ms, ticker, resolutions in groups:
+        current = (day, boundary_ms)
+        if key is not None and current < key:
+            raise ValueError("Persisted market time boundaries are not in causal order")
+        if key is not None and current != key:
+            yield (*key, at_boundary)
+            at_boundary = []
+            seen_tickers = set()
+        if ticker in seen_tickers:
+            raise ValueError(f"Duplicate ticker at persisted market boundary {current}: {ticker}")
+        at_boundary.append((ticker, resolutions))
+        seen_tickers.add(ticker)
+        key = current
+    if key is not None:
+        yield (*key, at_boundary)
+
+
 def vectorized_candidate_mask(rows: Sequence[Mapping[str, Any]]) -> list[bool]:
     """Cheap columnar necessary-condition mask before stateful strategy work."""
     if not rows:

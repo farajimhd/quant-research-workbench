@@ -2939,6 +2939,7 @@ class ReplayRunController:
         from itertools import islice
         from src.backend.backtest_market_data import (
             MarketDayLedger, configuration_tickers, iter_market_boundary_groups,
+            iter_market_time_groups,
             iter_market_day_rows,
             market_day_boundary,
         )
@@ -2970,13 +2971,18 @@ class ReplayRunController:
         self._journal.enable_write_batching()
 
         source = iter_market_day_rows(plan)
-        groups = iter_market_boundary_groups(source)
-        sequence = 0
+        groups = iter_market_time_groups(iter_market_boundary_groups(source))
+        if self._resume_state is not None and self._source_cursor and not self._source_cursor.get("session_date"):
+            raise ValueError("Fixed Backtest checkpoint lacks a persisted market boundary cursor")
+        sequence = int(self._source_cursor.get("sequence") or 0)
+        boundary_count = 0
         external_index = 0
         evaluation_ms = int(plan.execution_interval.milliseconds or 100)
 
-        def next_packet() -> list[tuple[str, int, str, dict[int, Mapping[str, Any]]]]:
-            return list(islice(groups, 4096))
+        def next_packet() -> list[tuple[str, int, list[tuple[str, dict[int, Mapping[str, Any]]]]]]:
+            # At full-universe breadth one boundary may contain thousands of
+            # ticker rows; cap lookahead by boundaries, not individual rows.
+            return list(islice(groups, 8))
 
         reader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="backtest-market-reader")
         try:
@@ -2984,20 +2990,29 @@ class ReplayRunController:
                 packet = await asyncio.get_running_loop().run_in_executor(reader, next_packet)
                 if not packet:
                     break
-                for day, boundary_ms, ticker_value, by_resolution in packet:
+                for day, boundary_ms, ticker_groups in packet:
+                    boundary_count += 1
+                    if self._stop_requested:
+                        await self._finish("stopped")
+                        return
+                    await self._wait_until_active()
                     if self._stop_requested:
                         await self._finish("stopped")
                         return
                     at = market_day_boundary(day, boundary_ms)
                     if at > self.definition.session_end:
                         continue
-                    ticker = _ticker(ticker_value)
-                    sequence += 1
-                    liquidity_row = by_resolution.get(100)
-                    if liquidity_row is not None:
-                        if self._runtime is None:
-                            raise RuntimeError("Fixed Backtest runtime is not initialized")
-                        await self._runtime.process_liquidity_bar(liquidity_row, at=at)
+                    if self._resume_state is not None and self._source_cursor:
+                        saved_day = str(self._source_cursor.get("session_date") or "")
+                        saved_boundary = int(self._source_cursor.get("boundary_ms") or 0)
+                        if (day, boundary_ms) <= (saved_day, saved_boundary):
+                            continue
+                    if self._runtime is None:
+                        raise RuntimeError("Fixed Backtest runtime is not initialized")
+                    for _ticker_value, by_resolution in ticker_groups:
+                        liquidity_row = by_resolution.get(100)
+                        if liquidity_row is not None:
+                            await self._runtime.process_liquidity_bar(liquidity_row, at=at)
                     while (
                         external_index < len(self._historical_external_signal_events)
                         and self._historical_external_signal_events[external_index].available_at <= at
@@ -3007,24 +3022,31 @@ class ReplayRunController:
                         )
                         external_index += 1
                     self._apply_historical_watchlist_membership(at)
-                    for resolution, auxiliary in sorted(by_resolution.items()):
-                        if resolution != evaluation_ms and int(auxiliary.get("price_valid") or 0):
-                            self._remember_strategy_frame(_persisted_market_day_frame(
-                                auxiliary, at=at, sequence=sequence))
-                    evaluation_row = by_resolution.get(evaluation_ms)
-                    if evaluation_row is None or not int(evaluation_row.get("price_valid") or 0):
-                        self.current_time = at
-                        continue
-                    frame = _persisted_market_day_frame(evaluation_row, at=at, sequence=sequence)
+                    prepared_groups = []
+                    for _ticker_value, by_resolution in ticker_groups:
+                        sequence += 1
+                        prepared_groups.append((by_resolution, sequence))
+                        for resolution, auxiliary in sorted(by_resolution.items()):
+                            if resolution != evaluation_ms and int(auxiliary.get("price_valid") or 0):
+                                self._remember_strategy_frame(_persisted_market_day_frame(
+                                    auxiliary, at=at, sequence=sequence))
+                    for by_resolution, frame_sequence in prepared_groups:
+                        evaluation_row = by_resolution.get(evaluation_ms)
+                        if evaluation_row is None or not int(evaluation_row.get("price_valid") or 0):
+                            continue
+                        frame = _persisted_market_day_frame(evaluation_row, at=at, sequence=frame_sequence)
+                        if at >= self.definition.requested_start:
+                            await self._process_strategy_frame(frame)
+                            self.processed_events += 1
+                        else:
+                            self._remember_strategy_frame(frame)
+                            self.warmup_events += 1
+                    self._source_cursor = {"session_date": day, "boundary_ms": boundary_ms,
+                                           "sequence": sequence}
                     if at >= self.definition.requested_start:
-                        if await self._process_strategy_frame(frame):
-                            await self._after_event(at)
-                        self.processed_events += 1
-                    else:
-                        self._remember_strategy_frame(frame)
-                        self.warmup_events += 1
+                        await self._after_event(at)
                     self.current_time = at
-                    if sequence % 256 == 0:
+                    if boundary_count % 32 == 0:
                         await self._publish()
                         await asyncio.sleep(0)
         finally:
