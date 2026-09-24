@@ -6242,9 +6242,18 @@ class ReplayRunController:
             frozen[assignment.assignment_id] = previous if previous is not None and previous[0] is assignment else (
                 assignment, replace(assignment, state=deepcopy(assignment.state)))
         self._monitoring_assignments = frozen
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        fixed_journal = isinstance(self._journal, BacktestMemoryJournal)
+        if fixed_journal and self._journal_publisher is None:
+            raise RuntimeError("Fixed Backtest monitoring lacks a fenced journal publisher")
         self._monitoring.publish(dict(
             run=self.stream_snapshot(), snapshot=self._runtime.projected_snapshot(as_of=self.current_time),
-            sequence=self._journal.latest_sequence(self.run_id), journal_path=str(self._journal.path),
+            sequence=(self._journal_publisher.fenced_sequence if fixed_journal
+                      else self._journal.latest_sequence(self.run_id)),
+            journal_batch_ids=(self._journal_publisher.committed_batch_ids if fixed_journal
+                               else ()),
+            journal_backend="arte_clickhouse_v1" if fixed_journal else "sqlite_v1",
+            journal_path="" if fixed_journal else str(self._journal.path),
             assignments=tuple(row[1] for row in frozen.values()),
             assignment_symbols=tuple(requested or ()),assignments_complete=complete,
             configuration={k: configuration[k] for k in ('strategy', 'deployment') if k in configuration},

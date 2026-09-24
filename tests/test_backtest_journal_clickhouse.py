@@ -192,6 +192,7 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
                          ["arte.bt_blob_v1", "arte.bt_event_v1",
                           "arte.bt_blob_v1", "arte.bt_commit_v1"])
         restored = load_fenced_checkpoint(client, RUN)
+        self.assertEqual(restored["batch_ids"], (batch.batch_id,))
         self.assertEqual(restored["sequence"], 2)
         self.assertEqual(restored["state"], {"broker": {"cash": 100}})
         self.assertTrue(all("storage_policy='live_market_ssd'" in sql for sql in schema_ddl()))
@@ -288,6 +289,8 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
                 await publisher.fence_checkpoint(state={"broker": {"cash": 100},
                                                          "authority": authority},
                                                  source_cursor="bucket-2")
+                self.assertEqual(publisher.fenced_sequence, 2)
+                self.assertEqual(len(publisher.committed_batch_ids), 2)
                 restored_first = load_fenced_checkpoint(client, RUN)
                 self.assertEqual(restored_first["sequence"], 2)
                 self.assertEqual(restored_first["state"]["authority"],

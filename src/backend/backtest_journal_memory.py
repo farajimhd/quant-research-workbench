@@ -379,7 +379,16 @@ class BacktestJournalPublisher:
         self._staged_sequence = 0
         self._fenced_sequence = 0
         self._fence_id = "00000000-0000-0000-0000-000000000000"
+        self._committed_batches: list[str] = []
         self._staged: list[JournalBatch] = []
+
+    @property
+    def fenced_sequence(self) -> int:
+        return self._fenced_sequence
+
+    @property
+    def committed_batch_ids(self) -> tuple[str, ...]:
+        return tuple(self._committed_batches)
 
     async def stage_pending(self) -> int:
         pending = self.journal.unfenced_records(after_sequence=self._staged_sequence)
@@ -408,5 +417,6 @@ class BacktestJournalPublisher:
         self.journal.mark_evidence_published(evidence)
         self._fenced_sequence = self._staged_sequence
         self._fence_id = fence_id
+        self._committed_batches.extend(batch.batch_id for batch in self._staged)
         self._staged = []
         return fence_id

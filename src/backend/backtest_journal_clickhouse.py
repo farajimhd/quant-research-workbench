@@ -534,8 +534,16 @@ def load_fenced_checkpoint(client: Any, run_id: str) -> dict[str, Any] | None:
     if raw is None:
         raise ValueError("Backtest journal checkpoint blob is missing")
     state = decode_evidence(json.loads(raw), fetch)
+    committed_batches = tuple(
+        str(UUID(str(batch_id)))
+        for committed in reversed(chain)
+        for batch_id in committed["batch_ids"]
+    )
+    if len(committed_batches) != len(set(committed_batches)):
+        raise ValueError("Backtest journal committed a batch more than once")
     return {"run_id": normalized, "fence_id": str(latest["fence_id"]),
             "sequence": int(latest["last_sequence"]),
+            "batch_ids": committed_batches,
             "source_cursor": str(latest["source_cursor"]),
             "status": str(latest["status"]), "state": state}
 

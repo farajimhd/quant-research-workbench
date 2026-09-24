@@ -126,18 +126,41 @@ class BacktestPublication:
             self.pool = None
 
 
+def _open_publication_journal(packet):
+    """Select the pinned journal authority without a disk fallback."""
+    from pathlib import Path
+    if packet.get("journal_backend") == "arte_clickhouse_v1":
+        from src.backend.backtest_market_data import readonly_clickhouse_client
+        from src.backend.backtest_journal_reader import BacktestJournalReader
+        client = readonly_clickhouse_client()
+        try:
+            journal = BacktestJournalReader(
+                client, packet["run"]["run_id"],
+                fenced_sequence=int(packet["sequence"]),
+                batch_ids=tuple(packet["journal_batch_ids"]),
+            )
+        except BaseException:
+            client.close()
+            raise
+        return journal, client.close
+    elif packet.get("journal_backend", "sqlite_v1") == "sqlite_v1":
+        from src.trading_runtime.journal import TradingJournal
+        journal = TradingJournal(Path(packet["journal_path"]), read_only=True)
+        return journal, journal.close
+    else:
+        raise ValueError("Unknown Backtest monitoring journal authority")
+
+
 def render_publication(packet):
     """Process worker: only frozen input and sequence-fenced read-only SQL."""
-    from pathlib import Path
     import json
     from datetime import datetime
-    from src.trading_runtime.journal import TradingJournal
     from src.backend.canonical_trading_service import trading_state_payload
     from src.backend.trading_runtime_service import strategy_activity_payload
     from src.backend.replay_run_service import _compact_strategy_chart_activity_rows, _compact_strategy_chart_activity_row
     run = packet["run"]
     cutoff = datetime.fromisoformat(run["current_time"])
-    journal = TradingJournal(Path(packet["journal_path"]), read_only=True)
+    journal, close_journal = _open_publication_journal(packet)
     try:
         def activity(**options):
             records = journal.strategy_activity_records(run_id=run["run_id"], as_of=cutoff,
@@ -189,4 +212,4 @@ def render_publication(packet):
         return dict(payloads=results, wire={symbol: json.dumps(payload, allow_nan=False,
             separators=(',', ':')).encode() for symbol, payload in results.items()})
     finally:
-        journal.close()
+        close_journal()

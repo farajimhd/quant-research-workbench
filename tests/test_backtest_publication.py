@@ -8,7 +8,37 @@ from tempfile import TemporaryDirectory
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
 
-from src.backend.backtest_publication import BacktestPublication, render_publication
+import pytest
+
+from src.backend.backtest_publication import (
+    BacktestPublication, _open_publication_journal, render_publication,
+)
+
+
+def test_fixed_publication_uses_clickhouse_without_sqlite_fallback(monkeypatch):
+    import src.backend.backtest_market_data as market_data
+    import src.backend.backtest_journal_reader as journal_reader
+
+    closed = []
+
+    class Client:
+        def close(self):
+            closed.append(True)
+
+    client = Client()
+    monkeypatch.setattr(market_data, "readonly_clickhouse_client", lambda: client)
+    monkeypatch.setattr(journal_reader, "BacktestJournalReader",
+                        lambda actual, run_id, **kwargs: (actual, run_id, kwargs))
+    journal, close = _open_publication_journal({
+        "journal_backend": "arte_clickhouse_v1",
+        "journal_path": "", "run": {"run_id": "run"},
+        "sequence": 3, "journal_batch_ids": ("batch",),
+    })
+    assert journal == (client, "run", {"fenced_sequence": 3, "batch_ids": ("batch",)})
+    close()
+    assert closed == [True]
+    with pytest.raises(ValueError, match="Unknown"):
+        _open_publication_journal({"journal_backend": "unsupported"})
 
 
 def slow_render(packet):
