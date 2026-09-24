@@ -6,7 +6,7 @@ before a storage adapter replaces large evidence with content references.
 """
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -14,6 +14,20 @@ from typing import Any
 
 
 VERSION = "trading-journal-envelope-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class JournalRecord:
+    record_id: str
+    run_id: str
+    sequence: int
+    event_time: datetime
+    recorded_at: datetime
+    category: str
+    entity_type: str
+    entity_id: str
+    account_id: str
+    payload: dict[str, Any]
 
 
 def canonical_json(value: Any) -> str:

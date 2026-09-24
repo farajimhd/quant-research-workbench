@@ -8,29 +8,16 @@ from collections import OrderedDict
 from time import perf_counter
 import uuid
 from hashlib import sha256
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from .journal_evidence import encode_evidence, decode_evidence, decode_immutable_json, activity_payload, REFERENCE
 from .journal_storage import pack
+from .journal_contract import JournalRecord
 
 from src.request_context import causal_identity, current_request_identity
-
-
-@dataclass(frozen=True, slots=True)
-class JournalRecord:
-    record_id: str
-    run_id: str
-    sequence: int
-    event_time: datetime
-    recorded_at: datetime
-    category: str
-    entity_type: str
-    entity_id: str
-    account_id: str
-    payload: dict[str, Any]
 
 
 class TradingJournal:
