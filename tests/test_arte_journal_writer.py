@@ -164,6 +164,27 @@ def test_position_snapshot_requires_account_snapshot_in_same_batch() -> None:
         publish_typed_batch(MemoryClient(), orphan)
 
 
+def test_typed_detail_cannot_change_parent_account_or_partition() -> None:
+    original = batch()
+    event = {**dict(original.events[0]), "category": "snapshot",
+             "entity_type": "portfolio", "account_id": "DU1"}
+    event.pop("content_hash")
+    detail = {
+        "record_id": RECORD, "run_id": RUN, "event_month": "2026-08-01",
+        "batch_id": BATCH, "snapshot_id": "s1", "account_id": "DU1",
+        "currency": "USD", "net_liquidation": "1", "total_cash_value": "1",
+        "buying_power": "1", "gross_position_value": "0", "available_funds": "1",
+        "excess_liquidity": "1", "snapshot_complete": 1,
+        "source_event_time": "2026-08-18T08:05:00+00:00",
+    }
+    for changed in ({"account_id": "OTHER"}, {"event_month": "2026-09-01"}):
+        item = TypedJournalBatch(RUN, original.run_month, ATTEMPT, BATCH, ZERO,
+                                 1, 1, "bucket-1", "running", (event,),
+                                 account_snapshots=({**detail, **changed},))
+        with pytest.raises(ValueError, match="differs from its parent"):
+            publish_typed_batch(MemoryClient(), item)
+
+
 def test_run_identity_is_immutable_and_uses_typed_rows() -> None:
     client = MemoryClient()
     row = run_row()

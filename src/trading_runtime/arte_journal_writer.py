@@ -101,6 +101,7 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
     event_ids = {str(UUID(str(row["record_id"]))) for row in batch.events}
     if len(event_ids) != len(batch.events):
         raise ValueError("Journal batch repeated an event identity")
+    events_by_id = {str(UUID(str(row["record_id"]))): row for row in batch.events}
     result: list[tuple[str, tuple[dict[str, Any], ...]]] = []
     for name, rows in batch.families():
         allowed = {column for column, _ in _CONTRACTS[name].columns}
@@ -114,6 +115,11 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
             record_id = str(UUID(str(row["record_id"])))
             if name != "trading_event_v1" and record_id not in event_ids:
                 raise ValueError(f"{name} has no parent journal event")
+            if name != "trading_event_v1":
+                parent = events_by_id[record_id]
+                if (str(row["account_id"]) != str(parent["account_id"])
+                        or str(row["event_month"]) != str(parent["event_month"])):
+                    raise ValueError(f"{name} differs from its parent event identity")
             if name == "trading_event_v1" and str(UUID(str(row["attempt_id"]))) != batch.attempt_id:
                 raise ValueError("Journal event mixed attempts")
             if record_id in identities:
