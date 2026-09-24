@@ -14,7 +14,8 @@ from src.trading_runtime.arte_journal_projection import commission_revision_batc
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, JournalQueueFull, TypedJournalBatch, load_committed_prefix,
-    publish_typed_batch, publish_typed_run, typed_row,
+    load_typed_run_context, publish_typed_batch, publish_typed_run,
+    publish_typed_run_context, typed_row,
 )
 
 
@@ -105,6 +106,45 @@ def run_row() -> dict:
         "configuration_hash": "a" * 64, "code_hash": "b" * 64,
         "market_plan_token": "certified-build", "started_at": "2026-08-18T08:00:00+00:00",
     }
+
+
+def run_context() -> dict:
+    return {
+        "strategy_id": "strategy-1", "strategy_revision": 7,
+        "anchor_date": "2026-08-18", "run_plan_id": "plan-1",
+        "safety_supervisor_enabled": True, "checkpoint_interval_events": 100,
+        "write_progress_checkpoints": True,
+    }
+
+
+def test_runtime_config_and_accounts_require_a_verified_context_fence() -> None:
+    client = MemoryClient()
+    publish_typed_run(client, run_row())
+    with pytest.raises(RuntimeError, match="complete publication fence"):
+        load_typed_run_context(client, RUN)
+    publish_typed_run_context(client, run_id=RUN, config=run_context(),
+                              account_ids=("DU1", "DU2"))
+    assert load_typed_run_context(client, RUN)["account_ids"] == ("DU1", "DU2")
+    assert client.inserts[-1] == "trading_run_context_commit_v1"
+    before = len(client.inserts)
+    publish_typed_run_context(client, run_id=RUN, config=run_context(),
+                              account_ids=("DU1", "DU2"))
+    assert len(client.inserts) == before
+    with pytest.raises(RuntimeError, match="conflicts"):
+        publish_typed_run_context(client, run_id=RUN, config=run_context(),
+                                  account_ids=("DU2", "DU1"))
+    client.tables["trading_run_account_v1"][0]["account_id"] = "tampered"
+    with pytest.raises(RuntimeError, match="row content differs"):
+        load_typed_run_context(client, RUN)
+    client.tables["trading_run_account_v1"][0]["account_id"] = "DU1"
+    client.tables["trading_run_v1"][0]["code_hash"] = "c" * 64
+    with pytest.raises(RuntimeError, match="differs from its committed fence"):
+        load_typed_run_context(client, RUN)
+    client.tables["trading_run_v1"][0]["code_hash"] = "b" * 64
+    client.tables["trading_run_account_v1"].clear()
+    with pytest.raises(RuntimeError, match="missing typed rows"):
+        publish_typed_run_context(client, run_id=RUN, config=run_context(),
+                                  account_ids=("DU1", "DU2"))
 
 
 class MemoryClient:

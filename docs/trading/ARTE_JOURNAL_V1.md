@@ -41,6 +41,9 @@ commissions, and P&L use explicit `Decimal` scales rather than `Float64`.
 | Family | One row per | Core typed fields | Partition / order |
 | --- | --- | --- | --- |
 | run | immutable run revision | run ID, mode, evaluation interval, session scope, config/code/source hashes, start time | month(start), run ID |
+| runtime config | one typed `RunConfig` per run | strategy identity/revision, anchor date, plan ID, safety and checkpoint policy | month(run), run ID |
+| run account | one ordered account binding per run | run ID, ordinal, account ID | month(run), run ID, ordinal |
+| run context commit | one immutable readiness fence per run | hashes of parent run/config/account rows, account count, commit time | month(run), run ID |
 | journal event | logical state transition | run, attempt, sequence, record ID, category, entity identity, account, event/recorded times, correlation/causation IDs | month(event), run, attempt, sequence |
 | signal and decision | emitted signal or decision | event ID, strategy and revision, ticker, action, direction, reason code, score/confidence when defined, causal boundary | month(event), run, strategy, ticker, boundary, event ID |
 | order command | unique command ID | run, account, instrument, side, type, quantity, prices, TIF, parent/OCA, activation boundary, strategy attribution | month(created), account, run, command ID |
@@ -59,6 +62,10 @@ identity plus ordinal or stable member ID. Do not duplicate the entire parent
 row in each child. Execution and commission revisions preserve their source
 identities; a trade episode is a derived, rebuildable projection, not the
 execution authority.
+The runtime config/account fence is published last and verified before a
+typed writer may start. It covers `RunConfig`, not yet the full approved trading
+configuration or strategy/OMS checkpoint; those still need normalized families
+before the runtime cutover can open.
 
 ## Durability and replay
 

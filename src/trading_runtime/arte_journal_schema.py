@@ -51,6 +51,46 @@ TABLES = (
         "toYYYYMM(run_month)", "run_id",
     ),
     TableContract(
+        "trading_runtime_config_v1",
+        (
+            ("run_id", "String"),
+            ("run_month", "Date"),
+            ("strategy_id", "String"),
+            ("strategy_revision", "UInt32"),
+            ("anchor_date", "Date"),
+            ("run_plan_id", "String"),
+            ("safety_supervisor_enabled", "UInt8"),
+            ("checkpoint_interval_events", "UInt32"),
+            ("write_progress_checkpoints", "UInt8"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(run_month)", "run_id",
+    ),
+    TableContract(
+        "trading_run_account_v1",
+        (
+            ("run_id", "String"),
+            ("run_month", "Date"),
+            ("ordinal", "UInt16"),
+            ("account_id", "String"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(run_month)", "run_id, ordinal",
+    ),
+    TableContract(
+        "trading_run_context_commit_v1",
+        (
+            ("run_id", "String"),
+            ("run_month", "Date"),
+            ("run_hash", "FixedString(64)"),
+            ("config_hash", "FixedString(64)"),
+            ("account_count", "UInt16"),
+            ("account_hash", "FixedString(64)"),
+            ("committed_at", "DateTime64(6, 'UTC')"),
+        ),
+        "toYYYYMM(run_month)", "run_id",
+    ),
+    TableContract(
         "trading_event_v1",
         (
             ("run_id", "String"),

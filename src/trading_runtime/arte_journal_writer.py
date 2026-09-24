@@ -366,14 +366,10 @@ def _canonical_typed_content(
 
 
 def _wire_row(name: str, row: Mapping[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for column, kind in _CONTRACTS[name].columns:
-        value = row[column]
-        if kind.startswith("DateTime64(9"):
-            value = _datetime_wire(value, 9)
-        elif kind.startswith("DateTime64(6"):
-            value = _datetime_wire(value, 6)
-        result[column] = value
+    content = {key: value for key, value in row.items() if key != "content_hash"}
+    result = _canonical_typed_content(name, content)
+    if "content_hash" in row:
+        result["content_hash"] = str(row["content_hash"])
     return result
 
 
@@ -419,7 +415,7 @@ def _insert(client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: 
 
 
 def publish_typed_run(client: Any, run: Mapping[str, Any]) -> str:
-    """Publish one immutable run identity before accepting its journal rows."""
+    """Publish the parent identity; runtime context still needs its own fence."""
     expected_columns = {column for column, _ in _CONTRACTS["trading_run_v1"].columns}
     if set(run) != expected_columns:
         raise ValueError("Typed run has missing or extra columns")
@@ -446,12 +442,163 @@ def publish_typed_run(client: Any, run: Mapping[str, Any]) -> str:
     return run_id
 
 
+_RUN_CONFIG_FIELDS = frozenset({
+    "strategy_id", "strategy_revision", "anchor_date", "run_plan_id",
+    "safety_supervisor_enabled", "checkpoint_interval_events",
+    "write_progress_checkpoints",
+})
+
+
+def publish_typed_run_context(
+    client: Any, *, run_id: str, config: Mapping[str, Any],
+    account_ids: tuple[str, ...],
+) -> None:
+    """Publish the normalized RunConfig and account membership, fence last."""
+    if set(config) != _RUN_CONFIG_FIELDS:
+        raise ValueError("Runtime configuration has missing or extra typed fields")
+    if (not str(config["strategy_id"]).strip()
+            or int(config["strategy_revision"]) < 0
+            or int(config["checkpoint_interval_events"]) < 1
+            or any(config[key] not in (0, 1, False, True) for key in (
+                "safety_supervisor_enabled", "write_progress_checkpoints"))):
+        raise ValueError("Runtime configuration contains invalid values")
+    if (not account_ids or len(account_ids) > 65535
+            or any(not account.strip() for account in account_ids)
+            or len(set(account_ids)) != len(account_ids)):
+        raise ValueError("Runtime account membership is invalid")
+    parent_columns = ",".join(column for column, _ in _CONTRACTS["trading_run_v1"].columns)
+    parent = _rows(client,
+        f"SELECT {parent_columns} FROM arte.trading_run_v1 "
+        f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
+    if len(parent) != 1:
+        raise RuntimeError("Typed run parent is missing or duplicated")
+    month = str(parent[0]["run_month"])
+    run_hash = sha256(canonical_json(_canonical_typed_content(
+        "trading_run_v1", parent[0], stored_utc=True)).encode("utf-8")).hexdigest()
+    context = typed_row("trading_runtime_config_v1", {
+        "run_id": run_id, "run_month": month,
+        **{key: (int(value) if key in {"safety_supervisor_enabled",
+                                        "write_progress_checkpoints"} else value)
+           for key, value in config.items()},
+    })
+    members = tuple(typed_row("trading_run_account_v1", {
+        "run_id": run_id, "run_month": month, "ordinal": ordinal,
+        "account_id": account,
+    }) for ordinal, account in enumerate(account_ids))
+    account_hash = sha256(canonical_json([
+        (row["ordinal"], row["content_hash"]) for row in members
+    ]).encode("utf-8")).hexdigest()
+    fenced = _rows(client,
+        "SELECT run_id FROM arte.trading_run_context_commit_v1 "
+        f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
+    if len(fenced) > 1:
+        raise RuntimeError("Typed run context has duplicated commit fences")
+    for name, expected_rows in (("trading_runtime_config_v1", (context,)),
+                                ("trading_run_account_v1", members)):
+        columns = ",".join(column for column, _ in _CONTRACTS[name].columns)
+        query = (f"SELECT {columns} FROM arte.{name} "
+                 f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
+        expected = [_wire_row(name, row) for row in expected_rows]
+        actual = _rows(client, query)
+        if actual and sorted(actual, key=canonical_json) != sorted(expected, key=canonical_json):
+            raise RuntimeError(f"Typed run {name} conflicts with existing publication")
+        if not actual:
+            if fenced:
+                raise RuntimeError("Committed run context has missing typed rows")
+            _insert(client, name, expected_rows, f"run-context:{run_id}:{name}")
+            actual = _rows(client, query)
+        if sorted(actual, key=canonical_json) != sorted(expected, key=canonical_json):
+            raise RuntimeError(f"Typed run {name} did not become durable")
+    fence = {
+        "run_id": run_id, "run_month": month,
+        "run_hash": run_hash,
+        "config_hash": context["content_hash"],
+        "account_count": len(members), "account_hash": account_hash,
+        "committed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    fence_query = (
+        "SELECT run_id,run_month,run_hash,config_hash,account_count,account_hash "
+        "FROM arte.trading_run_context_commit_v1 "
+        f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow"
+    )
+    stable = {key: value for key, value in fence.items() if key != "committed_at"}
+    existing = _rows(client, fence_query)
+    if existing and (len(existing) != 1 or existing[0] != stable):
+        raise RuntimeError("Typed run context fence conflicts with existing publication")
+    if not existing:
+        _insert(client, "trading_run_context_commit_v1", (fence,),
+                f"run-context:{run_id}:commit")
+        if _rows(client, fence_query) != [stable]:
+            raise RuntimeError("Typed run context fence did not become durable")
+
+
+def load_typed_run_context(client: Any, run_id: str) -> dict[str, Any]:
+    """Recover only a fully fenced and hash-verified runtime configuration."""
+    parent_columns = ",".join(column for column, _ in _CONTRACTS["trading_run_v1"].columns)
+    parents = _rows(client, f"SELECT {parent_columns} FROM arte.trading_run_v1 "
+                    f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
+    config_columns = ",".join(column for column, _ in
+                              _CONTRACTS["trading_runtime_config_v1"].columns)
+    account_columns = ",".join(column for column, _ in
+                               _CONTRACTS["trading_run_account_v1"].columns)
+    config_rows = _rows(client, f"SELECT {config_columns} "
+                        "FROM arte.trading_runtime_config_v1 "
+                        f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
+    accounts = _rows(client, f"SELECT {account_columns} "
+                     "FROM arte.trading_run_account_v1 "
+                     f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
+    fences = _rows(client,
+        "SELECT run_id,run_month,run_hash,config_hash,account_count,account_hash "
+        "FROM arte.trading_run_context_commit_v1 "
+        f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
+    if len(parents) != 1 or len(config_rows) != 1 or len(fences) != 1 or not accounts:
+        raise RuntimeError("Typed run context has no complete publication fence")
+    config = config_rows[0]
+    month = str(config["run_month"])
+    run_hash = sha256(canonical_json(_canonical_typed_content(
+        "trading_run_v1", parents[0], stored_utc=True)).encode("utf-8")).hexdigest()
+    if (str(config["run_id"]) != run_id
+            or str(parents[0]["run_id"]) != run_id
+            or str(parents[0]["run_month"]) != month
+            or str(fences[0]["run_id"]) != run_id
+            or str(fences[0]["run_month"]) != month):
+        raise RuntimeError("Typed run context identity differs from its fence")
+    def verified_hash(name: str, row: Mapping[str, Any]) -> str:
+        content = {key: value for key, value in row.items() if key != "content_hash"}
+        digest = sha256(canonical_json(_canonical_typed_content(name, content))
+                        .encode("utf-8")).hexdigest()
+        if digest != str(row["content_hash"]):
+            raise RuntimeError(f"Typed run {name} row content differs from its hash")
+        return digest
+    config_hash = verified_hash("trading_runtime_config_v1", config)
+    accounts.sort(key=lambda row: int(row["ordinal"]))
+    if (len(accounts) > 65535
+            or [int(row["ordinal"]) for row in accounts] != list(range(len(accounts)))
+            or any(str(row["run_id"]) != run_id or str(row["run_month"]) != month
+                   for row in accounts)):
+        raise RuntimeError("Typed run account membership is not contiguous")
+    account_hash = sha256(canonical_json([
+        (int(row["ordinal"]), verified_hash("trading_run_account_v1", row))
+        for row in accounts
+    ]).encode("utf-8")).hexdigest()
+    if (str(fences[0]["run_hash"]) != run_hash
+            or str(fences[0]["config_hash"]) != config_hash
+            or int(fences[0]["account_count"]) != len(accounts)
+            or str(fences[0]["account_hash"]) != account_hash):
+        raise RuntimeError("Typed run context differs from its committed fence")
+    return {key: config[key] for key in _RUN_CONFIG_FIELDS} | {
+        "run_id": run_id, "run_month": month,
+        "account_ids": tuple(str(row["account_id"]) for row in accounts),
+    }
+
+
 def _verify_run_identity(client: Any, run_id: str) -> None:
     rows = _rows(client,
         "SELECT run_id FROM arte.trading_run_v1 "
         f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
     if rows != [{"run_id": run_id}]:
         raise RuntimeError("Typed journal run identity is missing or duplicated")
+    load_typed_run_context(client, run_id)
 
 
 def _verify_commission_links(
