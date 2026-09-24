@@ -1,5 +1,6 @@
 """Controller-level fixed-boundary ordering without an event replay source."""
 import asyncio
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,6 +11,10 @@ import src.backend.backtest_market_data as market_data
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
 from src.backend.replay_run_service import ReplayRunController, RunMode, _fixed_market_evidence_gaps
+from src.trading_runtime.ibkr_schema import OrderRequest
+from src.trading_runtime.runtime import RunConfig, TradingRuntime
+from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
+from tests.test_trading_runtime import quote
 
 
 NY = ZoneInfo("America/New_York")
@@ -251,6 +256,114 @@ def test_fixed_controller_applies_all_liquidity_before_any_strategy_frame(monkey
     ]
     assert controller.processed_events == 4
     assert events[-1] == ("finish", "completed", "")
+
+
+def test_fixed_controller_runtime_fills_only_after_decision_boundary(monkeypatch):
+    start = datetime(2026, 8, 18, 4, tzinfo=NY)
+    plan = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "build", "definition", (DAY,),
+        ("AAPL",), (), (100,), "pinned-token")
+    rows = []
+    for boundary_ms in (100, 200):
+        at = start + timedelta(milliseconds=boundary_ms)
+        event_us = int(at.timestamp() * 1_000_000) - 1
+        rows.append({**_row("AAPL", boundary_ms, 100),
+                     "bucket_index": 144000 + boundary_ms // 100 - 1,
+                     "first_event_us": event_us, "last_event_us": event_us,
+                     "event_count": 1, "quote_timestamp_us": event_us,
+                     "bid_int": 99_900, "ask_int": 100_000,
+                     "bid_size": 100, "ask_size": 100,
+                     "low_int": 99_900, "high_int": 100_000,
+                     "extremes_valid": 1, "execution_volume": 0})
+    monkeypatch.setattr(market_data, "MarketDayLedger",
+                        lambda: SimpleNamespace(certified_plan=lambda **_kwargs: plan))
+    monkeypatch.setattr(market_data, "iter_market_day_rows",
+                        lambda _plan, **_kwargs: iter(rows))
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.definition = SimpleNamespace(
+        configuration_revision={"payload": {"assignments": []}},
+        market_data_plan={"token": "pinned-token", "sessions": [DAY]},
+        causal_v7_plan={}, tickers=("AAPL",), requested_start=start,
+        session_end=start + timedelta(milliseconds=200))
+    controller._journal = BacktestMemoryJournal(run_id=RUN)
+    controller._resume_state = None
+    controller._source_cursor = {}
+    controller._fixed_vwap_day = None
+    controller._fixed_vwap_by_ticker = {}
+    controller._historical_external_signal_events = []
+    controller._quotes = {}
+    controller._stop_requested = False
+    controller.processed_events = 0
+    controller.warmup_events = 0
+    controller._record_data_authority = lambda *_args: None
+    controller._apply_historical_watchlist_membership = lambda _at: None
+    controller._remember_strategy_frame = lambda _frame: None
+
+    class NoopStrategy:
+        strategy_id = "fixed-integration"
+        revision = 1
+        automatic = True
+
+    broker = SimulatedBrokerAdapter(
+        ["TEST"], SimulationConfig(initial_cash=100_000,
+            commission_per_share=0, minimum_commission=0),
+        mode=RunMode.BACKTEST, initial_time=start)
+    runtime = TradingRuntime(
+        RunConfig(RunMode.BACKTEST, "fixed-integration", 1, ("TEST",), start.date(),
+                  run_id=RUN, safety_supervisor_enabled=False,
+                  write_progress_checkpoints=False),
+        broker, NoopStrategy(), controller._journal)
+    controller._runtime = runtime
+    observed = []
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def decide(frame):
+        observed.append((frame.as_of, len([record for record in
+            controller._journal.records(RUN) if record.category == "execution"])))
+        if len(observed) == 1:
+            await broker.place_orders("TEST", [OrderRequest(
+                acctId="TEST", conid=265598, cOID="fixed-entry", ticker="AAPL",
+                orderType="MKT", side="BUY", quantity=5, outsideRTH=True)])
+
+    controller._prepare_session_relative_volume = no_op
+    controller._publish = no_op
+    controller._wait_until_active = no_op
+    controller._after_event = no_op
+    controller._process_strategy_frame = decide
+    controller._finish = no_op
+
+    async def run():
+        await runtime.initialize()
+        await controller._run_fixed_market_days()
+    asyncio.run(run())
+    fills = [record for record in controller._journal.records(RUN)
+             if record.category == "execution" and record.entity_type == "fill"]
+    assert observed == [(start + timedelta(milliseconds=100), 0),
+                        (start + timedelta(milliseconds=200), 1)]
+    assert len(fills) == 1
+    assert fills[0].event_time == start + timedelta(milliseconds=200)
+    assert float(fills[0].payload["price"]) == 10.0
+
+    async def event_reference():
+        reference = SimulatedBrokerAdapter(
+            ["TEST"], broker.config, mode=RunMode.BACKTEST, initial_time=start)
+        await reference.initialize()
+        first = start + timedelta(milliseconds=100, microseconds=-1)
+        second = start + timedelta(milliseconds=200, microseconds=-1)
+        await reference.on_market_event(replace(
+            quote(bid=9.99, ask=10.0, ask_size=100), ts=first, ingest_ts=first))
+        await reference.place_orders("TEST", [OrderRequest(
+            acctId="TEST", conid=265598, cOID="event-entry", ticker="AAPL",
+            orderType="MKT", side="BUY", quantity=5, outsideRTH=True)])
+        return await reference.on_market_event(replace(
+            quote(bid=9.99, ask=10.0, ask_size=100), ts=second, ingest_ts=second))
+
+    event_fills = asyncio.run(event_reference())
+    assert [(float(row.payload["price"]), float(row.payload["size"])) for row in fills] == [
+        (fill.price, fill.size) for fill in event_fills]
 
 
 def test_fixed_resume_does_not_redeliver_committed_source_signals(monkeypatch):
