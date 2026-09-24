@@ -84,7 +84,7 @@ _EVENT_DETAILS = {
     ("risk", "risk_snapshot"): "trading_operational_fault_v1",
     ("risk", "continuous_risk_state"): "trading_account_risk_state_v1",
     ("strategy_decision", "signal"): "trading_strategy_signal_v1",
-    ("strategy_decision", "intent"): "trading_strategy_intent_v1",
+    ("strategy", "strategy_intent"): "trading_strategy_intent_v1",
     ("strategy_decision", "intent_rejection"): "trading_intent_decision_v1",
     ("strategy_decision", "intent_deferral"): "trading_intent_decision_v1",
     ("execution", "fill"): "trading_execution_v1",
@@ -988,8 +988,8 @@ def _verify_exact_intent_uses(
         detail = intents[intent_id]
         consumer = groups.get(parent_id) or contexts.get(parent_id)
         if (consumer is None or int(source["sequence"]) >= int(parent["sequence"])
-                or source["category"] != "strategy_decision"
-                or source["entity_type"] != "intent"
+                or source["category"] != "strategy"
+                or source["entity_type"] != "strategy_intent"
                 or str(UUID(str(source["batch_id"]))) != str(UUID(str(detail["batch_id"])))
                 or str(source["account_id"]) != str(use["account_id"])
                 or str(detail["account_id"]) != str(use["account_id"])
@@ -1343,8 +1343,8 @@ def load_committed_order_context_page(
             if (str(UUID(str(source["batch_id"]))) != str(UUID(str(intent["batch_id"])))
                     or str(UUID(str(source["batch_id"]))) not in allowed_batches
                     or source["account_id"] != context["account_id"]
-                    or source["category"] != "strategy_decision"
-                    or source["entity_type"] != "intent"
+                    or source["category"] != "strategy"
+                    or source["entity_type"] != "strategy_intent"
                     or int(source["sequence"]) >= int(command["sequence"])):
                 raise RuntimeError("Strategy command intent is not an earlier committed event")
     return contexts

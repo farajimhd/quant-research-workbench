@@ -159,6 +159,9 @@ def test_intent_and_slice_publish_as_fence_verified_typed_rows():
         source_cursor="boundary-1", run_status="running",
         recorded_at=datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc),
     )
+    assert (batch.events[0]["category"], batch.events[0]["entity_type"]) == (
+        "strategy", "strategy_intent",
+    )
     client = MemoryClient()
     assert publish_typed_batch(client, batch) == batch_id
     assert client.inserts == [

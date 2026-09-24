@@ -310,7 +310,7 @@ def strategy_intent_batch(
         "record_id": record_id, "sequence": sequence,
         "event_time": projected.core["event_time"],
         "recorded_at": _instant(recorded_at),
-        "category": "strategy_decision", "entity_type": "intent",
+        "category": "strategy", "entity_type": "strategy_intent",
         "entity_id": intent.intent_id, "account_id": account_id,
         "correlation_id": "", "causation_id": "",
     }
@@ -376,7 +376,7 @@ def load_committed_strategy_intent_page(
         f"SELECT {event_columns} FROM arte.trading_event_v1 "
         f"WHERE run_id={_literal(prefix.run_id)} "
         f"AND sequence>{after_sequence} AND sequence<={prefix.last_sequence} "
-        "AND category='strategy_decision' AND entity_type='intent' "
+        "AND category='strategy' AND entity_type='strategy_intent' "
         f"{_committed_batch_filter(prefix)}"
         f"ORDER BY sequence LIMIT {limit} FORMAT JSONEachRow")
     if not events:

@@ -337,8 +337,8 @@ def load_committed_oms_group_state_page(
                     or source["account_id"] != group["account_id"]
                     or source_event["account_id"] != group["account_id"]
                     or str(UUID(str(source["batch_id"]))) != str(UUID(str(source_event["batch_id"])))
-                    or source_event["category"] != "strategy_decision"
-                    or source_event["entity_type"] != "intent"
+                    or source_event["category"] != "strategy"
+                    or source_event["entity_type"] != "strategy_intent"
                     or str(source["content_hash"]) != str(use_rows[0]["intent_content_hash"])
                     or int(source_event["sequence"]) >= sequence):
                 raise RuntimeError("Committed OMS intent revision differs from its source")
