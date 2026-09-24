@@ -34,6 +34,7 @@ def test_shared_event_and_execution_contract_uses_lossless_identifiers() -> None
         assert columns["trading_execution_v1"][field] == "Nullable(Decimal(38, 10))"
     assert columns["trading_execution_v1"]["liquidation_trade"] == "UInt8"
     assert columns["trading_commission_v1"]["commission"] == "Decimal(38, 10)"
+    assert columns["trading_commission_v1"]["time_authority"] == "LowCardinality(String)"
 
 
 def test_preflight_requires_exact_layout_and_actual_ssd_parts() -> None:

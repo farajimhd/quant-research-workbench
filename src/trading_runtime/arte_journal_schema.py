@@ -119,6 +119,7 @@ TABLES = (
             ("commission", "Decimal(38, 10)"),
             ("currency", "LowCardinality(String)"),
             ("status", "LowCardinality(String)"),
+            ("time_authority", "LowCardinality(String)"),
             ("realized_pnl", "Nullable(Decimal(38, 10))"),
             ("source_event_time", "DateTime64(9, 'UTC')"),
             ("received_at", "DateTime64(6, 'UTC')"),

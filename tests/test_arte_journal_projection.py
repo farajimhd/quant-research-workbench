@@ -1,12 +1,16 @@
 from dataclasses import replace
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 import pytest
 
-from src.trading_runtime.arte_journal_projection import broker_fill_batch, broker_fill_details
+from src.trading_runtime.arte_journal_projection import (
+    broker_fill_batch, broker_fill_details, commission_revision_batch,
+)
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch, _sealed_families
 from src.trading_runtime.ibkr_client import _execution
+from src.trading_runtime.domain import CommissionEvent
 
 
 AT = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
@@ -43,6 +47,7 @@ def test_broker_execution_projects_only_named_typed_fields() -> None:
     assert set(final.commission) == columns["trading_commission_v1"] - {"content_hash"}
     assert final.commission["commission"] == "0.0000000000"
     assert final.commission["status"] == "final"
+    assert final.commission["time_authority"] == "execution"
 
 
 def test_broker_execution_rejects_unmodeled_or_conflicting_source() -> None:
@@ -113,3 +118,33 @@ def test_background_fill_batch_has_stable_ids_and_contiguous_sequences() -> None
     pending = broker_fill_batch(_execution(source()), **args)
     assert (pending.first_sequence, pending.last_sequence) == (7, 7)
     assert len(pending.commissions) == 0
+
+
+def test_later_commission_is_a_separate_typed_revision() -> None:
+    report = CommissionEvent(
+        "e1", "DU1", Decimal("1.25"), "USD", Decimal("0.50"),
+        source_event_time=AT, received_at=AT,
+    )
+    args = dict(
+        run_id="live:DU1", run_month=date(2026, 8, 1),
+        attempt_id="00000000-0000-0000-0000-000000000004",
+        batch_id="00000000-0000-0000-0000-000000000005",
+        prior_batch_id="00000000-0000-0000-0000-000000000001",
+        sequence=8, source_cursor="fee:e1", run_status="running",
+        time_authority="observation",
+    )
+    revision = commission_revision_batch(report, **args)
+    assert revision.first_sequence == revision.last_sequence == 8
+    assert len(revision.events) == len(revision.commissions) == 1
+    assert not revision.executions
+    assert revision.commissions[0]["time_authority"] == "observation"
+    assert revision.commissions[0]["realized_pnl"] == "0.5000000000"
+    assert _sealed_families(revision) == _sealed_families(
+        commission_revision_batch(report, **args)
+    )
+    with pytest.raises(ValueError, match="must equal receipt"):
+        commission_revision_batch(
+            replace(report, source_event_time=AT.replace(hour=7)), **args
+        )
+    with pytest.raises(ValueError, match="unmodeled source fields"):
+        commission_revision_batch(replace(report, raw={"unknown": 1}), **args)

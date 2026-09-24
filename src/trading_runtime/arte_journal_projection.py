@@ -13,6 +13,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
+from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.ibkr_client import _execution as parse_ibkr_execution
 from src.trading_runtime.ibkr_schema import Execution
 
@@ -32,7 +33,7 @@ class FillDetails:
     commission: dict[str, Any] | None
 
 
-def _exact_decimal(value: float) -> str:
+def _exact_decimal(value: float | Decimal) -> str:
     try:
         decimal = Decimal(str(value))
         quantized = decimal.quantize(_SCALE)
@@ -98,6 +99,7 @@ def broker_fill_details(
             "execution_id": execution.execution_id,
             "commission": _exact_decimal(execution.commission),
             "currency": execution.currency, "status": "final",
+            "time_authority": "execution",
             "realized_pnl": None, "source_event_time": at, "received_at": received,
         }
     return FillDetails(fill, commission)
@@ -143,4 +145,58 @@ def broker_fill_batch(
         source_cursor, status, tuple(events),
         executions=(details.execution,),
         commissions=(details.commission,) if details.commission is not None else (),
+    )
+
+
+def commission_revision_batch(
+    report: CommissionEvent, *, run_id: str, run_month: date,
+    attempt_id: str, batch_id: str, prior_batch_id: str,
+    sequence: int, source_cursor: str, run_status: str,
+    time_authority: str, commission_status: str = "final",
+) -> TypedJournalBatch:
+    """Publish a later fee revision without duplicating its execution row."""
+    if report.raw:
+        raise ValueError("Commission report has unmodeled source fields")
+    if not report.execution_id or not report.account_id or not report.currency:
+        raise ValueError("Commission report identity is incomplete")
+    if report.source_event_time.tzinfo is None or report.received_at.tzinfo is None:
+        raise ValueError("Commission report timestamps must be timezone-aware")
+    if time_authority not in {"broker", "observation"}:
+        raise ValueError("Commission report time authority is required")
+    source_time = report.source_event_time.astimezone(timezone.utc)
+    received = report.received_at.astimezone(timezone.utc)
+    if time_authority == "observation" and source_time != received:
+        raise ValueError("Observed commission time must equal receipt time")
+    if commission_status not in {"final", "corrected", "reversed"}:
+        raise ValueError("Commission revision status is invalid")
+    event_month = source_time.strftime("%Y-%m-01")
+    record_id = str(uuid5(
+        NAMESPACE_URL,
+        f"{run_id}:{batch_id}:{report.execution_id}:commission-revision",
+    ))
+    event = {
+        "run_id": run_id, "event_month": event_month,
+        "attempt_id": attempt_id, "batch_id": batch_id,
+        "record_id": record_id, "sequence": sequence,
+        "event_time": source_time.isoformat(), "recorded_at": received.isoformat(),
+        "category": "execution", "entity_type": "commission",
+        "entity_id": report.execution_id, "account_id": report.account_id,
+        "correlation_id": "", "causation_id": "",
+    }
+    detail = {
+        "record_id": record_id, "run_id": run_id,
+        "event_month": event_month, "batch_id": batch_id,
+        "account_id": report.account_id, "execution_id": report.execution_id,
+        "commission": _exact_decimal(report.commission),
+        "currency": report.currency, "status": commission_status,
+        "time_authority": time_authority,
+        "realized_pnl": (_exact_decimal(report.realized_pnl)
+                         if report.realized_pnl is not None else None),
+        "source_event_time": source_time.isoformat(),
+        "received_at": received.isoformat(),
+    }
+    return TypedJournalBatch(
+        run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        sequence, sequence, source_cursor, run_status, (event,),
+        commissions=(detail,),
     )
