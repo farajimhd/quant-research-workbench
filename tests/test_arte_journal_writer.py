@@ -31,7 +31,7 @@ def batch() -> TypedJournalBatch:
         "account_id": "DU1", "correlation_id": "c1", "causation_id": "k1",
     })
     return TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
-                             1, 1, (event,))
+                             1, 1, "bucket-1", "running", (event,))
 
 
 class MemoryClient:
@@ -84,6 +84,7 @@ def test_typed_publication_rejects_out_of_order_prefix() -> None:
     item = batch()
     altered = TypedJournalBatch(item.run_id, item.run_month, item.attempt_id,
                                 item.batch_id, item.prior_batch_id, 2, 2,
+                                item.source_cursor, item.status,
                                 (typed_row({**{key: value for key, value in item.events[0].items()
                                                if key != "content_hash"}, "sequence": 2}),))
     with pytest.raises(RuntimeError, match="committed prefix"):
@@ -100,6 +101,7 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
         return item.batch_id
 
     monkeypatch.setattr(writer_module, "publish_typed_batch", stalled)
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     journal = ArteJournalWriter(object(), capacity=1)
     try:
         first = journal.submit(batch())
@@ -122,4 +124,4 @@ def test_invalid_family_row_is_rejected_before_enqueue() -> None:
     altered["payload_json"] = "{}"
     with pytest.raises(ValueError, match="typed columns"):
         TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
-                          1, 1, (altered,))
+                          1, 1, "bucket-1", "running", (altered,))

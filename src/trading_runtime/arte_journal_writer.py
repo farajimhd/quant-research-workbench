@@ -17,7 +17,7 @@ from threading import Thread
 from typing import Any, Mapping
 from uuid import UUID
 
-from src.trading_runtime.arte_journal_schema import TABLES
+from src.trading_runtime.arte_journal_schema import TABLES, storage_preflight
 from src.trading_runtime.journal_contract import canonical_json
 
 
@@ -39,6 +39,8 @@ class TypedJournalBatch:
     prior_batch_id: str
     first_sequence: int
     last_sequence: int
+    source_cursor: str
+    status: str
     events: tuple[Mapping[str, Any], ...]
     executions: tuple[Mapping[str, Any], ...] = ()
     commissions: tuple[Mapping[str, Any], ...] = ()
@@ -46,6 +48,8 @@ class TypedJournalBatch:
     def __post_init__(self) -> None:
         if not self.run_id or self.first_sequence < 1 or self.last_sequence < self.first_sequence:
             raise ValueError("Journal batch has invalid run or sequence identity")
+        if not self.source_cursor or self.status not in {"running", "completed", "stopped", "failed"}:
+            raise ValueError("Journal batch requires a source cursor and valid status")
         for value in (self.attempt_id, self.batch_id, self.prior_batch_id):
             UUID(value)
         if len(self.events) != self.last_sequence - self.first_sequence + 1:
@@ -132,7 +136,8 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
     existing = _rows(client,
         "SELECT run_id,attempt_id,batch_id,prior_batch_id,first_sequence,last_sequence,"
-        "event_count,execution_count,commission_count,event_hash,execution_hash,commission_hash "
+        "event_count,execution_count,commission_count,event_hash,execution_hash,commission_hash,"
+        "source_cursor,status "
         "FROM arte.trading_commit_v1 "
         f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
     if not existing:
@@ -165,6 +170,8 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
         "event_hash": hashes["trading_event_v1"],
         "execution_hash": hashes["trading_execution_v1"],
         "commission_hash": hashes["trading_commission_v1"],
+        "source_cursor": batch.source_cursor,
+        "status": batch.status,
         "committed_at": datetime.now(timezone.utc).isoformat(),
     }
     expected = {key: value for key, value in commit.items() if key not in ("run_month", "committed_at")}
@@ -174,7 +181,8 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
         _insert(client, "trading_commit_v1", (commit,), f"{batch.batch_id}:commit")
         verified = _rows(client,
             "SELECT run_id,attempt_id,batch_id,prior_batch_id,first_sequence,last_sequence,"
-            "event_count,execution_count,commission_count,event_hash,execution_hash,commission_hash "
+            "event_count,execution_count,commission_count,event_hash,execution_hash,commission_hash,"
+            "source_cursor,status "
             "FROM arte.trading_commit_v1 "
             f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
         if verified != [expected]:
@@ -188,6 +196,9 @@ class ArteJournalWriter:
     def __init__(self, client: Any, *, capacity: int = 8) -> None:
         if capacity < 1:
             raise ValueError("Journal queue capacity must be positive")
+        # Startup/control-plane validation, before a publication thread exists.
+        # Never attempt to create tables or repair misplaced parts here.
+        storage_preflight(client)
         self._client = client
         self._queue: Queue[tuple[TypedJournalBatch, Future[str]] | None] = Queue(maxsize=capacity)
         self._error: BaseException | None = None

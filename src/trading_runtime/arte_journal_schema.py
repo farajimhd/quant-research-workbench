@@ -134,6 +134,8 @@ TABLES = (
             ("event_hash", "FixedString(64)"),
             ("execution_hash", "FixedString(64)"),
             ("commission_hash", "FixedString(64)"),
+            ("source_cursor", "String"),
+            ("status", "LowCardinality(String)"),
             ("committed_at", "DateTime64(6, 'UTC')"),
         ),
         "toYYYYMM(run_month)", "run_id, attempt_id, last_sequence, batch_id",
