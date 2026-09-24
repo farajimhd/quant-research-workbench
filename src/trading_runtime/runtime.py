@@ -360,6 +360,62 @@ class TradingRuntime:
                 await self._execute_intents(evaluation, account_id, event)
         self._record_market_cursor(event)
 
+    async def process_liquidity_bar(
+        self, row: Mapping[str, Any], *, at: datetime,
+    ) -> None:
+        """Advance broker execution from one completed persisted liquidity bucket.
+
+        Strategy evaluation is a separate, later step at the configured bar
+        boundary. This method never invents quote/trade event ordering.
+        """
+        if self.config.mode != TradingMode.BACKTEST or at.tzinfo is None:
+            raise ValueError("Liquidity-bar execution is restricted to Backtest")
+        if self.last_event_time is not None and at < self.last_event_time:
+            raise ValueError("Liquidity bars must be processed in non-decreasing time")
+        matcher = getattr(self.broker, "on_liquidity_bar", None)
+        if matcher is None:
+            raise RuntimeError("Backtest broker lacks native liquidity-bar execution")
+        ticker = str(row.get("ticker") or "").upper()
+        bid = float(row.get("bid_int") or 0) / 10_000
+        ask = float(row.get("ask_int") or 0) / 10_000
+        if int(row.get("quote_valid") or 0) and 0 < bid <= ask:
+            quote_us = int(row.get("quote_timestamp_us") or 0)
+            if 0 < quote_us <= int(at.timestamp() * 1_000_000) and (
+                int(at.timestamp() * 1_000_000) - quote_us <= 1_000_000
+            ):
+                snapshot = ExecutionMarketSnapshot(
+                    ticker=ticker, bid=bid, ask=ask, tick_size=0.01,
+                    observed_at=at, source="arte.liquidity_100ms_v1",
+                )
+                self.execution_market_data.update(snapshot)
+                if self.order_manager is not None:
+                    self.order_manager.on_market_snapshot(snapshot)
+        if self.order_manager is not None:
+            await self.order_manager.enforce_entry_body_triggers(at)
+            await self.order_manager.advance_adaptive_execution(at)
+            await self.order_manager.expire_entry_deadlines(at)
+        executions = await matcher(row, at=at)
+        for execution in executions:
+            self.journal.append(
+                run_id=self.run_id, category="execution", entity_type="fill",
+                entity_id=execution.execution_id, account_id=execution.account,
+                event_time=execution.trade_time, payload=execution.to_cpapi(),
+            )
+        if executions and self.order_manager is not None:
+            await self.order_manager.reconcile()
+        if executions and self._canonical_session is not None:
+            await self._canonical_session.reconcile_executions(executions)
+            self.portfolio.synchronize_canonical(
+                self._canonical_session.projector.snapshot(),
+                persist=not self._review_only,
+            )
+        self.last_event_time = at
+        self.processed_events += 1
+        self._latest_checkpoint_cursor = (
+            f"{at.astimezone(timezone.utc).isoformat()}|"
+            f"{ticker}|{int(row.get('bucket_index') or 0)}|liquidity_bar"
+        )
+
     def process_passive_market_event(self, event: MarketEvent) -> None:
         """Advance market state when no order can match and strategy evaluation is external."""
 

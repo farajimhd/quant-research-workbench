@@ -2999,29 +2999,9 @@ class ReplayRunController:
                     resolution_ms = int(row["resolution_ms"])
                     sequence += 1
                     if resolution_ms == 100:
-                        if int(row.get("quote_valid") or 0):
-                            quote = QuoteEvent(
-                                ask_exchange=0, ask_price=float(row.get("ask_int") or 0) / 10_000,
-                                ask_size=float(row.get("ask_size") or 0),
-                                bid_exchange=0, bid_price=float(row.get("bid_int") or 0) / 10_000,
-                                bid_size=float(row.get("bid_size") or 0), conditions=(), indicators=(),
-                                ingest_ts=at.astimezone(UTC), sequence=sequence,
-                                source="arte.liquidity_100ms_v1", ticker=ticker, ts=at,
-                                raw={"aggregate_boundary": True, "quote_timestamp_us": int(row.get("quote_timestamp_us") or 0)},
-                            )
-                            await self._process_market_event(quote, evaluate_strategy=False)
-                        if int(row.get("price_valid") or 0) and float(row.get("execution_volume") or 0) > 0:
-                            trade = TradeEvent(
-                                conditions=(), event_id=f"fixed:{row['session_date']}:{ticker}:{row['bucket_index']}",
-                                exchange=0, ingest_ts=at.astimezone(UTC), participant_ts=None,
-                                price=float(row.get("close_int") or 0) / 10_000,
-                                sequence=sequence, size=float(row.get("execution_volume") or 0),
-                                source="arte.liquidity_100ms_v1", ticker=ticker, ts=at,
-                                raw={"aggregate_boundary": True, "price_eligible": True,
-                                     "high": float(row.get("high_int") or 0) / 10_000,
-                                     "low": float(row.get("low_int") or 0) / 10_000},
-                            )
-                            await self._process_market_event(trade, evaluate_strategy=False)
+                        if self._runtime is None:
+                            raise RuntimeError("Fixed Backtest runtime is not initialized")
+                        await self._runtime.process_liquidity_bar(row, at=at)
                     while (
                         external_index < len(self._historical_external_signal_events)
                         and self._historical_external_signal_events[external_index].available_at <= at

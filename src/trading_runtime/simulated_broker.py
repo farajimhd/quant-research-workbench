@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from math import floor, isclose, isfinite
-from typing import Any
+from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from src.market_engine.events import MarketEvent, QuoteEvent, TradeEvent
@@ -217,6 +217,9 @@ class SimulatedBrokerAdapter:
         self._performance = dict(complete=True, as_of='', unrealized=0., market_value=0.,
             peak_unrealized=0., worst_unrealized=0., equity_peak=0., maximum_drawdown=0.)
         self._liquidity_consumed: dict[str, tuple[str, float]] = {}
+        self._bar_mode = False
+        self._bar_boundaries: dict[str, datetime] = {}
+        self._bar_marks_by_ticker: dict[str, float] = {}
         self._next_order_id = 1
         self._next_execution_id = 1
         self._initialized = False
@@ -233,6 +236,9 @@ class SimulatedBrokerAdapter:
             "performance_extrema": dict(self._performance),
             "performance_marks": {str(k): list(v) for k,v in self._performance_marks.items()},
             "liquidity_consumed": dict(self._liquidity_consumed),
+            "bar_mode": self._bar_mode,
+            "bar_boundaries": {key: value.isoformat() for key, value in self._bar_boundaries.items()},
+            "bar_marks_by_ticker": dict(self._bar_marks_by_ticker),
             "account_ids": list(self._account_ids),
             "cash": dict(self._cash),
             "realized_pnl": dict(self._realized_pnl),
@@ -338,6 +344,15 @@ class SimulatedBrokerAdapter:
         self._liquidity_consumed = {
             str(key): (str(value[0]), float(value[1]))
             for key, value in dict(payload.get("liquidity_consumed") or {}).items()
+        }
+        self._bar_mode = bool(payload.get("bar_mode", False))
+        self._bar_boundaries = {
+            str(key): _checkpoint_time(value)
+            for key, value in dict(payload.get("bar_boundaries") or {}).items()
+        }
+        self._bar_marks_by_ticker = {
+            str(key): float(value)
+            for key, value in dict(payload.get("bar_marks_by_ticker") or {}).items()
         }
         self._realized_pnl = realized
         self._positions = positions
@@ -746,12 +761,178 @@ class SimulatedBrokerAdapter:
         return conid
 
     async def on_market_event(self, event: MarketEvent) -> list[Execution]:
+        if self._bar_mode:
+            raise RuntimeError("Liquidity-bar broker mode cannot mix with market events")
         conid = self.observe_market_event(event)
         if conid <= 0:
             return []
         if not self._orders:
             return []
         return await self._match_orders(event, fill_time=event.ts)
+
+    async def on_liquidity_bar(
+        self, row: Mapping[str, Any], *, at: datetime,
+    ) -> list[Execution]:
+        """Match against a completed 100 ms liquidity bucket, never an invented tape order.
+
+        A decision/order from this bucket first becomes eligible in the next
+        bucket. Stops triggered by an intrabucket range also wait for the next
+        bucket, because the aggregate cannot establish trigger/quote ordering.
+        """
+        if at.tzinfo is None or int(row.get("resolution_ms") or 0) != 100:
+            raise ValueError("Broker requires a completed, timezone-aware 100ms liquidity bar")
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if not ticker or int(row.get("event_count") or 0) <= 0:
+            raise ValueError("Broker liquidity bar requires a ticker and source events")
+        bucket_start = at - timedelta(milliseconds=100)
+        boundary_us = int(at.timestamp() * 1_000_000)
+        last_us = int(row.get("last_event_us") or 0)
+        if last_us < int(bucket_start.timestamp() * 1_000_000) or last_us > boundary_us:
+            raise ValueError("Broker liquidity events must belong to the completed bucket")
+        first_us = int(row.get("first_event_us") or last_us)
+        if first_us > last_us or first_us < int(bucket_start.timestamp() * 1_000_000):
+            raise ValueError("Broker liquidity bucket has invalid source event bounds")
+        previous_boundary = self._bar_boundaries.get(ticker)
+        if previous_boundary is not None and at <= previous_boundary:
+            raise ValueError("Broker liquidity buckets must advance by ticker")
+        # A cached quote is a completed-boundary snapshot for order submission,
+        # not a synthetic market event. match_current_orders is disabled below.
+        quote_us = int(row.get("quote_timestamp_us") or 0)
+        if int(row.get("quote_valid") or 0) and not 0 < quote_us <= last_us:
+            raise ValueError("Broker liquidity bar has invalid quote provenance")
+        valid_quote = bool(int(row.get("quote_valid") or 0)) and (
+            0 < quote_us <= last_us and boundary_us - quote_us <= 1_000_000
+        )
+        bid = float(row.get("bid_int") or 0) / 10_000
+        ask = float(row.get("ask_int") or 0) / 10_000
+        bid_size = float(row.get("bid_size") or 0)
+        ask_size = float(row.get("ask_size") or 0)
+        if valid_quote and (bid <= 0 or ask < bid or min(bid_size, ask_size) < 0):
+            raise ValueError("Broker liquidity bar contains an invalid quote")
+        quote = None
+        if valid_quote:
+            quote = QuoteEvent(
+                ask_exchange=0, ask_price=ask, ask_size=ask_size,
+                bid_exchange=0, bid_price=bid, bid_size=bid_size,
+                conditions=(), indicators=(), ingest_ts=at.astimezone(timezone.utc),
+                raw={"liquidity_bar_snapshot": True, "quote_timestamp_us": quote_us},
+                source="arte.liquidity_100ms_v1", ticker=ticker, ts=at,
+            )
+        self._trades_by_ticker.pop(ticker, None)
+        price_valid = bool(int(row.get("price_valid") or 0))
+        extremes_valid = bool(int(row.get("extremes_valid") or 0))
+        close = float(row.get("close_int") or 0) / 10_000 if price_valid else 0.0
+        low = float(row.get("low_int") or 0) / 10_000 if extremes_valid else 0.0
+        high = float(row.get("high_int") or 0) / 10_000 if extremes_valid else 0.0
+        execution_volume = float(row.get("execution_volume") or 0)
+        if execution_volume < 0 or (extremes_valid and (low <= 0 or high < low)):
+            raise ValueError("Broker liquidity bar contains invalid trade aggregates")
+        self._bar_mode = True
+        self._bar_boundaries[ticker] = at
+        mark = close or (quote.midpoint if quote is not None else 0.0)
+        if mark > 0:
+            self._bar_marks_by_ticker[ticker] = mark
+        else:
+            self._bar_marks_by_ticker.pop(ticker, None)
+        self._quotes_by_ticker.pop(ticker, None)
+        if quote is not None:
+            self._quotes_by_ticker[ticker] = quote
+        conids = {state.request.conid for state in self._orders.values()
+                  if state.request.ticker.upper() == ticker}
+        for positions in self._positions.values():
+            conids.update(conid for conid, position in positions.items()
+                          if position.ticker.upper() == ticker)
+        for conid in conids:
+            if quote is not None:
+                self._quotes[conid] = quote
+            else:
+                self._quotes.pop(conid, None)
+            self._trades.pop(conid, None)
+            if mark > 0:
+                self._marks[conid] = mark
+                self._observe_performance(conid, at)
+        if not conids:
+            return []
+        identity = f"{at.isoformat()}:{int(row.get('bucket_index') or 0)}"
+        executions: list[Execution] = []
+        async with self._lock:
+            eligible = [state for state in self._sorted_orders()
+                        if state.request.ticker.upper() == ticker
+                        and state.status in {OrderStatus.SUBMITTED, OrderStatus.PRE_SUBMITTED}
+                        and state.submitted_at <= bucket_start]
+            for state in eligible:
+                if state.status not in {OrderStatus.SUBMITTED, OrderStatus.PRE_SUBMITTED}:
+                    continue
+                if (self.config.new_order_activation_delay_ms and
+                    at < state.submitted_at + timedelta(
+                        milliseconds=self.config.new_order_activation_delay_ms)):
+                    continue
+                if not self._session_allows(state.request, at):
+                    continue
+                side = state.request.side.upper()
+                order_type = state.request.orderType.upper()
+                touch = (ask if side == "BUY" else bid) if quote is not None else 0.0
+                if order_type in {"STP", "STOP_LIMIT", "TRAIL"} and not state.stop_triggered:
+                    if order_type == "TRAIL":
+                        reference = state.trailing_reference or touch or close
+                        amount = float(state.request.trailingAmt or 0)
+                        if reference <= 0 or amount <= 0:
+                            continue
+                        threshold = (reference * (1 - amount / 100)
+                                     if str(state.request.trailingType or "").strip() == "%"
+                                     else reference - amount) if side == "SELL" else (
+                            reference * (1 + amount / 100)
+                            if str(state.request.trailingType or "").strip() == "%"
+                            else reference + amount)
+                        triggered = (low > 0 and low <= threshold) if side == "SELL" else (
+                            high > 0 and high >= threshold)
+                        state.trailing_reference = (max(reference, high) if side == "SELL"
+                                                    else min(reference, low or reference))
+                    else:
+                        stop = float(state.request.auxPrice or 0)
+                        triggered = stop > 0 and (
+                            high >= stop if side == "BUY" else 0 < low <= stop)
+                    if triggered:
+                        state.stop_triggered = True
+                    continue
+                if order_type in {"STP", "TRAIL"}:
+                    order_type = "MKT"
+                elif order_type == "STOP_LIMIT":
+                    order_type = "LMT"
+                marketable = False
+                available = 0.0
+                price = 0.0
+                if order_type == "MKT" and touch > 0:
+                    marketable, price = True, touch
+                    available = ask_size if side == "BUY" else bid_size
+                elif order_type == "LMT":
+                    limit = float(state.request.price or 0)
+                    if limit <= 0:
+                        continue
+                    if touch > 0 and (touch <= limit if side == "BUY" else touch >= limit):
+                        marketable, price = True, touch
+                        available = ask_size if side == "BUY" else bid_size
+                    elif execution_volume > 0 and (
+                        0 < low <= limit if side == "BUY" else high >= limit):
+                        price, available = limit, execution_volume
+                elif order_type == "MIDPRICE" and quote is not None:
+                    price, available = quote.midpoint, min(bid_size, ask_size)
+                elif order_type not in {"MKT", "LMT", "MIDPRICE"}:
+                    raise ValueError(f"Unsupported liquidity-bar order type: {order_type}")
+                if price <= 0 or available <= 0:
+                    continue
+                slot = f"{ticker}:bar:{side}"
+                fill = self._size_candidate(state, side=side, order_type=order_type,
+                    marketable=marketable, market_price=price, available=available,
+                    slot=slot, identity=identity)
+                if fill is None:
+                    continue
+                fill_price, quantity = fill
+                executions.append(self._apply_fill(state, at, fill_price, quantity))
+                previous = self._liquidity_consumed.get(slot, (identity, 0.0))
+                self._liquidity_consumed[slot] = (
+                    identity, (previous[1] if previous[0] == identity else 0.0) + quantity)
+        return executions
 
     async def match_current_orders(
         self,
@@ -775,6 +956,8 @@ class SimulatedBrokerAdapter:
             TradingMode.BACKTEST,
             TradingMode.BACKTEST_DEBUG,
         }:
+            return []
+        if self._bar_mode:
             return []
         at = event_time.astimezone(timezone.utc)
         requested_ids = set(broker_order_ids)
@@ -995,6 +1178,17 @@ class SimulatedBrokerAdapter:
         elif order_type not in {"MKT", "STP", "TRAIL"}:
             return None
         available = self._event_liquidity(event, side)
+        slot, identity = self._liquidity_identity(event, side)
+        return self._size_candidate(state, side=side, order_type=order_type,
+            marketable=marketable, market_price=market_price, available=available,
+            slot=slot, identity=identity)
+
+    def _size_candidate(
+        self, state: _OrderState, *, side: str, order_type: str,
+        marketable: bool, market_price: float, available: float,
+        slot: str, identity: str,
+    ) -> tuple[float, float] | None:
+        request = state.request
         if side == "SELL" and not self.config.allow_short:
             held = max(
                 0.0,
@@ -1023,7 +1217,6 @@ class SimulatedBrokerAdapter:
             # at the causal quote/trade event rather than granting an instant
             # full fill.
             participation = self.config.marketable_liquidity_participation
-        slot, identity = self._liquidity_identity(event, side)
         prior_identity, consumed = self._liquidity_consumed.get(slot, (identity, 0.0))
         available_quantity = min(
             state.remaining,
@@ -1411,6 +1604,8 @@ class SimulatedBrokerAdapter:
         direct = self._marks.get(conid, 0.0)
         if direct > 0 or not ticker:
             return direct
+        if self._bar_mode:
+            return self._bar_marks_by_ticker.get(ticker.upper(), 0.0)
         event = self._trades_by_ticker.get(ticker.upper()) or self._quotes_by_ticker.get(
             ticker.upper()
         )
@@ -1429,6 +1624,8 @@ class SimulatedBrokerAdapter:
         return next(iter(matching)) if len(matching) == 1 else 0
 
     def _event_time(self, conid: int, ticker: str = "") -> datetime:
+        if self._bar_mode and ticker.upper() in self._bar_boundaries:
+            return self._bar_boundaries[ticker.upper()]
         event = self._trades.get(conid) or self._quotes.get(conid)
         if event is None and ticker:
             event = self._trades_by_ticker.get(
@@ -1444,6 +1641,8 @@ class SimulatedBrokerAdapter:
                   self._quotes_by_ticker.get(request.ticker.upper()))
         market_time = max((event.ts.astimezone(timezone.utc) for event in events if event is not None),
                           default=self._event_time(request.conid, request.ticker).astimezone(timezone.utc))
+        if self._bar_mode and request.ticker.upper() in self._bar_boundaries:
+            market_time = max(market_time, self._bar_boundaries[request.ticker.upper()].astimezone(timezone.utc))
         metadata = dict(request.raw.get("canonical_metadata") or {})
         decision_raw = metadata.get("decision_event_time")
         if not decision_raw:
@@ -1468,6 +1667,7 @@ class SimulatedBrokerAdapter:
                 *self._quotes_by_ticker.values(),
             ]
         ]
+        times.extend(self._bar_boundaries.values())
         return max(times) if times else self.initial_time or datetime.now(timezone.utc)
 
     def _sorted_orders(self) -> list[_OrderState]:

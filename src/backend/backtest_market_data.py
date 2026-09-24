@@ -465,42 +465,50 @@ def market_day_rows_sql(plan: CertifiedMarketDayPlan) -> str:
             f"AND (session_date,ticker,attempt_id) IN ({attempts})"
         )
 
-    resolutions = tuple(sorted({100, *plan.required_resolutions_ms}))
-    resolution_sql = ",".join(str(value) for value in resolutions)
+    # Every 100 ms bar is copied from its liquidity bucket by the certified
+    # builder, but quote-only buckets have no bar. Drive that resolution from
+    # liquidity so the broker never loses a quote-only market boundary.
+    bar_columns = (
+        "open_int", "high_int", "low_int", "close_int", "volume", "trade_count",
+        "notional", "execution_volume", "execution_notional", "price_valid",
+        "extremes_valid",
+    )
+    liquidity_columns = (
+        "first_event_us", "last_event_us", "event_count", "source_trade_count",
+        "quote_event_count", "quote_timestamp_us", "bid_int", "ask_int",
+        "bid_size", "ask_size", "spread", "quote_valid", "cumulative_volume",
+        "cumulative_notional", "cumulative_execution_volume",
+        "cumulative_execution_notional", "execution_vwap",
+    )
+    columns_100 = ",".join(f"b.{name} AS {name}" for name in bar_columns)
+    liquidity_100 = ",".join(f"l.{name} AS {name}" for name in liquidity_columns)
+    base_100 = f"""SELECT l.session_date,l.ticker,l.bucket_index,toUInt32(100) AS resolution_ms,
+        (toUInt64(l.bucket_index)+1)*100 AS boundary_ms,{columns_100},{liquidity_100}
+      FROM ({pinned('liquidity_100ms_v1', liquidity)}) l
+      LEFT JOIN (SELECT * FROM ({pinned('bars_v1', bars)}) WHERE resolution_ms=100) b ON
+        b.session_date=l.session_date AND b.ticker=l.ticker
+        AND b.bucket_index=l.bucket_index AND b.resolution_ms=100"""
+    higher = tuple(value for value in plan.required_resolutions_ms if value > 100)
+    if higher:
+        resolution_sql = ",".join(str(value) for value in higher)
+        columns_higher = ",".join(f"b.{name} AS {name}" for name in bar_columns)
+        empty_liquidity = ",".join(f"0 AS {name}" for name in liquidity_columns)
+        base_100 += f""" UNION ALL SELECT b.session_date,b.ticker,b.bucket_index,
+          b.resolution_ms,(toUInt64(b.bucket_index)+1)*b.resolution_ms AS boundary_ms,
+          {columns_higher},{empty_liquidity}
+          FROM (SELECT * FROM ({pinned('bars_v1', bars)})
+                WHERE resolution_ms IN ({resolution_sql})) b"""
+    indicators = ",".join("i." + name for name in (
+        "ema_7", "ema_9", "ema_12", "ema_15", "ema_20", "ema_26", "ema_50",
+        "macd_line", "macd_signal", "macd_histogram", "rsi_14", "atr_14",
+        "rsi_ready", "atr_ready", "previous_close",
+    ))
     return assert_select_only(f"""
-      SELECT b.session_date AS session_date,b.ticker AS ticker,
-        b.bucket_index AS bucket_index,b.resolution_ms AS resolution_ms,
-        (toUInt64(b.bucket_index)+1)*b.resolution_ms AS boundary_ms,
-        b.open_int AS open_int,b.high_int AS high_int,b.low_int AS low_int,
-        b.close_int AS close_int,b.volume AS volume,b.trade_count AS trade_count,
-        b.notional AS notional,b.execution_volume AS execution_volume,
-        b.execution_notional AS execution_notional,b.price_valid AS price_valid,
-        b.extremes_valid AS extremes_valid,
-        i.ema_7,i.ema_9,i.ema_12,i.ema_15,i.ema_20,i.ema_26,i.ema_50,
-        i.macd_line,i.macd_signal,i.macd_histogram,i.rsi_14,i.atr_14,
-        i.rsi_ready,i.atr_ready,i.previous_close,
-        l.first_event_us AS first_event_us,l.last_event_us AS last_event_us,
-        l.event_count AS event_count,l.source_trade_count AS source_trade_count,
-        l.quote_event_count AS quote_event_count,
-        l.quote_timestamp_us AS quote_timestamp_us,l.bid_int AS bid_int,
-        l.ask_int AS ask_int,l.bid_size AS bid_size,l.ask_size AS ask_size,
-        l.spread AS spread,l.quote_valid AS quote_valid,
-        l.cumulative_volume AS cumulative_volume,
-        l.cumulative_notional AS cumulative_notional,
-        l.cumulative_execution_volume AS cumulative_execution_volume,
-        l.cumulative_execution_notional AS cumulative_execution_notional,
-        l.execution_vwap AS execution_vwap
-      FROM (SELECT * FROM ({pinned('bars_v1', bars)})
-            WHERE resolution_ms IN ({resolution_sql})) b
+      SELECT m.*,{indicators} FROM ({base_100}) m
       LEFT JOIN ({pinned('indicators_v1', technical)}) i ON
-        i.session_date=b.session_date AND i.ticker=b.ticker
-        AND i.resolution_ms=b.resolution_ms
-        AND i.bucket_index=b.bucket_index
-      LEFT JOIN ({pinned('liquidity_100ms_v1', liquidity)}) l ON
-        l.session_date=b.session_date AND l.ticker=b.ticker
-        AND l.resolution_ms=100
-        AND b.resolution_ms=100 AND l.bucket_index=b.bucket_index
-      ORDER BY b.session_date,boundary_ms,b.resolution_ms,b.ticker
+        i.session_date=m.session_date AND i.ticker=m.ticker
+        AND i.resolution_ms=m.resolution_ms AND i.bucket_index=m.bucket_index
+      ORDER BY m.session_date,m.boundary_ms,m.resolution_ms,m.ticker
       FORMAT JSONEachRow
     """)
 

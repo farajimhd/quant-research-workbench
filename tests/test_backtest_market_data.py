@@ -116,11 +116,12 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertIn("arte.liquidity_100ms_v1", sql)
         self.assertNotIn("market_day_events", sql)
         self.assertNotIn("WITH scopes", sql)
-        self.assertIn("b.session_date AS session_date", sql)
+        self.assertIn("SELECT l.session_date,l.ticker,l.bucket_index", sql)
         self.assertIn("l.quote_timestamp_us AS quote_timestamp_us", sql)
-        self.assertIn("FROM (SELECT * FROM (SELECT * FROM arte.bars_v1", sql)
-        self.assertIn("WHERE resolution_ms IN (100,1000)", sql)
-        self.assertNotIn("FROM (SELECT * FROM arte.bars_v1 WHERE build_id='build-1' AND resolution_ms", sql)
+        self.assertIn("FROM (SELECT * FROM arte.liquidity_100ms_v1", sql)
+        self.assertIn("WHERE resolution_ms=100", sql)
+        self.assertIn("WHERE resolution_ms IN (1000)", sql)
+        self.assertIn("UNION ALL SELECT b.session_date", sql)
 
     def test_missing_stage_fails_catalogue_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
