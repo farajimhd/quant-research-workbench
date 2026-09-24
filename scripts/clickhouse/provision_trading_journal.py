@@ -33,7 +33,8 @@ PRINCIPAL = "trading_journal_writer"
 SECRET_ROOT = Path(r"D:\TradingML\secrets")
 SECRET_PATH = SECRET_ROOT / "trading_journal.env"
 SETTINGS_PATH = SECRET_ROOT / ".env"
-SYSTEM_READ_TABLES = ("storage_policies", "tables", "columns", "parts")
+SYSTEM_READ_TABLES = ("storage_policies", "tables", "columns", "parts",
+                      "data_skipping_indices")
 
 
 def _restrict_secret_file(path: Path) -> None:

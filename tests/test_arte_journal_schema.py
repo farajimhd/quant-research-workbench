@@ -3,7 +3,9 @@ import json
 import pytest
 
 from src.trading_runtime.arte_journal_schema import (
-    TABLES, intent_schema_upgrade_ddl, order_context_upgrade_ddl,
+    TABLES, BATCH_LOOKUP_INDEX, batch_lookup_index_upgrade_ddl,
+    batch_lookup_index_materialize_ddl,
+    intent_schema_upgrade_ddl, order_context_upgrade_ddl,
     oms_state_upgrade_ddl, intent_use_upgrade_ddl, run_transition_upgrade_ddl,
     operational_fault_upgrade_ddl,
     account_risk_upgrade_ddl,
@@ -25,6 +27,19 @@ def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
             "payload_json", "state_json", "raw_json", "blob", "object('json')",
         ))
         assert len({name for name, _ in table.columns}) == len(table.columns)
+        if "batch_id" in dict(table.columns):
+            assert f"INDEX {BATCH_LOOKUP_INDEX} batch_id TYPE bloom_filter(0.01) GRANULARITY 1" in statement
+
+
+def test_batch_readback_index_upgrade_only_targets_typed_journal_tables() -> None:
+    indexed = {table.name for table in TABLES if "batch_id" in dict(table.columns)}
+    statements = batch_lookup_index_upgrade_ddl()
+    assert len(statements) == len(indexed)
+    assert {sql.split("arte.", 1)[1].split(" ", 1)[0] for sql in statements} == indexed
+    assert all("ADD INDEX IF NOT EXISTS" in sql for sql in statements)
+    materialize = batch_lookup_index_materialize_ddl()
+    assert len(materialize) == len(statements)
+    assert {sql.split("arte.", 1)[1].split(" ", 1)[0] for sql in materialize} == indexed
 
 
 def test_shared_event_and_execution_contract_uses_lossless_identifiers() -> None:
@@ -146,6 +161,10 @@ def test_preflight_requires_exact_layout_and_actual_ssd_parts() -> None:
                 rows = [{"table": table.name, "name": name, "type": kind}
                         for table in sorted(TABLES, key=lambda item: item.name)
                         for name, kind in table.columns]
+            elif "FROM system.data_skipping_indices" in sql:
+                rows = [{"table": table.name, "name": BATCH_LOOKUP_INDEX,
+                         "type": "bloom_filter", "expr": "batch_id", "granularity": 1}
+                        for table in TABLES if "batch_id" in dict(table.columns)]
             elif "FROM system.parts" in sql:
                 rows = ([{"table": TABLES[0].name, "disk_name": "default"}]
                         if self.wrong_disk else [])
@@ -183,7 +202,8 @@ def test_journal_principal_cannot_write_market_or_change_schema() -> None:
                           *(f"GRANT SELECT ON arte.{name} TO journal_writer"
                             for name in sorted(market)),
                           *(f"GRANT SELECT ON system.{name} TO journal_writer"
-                            for name in ("storage_policies", "tables", "columns", "parts"))]
+                            for name in ("storage_policies", "tables", "columns", "parts",
+                                         "data_skipping_indices"))]
                 if self.grant_line:
                     grants.append(self.grant_line)
                 return "\n".join(grants)

@@ -13,6 +13,7 @@ from typing import Any
 
 
 STORAGE_POLICY = "live_market_ssd"
+BATCH_LOOKUP_INDEX = "batch_id_bloom_v1"
 MARKET_READ_TABLES = frozenset({
     "bars_v1", "indicators_v1", "liquidity_100ms_v1",
     "structural_level_coverage_v7", "structural_level_observations_v7",
@@ -29,6 +30,9 @@ class TableContract:
 
     def ddl(self) -> str:
         columns = ",\n    ".join(f"{name} {kind}" for name, kind in self.columns)
+        if any(name == "batch_id" for name, _ in self.columns):
+            columns += (f",\n    INDEX {BATCH_LOOKUP_INDEX} batch_id "
+                        "TYPE bloom_filter(0.01) GRANULARITY 1")
         return (
             f"CREATE TABLE IF NOT EXISTS arte.{self.name} (\n    {columns}\n) "
             f"ENGINE = MergeTree PARTITION BY {self.partition} "
@@ -685,6 +689,25 @@ def schema_ddl() -> tuple[str, ...]:
     return tuple(table.ddl() for table in TABLES)
 
 
+def batch_lookup_index_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only, restart-safe index installation for global UUID readback."""
+    names = (table.name for table in TABLES
+             if any(column == "batch_id" for column, _ in table.columns))
+    return tuple(
+        f"ALTER TABLE arte.{name} ADD INDEX IF NOT EXISTS {BATCH_LOOKUP_INDEX} "
+        "batch_id TYPE bloom_filter(0.01) GRANULARITY 1"
+        for name in names
+    )
+
+
+def batch_lookup_index_materialize_ddl() -> tuple[str, ...]:
+    """Build the new index for pre-existing parts after its metadata is installed."""
+    return tuple(
+        f"ALTER TABLE arte.{table.name} MATERIALIZE INDEX {BATCH_LOOKUP_INDEX}"
+        for table in TABLES if "batch_id" in dict(table.columns)
+    )
+
+
 def intent_schema_upgrade_ddl() -> tuple[str, ...]:
     """Restart-safe operator DDL for the two intent families and old fences."""
     by_name = {table.name: table for table in TABLES}
@@ -837,6 +860,17 @@ def storage_preflight(client: Any) -> None:
                         for row in actual_columns if row["table"] == table.name)
         if columns != table.columns:
             raise ValueError(f"Typed journal columns differ: {table.name}")
+    indexed = {table.name for table in TABLES
+               if any(column == "batch_id" for column, _ in table.columns)}
+    indexes = _rows(client,
+        "SELECT table,name,type,expr,granularity FROM system.data_skipping_indices "
+        f"WHERE database='arte' AND table IN ({names}) FORMAT JSONEachRow")
+    if (len(indexes) != len(indexed)
+            or {row["table"] for row in indexes} != indexed
+            or any((row["name"], row["type"], row["expr"], int(row["granularity"]))
+                   != (BATCH_LOOKUP_INDEX, "bloom_filter", "batch_id", 1)
+                   for row in indexes)):
+        raise ValueError("Typed journal batch lookup indexes are missing or incompatible")
     bad_parts = _rows(client,
         "SELECT table,disk_name FROM system.parts WHERE database='arte' "
         f"AND table IN ({names}) AND active AND disk_name!='live_market_ssd' "
@@ -884,7 +918,8 @@ def journal_permission_preflight(client: Any) -> None:
                 continue
             if privilege == "SELECT" and ((database == "arte" and table in required)
                                           or (database == "system" and table in {
-                                              "storage_policies", "tables", "columns", "parts"})):
+                                              "storage_policies", "tables", "columns", "parts",
+                                              "data_skipping_indices"})):
                 continue
             if privilege in {"SHOW DATABASES", "SHOW TABLES", "SHOW COLUMNS", "CHECK"}:
                 continue
