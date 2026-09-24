@@ -3061,6 +3061,12 @@ class ReplayRunController:
         from src.backend.structural_v7_seed import certified_seed_plan
 
         configuration = self.definition.configuration_revision["payload"]
+        evidence_gaps = _fixed_market_evidence_gaps(configuration)
+        if evidence_gaps:
+            raise ValueError(
+                "Persisted 100ms products cannot reproduce event-derived strategy evidence: "
+                + ", ".join(evidence_gaps)
+            )
         expected = dict(self.definition.market_data_plan)
         sessions = [date.fromisoformat(value) for value in expected.get("sessions") or ()]
         plan = await asyncio.to_thread(
@@ -9897,6 +9903,29 @@ def _structural_recovery_projection_tickers(
     return selected
 
 
+def _fixed_market_evidence_gaps(configuration: Mapping[str, Any]) -> tuple[str, ...]:
+    """Event-dependent observations absent from the persisted bar contract.
+
+    A completed quote and aggregate volume cannot reconstruct intrabucket
+    trade classification, NBBO extrema, or an event-fed RVOL baseline.
+    """
+    profiles = [configuration.get("strategy_profile") or {},
+                *(configuration.get("assignments") or ())]
+    gaps: set[str] = set()
+    for profile in profiles:
+        parameters = dict(profile.get("parameters") or {})
+        hod = dict(parameters.get("historical_hod") or {})
+        if dict(parameters.get("market_pressure") or {}).get("enabled") or hod.get("setup_reversal_enabled"):
+            gaps.add("market_pressure")
+        if hod.get("setup_quote_confirmation_enabled"):
+            gaps.add("quote_geometry")
+        if hod.get("setup_minimum_volume_ratio"):
+            gaps.add("trade_volume")
+        if hod.get("setup_minimum_session_relative_volume"):
+            gaps.add("session_relative_volume")
+    return tuple(sorted(gaps))
+
+
 def backtest_preflight(
     *,
     anchor_date: date,
@@ -10075,6 +10104,19 @@ def backtest_preflight(
         except Exception as exc:
             watchlist_error = str(exc)
     checks = list(base["checks"])
+    if execution_interval.kind == "fixed":
+        evidence_gaps = _fixed_market_evidence_gaps(configuration)
+        checks.append({
+            "id": "fixed_strategy_evidence",
+            "label": "Persisted strategy evidence",
+            "status": "blocked" if evidence_gaps else "ready",
+            "required": True,
+            "summary": (
+                "Persisted bars and liquidity do not reproduce: " + ", ".join(evidence_gaps)
+                if evidence_gaps else "Configured strategy observations use persisted market products."
+            ),
+            "evidence": ",".join(evidence_gaps),
+        })
     checks.append({
         "id": "persisted_market_products",
         "label": "Persisted Backtest market products",

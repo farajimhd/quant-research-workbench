@@ -7,12 +7,22 @@ from zoneinfo import ZoneInfo
 import src.backend.backtest_market_data as market_data
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
-from src.backend.replay_run_service import ReplayRunController
+from src.backend.replay_run_service import ReplayRunController, _fixed_market_evidence_gaps
 
 
 NY = ZoneInfo("America/New_York")
 DAY = "2026-08-18"
 RUN = "00000000-0000-0000-0000-000000000001"
+
+
+def test_fixed_market_rejects_event_only_strategy_evidence():
+    assert _fixed_market_evidence_gaps({"assignments": [{"parameters": {
+        "market_pressure": {"enabled": True},
+        "historical_hod": {"setup_quote_confirmation_enabled": 1,
+                           "setup_minimum_volume_ratio": 2,
+                           "setup_minimum_session_relative_volume": 1.5},
+    }}]}) == ("market_pressure", "quote_geometry", "session_relative_volume", "trade_volume")
+    assert _fixed_market_evidence_gaps({"assignments": []}) == ()
 
 
 def _row(ticker, boundary_ms, resolution_ms):
