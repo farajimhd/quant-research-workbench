@@ -153,7 +153,10 @@ into scalar parent and child rows. It refuses nonempty open-ended metadata.
 The two typed intent families are installed in `arte` on `live_market_ssd` and
 participate in the same commit fence as live and Backtest journal families;
 an isolated one-intent, one-slice ClickHouse publication and cold prefix
-verification passed. This does not enable the runtime cutover. Source-field
+verification passed. A bounded reader now rechecks the stored row hashes,
+normalizes ClickHouse decimal and UTC wire values, validates parent/slice
+relationships, and reconstructs the intent; a read-only recovery of that real
+integration run passed. This does not enable the runtime cutover. Source-field
 inventory tests
 fail if a declared intent or policy field is added without reviewing the
 projection. The reverse projection checks row counts, ordinals, parent intent

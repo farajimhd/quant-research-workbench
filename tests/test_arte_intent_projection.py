@@ -9,7 +9,8 @@ from uuid import uuid4
 import pytest
 
 from src.trading_runtime.arte_intent_projection import (
-    project_strategy_intent, restore_strategy_intent, strategy_intent_batch,
+    load_committed_strategy_intent_page, project_strategy_intent,
+    restore_strategy_intent, strategy_intent_batch,
 )
 from src.trading_runtime.arte_journal_writer import (
     load_committed_prefix, publish_typed_batch,
@@ -163,6 +164,19 @@ def test_intent_and_slice_publish_as_fence_verified_typed_rows():
     ]
     prefix = load_committed_prefix(client, run_id)
     assert prefix is not None and prefix.last_sequence == 1
+    recovered = load_committed_strategy_intent_page(client, prefix)
+    assert len(recovered) == 1
+    assert recovered[0].intent == intent(protection_profile=profile)
+    assert recovered[0].account_id == "DU1"
+    assert load_committed_strategy_intent_page(client, prefix, after_sequence=1) == ()
+    # ClickHouse JSONEachRow may render fixed-scale decimals without zeros.
+    client.tables["trading_strategy_intent_v1"][0]["quantity"] = "5"
+    client.tables["trading_intent_protection_slice_v1"][0]["quantity_fraction"] = "1"
+    assert load_committed_strategy_intent_page(client, prefix)[0].intent.quantity == 5
+    with pytest.raises(ValueError, match="bounds"):
+        load_committed_strategy_intent_page(client, prefix, max_slices=0)
     client.tables["trading_intent_protection_slice_v1"][0]["slice_id"] = "tampered"
     with pytest.raises(RuntimeError, match="row content differs"):
         load_committed_prefix(client, run_id)
+    with pytest.raises(RuntimeError, match="committed hash"):
+        load_committed_strategy_intent_page(client, prefix)

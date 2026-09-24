@@ -9,13 +9,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
+from hashlib import sha256
+import re
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
-from src.trading_runtime.arte_journal_writer import TypedJournalBatch
+from src.trading_runtime.arte_journal_writer import (
+    CommittedPrefix, TypedJournalBatch, _CONTRACTS, _canonical_typed_content,
+    _literal, _rows,
+)
 from src.trading_runtime.execution_policies import (
     execution_policy_from_payload, protection_profile_from_payload,
 )
+from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.signals import CapitalRequest, StrategyIntent
 
 
@@ -326,3 +332,136 @@ def strategy_intent_batch(
         sequence, sequence, source_cursor, run_status, (event,),
         intents=(detail,), intent_slices=children,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveredIntent:
+    sequence: int
+    account_id: str
+    record_id: str
+    intent: StrategyIntent
+
+
+def _stored_instant(value: str) -> str:
+    match = re.fullmatch(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\.(\d{6})000", value)
+    if match is None:
+        raise ValueError("Stored intent time cannot fit Python's causal clock")
+    return _instant(datetime.fromisoformat(
+        f"{match.group(1)}.{match.group(2)}+00:00"
+    ))
+
+
+def _verify_stored_row(name: str, row: dict[str, Any]) -> dict[str, Any]:
+    content = {key: value for key, value in row.items() if key != "content_hash"}
+    canonical = _canonical_typed_content(
+        name, content, stored_utc=True,
+    )
+    digest = sha256(canonical_json(canonical).encode("utf-8")).hexdigest()
+    if digest != str(row["content_hash"]):
+        raise RuntimeError(f"Recovered {name} row differs from its committed hash")
+    return canonical
+
+
+def load_committed_strategy_intent_page(
+    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    limit: int = 200, max_slices: int = 4096,
+) -> tuple[RecoveredIntent, ...]:
+    """Read one bounded, fully typed intent page from a verified prefix."""
+    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+        raise ValueError("Intent recovery requires a verified committed prefix")
+    if after_sequence < 0 or not 1 <= limit <= 500 or max_slices < 1:
+        raise ValueError("Intent recovery page bounds are invalid")
+    event_columns = ",".join(column for column, _ in _CONTRACTS["trading_event_v1"].columns)
+    events = _rows(client,
+        f"SELECT {event_columns} FROM arte.trading_event_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND sequence>{after_sequence} AND sequence<={prefix.last_sequence} "
+        "AND category='strategy_decision' AND entity_type='intent' "
+        f"ORDER BY sequence LIMIT {limit} FORMAT JSONEachRow")
+    if not events:
+        return ()
+    ids = [str(UUID(str(row["record_id"]))) for row in events]
+    if len(set(ids)) != len(ids):
+        raise RuntimeError("Committed intent page repeated an event identity")
+    allowed_batches = set(prefix.batch_ids)
+    previous = after_sequence
+    for event in events:
+        _verify_stored_row("trading_event_v1", event)
+        sequence = int(event["sequence"])
+        if (sequence <= previous or sequence > prefix.last_sequence
+                or str(UUID(str(event["batch_id"]))) not in allowed_batches):
+            raise RuntimeError("Intent event is outside the committed prefix")
+        previous = sequence
+    ids_sql = ",".join(f"toUUID({_literal(value)})" for value in ids)
+    parent_columns = ",".join(column for column, _ in
+                              _CONTRACTS["trading_strategy_intent_v1"].columns)
+    parents = _rows(client,
+        f"SELECT {parent_columns} FROM arte.trading_strategy_intent_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} AND record_id IN ({ids_sql}) "
+        "FORMAT JSONEachRow")
+    if len(parents) != len(events):
+        raise RuntimeError("Committed intent page has missing or duplicate details")
+    by_id = {str(UUID(str(row["record_id"]))): row for row in parents}
+    if set(by_id) != set(ids):
+        raise RuntimeError("Intent details differ from committed events")
+    expected_slices = sum(int(row["protection_slice_count"]) for row in parents)
+    if expected_slices > max_slices:
+        raise RuntimeError("Intent page exceeds its bounded protection-slice budget")
+    slices: list[dict[str, Any]] = []
+    if expected_slices:
+        child_columns = ",".join(column for column, _ in
+                                 _CONTRACTS["trading_intent_protection_slice_v1"].columns)
+        slices = _rows(client,
+            f"SELECT {child_columns} FROM arte.trading_intent_protection_slice_v1 "
+            f"WHERE run_id={_literal(prefix.run_id)} "
+            f"AND parent_record_id IN ({ids_sql}) "
+            f"LIMIT {max_slices + 1} FORMAT JSONEachRow")
+    if len(slices) != expected_slices:
+        raise RuntimeError("Committed intent page has missing or excess slices")
+    by_parent: dict[str, list[dict[str, Any]]] = {}
+    for row in slices:
+        canonical_row = _verify_stored_row("trading_intent_protection_slice_v1", row)
+        parent_id = str(UUID(str(row["parent_record_id"])))
+        if parent_id not in by_id:
+            raise RuntimeError("Protection slice lacks a committed intent parent")
+        by_parent.setdefault(parent_id, []).append(canonical_row)
+    recovered = []
+    for event in events:
+        record_id = str(UUID(str(event["record_id"])))
+        parent = by_id[record_id]
+        canonical_parent = _verify_stored_row("trading_strategy_intent_v1", parent)
+        if (str(UUID(str(parent["batch_id"]))) != str(UUID(str(event["batch_id"])))
+                or parent["event_month"] != event["event_month"]
+                or parent["account_id"] != event["account_id"]
+                or parent["intent_id"] != event["entity_id"]):
+            raise RuntimeError("Intent detail differs from its event envelope")
+        projected_core = {
+            key: value for key, value in canonical_parent.items()
+            if key not in {"record_id", "run_id", "event_month", "batch_id",
+                           "account_id", "content_hash"}
+        }
+        projected_core["event_time"] = _stored_instant(event["event_time"])
+        projected_slices = []
+        for row in sorted(by_parent.get(record_id, []), key=lambda value: value["ordinal"]):
+            if (str(UUID(str(row["batch_id"]))) != str(UUID(str(parent["batch_id"])))
+                    or row["event_month"] != parent["event_month"]
+                    or row["account_id"] != parent["account_id"]):
+                raise RuntimeError("Protection slice differs from its intent parent")
+            projected = {
+                key: value for key, value in row.items()
+                if key not in {"record_id", "parent_record_id", "run_id",
+                               "event_month", "batch_id", "account_id", "content_hash"}
+            }
+            projected["intent_id"] = parent["intent_id"]
+            if projected["anchor_confirmed_at"] is not None:
+                projected["anchor_confirmed_at"] = _stored_instant(
+                    projected["anchor_confirmed_at"]
+                )
+            projected_slices.append(projected)
+        reconstructed = restore_strategy_intent(
+            ProjectedIntent(projected_core, tuple(projected_slices))
+        )
+        recovered.append(RecoveredIntent(
+            int(event["sequence"]), str(event["account_id"]), record_id, reconstructed,
+        ))
+    return tuple(recovered)
