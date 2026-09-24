@@ -28,6 +28,10 @@ def test_shared_event_and_execution_contract_uses_lossless_identifiers() -> None
     assert columns["trading_event_v1"]["sequence"] == "UInt64"
     assert columns["trading_execution_v1"]["quantity"] == "Decimal(38, 10)"
     assert columns["trading_execution_v1"]["price"] == "Decimal(38, 10)"
+    for field in ("net_amount", "cumulative_quantity", "average_price",
+                  "signal_price", "arrival_midpoint", "planned_risk"):
+        assert columns["trading_execution_v1"][field] == "Nullable(Decimal(38, 10))"
+    assert columns["trading_execution_v1"]["liquidation_trade"] == "UInt8"
     assert columns["trading_commission_v1"]["commission"] == "Decimal(38, 10)"
 
 
