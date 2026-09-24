@@ -10,7 +10,8 @@ import pytest
 from src.trading_runtime.arte_portfolio_snapshot import (
     load_latest_portfolio_snapshot, load_portfolio_snapshot,
     load_run_portfolio_snapshots, project_portfolio_snapshot, _snapshot_rows,
-    publish_portfolio_snapshot,
+    prepare_portfolio_snapshot, publish_portfolio_snapshot,
+    publish_prepared_portfolio_snapshot,
 )
 from src.trading_runtime.portfolio import PortfolioReservation
 
@@ -191,3 +192,24 @@ def test_run_recovery_requires_every_pinned_account(monkeypatch) -> None:
     recovered = load_run_portfolio_snapshots(client, run_id="live-run")
     assert set(recovered) == {"account-id"}
     assert recovered["account-id"]["state"]["account_key"] == "account-key"
+
+
+def test_prepared_snapshot_is_immutable_before_background_publication() -> None:
+    state = _state()
+    prepared = prepare_portfolio_snapshot(
+        run_id="live-run", account_id="account-id", state_revision=1,
+        snapshot_at=datetime(2026, 8, 18, 12, tzinfo=timezone.utc), state=state,
+    )
+    state["peak_net_liquidation"] = 999999.0
+    state["disabled_strategy_allocations"].append("late-strategy")
+    state["pending_operational_commands"][0]["reason"] = "changed"
+    assert prepared.rows.account["peak_net_liquidation"] == "1000.000000000000000000"
+    assert len(prepared.rows.disabled_strategies) == 2
+    assert prepared.rows.commands[0]["reason"] == "operator"
+    with pytest.raises(TypeError):
+        prepared.rows.account["peak_net_liquidation"] = "0"
+    client = SnapshotClient()
+    publish_prepared_portfolio_snapshot(client, prepared)
+    loaded = load_latest_portfolio_snapshot(client, run_id="live-run", account_id="account-id")
+    assert loaded is not None
+    assert loaded["state"]["peak_net_liquidation"] == 1000.0

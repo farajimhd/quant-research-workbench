@@ -10,6 +10,7 @@ from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from src.trading_runtime.arte_portfolio_policy import (
@@ -22,7 +23,7 @@ from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.portfolio import (
     PortfolioAllocationLot, PortfolioReconciliationDifference,
     PortfolioControlMode, PortfolioReservation, PortfolioSyncState,
-    portfolio_policy_from_payload,
+    PortfolioPolicy, portfolio_policy_from_payload,
 )
 
 
@@ -63,6 +64,24 @@ class PortfolioSnapshotRows:
     reservations: tuple[dict[str, Any], ...]
     allocations: tuple[dict[str, Any], ...]
     reconciliation: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedPortfolioSnapshot:
+    run_id: str
+    account_id: str
+    state_revision: int
+    snapshot_month: str
+    rows: PortfolioSnapshotRows
+    selected_policy: PortfolioPolicy | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.rows.account, MappingProxyType):
+            raise ValueError("Prepared portfolio snapshot must own immutable rows")
+        for name in ("disabled_strategies", "commands", "requests", "request_reasons",
+                     "reservations", "allocations", "reconciliation"):
+            if any(not isinstance(row, MappingProxyType) for row in getattr(self.rows, name)):
+                raise ValueError("Prepared portfolio snapshot must own immutable rows")
 
 
 _SNAPSHOT_FAMILIES = (
@@ -378,29 +397,60 @@ def _restore_state(families: Mapping[str, tuple[dict[str, Any], ...]],
     }
 
 
+def prepare_portfolio_snapshot(
+    *, run_id: str, account_id: str, state_revision: int,
+    snapshot_at: datetime, state: Mapping[str, Any],
+) -> PreparedPortfolioSnapshot:
+    """Capture a scalar, immutable recovery image without database I/O."""
+    if (not run_id or not account_id or type(state_revision) is not int
+            or state_revision < 1 or snapshot_at.tzinfo is None):
+        raise ValueError("Portfolio snapshot needs a causal writer identity")
+    from dataclasses import fields as dataclass_fields
+
+    projected = project_portfolio_snapshot(account_id, state)
+    sealed_fields: dict[str, Any] = {}
+    for field in dataclass_fields(PortfolioSnapshotRows):
+        value = getattr(projected, field.name)
+        sealed_fields[field.name] = (
+            MappingProxyType(dict(value)) if field.name == "account"
+            else tuple(MappingProxyType(dict(row)) for row in value)
+        )
+    sealed = PortfolioSnapshotRows(**sealed_fields)
+    selected = state["selected_policy"]
+    policy = portfolio_policy_from_payload(selected) if selected is not None else None
+    month = snapshot_at.astimezone(timezone.utc).date().replace(day=1).isoformat()
+    return PreparedPortfolioSnapshot(run_id, account_id, state_revision, month,
+                                     sealed, policy)
+
+
 def publish_portfolio_snapshot(
     client: Any, *, run_id: str, account_id: str, state_revision: int,
     snapshot_at: datetime, state: Mapping[str, Any],
 ) -> str:
-    """Worker-lane publication, retry-safe with a last-written commit fence.
+    """Control-plane convenience path; the realtime lane submits prepared rows."""
+    return publish_prepared_portfolio_snapshot(client, prepare_portfolio_snapshot(
+        run_id=run_id, account_id=account_id, state_revision=state_revision,
+        snapshot_at=snapshot_at, state=state))
+
+
+def publish_prepared_portfolio_snapshot(
+    client: Any, prepared: PreparedPortfolioSnapshot,
+) -> str:
+    """Worker-lane publication with a last-written commit fence.
 
     The caller must own a Keeper-fenced account writer and supply its strictly
     increasing journal state revision. Never invoke on a realtime callback.
     """
-    if (not run_id or not account_id or type(state_revision) is not int
-            or state_revision < 1 or snapshot_at.tzinfo is None):
-        raise ValueError("Portfolio snapshot needs a causal writer identity")
+    run_id, account_id = prepared.run_id, prepared.account_id
+    state_revision, month = prepared.state_revision, prepared.snapshot_month
+    projected = prepared.rows
     latest_revision = _latest_revision(client, run_id=run_id,
                                        account_id=account_id)
     if latest_revision is not None and latest_revision > state_revision:
         raise RuntimeError("Portfolio snapshot revision is older than the committed prefix")
-    projected = project_portfolio_snapshot(account_id, state)
-    selected = state["selected_policy"]
-    if selected is not None:
-        policy = portfolio_policy_from_payload(selected)
-        if publish_portfolio_policy(client, policy) != projected.account["selected_policy_hash"]:
+    if prepared.selected_policy is not None:
+        if publish_portfolio_policy(client, prepared.selected_policy) != projected.account["selected_policy_hash"]:
             raise RuntimeError("Selected portfolio policy differs from its catalog")
-    month = snapshot_at.astimezone(timezone.utc).date().replace(day=1).isoformat()
     families = _snapshot_rows(run_id, account_id, state_revision, month, projected)
     source_families = _snapshot_rows(run_id, account_id, state_revision, month,
                                     projected, wire=False)

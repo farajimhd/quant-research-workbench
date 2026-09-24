@@ -18,11 +18,14 @@ import re
 from queue import Empty, Full, Queue
 from threading import Lock, Thread
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 from uuid import UUID
 
 from src.trading_runtime.arte_journal_schema import TABLES, journal_permission_preflight, storage_preflight
 from src.trading_runtime.journal_contract import canonical_json
+
+if TYPE_CHECKING:
+    from src.trading_runtime.arte_portfolio_snapshot import PreparedPortfolioSnapshot
 
 
 _CONTRACTS = {table.name: table for table in TABLES}
@@ -1665,7 +1668,9 @@ class ArteJournalWriter:
         self._client = client
         self._run_id = run_id
         self._max_events_per_commit = max_events_per_commit
-        self._queue: Queue[tuple[TypedJournalBatch, Future[str]] | None] = Queue(maxsize=capacity)
+        self._queue: Queue[
+            tuple[TypedJournalBatch | PreparedPortfolioSnapshot, Future[str]] | None
+        ] = Queue(maxsize=capacity)
         self._submission_lock = Lock()
         self._error: BaseException | None = None
         self._closed = False
@@ -1689,8 +1694,28 @@ class ArteJournalWriter:
                 raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
         return receipt
 
+    def submit_portfolio_snapshot(self, prepared: PreparedPortfolioSnapshot) -> Future[str]:
+        """Enqueue immutable recovery rows without ClickHouse I/O or waiting."""
+        from src.trading_runtime.arte_portfolio_snapshot import PreparedPortfolioSnapshot
+
+        if not isinstance(prepared, PreparedPortfolioSnapshot):
+            raise TypeError("Portfolio journal submission requires prepared immutable rows")
+        with self._submission_lock:
+            if self._closed:
+                raise RuntimeError("Typed journal writer is closed")
+            if self._error is not None:
+                raise RuntimeError("Typed journal writer failed") from self._error
+            if prepared.run_id != self._run_id:
+                raise ValueError("Typed journal writer cannot mix runs")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((prepared, receipt))
+            except Full as exc:
+                raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
+        return receipt
+
     def _run(self) -> None:
-        held: tuple[TypedJournalBatch, Future[str]] | None = None
+        held: tuple[TypedJournalBatch | PreparedPortfolioSnapshot, Future[str]] | None = None
         while True:
             item = held if held is not None else self._queue.get()
             held = None
@@ -1707,7 +1732,9 @@ class ArteJournalWriter:
                 if following is None:
                     stopping = True
                     break
-                if (_can_coalesce(group[-1][0], following[0], self._max_events_per_commit)
+                if (isinstance(group[-1][0], TypedJournalBatch)
+                        and isinstance(following[0], TypedJournalBatch)
+                        and _can_coalesce(group[-1][0], following[0], self._max_events_per_commit)
                         and following[0].last_sequence - group[0][0].first_sequence + 1
                         <= self._max_events_per_commit):
                     group.append(following)
@@ -1717,8 +1744,15 @@ class ArteJournalWriter:
             try:
                 if self._error is not None:
                     raise RuntimeError("Typed journal writer failed earlier") from self._error
-                batch = _coalesce_unpublished(tuple(row for row, _ in group))
-                committed_id = publish_typed_batch(self._client, batch)
+                if isinstance(group[0][0], TypedJournalBatch):
+                    batch = _coalesce_unpublished(tuple(row for row, _ in group))
+                    committed_id = publish_typed_batch(self._client, batch)
+                else:
+                    from src.trading_runtime.arte_portfolio_snapshot import (
+                        publish_prepared_portfolio_snapshot,
+                    )
+                    committed_id = publish_prepared_portfolio_snapshot(
+                        self._client, group[0][0])
                 for _, receipt in group:
                     if receipt.cancelled():
                         continue
