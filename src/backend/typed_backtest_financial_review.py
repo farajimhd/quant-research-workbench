@@ -1,14 +1,15 @@
 """Read-only, disk-free execution page from the normalized ARTE journal.
 
 This is a bounded data contract, not the legacy saved-run UI projection.
-Portfolio snapshots are not joined here until their independent fence can be
-proven to match the selected terminal event prefix.
+Account recovery is joined only through a terminal snapshot anchor that binds
+the snapshot hash to the exact committed event prefix.
 """
 from __future__ import annotations
 
 from typing import Any
 
 from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+from src.trading_runtime.arte_backtest_snapshot_anchor import load_terminal_backtest_snapshot
 from src.trading_runtime.arte_journal_writer import (
     load_committed_commission_page, load_committed_execution_page,
     load_committed_prefix, load_typed_run_context,
@@ -39,6 +40,9 @@ def load_typed_backtest_financial_page(
     cursor = load_latest_backtest_cursor(client, prefix)
     if cursor is not None and str(cursor["session_date"]) != str(context["session_date"]):
         raise RuntimeError("Backtest market cursor differs from the pinned session")
+    accounts = {account_id: load_terminal_backtest_snapshot(
+        client, prefix, account_id=account_id)
+        for account_id in context["account_ids"]}
     fills = load_committed_execution_page(
         client, prefix, after_sequence=after_fill_sequence, limit=limit)
     fees = load_committed_commission_page(
@@ -46,7 +50,7 @@ def load_typed_backtest_financial_page(
     return {
         "run": context, "status": prefix.status,
         "committed_sequence": prefix.last_sequence,
-        "cursor": cursor,
+        "cursor": cursor, "accounts": accounts,
         "fills": fills, "commissions": fees,
         "next_fill_sequence": (int(fills[-1]["sequence"]) if fills else after_fill_sequence),
         "next_commission_sequence": (

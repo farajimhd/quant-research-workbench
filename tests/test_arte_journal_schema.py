@@ -13,6 +13,7 @@ from src.trading_runtime.arte_journal_schema import (
     oms_state_upgrade_ddl, intent_use_upgrade_ddl, run_transition_upgrade_ddl,
     operational_fault_upgrade_ddl,
     account_risk_upgrade_ddl, backtest_cursor_upgrade_ddl,
+    backtest_snapshot_anchor_upgrade_ddl,
     journal_permission_preflight,
     schema_ddl, storage_preflight,
 )
@@ -21,12 +22,14 @@ from src.trading_runtime.portfolio import PortfolioPolicy
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 47
+    assert len(statements) == len(TABLES) == 48
     upgrade = backtest_cursor_upgrade_ddl()
     assert len(upgrade) == 3
     assert "CREATE TABLE IF NOT EXISTS arte.trading_backtest_cursor_v1" in upgrade[0]
     assert "backtest_cursor_count UInt32 DEFAULT 0" in upgrade[1]
     assert "backtest_cursor_hash FixedString(64)" in upgrade[2]
+    assert ("CREATE TABLE IF NOT EXISTS arte.trading_backtest_snapshot_anchor_v1"
+            in backtest_snapshot_anchor_upgrade_ddl())
     for table, statement in zip(TABLES, statements):
         assert f"CREATE TABLE IF NOT EXISTS arte.{table.name}" in statement
         assert "ENGINE = MergeTree" in statement

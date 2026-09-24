@@ -21,6 +21,9 @@ def _stub(monkeypatch, *, mode="backtest", status="completed"):
     monkeypatch.setattr(review, "load_latest_backtest_cursor", lambda _client, _prefix: {
         "session_date": "2026-08-18", "boundary_ms": 100,
     })
+    monkeypatch.setattr(review, "load_terminal_backtest_snapshot",
+                        lambda _client, _prefix, *, account_id:
+                        {"state_hash": "a" * 64, "account_id": account_id})
 
 
 def test_typed_financial_review_uses_independent_fill_and_fee_cursors(monkeypatch) -> None:
@@ -45,6 +48,7 @@ def test_typed_financial_review_uses_independent_fill_and_fee_cursors(monkeypatc
     assert page["next_commission_sequence"] == 101
     assert page["complete"] is False
     assert page["run"]["account_ids"] == ("DU1",)
+    assert page["accounts"]["DU1"]["state_hash"] == "a" * 64
 
 
 def test_typed_financial_review_rejects_wrong_mode(monkeypatch) -> None:
@@ -72,6 +76,9 @@ def test_typed_financial_review_reads_real_run_and_commit_fences(monkeypatch) ->
     publish_typed_batch(client, replace(batch(), status="completed"))
     insert_count = len(client.inserts)
     monkeypatch.setattr(review, "load_latest_backtest_cursor", lambda _client, _prefix: None)
+    monkeypatch.setattr(review, "load_terminal_backtest_snapshot",
+                        lambda _client, _prefix, *, account_id:
+                        {"state_hash": "a" * 64, "account_id": account_id})
     monkeypatch.setattr(review, "load_committed_execution_page", lambda *_args, **_kwargs: ())
     monkeypatch.setattr(review, "load_committed_commission_page", lambda *_args, **_kwargs: ())
     page = review.load_typed_backtest_financial_page(client, RUN)

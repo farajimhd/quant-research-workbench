@@ -1695,6 +1695,12 @@ class _AdmissionUnit:
     captured: CapturedPortfolioSnapshot
 
 
+@dataclass(frozen=True, slots=True)
+class _TerminalBacktestUnit:
+    batch: TypedJournalBatch
+    captured: tuple[CapturedPortfolioSnapshot, ...]
+
+
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 
@@ -1712,7 +1718,7 @@ class ArteJournalWriter:
         self._max_events_per_commit = max_events_per_commit
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
-                  | _DurabilityBarrier | _AdmissionUnit,
+                  | _DurabilityBarrier | _AdmissionUnit | _TerminalBacktestUnit,
                   Future[str]] | None
         ] = Queue(maxsize=capacity)
         self._submission_lock = Lock()
@@ -1844,10 +1850,42 @@ class ArteJournalWriter:
             self._accepted_writes = True
         return barrier
 
+    def submit_terminal_backtest(
+        self, batch: TypedJournalBatch,
+        captured: tuple[CapturedPortfolioSnapshot, ...],
+    ) -> Future[str]:
+        """Enqueue terminal events and every account recovery image as one unit.
+
+        The caller captures state at the terminal simulation boundary. The
+        worker commits events first, then each typed snapshot, then each
+        prefix-to-snapshot anchor. A receipt resolves only after all anchors.
+        """
+        from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
+
+        if (not isinstance(batch, TypedJournalBatch)
+                or batch.status not in {"completed", "stopped", "failed"}
+                or batch.run_id != self._run_id or not captured
+                or any(not isinstance(row, CapturedPortfolioSnapshot)
+                       or row.run_id != self._run_id for row in captured)
+                or len({row.account_id for row in captured}) != len(captured)):
+            raise ValueError("Terminal Backtest requires one capture per distinct account")
+        with self._submission_lock:
+            if self._closed:
+                raise RuntimeError("Typed journal writer is closed")
+            if self._error is not None:
+                raise RuntimeError("Typed journal writer failed") from self._error
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((_TerminalBacktestUnit(batch, tuple(captured)), receipt))
+            except Full as exc:
+                raise JournalQueueFull("Terminal Backtest queue is full; stop execution") from exc
+            self._accepted_writes = True
+        return receipt
+
     def _run(self) -> None:
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
-            | _DurabilityBarrier | _AdmissionUnit,
+            | _DurabilityBarrier | _AdmissionUnit | _TerminalBacktestUnit,
             Future[str],
         ] | None = None
         while True:
@@ -1890,6 +1928,23 @@ class ArteJournalWriter:
                     unit = group[0][0]
                     committed_id = publish_fenced_admission(
                         self._client, unit.batch, unit.captured)
+                elif isinstance(group[0][0], _TerminalBacktestUnit):
+                    from src.trading_runtime.arte_backtest_snapshot_anchor import (
+                        publish_terminal_backtest_snapshots,
+                    )
+                    unit = group[0][0]
+                    context = load_typed_run_context(self._client, unit.batch.run_id)
+                    if (context["mode"] != "backtest"
+                            or set(context["account_ids"]) != {
+                                row.account_id for row in unit.captured}):
+                        raise RuntimeError("Terminal Backtest captures differ from run accounts")
+                    committed_id = publish_typed_batch(self._client, unit.batch)
+                    prefix = load_committed_prefix(self._client, unit.batch.run_id)
+                    if (prefix is None or prefix.last_batch_id != committed_id
+                            or prefix.last_sequence != unit.batch.last_sequence):
+                        raise RuntimeError("Terminal Backtest event prefix is not committed")
+                    publish_terminal_backtest_snapshots(
+                        self._client, prefix, unit.captured)
                 else:
                     from src.trading_runtime.arte_portfolio_snapshot import (
                         CapturedPortfolioSnapshot, prepare_captured_portfolio_snapshot,

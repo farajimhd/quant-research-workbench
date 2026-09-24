@@ -23,7 +23,8 @@ from src.trading_runtime.ibkr_client import _execution
 from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.risk_supervisor import AccountRiskState, RiskEvaluation
 from src.trading_runtime.arte_journal_writer import (
-    ArteJournalWriter, JournalQueueFull, TypedJournalBatch, load_committed_prefix,
+    ArteJournalWriter, CommittedPrefix, JournalQueueFull, TypedJournalBatch,
+    load_committed_prefix,
     load_committed_commission_page, load_committed_execution_page,
     load_committed_run_transition_page,
     load_committed_operational_fault_page,
@@ -875,6 +876,48 @@ def test_admission_queues_one_persistently_fenced_unit(monkeypatch) -> None:
         assert receipt.result(timeout=5) == "s" * 64
         assert published == [(BATCH, 1)]
     finally:
+        journal.close()
+
+
+def test_terminal_backtest_queues_all_account_anchors_after_events(monkeypatch) -> None:
+    from src.trading_runtime import arte_backtest_snapshot_anchor as anchor_module
+    from tests.test_arte_admission_fence import captured as captured_state
+
+    order = []
+    entered, release = Event(), Event()
+    item = replace(batch(), status="completed")
+    snapshot = replace(captured_state(), run_id=RUN, account_id="DU1")
+    prefix = CommittedPrefix(RUN, item.last_sequence, BATCH,
+                             item.source_cursor, "completed", (BATCH,))
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run: None)
+    monkeypatch.setattr(writer_module, "load_typed_run_context", lambda _client, _run: {
+        "mode": "backtest", "account_ids": ("DU1",),
+    })
+    monkeypatch.setattr(writer_module, "publish_typed_batch", lambda _client, batch: (
+        order.append("events") or batch.batch_id))
+    monkeypatch.setattr(writer_module, "load_committed_prefix", lambda _client, _run: prefix)
+    def persist_anchors(_client, _prefix, _captured):
+        entered.set()
+        assert release.wait(5)
+        order.append("anchor")
+        return ("a" * 64,)
+
+    monkeypatch.setattr(anchor_module, "publish_terminal_backtest_snapshots",
+                        persist_anchors)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=1)
+    try:
+        receipt = journal.submit_terminal_backtest(item, (snapshot,))
+        assert entered.wait(5)
+        assert not receipt.done()
+        release.set()
+        assert receipt.result(timeout=5) == BATCH
+        assert order == ["events", "anchor"]
+        with pytest.raises(ValueError, match="distinct account"):
+            journal.submit_terminal_backtest(item, (snapshot, snapshot))
+    finally:
+        release.set()
         journal.close()
 
 

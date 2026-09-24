@@ -217,6 +217,16 @@ TABLES = (
         "run_id, account_id, state_revision, phase",
     ),
     TableContract(
+        "trading_backtest_snapshot_anchor_v1",
+        (("run_id", "String"), ("anchor_month", "Date"),
+         ("account_id", "String"), ("state_revision", "UInt64"),
+         ("batch_id", "UUID"), ("last_sequence", "UInt64"),
+         ("snapshot_hash", "FixedString(64)"),
+         ("anchored_at", "DateTime64(6, 'UTC')"),
+         ("content_hash", "FixedString(64)")),
+        "toYYYYMM(anchor_month)", "run_id, account_id, last_sequence",
+    ),
+    TableContract(
         "trading_portfolio_policy_v1",
         (("policy_hash", "FixedString(64)"), ("policy_id", "String"),
          ("revision", "UInt32"))
@@ -945,6 +955,12 @@ def backtest_cursor_upgrade_ddl() -> tuple[str, ...]:
         f"backtest_cursor_hash FixedString(64) DEFAULT '{empty_hash}' "
         "AFTER backtest_cursor_count",
     )
+
+
+def backtest_snapshot_anchor_upgrade_ddl() -> str:
+    """Operator-only causal link between terminal events and account state."""
+    return next(table.ddl() for table in TABLES
+                if table.name == "trading_backtest_snapshot_anchor_v1")
 
 
 def portfolio_policy_schema_upgrade_ddl() -> tuple[str, ...]:
