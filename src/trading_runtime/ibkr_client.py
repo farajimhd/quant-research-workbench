@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+from math import isfinite
 import queue
 import ssl
 import urllib.parse
@@ -456,7 +457,7 @@ def _execution(row: dict[str, Any]) -> Execution:
         order_id=str(row.get("order_id") or row.get("orderId") or ""),
         account=str(row.get("account") or row.get("acctId") or ""),
         conid=int(_number(row, "conid", "con_id")),
-        commission=_number(row, "commission"),
+        commission=_optional_commission(row),
         currency=str(row.get("currency") or "USD"),
         raw=row,
     )
@@ -538,6 +539,19 @@ def _optional_number(row: dict[str, Any], *keys: str) -> float | None:
         if row.get(key) is not None:
             return _float(row[key])
     return None
+
+
+def _optional_commission(row: dict[str, Any]) -> float | None:
+    value = row.get("commission")
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(str(value).replace(",", ""))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Broker commission is not numeric") from exc
+    if not isfinite(parsed):
+        raise ValueError("Broker commission is not finite")
+    return parsed
 
 
 def _float(value: Any) -> float:

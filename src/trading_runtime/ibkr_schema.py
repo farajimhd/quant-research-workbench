@@ -173,7 +173,7 @@ class Execution:
     order_id: str
     account: str
     conid: int
-    commission: float = 0.0
+    commission: float | None = None
     currency: str = "USD"
     raw: dict[str, Any] = field(default_factory=dict, compare=False)
 
@@ -182,7 +182,7 @@ class Execution:
         payload["trade_time"] = self.trade_time.astimezone(timezone.utc).strftime("%Y%m%d-%H:%M:%S")
         raw = payload.pop("raw", {})
         payload.update(raw)
-        return payload
+        return {key: value for key, value in payload.items() if value is not None}
 
 
 @dataclass(frozen=True, slots=True)
