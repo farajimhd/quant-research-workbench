@@ -36,6 +36,10 @@ _FAMILIES = (
      "account_risk_state_hash"),
     ("trading_account_risk_reason_v1", "account_risk_reasons", "account_risk_reason_count",
      "account_risk_reason_hash"),
+    ("trading_intent_decision_v1", "intent_decisions", "intent_decision_count",
+     "intent_decision_hash"),
+    ("trading_intent_decision_reason_v1", "intent_decision_reasons",
+     "intent_decision_reason_count", "intent_decision_reason_hash"),
     ("trading_strategy_signal_v1", "signals", "signal_count", "signal_hash"),
     ("trading_signal_source_v1", "signal_sources", "signal_source_count",
      "signal_source_hash"),
@@ -76,6 +80,8 @@ _EVENT_DETAILS = {
     ("risk", "continuous_risk_state"): "trading_account_risk_state_v1",
     ("strategy_decision", "signal"): "trading_strategy_signal_v1",
     ("strategy_decision", "intent"): "trading_strategy_intent_v1",
+    ("strategy_decision", "intent_rejection"): "trading_intent_decision_v1",
+    ("strategy_decision", "intent_deferral"): "trading_intent_decision_v1",
     ("execution", "fill"): "trading_execution_v1",
     ("execution", "commission"): "trading_commission_v1",
     ("order_management", "order_command"): "trading_order_command_v1",
@@ -129,6 +135,8 @@ class TypedJournalBatch:
     operational_faults: tuple[Mapping[str, Any], ...] = ()
     account_risk_states: tuple[Mapping[str, Any], ...] = ()
     account_risk_reasons: tuple[Mapping[str, Any], ...] = ()
+    intent_decisions: tuple[Mapping[str, Any], ...] = ()
+    intent_decision_reasons: tuple[Mapping[str, Any], ...] = ()
     signals: tuple[Mapping[str, Any], ...] = ()
     signal_sources: tuple[Mapping[str, Any], ...] = ()
     executions: tuple[Mapping[str, Any], ...] = ()
@@ -197,6 +205,7 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 "trading_oms_broker_binding_v1", "trading_oms_warning_v1",
                 "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1",
                 "trading_account_risk_reason_v1",
+                "trading_intent_decision_reason_v1",
             }
             parent_id = (str(UUID(str(row["parent_record_id"])))
                          if child_family else record_id)
@@ -243,7 +252,8 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                     "trading_order_command_context_v1", "trading_oms_order_state_v1",
                     "trading_oms_broker_binding_v1", "trading_oms_warning_v1",
                     "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1",
-                    "trading_account_risk_reason_v1"}:
+                    "trading_account_risk_reason_v1",
+                    "trading_intent_decision_reason_v1"}:
             continue
         for row in rows:
             record_id = str(UUID(str(row["record_id"])))
@@ -307,6 +317,34 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 or sorted(int(row["ordinal"]) for row in reasons) != list(range(len(reasons)))
                 or len({str(row["reason"]) for row in reasons}) != len(reasons)):
             raise ValueError("Account risk state or reasons differ from its event")
+    decisions = {
+        str(UUID(str(row["record_id"]))): row
+        for row in by_family["trading_intent_decision_v1"]
+    }
+    decision_reasons: dict[str, list[dict[str, Any]]] = {}
+    for reason in by_family["trading_intent_decision_reason_v1"]:
+        parent_id = str(UUID(str(reason["parent_record_id"])))
+        if (parent_id not in decisions or not str(reason["reason"])
+                or str(reason["account_id"]) != str(decisions[parent_id]["account_id"])):
+            raise ValueError("Intent decision reason lacks its typed decision")
+        decision_reasons.setdefault(parent_id, []).append(reason)
+    for decision_id, decision in decisions.items():
+        parent = events_by_id[decision_id]
+        reasons = decision_reasons.get(decision_id, [])
+        if (parent["category"] != "strategy_decision"
+                or parent["entity_type"] != decision["decision_kind"]
+                or decision["decision_kind"] not in {"intent_rejection", "intent_deferral"}
+                or str(parent["account_id"]) != str(decision["account_id"])
+                or not str(decision["account_id"]) or not str(decision["intent_id"])
+                or not str(decision["ticker"]) or not str(decision["reason_code"])
+                or decision["action"] != "wait"
+                or _datetime_wire(decision["source_event_time"], 9)
+                != _datetime_wire(parent["event_time"], 9)
+                or len(reasons) != int(decision["reason_count"])
+                or sorted(int(row["ordinal"]) for row in reasons)
+                != list(range(len(reasons)))
+                or len({str(row["reason"]) for row in reasons}) != len(reasons)):
+            raise ValueError("Intent decision or reasons differ from its event")
     sources_by_parent: dict[str, list[dict[str, Any]]] = {}
     for row in by_family["trading_signal_source_v1"]:
         parent_id = str(UUID(str(row["parent_record_id"])))

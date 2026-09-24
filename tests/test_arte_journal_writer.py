@@ -14,7 +14,7 @@ from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_journal_projection import (
     broker_fill_batch, commission_revision_batch, runtime_lifecycle_batch,
     operational_fault_batch,
-    account_risk_batch,
+    account_risk_batch, intent_decision_batch,
 )
 from src.trading_runtime import arte_journal_projection as projection_module
 from src.trading_runtime.domain import CommissionEvent
@@ -129,6 +129,63 @@ def run_context() -> dict:
         "safety_supervisor_enabled": True, "checkpoint_interval_events": 100,
         "write_progress_checkpoints": True,
     }
+
+
+def test_intent_decision_reasons_are_typed_and_fenced() -> None:
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    record = JournalRecord(
+        RECORD, RUN, 1, at, at, "strategy_decision", "intent_rejection",
+        "intent-1:portfolio-rejected", "DU1",
+        {"intent_id": "intent-1", "event": "intent_rejected", "action": "wait",
+         "reason": "portfolio_rejected", "reason_detail": "Portfolio rejected the entry: cash",
+         "rejection_reasons": ["cash", "risk"], "ticker": "ABCD",
+         "reference_price": 1.25, "strategy_id": "strategy-1",
+         "strategy_revision": 7, "status": "watching"},
+    )
+    item = intent_decision_batch(
+        record, run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
+        batch_id=BATCH, prior_batch_id=ZERO, source_cursor="decision",
+    )
+    assert item.intent_decisions[0]["reason_count"] == 2
+    assert [row["reason"] for row in item.intent_decision_reasons] == ["cash", "risk"]
+    client = MemoryClient()
+    publish_typed_batch(client, item)
+    assert load_committed_prefix(client, RUN).last_sequence == 1
+    client.tables["trading_intent_decision_reason_v1"][0]["reason"] = "tampered"
+    with pytest.raises(RuntimeError, match="content differs from its hash"):
+        load_committed_prefix(client, RUN)
+    with pytest.raises(ValueError, match="unmodeled"):
+        intent_decision_batch(replace(record, payload={**record.payload, "opaque": {}}),
+            run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
+            batch_id=BATCH, prior_batch_id=ZERO, source_cursor="decision")
+
+
+def test_execution_rejection_and_portfolio_deferral_have_distinct_contracts() -> None:
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    common = dict(record_id=RECORD, run_id=RUN, sequence=1,
+                  event_time=at, recorded_at=at, category="strategy_decision",
+                  account_id="DU1")
+    immediate = JournalRecord(**common, entity_type="intent_rejection",
+        entity_id="intent-1", payload={"intent_id": "intent-1", "action": "wait",
+        "reason": "execution_stop_already_triggered", "reason_detail": "stop crossed",
+        "ticker": "ABCD"})
+    item = intent_decision_batch(immediate, run_month=date(2026, 8, 1),
+        attempt_id=ATTEMPT, batch_id=BATCH, prior_batch_id=ZERO,
+        source_cursor="decision")
+    assert item.intent_decisions[0]["reference_price"] is None
+    assert item.intent_decision_reasons == ()
+    deferred = JournalRecord(**common, entity_type="intent_deferral",
+        entity_id="intent-1:portfolio-deferred", payload={
+            "intent_id": "intent-1", "event": "intent_deferred", "action": "wait",
+            "reason": "portfolio_deferred", "reason_detail": "capacity pending",
+            "rejection_reasons": ["capacity"], "ticker": "ABCD",
+            "reference_price": 1.25, "strategy_id": "strategy-1",
+            "strategy_revision": 7, "status": "watching"})
+    item = intent_decision_batch(deferred, run_month=date(2026, 8, 1),
+        attempt_id=ATTEMPT, batch_id=BATCH, prior_batch_id=ZERO,
+        source_cursor="decision")
+    assert item.intent_decisions[0]["decision_kind"] == "intent_deferral"
+    assert item.intent_decision_reasons[0]["reason"] == "capacity"
 
 
 def test_runtime_lifecycle_is_normalized_and_fence_verified() -> None:
@@ -425,7 +482,7 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     assert len(client.tables["trading_commit_v1"]) == 1
     assert not any("payload_json" in row for rows in client.tables.values() for row in rows)
     prefix = load_committed_prefix(client, RUN)
-    assert len(client.selects) == 30
+    assert len(client.selects) == 32
     assert prefix is not None
     assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
 
@@ -450,7 +507,7 @@ def test_recovery_groups_batches_but_verifies_each_fence() -> None:
     client.selects.clear()
     prefix = load_committed_prefix(client, RUN)
     assert prefix is not None and prefix.last_sequence == 3
-    assert len(client.selects) == 23
+    assert len(client.selects) == 25
     client.tables["trading_commit_v1"][0]["event_count"] = 0
     with pytest.raises(RuntimeError, match="not contiguous"):
         load_committed_prefix(client, RUN)

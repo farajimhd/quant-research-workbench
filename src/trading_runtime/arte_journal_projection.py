@@ -236,6 +236,96 @@ def account_risk_batch(
     )
 
 
+def intent_decision_batch(
+    record: JournalRecord, *, run_month: date, attempt_id: str,
+    batch_id: str, prior_batch_id: str, source_cursor: str,
+) -> TypedJournalBatch:
+    """Normalize portfolio and execution rejections without opaque payloads."""
+    kind = record.entity_type
+    if (record.category != "strategy_decision"
+            or kind not in {"intent_rejection", "intent_deferral"}
+            or not record.account_id or record.event_time.tzinfo is None
+            or record.recorded_at.tzinfo is None):
+        raise ValueError("Intent decision envelope is invalid")
+    payload = dict(record.payload)
+    shared = {"intent_id", "action", "reason", "reason_detail", "ticker"}
+    portfolio = {"event", "rejection_reasons", "reference_price",
+                 "strategy_id", "strategy_revision", "status"}
+    if kind == "intent_deferral" or payload.get("reason") == "portfolio_rejected":
+        if set(payload) - {"correlation_id", "causation_id"} != (shared | portfolio):
+            raise ValueError("Portfolio intent decision has unmodeled fields")
+        if (payload["event"] != ("intent_deferred" if kind == "intent_deferral"
+                                else "intent_rejected")
+                or payload["reason"] != ("portfolio_deferred" if kind == "intent_deferral"
+                                          else "portfolio_rejected")
+                or record.entity_id != f"{payload['intent_id']}:portfolio-{'deferred' if kind == 'intent_deferral' else 'rejected'}"):
+            raise ValueError("Portfolio intent decision identity is inconsistent")
+        reasons = payload["rejection_reasons"]
+        if (not isinstance(reasons, (tuple, list)) or len(reasons) > 65535
+                or any(not isinstance(reason, str) or not reason for reason in reasons)
+                or len(set(reasons)) != len(reasons)):
+            raise ValueError("Portfolio intent decision reasons are invalid")
+        reference_price = _exact_decimal(payload["reference_price"])
+        strategy_id = payload["strategy_id"]
+        revision = payload["strategy_revision"]
+        status = payload["status"]
+    else:
+        if (kind != "intent_rejection" or set(payload) - {"correlation_id", "causation_id"}
+                != shared
+                or payload.get("reason") != "execution_stop_already_triggered"
+                or record.entity_id != payload.get("intent_id")):
+            raise ValueError("Execution intent rejection has unmodeled evidence")
+        reasons = ()
+        reference_price = None
+        strategy_id = ""
+        revision = 0
+        status = ""
+    if (not isinstance(payload.get("intent_id"), str) or not payload["intent_id"]
+            or payload.get("action") != "wait"
+            or not isinstance(payload.get("ticker"), str) or not payload["ticker"]
+            or not isinstance(payload.get("reason_detail"), str)
+            or not isinstance(strategy_id, str)
+            or type(revision) is not int or not 0 <= revision < 2**32
+            or not isinstance(status, str)):
+        raise ValueError("Intent decision fields are invalid")
+    at = record.event_time.astimezone(timezone.utc).isoformat()
+    received = record.recorded_at.astimezone(timezone.utc).isoformat()
+    month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+    event = {
+        "run_id": record.run_id, "event_month": month,
+        "attempt_id": attempt_id, "batch_id": batch_id,
+        "record_id": record.record_id, "sequence": record.sequence,
+        "event_time": at, "recorded_at": received,
+        "category": record.category, "entity_type": kind,
+        "entity_id": record.entity_id, "account_id": record.account_id,
+        "correlation_id": str(payload.get("correlation_id") or ""),
+        "causation_id": str(payload.get("causation_id") or ""),
+    }
+    decision = {
+        "record_id": record.record_id, "run_id": record.run_id,
+        "event_month": month, "batch_id": batch_id,
+        "account_id": record.account_id, "intent_id": payload["intent_id"],
+        "ticker": payload["ticker"].upper(), "decision_kind": kind,
+        "action": "wait", "reason_code": payload["reason"],
+        "reason_detail": payload["reason_detail"],
+        "reference_price": reference_price, "strategy_id": strategy_id,
+        "strategy_revision": revision, "assignment_status": status,
+        "reason_count": len(reasons), "source_event_time": at,
+    }
+    reason_rows = tuple({
+        "record_id": str(uuid5(NAMESPACE_URL,
+            f"{record.record_id}:intent-decision-reason:{ordinal}:{reason}")),
+        "run_id": record.run_id, "event_month": month, "batch_id": batch_id,
+        "parent_record_id": record.record_id, "account_id": record.account_id,
+        "ordinal": ordinal, "reason": reason,
+    } for ordinal, reason in enumerate(reasons))
+    return TypedJournalBatch(
+        record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        record.sequence, record.sequence, source_cursor, "running", (event,),
+        intent_decisions=(decision,), intent_decision_reasons=reason_rows,
+    )
+
+
 def _exact_decimal(value: float | Decimal, scale: Decimal = _SCALE) -> str:
     try:
         with localcontext() as context:

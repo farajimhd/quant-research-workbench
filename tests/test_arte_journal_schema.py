@@ -5,6 +5,7 @@ import pytest
 from src.trading_runtime.arte_journal_schema import (
     TABLES, BATCH_LOOKUP_INDEX, batch_lookup_index_upgrade_ddl,
     batch_lookup_index_materialize_ddl,
+    intent_decision_upgrade_ddl,
     intent_schema_upgrade_ddl, order_context_upgrade_ddl,
     oms_state_upgrade_ddl, intent_use_upgrade_ddl, run_transition_upgrade_ddl,
     operational_fault_upgrade_ddl,
@@ -16,7 +17,7 @@ from src.trading_runtime.arte_journal_schema import (
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 27
+    assert len(statements) == len(TABLES) == 29
     for table, statement in zip(TABLES, statements):
         assert f"CREATE TABLE IF NOT EXISTS arte.{table.name}" in statement
         assert "ENGINE = MergeTree" in statement
@@ -40,6 +41,16 @@ def test_batch_readback_index_upgrade_only_targets_typed_journal_tables() -> Non
     materialize = batch_lookup_index_materialize_ddl()
     assert len(materialize) == len(statements)
     assert {sql.split("arte.", 1)[1].split(" ", 1)[0] for sql in materialize} == indexed
+
+
+def test_intent_decision_upgrade_normalizes_reasons_and_commit_fence() -> None:
+    statements = intent_decision_upgrade_ddl()
+    assert len(statements) == 6
+    assert "trading_intent_decision_v1" in statements[0]
+    assert "trading_intent_decision_reason_v1" in statements[1]
+    assert all("ALTER TABLE arte.trading_commit_v1" in sql for sql in statements[2:])
+    assert not any("arte.bars_v1" in sql or "arte.liquidity_100ms_v1" in sql
+                   for sql in statements)
 
 
 def test_shared_event_and_execution_contract_uses_lossless_identifiers() -> None:

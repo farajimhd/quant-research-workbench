@@ -223,6 +223,38 @@ TABLES = (
         "run_id, strategy_id, ticker, source_event_time, record_id",
     ),
     TableContract(
+        "trading_intent_decision_v1",
+        (
+            ("record_id", "UUID"), ("run_id", "String"),
+            ("event_month", "Date"), ("batch_id", "UUID"),
+            ("account_id", "String"), ("intent_id", "String"),
+            ("ticker", "LowCardinality(String)"),
+            ("decision_kind", "LowCardinality(String)"),
+            ("action", "LowCardinality(String)"),
+            ("reason_code", "LowCardinality(String)"),
+            ("reason_detail", "String"),
+            ("reference_price", "Nullable(Decimal(38, 10))"),
+            ("strategy_id", "String"), ("strategy_revision", "UInt32"),
+            ("assignment_status", "String"), ("reason_count", "UInt16"),
+            ("source_event_time", "DateTime64(9, 'UTC')"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)",
+        "run_id, account_id, ticker, source_event_time, record_id",
+    ),
+    TableContract(
+        "trading_intent_decision_reason_v1",
+        (
+            ("record_id", "UUID"), ("run_id", "String"),
+            ("event_month", "Date"), ("batch_id", "UUID"),
+            ("parent_record_id", "UUID"), ("account_id", "String"),
+            ("ordinal", "UInt16"), ("reason", "String"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)",
+        "run_id, parent_record_id, ordinal, record_id",
+    ),
+    TableContract(
         "trading_signal_source_v1",
         (
             ("record_id", "UUID"),
@@ -675,6 +707,10 @@ TABLES = (
             ("account_risk_state_hash", "FixedString(64)"),
             ("account_risk_reason_count", "UInt32"),
             ("account_risk_reason_hash", "FixedString(64)"),
+            ("intent_decision_count", "UInt32"),
+            ("intent_decision_hash", "FixedString(64)"),
+            ("intent_decision_reason_count", "UInt32"),
+            ("intent_decision_reason_hash", "FixedString(64)"),
             ("source_cursor", "String"),
             ("status", "LowCardinality(String)"),
             ("committed_at", "DateTime64(6, 'UTC')"),
@@ -705,6 +741,25 @@ def batch_lookup_index_materialize_ddl() -> tuple[str, ...]:
     return tuple(
         f"ALTER TABLE arte.{table.name} MATERIALIZE INDEX {BATCH_LOOKUP_INDEX}"
         for table in TABLES if "batch_id" in dict(table.columns)
+    )
+
+
+def intent_decision_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only normalized rejection/deferral schema and commit counters."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_intent_decision_v1"].ddl(),
+        by_name["trading_intent_decision_reason_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "intent_decision_count UInt32 DEFAULT 0 AFTER account_risk_reason_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"intent_decision_hash FixedString(64) DEFAULT '{empty_hash}' AFTER intent_decision_count",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "intent_decision_reason_count UInt32 DEFAULT 0 AFTER intent_decision_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"intent_decision_reason_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER intent_decision_reason_count",
     )
 
 

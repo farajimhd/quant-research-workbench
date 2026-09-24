@@ -936,7 +936,8 @@ class TradingRuntime:
                     self.journal.append(run_id=self.run_id, category='strategy_decision',
                         entity_type='intent_rejection', entity_id=approved_intent.intent_id,
                         account_id=account_id, event_time=approved_intent.event_time,
-                        payload={'action':'wait', 'reason':'execution_stop_already_triggered',
+                        payload={'intent_id': approved_intent.intent_id,
+                                 'action':'wait', 'reason':'execution_stop_already_triggered',
                                  'reason_detail':str(exc), 'ticker':approved_intent.ticker})
                     results.append({'decision':{'status':'rejected','reason':str(exc)}, 'order_group':None})
                     continue
@@ -973,7 +974,8 @@ class TradingRuntime:
         reason_detail = (
             ("Portfolio deferred the entry: " if deferred else "Portfolio rejected the entry: ") + ", ".join(reasons)
             if reasons
-            else "Portfolio rejected the entry without a reason code."
+            else ("Portfolio deferred the entry without a reason code."
+                  if deferred else "Portfolio rejected the entry without a reason code.")
         )
         self.journal.append(
             run_id=self.run_id,
@@ -983,6 +985,7 @@ class TradingRuntime:
             account_id=account_id,
             event_time=intent.event_time,
             payload={
+                "intent_id": intent.intent_id,
                 "event": "intent_deferred" if deferred else "intent_rejected",
                 "action": "wait",
                 "reason": "portfolio_deferred" if deferred else "portfolio_rejected",
