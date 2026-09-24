@@ -60,3 +60,13 @@ reused only if that saved credential authenticates; no implicit rotation or
 overwrite occurs. The final check logs in as the restricted user and verifies
 that it cannot insert into market tables or alter schema. Do not enable a
 runtime writer until the typed storage-placement and recovery checks pass.
+
+## Retired opaque Backtest tables
+
+After stopping any job that still references the retired `arte.bt_*` contract,
+run `python -B scripts/clickhouse/drop_retired_backtest_journal.py` on the
+workstation to inspect the exact four-table drop plan. Run again with `--apply`
+to permanently remove only those four tables. The command fails if another
+`bt_*` name appears; it never drops typed journal or market-data tables. No old
+Backtest data is migrated. Do not run the drop while ClickHouse is unhealthy or
+the workstation's current data campaign is unverified.
