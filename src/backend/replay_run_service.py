@@ -2263,15 +2263,26 @@ class ReplayRunController:
                     'market': state['controller']['source_cursor'],
                     'frame': state['controller']['frame_cursor'],
                 }, separators=(',', ':'), sort_keys=True)
-                if not self._journal.unfenced_records():
-                    from src.trading_runtime.arte_journal_projection import (
-                        backtest_cursor_record_fields,
-                    )
-                    boundary_id, boundary_payload = backtest_cursor_record_fields(
-                        state['controller']['source_cursor'],
-                        state['controller']['frame_cursor'],
-                        completed_at=event_time,
-                    )
+                from src.trading_runtime.arte_journal_projection import (
+                    backtest_cursor_record_fields,
+                )
+                boundary_id, boundary_payload = backtest_cursor_record_fields(
+                    state['controller']['source_cursor'],
+                    state['controller']['frame_cursor'],
+                    completed_at=event_time,
+                )
+                pending = self._journal.unfenced_records()
+                last = pending[-1] if pending else None
+                same_boundary = (last is not None
+                                 and last.category == 'checkpoint'
+                                 and last.entity_type == 'market_boundary'
+                                 and last.entity_id == boundary_id)
+                if same_boundary:
+                    previous = {key: value for key, value in last.payload.items()
+                                if key not in {'correlation_id', 'causation_id'}}
+                    if previous != boundary_payload:
+                        raise RuntimeError('Unfenced Backtest boundary changed during retry')
+                else:
                     self._journal.append(
                         run_id=self.run_id, category='checkpoint',
                         entity_type='market_boundary', entity_id=boundary_id,

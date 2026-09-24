@@ -255,6 +255,53 @@ def test_controller_checkpoint_becomes_resumable_only_after_clickhouse_fence():
     assert controller._checkpoint_io_task is None
 
 
+def test_controller_adds_boundary_after_other_pending_records():
+    journal = BacktestMemoryJournal(run_id=RUN_ID, max_pending_records=2)
+    journal.append(run_id=RUN_ID, category="warning", entity_type="coverage",
+                   entity_id="earlier", payload={"reason": "test"}, event_time=AT)
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller.run_id = RUN_ID
+    controller.status = "running"
+    controller._journal = journal
+    controller._checkpoint_projection_cache = None
+    controller._checkpoint_io_task = None
+    controller.stream_snapshot = lambda: {"status": "running"}
+    controller._restart_checkpoint_state = lambda **_kwargs: {
+        "schema_version": 1,
+        "controller": {
+            "source_cursor": {"session_date": "2026-08-18",
+                              "boundary_ms": 14_400_000, "sequence": 1},
+            "frame_cursor": {}, "processed_events": 1,
+        },
+    }
+    controller._record_stage_time = lambda *_args: None
+    controller._restart_checkpoint_interval_events = lambda: 100
+
+    class Publisher:
+        async def fence_checkpoint(self, **_kwargs):
+            assert [row.category for row in journal.unfenced_records()] == [
+                "warning", "checkpoint"]
+            raise OSError("commit unavailable")
+
+    controller._journal_publisher = Publisher()
+    with pytest.raises(OSError, match="commit unavailable"):
+        asyncio.run(controller._save_restart_checkpoint_responsive(AT))
+    with pytest.raises(OSError, match="commit unavailable"):
+        asyncio.run(controller._save_restart_checkpoint_responsive(AT))
+    assert journal.pending_record_count == 2
+    controller._restart_checkpoint_state = lambda **_kwargs: {
+        "schema_version": 1,
+        "controller": {
+            "source_cursor": {"session_date": "2026-08-18",
+                              "boundary_ms": 14_400_000, "sequence": 2},
+            "frame_cursor": {}, "processed_events": 2,
+        },
+    }
+    with pytest.raises(RuntimeError, match="changed during retry"):
+        asyncio.run(controller._save_restart_checkpoint_responsive(AT))
+
+
 def test_controller_opens_clickhouse_journal_after_contract_preflight(monkeypatch):
     import src.backend.backtest_journal_clickhouse as clickhouse_journal
 
