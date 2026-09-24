@@ -1721,6 +1721,16 @@ class ArteJournalWriter:
         self._client = client
         self._run_id = run_id
         self._run_mode = context["mode"]
+        if self._run_mode == "backtest":
+            account_ids = context.get("account_ids")
+            if (not isinstance(account_ids, (tuple, list)) or not account_ids
+                    or len(set(account_ids)) != len(account_ids)
+                    or any(not isinstance(account_id, str) or not account_id
+                           for account_id in account_ids)):
+                raise RuntimeError("Backtest journal lacks verified account membership")
+            self._run_account_ids = frozenset(account_ids)
+        else:
+            self._run_account_ids = frozenset()
         self._max_events_per_commit = max_events_per_commit
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
@@ -1876,8 +1886,9 @@ class ArteJournalWriter:
                 or batch.run_id != self._run_id or not captured
                 or any(not isinstance(row, CapturedPortfolioSnapshot)
                        or row.run_id != self._run_id for row in captured)
-                or len({row.account_id for row in captured}) != len(captured)):
-            raise ValueError("Terminal Backtest requires one capture per distinct account")
+                or {row.account_id for row in captured} != self._run_account_ids
+                or len(captured) != len(self._run_account_ids)):
+            raise ValueError("Terminal Backtest requires one capture per run account")
         with self._submission_lock:
             if self._closed:
                 raise RuntimeError("Typed journal writer is closed")

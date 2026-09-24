@@ -891,7 +891,9 @@ def test_terminal_backtest_queues_all_account_anchors_after_events(monkeypatch) 
                              item.source_cursor, "completed", (BATCH,))
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run: {"mode": "backtest"})
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run: {
+        "mode": "backtest", "account_ids": ("DU1",),
+    })
     monkeypatch.setattr(writer_module, "load_typed_run_context", lambda _client, _run: {
         "mode": "backtest", "account_ids": ("DU1",),
     })
@@ -916,8 +918,11 @@ def test_terminal_backtest_queues_all_account_anchors_after_events(monkeypatch) 
         release.set()
         assert receipt.result(timeout=5) == BATCH
         assert order == ["events", "anchor"]
-        with pytest.raises(ValueError, match="distinct account"):
+        with pytest.raises(ValueError, match="per run account"):
             journal.submit_terminal_backtest(item, (snapshot, snapshot))
+        with pytest.raises(ValueError, match="per run account"):
+            journal.submit_terminal_backtest(item, (replace(snapshot, account_id="DU2"),))
+        assert order == ["events", "anchor"]
     finally:
         release.set()
         journal.close()
@@ -928,6 +933,15 @@ def test_writer_rejects_missing_verified_run_mode(monkeypatch) -> None:
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run: None)
     with pytest.raises(RuntimeError, match="verified run mode"):
+        ArteJournalWriter(object(), run_id=RUN)
+
+
+def test_backtest_writer_requires_verified_account_membership(monkeypatch) -> None:
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity",
+                        lambda _client, _run: {"mode": "backtest"})
+    with pytest.raises(RuntimeError, match="account membership"):
         ArteJournalWriter(object(), run_id=RUN)
 
 
