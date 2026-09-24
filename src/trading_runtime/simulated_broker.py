@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from math import floor, isclose, isfinite
@@ -45,6 +46,14 @@ def _checkpoint_time(value: Any) -> datetime:
     if parsed.tzinfo is None:
         raise ValueError("Simulator checkpoint timestamps must be timezone-aware")
     return parsed
+
+
+def _checkpoint_order_request(request: OrderRequest) -> dict[str, Any]:
+    """Keep simulator lineage that the outbound CPAPI serializer must omit."""
+    payload = request.to_cpapi()
+    payload.update({key: deepcopy(value) for key, value in request.raw.items()
+                    if key.startswith("canonical_")})
+    return payload
 
 
 def _market_event_checkpoint(event: MarketEvent) -> dict[str, Any]:
@@ -248,7 +257,7 @@ class SimulatedBrokerAdapter:
             },
             "orders": [
                 {
-                    "request": state.request.to_cpapi(),
+                    "request": _checkpoint_order_request(state.request),
                     "order_id": state.order_id,
                     "status": state.status.value,
                     "submitted_at": state.submitted_at.isoformat(),

@@ -65,6 +65,28 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         restored.restore_checkpoint_state(state)
         self.assertEqual(restored.checkpoint_state(), state)
 
+    async def test_checkpoint_restores_canonical_stop_trigger_metadata(self):
+        request = OrderRequest(
+            acctId="TEST", conid=265598, cOID="stop-with-lineage",
+            ticker="AAPL", orderType="STP", side="BUY", quantity=5,
+            price=10.5, auxPrice=10.5, raw={
+                "canonical_run_id": "backtest-run",
+                "canonical_strategy_id": "strategy-1",
+                "canonical_strategy_revision": 7,
+                "canonical_metadata": {"stop_trigger_source": "eligible_trade"},
+            })
+        await self.broker.place_orders("TEST", [request])
+        self.assertNotIn("canonical_metadata", request.to_cpapi())
+        checkpoint = self.broker.checkpoint_state()
+        self.assertEqual(checkpoint["orders"][0]["request"]["canonical_metadata"],
+                         {"stop_trigger_source": "eligible_trade"})
+        restored = SimulatedBrokerAdapter(
+            ["TEST"], self.broker.config, mode=RunMode.BACKTEST, initial_time=START)
+        await restored.initialize()
+        restored.restore_checkpoint_state(checkpoint)
+        self.assertEqual(restored._orders["1"].request.raw, request.raw)
+        self.assertEqual(restored.checkpoint_state(), checkpoint)
+
     async def test_market_order_uses_completed_quote_and_displayed_size(self):
         await self.order("MKT", quantity=30)
         at = START + timedelta(milliseconds=100)
