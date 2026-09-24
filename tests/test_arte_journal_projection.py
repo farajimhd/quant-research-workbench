@@ -45,6 +45,7 @@ def test_simple_order_command_preserves_every_broker_instruction() -> None:
     assert detail["listing_exchange"] == "ARCA"
     assert detail["manual_indicator"] == 1
     assert detail["broker_strategy"] == "broker-algo"
+    assert order_command_batch(replace(request, ticker="Test.a"), **args).order_commands[0]["ticker"] == "Test.a"
     assert dict(_sealed_families(batch))["trading_order_command_v1"]
     assert order_command_batch(request, **args).events[0]["record_id"] == batch.events[0]["record_id"]
     contextual = order_command_batch(

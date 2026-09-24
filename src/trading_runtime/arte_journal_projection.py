@@ -191,7 +191,7 @@ def order_command_batch(
         "record_id": record_id, "run_id": run_id, "event_month": event_month,
         "batch_id": batch_id, "account_id": request.acctId,
         "command_id": command_id, "client_order_id": request.cOID,
-        "conid": request.conid, "ticker": request.ticker.upper(),
+        "conid": request.conid, "ticker": request.ticker,
         "side": request.side, "order_type": request.orderType,
         "time_in_force": request.tif,
         "quantity": _exact_decimal(request.quantity) if request.quantity is not None else None,
