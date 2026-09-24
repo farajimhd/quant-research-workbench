@@ -8,12 +8,15 @@ import unittest
 from unittest.mock import patch
 from uuid import UUID
 
+import pytest
+
 from src.backend.backtest_journal_clickhouse import (
-    BacktestJournalWriter, journal_clickhouse_client, load_fenced_checkpoint,
+    BacktestJournalWriter, backtest_code_hash, journal_clickhouse_client,
+    load_fenced_checkpoint,
     prepare_batch, prepare_fence, publish_batch, publish_fence, publish_run,
     schema_ddl, storage_preflight,
 )
-from src.backend.backtest_journal_clickhouse import _COLUMNS, _LAYOUT
+from src.backend.backtest_journal_clickhouse import _COLUMNS, _LAYOUT, _insert
 from src.backend.backtest_journal_memory import BacktestJournalPublisher, BacktestMemoryJournal
 from src.trading_runtime.clickhouse import _journal_row
 from src.trading_runtime.journal import JournalRecord
@@ -22,6 +25,24 @@ from src.trading_runtime.journal_contract import journal_row
 
 RUN = "00000000-0000-0000-0000-000000000010"
 ATTEMPT = "00000000-0000-0000-0000-000000000020"
+
+
+def test_source_identity_changes_with_deployed_python(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "research").mkdir()
+    source = tmp_path / "src" / "runtime.py"
+    source.write_text("VERSION = 1\n", encoding="utf-8")
+    (tmp_path / "research" / "helper.py").write_text("x = 1\n", encoding="utf-8")
+    first = backtest_code_hash(tmp_path)
+    assert first == backtest_code_hash(tmp_path)
+    source.write_text("VERSION = 2\n", encoding="utf-8")
+    assert first != backtest_code_hash(tmp_path)
+
+
+def test_journal_insert_cannot_target_market_products():
+    with pytest.raises(ValueError, match="outside its four journal tables"):
+        _insert(_Client(), "arte.bars_v1", ({"ticker": "TEST"},), "token")
+
 
 
 def record(sequence: int) -> JournalRecord:

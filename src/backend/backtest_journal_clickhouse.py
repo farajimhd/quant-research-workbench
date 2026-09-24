@@ -13,6 +13,7 @@ from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
 import os
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 from uuid import UUID, uuid5
 
@@ -23,6 +24,7 @@ from src.trading_runtime.journal_evidence import decode_evidence, encode_evidenc
 TABLE_PREFIX = "arte.bt_"
 STORAGE_POLICY = "live_market_ssd"
 TABLES = ("bt_run_v1", "bt_event_v1", "bt_blob_v1", "bt_commit_v1")
+WRITABLE_TABLES = frozenset(f"arte.{name}" for name in TABLES)
 _BATCH_NAMESPACE = UUID("9c911ad1-61b5-48ba-a858-6bba42e27f70")
 _LAYOUT = {
     "bt_run_v1": ("toYYYYMM(run_month)", "run_id"),
@@ -66,6 +68,33 @@ def journal_clickhouse_client() -> Any:
         url, user, password, timeout_seconds=60, persistent=True,
         default_query_params={"max_threads": 2, "max_execution_time": 60},
     )
+
+
+def backtest_code_hash(root: Path) -> str:
+    """Fingerprint the deployed Python source, including research dependencies.
+
+    This uses source files rather than a Git checkout because workstation code
+    synchronization does not require a ``.git`` directory at execution time.
+    """
+    digest = sha256()
+    count = 0
+    for directory in ("src", "research"):
+        source = root / directory
+        if not source.is_dir():
+            raise ValueError(f"Backtest code identity lacks {directory} source")
+        for path in sorted(source.rglob("*.py")):
+            if not path.is_file() or path.is_symlink():
+                raise ValueError(f"Backtest code identity contains an invalid source: {path}")
+            relative = path.relative_to(root).as_posix().encode("utf-8")
+            digest.update(len(relative).to_bytes(4, "big"))
+            digest.update(relative)
+            with path.open("rb") as source_file:
+                while chunk := source_file.read(1024 * 1024):
+                    digest.update(chunk)
+            count += 1
+    if not count:
+        raise ValueError("Backtest code identity has no source files")
+    return digest.hexdigest()
 
 
 def schema_ddl() -> tuple[str, ...]:
@@ -275,6 +304,8 @@ def _literal(value: str) -> str:
 
 
 def _insert(client: Any, table: str, rows: Sequence[dict[str, Any]], token: str) -> None:
+    if table not in WRITABLE_TABLES:
+        raise ValueError("Backtest journal cannot insert outside its four journal tables")
     if not rows:
         return
     body = "\n".join(canonical_json(row) for row in rows)

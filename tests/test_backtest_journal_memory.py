@@ -168,3 +168,45 @@ def test_controller_checkpoint_becomes_resumable_only_after_clickhouse_fence():
     assert succeeded.calls[0]["status"] == "completed"
     assert controller._checkpoint_projection_cache["resume_supported"] is True
     assert controller._checkpoint_io_task is None
+
+
+def test_controller_opens_clickhouse_journal_after_contract_preflight(monkeypatch):
+    import src.backend.backtest_journal_clickhouse as clickhouse_journal
+
+    calls = []
+
+    class Client:
+        def close(self):
+            calls.append("closed")
+
+    client = Client()
+    monkeypatch.setattr(clickhouse_journal, "journal_clickhouse_client", lambda: client)
+    monkeypatch.setattr(clickhouse_journal, "storage_preflight",
+                        lambda actual: calls.append(("preflight", actual)))
+    monkeypatch.setattr(clickhouse_journal, "backtest_code_hash", lambda _root: "b" * 64)
+    monkeypatch.setattr(clickhouse_journal, "publish_run",
+                        lambda actual, **kwargs: calls.append(("run", actual, kwargs)))
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST,
+        configuration_revision={"content_hash": "a" * 64},
+        market_data_plan={"token": "market"},
+        causal_v7_plan={"token": "v7"},
+        payload=lambda: {"mode": "backtest"},
+    )
+    controller.run_id = RUN_ID
+    controller.created_at = AT
+    controller._journal = None
+    controller._journal_writer = None
+    controller._journal_publisher = None
+
+    async def exercise():
+        await controller._open_fixed_journal()
+        assert isinstance(controller._journal, BacktestMemoryJournal)
+        assert controller._journal_publisher.journal is controller._journal
+        assert calls[0] == ("preflight", client)
+        assert calls[1][2]["market_plan_token"] == "market"
+        await controller._close_fixed_journal()
+
+    asyncio.run(exercise())
+    assert calls[-1] == "closed"

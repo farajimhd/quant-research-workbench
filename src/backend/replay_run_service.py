@@ -1134,6 +1134,8 @@ class ReplayRunController:
         self._strategy_registration: StrategyExecutorRegistration | None = None
         self._planner: RuntimeIbkrStrategyOrderPlanner | None = None
         self._journal: TradingJournal | None = None
+        self._journal_publisher = None
+        self._journal_writer = None
         self._account_map: dict[str, str] = {}
         self._quotes: dict[str, QuoteEvent] = {}
         self._pending_passive_market_events: list[MarketEvent] = []
@@ -2589,6 +2591,60 @@ class ReplayRunController:
             active = False
             self._dependency_retries.clear()
 
+    async def _open_fixed_journal(self) -> None:
+        """Publish one immutable Backtest identity before accepting journal events."""
+        from src.backend.backtest_journal_clickhouse import (
+            BacktestJournalWriter, backtest_code_hash, journal_clickhouse_client,
+            publish_run, storage_preflight,
+        )
+        from src.backend.backtest_journal_memory import (
+            BacktestJournalPublisher, BacktestMemoryJournal,
+        )
+
+        if self.definition.mode != RunMode.BACKTEST or self._journal is not None:
+            raise RuntimeError("ClickHouse Backtest journal requires a new Backtest run")
+        client = await asyncio.to_thread(journal_clickhouse_client)
+        writer = None
+        try:
+            await asyncio.to_thread(storage_preflight, client)
+            code_hash = await asyncio.to_thread(
+                backtest_code_hash, Path(__file__).resolve().parents[2])
+            configuration_hash = str(
+                self.definition.configuration_revision.get("content_hash") or "")
+            run_date = self.created_at.astimezone(UTC).date()
+            await asyncio.to_thread(
+                publish_run, client,
+                run_id=self.run_id, run_date=run_date,
+                definition=self.definition.payload(),
+                configuration_hash=configuration_hash,
+                market_plan_token=str(self.definition.market_data_plan["token"]),
+                v7_plan_token=str(self.definition.causal_v7_plan.get("token") or ""),
+                code_hash=code_hash,
+            )
+            journal = BacktestMemoryJournal(run_id=self.run_id)
+            writer = BacktestJournalWriter(client)
+            self._journal = journal
+            self._journal_writer = writer
+            self._journal_publisher = BacktestJournalPublisher(
+                journal, writer, attempt_id=str(uuid4()), run_date=run_date)
+        except BaseException:
+            if writer is None:
+                await asyncio.to_thread(client.close)
+            else:
+                await writer.close()
+            raise
+
+    async def _close_fixed_journal(self) -> None:
+        writer = self._journal_writer
+        self._journal_writer = None
+        self._journal_publisher = None
+        try:
+            if writer is not None:
+                await writer.close()
+        finally:
+            if self._journal is not None:
+                self._journal.close()
+
     async def _run_engine(self) -> None:
         try:
             if self.status == "created":
@@ -2977,6 +3033,8 @@ class ReplayRunController:
             self.error = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
             await self._finish("failed")
         finally:
+            if self._journal_writer is not None:
+                await self._close_fixed_journal()
             await asyncio.to_thread(self._session_relative_volume_store.close)
             pool=getattr(self,'_prepared_v7',None)
             if pool is not None:
@@ -7782,7 +7840,14 @@ class ReplayRunController:
                 self.definition.configuration_revision.get("content_hash") or ""
             ),
             "runtime_root": str(self.runtime_root),
-            "journal_path": str(self.run_dir / "journal.sqlite3"),
+            "journal_path": (
+                "" if self.definition.mode == RunMode.BACKTEST
+                else str(self.run_dir / "journal.sqlite3")
+            ),
+            "journal_backend": (
+                "arte_clickhouse_v1" if self.definition.mode == RunMode.BACKTEST
+                else "sqlite_v1"
+            ),
         }
         if self.definition.debug_fixture is not None:
             fixture_target = self.run_dir / "debug-fixture.json"
