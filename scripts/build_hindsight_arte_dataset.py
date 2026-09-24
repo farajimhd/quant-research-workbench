@@ -72,11 +72,8 @@ def listing_work(listing, day, source, plan, root, threads):
         stage = 'MACD targets'
         episodes = labels.intervals(indicators,right)
         target = labels.targets(bars,episodes,plan['lookback_seconds'])
-        target_times = [round(p['exit_time']*1e6) for p in target['positions']]
-        times = sorted(set(range(left,right+1,1_000_000)).union(target_times))
-        stage = 'quote samples'
-        quotes = source_api.quote_samples(c,source,day,ticker,times)
-        values = labels.decision_values(day,bars,quotes,target['positions']).with_columns(
+        stage = 'price-action labels'
+        values = labels.decision_values(day,bars,target['positions']).with_columns(
             pl.lit(ticker).alias('ticker'),pl.lit(listing['listing_id']).alias('listing_id'))
         # Recheck pinned products before publishing; do not trust a mutable latest pointer.
         stage = 'final integrity'
@@ -104,7 +101,8 @@ def phase1(day, source, listings, population, root, args, console, code):
         source_units=source['units'][str(day)],population=population,
         lookback_seconds=args.lookback_seconds,code_hashes={k:v for k,v in code.items() if 'greedy' not in k},
         polars_version=pl.__version__,target_clock='completed_100ms_bar_end',
-        quote_policy='persisted_last_valid_quote_at_completed_bucket; freshness <= 1 second at decision',
+        valuation_basis='price_action',
+        price_policy='latest completed eligible 100ms trade close; retain observation age; no quote gates',
         volume_policy='completed_1s_canonical_volume; rolling_10s; cumulative_from_0400',
         semantics='Local MACD swing supervision; retained target and reward selection; no event parity claim')
     plan['plan_hash'] = digest(plan)

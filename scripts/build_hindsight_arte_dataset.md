@@ -1,8 +1,9 @@
 # Hindsight dataset from persisted arte products
 
 Use `build_hindsight_arte_dataset.py` for the new Phase 1 → Phase 2 workflow.
-All market observations come from `arte.bars_v1`, `arte.indicators_v1` and
-`arte.liquidity_100ms_v1`. It never reads canonical events or calls QMD History.
+All market observations come from `arte.bars_v1` and `arte.indicators_v1`.
+Phase 1 defines labels exclusively from price action. It never reads quotes,
+liquidity tables, canonical events or QMD History.
 Population identity comes from the source build's pinned V2 snapshot; completed
 stage certificates come from its runtime SQLite ledger.
 
@@ -26,7 +27,8 @@ It does not start services or alter source tables.
 
 ## Meaning of the new version
 
-`hindsight-phase1-arte-100ms-v1` is explicitly different from event-exact labels:
+`hindsight-phase1-arte-price-action-v2` replaces quote-valued Phase 1 with
+price-action labels. Prior datasets remain immutable and retain their versions.
 
 - MACD uses completed, sparse 1-second indicator rows with the persisted build's
   seed history. Missing seconds do not create synthetic indicator updates.
@@ -36,11 +38,16 @@ It does not start services or alter source tables.
   selected entry. Equal extrema select the earliest completed bar.
 - The target timestamp is the **100 ms bar close**, not the unknown intrabar
   extremum time. A high and low in the same bar cannot form a round trip.
-- Quotes use the latest **completed** liquidity bucket at or before the decision
-  or target. A bucket is never exposed at its last event time before it closes.
-  Persisted valid-quote carry behavior is retained. Both sides need finite,
-  positive depth and valid prices; the source quote must be at most one second
-  old at the actual sampled time.
+- The decision reference is the latest completed eligible 100 ms trade close.
+  Before the first price it is unavailable. Sparse periods carry the last
+  observed close; `price_us` and `price_age_seconds` expose its age without an
+  arbitrary freshness gate. Future bars cannot supply the current reference.
+- Long gross labels equal the future swing high minus the decision price;
+  short gross labels equal the decision price minus the future swing low.
+  Targets use their selected high/low, not the close of the target bar.
+  No bid/ask, spread, quote-age, depth, fillability or transaction-cost condition
+  changes Phase 1 labels. Negative values are retained. Missing labels mean no
+  future target or no observed current price, never an unavailable quote.
 - Activity uses completed 1-second bar volume/counts. Missing seconds contribute
   zero activity, ten-second volume is a rolling sum, and session volume starts
   at 04:00 ET. Different timeframe volumes are never added together.
@@ -50,6 +57,12 @@ It does not start services or alter source tables.
 - Positive-swing target selection, next-target selection and Phase 2's fractional
   local objective are retained. This change does not redesign RL rewards or
   claim to produce account trajectories. Future target fields remain labels.
+- Phase 2 explicitly records `valuation_basis=price_action` for this version.
+  Its coefficients use the same decision/target prices, without inventing
+  bid/ask fields. Optional Phase 2 costs remain explicit. These are price-action
+  values, not executable returns; `can_open`/`can_close` mean that a current
+  reference price exists under the comparison model, not that an order can fill.
+  Legacy Phase 1 versions still use their original quote-based Phase 2 contract.
 
 ## Certification and population
 
@@ -75,8 +88,8 @@ fail instead of being collapsed arbitrarily.
 ## Efficiency, output and restart
 
 Dates run sequentially with a bounded shared listing pool. Queries push down
-build/date/ticker/attempt/resolution filters. Only 100 ms extrema, 1-second
-activity/MACD, and sampled quotes cross the network. Polars assigns exit bars
+build/date/ticker/attempt/resolution filters. Only 100 ms price bars and 1-second
+activity/MACD cross the network. Polars assigns exit bars
 with an ASOF join and selects extrema in columnar operations; entry range joins
 are bounded by the 0–30 second lookback. It does not expand all interval/bar pairs
 or all fractional portfolio actions. Integrity scans are additional work and are
@@ -86,7 +99,7 @@ Outputs live under `runtime/hindsight-arte/<configuration-hash>/`. Each session
 has a Phase 1 directory compatible with the shared Phase 2 compiler. Phase 2
 outputs remain under `runtime/hindsight-greedy/`; their paths and market-wide
 available/unavailable counts are recorded in the campaign `summary.json`.
-Phase 1 summaries retain missing-target and invalid-quote counts per ticker/side.
+Phase 1 summaries retain missing-target and missing-current-price counts per ticker/side.
 Every decision grid includes the terminal 20:00 row, which may have no future
 target. Missing labels remain null; no eligible candidate is silently ignored.
 
@@ -109,15 +122,24 @@ python -B -m pytest tests/test_hindsight_arte.py tests/test_hindsight_phase1.py 
 ```
 
 Tests cover independent bar-target arithmetic, exact close boundaries, sparse
-MACD, neutral intervals, volume/freshness, certification failure, and the runnable
+MACD, neutral intervals, completed-price timing, volume, certification failure, and the runnable
 Phase 1 → Phase 2/resume/STOP path. A real canary measures data coverage and
 runtime; it does not prove full-universe usable-label coverage or RL performance.
 
-The September 24 validation used the completed workstation build
+The earlier quote-valued V1 validation used the completed workstation build
 `1521ba7702a9ee0783916f706f4885a24a3f32a91630b04ff738a90e65bc9dd5`, with AAPL and
 SUGP on August 21. Both phases passed in 12.5 seconds including 8.4 seconds of
 source preflight (warm infrastructure; no old/new throughput comparison).
 Combined-mode labels were available for 26,568 of 37,270 seconds with eligible
 candidates; 10,702 seconds had unavailable candidate values. The remaining
 20,331 seconds had no eligible candidates and a known wait label. This confirms
-that persisted source completeness does not eliminate future-label gaps.
+that persisted source completeness does not eliminate future-label gaps. Those
+V1 coverage figures do not describe the corrected price-action V2 dataset.
+
+The corrected V2 canary on the same build/date/tickers passed both phases in
+11.9 seconds including preflight. Its swing targets matched V1 exactly, while
+the output schema contained no quote fields. Combined-mode labels were available
+for 56,615 of 57,600 seconds with an observed current price; the remaining 985
+seconds had no future qualifying target. Each ticker also had one initial second
+without a completed trade price. Fifty focused tests passed, including the
+price-only Phase 1 → Phase 2 handoff and resume/STOP behavior.

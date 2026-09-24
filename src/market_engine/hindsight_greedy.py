@@ -16,22 +16,28 @@ MODES = {"long": ("long",), "short": ("short",), "long_short": ("long", "short")
 
 
 def coefficients(frame: pl.DataFrame, gamma: float = 0.99,
-                 cost_per_share: float = 0.0) -> pl.DataFrame:
+                 cost_per_share: float = 0.0, *, valuation_basis: str = 'quotes') -> pl.DataFrame:
     """O(rows) vectorized compilation; keep unavailable outcomes explicitly null."""
     if not math.isfinite(gamma) or not 0 < gamma <= 1:
         raise ValueError("gamma must be finite and in (0, 1]")
     if not math.isfinite(cost_per_share) or cost_per_share < 0:
         raise ValueError("cost_per_share must be finite and nonnegative")
+    if valuation_basis not in ('quotes','price_action'):
+        raise ValueError('Unknown valuation basis')
     out = []
     for side, sign in (("long", 1), ("short", -1)):
-        entry = pl.col("ask" if side == "long" else "bid") + sign * cost_per_share
-        close = pl.col("bid" if side == "long" else "ask") - sign * cost_per_share
-        target = pl.col(f"{side}_" + ("bid" if side == "long" else "ask")) - sign * cost_per_share
-        capital = pl.col("ask" if side == "long" else "bid") + cost_per_share
+        price_only = valuation_basis == 'price_action'
+        entry_observation = pl.col('decision_price' if price_only else 'ask' if side == 'long' else 'bid')
+        close_observation = pl.col('decision_price' if price_only else 'bid' if side == 'long' else 'ask')
+        target_observation = pl.col(f'{side}_target_price' if price_only else f'{side}_' + ('bid' if side == 'long' else 'ask'))
+        entry = entry_observation + sign * cost_per_share
+        close = close_observation - sign * cost_per_share
+        target = target_observation - sign * cost_per_share
+        capital = entry_observation + cost_per_share
         # Eligibility is based on current observations, never future profitability.
-        quote_ok = (pl.col("quote_valid") & (pl.col("ask_size") >= 1)
-                    & (pl.col("bid_size") >= 1)).fill_null(False)
-        new_ok = (quote_ok & (entry > 0) & (capital > 0)
+        observation_ok = ((pl.col('price_valid') & (entry_observation > 0) & entry_observation.is_finite()) if price_only else
+            (pl.col('quote_valid') & (pl.col('ask_size') >= 1) & (pl.col('bid_size') >= 1))).fill_null(False)
+        new_ok = (observation_ok & (entry > 0) & (capital > 0)
                   & entry.is_finite() & capital.is_finite()).fill_null(False)
         hold = pl.col(f"{side}_hold_seconds")
         available = ((pl.col(f"{side}_status") == "available")
@@ -44,7 +50,7 @@ def coefficients(frame: pl.DataFrame, gamma: float = 0.99,
             pl.col(f"{side}_target_us").alias("target_us"),
             pl.col(f"{side}_target_id").alias("target_id"),
             pl.col(f"{side}_available_us").alias("label_available_us"),
-            quote_ok.alias("can_close"), new_ok.alias("can_open"),
+            observation_ok.alias("can_close"), new_ok.alias("can_open"),
             available.alias("value_available"),
             entry.alias("entry_price"), close.alias("close_price"),
             capital.alias("capital_per_share"), target.alias("target_price"),
@@ -56,7 +62,7 @@ def coefficients(frame: pl.DataFrame, gamma: float = 0.99,
             pl.when(available).then(sign * (target - close) * discount).alias("hold_value_per_share"),
         ).with_columns(
             (pl.col("open_value_per_share") / pl.col("capital_per_share")).alias("open_value_per_dollar"),
-            pl.when(~pl.col("can_open")).then(pl.lit("current_quote_or_cost_unavailable"))
+            pl.when(~pl.col("can_open")).then(pl.lit('current_price_or_cost_unavailable' if price_only else 'current_quote_or_cost_unavailable'))
             .when(~pl.col("value_available") & (pl.col("phase1_status") == "available"))
             .then(pl.lit("invalid_target_or_duration"))
             .otherwise(pl.col("phase1_status")).alias("status"),

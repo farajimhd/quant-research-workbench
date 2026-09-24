@@ -133,8 +133,11 @@ def phase1_plan(root):
         raise ValueError("Duplicate Phase 1 ticker")
     if not plan["selected"] or complete["rows"] != 57601 * len(plan["selected"]):
         raise ValueError("Empty or incomplete Phase 1 decision grid")
-    if plan["version"] not in ("hindsight-phase1-macd-v1", "hindsight-phase1-arte-100ms-v1"):
+    if plan["version"] not in ("hindsight-phase1-macd-v1", "hindsight-phase1-arte-100ms-v1", "hindsight-phase1-arte-price-action-v2"):
         raise ValueError("Unsupported Phase 1 version")
+    expected_basis = 'price_action' if plan['version'] == 'hindsight-phase1-arte-price-action-v2' else 'quotes'
+    if plan.get('valuation_basis','quotes') != expected_basis:
+        raise ValueError('Phase 1 valuation basis does not match its version')
     return plan
 
 
@@ -164,7 +167,8 @@ def compile_listing(listing, source, root, plan):
             or frame["ticker"].unique().to_list() != [listing["ticker"]]
             or frame["listing_id"].unique().to_list() != [listing["listing_id"]]):
             raise ValueError("Phase 1 grid or identity mismatch")
-        values = coefficients(frame, plan["gamma_per_second"], plan["cost_per_share_per_transaction"])
+        values = coefficients(frame, plan["gamma_per_second"], plan["cost_per_share_per_transaction"],
+                              valuation_basis=plan.get('valuation_basis','quotes'))
         parquet(output / "coefficients.parquet", values)
         for mode in MODES:
             parquet(output / f"{mode}.parquet", summarize_listing(values, mode))
@@ -190,6 +194,7 @@ def run_build(args, console):
         raise ValueError("cost-per-share must be finite and nonnegative")
     runtime = required_runtime()
     plan = dict(version=VERSION, phase1_root=str(source), phase1_plan_hash=original["plan_hash"],
+                valuation_basis=original.get('valuation_basis','quotes'),
                 date=original["date"], scope=original["scope"], selected=original["selected"],
                 gamma_per_second=args.gamma, cost_per_share_per_transaction=args.cost_per_share,
                 sizes="fractional", modes=list(MODES),

@@ -15,10 +15,10 @@ DAY = date(2026,8,21)
 
 
 def bar_frame(points):
-    return pl.DataFrame([dict(time_us=t,low=lo,high=hi,resolution_ms=100,extremes_valid=1,
+    return pl.DataFrame([dict(time_us=t,low=lo,high=hi,close=(lo+hi)/2,price_valid=1,resolution_ms=100,extremes_valid=1,
                              volume=1.,trade_count=1) for t,lo,hi in points],
         schema={'time_us':pl.Int64,'low':pl.Float64,'high':pl.Float64,'resolution_ms':pl.Int64,
-                'extremes_valid':pl.Int64,'volume':pl.Float64,'trade_count':pl.Int64})
+                'extremes_valid':pl.Int64,'volume':pl.Float64,'trade_count':pl.Int64,'close':pl.Float64,'price_valid':pl.Int64})
 
 
 def test_vectorized_targets_match_independent_bar_oracle():
@@ -55,17 +55,17 @@ def test_sparse_macd_neutral_and_terminal_boundaries():
     assert labels.targets(bar_frame([]),labels.intervals(empty,10000000))['positions'] == []
 
 
-def test_volume_uses_only_completed_seconds_and_quote_age():
+def test_volume_and_prices_use_completed_bars_without_quote_fields():
     left,right = bounds(DAY)
     bars = bar_frame([(left+100000,1.,2.),(left+1000000,1.,2.),(left+2000000,1.,2.)])
     bars = bars.with_columns(pl.Series('resolution_ms',[100,1000,1000]),pl.Series('volume',[999.,3.,7.]))
-    times = list(range(left,right+1,1000000))
-    q = pl.DataFrame({'time_us':times,'quote_us':[left]*len(times),'ask':[2.]*len(times),
-                     'bid':[1.]*len(times),'bid_size':[1.]*len(times),'ask_size':[1.]*len(times)})
-    values = labels.decision_values(DAY,bars,q,[])
+    values = labels.decision_values(DAY,bars,[])
     assert values['volume'].head(3).to_list() == [0.,3.,7.]
     assert values['session_eligible_volume'][-1] == 10.
-    assert values['quote_valid'].head(3).to_list() == [True,True,False]
+    assert values['price_valid'].head(3).to_list() == [False,True,True]
+    assert values['decision_price'].head(3).to_list() == [None,1.5,1.5]
+    assert values['price_age_seconds'][2] == pytest.approx(1.9)
+    assert not {'ask','bid','quote_valid','spread_bps','quote_us'} & set(values.columns)
 
 
 def test_source_requires_matching_completed_certificates(tmp_path):
@@ -87,14 +87,17 @@ def test_source_requires_matching_completed_certificates(tmp_path):
         source.load_build(manifest,ledger,[DAY])
 
 
-def test_quote_query_uses_bucket_completion_not_last_event(monkeypatch):
+def test_source_queries_only_bars_and_indicators(monkeypatch):
     captured = []
     monkeypatch.setattr(source,'frame',lambda c,q,s:captured.append(q))
-    context = dict(build_id='build',units={str(DAY):{'A':{'broker_100ms':{'attempt_id':str(uuid4())}}}})
-    source.quote_samples(None,context,DAY,'A',[1000000])
-    q = captured[0]
-    assert 'p.time_us>=q.end_us' in q and '(toInt64(bucket_index)+1)*100000' in q
-    assert 'events_' not in q and 'last_event_us' not in q and 'attempt_id=' in q
+    context = dict(build_id='build',units={str(DAY):{'A':{stage:{'attempt_id':str(uuid4())} for stage in source.TABLES}}})
+    source.inputs(None,context,DAY,'A')
+    assert set(source.TABLES.values()) == {'bars_v1','indicators_v1'}
+    assert 'close_int/10000.' in captured[0]
+    for q in captured:
+        assert '(toInt64(bucket_index)+1)' in q
+        assert all(word not in q for word in ('events_','liquidity','quote','bid','ask'))
+        assert 'attempt_id=' in q
 
 
 def test_corrupt_persisted_product_fails_before_read(monkeypatch):
@@ -124,15 +127,42 @@ def test_runnable_phase1_phase2_and_resume(tmp_path,monkeypatch):
     monkeypatch.setattr(source,'verify_listing',lambda *a:None)
     monkeypatch.setattr(source,'inputs',lambda *a:(bars,indicators))
     monkeypatch.setattr(runner,'load_env_files',lambda *a,**kw:None)
-    monkeypatch.setattr(source,'quote_samples',lambda c,s,d,t,times:pl.DataFrame({'time_us':times,'quote_us':times,
-        'ask':[2.]*len(times),'bid':[1.9]*len(times),'bid_size':[1.]*len(times),'ask_size':[1.]*len(times)}))
     args = ['benchmark','--date',str(DAY),'--tickers','A','--workers','1']
     assert runner.main(args) == 0
     root = next((tmp_path/'hindsight-arte').iterdir())
     summary = read(root/'summary.json')
     assert summary['results'][0]['coverage']['long_short']['unavailable_seconds'] > 0
+    p1 = root/'days'/str(DAY)/'phase1'
+    plan = read(p1/'plan.json')
+    assert plan['valuation_basis'] == 'price_action' and plan['version'] == labels.VERSION
+    output = pl.read_parquet(next((p1/'listings').glob('*/opportunities.parquet')))
+    assert not any('quote' in c or c in ('bid','ask') for c in output.columns)
+    assert read(__import__('pathlib').Path(summary['results'][0]['phase2_root'])/'plan.json')['valuation_basis'] == 'price_action'
     assert runner.main(args) == 0
     p1 = root/'days'/str(DAY)/'phase1'
     assert read(p1/'summary.json')['counts']['reused'] == 1
     (root/'STOP').touch()
     assert runner.main(args) == 2 and not (root/'complete.json').exists()
+
+
+def test_price_labels_use_extremum_not_exit_close_and_keep_negative_values():
+    from src.market_engine.hindsight_greedy import coefficients
+    left,right = bounds(DAY)
+    bars = bar_frame([(left+100000,9.,11.),(left+1100000,10.,30.)])
+    targets = [dict(direction='long',exit_time=(left+1100000)/1e6,exit_price=30.,position_number=1,
+                    label_available_at=(left+3000000)/1e6),
+               dict(direction='short',exit_time=(left+1100000)/1e6,exit_price=12.,position_number=2,
+                    label_available_at=(left+3000000)/1e6)]
+    values = labels.decision_values(DAY,bars,targets).with_columns(pl.lit('A').alias('ticker'),pl.lit('A-id').alias('listing_id'))
+    current = values.filter(pl.col('time_us') == left+1000000)
+    assert current['decision_price'][0] == 10. # The next 100 ms bar is not complete yet.
+    assert current['long_gross_profit'][0] == 20.
+    assert current['short_gross_profit'][0] == -2.
+    assert current['long_status'][0] == current['short_status'][0] == 'available'
+    actual = coefficients(current,gamma=1,cost_per_share=.1,valuation_basis='price_action')
+    assert actual['open_profit_per_share'].to_list() == pytest.approx([19.8,-2.2])
+    assert actual['hold_profit_per_share'].to_list() == pytest.approx([20.,-2.])
+    # Observed prices carry through sparse periods, without a one-second quote-age gate.
+    later = labels.decision_values(DAY,bars,[{**targets[0],'exit_time':(left+6000000)/1e6}])
+    assert later.filter(pl.col('time_us') == left+5000000)['long_status'][0] == 'available'
+    assert values['long_status'][-1] == 'no_future_macd_target'

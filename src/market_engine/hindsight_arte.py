@@ -1,9 +1,9 @@
 """Versioned completed-bar MACD supervision, using only certified arte products."""
 import polars as pl
 
-from src.market_engine.hindsight_phase1 import bounds, opportunities
+from src.market_engine.hindsight_phase1 import bounds
 
-VERSION = 'hindsight-phase1-arte-100ms-v1'
+VERSION = 'hindsight-phase1-arte-price-action-v2'
 
 
 def intervals(indicators, terminal):
@@ -56,9 +56,46 @@ def targets(bars, episodes, lookback=2):
         target_clock='completed_100ms_bar_end')
 
 
-def decision_values(day, bars, quotes, selected_targets):
+def decision_values(day, bars, selected_targets):
+    """Price-action labels; neither quotes nor hypothetical execution eligibility.
+
+    The decision reference is the latest completed eligible 100 ms trade close.
+    Sparse periods carry that observed close, retaining its timestamp and age.
+    Future swing extrema are label-side prices, never current observations.
+    """
+    left,right = bounds(day)
+    grid = pl.DataFrame({'time_us':pl.int_range(left,right+1,1_000_000,eager=True)})
+    prices = bars.filter((pl.col('resolution_ms') == 100) & (pl.col('price_valid') == 1)).select(
+        pl.col('time_us').alias('price_us'),pl.col('close').alias('decision_price')).sort('price_us')
+    if prices['price_us'].n_unique() != prices.height or prices.filter(
+            ~((pl.col('decision_price') > 0) & pl.col('decision_price').is_finite()).fill_null(False)).height:
+        raise ValueError('Invalid or duplicate certified trade closes')
+    grid = grid.join_asof(prices,left_on='time_us',right_on='price_us').with_columns(
+        pl.col('decision_price').is_not_null().alias('price_valid'),
+        ((pl.col('time_us')-pl.col('price_us'))/1e6).alias('price_age_seconds'))
     activity = bars.filter(pl.col('resolution_ms') == 1000).select('time_us',pl.col('trade_count').alias('trades'),'volume')
-    return opportunities(day,activity,quotes,selected_targets)
+    grid = grid.join(activity,on='time_us',how='left',validate='1:1').sort('time_us').with_columns(
+        pl.col('trades','volume').fill_null(0)).with_columns(
+        pl.col('trades').rolling_sum(10,min_samples=1).alias('trades_10s'),
+        pl.col('volume').rolling_sum(10,min_samples=1).alias('volume_10s'),
+        pl.col('volume').cum_sum().alias('session_eligible_volume'))
+    for side,sign in (('long',1),('short',-1)):
+        selected = [p for p in selected_targets if p['direction'] == side]
+        data = pl.DataFrame({f'{side}_target_us':[round(p['exit_time']*1e6) for p in selected],
+            f'{side}_target_id':[p['position_number'] for p in selected],
+            f'{side}_available_us':[round(p['label_available_at']*1e6) for p in selected],
+            f'{side}_target_price':[p['exit_price'] for p in selected]},schema={
+                f'{side}_target_us':pl.Int64,f'{side}_target_id':pl.Int64,
+                f'{side}_available_us':pl.Int64,f'{side}_target_price':pl.Float64}).sort(f'{side}_target_us')
+        grid = grid.with_columns((pl.col('time_us')+1).alias('_next')).join_asof(
+            data,left_on='_next',right_on=f'{side}_target_us',strategy='forward').drop('_next')
+        grid = grid.with_columns(
+            ((pl.col(f'{side}_target_price')-pl.col('decision_price'))*sign).alias(f'{side}_gross_profit'),
+            ((pl.col(f'{side}_target_us')-pl.col('time_us'))/1e6).alias(f'{side}_hold_seconds'),
+            pl.when(pl.col(f'{side}_target_id').is_null()).then(pl.lit('no_future_macd_target'))
+                .when(~pl.col('price_valid')).then(pl.lit('current_price_unavailable'))
+                .otherwise(pl.lit('available')).alias(f'{side}_status'))
+    return grid
 
 
 def label_coverage(values):

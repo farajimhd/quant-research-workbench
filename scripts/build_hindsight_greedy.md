@@ -1,5 +1,12 @@
 # Greedy fractional action-value labels
 
+For `hindsight-phase1-arte-price-action-v2` inputs, the compiler explicitly uses
+`valuation_basis=price_action`: current completed trade close and future swing
+high/low prices, with no quotes or spread. Phase 2's optional per-share cost is
+still applied, and its fractional allocation/discount formulas are unchanged.
+Here `can_open`/`can_close` indicate an available reference price, not executable
+liquidity. The quote-based descriptions below apply to legacy Phase 1 datasets.
+
 For both phases across multiple dates, see [the dataset campaign](build_hindsight_dataset.md).
 The standalone `build` also accepts `--workers`; compilation is bounded and
 parallel, while market reduction remains deterministic. Per-listing summaries

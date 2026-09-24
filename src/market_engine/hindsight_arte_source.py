@@ -10,10 +10,10 @@ from uuid import UUID
 import polars as pl
 
 from pipelines.market_sip.events import market_day_sql as sql
-from src.market_engine.hindsight_phase1 import NY, digest, bounds
+from src.market_engine.hindsight_phase1 import NY, digest
 from src.market_engine.hindsight_phase1_source import client, query
 
-TABLES = {'bars': 'bars_v1', 'technical': 'indicators_v1', 'broker_100ms': 'liquidity_100ms_v1'}
+TABLES = {'bars': 'bars_v1', 'technical': 'indicators_v1'}
 
 
 def load_build(manifest, ledger, days, tickers=None):
@@ -131,32 +131,15 @@ def inputs(c, source, day, ticker):
     # Only the 100 ms extrema and 1 s features/indicators cross the wire.
     end = f"toInt64({sql.bounds(day)})+(toInt64(bucket_index)+1)*toInt64(resolution_ms)*1000"
     bars = frame(c, f'SELECT {end} AS time_us,resolution_ms,low_int/10000. AS low,high_int/10000. AS high,'
-        f'volume,trade_count,extremes_valid FROM arte.bars_v1 WHERE {selection(source,day,ticker,"bars")} '
+        f'close_int/10000. AS close,price_valid,volume,trade_count,extremes_valid FROM arte.bars_v1 WHERE {selection(source,day,ticker,"bars")} '
         'AND resolution_ms IN (100,1000) ORDER BY resolution_ms,bucket_index',
         {'time_us':pl.Int64, 'resolution_ms':pl.Int64, 'low':pl.Float64, 'high':pl.Float64,
+         'close':pl.Float64, 'price_valid':pl.Int64,
          'volume':pl.Float64, 'trade_count':pl.Int64, 'extremes_valid':pl.Int64})
     indicators = frame(c, f'SELECT {end} AS time_us,macd_line,macd_signal FROM arte.indicators_v1 '
         f'WHERE {selection(source,day,ticker,"technical")} AND resolution_ms=1000 ORDER BY bucket_index',
         {'time_us':pl.Int64, 'macd_line':pl.Float64, 'macd_signal':pl.Float64})
     return bars, indicators
-
-
-def quote_samples(c, source, day, ticker, times):
-    # A bucket is visible only at its close, never at its last event timestamp.
-    # Invalid-update behavior deliberately follows the persisted product contract.
-    midnight = sql.bounds(day)
-    left,right = bounds(day)
-    targets = ','.join(str(t) for t in times if t % 1000000)
-    statement = f"""SELECT toInt64(p.time_us) AS time_us,toInt64(q.quote_us) AS quote_us,
-      q.ask AS ask,q.bid AS bid,q.ask_size AS ask_size,q.bid_size AS bid_size
-      FROM (SELECT toUInt8(1) AS k,arrayJoin(arraySort(arrayDistinct(arrayConcat(
-        range(toInt64({left}),toInt64({right+1}),toInt64(1000000)),CAST([{targets}], 'Array(Int64)'))))) AS time_us ORDER BY time_us) p
-      ASOF LEFT JOIN (SELECT toUInt8(1) AS k,toInt64({midnight})+(toInt64(bucket_index)+1)*100000 AS end_us,
-        quote_timestamp_us AS quote_us,ask_int/10000. AS ask,bid_int/10000. AS bid,ask_size,bid_size
-        FROM arte.liquidity_100ms_v1 WHERE {selection(source,day,ticker,'broker_100ms')}
-        AND resolution_ms=100 ORDER BY end_us) q ON p.k=q.k AND p.time_us>=q.end_us ORDER BY time_us"""
-    return frame(c, statement, {'time_us':pl.Int64, 'quote_us':pl.Int64, 'ask':pl.Float64,
-                               'bid':pl.Float64, 'ask_size':pl.Float64, 'bid_size':pl.Float64})
 
 
 def reader(threads=2):
