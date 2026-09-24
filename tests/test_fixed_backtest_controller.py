@@ -50,6 +50,42 @@ def test_fixed_engine_opens_clickhouse_journal_before_any_sqlite(monkeypatch):
     assert "journal unavailable" in controller.error
 
 
+def test_fixed_activity_reads_only_committed_clickhouse_prefix(monkeypatch):
+    from src.backend import backtest_journal_reader, backtest_market_data
+
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, configuration_revision={"payload": {}})
+    controller.current_time = datetime(2026, 8, 18, 4, 1, tzinfo=NY)
+    controller._journal = BacktestMemoryJournal(run_id=RUN)
+    controller._journal_publisher = SimpleNamespace(
+        fenced_sequence=7, committed_batch_ids=(RUN,))
+    controller._journal.append(run_id=RUN, category="strategy_decision",
+                               entity_type="signal", entity_id="unfenced",
+                               event_time=controller.current_time, payload={"action": "enter"})
+
+    class Client:
+        def close(self):
+            pass
+
+    observed = []
+    class Reader:
+        def __init__(self, _client, _run_id, **kwargs):
+            observed.append(kwargs)
+            self.sequence = kwargs["fenced_sequence"]
+        def strategy_activity_records(self, **kwargs):
+            observed.append(kwargs)
+            return []
+
+    monkeypatch.setattr(backtest_market_data, "readonly_clickhouse_client", Client)
+    monkeypatch.setattr(backtest_journal_reader, "BacktestJournalReader", Reader)
+    payload = controller.strategy_activity_snapshot(limit=2)
+    assert observed[0] == {"fenced_sequence": 7, "batch_ids": (RUN,)}
+    assert observed[1]["through_sequence"] == 7
+    assert payload["presentation_sequence"] == 7
+
+
 def test_fixed_signal_loader_never_prepares_missing_occurrences(monkeypatch):
     from src.backend import historical_signal_occurrence_service as occurrences
 

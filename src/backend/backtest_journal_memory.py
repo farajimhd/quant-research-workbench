@@ -30,8 +30,12 @@ class BacktestMemoryJournal:
         self.run_id = run_id
         self.max_pending_records = max_pending_records
         self._records: list[JournalRecord] = []
+        self._base_sequence = 0
+        self._next_sequence = 0
         self._fenced_sequence = 0
         self._by_identity: dict[tuple[str, str, str], JournalRecord] = {}
+        self._signal_records: list[JournalRecord] = []
+        self._protection_records: list[JournalRecord] = []
         self._checkpoint: dict[str, Any] | None = None
         self._portfolio_states: dict[str, dict[str, Any]] = {}
         self._order_states: dict[str, dict[str, Any]] = {}
@@ -57,7 +61,7 @@ class BacktestMemoryJournal:
         pending = [dict(entry) for entry in entries]
         with self._lock:
             self._require_open()
-            if len(self._records) - self._fenced_sequence + len(pending) > self.max_pending_records:
+            if self._next_sequence - self._fenced_sequence + len(pending) > self.max_pending_records:
                 raise RuntimeError("Backtest journal buffer is full; durable fence is required")
             result: list[JournalRecord] = []
             for entry in pending:
@@ -84,7 +88,7 @@ class BacktestMemoryJournal:
                 canonical_json(payload)
                 record = JournalRecord(
                     record_id=str(uuid4()), run_id=run_id,
-                    sequence=len(self._records) + len(result) + 1,
+                    sequence=self._next_sequence + len(result) + 1,
                     event_time=at, recorded_at=datetime.now(timezone.utc),
                     category=category, entity_type=entity_type,
                     entity_id=entity_id,
@@ -92,29 +96,36 @@ class BacktestMemoryJournal:
                 )
                 result.append(record)
             self._records.extend(result)
+            self._next_sequence += len(result)
             for record in result:
-                self._by_identity.setdefault(
-                    (record.category, record.entity_type, record.entity_id), record)
+                if record.category == "market_discovery_signal":
+                    self._signal_records.append(record)
+                if record.category == "protection":
+                    self._protection_records.append(record)
             return result
 
     def unfenced_records(self, *, after_sequence: int | None = None) -> list[JournalRecord]:
         """Return an immutable-to-the-caller prefix for asynchronous publication."""
         with self._lock:
             start = self._fenced_sequence if after_sequence is None else int(after_sequence)
-            if start < self._fenced_sequence or start > len(self._records):
+            if start < self._fenced_sequence or start > self._next_sequence:
                 raise ValueError("Journal publication cursor is outside the unfenced prefix")
-            return list(self._records[start:])
+            return list(self._records[start - self._base_sequence:])
 
     @property
     def pending_record_count(self) -> int:
         with self._lock:
-            return len(self._records) - self._fenced_sequence
+            return self._next_sequence - self._fenced_sequence
 
     def mark_fenced(self, sequence: int) -> None:
         """Release pending capacity only after ClickHouse confirms its fence."""
         with self._lock:
-            if not self._fenced_sequence <= sequence <= len(self._records):
+            if not self._fenced_sequence <= sequence <= self._next_sequence:
                 raise ValueError("Journal fence sequence is outside the current prefix")
+            discard = sequence - self._base_sequence
+            if discard:
+                del self._records[:discard]
+                self._base_sequence = sequence
             self._fenced_sequence = sequence
 
     def pending_evidence(self) -> dict[str, str]:
@@ -144,6 +155,7 @@ class BacktestMemoryJournal:
                 if key not in self._by_identity and key not in new:
                     new[key] = entry
             inserted = dict(zip(new, self.append_many(new.values()), strict=True))
+            self._by_identity.update(inserted)
             result = []
             emitted = set()
             for key in keys:
@@ -158,22 +170,28 @@ class BacktestMemoryJournal:
         if run_id != self.run_id:
             return []
         with self._lock:
-            return list(self._records[max(0, int(after_sequence)):])
+            start = max(0, int(after_sequence))
+            if start < self._base_sequence:
+                raise ValueError("Fenced Backtest records must be read from ClickHouse")
+            return list(self._records[start - self._base_sequence:])
 
     def latest_sequence(self, run_id: str) -> int:
-        return len(self._records) if run_id == self.run_id else 0
+        return self._next_sequence if run_id == self.run_id else 0
 
     def next_record_after_time(self, run_id: str, event_time: datetime, *,
                                categories: tuple[str, ...]) -> JournalRecord | None:
         if run_id != self.run_id or not categories:
             return None
-        matches = (record for record in self._records if record.category in categories
+        records = (*self._signal_records, *self._records)
+        matches = (record for record in records if record.category in categories
                    and record.event_time > event_time)
         return min(matches, key=lambda record: (record.event_time, record.sequence), default=None)
 
     def protection_records(self, run_id: str, after_sequence: int = 0) -> list[JournalRecord]:
-        return [record for record in self.records(run_id, after_sequence=after_sequence)
-                if record.category == "protection"]
+        if run_id != self.run_id:
+            return []
+        return [record for record in self._protection_records
+                if record.sequence > after_sequence]
 
     def save_checkpoint(self, run_id: str, cursor: str,
                         state: dict[str, Any], event_time: datetime) -> None:

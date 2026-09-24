@@ -2498,6 +2498,24 @@ class ReplayRunController:
         if self._journal is None:
             raise ValueError("Replay Signal Stream is not ready")
         from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        if isinstance(self._journal, BacktestMemoryJournal):
+            from src.backend.backtest_market_data import readonly_clickhouse_client
+            from src.backend.backtest_journal_reader import BacktestJournalReader
+            publisher = self._journal_publisher
+            with closing(readonly_clickhouse_client()) as client:
+                reader = BacktestJournalReader(
+                    client, self.run_id,
+                    **({"fenced_sequence": publisher.fenced_sequence,
+                        "batch_ids": publisher.committed_batch_ids}
+                       if publisher is not None else {}),
+                )
+                return SIGNAL_STREAM_RUNTIME.snapshot(
+                    reader, signal_stream_id=signal_stream_id,
+                    run_id=self.run_id, as_of=as_of or self.current_time,
+                    limit=limit,
+                    configuration=self.definition.configuration_revision["payload"],
+                )
 
         return SIGNAL_STREAM_RUNTIME.snapshot(
             self._journal,
@@ -2528,14 +2546,37 @@ class ReplayRunController:
 
         if self.definition.mode == RunMode.BACKTEST or through_sequence is not None:
             cutoff = min(as_of, self.current_time) if as_of and self.current_time else self.current_time or as_of
-            fence = self._journal.latest_sequence(self.run_id)
-            if through_sequence is not None:
-                fence = min(fence, through_sequence)
             limit = max(1, min(int(limit), 50_000))
-            records = self._journal.strategy_activity_records(run_id=self.run_id, as_of=cutoff,
-                through_sequence=fence, record_id=record_id, strategy_id=strategy_id, ticker=ticker,
-                event_type=event_type, limit=limit + 1, offset=offset,
-                compact=not include_decision_evidence, consequential_only=consequential_only)
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            if isinstance(self._journal, BacktestMemoryJournal):
+                from src.backend.backtest_market_data import readonly_clickhouse_client
+                from src.backend.backtest_journal_reader import BacktestJournalReader
+                publisher = self._journal_publisher
+                with closing(readonly_clickhouse_client()) as client:
+                    reader = BacktestJournalReader(
+                        client, self.run_id,
+                        **({"fenced_sequence": publisher.fenced_sequence,
+                            "batch_ids": publisher.committed_batch_ids}
+                           if publisher is not None else {}),
+                    )
+                    fence = reader.sequence
+                    if through_sequence is not None:
+                        fence = min(fence, through_sequence)
+                    records = reader.strategy_activity_records(
+                        run_id=self.run_id, as_of=cutoff, through_sequence=fence,
+                        record_id=record_id, strategy_id=strategy_id, ticker=ticker,
+                        event_type=event_type, limit=limit + 1, offset=offset,
+                        compact=not include_decision_evidence,
+                        consequential_only=consequential_only,
+                    )
+            else:
+                fence = self._journal.latest_sequence(self.run_id)
+                if through_sequence is not None:
+                    fence = min(fence, through_sequence)
+                records = self._journal.strategy_activity_records(run_id=self.run_id, as_of=cutoff,
+                    through_sequence=fence, record_id=record_id, strategy_id=strategy_id, ticker=ticker,
+                    event_type=event_type, limit=limit + 1, offset=offset,
+                    compact=not include_decision_evidence, consequential_only=consequential_only)
             return {**strategy_activity_payload(as_of=cutoff, run_id=self.run_id, record_id=record_id,
                 strategy_id=strategy_id, ticker=ticker, event_type=event_type, limit=limit, offset=offset,
                 include_decision_evidence=include_decision_evidence, consequential_only=consequential_only,

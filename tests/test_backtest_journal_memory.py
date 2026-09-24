@@ -58,6 +58,21 @@ def test_buffer_fails_closed_and_evidence_uses_live_reference_contract():
         journal.unfenced_records(after_sequence=0)
 
 
+def test_acknowledged_batches_release_memory_without_reusing_sequences():
+    journal = BacktestMemoryJournal(run_id=RUN_ID, max_pending_records=2)
+    for index in range(20):
+        record = journal.append_many([_entry(str(index))])[0]
+        assert record.sequence == index + 1
+        journal.mark_fenced(record.sequence)
+        assert journal.pending_record_count == 0
+        assert journal.unfenced_records() == []
+        assert journal._records == []
+        with pytest.raises(ValueError, match="ClickHouse"):
+            journal.records(RUN_ID)
+    assert journal.latest_sequence(RUN_ID) == 20
+    assert journal._by_identity == {}
+
+
 def test_campaign_ownership_matches_live_reserve_confirm_release_contract():
     journal = BacktestMemoryJournal(run_id=RUN_ID)
     key = dict(resource_id="book:AAPL", session_key="2026-08-18")
