@@ -1,0 +1,123 @@
+"""Bounded asynchronous publication of a typed fixed-Backtest journal prefix.
+
+This adapter is intentionally not wired into launch. Terminal account captures
+and cold checkpoint recovery still require separate typed contracts.
+"""
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Any
+from uuid import UUID
+
+from src.backend.backtest_journal_memory import BacktestMemoryJournal
+from src.backend.backtest_typed_projection import NIL_BATCH_ID, project_pending_backtest_prefix
+from src.trading_runtime.arte_journal_writer import (
+    ArteJournalWriter, TypedJournalBatch, _coalesce_unpublished,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class TypedBacktestReceipt:
+    last_sequence: int
+    last_batch_id: str
+    source_cursor: str
+
+
+class BacktestTypedJournalPublisher:
+    """One exclusive writer lane; engine enqueues, a task finalizes receipts."""
+
+    def __init__(
+        self, journal: BacktestMemoryJournal, writer: ArteJournalWriter, *,
+        attempt_id: str, run_month: date, batch_size: int = 512,
+        initial_sequence: int = 0, prior_batch_id: str = NIL_BATCH_ID,
+        source_cursor: str = "start", expected_config: dict[str, Any] | None = None,
+        fixed_market_parent_plan: object | None = None,
+        fixed_market_execution_plan: object | None = None,
+        expected_market_start: datetime | None = None,
+    ) -> None:
+        attempt = str(UUID(attempt_id))
+        prior = str(UUID(prior_batch_id))
+        if (writer.run_id != journal.run_id or writer.run_mode != "backtest"
+                or writer.coalesce_batches
+                or type(batch_size) is not int or not 1 <= batch_size <= writer.max_events_per_commit
+                or type(initial_sequence) is not int or initial_sequence < 0
+                or (initial_sequence == 0 and prior != NIL_BATCH_ID)
+                or (initial_sequence > 0 and prior == NIL_BATCH_ID)
+                or journal.latest_sequence(journal.run_id) < initial_sequence
+                or run_month.day != 1 or not source_cursor):
+            raise ValueError("Typed Backtest publisher lacks an exclusive bounded prefix")
+        self.journal = journal
+        self.writer = writer
+        self.attempt_id = attempt
+        self.run_month = run_month
+        self.batch_size = batch_size
+        self.expected_config = expected_config
+        self.fixed_market_parent_plan = fixed_market_parent_plan
+        self.fixed_market_execution_plan = fixed_market_execution_plan
+        self.expected_market_start = expected_market_start
+        self._sequence = initial_sequence
+        self._batch_id = prior
+        self._source_cursor = source_cursor
+        self._task: asyncio.Task[TypedBacktestReceipt] | None = None
+        self._error: BaseException | None = None
+
+    @property
+    def fenced_sequence(self) -> int:
+        return self._sequence
+
+    def enqueue_pending(self) -> asyncio.Task[TypedBacktestReceipt]:
+        """Schedule projection and persistence without hot-path work or I/O.
+
+        An active submission owns the current prefix. The caller may enqueue
+        the next prefix after its checkpoint fence settles. Journal capacity
+        bounds new event admission meanwhile; no disk fallback is allowed.
+        """
+        if self._error is not None:
+            raise RuntimeError("Typed Backtest publication failed") from self._error
+        if self._task is not None and not self._task.done():
+            return self._task
+        if self._task is not None:
+            self._task.result()  # Surface an earlier failed receipt.
+        self._task = asyncio.create_task(self._drain())
+        return self._task
+
+    def _prepare_batches(self) -> tuple[TypedJournalBatch, ...]:
+        """CPU-heavy bounded prefix projection runs outside the event loop."""
+        prefix = project_pending_backtest_prefix(
+            self.journal, attempt_id=self.attempt_id,
+            run_month=self.run_month, prior_sequence=self._sequence,
+            prior_batch_id=self._batch_id, source_cursor=self._source_cursor,
+            expected_config=self.expected_config,
+            fixed_market_parent_plan=self.fixed_market_parent_plan,
+            fixed_market_execution_plan=self.fixed_market_execution_plan,
+            expected_market_start=self.expected_market_start,
+        )
+        return tuple(_coalesce_unpublished(prefix.batches[offset:offset + self.batch_size])
+                     for offset in range(0, len(prefix.batches), self.batch_size))
+
+    async def _drain(self) -> TypedBacktestReceipt:
+        try:
+            batches = await asyncio.to_thread(self._prepare_batches)
+            for batch in batches:
+                receipt = self.writer.submit(batch)  # Bounded, nonblocking admission.
+                committed = await asyncio.wrap_future(receipt)
+                if str(UUID(str(committed))) != batch.batch_id:
+                    raise RuntimeError("Typed Backtest writer changed an exclusive batch ID")
+                self.journal.mark_fenced(batch.last_sequence)
+                self._sequence = batch.last_sequence
+                self._batch_id = batch.batch_id
+                self._source_cursor = batch.source_cursor
+            return TypedBacktestReceipt(self._sequence, self._batch_id,
+                                        self._source_cursor)
+        except BaseException as exc:
+            self._error = exc
+            raise
+
+    async def await_fence(self) -> TypedBacktestReceipt:
+        """Wait once at a checkpoint boundary; never once per journal event."""
+        if self._task is None:
+            self.enqueue_pending()
+        assert self._task is not None
+        return await asyncio.shield(self._task)

@@ -501,10 +501,44 @@ def test_cold_sync_resume_seals_only_complete_committed_sources(monkeypatch) -> 
     result = asyncio.run(sync.resume_complete_portfolio_sync(
         object(), keeper, run_id=RUN, account_id="DU1", state_revision=1))
     assert result["batch_id"] == BATCH
-    assert keeper.receipt is None
-    with pytest.raises(RuntimeError, match="no matching Keeper CAS attestation"):
-        sync.load_attested_portfolio_sync(
-            object(), keeper, run_id=RUN, account_id="DU1", state_revision=1)
+    assert keeper.receipt is not None
+    assert sync.load_attested_portfolio_sync(
+        object(), keeper, run_id=RUN, account_id="DU1", state_revision=1) == result
+
+
+@pytest.mark.parametrize("proof_state", ["missing", "matching", "conflicting"])
+def test_cold_sync_resume_existing_fence_requires_exact_keeper_proof(
+    monkeypatch, proof_state,
+) -> None:
+    image = captured()
+    batch = project_portfolio_reconciliation_records(
+        records(), captured=image, **identity())
+    marker = sync._canonical_typed_content(
+        sync._MARKER, {key: value for key, value in sync._marker(batch, image).items()
+                       if key != "content_hash"})
+    keeper = Keeper()
+    fence = {"batch_id": BATCH, "snapshot_hash": "a" * 64}
+    if proof_state != "missing":
+        keeper.receipt = sync.KeeperSyncAttestation(
+            RUN, "DU1", 1, BATCH,
+            "b" * 64 if proof_state == "conflicting" else "a" * 64,
+            "historical-owner", 3)
+    monkeypatch.setattr(sync, "_stored_marker", lambda *_args: marker)
+    monkeypatch.setattr(sync, "load_fenced_portfolio_sync", lambda *_args, **_kwargs: fence)
+    monkeypatch.setattr(sync, "_insert", lambda *_args:
+                        pytest.fail("existing fence must not be republished"))
+    if proof_state != "missing":
+        monkeypatch.setattr(keeper, "attest_portfolio_snapshot_receipt", lambda *_args:
+                            pytest.fail("existing proof must not be rewritten"))
+    if proof_state == "conflicting":
+        with pytest.raises(RuntimeError, match="no matching Keeper CAS attestation"):
+            asyncio.run(sync.resume_complete_portfolio_sync(
+                object(), keeper, run_id=RUN, account_id="DU1", state_revision=1))
+    else:
+        assert asyncio.run(sync.resume_complete_portfolio_sync(
+            object(), keeper, run_id=RUN, account_id="DU1",
+            state_revision=1)) == fence
+        assert keeper.receipt is not None
 
 
 def test_cold_sync_resume_keeps_marker_only_transition_blocked(monkeypatch) -> None:
@@ -532,3 +566,29 @@ def test_cold_sync_resume_rejects_stale_keeper_claim_before_read(monkeypatch) ->
     with pytest.raises(RuntimeError, match="current Keeper claim"):
         asyncio.run(sync.resume_complete_portfolio_sync(
             object(), keeper, run_id=RUN, account_id="DU1", state_revision=1))
+
+
+def test_cold_sync_resume_keeps_event_loop_responsive_during_keeper_check(monkeypatch) -> None:
+    from threading import Event
+
+    entered, release = Event(), Event()
+    class BlockingKeeper(Keeper):
+        def portfolio_snapshot_claim_is_current(self, lease):
+            entered.set()
+            assert release.wait(2)
+            return super().portfolio_snapshot_claim_is_current(lease)
+
+    monkeypatch.setattr(sync, "_stored_marker", lambda *_args: None)
+    async def run():
+        task = asyncio.create_task(sync.resume_complete_portfolio_sync(
+            object(), BlockingKeeper(), run_id=RUN, account_id="DU1",
+            state_revision=1))
+        assert await asyncio.to_thread(entered.wait, 1)
+        heartbeat = []
+        asyncio.get_running_loop().call_soon(heartbeat.append, "responsive")
+        await asyncio.sleep(0)
+        assert heartbeat == ["responsive"] and not task.done()
+        release.set()
+        with pytest.raises(RuntimeError, match="prepared marker"):
+            await task
+    asyncio.run(run())

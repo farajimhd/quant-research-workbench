@@ -1166,6 +1166,13 @@ def schema_ddl() -> tuple[str, ...]:
     return tuple(table.ddl() for table in TABLES)
 
 
+def long_momentum_parameter_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only staged parameter tables; excluded from active TABLES."""
+    from src.trading_runtime.arte_long_momentum_parameter_journal import PARAMETER_TABLES
+
+    return tuple(table.ddl() for table in PARAMETER_TABLES)
+
+
 def strategy_assignment_command_upgrade_ddl() -> tuple[str, ...]:
     """Operator-only additive typed assignment-command table and commit proof."""
     by_name = {table.name: table for table in TABLES}

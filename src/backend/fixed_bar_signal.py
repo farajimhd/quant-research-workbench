@@ -167,6 +167,8 @@ def load_first_squeeze_occurrences(
             "squeeze_anchor_price": anchor, "squeeze_move_pct": move,
             "squeeze_high_water_pct": max(0., move),
             "source_authority": CONTRACT,
+            "market_plan_token": plan.token,
+            "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
             "evidence": {
                 "price_change_1_bar_pct": move,
                 "trade_count_change": trades - previous_trades,

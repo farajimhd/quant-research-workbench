@@ -294,6 +294,8 @@ def project_journal_record(
             record.sequence, record.sequence, source_cursor, "running", (event,),
             backtest_market_authorities=(detail,),
         )
+    if kind == ("market_discovery_signal", "signal_occurrence"):
+        raise ValueError("Squeeze episode needs operator-provisioned Backtest-only journal family")
     if kind == ("strategy_decision", "signal"):
         from dataclasses import fields
         payload = dict(record.payload)

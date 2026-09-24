@@ -1,9 +1,10 @@
 """Contention and failure semantics of the staged Keeper coordinator."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
-from threading import Lock
+from threading import Lock, get_ident
 from time import monotonic, time
 
 import pytest
@@ -11,6 +12,8 @@ import pytest
 from src.trading_runtime.keeper_ownership import (
     KeeperOwnershipCoordinator, KeeperUnavailable,
 )
+from src.trading_runtime import keeper_ownership as ownership
+from src.trading_runtime.arte_portfolio_sync import KeeperSyncAttestation
 
 
 class NodeExistsError(Exception):
@@ -50,6 +53,9 @@ class _Transaction:
     def set_data(self, path: str, data: bytes, *, version: int) -> None:
         self.actions.append(("set", path, data, version))
 
+    def check(self, path: str, *, version: int) -> None:
+        self.actions.append(("check", path, version))
+
     def create(self, path: str, data: bytes, *, ephemeral: bool) -> None:
         self.actions.append(("create", path, data, ephemeral))
 
@@ -59,9 +65,11 @@ class _Transaction:
                 kind, path = action[:2]
                 current = self.client.store.nodes.get(path)
                 error = None
-                if kind == "set" and current is None:
+                if kind in {"set", "check"} and current is None:
                     error = NoNodeError()
                 elif kind == "set" and current[1].version != action[3]:
+                    error = BadVersionError()
+                elif kind == "check" and current[1].version != action[2]:
                     error = BadVersionError()
                 elif kind == "create" and current is not None:
                     error = NodeExistsError()
@@ -73,7 +81,7 @@ class _Transaction:
                     current = self.client.store.nodes[path][1]
                     self.client.store.nodes[path] = (data, _Stat(
                         current.version + 1, current.ephemeralOwner, int(time() * 1000)))
-                else:
+                elif kind == "create":
                     self.client.store.nodes[path] = (data, _Stat(
                         ephemeralOwner=self.client.client_id[0] if action[3] else 0,
                         mtime=int(time() * 1000)))
@@ -132,6 +140,127 @@ class _Client:
 
     def transaction(self) -> _Transaction:
         return _Transaction(self)
+
+
+def test_sync_attestation_cas_survives_owner_change_without_live_authority() -> None:
+    store = _Store()
+    first = KeeperOwnershipCoordinator(_Client(store, 11))
+    second = KeeperOwnershipCoordinator(_Client(store, 12))
+    run, account = "run-a", "DU1"
+    batch = "00000000-0000-0000-0000-000000000012"
+    async def attest():
+        async with first.claim_portfolio_snapshot(run, account) as lease:
+            proof = first.attest_portfolio_snapshot_receipt(
+                lease, run, account, 7, batch, "a" * 64)
+            assert proof == KeeperSyncAttestation(
+                run, account, 7, batch, "a" * 64,
+                lease["owner_id"], lease["epoch"])
+            return lease, proof
+    lease, proof = asyncio.run(attest())
+    assert not first.portfolio_snapshot_claim_is_current(lease)
+    async def new_owner():
+        async with second.claim_portfolio_snapshot(run, account) as newer:
+            assert newer["epoch"] > proof.epoch
+            assert second.load_portfolio_snapshot_receipt(run, account, 7) == proof
+            with pytest.raises(KeeperUnavailable, match="expired before attestation"):
+                first.attest_portfolio_snapshot_receipt(
+                    lease, run, account, 8, batch, "b" * 64)
+    asyncio.run(new_owner())
+
+
+def test_sync_attestation_rejects_holder_aba_during_cas(monkeypatch) -> None:
+    store = _Store()
+    client = _Client(store, 11)
+    coordinator = KeeperOwnershipCoordinator(client)
+    run, account = "run-a", "DU1"
+    batch = "00000000-0000-0000-0000-000000000012"
+    original_transaction = client.transaction
+    async def race():
+        async with coordinator.claim_portfolio_snapshot(run, account) as lease:
+            base = ownership._path("portfolio", lease["resource_id"])
+            def racing_transaction():
+                txn = original_transaction()
+                original_commit = txn.commit
+                def commit():
+                    # Simulate expiration and reacquisition between the read
+                    # and CAS. The new holder also has version zero (ABA).
+                    with store.lock:
+                        counter, stat = store.nodes[f"{base}/epoch"]
+                        store.nodes[f"{base}/epoch"] = (b"2", _Stat(
+                            stat.version + 1, 0, int(time() * 1000)))
+                        store.nodes[f"{base}/holder"] = (
+                            ownership._encode("new-owner", 2, "portfolio"),
+                            _Stat(0, 12, int(time() * 1000)))
+                    return original_commit()
+                txn.commit = commit
+                return txn
+            monkeypatch.setattr(client, "transaction", racing_transaction)
+            with pytest.raises(KeeperUnavailable, match="CAS lost or conflicts"):
+                coordinator.attest_portfolio_snapshot_receipt(
+                    lease, run, account, 7, batch, "a" * 64)
+            assert coordinator.load_portfolio_snapshot_receipt(run, account, 7) is None
+    asyncio.run(race())
+
+
+def test_sync_attestation_is_idempotent_only_for_exact_receipt() -> None:
+    store = _Store()
+    coordinator = KeeperOwnershipCoordinator(_Client(store, 11))
+    run, account = "run-a", "DU1"
+    batch = "00000000-0000-0000-0000-000000000012"
+    async def publish():
+        async with coordinator.claim_portfolio_snapshot(run, account) as lease:
+            first = coordinator.attest_portfolio_snapshot_receipt(
+                lease, run, account, 7, batch, "a" * 64)
+            assert coordinator.attest_portfolio_snapshot_receipt(
+                lease, run, account, 7, batch, "a" * 64) == first
+            with pytest.raises(KeeperUnavailable, match="CAS lost or conflicts"):
+                coordinator.attest_portfolio_snapshot_receipt(
+                    lease, run, account, 7, batch, "b" * 64)
+    asyncio.run(publish())
+
+
+def test_sync_attestation_rejects_corrupt_historical_proof() -> None:
+    store = _Store()
+    coordinator = KeeperOwnershipCoordinator(_Client(store, 11))
+    path = ownership._sync_receipt_path("run-a", "DU1", 7)
+    store.nodes[path] = (b"1\nwrong", _Stat())
+    with pytest.raises(KeeperUnavailable, match="corrupt"):
+        coordinator.load_portfolio_snapshot_receipt("run-a", "DU1", 7)
+
+
+def test_async_sync_claim_acquires_and_releases_off_event_loop(monkeypatch) -> None:
+    coordinator = KeeperOwnershipCoordinator(_Client(_Store(), 11))
+    loop_thread = get_ident()
+    calls = []
+    acquire = coordinator.acquire_portfolio_admission_lease
+    release = coordinator.release_portfolio_admission_lease
+    def tracked_acquire(*args, **kwargs):
+        calls.append(("acquire", get_ident()))
+        return acquire(*args, **kwargs)
+    def tracked_release(*args, **kwargs):
+        calls.append(("release", get_ident()))
+        return release(*args, **kwargs)
+    monkeypatch.setattr(coordinator, "acquire_portfolio_admission_lease", tracked_acquire)
+    monkeypatch.setattr(coordinator, "release_portfolio_admission_lease", tracked_release)
+    async def claim():
+        async with coordinator.claim_portfolio_snapshot("run-a", "DU1") as lease:
+            assert coordinator.portfolio_snapshot_claim_is_current(lease)
+    asyncio.run(claim())
+    assert [name for name, _ in calls] == ["acquire", "release"]
+    assert all(thread_id != loop_thread for _, thread_id in calls)
+
+
+def test_sync_proof_identity_rejects_delimiters() -> None:
+    batch = "00000000-0000-0000-0000-000000000012"
+    with pytest.raises(ValueError, match="single-line"):
+        ownership._sync_receipt_bytes("run\nother", "DU1", 7, batch,
+                                      "a" * 64, "owner-a", 1)
+    with pytest.raises(ValueError, match="single-line"):
+        ownership._sync_receipt_bytes("run-a", "DU1", 7, batch,
+                                      "a" * 64, "owner\nother", 1)
+    with pytest.raises(ValueError, match="single-line"):
+        ownership._sync_receipt_bytes("run-a", "DU1\rother", 7, batch,
+                                      "a" * 64, "owner-a", 1)
 
 
 def test_portfolio_claims_are_exclusive_and_fenced_across_clients() -> None:

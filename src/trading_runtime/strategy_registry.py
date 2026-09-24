@@ -54,6 +54,7 @@ class StrategyExecutorRegistration:
 
 _LOCK = RLock()
 _REGISTRY: dict[tuple[str, int], StrategyExecutorRegistration] = {}
+_BUILTIN_REGISTRY: dict[tuple[str, int], StrategyExecutorRegistration] = {}
 _BUILTINS_REGISTERED = False
 
 
@@ -117,6 +118,23 @@ def installed_strategy_executors() -> tuple[StrategyExecutorRegistration, ...]:
         )
 
 
+def typed_persistence_executor(
+    strategy_id: str, revision: int,
+) -> StrategyExecutorRegistration:
+    """Admit only the original built-in executor object to inactive typed mode.
+
+    Legacy registration and replacement remain available; typed persistence
+    must fail closed until an explicit catalog exists for another executor.
+    """
+    registration = strategy_executor(strategy_id, revision)
+    with _LOCK:
+        if _BUILTIN_REGISTRY.get(registration.key) is not registration:
+            raise ValueError(
+                f"No typed persistence catalog for {registration.strategy_id}@{registration.revision}"
+            )
+    return registration
+
+
 def installed_strategy_definitions() -> list[dict[str, Any]]:
     return [registration.definition() for registration in installed_strategy_executors()]
 
@@ -150,8 +168,7 @@ def _ensure_builtin_executors() -> None:
         )
 
         for revision in (*HISTORICAL_STRATEGY_REVISIONS, STRATEGY_REVISION):
-            register_strategy_executor(
-                StrategyExecutorRegistration(
+            builtin = StrategyExecutorRegistration(
                     strategy_id=STRATEGY_ID,
                     revision=revision,
                     implementation=(
@@ -175,5 +192,6 @@ def _ensure_builtin_executors() -> None:
                         revision=revision
                     ).evaluate,
                 )
-            )
+            register_strategy_executor(builtin)
+            _BUILTIN_REGISTRY[builtin.key] = builtin
         _BUILTINS_REGISTERED = True

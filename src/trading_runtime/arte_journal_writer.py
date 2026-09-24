@@ -1858,7 +1858,8 @@ class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 
     def __init__(self, client: Any, *, run_id: str, capacity: int = 8,
-                 max_events_per_commit: int = 4096) -> None:
+                 max_events_per_commit: int = 4096,
+                 coalesce_batches: bool = True) -> None:
         if capacity < 1 or max_events_per_commit < 1:
             raise ValueError("Journal queue capacity and commit bound must be positive")
         # Startup/control-plane validation, before a publication thread exists.
@@ -1884,6 +1885,7 @@ class ArteJournalWriter:
         else:
             self._run_account_ids = frozenset()
         self._max_events_per_commit = max_events_per_commit
+        self._coalesce_batches = coalesce_batches
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
                   | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit | _TerminalBacktestUnit,
@@ -1897,6 +1899,22 @@ class ArteJournalWriter:
         self._client_closed = False
         self._thread = Thread(target=self._run, name="arte-journal-writer", daemon=False)
         self._thread.start()
+
+    @property
+    def run_id(self) -> str:
+        return self._run_id
+
+    @property
+    def run_mode(self) -> str:
+        return self._run_mode
+
+    @property
+    def max_events_per_commit(self) -> int:
+        return self._max_events_per_commit
+
+    @property
+    def coalesce_batches(self) -> bool:
+        return self._coalesce_batches
 
     def submit(self, batch: TypedJournalBatch) -> Future[str]:
         """Enqueue without waiting; the receipt names the durable combined batch."""
@@ -2100,7 +2118,8 @@ class ArteJournalWriter:
                 if following is None:
                     stopping = True
                     break
-                if (isinstance(group[-1][0], TypedJournalBatch)
+                if (self._coalesce_batches
+                        and isinstance(group[-1][0], TypedJournalBatch)
                         and isinstance(following[0], TypedJournalBatch)
                         and _can_coalesce(group[-1][0], following[0], self._max_events_per_commit)
                         and following[0].last_sequence - group[0][0].first_sequence + 1

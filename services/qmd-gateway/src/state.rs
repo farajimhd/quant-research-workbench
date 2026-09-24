@@ -7,6 +7,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const SCANNER_STALE_AFTER_MS: u64 = 60_000;
+/// Bump whenever scanner liquidity scoring, quality, eligibility, or ranking changes.
+pub const QMD_SCANNER_SCORE_REVISION: &str = "qmd-liquidity-ranking-v1";
 const LIQUIDITY_RANK_CACHE_MS: i64 = 1_000;
 const LIQUIDITY_MIN_SESSION_DOLLAR_VOLUME: f64 = 1_000_000.0;
 const LIQUIDITY_MIN_SESSION_SHARE_VOLUME: f64 = 100_000.0;

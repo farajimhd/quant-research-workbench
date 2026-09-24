@@ -66,31 +66,55 @@ async def resume_complete_portfolio_sync(
     """
     async with keeper.claim_portfolio_snapshot(run_id, account_id) as lease:
         current = keeper.portfolio_snapshot_claim_is_current
-        if not current(lease):
+        async def attested(fence: Mapping[str, Any]) -> dict[str, Any]:
+            if not await asyncio.to_thread(current, lease):
+                raise RuntimeError("Portfolio sync resume lost its Keeper claim before CAS")
+            proof = await asyncio.to_thread(
+                keeper.load_portfolio_snapshot_receipt,
+                run_id, account_id, state_revision)
+            if proof is None:
+                await asyncio.to_thread(
+                    keeper.attest_portfolio_snapshot_receipt,
+                    lease, run_id, account_id, state_revision,
+                    str(fence["batch_id"]), str(fence["snapshot_hash"]))
+            verified = await asyncio.to_thread(
+                load_attested_portfolio_sync, client, keeper,
+                run_id=run_id, account_id=account_id,
+                state_revision=state_revision)
+            if (verified is None or verified["batch_id"] != fence["batch_id"]
+                    or verified["snapshot_hash"] != fence["snapshot_hash"]
+                    or not await asyncio.to_thread(current, lease)):
+                raise RuntimeError("Portfolio sync resume lacks an attested receipt")
+            return verified
+
+        if not await asyncio.to_thread(current, lease):
             raise RuntimeError("Portfolio sync resume lacks a current Keeper claim")
-        marker = _stored_marker(client, run_id, account_id, state_revision)
+        marker = await asyncio.to_thread(
+            _stored_marker, client, run_id, account_id, state_revision)
         if marker is None:
             raise RuntimeError("Portfolio sync resume lacks its prepared marker")
-        existing = load_fenced_portfolio_sync(
+        existing = await asyncio.to_thread(
+            load_fenced_portfolio_sync,
             client, run_id=run_id, account_id=account_id,
             state_revision=state_revision)
         if existing is not None:
             if existing["batch_id"] != marker["batch_id"]:
                 raise RuntimeError("Portfolio sync resume fence differs from marker")
-            return existing
+            return await attested(existing)
         batch_id = str(marker["batch_id"])
-        prefix = load_committed_prefix(client, run_id)
+        prefix = await asyncio.to_thread(load_committed_prefix, client, run_id)
         if prefix is None:
             raise RuntimeError("Portfolio sync resume lacks a committed event prefix")
-        commits = _rows(client,
+        commits = await asyncio.to_thread(_rows, client,
             "SELECT attempt_id,first_sequence,last_sequence FROM arte.trading_commit_v1 "
             f"WHERE run_id={_literal(run_id)} "
             f"AND batch_id=toUUID({_literal(batch_id)}) FORMAT JSONEachRow")
-        details = _rows(client,
+        details = await asyncio.to_thread(_rows, client,
             "SELECT difference_hash,snapshot_id FROM arte.trading_portfolio_reconciliation_event_v1 "
             f"WHERE run_id={_literal(run_id)} "
             f"AND batch_id=toUUID({_literal(batch_id)}) FORMAT JSONEachRow")
-        snapshot = load_portfolio_snapshot(
+        snapshot = await asyncio.to_thread(
+            load_portfolio_snapshot,
             client, run_id=run_id, account_id=account_id,
             state_revision=state_revision)
         if (len(commits) != 1 or len(details) != 1 or snapshot is None
@@ -108,19 +132,23 @@ async def resume_complete_portfolio_sync(
         })
         # Verify the exact sealed event/detail and complete normalized snapshot
         # before publishing the missing late fence.
-        load_fenced_portfolio_sync(
+        await asyncio.to_thread(
+            load_fenced_portfolio_sync,
             client, run_id=run_id, account_id=account_id,
             state_revision=state_revision, _provisional_fence=fence)
-        if not current(lease):
+        if not await asyncio.to_thread(current, lease):
             raise RuntimeError("Portfolio sync resume lost its Keeper claim")
-        _insert(client, _FENCE, (fence,),
-                f"portfolio-sync:{run_id}:{account_id}:{state_revision}")
-        verified = load_fenced_portfolio_sync(
+        await asyncio.to_thread(
+            _insert, client, _FENCE, (fence,),
+            f"portfolio-sync:{run_id}:{account_id}:{state_revision}")
+        verified = await asyncio.to_thread(
+            load_fenced_portfolio_sync,
             client, run_id=run_id, account_id=account_id,
             state_revision=state_revision)
-        if verified is None or verified["batch_id"] != batch_id or not current(lease):
+        if (verified is None or verified["batch_id"] != batch_id
+                or not await asyncio.to_thread(current, lease)):
             raise RuntimeError("Portfolio sync resume fence did not become durable")
-        return verified
+        return await attested(verified)
 
 
 def _publish_marker(client: Any, row: Mapping[str, Any]) -> None:

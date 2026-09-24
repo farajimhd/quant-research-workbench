@@ -16,7 +16,8 @@ use qmd_core::indicators::{
 };
 use qmd_core::market_signal::{MarketSignalEngine, MarketSignalEvent};
 use qmd_core::microstructure_interval::MicrostructureIntervalWindow;
-use qmd_core::state::{SharedMarketState, SymbolSnapshot};
+use qmd_core::state::{SharedMarketState, SymbolSnapshot, QMD_SCANNER_SCORE_REVISION};
+use qmd_core::structure_certification::canonical_json_sha256;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -66,8 +67,11 @@ pub struct HistoricalScannerDerivedSnapshot {
     pub indicators: Vec<IndicatorRow>,
     pub indicator_timeframe: &'static str,
     pub market_rows: Vec<HistoricalScannerMarketRow>,
+    pub market_row_count: usize,
+    pub market_rows_sha256: String,
     pub recent_signal_events: Vec<MarketSignalEvent>,
     pub schema_version: &'static str,
+    pub scanner_score_revision: &'static str,
     pub source_revision: SourceRevision,
     pub ticker_count: usize,
 }
@@ -673,6 +677,8 @@ impl CrossSectionEngine {
                 market,
             })
             .collect::<Vec<_>>();
+        let market_row_count = market_rows.len();
+        let market_rows_sha256 = scanner_market_rows_sha256(&market_rows);
         let mut indicators = self
             .latest_indicators
             .into_values()
@@ -704,8 +710,11 @@ impl CrossSectionEngine {
             indicators,
             indicator_timeframe: SCANNER_INDICATOR_TIMEFRAME,
             market_rows,
+            market_row_count,
+            market_rows_sha256,
             recent_signal_events,
             schema_version: HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION,
+            scanner_score_revision: QMD_SCANNER_SCORE_REVISION,
             source_revision,
             ticker_count,
         }
@@ -2248,6 +2257,20 @@ fn valid_price_bar(bar: &BarRow) -> bool {
         && bar.high >= bar.low
 }
 
+fn scanner_market_rows_sha256(rows: &[HistoricalScannerMarketRow]) -> String {
+    let mut sorted = rows.iter().collect::<Vec<_>>();
+    sorted.sort_by(|left, right| left.market.ticker.cmp(&right.market.ticker));
+    // Hash the same shortest-decimal JSON representation emitted by the API.
+    // to_value alone can retain a different binary-float rendering.
+    let encoded = serde_json::to_string(&sorted)
+        .expect("scanner market rows must serialize for full-population certification");
+    let value = serde_json::from_str(&encoded)
+        .expect("scanner market rows must decode for full-population certification");
+    canonical_json_sha256(&value)
+        .expect("scanner market rows must hash for full-population certification")
+}
+
+
 fn merge_worker_results(
     results: Vec<ScannerWorkerResult>,
     as_of: DateTime<Utc>,
@@ -2275,6 +2298,8 @@ fn merge_worker_results(
     });
     sort_and_bound_signal_events(&mut recent_signal_events);
     let ticker_count = indicators.len();
+    let market_row_count = market_rows.len();
+    let market_rows_sha256 = scanner_market_rows_sha256(&market_rows);
     HistoricalScannerDerivedSnapshot {
         active_signals,
         as_of,
@@ -2283,8 +2308,11 @@ fn merge_worker_results(
         indicators,
         indicator_timeframe: SCANNER_INDICATOR_TIMEFRAME,
         market_rows,
+        market_row_count,
+        market_rows_sha256,
         recent_signal_events,
         schema_version: HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION,
+        scanner_score_revision: QMD_SCANNER_SCORE_REVISION,
         source_revision,
         ticker_count,
     }
@@ -2327,7 +2355,8 @@ fn scanner_shard_index(ticker: &str, shard_count: usize) -> usize {
 mod tests {
     use super::{
         accumulate_aligned_volume_session, aligned_volume_bucket, empty_source_revision,
-        replay_end_for_evaluation_windows, scanner_shard_index, source_event_requirement,
+        replay_end_for_evaluation_windows, scanner_market_rows_sha256,
+        scanner_shard_index, source_event_requirement,
         watchlist_derived_timeframes, CoreLiquidityIndex, CrossSectionEngine,
         RelativeVolumeRevisionEvidence, RuleEventRequirement, ALIGNED_VOLUME_BUCKET_COUNT,
     };
@@ -2336,6 +2365,7 @@ mod tests {
     use qmd_core::bars::{TradeAggregationRules, TradeUpdateRule};
     use qmd_core::event::{MarketEvent, QuoteEvent, TradeEvent};
     use qmd_core::indicators::MarketStructureReferenceLevels;
+    use qmd_core::state::QMD_SCANNER_SCORE_REVISION;
     use serde_json::json;
     use std::collections::{BTreeSet, HashMap};
 
@@ -2482,6 +2512,12 @@ mod tests {
             .await;
         assert_eq!(snapshot.ticker_count, 2);
         assert_eq!(snapshot.market_rows.len(), 2);
+        assert_eq!(snapshot.market_row_count, 2);
+        assert_eq!(snapshot.scanner_score_revision, QMD_SCANNER_SCORE_REVISION);
+        assert_eq!(snapshot.market_rows_sha256, scanner_market_rows_sha256(&snapshot.market_rows));
+        let mut reversed = snapshot.market_rows.clone();
+        reversed.reverse();
+        assert_eq!(snapshot.market_rows_sha256, scanner_market_rows_sha256(&reversed));
         let aapl_market = snapshot
             .market_rows
             .iter()
