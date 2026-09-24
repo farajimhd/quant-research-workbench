@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import HTTPException
+from httpx import ASGITransport, AsyncClient
 
 from src.backend.app import (
     app, backtest_run_service, trading_backtest_run_review,
@@ -60,3 +61,22 @@ class BacktestReviewAPITests(IsolatedAsyncioTestCase):
     def test_typed_financial_route_is_separate_from_saved_review(self):
         paths = {route.path: route.methods for route in app.routes if hasattr(route, 'methods')}
         self.assertIn('GET', paths['/api/trading/backtest/runs/{run_id}/typed-financial-page'])
+
+    async def test_typed_financial_http_route_serializes_page(self):
+        run_id = str(uuid4())
+        client = Mock()
+        client.close = Mock()
+        page = {"run": {"run_id": run_id}, "status": "completed", "fills": [],
+                "commissions": [], "accounts": {}, "next_fill_sequence": 0,
+                "next_commission_sequence": 0, "complete": True}
+        with (patch('src.trading_runtime.arte_journal_reader.readonly_typed_journal_client',
+                    return_value=client),
+              patch('src.backend.typed_backtest_financial_review.load_typed_backtest_financial_page',
+                    return_value=page)):
+            async with AsyncClient(transport=ASGITransport(app=app),
+                                   base_url='http://test') as http:
+                response = await http.get(
+                    f'/api/trading/backtest/runs/{run_id}/typed-financial-page')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), page)
+        client.close.assert_called_once()
