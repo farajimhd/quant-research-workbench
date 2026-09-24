@@ -109,20 +109,9 @@ def test_fixed_engine_opens_clickhouse_journal_before_any_sqlite(monkeypatch):
     assert "journal unavailable" in controller.error
 
 
-def test_fixed_journal_resume_restores_verified_fence_and_command_state(monkeypatch):
-    from src.backend import backtest_journal_clickhouse, backtest_journal_reader
-
-    at = datetime(2026, 8, 18, 4, 5, tzinfo=NY)
-    prior = BacktestMemoryJournal(run_id=RUN)
-    prior.save_portfolio_state("paper", {"reservations": [{"reservation_id": "held"}]})
-    state = {"journal_command": prior.command_checkpoint()}
-    signal = JournalRecord(RUN, RUN, 1, at, at,
-        "market_discovery_signal", "signal_occurrence", "s1", "", {"ticker": "AAPL"})
-    protection = JournalRecord("00000000-0000-0000-0000-000000000002", RUN,
-        2, at, at, "protection", "price", "stop", "paper", {"price": 9.5})
-    checkpoint = dict(fence_id="00000000-0000-0000-0000-000000000003",
-        sequence=2, batch_ids=("00000000-0000-0000-0000-000000000004",),
-        state=state)
+def test_fixed_journal_refuses_retired_bt_resume_even_after_typed_preflight(monkeypatch):
+    from src.backend import backtest_journal_clickhouse
+    from src.trading_runtime import arte_journal_schema, arte_journal_writer
 
     class Client:
         closed = False
@@ -130,45 +119,46 @@ def test_fixed_journal_resume_restores_verified_fence_and_command_state(monkeypa
             self.closed = True
 
     client = Client()
-    monkeypatch.setattr(backtest_journal_clickhouse, "journal_clickhouse_client", lambda: client)
-    monkeypatch.setattr(backtest_journal_clickhouse, "storage_preflight", lambda _client: None)
-    monkeypatch.setattr(backtest_journal_clickhouse, "backtest_code_hash", lambda _root: "h" * 64)
-    monkeypatch.setattr(backtest_journal_clickhouse, "verify_run_identity", lambda *_a, **_k: None)
+    checked = []
+    monkeypatch.setattr(arte_journal_writer, "journal_client_from_env", lambda: client)
+    monkeypatch.setattr(arte_journal_schema, "storage_preflight",
+                        lambda value: checked.append(("storage", value)))
+    monkeypatch.setattr(arte_journal_schema, "journal_permission_preflight",
+                        lambda value: checked.append(("grants", value)))
     monkeypatch.setattr(backtest_journal_clickhouse, "load_fenced_checkpoint",
-                        lambda *_a: checkpoint)
-    monkeypatch.setattr(backtest_journal_reader, "BacktestJournalReader",
-        lambda *_a, **_k: SimpleNamespace(committed_command_records=lambda: [signal, protection]))
+                        lambda *_a: (_ for _ in ()).throw(AssertionError("retired bt_* read")))
     controller = object.__new__(ReplayRunController)
     controller.run_id = RUN
-    controller.created_at = at
-    controller.definition = SimpleNamespace(
-        mode=RunMode.BACKTEST,
-        configuration_revision={"content_hash": "a" * 64},
-        market_data_plan={"token": "market"}, causal_v7_plan={},
-        payload=lambda: {"mode": "backtest"})
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
     controller._journal = None
     controller._journal_writer = None
     controller._journal_publisher = None
-    controller._resume_state = state
-    controller._resume_journal_prefix = {key: checkpoint[key] for key in
-                                         ("sequence", "fence_id", "batch_ids")}
+
+    with pytest.raises(RuntimeError, match="typed journal publication and cold recovery"):
+        asyncio.run(controller._open_fixed_journal())
+    assert checked == [("storage", client), ("grants", client)]
+    assert client.closed
+
+
+def test_fixed_journal_shutdown_drains_off_event_loop():
+    import threading
+
+    controller = object.__new__(ReplayRunController)
+    calls = []
+    controller._journal_writer = SimpleNamespace(
+        close=lambda: calls.append(("writer", threading.get_ident())))
+    controller._journal_publisher = object()
+    controller._journal = SimpleNamespace(close=lambda: calls.append(("journal", threading.get_ident())))
 
     async def exercise():
-        await controller._open_fixed_journal()
-        assert controller._journal_publisher.fenced_sequence == 2
-        assert controller._journal.portfolio_reservation("paper", "held") == {
-            "reservation_id": "held"}
-        assert controller._journal.protection_records(RUN) == [protection]
-        assert controller._journal.append_once(run_id=RUN,
-            category="market_discovery_signal", entity_type="signal_occurrence",
-            entity_id="s1", payload={"ticker": "AAPL"}, event_time=at)[1] is False
-        assert controller._journal.append(run_id=RUN, category="strategy",
-            entity_type="decision", entity_id="new", payload={},
-            event_time=at).sequence == 3
+        loop_thread = threading.get_ident()
         await controller._close_fixed_journal()
+        assert calls[0][0] == "writer" and calls[0][1] != loop_thread
+        assert calls[1][0] == "journal"
 
     asyncio.run(exercise())
-    assert client.closed
+    assert controller._journal_writer is None
+    assert controller._journal_publisher is None
 
 
 def test_fixed_activity_reads_only_committed_clickhouse_prefix(monkeypatch):

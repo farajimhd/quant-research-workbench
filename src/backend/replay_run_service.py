@@ -2697,7 +2697,7 @@ class ReplayRunController:
         self._journal_publisher = None
         try:
             if writer is not None:
-                await writer.close()
+                await asyncio.to_thread(writer.close)
         finally:
             if self._journal is not None:
                 self._journal.close()
