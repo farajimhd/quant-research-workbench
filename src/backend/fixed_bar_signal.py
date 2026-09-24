@@ -1,8 +1,8 @@
 """Read-only, completed-bar Early Squeeze admission for fixed Backtests.
 
 The approved 100 ms impulse is evaluated in ClickHouse over the pinned bar
-attempts. Only its first causal start per ticker-session is returned; no event
-stream, producer job, or signal artifact is created by Backtest.
+attempts. A sparse causal pass applies the live episode expiry rule to every
+qualifying impulse; no event stream, producer job, or signal artifact is created.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from src.backend.backtest_market_data import (
 CONTRACT = "arte-completed-100ms-squeeze-start-v1"
 RULE_ID = "watchlist-squeeze-early-impulse-100ms"
 STREAM_ID = "price-squeeze-early"
+MAX_BACKTEST_EPISODES = 1_000_000
 _CONDITIONS = {
     ("price_change_1_bar_pct", "greater_or_equal", 0.05),
     ("trade_count_change", "greater_than", 0.0),
@@ -103,17 +104,14 @@ def first_squeeze_sql(plan: CertifiedMarketDayPlan, *, through_boundary_ms: int)
         WINDOW w AS (PARTITION BY session_date,ticker ORDER BY bucket_index
                      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
       ), candidates AS (
-        SELECT *,row_number() OVER (PARTITION BY session_date,ticker
-                                    ORDER BY bucket_index) AS candidate_number
-        FROM ordered
+        SELECT * FROM ordered
         WHERE previous_close_int>0
           AND (toFloat64(close_int)/previous_close_int-1)*100>=0.05
           AND trade_count>previous_trade_count AND volume>previous_volume
       )
       SELECT session_date,ticker,bucket_index,open_int,close_int,volume,trade_count,
         previous_close_int,previous_volume,previous_trade_count
-      FROM candidates WHERE candidate_number=1
-      ORDER BY session_date,ticker FORMAT JSONEachRow
+      FROM candidates ORDER BY session_date,ticker,bucket_index FORMAT JSONEachRow
     """)
 
 
@@ -124,10 +122,11 @@ def load_first_squeeze_occurrences(
     validate_stream(stream, activation)
     query = first_squeeze_sql(plan, through_boundary_ms=through_boundary_ms)
     rows = list(client.iter_json_each_row(query))
-    maximum = int(stream.get("maximum_events") or 0)
-    if maximum > 0 and len(rows) > maximum:
-        raise ValueError("Completed-bar squeeze occurrences exceed the saved stream limit")
-    seen: set[tuple[str, str]] = set()
+    # maximum_events is a display/query setting in the saved stream, not an
+    # all-session producer cap.  The live engine does not suppress new starts
+    # after it, so Backtest must not truncate or reject at that threshold.
+    last_bucket: dict[tuple[str, str], int] = {}
+    episode_expires: dict[tuple[str, str], int] = {}
     occurrences: list[dict[str, Any]] = []
     for row in rows:
         day, ticker = str(row["session_date"]), str(row["ticker"])
@@ -136,15 +135,22 @@ def load_first_squeeze_occurrences(
         close_int, previous_int = int(row["close_int"]), int(row["previous_close_int"])
         volume, previous_volume = float(row["volume"]), float(row["previous_volume"])
         trades, previous_trades = int(row["trade_count"]), int(row["previous_trade_count"])
-        if (key in seen or day not in plan.sessions or ticker not in plan.tickers
+        if (day not in plan.sessions or ticker not in plan.tickers
                 or not SESSION_OPEN_OFFSET_MS // 100 <= bucket
                        < (through_boundary_ms + SESSION_OPEN_OFFSET_MS) // 100
+                or bucket <= last_bucket.get(key, -1)
                 or close_int <= 0 or previous_int <= 0
                 or not math.isfinite(volume) or not math.isfinite(previous_volume)
                 or (close_int / previous_int - 1) * 100 < 0.05
                 or volume <= previous_volume or trades <= previous_trades):
-            raise ValueError("Completed-bar squeeze query returned invalid or duplicate evidence")
-        seen.add(key)
+            raise ValueError("Completed-bar squeeze query returned invalid or unordered evidence")
+        last_bucket[key] = bucket
+        # The QMD episode engine removes an episode at its expiry before
+        # checking the current impulse.  A qualifying bar inside an active
+        # episode is not a second start, even if the rule remains true.
+        if bucket < episode_expires.get(key, -1):
+            continue
+        episode_expires[key] = bucket + 3_000  # 300 seconds at 100 ms.
         at = market_day_boundary(day, (bucket + 1) * 100 - SESSION_OPEN_OFFSET_MS)
         price, anchor = close_int / 10_000, previous_int / 10_000
         move = (price / anchor - 1) * 100
@@ -167,6 +173,8 @@ def load_first_squeeze_occurrences(
                 "volume_change": volume - previous_volume,
             },
         })
+        if len(occurrences) > MAX_BACKTEST_EPISODES:
+            raise ValueError("Completed-bar squeeze occurrences exceed the Backtest safety bound")
     body = json.dumps(occurrences, sort_keys=True, separators=(",", ":"))
     return {
         "occurrences": occurrences,
