@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime, timezone
 import json
+import os
 import unittest
+from unittest.mock import patch
 from uuid import UUID
 
 from src.backend.backtest_journal_clickhouse import (
-    BacktestJournalWriter, load_fenced_checkpoint,
+    BacktestJournalWriter, journal_clickhouse_client, load_fenced_checkpoint,
     prepare_batch, prepare_fence, publish_batch, publish_fence, publish_run,
     schema_ddl, storage_preflight,
 )
@@ -86,6 +88,23 @@ class _Client:
 
 
 class BacktestJournalClickHouseTests(unittest.TestCase):
+    def test_journal_client_requires_separate_credentials(self) -> None:
+        settings = {
+            "BACKTEST_CLICKHOUSE_USER": "market_reader",
+            "BACKTEST_JOURNAL_CLICKHOUSE_URL": "http://localhost:8123",
+            "BACKTEST_JOURNAL_CLICKHOUSE_USER": "market_reader",
+            "BACKTEST_JOURNAL_CLICKHOUSE_PASSWORD": "test-only",
+        }
+        with patch.dict(os.environ, settings, clear=True):
+            with self.assertRaisesRegex(ValueError, "must not share"):
+                journal_clickhouse_client()
+            os.environ["BACKTEST_JOURNAL_CLICKHOUSE_USER"] = "journal_writer"
+            with patch("research.mlops.clickhouse.ClickHouseHttpClient") as factory:
+                journal_clickhouse_client()
+                args, kwargs = factory.call_args
+                self.assertEqual(args[:2], ("http://localhost:8123", "journal_writer"))
+                self.assertNotIn("readonly", kwargs["default_query_params"])
+
     def test_storage_policy_and_part_placement_fail_closed(self) -> None:
         class Catalog:
             def execute(self, sql: str) -> str:
