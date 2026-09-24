@@ -22,7 +22,7 @@ from src.trading_runtime.portfolio import PortfolioPolicy
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 48
+    assert len(statements) == len(TABLES) == 52
     upgrade = backtest_cursor_upgrade_ddl()
     assert len(upgrade) == 3
     assert "CREATE TABLE IF NOT EXISTS arte.trading_backtest_cursor_v1" in upgrade[0]

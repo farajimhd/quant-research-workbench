@@ -937,6 +937,52 @@ TABLES = (
     ),
 )
 
+# Activation watch-set authority is normalized separately from execution
+# events, but belongs to the same operator-installed journal surface.
+ACTIVATION_TABLES = (
+    TableContract("trading_activation_v1", (
+        ("run_id", "String"), ("session_date", "Date"), ("run_plan_id", "String"),
+        ("ticker", "String"), ("event_id", "String"),
+        ("delivery_id", "String"), ("profile_id", "String"),
+        ("book_id", "String"), ("signal_stream_id", "String"),
+        ("event_time", "DateTime64(6, 'UTC')"),
+        ("evidence_count", "UInt32"), ("field_evidence_count", "UInt32"),
+        ("content_hash", "FixedString(64)"),
+    ), "toYYYYMM(session_date)", "run_id, session_date, run_plan_id, ticker, event_id"),
+    TableContract("trading_activation_evidence_v1", (
+        ("run_id", "String"), ("session_date", "Date"), ("run_plan_id", "String"),
+        ("ticker", "String"), ("event_id", "String"),
+        ("field_key", "String"), ("value_kind", "LowCardinality(String)"),
+        ("value_text", "Nullable(String)"), ("value_int", "Nullable(Int64)"),
+        ("value_float", "Nullable(Float64)"),
+        ("value_decimal", "Nullable(Decimal(38, 18))"),
+        ("value_bool", "Nullable(UInt8)"), ("content_hash", "FixedString(64)"),
+    ), "toYYYYMM(session_date)", "run_id, session_date, run_plan_id, ticker, event_id, field_key"),
+    TableContract("trading_activation_field_evidence_v1", (
+        ("run_id", "String"), ("session_date", "Date"), ("run_plan_id", "String"),
+        ("ticker", "String"), ("event_id", "String"),
+        ("field_key", "String"), ("field_ref", "String"),
+        ("interval", "String"), ("aggregation", "String"),
+        ("available_at", "Nullable(DateTime64(6, 'UTC'))"),
+        ("null_reason", "Nullable(String)"),
+        ("value_kind", "LowCardinality(String)"),
+        ("value_text", "Nullable(String)"), ("value_int", "Nullable(Int64)"),
+        ("value_float", "Nullable(Float64)"),
+        ("value_decimal", "Nullable(Decimal(38, 18))"),
+        ("value_bool", "Nullable(UInt8)"), ("content_hash", "FixedString(64)"),
+    ), "toYYYYMM(session_date)", "run_id, session_date, run_plan_id, ticker, event_id, field_key"),
+    TableContract("trading_activation_commit_v1", (
+        ("run_id", "String"), ("session_date", "Date"), ("run_plan_id", "String"),
+        ("ticker", "String"), ("event_id", "String"),
+        ("parent_hash", "FixedString(64)"),
+        ("evidence_hash", "FixedString(64)"),
+        ("field_evidence_hash", "FixedString(64)"),
+        ("committed_at", "DateTime64(6, 'UTC')"),
+        ("content_hash", "FixedString(64)"),
+    ), "toYYYYMM(session_date)", "run_id, session_date, run_plan_id, ticker, event_id"),
+)
+TABLES += ACTIVATION_TABLES
+
 
 def schema_ddl() -> tuple[str, ...]:
     """Return DDL for a separately authorized installer, never run it here."""
