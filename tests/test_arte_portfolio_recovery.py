@@ -8,7 +8,8 @@ import pytest
 from src.trading_runtime import arte_portfolio_recovery as recovery
 from src.trading_runtime.arte_portfolio_snapshot import publish_portfolio_snapshot
 from src.trading_runtime.portfolio import (
-    PortfolioAllocationLot, PortfolioReservation, profiles_for_runtime,
+    PortfolioAllocationLot, PortfolioReservation, PortfolioSyncState,
+    profiles_for_runtime,
 )
 from tests.test_arte_portfolio_snapshot_persistence import SnapshotClient, _state
 
@@ -16,12 +17,13 @@ from tests.test_arte_portfolio_snapshot_persistence import SnapshotClient, _stat
 AT = datetime(2026, 8, 18, 12, tzinfo=timezone.utc)
 
 
-def _client(monkeypatch):
+def _client(monkeypatch, *, sync_state: str = "synchronized"):
     client = SnapshotClient()
     monkeypatch.setattr(recovery, "load_typed_run_context",
                         lambda _client, run_id: {"account_ids": ("account-id",)}
                         if run_id == "live-run" else {"account_ids": ()})
     state = _state()
+    state["sync_state"] = sync_state
     state["reservations"] = [asdict(PortfolioReservation(
         reservation_id="reservation-1", decision_id="decision-1", intent_id="intent-1",
         account_key="account-key", account_id="account-id", strategy_id="strategy-a",
@@ -51,9 +53,24 @@ def test_exact_revision_reconstructs_typed_engine_state(monkeypatch) -> None:
         state_revisions={"account-id": 7}, cutoff_at=AT)
     assert restored.states["account-id"].profile is profile
     assert restored.states["account-id"].observed_at == AT
+    assert restored.states["account-id"].sync_state == PortfolioSyncState.ENTRIES_BLOCKED
+    assert not restored.states["account-id"].synchronized
+    assert restored.states["account-id"].summary is None
+    assert restored.states["account-id"].stale_reason == (
+        "Broker resynchronization required after journal recovery")
     assert restored.reservations["reservation-1"].created_at == AT
     assert restored.allocations["allocation-1"].updated_at == AT
     assert restored.last_filled_by_reservation == {"reservation-1": 2.0}
+
+
+@pytest.mark.parametrize("persisted", ["disabled", "fully_blocked"])
+def test_recovery_preserves_stronger_broker_admission_blocks(monkeypatch, persisted) -> None:
+    client, profile = _client(monkeypatch, sync_state=persisted)
+    restored = recovery.recover_portfolio_engine_state(
+        client, run_id="live-run", profiles=(profile,),
+        state_revisions={"account-id": 7}, cutoff_at=AT)
+    assert restored.states["account-id"].sync_state == PortfolioSyncState(persisted)
+    assert not restored.states["account-id"].synchronized
 
 
 def test_missing_revision_and_wrong_profile_fail_closed(monkeypatch) -> None:

@@ -86,11 +86,23 @@ def recover_portfolio_engine_state(
             raise RuntimeError("Portfolio recovery account key differs from pinned profile")
         state = PortfolioAccountState(profile=profile)
         state.control_mode = PortfolioControlMode(raw["control_mode"])
-        state.sync_state = PortfolioSyncState(raw["sync_state"])
+        persisted_sync_state = PortfolioSyncState(raw["sync_state"])
+        # The typed snapshot contains durable policy and reservation state, not
+        # the broker's current balances, positions, or open orders. Never turn
+        # a historical synchronized flag into present-tense admission authority.
+        state.sync_state = (persisted_sync_state
+                            if persisted_sync_state in {
+                                PortfolioSyncState.DISABLED,
+                                PortfolioSyncState.FULLY_BLOCKED,
+                            } else PortfolioSyncState.ENTRIES_BLOCKED)
         state.snapshot_id = raw["snapshot_id"]
         state.observed_at = (_time(raw["observed_at"], cutoff_at=cutoff_at)
                              if raw["observed_at"] is not None else None)
-        state.stale_reason = raw["stale_reason"]
+        state.stale_reason = (raw["stale_reason"]
+                              if state.sync_state in {
+                                  PortfolioSyncState.DISABLED,
+                                  PortfolioSyncState.FULLY_BLOCKED,
+                              } else "Broker resynchronization required after journal recovery")
         state.peak_net_liquidation = raw["peak_net_liquidation"]
         state.realized_pnl_baseline = raw["realized_pnl_baseline"]
         if raw["selected_policy"] is not None:
