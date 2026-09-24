@@ -86,6 +86,8 @@ _FAMILIES = (
      "backtest_cursor_hash"),
     ("trading_backtest_progress_v1", "backtest_progress",
      "backtest_progress_count", "backtest_progress_hash"),
+    ("trading_prepared_v7_lease_v1", "prepared_v7_leases",
+     "prepared_v7_lease_count", "prepared_v7_lease_hash"),
 )
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 _EVENT_DETAILS = {
@@ -99,6 +101,7 @@ _EVENT_DETAILS = {
     ("strategy_decision", "signal"): "trading_strategy_signal_v1",
     ("strategy", "strategy_intent"): "trading_strategy_intent_v1",
     ("checkpoint", "market_boundary"): "trading_backtest_cursor_v1",
+    ("resource_lease", "prepared_v7_stream"): "trading_prepared_v7_lease_v1",
     ("strategy_decision", "intent_rejection"): "trading_intent_decision_v1",
     ("strategy_decision", "intent_deferral"): "trading_intent_decision_v1",
     ("portfolio_management", "portfolio_decision"): "trading_portfolio_decision_v1",
@@ -181,6 +184,7 @@ class TypedJournalBatch:
     intent_slices: tuple[Mapping[str, Any], ...] = ()
     backtest_cursors: tuple[Mapping[str, Any], ...] = ()
     backtest_progress: tuple[Mapping[str, Any], ...] = ()
+    prepared_v7_leases: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.run_id or self.first_sequence < 1 or self.last_sequence < self.first_sequence:
@@ -303,6 +307,18 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
         record_id = str(UUID(str(event["record_id"])))
         if details_by_record.get(record_id) != _EVENT_DETAILS[key]:
             raise ValueError("Journal event lacks its required typed detail")
+    for lease in by_family["trading_prepared_v7_lease_v1"]:
+        parent = events_by_id[str(UUID(str(lease["record_id"]))) ]
+        if (parent["category"] != "resource_lease"
+                or parent["entity_type"] != "prepared_v7_stream"
+                or parent["entity_id"] != lease["stream_id"]
+                or parent["account_id"] or lease["account_id"]
+                or not lease["stream_id"] or not 0 < int(lease["owner_pid"]) < 2**32
+                or lease["phase"] not in {"acquiring", "acquired", "release_failed", "released"}
+                or (lease["phase"] == "release_failed") != (lease["error_type"] is not None)
+                or _datetime_wire(lease["source_event_time"], 9)
+                != _datetime_wire(parent["event_time"], 9)):
+            raise ValueError("Prepared V7 lease differs from its journal event")
     progress_parents: set[str] = set()
     for progress in by_family["trading_backtest_progress_v1"]:
         parent_id = str(UUID(str(progress["parent_record_id"])))

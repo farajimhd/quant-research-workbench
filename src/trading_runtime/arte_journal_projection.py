@@ -255,9 +255,60 @@ def project_journal_record(
         return intent_decision_batch(record, **identity)
     if kind == ("checkpoint", "market_boundary"):
         return backtest_cursor_batch(record, **identity)
+    if kind == ("resource_lease", "prepared_v7_stream"):
+        return prepared_v7_lease_batch(record, **identity)
     raise ValueError(
         f"Journal record {record.category}/{record.entity_type} lacks a typed projection"
     )
+
+
+def prepared_v7_lease_batch(
+    record: JournalRecord, *, run_month: date, attempt_id: str,
+    batch_id: str, prior_batch_id: str, source_cursor: str,
+) -> TypedJournalBatch:
+    """Preserve the fixed Backtest's prepared V7 ownership transition."""
+    if ((record.category, record.entity_type) != ("resource_lease", "prepared_v7_stream")
+            or record.account_id or not record.entity_id
+            or record.event_time.tzinfo is None or record.recorded_at.tzinfo is None):
+        raise ValueError("Prepared V7 lease journal envelope is invalid")
+    payload = dict(record.payload)
+    required = {"stream_id", "owner_run_id", "owner_pid", "phase",
+                "error_type", "recorded_at"}
+    if set(payload) - {"correlation_id", "causation_id", "intent_id"} != required:
+        raise ValueError("Prepared V7 lease has missing or unmodeled fields")
+    phase = payload["phase"]
+    error_type = payload["error_type"]
+    pid = payload["owner_pid"]
+    if (payload["stream_id"] != record.entity_id
+            or payload["owner_run_id"] != record.run_id
+            or type(pid) is not int or not 0 < pid < 2**32
+            or phase not in {"acquiring", "acquired", "release_failed", "released"}
+            or (phase == "release_failed") != (error_type is not None)
+            or (error_type is not None and
+                (not isinstance(error_type, str) or not error_type))):
+        raise ValueError("Prepared V7 lease identity or phase is invalid")
+    recorded = datetime.fromisoformat(str(payload["recorded_at"]))
+    if recorded.tzinfo is None or recorded > record.recorded_at:
+        raise ValueError("Prepared V7 lease receipt time is invalid")
+    at = record.event_time.astimezone(timezone.utc).isoformat()
+    month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+    event = dict(run_id=record.run_id, event_month=month,
+                 attempt_id=attempt_id, batch_id=batch_id,
+                 record_id=record.record_id, sequence=record.sequence,
+                 event_time=at, recorded_at=record.recorded_at.astimezone(timezone.utc).isoformat(),
+                 category=record.category, entity_type=record.entity_type,
+                 entity_id=record.entity_id, account_id="",
+                 correlation_id=str(payload.get("correlation_id") or ""),
+                 causation_id=str(payload.get("causation_id") or ""))
+    lease = dict(record_id=record.record_id, run_id=record.run_id,
+                 event_month=month, batch_id=batch_id, account_id="",
+                 stream_id=record.entity_id, owner_pid=pid, phase=phase,
+                 error_type=error_type, source_event_time=at,
+                 lease_recorded_at=recorded.astimezone(timezone.utc).isoformat())
+    return TypedJournalBatch(
+        record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        record.sequence, record.sequence, source_cursor, "running", (event,),
+        prepared_v7_leases=(lease,))
 
 
 def project_portfolio_admission_records(

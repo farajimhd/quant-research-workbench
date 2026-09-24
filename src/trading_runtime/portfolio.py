@@ -528,6 +528,118 @@ class PortfolioManagementEngine:
         self._reconcile_account(state)
         self._persist_state(state)
 
+    async def synchronize_typed_snapshot(
+        self, account_id: str, *, summary: AccountSummary,
+        ledger: AccountLedger, positions: list[PortfolioPosition],
+        open_orders: list[LiveOrder] | None, authority: Any,
+    ) -> None:
+        """Commit broker reconciliation before exposing synchronized state."""
+        from src.trading_runtime.arte_portfolio_sync import TypedPortfolioSyncAuthority
+
+        if (not self._typed_recovery or self._typed_admission_poisoned
+                or not isinstance(authority, TypedPortfolioSyncAuthority)):
+            raise RuntimeError("Typed broker synchronization requires verified recovery authority")
+        state = self._state(account_id)
+        async with self._account_locks[account_id]:
+            state.sync_state = PortfolioSyncState.ENTRIES_BLOCKED
+            state.stale_reason = "Broker synchronization is being committed"
+            if (summary.account_id != account_id or ledger.acctId != account_id
+                    or summary.timestamp.tzinfo is None or ledger.timestamp.tzinfo is None
+                    or any(row.acctId != account_id for row in positions)
+                    or any(row.account != account_id for row in (open_orders or []))):
+                raise ValueError("Typed broker snapshot has mixed accounts or naive time")
+            async with authority.claim(self.run_id, account_id) as lease:
+                if not authority.claim_is_current(lease):
+                    raise RuntimeError("Typed broker snapshot claim is stale")
+                revision = authority.next_revision(self.run_id, account_id, lease)
+                if type(revision) is not int or revision < 1:
+                    raise RuntimeError("Typed broker snapshot revision is invalid")
+                before_differences = dict(self.differences)
+                publication_attempted = False
+                self._typed_admission_stage = []
+                try:
+                    now = datetime.now(timezone.utc)
+                    candidate = copy.deepcopy(state)
+                    candidate.summary = summary
+                    candidate.ledger = ledger
+                    candidate.positions = {_ticker(position): position for position in positions}
+                    candidate.open_orders = [order for order in (open_orders or [])
+                                             if not _terminal_order(order)]
+                    candidate.component_watermarks = {
+                        "summary": summary.timestamp.astimezone(timezone.utc),
+                        "ledger": ledger.timestamp.astimezone(timezone.utc),
+                        "positions": now, "orders": now,
+                    }
+                    candidate.observed_at = min(candidate.component_watermarks.values())
+                    candidate.snapshot_id = str(uuid4())
+                    candidate.peak_net_liquidation = max(
+                        candidate.peak_net_liquidation, float(summary.netliquidation))
+                    self._update_realized_pnl(candidate, float(ledger.realizedpnl))
+                    self._reconcile_account(candidate)
+                    if self._typed_admission_stage:
+                        raise RuntimeError(
+                            "Typed broker sync has unmodeled staged journal events")
+                    candidate_differences = dict(self.differences)
+                    self.differences = before_differences
+                    candidate.sync_state = PortfolioSyncState.SYNCHRONIZED
+                    candidate.stale_reason = ""
+                    from src.trading_runtime.arte_portfolio_snapshot import capture_portfolio_snapshot
+                    captured = capture_portfolio_snapshot(
+                        run_id=self.run_id, state_revision=revision,
+                        snapshot_at=now, state=candidate,
+                        reservations=self.reservations.values(),
+                        allocations=self.allocations.values(),
+                        reconciliation=candidate_differences.values())
+                    publication_attempted = True
+                    receipt = await authority.publish(captured, lease)
+                    if (receipt.run_id != self.run_id or receipt.account_id != account_id
+                            or receipt.state_revision != revision
+                            or not authority.claim_is_current(lease)):
+                        raise RuntimeError("Typed broker snapshot receipt differs")
+                    self.states[account_id] = candidate
+                    self.by_key[candidate.profile.account_key] = candidate
+                    self.differences = candidate_differences
+                except BaseException:
+                    if publication_attempted:
+                        self._typed_admission_poisoned = True
+                        state.sync_state = PortfolioSyncState.ENTRIES_BLOCKED
+                        state.stale_reason = (
+                            "Typed broker snapshot outcome uncertain; cold recovery required")
+                    else:
+                        self.differences = before_differences
+                        state.sync_state = PortfolioSyncState.ENTRIES_BLOCKED
+                        state.stale_reason = "Typed broker synchronization failed"
+                    raise
+                finally:
+                    self._typed_admission_stage = None
+
+    async def synchronize_typed_broker(self, broker: BrokerAdapter, *, authority: Any) -> None:
+        """Fetch broker authority, then commit each pinned account snapshot."""
+        if not self._typed_recovery or self._typed_admission_poisoned:
+            raise RuntimeError("Typed broker synchronization requires recovered state")
+        try:
+            live_orders = await broker.live_orders()
+        except BaseException:
+            for state in self.states.values():
+                state.sync_state = PortfolioSyncState.ENTRIES_BLOCKED
+                state.stale_reason = "Typed broker synchronization failed before order read"
+            raise
+        for account_id in self.states:
+            try:
+                summary, ledger, positions = await asyncio.gather(
+                    broker.account_summary(account_id), broker.account_ledger(account_id),
+                    broker.positions(account_id))
+                await self.synchronize_typed_snapshot(
+                    account_id, summary=summary, ledger=ledger, positions=positions,
+                    open_orders=[order for order in live_orders if order.account == account_id],
+                    authority=authority)
+            except BaseException:
+                for state in self.states.values():
+                    state.sync_state = PortfolioSyncState.ENTRIES_BLOCKED
+                    if not state.stale_reason:
+                        state.stale_reason = "Typed broker synchronization failed"
+                raise
+
     def synchronize_canonical(
         self,
         snapshot: TradingStateSnapshot,

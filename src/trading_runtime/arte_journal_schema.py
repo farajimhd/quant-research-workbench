@@ -954,6 +954,19 @@ TABLES = (
         "toYYYYMM(event_month)", "run_id, parent_record_id, record_id",
     ),
     TableContract(
+        "trading_prepared_v7_lease_v1",
+        (("record_id", "UUID"), ("run_id", "String"),
+         ("event_month", "Date"), ("batch_id", "UUID"),
+         ("account_id", "String"), ("stream_id", "String"),
+         ("owner_pid", "UInt32"),
+         ("phase", "LowCardinality(String)"),
+         ("error_type", "Nullable(String)"),
+         ("source_event_time", "DateTime64(9, 'UTC')"),
+         ("lease_recorded_at", "DateTime64(9, 'UTC')"),
+         ("content_hash", "FixedString(64)")),
+        "toYYYYMM(event_month)", "run_id, stream_id, source_event_time, record_id",
+    ),
+    TableContract(
         "trading_commit_v1",
         (
             ("run_id", "String"),
@@ -991,6 +1004,8 @@ TABLES = (
             ("backtest_cursor_hash", "FixedString(64)"),
             ("backtest_progress_count", "UInt32"),
             ("backtest_progress_hash", "FixedString(64)"),
+            ("prepared_v7_lease_count", "UInt32"),
+            ("prepared_v7_lease_hash", "FixedString(64)"),
             ("order_context_count", "UInt32"),
             ("order_context_hash", "FixedString(64)"),
             ("oms_group_state_count", "UInt32"),
@@ -1108,6 +1123,20 @@ def backtest_progress_upgrade_ddl() -> tuple[str, ...]:
         "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
         f"backtest_progress_hash FixedString(64) DEFAULT '{empty_hash}' "
         "AFTER backtest_progress_count",
+    )
+
+
+def prepared_v7_lease_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only additive typed Backtest lease evidence and commit proof."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_prepared_v7_lease_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "prepared_v7_lease_count UInt32 DEFAULT 0 AFTER backtest_progress_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"prepared_v7_lease_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER prepared_v7_lease_count",
     )
 
 

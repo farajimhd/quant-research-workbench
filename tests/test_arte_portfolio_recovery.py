@@ -11,12 +11,14 @@ import pytest
 
 from src.trading_runtime import arte_portfolio_recovery as recovery
 from src.trading_runtime.arte_portfolio_admission import TypedPortfolioAdmissionAuthority
+from src.trading_runtime.arte_portfolio_sync import TypedPortfolioSyncAuthority
 from src.trading_runtime.arte_portfolio_snapshot import publish_portfolio_snapshot
 from src.trading_runtime.portfolio import (
     PortfolioAllocationLot, PortfolioManagementEngine, PortfolioReservation, PortfolioSyncState,
     profiles_for_runtime,
 )
 from tests.test_arte_portfolio_snapshot_persistence import SnapshotClient, _state
+from tests.test_portfolio_management import ledger, position, summary
 
 
 AT = datetime(2026, 8, 18, 12, tzinfo=timezone.utc)
@@ -240,6 +242,144 @@ def test_typed_admission_waits_for_receipt_and_poison_on_uncertain_commit(monkey
     assert "reservation-2" in engine.reservations
     assert engine._typed_admission_poisoned
     assert engine.states["account-id"].sync_state == PortfolioSyncState.ENTRIES_BLOCKED
+    with pytest.raises(RuntimeError, match="verified recovery authority"):
+        asyncio.run(engine.synchronize_typed_snapshot(
+            "account-id", summary=summary("account-id"), ledger=ledger("account-id"),
+            positions=[], open_orders=[], authority=Authority()))
     with pytest.raises(RuntimeError, match="idle recovered engine"):
         asyncio.run(engine.prepare_typed_admission(
             None, account_id="account-id", authority=Authority()))
+
+
+def test_typed_broker_sync_exposes_synchronized_only_after_receipt(monkeypatch) -> None:
+    client, profile = _client(monkeypatch)
+    restored = recovery.recover_portfolio_engine_state(
+        client, run_id="live-run", profiles=(profile,),
+        state_revisions={"account-id": 7}, cutoff_at=AT)
+
+    class NoSQLite:
+        def __getattr__(self, name):
+            raise AssertionError(f"unexpected SQLite access: {name}")
+
+    engine = PortfolioManagementEngine(
+        (profile,), journal=NoSQLite(), run_id="live-run", strategy_id="strategy-a",
+        strategy_revision=1, typed_recovery=restored)
+    ready = asyncio.Event()
+    release = asyncio.Event()
+
+    class Authority(TypedPortfolioSyncAuthority):
+        def __init__(self):
+            pass
+
+        @asynccontextmanager
+        async def claim(self, run_id, account_id):
+            assert (run_id, account_id) == ("live-run", "account-id")
+            yield "lease"
+
+        def claim_is_current(self, lease):
+            return True
+
+        def next_revision(self, run_id, account_id, lease):
+            return 8
+
+        async def publish(self, captured, lease):
+            assert captured.sync_state == "synchronized"
+            assert captured.state_revision == 8
+            assert not captured.reconciliation
+            ready.set()
+            await release.wait()
+            return SimpleNamespace(run_id="live-run", account_id="account-id",
+                                   state_revision=8, snapshot_hash="a" * 64)
+
+    async def run():
+        task = asyncio.create_task(engine.synchronize_typed_snapshot(
+            "account-id", summary=summary("account-id"), ledger=ledger("account-id"),
+            positions=[position("account-id", "AAA", 2, 5.25)],
+            open_orders=[], authority=Authority()))
+        await ready.wait()
+        assert not task.done()
+        assert engine.states["account-id"].sync_state == PortfolioSyncState.ENTRIES_BLOCKED
+        release.set()
+        await task
+
+    asyncio.run(run())
+    assert engine.states["account-id"].sync_state == PortfolioSyncState.SYNCHRONIZED
+    assert not engine.differences
+
+    class BrokenBroker:
+        async def live_orders(self):
+            raise OSError("broker unavailable")
+
+    with pytest.raises(OSError, match="broker unavailable"):
+        asyncio.run(engine.synchronize_typed_broker(BrokenBroker(), authority=Authority()))
+    assert engine.states["account-id"].sync_state == PortfolioSyncState.ENTRIES_BLOCKED
+
+
+def test_uncertain_typed_broker_sync_blocks_until_cold_recovery(monkeypatch) -> None:
+    client, profile = _client(monkeypatch)
+    restored = recovery.recover_portfolio_engine_state(
+        client, run_id="live-run", profiles=(profile,),
+        state_revisions={"account-id": 7}, cutoff_at=AT)
+    engine = PortfolioManagementEngine(
+        (profile,), journal=object(), run_id="live-run", strategy_id="strategy-a",
+        strategy_revision=1, typed_recovery=restored)
+
+    class Authority(TypedPortfolioSyncAuthority):
+        def __init__(self):
+            pass
+
+        @asynccontextmanager
+        async def claim(self, run_id, account_id):
+            yield "lease"
+
+        def claim_is_current(self, lease):
+            return True
+
+        def next_revision(self, run_id, account_id, lease):
+            return 8
+
+        async def publish(self, captured, lease):
+            raise OSError("receipt unavailable")
+
+    with pytest.raises(OSError, match="receipt unavailable"):
+        asyncio.run(engine.synchronize_typed_snapshot(
+            "account-id", summary=summary("account-id"), ledger=ledger("account-id"),
+            positions=[position("account-id", "AAA", 2, 5.25)],
+            open_orders=[], authority=Authority()))
+    assert engine._typed_admission_poisoned
+    assert engine.states["account-id"].sync_state == PortfolioSyncState.ENTRIES_BLOCKED
+
+
+def test_typed_broker_sync_rejects_unmodeled_reconciliation_before_publish(monkeypatch) -> None:
+    client, profile = _client(monkeypatch)
+    restored = recovery.recover_portfolio_engine_state(
+        client, run_id="live-run", profiles=(profile,),
+        state_revisions={"account-id": 7}, cutoff_at=AT)
+    engine = PortfolioManagementEngine(
+        (profile,), journal=object(), run_id="live-run", strategy_id="strategy-a",
+        strategy_revision=1, typed_recovery=restored)
+
+    class Authority(TypedPortfolioSyncAuthority):
+        def __init__(self):
+            pass
+
+        @asynccontextmanager
+        async def claim(self, run_id, account_id):
+            yield "lease"
+
+        def claim_is_current(self, lease):
+            return True
+
+        def next_revision(self, run_id, account_id, lease):
+            return 8
+
+        async def publish(self, captured, lease):
+            pytest.fail("unmodeled reconciliation must not be published")
+
+    with pytest.raises(RuntimeError, match="unmodeled staged journal events"):
+        asyncio.run(engine.synchronize_typed_snapshot(
+            "account-id", summary=summary("account-id"), ledger=ledger("account-id"),
+            positions=[], open_orders=[], authority=Authority()))
+    assert engine.states["account-id"].sync_state == PortfolioSyncState.ENTRIES_BLOCKED
+    assert not engine.differences
+    assert not engine._typed_admission_poisoned

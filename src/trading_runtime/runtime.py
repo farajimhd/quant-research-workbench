@@ -160,6 +160,7 @@ class TradingRuntime:
         portfolio_configuration: Mapping[str, Any] | None = None,
         control_plane: TradingControlPlane | None = None,
         review_only: bool = False,
+        typed_portfolio_sync_authority: Any | None = None,
     ) -> None:
         if strategy is not None and (
             config.strategy_id != strategy.strategy_id
@@ -211,6 +212,7 @@ class TradingRuntime:
             portfolio.allocation_identity = config.run_plan_id or config.strategy_id
             portfolio.bind_control_plane(self.control_plane)
         self.portfolio = portfolio
+        self._typed_portfolio_sync_authority = typed_portfolio_sync_authority
         # Explicit capability for a pure MACD backtest; never enabled by an
         # order's metadata alone and never available in live/paper execution.
         assignments = strategy.assignments() if hasattr(strategy,'assignments') else ()
@@ -274,6 +276,8 @@ class TradingRuntime:
     ) -> None:
         self._review_only = review_only
         if hasattr(self.broker, "canonical_accounts"):
+            if getattr(self.portfolio, "_typed_recovery", False):
+                raise RuntimeError("Typed portfolio canonical broker sync is not wired")
             self._canonical_session = CanonicalBrokerSession(
                 self.broker,  # type: ignore[arg-type]
                 mode=TradingMode(self.config.mode.value),
@@ -297,7 +301,7 @@ class TradingRuntime:
         else:
             await self.broker.initialize()
             available = set(await self.broker.accounts())
-            await self.portfolio.synchronize(self.broker)
+            await self._synchronize_portfolio_broker()
         missing = set(self.config.account_ids) - available
         if missing:
             raise ValueError(f"Broker does not expose configured accounts: {', '.join(sorted(missing))}")
@@ -904,7 +908,7 @@ class TradingRuntime:
                             persist=not self._review_only,
                         )
                     else:
-                        await self.portfolio.synchronize(self.broker)
+                        await self._synchronize_portfolio_broker()
                 results.append({
                     "decision": decision.payload(),
                     "order_group": asdict(order_group),
@@ -1219,6 +1223,8 @@ class TradingRuntime:
     async def canonical_snapshot(self, *, as_of: datetime | None = None):
         """Return the freshest canonical broker projection for UI and recovery consumers."""
         if self._canonical_session is not None:
+            if getattr(self.portfolio, "_typed_recovery", False):
+                raise RuntimeError("Typed portfolio canonical broker sync is not wired")
             await self._canonical_session.reconcile()
             snapshot = self._canonical_session.projector.snapshot()
             self.portfolio.synchronize_canonical(
@@ -1232,13 +1238,24 @@ class TradingRuntime:
     async def _refresh_portfolio_from_broker(self) -> None:
         async with self._portfolio_sync_lock:
             if self._canonical_session is not None:
+                if getattr(self.portfolio, "_typed_recovery", False):
+                    raise RuntimeError("Typed portfolio canonical broker sync is not wired")
                 await self._canonical_session.reconcile()
                 self.portfolio.synchronize_canonical(
                     self._canonical_session.projector.snapshot(),
                     persist=not self._review_only,
                 )
             else:
-                await self.portfolio.synchronize(self.broker)
+                await self._synchronize_portfolio_broker()
+
+    async def _synchronize_portfolio_broker(self) -> None:
+        if getattr(self.portfolio, "_typed_recovery", False):
+            if self._typed_portfolio_sync_authority is None:
+                raise RuntimeError("Typed portfolio broker sync authority is unavailable")
+            await self.portfolio.synchronize_typed_broker(
+                self.broker, authority=self._typed_portfolio_sync_authority)
+        else:
+            await self.portfolio.synchronize(self.broker)
 
     async def finish(self, status: str = "completed") -> None:
         if (
