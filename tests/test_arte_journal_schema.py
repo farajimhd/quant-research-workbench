@@ -21,7 +21,7 @@ from src.trading_runtime.portfolio import PortfolioPolicy
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 41
+    assert len(statements) == len(TABLES) == 42
     for table, statement in zip(TABLES, statements):
         assert f"CREATE TABLE IF NOT EXISTS arte.{table.name}" in statement
         assert "ENGINE = MergeTree" in statement

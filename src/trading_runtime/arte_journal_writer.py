@@ -857,6 +857,8 @@ def _verify_run_identity(client: Any, run_id: str) -> None:
     if rows != [{"run_id": run_id}]:
         raise RuntimeError("Typed journal run identity is missing or duplicated")
     load_typed_run_context(client, run_id)
+    from src.trading_runtime.arte_admission_fence import verify_no_incomplete_admissions
+    verify_no_incomplete_admissions(client, run_id)
 
 
 def _verify_commission_links(
@@ -1673,6 +1675,12 @@ class _DurabilityBarrier:
     """Queue marker ordered after every earlier typed publication."""
 
 
+@dataclass(frozen=True, slots=True)
+class _AdmissionUnit:
+    batch: TypedJournalBatch
+    captured: CapturedPortfolioSnapshot
+
+
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 
@@ -1690,7 +1698,7 @@ class ArteJournalWriter:
         self._max_events_per_commit = max_events_per_commit
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
-                  | _DurabilityBarrier,
+                  | _DurabilityBarrier | _AdmissionUnit,
                   Future[str]] | None
         ] = Queue(maxsize=capacity)
         self._submission_lock = Lock()
@@ -1786,11 +1794,11 @@ class ArteJournalWriter:
     def submit_admission(
         self, batch: TypedJournalBatch, captured: CapturedPortfolioSnapshot,
     ) -> Future[str]:
-        """Atomically queue an admission's events, recovery image, and fence.
+        """Queue one fenced admission without blocking the realtime caller.
 
-        Only the barrier receipt is exposed: its success means both earlier
-        publications were acknowledged. The realtime caller never waits for
-        capacity or network I/O and must retain its Keeper claim on failure.
+        The worker writes a persistent prepared fence, events, recovery image,
+        and committed fence in that order. The receipt resolves only after
+        the final fence is verified; failure retains the Keeper claim.
         """
         from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
 
@@ -1814,19 +1822,18 @@ class ArteJournalWriter:
                 raise RuntimeError("Typed journal writer is closed")
             if self._error is not None:
                 raise RuntimeError("Typed journal writer failed") from self._error
-            if self._queue.maxsize - self._queue.qsize() < 3:
-                raise JournalQueueFull("Typed admission needs three queue slots; stop admission")
             barrier: Future[str] = Future()
-            self._queue.put_nowait((batch, Future()))
-            self._queue.put_nowait((captured, Future()))
-            self._queue.put_nowait((_DurabilityBarrier(), barrier))
+            try:
+                self._queue.put_nowait((_AdmissionUnit(batch, captured), barrier))
+            except Full as exc:
+                raise JournalQueueFull("Typed admission queue is full; stop admission") from exc
             self._accepted_writes = True
         return barrier
 
     def _run(self) -> None:
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
-            | _DurabilityBarrier,
+            | _DurabilityBarrier | _AdmissionUnit,
             Future[str],
         ] | None = None
         while True:
@@ -1864,6 +1871,11 @@ class ArteJournalWriter:
                     if self._last_commit_id is None:
                         raise RuntimeError("Durability barrier has no committed predecessor")
                     committed_id = self._last_commit_id
+                elif isinstance(group[0][0], _AdmissionUnit):
+                    from src.trading_runtime.arte_admission_fence import publish_fenced_admission
+                    unit = group[0][0]
+                    committed_id = publish_fenced_admission(
+                        self._client, unit.batch, unit.captured)
                 else:
                     from src.trading_runtime.arte_portfolio_snapshot import (
                         CapturedPortfolioSnapshot, prepare_captured_portfolio_snapshot,

@@ -197,6 +197,19 @@ TABLES = (
         "toYYYYMM(snapshot_month)", "run_id, account_id, state_revision",
     ),
     TableContract(
+        "trading_admission_fence_v1",
+        (("run_id", "String"), ("admission_month", "Date"),
+         ("account_id", "String"), ("state_revision", "UInt64"),
+         ("attempt_id", "UUID"), ("batch_id", "UUID"),
+         ("first_sequence", "UInt64"), ("last_sequence", "UInt64"),
+         ("phase", "LowCardinality(String)"),
+         ("snapshot_hash", "Nullable(FixedString(64))"),
+         ("captured_at", "DateTime64(6, 'UTC')"),
+         ("content_hash", "FixedString(64)")),
+        "toYYYYMM(admission_month)",
+        "run_id, account_id, state_revision, phase",
+    ),
+    TableContract(
         "trading_portfolio_policy_v1",
         (("policy_hash", "FixedString(64)"), ("policy_id", "String"),
          ("revision", "UInt32"))
