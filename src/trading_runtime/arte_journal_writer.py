@@ -13,6 +13,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 import json
+import math
 import os
 import re
 from queue import Empty, Full, Queue
@@ -46,6 +47,8 @@ _FAMILIES = (
     ("trading_intent_decision_reason_v1", "intent_decision_reasons",
      "intent_decision_reason_count", "intent_decision_reason_hash"),
     ("trading_strategy_signal_v1", "signals", "signal_count", "signal_hash"),
+    ("trading_strategy_signal_evidence_node_v1", "signal_evidence_nodes",
+     "signal_evidence_node_count", "signal_evidence_node_hash"),
     ("trading_signal_source_v1", "signal_sources", "signal_source_count",
      "signal_source_hash"),
     ("trading_execution_v1", "executions", "execution_count", "execution_hash"),
@@ -146,6 +149,7 @@ class TypedJournalBatch:
     intent_decisions: tuple[Mapping[str, Any], ...] = ()
     intent_decision_reasons: tuple[Mapping[str, Any], ...] = ()
     signals: tuple[Mapping[str, Any], ...] = ()
+    signal_evidence_nodes: tuple[Mapping[str, Any], ...] = ()
     signal_sources: tuple[Mapping[str, Any], ...] = ()
     executions: tuple[Mapping[str, Any], ...] = ()
     commissions: tuple[Mapping[str, Any], ...] = ()
@@ -218,6 +222,7 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1",
                 "trading_account_risk_reason_v1",
                 "trading_intent_decision_reason_v1",
+                "trading_strategy_signal_evidence_node_v1",
             }
             parent_id = (str(UUID(str(row["parent_record_id"])))
                          if child_family else record_id)
@@ -265,7 +270,8 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                     "trading_oms_broker_binding_v1", "trading_oms_warning_v1",
                     "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1",
                     "trading_account_risk_reason_v1",
-                    "trading_intent_decision_reason_v1"}:
+                    "trading_intent_decision_reason_v1",
+                    "trading_strategy_signal_evidence_node_v1"}:
             continue
         for row in rows:
             record_id = str(UUID(str(row["record_id"])))
@@ -372,6 +378,20 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 or sorted(int(row["source_ordinal"]) for row in source_rows)
                 != list(range(len(source_rows)))):
             raise ValueError("Signal sources do not match the typed signal count")
+    evidence_by_parent: dict[str, list[dict[str, Any]]] = {}
+    for node in by_family["trading_strategy_signal_evidence_node_v1"]:
+        parent_id = str(UUID(str(node["parent_record_id"])))
+        if details_by_record.get(parent_id) != "trading_strategy_signal_v1":
+            raise ValueError("Signal evidence node lacks its typed signal")
+        evidence_by_parent.setdefault(parent_id, []).append(node)
+    from src.trading_runtime.arte_journal_projection import recover_signal_evidence_nodes
+    for signal in by_family["trading_strategy_signal_v1"]:
+        signal_id = str(UUID(str(signal["record_id"])))
+        if len(evidence_by_parent.get(signal_id, [])) != int(signal["evidence_node_count"]):
+            raise ValueError("Signal evidence nodes do not match the typed signal count")
+        if evidence_by_parent.get(signal_id):
+            recover_signal_evidence_nodes(evidence_by_parent[signal_id],
+                                          parent_record_id=signal_id)
     slices_by_parent: dict[str, list[dict[str, Any]]] = {}
     for row in by_family["trading_intent_protection_slice_v1"]:
         parent_id = str(UUID(str(row["parent_record_id"])))
@@ -595,6 +615,14 @@ def _canonical_typed_content(
             if number >= 1 << int(base[4:]):
                 raise ValueError(f"{name}.{column} exceeds its unsigned width")
             canonical[column] = number
+        elif base == "Int64":
+            if type(value) is not int or not -(2**63) <= value < 2**63:
+                raise ValueError(f"{name}.{column} is not an Int64")
+            canonical[column] = value
+        elif base == "Float64":
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError(f"{name}.{column} is not a finite Float64")
+            canonical[column] = float(value)
         elif base == "UUID":
             canonical[column] = str(UUID(str(value)))
         elif base == "Date":

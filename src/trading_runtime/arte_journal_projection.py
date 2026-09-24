@@ -10,10 +10,12 @@ from dataclasses import dataclass, fields
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
+import math
 import re
-from typing import Any
+from typing import Any, Mapping
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import (
     CommittedPrefix, TypedJournalBatch, _canonical_typed_content, _literal, _rows,
 )
@@ -41,6 +43,180 @@ _RISK_SOURCE_FIELDS = frozenset({
     "account_id", "account_key", "state", "reasons", "metrics", "observed_at",
     "protection_required", "protection_coverage", "internal_reaction_ms",
 })
+_SIGNAL_EVIDENCE_MAX_NODES = 16_384
+_SIGNAL_EVIDENCE_MAX_DEPTH = 24
+_SIGNAL_EVIDENCE_MAX_BYTES = 8_388_608
+
+
+def project_signal_evidence_nodes(metadata: Mapping[str, Any], *, run_id: str,
+                                  event_month: str, batch_id: str,
+                                  parent_record_id: str) -> tuple[dict[str, Any], ...]:
+    """Flatten signal evidence into typed, bounded and ordered scalar nodes."""
+    if not isinstance(metadata, Mapping):
+        raise ValueError("Strategy signal metadata must be a mapping")
+    rows: list[dict[str, Any]] = []
+    active: set[int] = set()
+    total_bytes = 0
+
+    def visit(value: Any, parent: str | None, ordinal: int,
+              key: str | None, depth: int) -> None:
+        nonlocal total_bytes
+        if depth > _SIGNAL_EVIDENCE_MAX_DEPTH or len(rows) >= _SIGNAL_EVIDENCE_MAX_NODES:
+            raise ValueError("Strategy signal evidence exceeds its tree bound")
+        kind = ("map" if isinstance(value, Mapping) else
+                "tuple" if isinstance(value, tuple) else
+                "list" if isinstance(value, list) else
+                "null" if value is None else
+                "bool" if type(value) is bool else
+                "int" if type(value) is int else
+                "float" if type(value) is float else
+                "text" if type(value) is str else "unsupported")
+        if kind == "unsupported":
+            raise ValueError(f"Unsupported strategy signal evidence type: {type(value).__name__}")
+        if kind == "int" and not -(2**63) <= value < 2**63:
+            raise ValueError("Strategy signal evidence integer exceeds Int64")
+        if kind == "float" and not math.isfinite(value):
+            raise ValueError("Strategy signal evidence float must be finite")
+        if key is not None and (not isinstance(key, str) or len(key) > 512):
+            raise ValueError("Strategy signal evidence map key is invalid")
+        if kind == "text" and len(value.encode("utf-8")) > 1_048_576:
+            raise ValueError("Strategy signal evidence text exceeds its bound")
+        total_bytes += (len(key.encode("utf-8")) if key is not None else 0)
+        total_bytes += (len(value.encode("utf-8")) if kind == "text" else 0)
+        if total_bytes > _SIGNAL_EVIDENCE_MAX_BYTES:
+            raise ValueError("Strategy signal evidence exceeds its byte bound")
+        node_id = str(uuid5(NAMESPACE_URL, f"{parent_record_id}:evidence:{len(rows)}"))
+        rows.append(dict(record_id=node_id, run_id=run_id, event_month=event_month,
+                         batch_id=batch_id, parent_record_id=parent_record_id,
+                         parent_node_id=parent, ordinal=ordinal, map_key=key,
+                         value_kind=kind,
+                         value_text=value if kind == "text" else None,
+                         value_int=value if kind == "int" else None,
+                         value_float=value if kind == "float" else None,
+                         value_bool=int(value) if kind == "bool" else None))
+        if kind in {"map", "list", "tuple"}:
+            identity = id(value)
+            if identity in active:
+                raise ValueError("Strategy signal evidence contains a cycle")
+            active.add(identity)
+            if kind == "map":
+                if any(not isinstance(child_key, str) for child_key in value):
+                    raise ValueError("Strategy signal evidence map keys must be strings")
+                children = sorted(value.items())
+            else:
+                children = [(None, child) for child in value]
+            for index, (child_key, child) in enumerate(children):
+                visit(child, node_id, index, child_key, depth + 1)
+            active.remove(identity)
+
+    visit(metadata, None, 0, None, 0)
+    return tuple(rows)
+
+
+def recover_signal_evidence_nodes(rows: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+                                  *, parent_record_id: str) -> dict[str, Any]:
+    """Reconstruct and validate a committed signal evidence tree."""
+    if not rows or len(rows) > _SIGNAL_EVIDENCE_MAX_NODES:
+        raise ValueError("Strategy signal evidence tree is absent or too large")
+    total_bytes = sum(
+        (len(row["map_key"].encode("utf-8")) if isinstance(row["map_key"], str) else 0)
+        + (len(row["value_text"].encode("utf-8"))
+           if isinstance(row["value_text"], str) else 0)
+        for row in rows
+    )
+    if total_bytes > _SIGNAL_EVIDENCE_MAX_BYTES:
+        raise ValueError("Strategy signal evidence exceeds its byte bound")
+    indexed = {str(row["record_id"]): row for row in rows}
+    if len(indexed) != len(rows) or any(str(row["parent_record_id"]) != parent_record_id for row in rows):
+        raise ValueError("Strategy signal evidence has duplicate or foreign nodes")
+    children: dict[str | None, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        parent = row["parent_node_id"]
+        parent = str(parent) if parent is not None else None
+        children.setdefault(parent, []).append(row)
+    if len(children.get(None, ())) != 1:
+        raise ValueError("Strategy signal evidence requires one root")
+    seen: set[str] = set()
+
+    def build(row: Mapping[str, Any], depth: int) -> Any:
+        node_id = str(row["record_id"])
+        if depth > _SIGNAL_EVIDENCE_MAX_DEPTH or node_id in seen:
+            raise ValueError("Strategy signal evidence has a cycle or excessive depth")
+        seen.add(node_id)
+        kind = str(row["value_kind"])
+        descendants = sorted(children.get(node_id, ()), key=lambda child: int(child["ordinal"]))
+        if [int(child["ordinal"]) for child in descendants] != list(range(len(descendants))):
+            raise ValueError("Strategy signal evidence child order is incomplete")
+        values = [row[name] for name in ("value_text", "value_int", "value_float", "value_bool")]
+        expected = {"text": 0, "int": 1, "float": 2, "bool": 3}.get(kind)
+        if any(value is not None for index, value in enumerate(values) if index != expected):
+            raise ValueError("Strategy signal evidence scalar columns conflict")
+        if kind in {"map", "list", "tuple"}:
+            if kind == "map":
+                keys = [child["map_key"] for child in descendants]
+                if any(not isinstance(key, str) for key in keys) or len(set(keys)) != len(keys):
+                    raise ValueError("Strategy signal evidence map keys are invalid")
+                return {key: build(child, depth + 1) for key, child in zip(keys, descendants)}
+            if any(child["map_key"] is not None for child in descendants):
+                raise ValueError("Strategy signal evidence list has map keys")
+            items = [build(child, depth + 1) for child in descendants]
+            return tuple(items) if kind == "tuple" else items
+        if descendants or kind not in {"null", "bool", "int", "float", "text"}:
+            raise ValueError("Strategy signal evidence leaf is invalid")
+        value = values[expected] if expected is not None else None
+        if kind == "bool" and value not in {0, 1}:
+            raise ValueError("Strategy signal evidence bool is invalid")
+        if expected is not None and value is None:
+            raise ValueError("Strategy signal evidence scalar is absent")
+        return bool(value) if kind == "bool" else value
+
+    root = children[None][0]
+    if root["value_kind"] != "map" or root["map_key"] is not None or int(root["ordinal"]) != 0:
+        raise ValueError("Strategy signal evidence root is invalid")
+    recovered = build(root, 0)
+    if len(seen) != len(rows):
+        raise ValueError("Strategy signal evidence has unreachable nodes")
+    return recovered
+
+
+def load_committed_signal_evidence(client: Any, prefix: CommittedPrefix,
+                                   record_id: str) -> dict[str, Any]:
+    """Recover one typed signal tree only through a verified commit prefix."""
+    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+        raise ValueError("Signal evidence recovery requires a verified prefix")
+    normalized = str(UUID(record_id))
+    batches = ",".join(f"toUUID({_literal(value)})" for value in prefix.batch_ids)
+    signal_columns = ",".join(name for name, _ in next(
+        table for table in TABLES if table.name == "trading_strategy_signal_v1").columns)
+    signals = _rows(client, f"SELECT {signal_columns} FROM arte.trading_strategy_signal_v1 "
+                    f"WHERE run_id={_literal(prefix.run_id)} AND record_id=toUUID({_literal(normalized)}) "
+                    f"AND batch_id IN ({batches}) FORMAT JSONEachRow")
+    if len(signals) != 1:
+        raise ValueError("Committed strategy signal is missing or ambiguous")
+    signal = signals[0]
+    node_columns = ",".join(name for name, _ in next(
+        table for table in TABLES if table.name ==
+        "trading_strategy_signal_evidence_node_v1").columns)
+    nodes = _rows(client, f"SELECT {node_columns} "
+                  "FROM arte.trading_strategy_signal_evidence_node_v1 "
+                  f"WHERE run_id={_literal(prefix.run_id)} "
+                  f"AND parent_record_id=toUUID({_literal(normalized)}) "
+                  f"AND batch_id IN ({batches}) FORMAT JSONEachRow")
+    if len(nodes) != int(signal["evidence_node_count"]):
+        raise ValueError("Committed signal evidence node count changed")
+    for name, rows in (("trading_strategy_signal_v1", signals),
+                       ("trading_strategy_signal_evidence_node_v1", nodes)):
+        for row in rows:
+            content = {key: value for key, value in row.items() if key != "content_hash"}
+            digest = sha256(canonical_json(_canonical_typed_content(
+                name, content, stored_utc=True)).encode("utf-8")).hexdigest()
+            if digest != row["content_hash"] or row["batch_id"] != signal["batch_id"]:
+                raise ValueError("Committed signal evidence differs from its typed hash or batch")
+    if not nodes:
+        # Earlier typed signals could only publish empty metadata. The
+        # additive column defaults their node count to zero on upgrade.
+        return {}
+    return recover_signal_evidence_nodes(nodes, parent_record_id=normalized)
 
 
 @dataclass(frozen=True, slots=True)
@@ -747,8 +923,6 @@ def strategy_signal_batch(
     recorded_at: datetime,
 ) -> TypedJournalBatch:
     """Project a signal only when every source and evidence field is represented."""
-    if signal.metadata:
-        raise ValueError("Strategy signal metadata has no typed evidence contract")
     if not signal.signal_id or not signal.ticker or not strategy_id or not account_id:
         raise ValueError("Strategy signal identity is incomplete")
     if not (-1 <= signal.score <= 1 and 0 <= signal.confidence <= 1):
@@ -772,6 +946,9 @@ def strategy_signal_batch(
         "entity_id": signal.signal_id, "account_id": account_id,
         "correlation_id": "", "causation_id": "",
     }
+    evidence_nodes = project_signal_evidence_nodes(
+        signal.metadata, run_id=run_id, event_month=month,
+        batch_id=batch_id, parent_record_id=record_id)
     detail = {
         "record_id": record_id, "run_id": run_id, "event_month": month,
         "batch_id": batch_id, "account_id": account_id,
@@ -786,6 +963,7 @@ def strategy_signal_batch(
         "invalidation_price": (_exact_decimal(signal.invalidation_price)
                                if signal.invalidation_price is not None else None),
         "source_signal_count": len(signal.source_signal_ids),
+        "evidence_node_count": len(evidence_nodes),
         "source_event_time": at,
     }
     sources = tuple({
@@ -799,4 +977,5 @@ def strategy_signal_batch(
         run_id, run_month, attempt_id, batch_id, prior_batch_id,
         sequence, sequence, source_cursor, run_status, (event,),
         signals=(detail,), signal_sources=sources,
+        signal_evidence_nodes=evidence_nodes,
     )

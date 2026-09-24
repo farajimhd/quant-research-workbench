@@ -419,11 +419,27 @@ TABLES = (
             ("working_timeframe", "LowCardinality(String)"),
             ("invalidation_price", "Nullable(Decimal(38, 10))"),
             ("source_signal_count", "UInt16"),
+            ("evidence_node_count", "UInt32"),
             ("source_event_time", "DateTime64(9, 'UTC')"),
             ("content_hash", "FixedString(64)"),
         ),
         "toYYYYMM(event_month)",
         "run_id, strategy_id, ticker, source_event_time, record_id",
+    ),
+    TableContract(
+        "trading_strategy_signal_evidence_node_v1",
+        (
+            ("record_id", "UUID"), ("run_id", "String"),
+            ("event_month", "Date"), ("batch_id", "UUID"),
+            ("parent_record_id", "UUID"), ("parent_node_id", "Nullable(UUID)"),
+            ("ordinal", "UInt32"), ("map_key", "Nullable(String)"),
+            ("value_kind", "LowCardinality(String)"),
+            ("value_text", "Nullable(String)"), ("value_int", "Nullable(Int64)"),
+            ("value_float", "Nullable(Float64)"), ("value_bool", "Nullable(UInt8)"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)",
+        "run_id, parent_record_id, parent_node_id, ordinal, record_id",
     ),
     TableContract(
         "trading_intent_decision_v1",
@@ -881,6 +897,7 @@ TABLES = (
             ("last_sequence", "UInt64"),
             ("event_count", "UInt32"),
             ("signal_count", "UInt32"),
+            ("signal_evidence_node_count", "UInt32"),
             ("signal_source_count", "UInt32"),
             ("execution_count", "UInt32"),
             ("commission_count", "UInt32"),
@@ -890,6 +907,7 @@ TABLES = (
             ("position_snapshot_count", "UInt32"),
             ("event_hash", "FixedString(64)"),
             ("signal_hash", "FixedString(64)"),
+            ("signal_evidence_node_hash", "FixedString(64)"),
             ("signal_source_hash", "FixedString(64)"),
             ("execution_hash", "FixedString(64)"),
             ("commission_hash", "FixedString(64)"),
@@ -1000,6 +1018,22 @@ def backtest_cursor_upgrade_ddl() -> tuple[str, ...]:
         "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
         f"backtest_cursor_hash FixedString(64) DEFAULT '{empty_hash}' "
         "AFTER backtest_cursor_count",
+    )
+
+
+def strategy_signal_evidence_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only additive schema for bounded typed signal evidence trees."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_strategy_signal_evidence_node_v1"].ddl(),
+        "ALTER TABLE arte.trading_strategy_signal_v1 ADD COLUMN IF NOT EXISTS "
+        "evidence_node_count UInt32 DEFAULT 0 AFTER source_signal_count",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "signal_evidence_node_count UInt32 DEFAULT 0 AFTER signal_count",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"signal_evidence_node_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER signal_hash",
     )
 
 

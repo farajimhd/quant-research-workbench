@@ -71,6 +71,21 @@ def test_typed_hash_uses_stored_utc_representation() -> None:
     )
 
 
+def test_typed_float_hash_accepts_integral_json_number_from_clickhouse() -> None:
+    from src.trading_runtime.arte_journal_projection import project_signal_evidence_nodes
+
+    node = project_signal_evidence_nodes(
+        {"ratio": 1.0}, run_id=RUN, event_month="2026-08-01",
+        batch_id=BATCH, parent_record_id=RECORD,
+    )[1]
+    canonical = writer_module._canonical_typed_content(
+        "trading_strategy_signal_evidence_node_v1", node)
+    as_stored = {**node, "value_float": 1}
+    assert writer_module._canonical_typed_content(
+        "trading_strategy_signal_evidence_node_v1", as_stored,
+        stored_utc=True) == canonical
+
+
 @pytest.mark.parametrize("encoded", ['{"nested":1}', '  ["unmodelled"]'])
 def test_typed_journal_rejects_json_hidden_in_string_column(encoded: str) -> None:
     source = {key: value for key, value in batch().events[0].items()
@@ -510,7 +525,7 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     assert len(client.tables["trading_commit_v1"]) == 1
     assert not any("payload_json" in row for rows in client.tables.values() for row in rows)
     prefix = load_committed_prefix(client, RUN)
-    assert len(client.selects) == 33
+    assert len(client.selects) == 34
     assert prefix is not None
     assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
 
@@ -535,7 +550,7 @@ def test_recovery_groups_batches_but_verifies_each_fence() -> None:
     client.selects.clear()
     prefix = load_committed_prefix(client, RUN)
     assert prefix is not None and prefix.last_sequence == 3
-    assert len(client.selects) == 26
+    assert len(client.selects) == 27
     client.tables["trading_commit_v1"][0]["event_count"] = 0
     with pytest.raises(RuntimeError, match="not contiguous"):
         load_committed_prefix(client, RUN)
