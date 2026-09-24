@@ -1,8 +1,14 @@
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, Mock, patch
 from datetime import datetime, timezone
+from uuid import uuid4
 
-from src.backend.app import backtest_run_service, trading_backtest_run_review
+from fastapi import HTTPException
+
+from src.backend.app import (
+    app, backtest_run_service, trading_backtest_run_review,
+    trading_backtest_typed_financial_page,
+)
 
 
 class BacktestReviewAPITests(IsolatedAsyncioTestCase):
@@ -25,3 +31,32 @@ class BacktestReviewAPITests(IsolatedAsyncioTestCase):
             self.assertEqual(await trading_backtest_run_review('saved', compact=True), controller.stream_snapshot.return_value)
             controller.snapshot.assert_not_called()
             self.assertEqual(await trading_backtest_run_review('saved'), controller.snapshot.return_value)
+
+    async def test_typed_financial_page_uses_only_readonly_typed_reader(self):
+        run_id = str(uuid4())
+        client = Mock()
+        client.close = Mock()
+        page = {"cursor": None, "fills": (), "commissions": (), "accounts": {}}
+        with (patch('src.trading_runtime.arte_journal_reader.readonly_typed_journal_client', return_value=client),
+              patch('src.backend.typed_backtest_financial_review.load_typed_backtest_financial_page',
+                    return_value=page) as read,
+              patch.object(backtest_run_service, 'review_saved', new=AsyncMock()) as saved):
+            result = await trading_backtest_typed_financial_page(
+                run_id, after_fill_sequence=7, after_commission_sequence=12, limit=20)
+        self.assertEqual(result, page)
+        read.assert_called_once_with(client, run_id, after_fill_sequence=7,
+                                     after_commission_sequence=12, limit=20)
+        client.close.assert_called_once()
+        saved.assert_not_called()
+
+    async def test_typed_financial_page_rejects_invalid_run_id_before_client(self):
+        with patch('src.trading_runtime.arte_journal_reader.readonly_typed_journal_client') as factory:
+            with self.assertRaises(HTTPException) as caught:
+                await trading_backtest_typed_financial_page(
+                    'invalid', after_fill_sequence=0, after_commission_sequence=0, limit=20)
+        self.assertEqual(caught.exception.status_code, 400)
+        factory.assert_not_called()
+
+    def test_typed_financial_route_is_separate_from_saved_review(self):
+        paths = {route.path: route.methods for route in app.routes if hasattr(route, 'methods')}
+        self.assertIn('GET', paths['/api/trading/backtest/runs/{run_id}/typed-financial-page'])

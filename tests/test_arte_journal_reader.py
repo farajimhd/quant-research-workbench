@@ -3,7 +3,9 @@ from datetime import date, datetime, timezone
 import pytest
 
 from src.trading_runtime.arte_journal_projection import runtime_lifecycle_batch
-from src.trading_runtime.arte_journal_reader import load_typed_event_page
+from src.trading_runtime.arte_journal_reader import (
+    load_typed_event_page, readonly_typed_journal_client,
+)
 from src.trading_runtime.arte_journal_writer import (
     load_committed_prefix, publish_typed_batch,
 )
@@ -13,6 +15,22 @@ from tests.test_arte_journal_writer import MemoryClient
 
 RUN = "live:DU1"
 AT = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+
+
+def test_typed_review_connection_is_journal_only_and_readonly(monkeypatch) -> None:
+    monkeypatch.setenv("TRADING_JOURNAL_CLICKHOUSE_URL", "http://localhost:18123")
+    monkeypatch.setenv("TRADING_JOURNAL_CLICKHOUSE_USER", "journal-only")
+    monkeypatch.setenv("TRADING_JOURNAL_CLICKHOUSE_PASSWORD", "test-only")
+    monkeypatch.setenv("BACKTEST_CLICKHOUSE_USER", "market-only")
+    client = readonly_typed_journal_client()
+    try:
+        assert client.user == "journal-only"
+        assert client.default_query_params["readonly"] == "1"
+    finally:
+        client.close()
+    monkeypatch.setenv("BACKTEST_CLICKHOUSE_USER", "journal-only")
+    with pytest.raises(ValueError, match="separate journal credentials"):
+        readonly_typed_journal_client()
 
 
 def test_typed_reader_loads_fenced_event_and_rejects_missing_detail() -> None:

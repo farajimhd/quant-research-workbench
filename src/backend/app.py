@@ -5829,6 +5829,34 @@ async def trading_backtest_run_review(run_id: str, compact: bool = False) -> dic
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/api/trading/backtest/runs/{run_id}/typed-financial-page")
+async def trading_backtest_typed_financial_page(
+    run_id: str,
+    after_fill_sequence: int = Query(default=0, ge=0),
+    after_commission_sequence: int = Query(default=0, ge=0),
+    limit: int = Query(default=500, ge=1, le=1000),
+) -> dict[str, Any]:
+    """Read only committed typed financial facts; this does not open saved review."""
+    try:
+        normalized = str(uuid.UUID(run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Backtest run id") from exc
+
+    def read_page() -> dict[str, Any]:
+        from contextlib import closing
+        from src.trading_runtime.arte_journal_reader import readonly_typed_journal_client
+        from src.backend.typed_backtest_financial_review import load_typed_backtest_financial_page
+        with closing(readonly_typed_journal_client()) as client:
+            return load_typed_backtest_financial_page(
+                client, normalized, after_fill_sequence=after_fill_sequence,
+                after_commission_sequence=after_commission_sequence, limit=limit)
+
+    try:
+        return await asyncio.to_thread(read_page)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/backtest/runs/{run_id}/results")
 async def trading_backtest_run_results(
     run_id: str,

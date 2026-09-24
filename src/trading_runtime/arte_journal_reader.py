@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+import os
 from typing import Any
 from uuid import UUID
 
@@ -11,6 +12,23 @@ from src.trading_runtime.arte_journal_writer import (
     _literal, _rows,
 )
 from src.trading_runtime.journal_contract import canonical_json
+
+
+def readonly_typed_journal_client():
+    """Open journal credentials with server-enforced read-only query settings."""
+    from research.mlops.clickhouse import ClickHouseHttpClient
+
+    url = os.environ.get("TRADING_JOURNAL_CLICKHOUSE_URL", "").strip()
+    user = os.environ.get("TRADING_JOURNAL_CLICKHOUSE_USER", "").strip()
+    password = os.environ.get("TRADING_JOURNAL_CLICKHOUSE_PASSWORD", "")
+    market_user = os.environ.get("BACKTEST_CLICKHOUSE_USER", "").strip()
+    if not url or not user or not password or user == market_user:
+        raise ValueError("Typed journal review requires separate journal credentials")
+    return ClickHouseHttpClient(
+        url, user, password, timeout_seconds=60, persistent=True,
+        default_query_params={"readonly": 1, "max_threads": 2,
+                              "max_execution_time": 60},
+    )
 
 
 @dataclass(frozen=True, slots=True)
