@@ -281,11 +281,15 @@ def backtest_cursor_batch(
         raise ValueError("Backtest cursor session date is invalid")
     boundary = payload["boundary_ms"]
     market_sequence = payload["market_sequence"]
-    if (type(boundary) is not int or not 0 <= boundary < 86_400_000
+    if (type(boundary) is not int or not 0 <= boundary <= 57_600_000
             or type(market_sequence) is not int or market_sequence < 0
             or record.entity_id != f"{day.isoformat()}:{boundary}"
             or source_cursor != record.entity_id):
         raise ValueError("Backtest market boundary identity is invalid")
+    from src.backend.backtest_market_data import market_day_boundary
+    if record.event_time.astimezone(timezone.utc) != market_day_boundary(
+            day, boundary).astimezone(timezone.utc):
+        raise ValueError("Backtest cursor event time differs from its completed boundary")
     frame = tuple(payload[key] for key in (
         "frame_as_of", "frame_ticker", "frame_timeframe", "frame_sequence"))
     if any(value is not None for value in frame):
@@ -293,7 +297,7 @@ def backtest_cursor_batch(
                 or not isinstance(frame[0], str)
                 or not isinstance(frame[1], str) or not frame[1]
                 or not isinstance(frame[2], str) or not frame[2]
-                or type(frame[3]) is not int or frame[3] < 0):
+                or type(frame[3]) is not int or not 0 <= frame[3] <= market_sequence):
             raise ValueError("Backtest frame cursor is incomplete")
         frame_at = datetime.fromisoformat(frame[0])
         if (frame_at.tzinfo is None
@@ -327,6 +331,46 @@ def backtest_cursor_batch(
         record.sequence, record.sequence, source_cursor, "running", (event,),
         backtest_cursors=(cursor,),
     )
+
+
+def backtest_cursor_record_fields(
+    market_cursor: Mapping[str, Any], frame_cursor: Mapping[str, Any],
+    *, completed_at: datetime,
+) -> tuple[str, dict[str, Any]]:
+    """Freeze a controller boundary as a normalized journal event identity."""
+    if (not isinstance(market_cursor, Mapping) or
+            set(market_cursor) != {"session_date", "boundary_ms", "sequence"} or
+            not isinstance(frame_cursor, Mapping) or completed_at.tzinfo is None):
+        raise ValueError("Fixed Backtest cursor is incomplete")
+    day = date.fromisoformat(str(market_cursor["session_date"]))
+    boundary = market_cursor["boundary_ms"]
+    sequence = market_cursor["sequence"]
+    from src.backend.backtest_market_data import market_day_boundary
+    if (type(boundary) is not int or type(sequence) is not int or sequence < 0
+            or completed_at.astimezone(timezone.utc) != market_day_boundary(
+                day, boundary).astimezone(timezone.utc)):
+        raise ValueError("Fixed Backtest cursor differs from its completed boundary")
+    if frame_cursor:
+        if set(frame_cursor) != {"as_of", "ticker", "timeframe", "sequence"}:
+            raise ValueError("Fixed Backtest frame cursor is incomplete")
+        frame_at = datetime.fromisoformat(str(frame_cursor["as_of"]).replace("Z", "+00:00"))
+        frame_sequence = frame_cursor["sequence"]
+        if (frame_at.tzinfo is None or frame_at > completed_at
+                or not str(frame_cursor["ticker"]) or not str(frame_cursor["timeframe"])
+                or type(frame_sequence) is not int or not 0 <= frame_sequence <= sequence):
+            raise ValueError("Fixed Backtest frame cursor is not causal")
+    else:
+        frame_at = None
+        frame_sequence = None
+    entity_id = f"{day.isoformat()}:{boundary}"
+    return entity_id, {
+        "session_date": day.isoformat(), "boundary_ms": boundary,
+        "market_sequence": sequence,
+        "frame_as_of": frame_at.astimezone(timezone.utc).isoformat() if frame_at else None,
+        "frame_ticker": str(frame_cursor["ticker"]) if frame_at else None,
+        "frame_timeframe": str(frame_cursor["timeframe"]) if frame_at else None,
+        "frame_sequence": frame_sequence,
+    }
 
 
 def load_latest_backtest_cursor(client: Any, prefix: CommittedPrefix) -> dict[str, Any] | None:

@@ -201,7 +201,8 @@ def test_controller_checkpoint_becomes_resumable_only_after_clickhouse_fence():
     controller.stream_snapshot = lambda: {"status": "running"}
     controller._restart_checkpoint_state = lambda **kwargs: {
         "schema_version": 1, "controller": {
-            "source_cursor": {"session_date": "2026-08-18", "boundary_ms": 100},
+            "source_cursor": {"session_date": "2026-08-18",
+                              "boundary_ms": 14_400_000, "sequence": 1},
             "frame_cursor": {}, "processed_events": 1,
         },
     }
@@ -225,6 +226,11 @@ def test_controller_checkpoint_becomes_resumable_only_after_clickhouse_fence():
     controller._journal_publisher = failed
     with pytest.raises(OSError, match="commit unavailable"):
         asyncio.run(controller._save_restart_checkpoint_responsive(at))
+    pending = journal.unfenced_records()
+    assert len(pending) == 1
+    assert pending[0].entity_id == "2026-08-18:14400000"
+    assert pending[0].payload["market_sequence"] == 1
+    assert "source_cursor" not in pending[0].payload
     assert journal.load_checkpoint(RUN_ID) is None
     assert controller._checkpoint_projection_cache is None
     assert controller._checkpoint_io_task is None

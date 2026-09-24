@@ -2264,11 +2264,19 @@ class ReplayRunController:
                     'frame': state['controller']['frame_cursor'],
                 }, separators=(',', ':'), sort_keys=True)
                 if not self._journal.unfenced_records():
+                    from src.trading_runtime.arte_journal_projection import (
+                        backtest_cursor_record_fields,
+                    )
+                    boundary_id, boundary_payload = backtest_cursor_record_fields(
+                        state['controller']['source_cursor'],
+                        state['controller']['frame_cursor'],
+                        completed_at=event_time,
+                    )
                     self._journal.append(
                         run_id=self.run_id, category='checkpoint',
-                        entity_type='market_boundary', entity_id=cursor,
+                        entity_type='market_boundary', entity_id=boundary_id,
                         event_time=event_time,
-                        payload={'source_cursor': cursor},
+                        payload=boundary_payload,
                     )
                 self._checkpoint_phase = 'checkpoint_persist'
                 started = time.perf_counter()

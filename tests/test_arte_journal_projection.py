@@ -1,12 +1,13 @@
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 import src.trading_runtime.arte_journal_projection as projection_module
 
 from src.trading_runtime.arte_journal_projection import (
-    backtest_cursor_batch, broker_fill_batch, broker_fill_details, commission_revision_batch,
+    backtest_cursor_batch, backtest_cursor_record_fields, broker_fill_batch,
+    broker_fill_details, commission_revision_batch,
     load_latest_backtest_cursor, order_command_batch, project_journal_record,
     strategy_signal_batch,
 )
@@ -94,6 +95,25 @@ def test_backtest_cursor_is_normalized_and_causal(monkeypatch) -> None:
         backtest_cursor_batch(replace(record, payload={
             **record.payload, "checkpoint_json": "{}",
         }), **identity)
+    with pytest.raises(ValueError, match="completed boundary"):
+        backtest_cursor_batch(replace(record, event_time=AT + timedelta(milliseconds=100)),
+                              **identity)
+
+
+def test_controller_cursor_projects_without_json_and_rejects_future_frame() -> None:
+    market = {"session_date": "2026-08-18", "boundary_ms": 300000, "sequence": 700}
+    frame = {"as_of": AT.isoformat(), "ticker": "TEST", "timeframe": "100ms",
+             "sequence": 699}
+    entity_id, payload = backtest_cursor_record_fields(market, frame, completed_at=AT)
+    assert entity_id == "2026-08-18:300000"
+    assert payload["market_sequence"] == 700
+    assert payload["frame_sequence"] == 699
+    assert all(not isinstance(value, (dict, list)) for value in payload.values())
+    with pytest.raises(ValueError, match="not causal"):
+        backtest_cursor_record_fields(market, {**frame, "sequence": 701}, completed_at=AT)
+    with pytest.raises(ValueError, match="completed boundary"):
+        backtest_cursor_record_fields(market, frame,
+                                      completed_at=AT + timedelta(milliseconds=100))
 
 
 def test_simple_order_command_preserves_every_broker_instruction() -> None:
