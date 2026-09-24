@@ -87,6 +87,7 @@ TABLES = (
             ("quantity", "Decimal(38, 10)"),
             ("price", "Decimal(38, 10)"),
             ("exchange", "LowCardinality(String)"),
+            ("currency", "LowCardinality(String)"),
             ("net_amount", "Nullable(Decimal(38, 10))"),
             ("cumulative_quantity", "Nullable(Decimal(38, 10))"),
             ("average_price", "Nullable(Decimal(38, 10))"),
