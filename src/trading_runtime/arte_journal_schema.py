@@ -127,6 +127,22 @@ TABLES = (
         "toYYYYMM(event_month)", "run_id, source_event_time, record_id",
     ),
     TableContract(
+        "trading_operational_fault_v1",
+        (
+            ("record_id", "UUID"),
+            ("run_id", "String"),
+            ("event_month", "Date"),
+            ("batch_id", "UUID"),
+            ("account_id", "String"),
+            ("status", "LowCardinality(String)"),
+            ("error", "String"),
+            ("entries_frozen", "UInt8"),
+            ("source_event_time", "DateTime64(9, 'UTC')"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, source_event_time, record_id",
+    ),
+    TableContract(
         "trading_strategy_signal_v1",
         (
             ("record_id", "UUID"),
@@ -600,6 +616,8 @@ TABLES = (
             ("intent_use_hash", "FixedString(64)"),
             ("run_transition_count", "UInt32"),
             ("run_transition_hash", "FixedString(64)"),
+            ("operational_fault_count", "UInt32"),
+            ("operational_fault_hash", "FixedString(64)"),
             ("source_cursor", "String"),
             ("status", "LowCardinality(String)"),
             ("committed_at", "DateTime64(6, 'UTC')"),
@@ -700,6 +718,19 @@ def run_transition_upgrade_ddl() -> tuple[str, ...]:
         "run_transition_count UInt32 DEFAULT 0 AFTER intent_use_hash",
         "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
         f"run_transition_hash FixedString(64) DEFAULT '{empty_hash}' AFTER run_transition_count",
+    )
+
+
+def operational_fault_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only typed broker/risk fault detail and additive fence fields."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_operational_fault_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "operational_fault_count UInt32 DEFAULT 0 AFTER run_transition_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"operational_fault_hash FixedString(64) DEFAULT '{empty_hash}' AFTER operational_fault_count",
     )
 
 

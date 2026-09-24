@@ -5,6 +5,7 @@ import pytest
 from src.trading_runtime.arte_journal_schema import (
     TABLES, intent_schema_upgrade_ddl, order_context_upgrade_ddl,
     oms_state_upgrade_ddl, intent_use_upgrade_ddl, run_transition_upgrade_ddl,
+    operational_fault_upgrade_ddl,
     journal_permission_preflight,
     schema_ddl, storage_preflight,
 )
@@ -12,7 +13,7 @@ from src.trading_runtime.arte_journal_schema import (
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 24
+    assert len(statements) == len(TABLES) == 25
     for table, statement in zip(TABLES, statements):
         assert f"CREATE TABLE IF NOT EXISTS arte.{table.name}" in statement
         assert "ENGINE = MergeTree" in statement
@@ -98,6 +99,16 @@ def test_run_transition_upgrade_is_typed_additive_and_journal_only() -> None:
     statements = run_transition_upgrade_ddl()
     assert len(statements) == 3
     assert "CREATE TABLE IF NOT EXISTS arte.trading_run_transition_v1" in statements[0]
+    assert "storage_policy = 'live_market_ssd'" in statements[0]
+    assert all("ALTER TABLE arte.trading_commit_v1" in sql for sql in statements[1:])
+    assert not any("arte.bars_v1" in sql or "arte.indicators_v1" in sql
+                   for sql in statements)
+
+
+def test_operational_fault_upgrade_is_typed_and_journal_only() -> None:
+    statements = operational_fault_upgrade_ddl()
+    assert len(statements) == 3
+    assert "CREATE TABLE IF NOT EXISTS arte.trading_operational_fault_v1" in statements[0]
     assert "storage_policy = 'live_market_ssd'" in statements[0]
     assert all("ALTER TABLE arte.trading_commit_v1" in sql for sql in statements[1:])
     assert not any("arte.bars_v1" in sql or "arte.indicators_v1" in sql

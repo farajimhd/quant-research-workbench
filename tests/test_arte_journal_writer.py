@@ -12,6 +12,7 @@ import pytest
 from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_journal_projection import (
     broker_fill_batch, commission_revision_batch, runtime_lifecycle_batch,
+    operational_fault_batch,
 )
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.ibkr_client import _execution
@@ -20,6 +21,7 @@ from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, JournalQueueFull, TypedJournalBatch, load_committed_prefix,
     load_committed_commission_page, load_committed_execution_page,
     load_committed_run_transition_page,
+    load_committed_operational_fault_page,
     load_committed_order_command_page, load_committed_order_transition_page,
     load_typed_run_context, publish_typed_batch, publish_typed_run,
     publish_typed_run_context, typed_row,
@@ -168,6 +170,54 @@ def test_runtime_lifecycle_is_normalized_and_fence_verified() -> None:
         load_committed_prefix(client, RUN)
 
 
+def test_broker_and_risk_faults_share_one_normalized_fenced_family() -> None:
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    client = MemoryClient()
+    next_batch = "00000000-0000-0000-0000-000000000019"
+    for sequence, batch_id, prior_id, category, entity_type, status in (
+        (1, BATCH, ZERO, "broker", "connection_state", "disconnected"),
+        (2, next_batch, BATCH, "risk", "risk_snapshot", "stale"),
+    ):
+        record = JournalRecord(
+            record_id=f"00000000-0000-0000-0000-{sequence + 20:012d}",
+            run_id=RUN, sequence=sequence, event_time=at, recorded_at=at,
+            category=category, entity_type=entity_type, entity_id=RUN,
+            account_id="", payload={"status": status, "error": "network timeout",
+                                    "entries_frozen": True},
+        )
+        item = operational_fault_batch(
+            record, run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
+            batch_id=batch_id, prior_batch_id=prior_id,
+            source_cursor=f"fault-{sequence}",
+        )
+        publish_typed_batch(client, item)
+    prefix = load_committed_prefix(client, RUN)
+    assert prefix is not None
+    rows = load_committed_operational_fault_page(client, prefix)
+    assert [(row["sequence"], row["category"], row["status"])
+            for row in rows] == [(1, "broker", "disconnected"), (2, "risk", "stale")]
+    assert len(load_committed_operational_fault_page(
+        client, prefix, after_sequence=1)) == 1
+    for name in ("trading_event_v1", "trading_operational_fault_v1"):
+        clone = dict(client.tables[name][0])
+        clone["batch_id"] = "00000000-0000-0000-0000-000000000099"
+        client.tables[name].append(clone)
+    assert len(load_committed_operational_fault_page(client, prefix)) == 2
+    with pytest.raises(ValueError, match="unmodeled or inconsistent"):
+        operational_fault_batch(JournalRecord(
+            record_id=RECORD, run_id=RUN, sequence=3, event_time=at,
+            recorded_at=at, category="risk", entity_type="risk_snapshot",
+            entity_id=RUN, account_id="", payload={
+                "status": "stale", "error": "x", "entries_frozen": True,
+                "raw_json": "{}",
+            }), run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
+            batch_id=str(UUID(int=30)), prior_batch_id=next_batch,
+            source_cursor="fault-3")
+    client.tables["trading_operational_fault_v1"][0]["entries_frozen"] = 0
+    with pytest.raises(RuntimeError, match="row content differs from its hash"):
+        load_committed_prefix(client, RUN)
+
+
 def test_runtime_config_and_accounts_require_a_verified_context_fence() -> None:
     client = MemoryClient()
     publish_typed_run(client, run_row())
@@ -239,7 +289,16 @@ class MemoryClient:
         if "WHERE run_id=" in sql:
             run_id = sql.split("WHERE run_id='", 1)[1].split("'", 1)[0]
             matching = [row for row in self.tables.get(name, []) if row["run_id"] == run_id]
+            fault_pair_filter = "AND ((category='broker' AND entity_type='connection_state')" in sql
+            if fault_pair_filter:
+                matching = [row for row in matching if
+                            (row["category"], row["entity_type"]) in {
+                                ("broker", "connection_state"),
+                                ("risk", "risk_snapshot"),
+                            }]
             for field in ("account_id", "execution_id", "category", "entity_type"):
+                if fault_pair_filter and field in {"category", "entity_type"}:
+                    continue
                 marker = f"AND {field}='"
                 if marker in sql:
                     value = sql.split(marker, 1)[1].split("'", 1)[0]
@@ -299,7 +358,7 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     assert len(client.tables["trading_commit_v1"]) == 1
     assert not any("payload_json" in row for rows in client.tables.values() for row in rows)
     prefix = load_committed_prefix(client, RUN)
-    assert len(client.selects) == 27
+    assert len(client.selects) == 28
     assert prefix is not None
     assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
 
@@ -324,7 +383,7 @@ def test_recovery_groups_batches_but_verifies_each_fence() -> None:
     client.selects.clear()
     prefix = load_committed_prefix(client, RUN)
     assert prefix is not None and prefix.last_sequence == 3
-    assert len(client.selects) == 20
+    assert len(client.selects) == 21
     client.tables["trading_commit_v1"][0]["event_count"] = 0
     with pytest.raises(RuntimeError, match="not contiguous"):
         load_committed_prefix(client, RUN)

@@ -140,6 +140,12 @@ source config against the separately fenced typed run context, rather than
 persisting another config copy. The detail count and hash join the same commit
 fence; cold paging excludes unfenced transitions. This maps lifecycle evidence
 only, not the remaining strategy/OMS state.
+The live runtime's broker-disconnect and risk-refresh-failure records share
+`trading_operational_fault_v1`: the envelope identifies the source, and one
+typed detail carries status, error text, frozen-entry flag, and source clock.
+Unknown fields fail projection, and both fault types are covered by the commit
+fence and cold-read checks. Continuous account-risk evaluations and recovery
+state still require separate normalized contracts.
 
 ## Cutover gate
 

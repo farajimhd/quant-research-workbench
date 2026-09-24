@@ -30,6 +30,8 @@ _FAMILIES = (
     ("trading_event_v1", "events", "event_count", "event_hash"),
     ("trading_run_transition_v1", "run_transitions", "run_transition_count",
      "run_transition_hash"),
+    ("trading_operational_fault_v1", "operational_faults", "operational_fault_count",
+     "operational_fault_hash"),
     ("trading_strategy_signal_v1", "signals", "signal_count", "signal_hash"),
     ("trading_signal_source_v1", "signal_sources", "signal_source_count",
      "signal_source_hash"),
@@ -65,6 +67,8 @@ _EVENT_DETAILS = {
     # normalized (lifecycle, run) detail below.
     ("run_state", "lifecycle"): None,
     ("lifecycle", "run"): "trading_run_transition_v1",
+    ("broker", "connection_state"): "trading_operational_fault_v1",
+    ("risk", "risk_snapshot"): "trading_operational_fault_v1",
     ("strategy_decision", "signal"): "trading_strategy_signal_v1",
     ("strategy_decision", "intent"): "trading_strategy_intent_v1",
     ("execution", "fill"): "trading_execution_v1",
@@ -117,6 +121,7 @@ class TypedJournalBatch:
     status: str
     events: tuple[Mapping[str, Any], ...]
     run_transitions: tuple[Mapping[str, Any], ...] = ()
+    operational_faults: tuple[Mapping[str, Any], ...] = ()
     signals: tuple[Mapping[str, Any], ...] = ()
     signal_sources: tuple[Mapping[str, Any], ...] = ()
     executions: tuple[Mapping[str, Any], ...] = ()
@@ -254,6 +259,19 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 != _datetime_wire(parent["event_time"], 9)
                 or (transition["status"] == "running") != (transition["processed_events"] is None)):
             raise ValueError("Run transition differs from its lifecycle event")
+    for fault in by_family["trading_operational_fault_v1"]:
+        parent = events_by_id[str(UUID(str(fault["record_id"])))]
+        expected_status = {
+            ("broker", "connection_state"): "disconnected",
+            ("risk", "risk_snapshot"): "stale",
+        }.get((parent["category"], parent["entity_type"]))
+        if (expected_status is None or parent["entity_id"] != batch.run_id
+                or parent["account_id"] or fault["account_id"]
+                or fault["status"] != expected_status
+                or fault["entries_frozen"] != 1
+                or _datetime_wire(fault["source_event_time"], 9)
+                != _datetime_wire(parent["event_time"], 9)):
+            raise ValueError("Operational fault differs from its broker or risk event")
     sources_by_parent: dict[str, list[dict[str, Any]]] = {}
     for row in by_family["trading_signal_source_v1"]:
         parent_id = str(UUID(str(row["parent_record_id"])))
@@ -1347,6 +1365,67 @@ def load_committed_run_transition_page(
             raise RuntimeError("Committed lifecycle page differs from its event envelope")
         prior = sequence
         result.append({"sequence": sequence, **detail})
+    return tuple(result)
+
+
+def load_committed_operational_fault_page(
+    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    limit: int = 500,
+) -> tuple[dict[str, Any], ...]:
+    """Cold-read broker/risk faults after verifying the complete commit chain."""
+    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+        raise ValueError("Operational fault recovery requires a verified committed prefix")
+    if after_sequence < 0 or not 1 <= limit <= 1000:
+        raise ValueError("Operational fault page bounds are invalid")
+    events = _rows(client,
+        "SELECT record_id,batch_id,sequence,event_month,account_id,event_time,category,entity_type,entity_id "
+        "FROM arte.trading_event_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND sequence>{int(after_sequence)} "
+        f"AND sequence<={int(prefix.last_sequence)} "
+        "AND ((category='broker' AND entity_type='connection_state') "
+        "OR (category='risk' AND entity_type='risk_snapshot')) "
+        f"{_committed_batch_filter(prefix)}"
+        f"ORDER BY sequence LIMIT {int(limit)} FORMAT JSONEachRow")
+    if not events:
+        return ()
+    ids = tuple(str(UUID(str(row["record_id"]))) for row in events)
+    if len(set(ids)) != len(ids):
+        raise RuntimeError("Committed fault page repeated an event identity")
+    if any(str(UUID(str(row["batch_id"]))) not in prefix.batch_ids for row in events):
+        raise RuntimeError("Fault page contains an unfenced event")
+    columns = ",".join(column for column, _ in _CONTRACTS["trading_operational_fault_v1"].columns)
+    ids_sql = ",".join(f"toUUID({_literal(value)})" for value in ids)
+    details = _rows(client, f"SELECT {columns} FROM arte.trading_operational_fault_v1 "
+                    f"WHERE run_id={_literal(prefix.run_id)} "
+                    f"AND record_id IN ({ids_sql}) "
+                    f"{_committed_batch_filter(prefix)}FORMAT JSONEachRow")
+    if len(details) != len(events):
+        raise RuntimeError("Committed fault page has missing or duplicate details")
+    by_id = {str(UUID(str(row["record_id"]))): row for row in details}
+    if set(by_id) != set(ids):
+        raise RuntimeError("Committed fault page details differ from events")
+    result = []
+    prior = after_sequence
+    for event in events:
+        sequence = int(event["sequence"])
+        detail = by_id[str(UUID(str(event["record_id"])))]
+        expected_status = {
+            ("broker", "connection_state"): "disconnected",
+            ("risk", "risk_snapshot"): "stale",
+        }.get((event["category"], event["entity_type"]))
+        if (sequence <= prior or expected_status is None
+                or event["entity_id"] != prefix.run_id
+                or event["account_id"] or detail["account_id"]
+                or detail["status"] != expected_status
+                or int(detail["entries_frozen"]) != 1
+                or str(UUID(str(detail["batch_id"]))) != str(UUID(str(event["batch_id"])))
+                or detail["event_month"] != event["event_month"]
+                or detail["source_event_time"] != event["event_time"]):
+            raise RuntimeError("Committed fault page differs from its event envelope")
+        prior = sequence
+        result.append({"sequence": sequence, "category": event["category"],
+                       "entity_type": event["entity_type"], **detail})
     return tuple(result)
 
 
