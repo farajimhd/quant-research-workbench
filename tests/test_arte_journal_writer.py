@@ -430,7 +430,8 @@ def test_writer_failure_poisoning_is_visible_to_all_receipts(monkeypatch) -> Non
         with pytest.raises(RuntimeError, match="failed"):
             journal.submit(batch())
     finally:
-        journal.close()
+        with pytest.raises(RuntimeError, match="did not drain durably"):
+            journal.close()
 
 
 def test_invalid_family_row_is_rejected_before_publication() -> None:
@@ -454,3 +455,11 @@ def test_submission_snapshot_is_immutable_and_hashing_stays_off_caller(monkeypat
     source["entity_id"] = "changed-after-submit"
     assert pending.events[0]["entity_id"] == "run-1"
     assert publish_typed_batch(MemoryClient(), pending) == BATCH
+
+
+def test_submission_rejects_nested_mutable_data_before_async_handoff() -> None:
+    source = dict(batch().events[0])
+    source["entity_id"] = {"mutable": "value"}
+    with pytest.raises(ValueError, match="mutable or opaque"):
+        TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
+                          1, 1, "bucket-1", "running", (source,))

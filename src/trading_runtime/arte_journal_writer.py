@@ -89,9 +89,13 @@ class TypedJournalBatch:
         # Copy only the small typed row envelopes at submission. Full schema
         # checks, JSON wire serialization, and hashing happen on the writer.
         for _, family, _, _ in _FAMILIES:
-            object.__setattr__(self, family, tuple(
-                MappingProxyType(dict(row)) for row in getattr(self, family)
-            ))
+            snapshots = []
+            for row in getattr(self, family):
+                if any(isinstance(value, (Mapping, list, tuple, set, bytearray, memoryview))
+                       for value in row.values()):
+                    raise ValueError(f"{family} contains mutable or opaque journal data")
+                snapshots.append(MappingProxyType(dict(row)))
+            object.__setattr__(self, family, tuple(snapshots))
 
     def families(self) -> tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...]:
         return tuple((name, getattr(self, attribute)) for name, attribute, _, _ in _FAMILIES)
@@ -624,10 +628,16 @@ class ArteJournalWriter:
     def close(self) -> None:
         """Drain only from a control-plane shutdown, never a market callback."""
         if self._closed:
+            if self._error is not None:
+                raise RuntimeError("Typed journal did not drain durably") from self._error
             return
         self._closed = True
         self._queue.put(None)
         self._thread.join()
         close = getattr(self._client, "close", None)
-        if close is not None:
-            close()
+        try:
+            if close is not None:
+                close()
+        finally:
+            if self._error is not None:
+                raise RuntimeError("Typed journal did not drain durably") from self._error
