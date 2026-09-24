@@ -4,11 +4,15 @@ from dataclasses import fields, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from math import nan
+from uuid import uuid4
 
 import pytest
 
 from src.trading_runtime.arte_intent_projection import (
-    project_strategy_intent, restore_strategy_intent,
+    project_strategy_intent, restore_strategy_intent, strategy_intent_batch,
+)
+from src.trading_runtime.arte_journal_writer import (
+    load_committed_prefix, publish_typed_batch,
 )
 from src.trading_runtime.execution_policies import (
     ExecutionEnvelope, ExecutionPolicy, ExecutionPolicyName,
@@ -16,6 +20,7 @@ from src.trading_runtime.execution_policies import (
     StopOrderType, StructuralAnchor, TrailingRule, TrailingRuleType,
 )
 from src.trading_runtime.signals import CapitalRequest, StrategyIntent
+from tests.test_arte_journal_writer import MemoryClient
 
 
 def intent(**overrides):
@@ -135,3 +140,29 @@ def test_restore_roundtrips_absent_optional_policy_and_full_rule_values():
         )),
     )))
     assert restore_strategy_intent(project_strategy_intent(complex_intent)) == complex_intent
+
+
+def test_intent_and_slice_publish_as_fence_verified_typed_rows():
+    run_id, attempt_id, batch_id = "live:test", str(uuid4()), str(uuid4())
+    profile = ProtectionProfile("single", 1, (
+        ProtectionSlice("main", 1.0, StopRule(price=11.5)),
+    ))
+    batch = strategy_intent_batch(
+        intent(protection_profile=profile), run_id=run_id,
+        run_month=datetime(2026, 8, 1, tzinfo=timezone.utc).date(),
+        account_id="DU1", attempt_id=attempt_id, batch_id=batch_id,
+        prior_batch_id="00000000-0000-0000-0000-000000000000", sequence=1,
+        source_cursor="boundary-1", run_status="running",
+        recorded_at=datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc),
+    )
+    client = MemoryClient()
+    assert publish_typed_batch(client, batch) == batch_id
+    assert client.inserts == [
+        "trading_event_v1", "trading_strategy_intent_v1",
+        "trading_intent_protection_slice_v1", "trading_commit_v1",
+    ]
+    prefix = load_committed_prefix(client, run_id)
+    assert prefix is not None and prefix.last_sequence == 1
+    client.tables["trading_intent_protection_slice_v1"][0]["slice_id"] = "tampered"
+    with pytest.raises(RuntimeError, match="row content differs"):
+        load_committed_prefix(client, run_id)

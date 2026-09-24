@@ -7,10 +7,12 @@ projection rejects it and the runtime cutover remains closed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
+from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.execution_policies import (
     execution_policy_from_payload, protection_profile_from_payload,
 )
@@ -283,3 +285,44 @@ def restore_strategy_intent(rows: ProjectedIntent) -> StrategyIntent:
             + ",".join(changed or ["protection_slices"])
         )
     return restored
+
+
+def strategy_intent_batch(
+    intent: StrategyIntent, *, run_id: str, run_month: date, account_id: str,
+    attempt_id: str, batch_id: str, prior_batch_id: str, sequence: int,
+    source_cursor: str, run_status: str, recorded_at: datetime,
+) -> TypedJournalBatch:
+    """Build a fenced journal event with one typed intent and child slices."""
+    if not run_id or not account_id or recorded_at.tzinfo is None:
+        raise ValueError("Strategy intent journal identity and receipt clock are required")
+    projected = project_strategy_intent(intent)
+    event_month = intent.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+    record_id = str(uuid5(NAMESPACE_URL, f"{run_id}:{batch_id}:{intent.intent_id}:intent"))
+    event = {
+        "run_id": run_id, "event_month": event_month,
+        "attempt_id": attempt_id, "batch_id": batch_id,
+        "record_id": record_id, "sequence": sequence,
+        "event_time": projected.core["event_time"],
+        "recorded_at": _instant(recorded_at),
+        "category": "strategy_decision", "entity_type": "intent",
+        "entity_id": intent.intent_id, "account_id": account_id,
+        "correlation_id": "", "causation_id": "",
+    }
+    identity = {
+        "run_id": run_id, "event_month": event_month,
+        "batch_id": batch_id, "account_id": account_id,
+    }
+    detail = {
+        "record_id": record_id, **identity,
+        **{key: value for key, value in projected.core.items() if key != "event_time"},
+    }
+    children = tuple({
+        "record_id": str(uuid5(NAMESPACE_URL, f"{record_id}:slice:{row['ordinal']}")),
+        "parent_record_id": record_id, **identity,
+        **{key: value for key, value in row.items() if key != "intent_id"},
+    } for row in projected.protection_slices)
+    return TypedJournalBatch(
+        run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        sequence, sequence, source_cursor, run_status, (event,),
+        intents=(detail,), intent_slices=children,
+    )

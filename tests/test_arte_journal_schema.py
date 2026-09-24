@@ -3,13 +3,14 @@ import json
 import pytest
 
 from src.trading_runtime.arte_journal_schema import (
-    TABLES, journal_permission_preflight, schema_ddl, storage_preflight,
+    TABLES, intent_schema_upgrade_ddl, journal_permission_preflight,
+    schema_ddl, storage_preflight,
 )
 
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 14
+    assert len(statements) == len(TABLES) == 16
     for table, statement in zip(TABLES, statements):
         assert f"CREATE TABLE IF NOT EXISTS arte.{table.name}" in statement
         assert "ENGINE = MergeTree" in statement
@@ -44,6 +45,21 @@ def test_shared_event_and_execution_contract_uses_lossless_identifiers() -> None
     assert columns["trading_runtime_config_v1"]["strategy_revision"] == "UInt32"
     assert columns["trading_run_account_v1"]["ordinal"] == "UInt16"
     assert columns["trading_run_context_commit_v1"]["account_hash"] == "FixedString(64)"
+    assert columns["trading_strategy_intent_v1"]["quantity"] == "Decimal(38, 18)"
+    assert columns["trading_intent_protection_slice_v1"]["parent_record_id"] == "UUID"
+    assert columns["trading_commit_v1"]["intent_slice_hash"] == "FixedString(64)"
+
+
+def test_intent_upgrade_is_journal_only_and_backfills_empty_fence_hashes() -> None:
+    statements = intent_schema_upgrade_ddl()
+    assert len(statements) == 6
+    assert "storage_policy = 'live_market_ssd'" in statements[0]
+    assert "storage_policy = 'live_market_ssd'" in statements[1]
+    assert all("arte.trading_commit_v1" in sql for sql in statements[2:])
+    assert all("IF NOT EXISTS" in sql for sql in statements)
+    assert not any("arte.bars_v1" in sql or "arte.indicators_v1" in sql
+                   or "arte.liquidity_100ms_v1" in sql for sql in statements)
+    assert statements[4].count("4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945") == 1
 
 
 def test_preflight_requires_exact_layout_and_actual_ssd_parts() -> None:

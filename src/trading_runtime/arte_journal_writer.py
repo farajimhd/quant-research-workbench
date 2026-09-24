@@ -40,11 +40,15 @@ _FAMILIES = (
      "account_snapshot_hash"),
     ("trading_position_snapshot_v1", "position_snapshots", "position_snapshot_count",
      "position_snapshot_hash"),
+    ("trading_strategy_intent_v1", "intents", "intent_count", "intent_hash"),
+    ("trading_intent_protection_slice_v1", "intent_slices", "intent_slice_count",
+     "intent_slice_hash"),
 )
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 _EVENT_DETAILS = {
     ("run_state", "lifecycle"): None,
     ("strategy_decision", "signal"): "trading_strategy_signal_v1",
+    ("strategy_decision", "intent"): "trading_strategy_intent_v1",
     ("execution", "fill"): "trading_execution_v1",
     ("execution", "commission"): "trading_commission_v1",
     ("order_management", "order_command"): "trading_order_command_v1",
@@ -101,6 +105,8 @@ class TypedJournalBatch:
     order_transitions: tuple[Mapping[str, Any], ...] = ()
     account_snapshots: tuple[Mapping[str, Any], ...] = ()
     position_snapshots: tuple[Mapping[str, Any], ...] = ()
+    intents: tuple[Mapping[str, Any], ...] = ()
+    intent_slices: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.run_id or self.first_sequence < 1 or self.last_sequence < self.first_sequence:
@@ -146,14 +152,17 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
             if str(row["run_id"]) != batch.run_id or str(UUID(str(row["batch_id"]))) != batch.batch_id:
                 raise ValueError(f"{name} mixed runs or batches")
             record_id = str(UUID(str(row["record_id"])))
+            child_family = name in {
+                "trading_signal_source_v1", "trading_intent_protection_slice_v1",
+            }
             parent_id = (str(UUID(str(row["parent_record_id"])))
-                         if name == "trading_signal_source_v1" else record_id)
+                         if child_family else record_id)
             if name != "trading_event_v1" and parent_id not in event_ids:
                 raise ValueError(f"{name} has no parent journal event")
             if name != "trading_event_v1":
                 parent = events_by_id[parent_id]
                 if (str(row["event_month"]) != str(parent["event_month"])
-                        or (name != "trading_signal_source_v1"
+                        or (not child_family
                             and str(row["account_id"]) != str(parent["account_id"]))):
                     raise ValueError(f"{name} differs from its parent event identity")
             if name == "trading_event_v1" and str(UUID(str(row["attempt_id"]))) != batch.attempt_id:
@@ -186,7 +195,8 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
             raise ValueError("Position snapshot lacks its complete account snapshot")
     details_by_record: dict[str, str] = {}
     for name, rows in result:
-        if name in {"trading_event_v1", "trading_signal_source_v1"}:
+        if name in {"trading_event_v1", "trading_signal_source_v1",
+                    "trading_intent_protection_slice_v1"}:
             continue
         for row in rows:
             record_id = str(UUID(str(row["record_id"])))
@@ -215,6 +225,23 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 or sorted(int(row["source_ordinal"]) for row in source_rows)
                 != list(range(len(source_rows)))):
             raise ValueError("Signal sources do not match the typed signal count")
+    slices_by_parent: dict[str, list[dict[str, Any]]] = {}
+    for row in by_family["trading_intent_protection_slice_v1"]:
+        parent_id = str(UUID(str(row["parent_record_id"])))
+        if details_by_record.get(parent_id) != "trading_strategy_intent_v1":
+            raise ValueError("Protection slice parent lacks a typed strategy intent")
+        parent = events_by_id[parent_id]
+        if str(row["account_id"]) != str(parent["account_id"]):
+            raise ValueError("Protection slice account differs from its intent")
+        slices_by_parent.setdefault(parent_id, []).append(row)
+    for intent in by_family["trading_strategy_intent_v1"]:
+        intent_id = str(UUID(str(intent["record_id"])))
+        child_rows = slices_by_parent.get(intent_id, [])
+        if (len(child_rows) != int(intent["protection_slice_count"])
+                or sorted(int(row["ordinal"]) for row in child_rows)
+                != list(range(len(child_rows)))
+                or len({str(row["slice_id"]) for row in child_rows}) != len(child_rows)):
+            raise ValueError("Protection slices do not match the typed intent count")
     return tuple(result)
 
 

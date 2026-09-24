@@ -330,6 +330,84 @@ TABLES = (
         "account_id, run_id, snapshot_id, conid, record_id",
     ),
     TableContract(
+        "trading_strategy_intent_v1",
+        (
+            ("record_id", "UUID"), ("run_id", "String"), ("event_month", "Date"),
+            ("batch_id", "UUID"), ("account_id", "String"),
+            ("intent_id", "String"), ("ticker", "LowCardinality(String)"),
+            ("action", "LowCardinality(String)"),
+            ("quantity", "Decimal(38, 18)"),
+            ("reference_price", "Decimal(38, 18)"),
+            ("schema_version", "UInt16"),
+            ("invalidation_price", "Nullable(Decimal(38, 18))"),
+            ("profit_target_price", "Nullable(Decimal(38, 18))"),
+            ("trailing_amount", "Nullable(Decimal(38, 18))"),
+            ("urgency", "LowCardinality(String)"),
+            ("time_in_force", "String"), ("outside_rth", "UInt8"),
+            ("reason", "String"),
+            ("capital_mode", "Nullable(String)"),
+            ("capital_value", "Nullable(Decimal(38, 18))"),
+            ("capital_minimum_quantity", "Nullable(Decimal(38, 18))"),
+            ("capital_maximum_quantity", "Nullable(Decimal(38, 18))"),
+            ("capital_allow_replacement", "Nullable(UInt8)"),
+            ("execution_policy_id", "Nullable(String)"),
+            ("execution_policy_revision", "Nullable(UInt32)"),
+            ("execution_policy_name", "Nullable(String)"),
+            ("execution_partial_fill_policy", "Nullable(String)"),
+            ("execution_quote_source", "Nullable(String)"),
+            ("execution_maximum_buy_price", "Nullable(Decimal(38, 18))"),
+            ("execution_minimum_sell_price", "Nullable(Decimal(38, 18))"),
+            ("execution_deadline_ms", "Nullable(UInt32)"),
+            ("execution_maximum_reprices", "Nullable(UInt16)"),
+            ("execution_minimum_reprice_interval_ms", "Nullable(UInt32)"),
+            ("execution_persist_until_cancelled", "Nullable(UInt8)"),
+            ("protection_profile_id", "Nullable(String)"),
+            ("protection_profile_revision", "Nullable(UInt32)"),
+            ("protection_add_policy", "Nullable(String)"),
+            ("protection_profit_pocket_transition", "Nullable(String)"),
+            ("protection_mandatory_catastrophic_backstop", "Nullable(UInt8)"),
+            ("protection_emergency_repair_deadline_ms", "Nullable(UInt32)"),
+            ("protection_slice_count", "UInt16"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, account_id, intent_id, record_id",
+    ),
+    TableContract(
+        "trading_intent_protection_slice_v1",
+        (
+            ("record_id", "UUID"), ("parent_record_id", "UUID"),
+            ("run_id", "String"), ("event_month", "Date"),
+            ("batch_id", "UUID"), ("account_id", "String"),
+            ("ordinal", "UInt16"), ("slice_id", "String"),
+            ("quantity_fraction", "Decimal(38, 18)"),
+            ("profit_target_price", "Nullable(Decimal(38, 18))"),
+            ("inherit_profit_target", "UInt8"),
+            ("stop_rule_type", "LowCardinality(String)"),
+            ("stop_order_type", "LowCardinality(String)"),
+            ("stop_price", "Nullable(Decimal(38, 18))"),
+            ("stop_distance_percent", "Nullable(Decimal(38, 18))"),
+            ("stop_distance_bps", "Nullable(Decimal(38, 18))"),
+            ("stop_maximum_cash_risk", "Nullable(Decimal(38, 18))"),
+            ("stop_volatility_multiple", "Nullable(Decimal(38, 18))"),
+            ("stop_buffer_bps", "Decimal(38, 18)"),
+            ("stop_limit_offset_bps", "Nullable(Decimal(38, 18))"),
+            ("anchor_observation_id", "Nullable(String)"),
+            ("anchor_price", "Nullable(Decimal(38, 18))"),
+            ("anchor_confirmed_at", "Nullable(DateTime64(9, 'UTC'))"),
+            ("anchor_timeframe", "Nullable(String)"),
+            ("anchor_ordinal", "Nullable(String)"),
+            ("trailing_rule_type", "LowCardinality(String)"),
+            ("trailing_amount", "Nullable(Decimal(38, 18))"),
+            ("trailing_percent", "Nullable(Decimal(38, 18))"),
+            ("trailing_volatility_multiple", "Nullable(Decimal(38, 18))"),
+            ("trailing_activation_gain_percent", "Decimal(38, 18)"),
+            ("trailing_breakeven_buffer_bps", "Decimal(38, 18)"),
+            ("trailing_structural_timeframe", "String"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, parent_record_id, ordinal, record_id",
+    ),
+    TableContract(
         "trading_commit_v1",
         (
             ("run_id", "String"),
@@ -357,6 +435,10 @@ TABLES = (
             ("order_transition_hash", "FixedString(64)"),
             ("account_snapshot_hash", "FixedString(64)"),
             ("position_snapshot_hash", "FixedString(64)"),
+            ("intent_count", "UInt32"),
+            ("intent_slice_count", "UInt32"),
+            ("intent_hash", "FixedString(64)"),
+            ("intent_slice_hash", "FixedString(64)"),
             ("source_cursor", "String"),
             ("status", "LowCardinality(String)"),
             ("committed_at", "DateTime64(6, 'UTC')"),
@@ -369,6 +451,24 @@ TABLES = (
 def schema_ddl() -> tuple[str, ...]:
     """Return DDL for a separately authorized installer, never run it here."""
     return tuple(table.ddl() for table in TABLES)
+
+
+def intent_schema_upgrade_ddl() -> tuple[str, ...]:
+    """Restart-safe operator DDL for the two intent families and old fences."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_strategy_intent_v1"].ddl(),
+        by_name["trading_intent_protection_slice_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "intent_count UInt32 DEFAULT 0 AFTER position_snapshot_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "intent_slice_count UInt32 DEFAULT 0 AFTER intent_count",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"intent_hash FixedString(64) DEFAULT '{empty_hash}' AFTER intent_slice_count",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"intent_slice_hash FixedString(64) DEFAULT '{empty_hash}' AFTER intent_hash",
+    )
 
 
 def _rows(client: Any, query: str) -> list[dict[str, Any]]:
