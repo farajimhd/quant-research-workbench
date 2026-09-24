@@ -6,7 +6,8 @@ from src.trading_runtime.arte_journal_schema import (
     TABLES, TableContract, BATCH_LOOKUP_INDEX, batch_lookup_index_upgrade_ddl,
     batch_lookup_index_materialize_ddl,
     intent_decision_upgrade_ddl,
-    portfolio_policy_schema_upgrade_ddl, POLICY_ALLOWED_FIELDS,
+    portfolio_policy_schema_upgrade_ddl, portfolio_snapshot_schema_upgrade_ddl,
+    POLICY_ALLOWED_FIELDS,
     POLICY_NUMERIC_FIELDS, POLICY_INTEGER_FIELDS, POLICY_BOOLEAN_FIELDS,
     intent_schema_upgrade_ddl, order_context_upgrade_ddl,
     oms_state_upgrade_ddl, intent_use_upgrade_ddl, run_transition_upgrade_ddl,
@@ -20,7 +21,7 @@ from src.trading_runtime.portfolio import PortfolioPolicy
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 32
+    assert len(statements) == len(TABLES) == 41
     for table, statement in zip(TABLES, statements):
         assert f"CREATE TABLE IF NOT EXISTS arte.{table.name}" in statement
         assert "ENGINE = MergeTree" in statement
@@ -76,6 +77,17 @@ def test_portfolio_policy_catalog_covers_all_fields_without_json() -> None:
     assert len(statements) == 3
     assert all("live_market_ssd" in sql and "cityHash64(policy_hash) % 32" in sql
                for sql in statements)
+
+
+def test_portfolio_snapshot_is_normalized_and_fenced() -> None:
+    statements = portfolio_snapshot_schema_upgrade_ddl()
+    assert len(statements) == 9
+    assert all("live_market_ssd" in sql and "toYYYYMM(snapshot_month)" in sql
+               for sql in statements)
+    names = {sql.split("arte.", 1)[1].split(" ", 1)[0] for sql in statements}
+    assert "trading_portfolio_snapshot_commit_v1" in names
+    assert "trading_portfolio_request_reason_v1" in names
+    assert not any("payload_json" in sql or "blob" in sql for sql in statements)
 
 
 def test_shared_event_and_execution_contract_uses_lossless_identifiers() -> None:

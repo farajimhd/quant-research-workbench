@@ -9,9 +9,16 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
+from hashlib import sha256
 from typing import Any, Mapping
 
-from src.trading_runtime.arte_portfolio_policy import _policy_rows
+from src.trading_runtime.arte_portfolio_policy import (
+    _policy_rows, load_portfolio_policy, publish_portfolio_policy,
+)
+from src.trading_runtime.arte_journal_writer import (
+    _CONTRACTS, _insert, _literal, _rows, _wire_row,
+)
+from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.portfolio import (
     PortfolioAllocationLot, PortfolioReconciliationDifference,
     PortfolioControlMode, PortfolioReservation, PortfolioSyncState,
@@ -56,6 +63,28 @@ class PortfolioSnapshotRows:
     reservations: tuple[dict[str, Any], ...]
     allocations: tuple[dict[str, Any], ...]
     reconciliation: tuple[dict[str, Any], ...]
+
+
+_SNAPSHOT_FAMILIES = (
+    ("trading_portfolio_snapshot_v1", "account"),
+    ("trading_portfolio_disabled_strategy_v1", "disabled_strategies"),
+    ("trading_portfolio_command_v1", "commands"),
+    ("trading_portfolio_request_v1", "requests"),
+    ("trading_portfolio_request_reason_v1", "request_reasons"),
+    ("trading_portfolio_reservation_v1", "reservations"),
+    ("trading_portfolio_allocation_v1", "allocations"),
+    ("trading_portfolio_reconciliation_v1", "reconciliation"),
+)
+_SNAPSHOT_COMMIT = "trading_portfolio_snapshot_commit_v1"
+_COUNT_COLUMNS = {
+    "disabled_strategies": "disabled_strategy_count",
+    "commands": "command_count",
+    "requests": "request_count",
+    "request_reasons": "request_reason_count",
+    "reservations": "reservation_count",
+    "allocations": "allocation_count",
+    "reconciliation": "reconciliation_count",
+}
 
 
 def _decimal(value: Any) -> str:
@@ -218,3 +247,228 @@ def project_portfolio_snapshot(account_id: str, state: Mapping[str, Any]) -> Por
                                  tuple(request_rows), tuple(reason_rows),
                                  projected["reservations"], projected["allocations"],
                                  projected["reconciliation"])
+
+
+def _snapshot_rows(run_id: str, account_id: str, state_revision: int,
+                   snapshot_month: str, projected: PortfolioSnapshotRows,
+                   *, wire: bool = True,
+                   ) -> dict[str, tuple[dict[str, Any], ...]]:
+    identity = {"run_id": run_id, "snapshot_month": snapshot_month,
+                "account_id": account_id, "state_revision": state_revision}
+    result = {}
+    for table, attribute in _SNAPSHOT_FAMILIES:
+        values = getattr(projected, attribute)
+        source = (values,) if attribute == "account" else values
+        result[table] = tuple((_wire_row(table, {**identity, **row}) if wire
+                               else {**identity, **row}) for row in source)
+    return result
+
+
+def _state_hash(families: Mapping[str, tuple[dict[str, Any], ...]]) -> str:
+    return sha256(canonical_json({name: sorted(families[name], key=canonical_json)
+                                  for name, _ in _SNAPSHOT_FAMILIES})
+                  .encode("utf-8")).hexdigest()
+
+
+def _stored_rows(client: Any, table: str, run_id: str, account_id: str,
+                 state_revision: int) -> list[dict[str, Any]]:
+    columns = ",".join(name for name, _ in _CONTRACTS[table].columns)
+    return _rows(client, f"SELECT {columns} FROM arte.{table} "
+                 f"WHERE run_id={_literal(run_id)} AND account_id={_literal(account_id)} "
+                 f"AND state_revision={state_revision} FORMAT JSONEachRow")
+
+
+def _canonical_family(table: str, rows: list[dict[str, Any]] | tuple[dict[str, Any], ...]
+                      ) -> list[dict[str, Any]]:
+    # ClickHouse renders DateTime64 without a timezone suffix. It is UTC by
+    # column contract; reattach that authority before canonical hashing.
+    from src.trading_runtime.arte_journal_writer import _canonical_typed_content
+
+    return sorted((_canonical_typed_content(table, row, stored_utc=True)
+                   for row in rows), key=canonical_json)
+
+
+def _aware_utc(value: str | None) -> str | None:
+    return None if value is None else value.replace(" ", "T") + "+00:00"
+
+
+def _restore_state(families: Mapping[str, tuple[dict[str, Any], ...]],
+                   policy: dict[str, Any] | None) -> dict[str, Any]:
+    root = families["trading_portfolio_snapshot_v1"][0]
+    account_id = root["account_id"]
+    account_key = root["account_key"]
+    identity = {"run_id", "snapshot_month", "account_id", "state_revision"}
+
+    def children(table: str) -> list[dict[str, Any]]:
+        rows = families[table]
+        if any(row["account_id"] != account_id
+               or row["run_id"] != root["run_id"]
+               or row["state_revision"] != root["state_revision"] for row in rows):
+            raise RuntimeError("Portfolio snapshot child identity differs from its account")
+        return [{key: value for key, value in row.items() if key not in identity}
+                for row in rows]
+
+    disabled = children("trading_portfolio_disabled_strategy_v1")
+    if len({row["strategy_id"] for row in disabled}) != len(disabled):
+        raise RuntimeError("Portfolio snapshot disabled strategies are duplicated")
+    commands = sorted(children("trading_portfolio_command_v1"),
+                      key=lambda row: row["ordinal"])
+    if ([row["ordinal"] for row in commands] != list(range(len(commands)))
+            or len({row["command_id"] for row in commands}) != len(commands)):
+        raise RuntimeError("Portfolio snapshot command order is invalid")
+    for row in commands:
+        row.pop("ordinal")
+        row["completed_at"] = _aware_utc(row["completed_at"])
+        if row["completed_at"] is None:
+            row.pop("completed_at")
+        if row["error"] is None:
+            row.pop("error")
+    requests = children("trading_portfolio_request_v1")
+    if len({row["request_id"] for row in requests}) != len(requests):
+        raise RuntimeError("Portfolio snapshot requests are duplicated")
+    by_request = {row["request_id"]: row for row in requests}
+    for row in requests:
+        row["requested_at"] = _aware_utc(row["requested_at"])
+        row["last_validated_at"] = _aware_utc(row["last_validated_at"])
+        row["reasons"] = []
+    reasons: dict[str, list[dict[str, Any]]] = {}
+    for row in children("trading_portfolio_request_reason_v1"):
+        if row["request_id"] not in by_request:
+            raise RuntimeError("Portfolio snapshot reason lacks a request")
+        reasons.setdefault(row["request_id"], []).append(row)
+    for request_id, rows in reasons.items():
+        rows.sort(key=lambda row: row["ordinal"])
+        if [row["ordinal"] for row in rows] != list(range(len(rows))):
+            raise RuntimeError("Portfolio snapshot reason order is invalid")
+        by_request[request_id]["reasons"] = [row["reason"] for row in rows]
+
+    restored: dict[str, list[dict[str, Any]]] = {}
+    for attribute, table, numeric, timestamp, key in (
+        ("reservations", "trading_portfolio_reservation_v1", _RESERVATION_NUMERIC,
+         "created_at", "reservation_id"),
+        ("allocations", "trading_portfolio_allocation_v1", _ALLOCATION_NUMERIC,
+         "updated_at", "allocation_id"),
+        ("reconciliation", "trading_portfolio_reconciliation_v1",
+         _RECONCILIATION_NUMERIC, "observed_at", "ticker"),
+    ):
+        rows = children(table)
+        if (len({row[key] for row in rows}) != len(rows)
+                or any(row["account_key"] != account_key for row in rows)):
+            raise RuntimeError(f"Portfolio snapshot {attribute} identity is invalid")
+        for row in rows:
+            if attribute != "reconciliation":
+                row["account_id"] = account_id
+            row[timestamp] = _aware_utc(row[timestamp])
+            for name in numeric:
+                row[name] = float(row[name])
+        restored[attribute] = rows
+    return {
+        "account_key": account_key, "control_mode": root["control_mode"],
+        "sync_state": root["sync_state"], "snapshot_id": root["snapshot_id"],
+        "observed_at": _aware_utc(root["observed_at"]),
+        "stale_reason": root["stale_reason"],
+        "peak_net_liquidation": float(root["peak_net_liquidation"]),
+        "realized_pnl_baseline": (float(root["realized_pnl_baseline"])
+                                  if root["realized_pnl_baseline"] is not None else None),
+        "selected_policy": policy,
+        "disabled_strategy_allocations": sorted(row["strategy_id"] for row in disabled),
+        "pending_operational_commands": commands,
+        "pending_entry_requests": by_request,
+        **restored,
+    }
+
+
+def publish_portfolio_snapshot(
+    client: Any, *, run_id: str, account_id: str, state_revision: int,
+    snapshot_at: datetime, state: Mapping[str, Any],
+) -> str:
+    """Worker-lane publication, retry-safe with a last-written commit fence.
+
+    The caller must own a Keeper-fenced account writer and supply its strictly
+    increasing journal state revision. Never invoke on a realtime callback.
+    """
+    if (not run_id or not account_id or type(state_revision) is not int
+            or state_revision < 1 or snapshot_at.tzinfo is None):
+        raise ValueError("Portfolio snapshot needs a causal writer identity")
+    projected = project_portfolio_snapshot(account_id, state)
+    selected = state["selected_policy"]
+    if selected is not None:
+        policy = portfolio_policy_from_payload(selected)
+        if publish_portfolio_policy(client, policy) != projected.account["selected_policy_hash"]:
+            raise RuntimeError("Selected portfolio policy differs from its catalog")
+    month = snapshot_at.astimezone(timezone.utc).date().replace(day=1).isoformat()
+    families = _snapshot_rows(run_id, account_id, state_revision, month, projected)
+    source_families = _snapshot_rows(run_id, account_id, state_revision, month,
+                                    projected, wire=False)
+    digest = _state_hash(families)
+    existing_fence = _stored_rows(client, _SNAPSHOT_COMMIT, run_id, account_id,
+                                  state_revision)
+    if existing_fence:
+        loaded = load_portfolio_snapshot(client, run_id=run_id,
+                                         account_id=account_id,
+                                         state_revision=state_revision)
+        if loaded is None or loaded["state_hash"] != digest:
+            raise RuntimeError("Portfolio snapshot revision has conflicting content")
+        return digest
+    for table, expected in families.items():
+        actual = _stored_rows(client, table, run_id, account_id, state_revision)
+        if actual and _canonical_family(table, actual) != _canonical_family(table, expected):
+            raise RuntimeError(f"Portfolio snapshot {table} has conflicting partial rows")
+        if not actual and expected:
+            _insert(client, table, source_families[table],
+                    f"portfolio-state:{run_id}:{account_id}:{state_revision}:{table}")
+            actual = _stored_rows(client, table, run_id, account_id, state_revision)
+        if _canonical_family(table, actual) != _canonical_family(table, expected):
+            raise RuntimeError(f"Portfolio snapshot {table} did not become durable")
+    fence = {"run_id": run_id, "snapshot_month": month, "account_id": account_id,
+             "state_revision": state_revision, "state_hash": digest,
+             **{_COUNT_COLUMNS[attribute]: len(families[table])
+                for table, attribute in _SNAPSHOT_FAMILIES if attribute != "account"},
+             "committed_at": datetime.now(timezone.utc).isoformat()}
+    if set(fence) != {name for name, _ in _CONTRACTS[_SNAPSHOT_COMMIT].columns}:
+        raise RuntimeError("Portfolio snapshot fence lacks a typed family count")
+    _insert(client, _SNAPSHOT_COMMIT, (fence,),
+            f"portfolio-state:{run_id}:{account_id}:{state_revision}:commit")
+    loaded = load_portfolio_snapshot(client, run_id=run_id, account_id=account_id,
+                                     state_revision=state_revision)
+    if loaded is None or loaded["state_hash"] != digest:
+        raise RuntimeError("Portfolio snapshot fence did not become durable")
+    return digest
+
+
+def load_portfolio_snapshot(
+    client: Any, *, run_id: str, account_id: str, state_revision: int,
+) -> dict[str, Any] | None:
+    """Cold-read exactly one committed, content-verified recovery revision."""
+    if not run_id or not account_id or type(state_revision) is not int or state_revision < 1:
+        raise ValueError("Portfolio snapshot identity is invalid")
+    fences = _stored_rows(client, _SNAPSHOT_COMMIT, run_id, account_id, state_revision)
+    if not fences:
+        return None
+    if len(fences) != 1:
+        raise RuntimeError("Portfolio snapshot has duplicate commit fences")
+    fence = fences[0]
+    families: dict[str, tuple[dict[str, Any], ...]] = {}
+    for table, attribute in _SNAPSHOT_FAMILIES:
+        actual = _stored_rows(client, table, run_id, account_id, state_revision)
+        count_name = _COUNT_COLUMNS.get(attribute)
+        if (attribute == "account" and len(actual) != 1
+                or attribute != "account" and len(actual) != int(fence[count_name])):
+            raise RuntimeError(f"Portfolio snapshot {table} differs from its fence count")
+        families[table] = tuple(_canonical_family(table, actual))
+    if _state_hash(families) != str(fence["state_hash"]):
+        raise RuntimeError("Portfolio snapshot content differs from its fence")
+    root = families["trading_portfolio_snapshot_v1"][0]
+    if any(row["snapshot_month"] != fence["snapshot_month"]
+           for rows in families.values() for row in rows):
+        raise RuntimeError("Portfolio snapshot month differs from its fence")
+    policy = None
+    if root["selected_policy_hash"] is not None:
+        selected = load_portfolio_policy(client, root["selected_policy_hash"])
+        if selected is None:
+            raise RuntimeError("Portfolio snapshot selected policy is not committed")
+        from dataclasses import asdict
+        policy = {**asdict(selected), "identity": selected.identity}
+    return {"state_hash": str(fence["state_hash"]),
+            "state_revision": state_revision, "state": _restore_state(families, policy),
+            "families": families}
