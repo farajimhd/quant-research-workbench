@@ -46,6 +46,39 @@ class FillDetails:
     commission: dict[str, Any] | None
 
 
+def project_journal_record(
+    record: JournalRecord, *, run_month: date, attempt_id: str,
+    batch_id: str, prior_batch_id: str, source_cursor: str,
+    expected_config: dict[str, Any] | None = None,
+    expected_mode: str | None = None,
+) -> TypedJournalBatch:
+    """Strict shared entry point for existing live/Backtest journal records.
+
+    Domain-object projections (orders, fills, signals, intents) must receive
+    their original typed objects. A flattened payload is not sufficient to
+    reconstruct arbitrary broker evidence, so unsupported records fail here.
+    """
+    identity = dict(run_month=run_month, attempt_id=attempt_id,
+                    batch_id=batch_id, prior_batch_id=prior_batch_id,
+                    source_cursor=source_cursor)
+    kind = (record.category, record.entity_type)
+    if kind == ("lifecycle", "run"):
+        return runtime_lifecycle_batch(record, **identity,
+                                       expected_config=expected_config)
+    if kind in {("broker", "connection_state"), ("risk", "risk_snapshot")}:
+        return operational_fault_batch(record, **identity)
+    if kind == ("risk", "continuous_risk_state"):
+        if expected_mode is None:
+            raise ValueError("Continuous risk projection requires the pinned run mode")
+        return account_risk_batch(record, **identity, expected_mode=expected_mode)
+    if kind in {("strategy_decision", "intent_rejection"),
+                ("strategy_decision", "intent_deferral")}:
+        return intent_decision_batch(record, **identity)
+    raise ValueError(
+        f"Journal record {record.category}/{record.entity_type} lacks a typed projection"
+    )
+
+
 def runtime_lifecycle_batch(
     record: JournalRecord, *, run_month: date, attempt_id: str,
     batch_id: str, prior_batch_id: str, source_cursor: str,

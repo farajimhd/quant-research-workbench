@@ -6,7 +6,7 @@ import pytest
 
 from src.trading_runtime.arte_journal_projection import (
     broker_fill_batch, broker_fill_details, commission_revision_batch,
-    order_command_batch, strategy_signal_batch,
+    order_command_batch, project_journal_record, strategy_signal_batch,
 )
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import (
@@ -15,11 +15,38 @@ from src.trading_runtime.arte_journal_writer import (
 from src.trading_runtime.ibkr_client import _execution
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.domain import CommissionEvent
+from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.signals import StrategySignal
 from tests.test_arte_journal_writer import MemoryClient
 
 
 AT = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+
+
+def test_shared_record_projection_is_typed_and_rejects_unknown_payloads() -> None:
+    record = JournalRecord(
+        "00000000-0000-0000-0000-000000000013", "live:DU1", 1,
+        AT, AT, "lifecycle", "run", "live:DU1", "",
+        {"status": "running", "config": {"mode": "live"}},
+    )
+    identity = dict(
+        run_month=date(2026, 8, 1),
+        attempt_id="00000000-0000-0000-0000-000000000011",
+        batch_id="00000000-0000-0000-0000-000000000012",
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        source_cursor="start",
+    )
+    batch = project_journal_record(
+        record, **identity, expected_config={"mode": "live"})
+    assert batch.events[0]["record_id"] == record.record_id
+    assert batch.run_transitions[0]["status"] == "running"
+    assert dict(_sealed_families(batch))["trading_run_transition_v1"]
+    with pytest.raises(ValueError, match="lacks a typed projection"):
+        project_journal_record(replace(
+            record, category="configuration", entity_type="opaque",
+            payload={"unmodeled": {"nested": True}}), **identity)
+    with pytest.raises(ValueError, match="pinned typed configuration"):
+        project_journal_record(record, **identity)
 
 
 def test_simple_order_command_preserves_every_broker_instruction() -> None:
