@@ -33,6 +33,13 @@ if TYPE_CHECKING:
 
 
 _CONTRACTS = {table.name: table for table in TABLES}
+
+
+def _without_text_prefix(value: str) -> str:
+    """Ignore whitespace and UTF-8 BOMs when checking for opaque JSON text."""
+    return re.sub(r"^[\s\ufeff]+", "", value)
+
+
 _FAMILIES = (
     ("trading_event_v1", "events", "event_count", "event_hash"),
     ("trading_strategy_assignment_command_v1", "assignment_commands",
@@ -205,7 +212,7 @@ class TypedJournalBatch:
         if (not isinstance(self.source_cursor, str) or not self.source_cursor
                 or self.status not in {"running", "completed", "stopped", "failed"}):
             raise ValueError("Journal batch requires a source cursor and valid status")
-        if self.source_cursor.lstrip().startswith(("{", "[")):
+        if _without_text_prefix(self.source_cursor).startswith(("{", "[")):
             raise ValueError("Journal source cursor requires normalized typed fields, not JSON")
         for value in (self.attempt_id, self.batch_id, self.prior_batch_id):
             UUID(value)
@@ -746,7 +753,7 @@ def _canonical_typed_content(
                 raise ValueError(f"{name}.{column} is not a string")
             # A String column is not an escape hatch for an unmodelled JSON
             # object or array. JSONEachRow below is only the wire format.
-            candidate = value.lstrip()
+            candidate = _without_text_prefix(value)
             if candidate.startswith(("{", "[")):
                 try:
                     decoded = json.loads(candidate)
@@ -1238,6 +1245,9 @@ def load_committed_prefix(client: Any, run_id: str) -> CommittedPrefix | None:
     prior_status = "running"
     batch_ids: list[str] = []
     for commit in commits:
+        cursor = commit["source_cursor"]
+        if not isinstance(cursor, str) or not cursor or _without_text_prefix(cursor).startswith(("{", "[")):
+            raise RuntimeError("Typed journal commit has an opaque source cursor")
         batch_id = str(UUID(str(commit["batch_id"])))
         if (str(commit["run_id"]) != run_id
                 or str(UUID(str(commit["prior_batch_id"]))) != prior_id

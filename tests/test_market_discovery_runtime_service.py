@@ -7,6 +7,21 @@ from src.backend.market_discovery_runtime_service import MarketDiscoveryRuntimeC
 
 
 class MarketDiscoveryRuntimeCoordinatorTests(unittest.TestCase):
+    def test_typed_delivery_mode_fails_before_source_checkpoint_or_submission(self) -> None:
+        calls = []
+        runtime = MarketDiscoveryRuntimeCoordinator(
+            health_loader=lambda: calls.append("health") or {},
+            configuration_loader=lambda: calls.append("configuration") or {},
+            refresh=lambda: calls.append("source") or {},
+        )
+        with patch.dict("os.environ", {"TRADING_SIGNAL_DELIVERY_AUTHORITY": "typed"}):
+            runtime.start()
+            self.assertEqual(runtime.snapshot()["state"], "degraded")
+            self.assertFalse(runtime.snapshot()["running"])
+            with self.assertRaisesRegex(RuntimeError, "refusing SQLite fallback"):
+                runtime.refresh_once()
+        self.assertEqual(calls, [])
+
     def test_active_market_refreshes_approved_discovery(self) -> None:
         calls: list[bool] = []
         runtime = MarketDiscoveryRuntimeCoordinator(

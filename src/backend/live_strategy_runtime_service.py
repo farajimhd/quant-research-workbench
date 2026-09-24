@@ -70,10 +70,15 @@ class LiveStrategyRuntimeSupervisor:
         value = os.environ.get("TRADING_STRATEGY_RUNTIME_MODE", "paper").strip().lower()
         return value if value in {"paper", "live"} else "disabled"
 
+    def _typed_delivery_requested(self) -> bool:
+        return (self._typed_assignment_admission is not None or
+                os.environ.get("TRADING_SIGNAL_DELIVERY_AUTHORITY", "sqlite").strip().lower()
+                != "sqlite")
+
     def start(self) -> None:
         # This bounded lane covers incremental assignment admission only.
         # Initial assignments and activation recovery are still SQLite-owned.
-        if self._typed_assignment_admission is not None:
+        if self._typed_delivery_requested():
             with self._lock:
                 self._status.update({"running": False, "state": "degraded",
                                      "last_error": "Typed live cutover is incomplete"})
@@ -111,6 +116,8 @@ class LiveStrategyRuntimeSupervisor:
             self._status.update({"running": False, "state": "stopped"})
 
     def submit(self, deliveries: list[dict[str, Any]]) -> int:
+        if self._typed_delivery_requested():
+            raise RuntimeError("Typed live signal delivery cutover is incomplete; refusing SQLite fallback")
         accepted = 0
         changed = False
         for delivery in deliveries:
@@ -147,6 +154,8 @@ class LiveStrategyRuntimeSupervisor:
         return accepted
 
     def submit_market_rows(self, rows: list[dict[str, Any]], *, as_of: Any) -> int:
+        if self._typed_delivery_requested():
+            raise RuntimeError("Typed live market delivery cutover is incomplete")
         with self._lock:
             activations = list(self._activations.values())
         by_ticker: dict[str, list[dict[str, Any]]] = {}

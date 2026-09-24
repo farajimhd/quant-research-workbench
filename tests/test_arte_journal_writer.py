@@ -87,7 +87,10 @@ def test_typed_float_hash_accepts_integral_json_number_from_clickhouse() -> None
         stored_utc=True) == canonical
 
 
-@pytest.mark.parametrize("encoded", ['{"nested":1}', '  ["unmodelled"]'])
+@pytest.mark.parametrize("encoded", [
+    '{"nested":1}', '  ["unmodelled"]', '\ufeff{"nested":1}',
+    ' \ufeff ["unmodelled"]',
+])
 def test_typed_journal_rejects_json_hidden_in_string_column(encoded: str) -> None:
     source = {key: value for key, value in batch().events[0].items()
               if key != "content_hash"}
@@ -143,6 +146,8 @@ def batch() -> TypedJournalBatch:
 def test_opaque_backtest_cursor_is_rejected_before_queue_submission() -> None:
     with pytest.raises(ValueError, match="normalized typed fields"):
         replace(batch(), source_cursor='{"market":{"boundary_ms":100},"frame":{}}')
+    with pytest.raises(ValueError, match="normalized typed fields"):
+        replace(batch(), source_cursor=' \ufeff {"market":{"boundary_ms":100}}')
 
 
 def captured() -> CapturedPortfolioSnapshot:
@@ -529,6 +534,14 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     assert len(client.selects) == 42
     assert prefix is not None
     assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
+
+
+def test_cold_prefix_rejects_opaque_committed_source_cursor() -> None:
+    client = MemoryClient()
+    publish_typed_batch(client, batch())
+    client.tables["trading_commit_v1"][0]["source_cursor"] = '\ufeff {"hidden":1}'
+    with pytest.raises(RuntimeError, match="opaque source cursor"):
+        load_committed_prefix(client, RUN)
 
 
 def test_assignment_command_shared_family_cold_prefix_readback() -> None:

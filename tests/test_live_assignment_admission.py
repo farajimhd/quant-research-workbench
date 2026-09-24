@@ -141,5 +141,28 @@ def test_injected_lane_keeps_supervisor_disabled_before_sqlite_hydration() -> No
         assert supervisor.snapshot()["state"] == "degraded"
         hydrate.assert_not_called()
         assert not lane._thread.is_alive()
+        with patch("src.backend.live_strategy_runtime_service.trading_journal") as sqlite:
+            with pytest.raises(RuntimeError, match="refusing SQLite fallback"):
+                supervisor.submit([{"run_plan_id": "plan-1", "ticker": "ABC"}])
+            with pytest.raises(RuntimeError, match="market delivery cutover"):
+                supervisor.submit_market_rows([{"ticker": "ABC"}], as_of="2026-08-18T08:00:00Z")
+            sqlite.assert_not_called()
+        assert supervisor._queue.empty()
+        assert supervisor._activations == {}
     finally:
         lane.close()
+
+
+def test_typed_delivery_authority_cannot_fall_back_without_injected_lane() -> None:
+    supervisor = LiveStrategyRuntimeSupervisor()
+    with patch.dict("os.environ", {"TRADING_SIGNAL_DELIVERY_AUTHORITY": "typed"}), \
+         patch.object(supervisor, "_hydrate_activations") as hydrate, \
+         patch("src.backend.live_strategy_runtime_service.trading_journal") as sqlite:
+        supervisor.start()
+        assert supervisor.snapshot()["state"] == "degraded"
+        with pytest.raises(RuntimeError, match="refusing SQLite fallback"):
+            supervisor.submit([{"run_plan_id": "plan-1", "ticker": "ABC"}])
+        with pytest.raises(RuntimeError, match="market delivery cutover"):
+            supervisor.submit_market_rows([{"ticker": "ABC"}], as_of="2026-08-18T08:00:00Z")
+        hydrate.assert_not_called()
+        sqlite.assert_not_called()

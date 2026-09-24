@@ -33,6 +33,15 @@ class MarketDiscoveryRuntimeCoordinator:
         }
 
     def start(self) -> None:
+        if os.environ.get("TRADING_SIGNAL_DELIVERY_AUTHORITY", "sqlite").strip().lower() != "sqlite":
+            # Signal Stream currently advances its SQLite checkpoint before
+            # returning an ephemeral new_occurrences list. Until a typed
+            # occurrence replay cursor owns that source, no typed delivery
+            # may enter this producer cycle.
+            with self._lock:
+                self._status.update({"running": False, "state": "degraded",
+                                     "last_error": "Typed signal delivery replay authority is unavailable"})
+            return
         if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("MARKET_DISCOVERY_RUNTIME_ENABLED", "1") == "0":
             with self._lock:
                 self._status.update({"running": False, "state": "disabled"})
@@ -58,6 +67,8 @@ class MarketDiscoveryRuntimeCoordinator:
             return dict(self._status)
 
     def refresh_once(self) -> float:
+        if os.environ.get("TRADING_SIGNAL_DELIVERY_AUTHORITY", "sqlite").strip().lower() != "sqlite":
+            raise RuntimeError("Typed signal delivery replay authority is unavailable; refusing SQLite fallback")
         health = (self._health_loader or self._default_health_loader)()
         configuration = (self._configuration_loader or self._default_configuration_loader)()
         discovery = dict(configuration.get("market_discovery") or {})
