@@ -3,7 +3,7 @@ from src.trading_runtime.arte_journal_schema import TABLES, schema_ddl
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 4
+    assert len(statements) == len(TABLES) == 5
     for table, statement in zip(TABLES, statements):
         assert f"CREATE TABLE IF NOT EXISTS arte.{table.name}" in statement
         assert "ENGINE = MergeTree" in statement
