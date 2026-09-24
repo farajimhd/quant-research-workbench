@@ -4753,7 +4753,11 @@ class ReplayRunController:
             "sequence": frame.sequence,
         }
         self._processed_frames += 1
-        await asyncio.sleep(0)
+        # Fixed Backtest can evaluate millions of completed 100 ms frames.
+        # A scheduler handoff for each frame dominates cheap no-order
+        # decisions; retain bounded cancellation/UI fairness instead.
+        if self.definition.mode != RunMode.BACKTEST or self._processed_frames % 64 == 0:
+            await asyncio.sleep(0)
         return True
 
     async def _process_strategy_market_event(self, event: MarketEvent) -> bool:
