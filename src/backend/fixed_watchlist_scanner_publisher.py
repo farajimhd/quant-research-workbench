@@ -10,7 +10,7 @@ from typing import Any, Mapping
 import re
 
 from src.backend.fixed_watchlist_scanner_sidecar import (
-    load_scanner_boundary, operator_publication_plan,
+    load_scanner_boundary, load_scanner_boundaries_batch, operator_publication_plan,
 )
 
 
@@ -113,6 +113,20 @@ def load_attested_scanner_boundary(
     _assert_committed(keeper, boundary_id, boundary["content_hash"])
     scanner_sidecar_storage_preflight(client)
     return boundary, rows
+
+
+def load_attested_scanner_boundaries_batch(
+    client: Any, keeper: Any, refs: tuple[tuple[str, str, datetime], ...], *,
+    market_plan_token: str,
+) -> tuple[tuple[dict[str, Any], tuple[dict[str, Any], ...]], ...]:
+    """Batch CH I/O while preserving independent Keeper proof per boundary."""
+    scanner_sidecar_storage_preflight(client)
+    results = load_scanner_boundaries_batch(
+        client, refs, market_plan_token=market_plan_token)
+    for (boundary_id, _revision, _at), (boundary, _rows_for_boundary) in zip(refs, results):
+        _assert_committed(keeper, boundary_id, boundary["content_hash"])
+    scanner_sidecar_storage_preflight(client)
+    return results
 
 
 def publish_operator_scanner_boundary(

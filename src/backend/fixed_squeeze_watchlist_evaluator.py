@@ -13,7 +13,7 @@ from hashlib import sha256
 import json
 from typing import Any, Mapping
 
-from src.backend.fixed_watchlist_scanner_publisher import load_attested_scanner_boundary
+from src.backend.fixed_watchlist_scanner_publisher import load_attested_scanner_boundaries_batch
 from src.backend.fixed_watchlist_transitions import (
     CompletedMembership, MembershipCandidate, MembershipTransition,
     reduce_completed_memberships, universe_fingerprint,
@@ -154,25 +154,35 @@ def evaluate_attested_squeeze_watchlist(
         if not (start <= at < end and any(left <= at < right for left, right in windows)):
             raise ValueError("fixed squeeze Watchlist boundary is outside pinned session")
         previous_at = at
-        boundary, rows = load_attested_scanner_boundary(
-            client, keeper, ref.boundary_id, market_plan_token=market_plan_token,
-            source_revision_token=ref.source_revision_token, boundary_at=at,
+    # At the full tradable universe, even eight one-second snapshots are a
+    # substantial bounded row set. Keep the CH batch below the memory budget.
+    for offset in range(0, len(refs), 8):
+        chunk = refs[offset:offset + 8]
+        loaded = load_attested_scanner_boundaries_batch(
+            client, keeper,
+            tuple((ref.boundary_id, ref.source_revision_token,
+                   ref.boundary_at.astimezone(timezone.utc)) for ref in chunk),
+            market_plan_token=market_plan_token,
         )
-        tickers = tuple(sorted(row["ticker"] for row in rows))
-        ranks = {int(row["liquidity_rank"]) for row in rows}
-        if (tickers != expected_tickers or len(rows) != boundary["market_row_count"]
-                or ranks != set(range(1, len(rows) + 1))):
-            raise ValueError("fixed squeeze Watchlist scanner universe is incomplete")
-        matched = [row for row in rows if _matches(row)]
-        # QMD Watchlist ranking is score DESC, then ticker ASC. The global
-        # scanner rank has additional tie-breaks and is not this plan's rank.
-        matched.sort(key=lambda row: (-Decimal(str(row["liquidity_score"])), row["ticker"]))
-        candidates = tuple(MembershipCandidate(
-            row["ticker"], rank, Decimal(str(row["liquidity_score"])), "rules passed",
-        ) for rank, row in enumerate(matched[:10], 1))
-        snapshots.append(CompletedMembership(
-            "squeeze-tradable-candidates", plan_hash, market_plan_token,
-            query_sha256, fingerprint, expected_tickers, at, candidates,
-        ))
+        if len(loaded) != len(chunk):
+            raise ValueError("fixed squeeze Watchlist batch is incomplete")
+        for ref, (boundary, rows) in zip(chunk, loaded):
+            at = ref.boundary_at.astimezone(timezone.utc)
+            tickers = tuple(sorted(row["ticker"] for row in rows))
+            ranks = {int(row["liquidity_rank"]) for row in rows}
+            if (tickers != expected_tickers or len(rows) != boundary["market_row_count"]
+                    or ranks != set(range(1, len(rows) + 1))):
+                raise ValueError("fixed squeeze Watchlist scanner universe is incomplete")
+            matched = [row for row in rows if _matches(row)]
+            # QMD Watchlist ranking is score DESC, then ticker ASC. The global
+            # scanner rank has additional tie-breaks and is not this plan's rank.
+            matched.sort(key=lambda row: (-Decimal(str(row["liquidity_score"])), row["ticker"]))
+            candidates = tuple(MembershipCandidate(
+                row["ticker"], rank, Decimal(str(row["liquidity_score"])), "rules passed",
+            ) for rank, row in enumerate(matched[:10], 1))
+            snapshots.append(CompletedMembership(
+                "squeeze-tradable-candidates", plan_hash, market_plan_token,
+                query_sha256, fingerprint, expected_tickers, at, candidates,
+            ))
     completed = tuple(snapshots)
     return completed, reduce_completed_memberships(completed, expected_tickers=expected_tickers)

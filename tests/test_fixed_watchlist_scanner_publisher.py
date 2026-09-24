@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from src.backend.fixed_watchlist_scanner_publisher import (
-    load_attested_scanner_boundary, publish_operator_scanner_boundary,
+    load_attested_scanner_boundary, load_attested_scanner_boundaries_batch,
+    publish_operator_scanner_boundary,
     scanner_sidecar_storage_preflight,
 )
 from src.backend.fixed_watchlist_scanner_sidecar import (
@@ -219,3 +220,18 @@ def test_attested_reader_rejects_tampered_or_missing_keeper_proof():
     del keeper.nodes[path]
     with pytest.raises(RuntimeError, match="unavailable"):
         load_attested_scanner_boundary(storage, keeper, boundary["boundary_id"], **identity)
+
+
+def test_batch_reader_preserves_seal_and_keeper_proof():
+    storage, keeper = FakeStorage(), FakeKeeper()
+    boundary = publish_operator_scanner_boundary(
+        storage, keeper, snapshot(), market_plan_token="a" * 64)
+    refs = ((boundary["boundary_id"], boundary["source_revision_token"], AT),)
+    result = load_attested_scanner_boundaries_batch(
+        storage, keeper, refs, market_plan_token="a" * 64)
+    assert result[0][0] == boundary
+    assert result[0][1][0]["ticker"] == "AAPL"
+    storage.corrupt_readback = True
+    with pytest.raises(RuntimeError, match="content or full-scope"):
+        load_attested_scanner_boundaries_batch(
+            storage, keeper, refs, market_plan_token="a" * 64)

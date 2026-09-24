@@ -34,16 +34,18 @@ def row(ticker, rank, *, score="60"):
 
 
 def fake_boundaries(monkeypatch, frames):
-    def load(_client, _keeper, boundary_id, *, market_plan_token,
-             source_revision_token, boundary_at):
+    def load(_client, _keeper, refs, *, market_plan_token):
         assert market_plan_token == "a" * 64
-        assert source_revision_token == "source"
-        index = int(boundary_id)
-        assert boundary_at == AT + timedelta(seconds=index)
-        rows = frames[index]
-        return {"market_row_count": len(rows)}, tuple(rows)
+        result = []
+        for boundary_id, source_revision_token, boundary_at in refs:
+            assert source_revision_token == "source"
+            index = int(boundary_id)
+            assert boundary_at == AT + timedelta(seconds=index)
+            rows = frames[index]
+            result.append(({"market_row_count": len(rows)}, tuple(rows)))
+        return tuple(result)
     monkeypatch.setattr(
-        "src.backend.fixed_squeeze_watchlist_evaluator.load_attested_scanner_boundary", load)
+        "src.backend.fixed_squeeze_watchlist_evaluator.load_attested_scanner_boundaries_batch", load)
 
 
 def refs(count):

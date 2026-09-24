@@ -247,6 +247,18 @@ def load_scanner_boundary(
     rows = list(client.iter_json_each_row(
         "SELECT * FROM arte.qmd_scanner_symbol_v1 WHERE boundary_id='"
         + boundary_id + "' ORDER BY ticker FORMAT JSONEachRow"))
+    return _validate_loaded_boundary(
+        boundaries, rows, boundary_id=boundary_id,
+        market_plan_token=market_plan_token,
+        source_revision_token=source_revision_token, boundary_at=boundary_at,
+    )
+
+
+def _validate_loaded_boundary(
+    boundaries: list[dict[str, Any]], rows: list[dict[str, Any]], *,
+    boundary_id: str, market_plan_token: str, source_revision_token: str,
+    boundary_at: datetime,
+) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
     if len(boundaries) != 1 or any(row.get("boundary_id") != boundary_id for row in rows):
         raise RuntimeError("Scanner sidecar boundary is missing or ambiguous")
     boundary = dict(boundaries[0])
@@ -273,3 +285,40 @@ def load_scanner_boundary(
             or _hash(rows) != boundary["market_row_hash"]):
         raise RuntimeError("Scanner sidecar content or full-scope coverage differs")
     return boundary, tuple(rows)
+
+
+def load_scanner_boundaries_batch(
+    client: Any, refs: tuple[tuple[str, str, datetime], ...], *,
+    market_plan_token: str,
+) -> tuple[tuple[dict[str, Any], tuple[dict[str, Any], ...]], ...]:
+    """Two bounded CH reads for a contiguous batch; validate every original seal."""
+    if (not refs or len(refs) > 8 or _HEX.fullmatch(market_plan_token) is None
+            or any(_HEX.fullmatch(boundary_id) is None or not revision
+                   or at.tzinfo is None for boundary_id, revision, at in refs)
+            or len({boundary_id for boundary_id, _, _ in refs}) != len(refs)):
+        raise ValueError("Scanner batch identities are invalid")
+    ids = ",".join(f"'{boundary_id}'" for boundary_id, _, _ in refs)
+    boundaries = list(client.iter_json_each_row(
+        "SELECT * FROM arte.qmd_scanner_boundary_v1 WHERE boundary_id IN ("
+        + ids + ") FORMAT JSONEachRow"))
+    rows = list(client.iter_json_each_row(
+        "SELECT * FROM arte.qmd_scanner_symbol_v1 WHERE boundary_id IN ("
+        + ids + ") ORDER BY boundary_id,ticker FORMAT JSONEachRow"))
+    by_boundary: dict[str, list[dict[str, Any]]] = {}
+    by_symbol: dict[str, list[dict[str, Any]]] = {}
+    requested = {boundary_id for boundary_id, _, _ in refs}
+    for boundary in boundaries:
+        boundary_id = boundary.get("boundary_id")
+        if boundary_id not in requested:
+            raise RuntimeError("Scanner batch contains an unexpected boundary")
+        by_boundary.setdefault(boundary_id, []).append(boundary)
+    for row in rows:
+        boundary_id = row.get("boundary_id")
+        if boundary_id not in requested:
+            raise RuntimeError("Scanner batch contains an unexpected symbol")
+        by_symbol.setdefault(boundary_id, []).append(row)
+    return tuple(_validate_loaded_boundary(
+        by_boundary.get(boundary_id, []), by_symbol.get(boundary_id, []),
+        boundary_id=boundary_id, market_plan_token=market_plan_token,
+        source_revision_token=revision, boundary_at=at,
+    ) for boundary_id, revision, at in refs)
