@@ -78,6 +78,7 @@ def test_snapshot_commit_fences_exact_typed_children_and_retries() -> None:
     loaded = load_portfolio_snapshot(client, run_id="live-run", account_id="account-id",
                                      state_revision=1)
     assert loaded is not None and loaded["state_hash"] == digest
+    assert loaded["snapshot_at"] == "2026-08-18T12:00:00+00:00"
     assert load_latest_portfolio_snapshot(
         client, run_id="live-run", account_id="account-id")["state_hash"] == digest
     assert len(loaded["families"]["trading_portfolio_disabled_strategy_v1"]) == 2
@@ -155,8 +156,11 @@ def test_latest_snapshot_rejects_stale_publication_and_corrupt_head() -> None:
 
 def test_unfenced_partial_snapshot_is_invisible_and_retry_completes() -> None:
     client = SnapshotClient()
+    prepared = prepare_portfolio_snapshot(
+        run_id="live-run", account_id="account-id", state_revision=1,
+        snapshot_at=datetime(2026, 8, 18, 12, tzinfo=timezone.utc), state=_state())
     partial = _snapshot_rows("live-run", "account-id", 1, "2026-08-01",
-                             project_portfolio_snapshot("account-id", _state()))
+                             prepared.rows)
     client.tables["trading_portfolio_snapshot_v1"] = [partial["trading_portfolio_snapshot_v1"][0]]
     assert load_latest_portfolio_snapshot(client, run_id="live-run", account_id="account-id") is None
     digest = _publish(client)

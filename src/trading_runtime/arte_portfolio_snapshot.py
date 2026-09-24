@@ -515,11 +515,17 @@ def prepare_portfolio_snapshot(
     from dataclasses import fields as dataclass_fields
 
     projected = project_portfolio_snapshot(account_id, state)
+    capture_time = snapshot_at.astimezone(timezone.utc)
+    observed_at = projected.account["observed_at"]
+    if (observed_at is not None
+            and datetime.fromisoformat(observed_at) > capture_time):
+        raise ValueError("Portfolio snapshot broker observation is after capture")
     sealed_fields: dict[str, Any] = {}
     for field in dataclass_fields(PortfolioSnapshotRows):
         value = getattr(projected, field.name)
         sealed_fields[field.name] = (
-            MappingProxyType(dict(value)) if field.name == "account"
+            MappingProxyType({**value, "snapshot_at": capture_time.isoformat(timespec="microseconds")})
+            if field.name == "account"
             else tuple(MappingProxyType(dict(row)) for row in value)
         )
     sealed = PortfolioSnapshotRows(**sealed_fields)
@@ -620,6 +626,16 @@ def load_portfolio_snapshot(
     if _state_hash(families) != str(fence["state_hash"]):
         raise RuntimeError("Portfolio snapshot content differs from its fence")
     root = families["trading_portfolio_snapshot_v1"][0]
+    snapshot_at = root.get("snapshot_at")
+    if snapshot_at is None:
+        raise RuntimeError("Portfolio snapshot lacks its causal capture time")
+    captured = datetime.fromisoformat(_aware_utc(str(snapshot_at)))
+    if (captured.tzinfo is None
+            or captured.astimezone(timezone.utc).date().replace(day=1).isoformat()
+            != root["snapshot_month"]
+            or (root["observed_at"] is not None
+                and datetime.fromisoformat(_aware_utc(str(root["observed_at"]))) > captured)):
+        raise RuntimeError("Portfolio snapshot capture time is inconsistent")
     if any(row["snapshot_month"] != fence["snapshot_month"]
            for rows in families.values() for row in rows):
         raise RuntimeError("Portfolio snapshot month differs from its fence")
@@ -631,7 +647,8 @@ def load_portfolio_snapshot(
         from dataclasses import asdict
         policy = {**asdict(selected), "identity": selected.identity}
     return {"state_hash": str(fence["state_hash"]),
-            "state_revision": state_revision, "state": _restore_state(families, policy),
+            "state_revision": state_revision, "snapshot_at": captured.isoformat(),
+            "state": _restore_state(families, policy),
             "families": families}
 
 

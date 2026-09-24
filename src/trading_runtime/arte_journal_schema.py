@@ -96,6 +96,7 @@ TABLES = (
          ("account_id", "String"), ("state_revision", "UInt64"),
          ("account_key", "String"), ("control_mode", "LowCardinality(String)"),
          ("sync_state", "LowCardinality(String)"), ("snapshot_id", "String"),
+         ("snapshot_at", "Nullable(DateTime64(6, 'UTC'))"),
          ("observed_at", "Nullable(DateTime64(6, 'UTC'))"),
          ("stale_reason", "String"),
          ("peak_net_liquidation", "Decimal(38, 18)"),
@@ -1057,6 +1058,15 @@ def portfolio_snapshot_schema_upgrade_ddl() -> tuple[str, ...]:
     return tuple(table.ddl() for table in TABLES
                  if table.name.startswith("trading_portfolio_")
                  and table.name not in policy_names)
+
+
+def portfolio_snapshot_timestamp_upgrade_ddl() -> str:
+    """Operator-only capture time; old unanchored revisions fail recovery."""
+    return (
+        "ALTER TABLE arte.trading_portfolio_snapshot_v1 "
+        "ADD COLUMN IF NOT EXISTS snapshot_at Nullable(DateTime64(6, 'UTC')) "
+        "AFTER snapshot_id"
+    )
 
 
 def batch_lookup_index_upgrade_ddl() -> tuple[str, ...]:

@@ -75,6 +75,7 @@ def recover_portfolio_engine_state(
                                            state_revision=revision)
         if snapshot is None or snapshot["state_revision"] != revision:
             raise RuntimeError(f"Portfolio recovery lacks account revision: {account_id}")
+        _time(snapshot["snapshot_at"], cutoff_at=cutoff_at)
         root = snapshot["families"]["trading_portfolio_snapshot_v1"]
         if (len(root) != 1 or root[0]["run_id"] != run_id
                 or root[0]["account_id"] != account_id

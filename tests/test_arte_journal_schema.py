@@ -7,6 +7,7 @@ from src.trading_runtime.arte_journal_schema import (
     batch_lookup_index_materialize_ddl,
     intent_decision_upgrade_ddl,
     portfolio_policy_schema_upgrade_ddl, portfolio_snapshot_schema_upgrade_ddl,
+    portfolio_snapshot_timestamp_upgrade_ddl,
     POLICY_ALLOWED_FIELDS, POLICY_ALLOWED_TABLES,
     POLICY_NUMERIC_FIELDS, POLICY_INTEGER_FIELDS, POLICY_BOOLEAN_FIELDS,
     intent_schema_upgrade_ddl, order_context_upgrade_ddl,
@@ -98,6 +99,7 @@ def test_portfolio_snapshot_is_normalized_and_fenced() -> None:
     names = {sql.split("arte.", 1)[1].split(" ", 1)[0] for sql in statements}
     assert "trading_portfolio_snapshot_commit_v1" in names
     assert "trading_portfolio_request_reason_v1" in names
+    assert "snapshot_at Nullable(DateTime64(6, 'UTC'))" in portfolio_snapshot_timestamp_upgrade_ddl()
     assert not any("payload_json" in sql or "blob" in sql for sql in statements)
 
 

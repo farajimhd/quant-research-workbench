@@ -17,13 +17,15 @@ from tests.test_arte_portfolio_snapshot_persistence import SnapshotClient, _stat
 AT = datetime(2026, 8, 18, 12, tzinfo=timezone.utc)
 
 
-def _client(monkeypatch, *, sync_state: str = "synchronized"):
+def _client(monkeypatch, *, sync_state: str = "synchronized",
+            observed_at: datetime = AT, snapshot_at: datetime = AT):
     client = SnapshotClient()
     monkeypatch.setattr(recovery, "load_typed_run_context",
                         lambda _client, run_id: {"account_ids": ("account-id",)}
                         if run_id == "live-run" else {"account_ids": ()})
     state = _state()
     state["sync_state"] = sync_state
+    state["observed_at"] = observed_at
     state["reservations"] = [asdict(PortfolioReservation(
         reservation_id="reservation-1", decision_id="decision-1", intent_id="intent-1",
         account_key="account-key", account_id="account-id", strategy_id="strategy-a",
@@ -39,7 +41,7 @@ def _client(monkeypatch, *, sync_state: str = "synchronized"):
         realized_pnl=0, source="fill", updated_at=AT,
     ))]
     publish_portfolio_snapshot(client, run_id="live-run", account_id="account-id",
-                               state_revision=7, snapshot_at=AT, state=state)
+                               state_revision=7, snapshot_at=snapshot_at, state=state)
     profile = profiles_for_runtime(("account-id",), mode="live")[0]
     profile = type(profile)(**{**asdict(profile), "account_key": "account-key",
                                "policy": profile.policy})
@@ -93,6 +95,13 @@ def test_future_domain_timestamp_and_missing_pinned_account_fail_closed(monkeypa
         recovery.recover_portfolio_engine_state(
             client, run_id="live-run", profiles=(profile,),
             state_revisions={"account-id": 7}, cutoff_at=AT - timedelta(seconds=1))
+    delayed_client, delayed_profile = _client(
+        monkeypatch, observed_at=AT - timedelta(seconds=1), snapshot_at=AT)
+    with pytest.raises(ValueError, match="beyond its cutoff"):
+        recovery.recover_portfolio_engine_state(
+            delayed_client, run_id="live-run", profiles=(delayed_profile,),
+            state_revisions={"account-id": 7},
+            cutoff_at=AT - timedelta(milliseconds=500))
     monkeypatch.setattr(recovery, "load_typed_run_context",
                         lambda _client, _run_id: {"account_ids": ("account-id", "other")})
     with pytest.raises(RuntimeError, match="pinned run accounts"):
