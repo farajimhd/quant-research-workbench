@@ -10479,7 +10479,7 @@ def backtest_preflight(
                 )
             ),
             "evidence": (
-                "The complete certified 100ms bar universe is scanned for causal first occurrences; only proven candidates can narrow later execution reads."
+                "The complete certified 100ms bar universe is scanned for causal episode starts; only proven candidates can narrow later execution reads."
                 if source_native_ready and execution_interval.kind == "fixed" and bar_signals is not None
                 else "Persisted Signal Stream occurrences define the bounded ticker and event-time population; the controller loads causal market and indicator frames only for those tickers."
                 if source_native_ready
@@ -10518,22 +10518,20 @@ def backtest_preflight(
             "required": True,
         }
     )
+    # One visible required-check contract controls admission. The fixed and
+    # event execution guards above remain blocked until each runnable path is
+    # accepted; a second, contradictory interval veto would permanently hide
+    # readiness even after those guards are deliberately lifted.
     ready = bool(
         base["strategy_run_ready"]
-        and signal_check["status"] == "ready"
-        and version_check["status"] == "ready"
-        and bindings
-        and work_ready
-        and storage_ready
         and sessions
-        and (execution_interval.kind == "events" or bool(market_data_plan))
-        and execution_interval.kind != "fixed"
-        and execution_interval.kind != "events"
         and 1_000 <= initial_cash <= 1_000_000_000
+        and all(row.get("status") == "ready" for row in checks if row.get("required"))
     )
     return {
         **base,
         "checks": checks,
+        "ready": ready,
         "strategy_run_ready": ready,
         "configuration_revision_id": approved.get("revision_id", ""),
         "configuration_revision": approved.get("revision", 0),

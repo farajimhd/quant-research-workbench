@@ -2690,6 +2690,7 @@ class BacktestPreflightTests(unittest.TestCase):
             )
 
         self.assertFalse(payload["strategy_run_ready"])
+        self.assertEqual(payload["ready"], payload["strategy_run_ready"])
         self.assertEqual(payload["configuration_revision_id"], "configuration-test")
         self.assertEqual(payload["experiment_start_time"], "09:30:00")
         self.assertEqual(payload["experiment_end_time"], "10:15:00")
