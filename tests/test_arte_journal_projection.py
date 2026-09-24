@@ -3,7 +3,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from src.trading_runtime.arte_journal_projection import broker_fill_details
+from src.trading_runtime.arte_journal_projection import broker_fill_batch, broker_fill_details
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch, _sealed_families
 from src.trading_runtime.ibkr_client import _execution
@@ -92,3 +92,24 @@ def test_fill_and_commission_form_a_typed_committable_batch() -> None:
     sealed = dict(_sealed_families(batch))
     assert len(sealed["trading_execution_v1"]) == 1
     assert len(sealed["trading_commission_v1"]) == 1
+
+
+def test_background_fill_batch_has_stable_ids_and_contiguous_sequences() -> None:
+    args = dict(
+        run_id="live:DU1", run_month=date(2026, 8, 1),
+        attempt_id="00000000-0000-0000-0000-000000000004",
+        batch_id="00000000-0000-0000-0000-000000000001",
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        first_sequence=7, source_cursor="broker-execution:e1",
+        status="running", received_at=AT,
+    )
+    first = broker_fill_batch(_execution(source(commission=1.25)), **args)
+    retried = broker_fill_batch(_execution(source(commission=1.25)), **args)
+    assert (first.first_sequence, first.last_sequence) == (7, 8)
+    assert [row["record_id"] for row in first.events] == [
+        row["record_id"] for row in retried.events
+    ]
+    assert _sealed_families(first) == _sealed_families(retried)
+    pending = broker_fill_batch(_execution(source()), **args)
+    assert (pending.first_sequence, pending.last_sequence) == (7, 7)
+    assert len(pending.commissions) == 0

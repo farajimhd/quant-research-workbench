@@ -7,10 +7,12 @@ versioned typed column or child family represents them.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
+from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.ibkr_client import _execution as parse_ibkr_execution
 from src.trading_runtime.ibkr_schema import Execution
 
@@ -99,3 +101,46 @@ def broker_fill_details(
             "realized_pnl": None, "source_event_time": at, "received_at": received,
         }
     return FillDetails(fill, commission)
+
+
+def broker_fill_batch(
+    execution: Execution, *, run_id: str, run_month: date, attempt_id: str,
+    batch_id: str, prior_batch_id: str, first_sequence: int,
+    source_cursor: str, status: str, received_at: datetime,
+    strategy_id: str = "", strategy_revision: int = 0,
+    setup: str = "", exit_reason: str = "",
+) -> TypedJournalBatch:
+    """Build one retry-stable fill batch on a background persistence lane."""
+    event_month = execution.trade_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+    identity = f"{run_id}:{batch_id}:{execution.execution_id}"
+    fill_id = str(uuid5(NAMESPACE_URL, identity + ":fill"))
+    fee_id = (str(uuid5(NAMESPACE_URL, identity + ":commission"))
+              if execution.commission is not None else None)
+    details = broker_fill_details(
+        execution, run_id=run_id, event_month=event_month, batch_id=batch_id,
+        execution_record_id=fill_id, commission_record_id=fee_id,
+        received_at=received_at, strategy_id=strategy_id,
+        strategy_revision=strategy_revision, setup=setup,
+        exit_reason=exit_reason,
+    )
+    common = {
+        "run_id": run_id, "event_month": event_month,
+        "attempt_id": attempt_id, "batch_id": batch_id,
+        "event_time": execution.trade_time.astimezone(timezone.utc).isoformat(),
+        "recorded_at": received_at.astimezone(timezone.utc).isoformat(),
+        "category": "execution", "entity_id": execution.execution_id,
+        "account_id": execution.account, "correlation_id": "", "causation_id": "",
+    }
+    events = [{**common, "record_id": fill_id, "sequence": first_sequence,
+               "entity_type": "fill"}]
+    if fee_id is not None:
+        events.append({**common, "record_id": fee_id,
+                       "sequence": first_sequence + 1,
+                       "entity_type": "commission"})
+    return TypedJournalBatch(
+        run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        first_sequence, first_sequence + len(events) - 1,
+        source_cursor, status, tuple(events),
+        executions=(details.execution,),
+        commissions=(details.commission,) if details.commission is not None else (),
+    )
