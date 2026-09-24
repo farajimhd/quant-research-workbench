@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+import asyncio
 
 import pytest
 
 from src.trading_runtime import arte_portfolio_recovery as recovery
 from src.trading_runtime.arte_portfolio_snapshot import publish_portfolio_snapshot
 from src.trading_runtime.portfolio import (
-    PortfolioAllocationLot, PortfolioReservation, PortfolioSyncState,
+    PortfolioAllocationLot, PortfolioManagementEngine, PortfolioReservation, PortfolioSyncState,
     profiles_for_runtime,
 )
 from tests.test_arte_portfolio_snapshot_persistence import SnapshotClient, _state
@@ -108,3 +109,29 @@ def test_future_domain_timestamp_and_missing_pinned_account_fail_closed(monkeypa
         recovery.recover_portfolio_engine_state(
             client, run_id="live-run", profiles=(profile,),
             state_revisions={"account-id": 7}, cutoff_at=AT)
+
+
+def test_engine_typed_seam_skips_sqlite_and_blocks_admission(monkeypatch) -> None:
+    client, profile = _client(monkeypatch)
+    recovered = recovery.recover_portfolio_engine_state(
+        client, run_id="live-run", profiles=(profile,),
+        state_revisions={"account-id": 7}, cutoff_at=AT)
+
+    class NoSQLite:
+        def __getattr__(self, name):
+            raise AssertionError(f"unexpected SQLite access: {name}")
+
+    engine = PortfolioManagementEngine(
+        (profile,), journal=NoSQLite(), run_id="live-run", strategy_id="strategy-a",
+        strategy_revision=1, typed_recovery=recovered)
+    assert engine.reservations == recovered.reservations
+    assert engine.allocations == recovered.allocations
+    assert engine.states["account-id"].sync_state == PortfolioSyncState.ENTRIES_BLOCKED
+    with pytest.raises(RuntimeError, match="durable admission writer"):
+        asyncio.run(engine.approve(None, account_id="account-id"))
+    with pytest.raises(RuntimeError, match="cannot overwrite SQLite"):
+        engine._persist_state(engine.states["account-id"])
+    with pytest.raises(ValueError, match="differs from the engine run"):
+        PortfolioManagementEngine(
+            (profile,), journal=NoSQLite(), run_id="different", strategy_id="strategy-a",
+            strategy_revision=1, typed_recovery=recovered)

@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from time import monotonic
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 from uuid import uuid4
 
 from src.request_context import causal_identity, normalize_request_identity
@@ -20,6 +20,9 @@ from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary, LiveO
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.order_management import OrderGroupSnapshot, OrderManagementState
 from src.trading_runtime.signals import StrategyIntent
+
+if TYPE_CHECKING:
+    from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
 
 
 ENTRY_ACTIONS = {"enter_long", "add_long", "enter_short", "add_short"}
@@ -362,6 +365,7 @@ class PortfolioManagementEngine:
         groups: list[PortfolioGroupPolicy] | tuple[PortfolioGroupPolicy, ...] = (),
         control_plane: TradingControlPlane | None = None,
         allocation_identity: str = "",
+        typed_recovery: PortfolioRecovery | None = None,
     ) -> None:
         if not profiles:
             raise ValueError("Portfolio management requires at least one account profile")
@@ -410,7 +414,24 @@ class PortfolioManagementEngine:
         }
         self._last_filled_by_reservation: dict[str, float] = {}
         self._active_admission_lease: dict[str, Any] | None = None
-        self._restore()
+        self._typed_recovery = typed_recovery is not None
+        if typed_recovery is None:
+            self._restore()
+        else:
+            from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
+
+            if (not isinstance(typed_recovery, PortfolioRecovery)
+                    or typed_recovery.run_id != run_id
+                    or set(typed_recovery.states) != set(self.states)
+                    or any(typed_recovery.states[account_id].profile != state.profile
+                           for account_id, state in self.states.items())):
+                raise ValueError("Typed portfolio recovery differs from the engine run or profiles")
+            self.states = dict(typed_recovery.states)
+            self.by_key = {state.profile.account_key: state for state in self.states.values()}
+            self.reservations = dict(typed_recovery.reservations)
+            self.allocations = dict(typed_recovery.allocations)
+            self.differences = dict(typed_recovery.differences)
+            self._last_filled_by_reservation = dict(typed_recovery.last_filled_by_reservation)
 
     def bind_control_plane(self, control_plane: TradingControlPlane) -> None:
         """Promote this engine's admission locks to shared account authorities."""
@@ -629,6 +650,8 @@ class PortfolioManagementEngine:
 
     @asynccontextmanager
     async def _admission_fence(self, account_id: str):
+        if self._typed_recovery:
+            raise RuntimeError("Typed portfolio recovery awaits a durable admission writer")
         state = self._state(account_id)
         self._refresh_operational_state(state)
         group_ids = sorted(
@@ -2005,6 +2028,8 @@ class PortfolioManagementEngine:
         return state
 
     def _record(self, entity_type: str, entity_id: str, account_id: str, payload: dict[str, Any]) -> None:
+        if self._typed_recovery:
+            raise RuntimeError("Typed portfolio recovery cannot append to the SQLite journal")
         self.journal.append(
             run_id=self.run_id,
             category="portfolio_management",
@@ -2015,6 +2040,8 @@ class PortfolioManagementEngine:
         )
 
     def _persist_state(self, state: PortfolioAccountState) -> None:
+        if self._typed_recovery:
+            raise RuntimeError("Typed portfolio recovery cannot overwrite SQLite state")
         self.journal.save_portfolio_state(
             state.profile.account_id,
             {
@@ -2135,6 +2162,8 @@ class PortfolioManagementEngine:
         return state.policy_override or state.profile.policy
 
     def _refresh_operational_state(self, state: PortfolioAccountState) -> None:
+        if self._typed_recovery:
+            raise RuntimeError("Typed portfolio recovery cannot read SQLite controls")
         payload = self.journal.portfolio_states().get(state.profile.account_id) or {}
         try:
             state.control_mode = PortfolioControlMode(

@@ -78,6 +78,8 @@ _FAMILIES = (
      "intent_slice_hash"),
     ("trading_backtest_cursor_v1", "backtest_cursors", "backtest_cursor_count",
      "backtest_cursor_hash"),
+    ("trading_backtest_progress_v1", "backtest_progress",
+     "backtest_progress_count", "backtest_progress_hash"),
 )
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 _EVENT_DETAILS = {
@@ -167,6 +169,7 @@ class TypedJournalBatch:
     intents: tuple[Mapping[str, Any], ...] = ()
     intent_slices: tuple[Mapping[str, Any], ...] = ()
     backtest_cursors: tuple[Mapping[str, Any], ...] = ()
+    backtest_progress: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.run_id or self.first_sequence < 1 or self.last_sequence < self.first_sequence:
@@ -222,6 +225,7 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1",
                 "trading_account_risk_reason_v1",
                 "trading_intent_decision_reason_v1",
+                "trading_backtest_progress_v1",
                 "trading_strategy_signal_evidence_node_v1",
             }
             parent_id = (str(UUID(str(row["parent_record_id"])))
@@ -271,6 +275,7 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                     "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1",
                     "trading_account_risk_reason_v1",
                     "trading_intent_decision_reason_v1",
+                    "trading_backtest_progress_v1",
                     "trading_strategy_signal_evidence_node_v1"}:
             continue
         for row in rows:
@@ -285,6 +290,19 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
         record_id = str(UUID(str(event["record_id"])))
         if details_by_record.get(record_id) != _EVENT_DETAILS[key]:
             raise ValueError("Journal event lacks its required typed detail")
+    progress_parents: set[str] = set()
+    for progress in by_family["trading_backtest_progress_v1"]:
+        parent_id = str(UUID(str(progress["parent_record_id"])))
+        parent = events_by_id[parent_id]
+        if (details_by_record.get(parent_id) != "trading_backtest_cursor_v1"
+                or parent_id in progress_parents
+                or _datetime_wire(progress["controller_time"], 9)
+                != _datetime_wire(parent["event_time"], 9)
+                or (progress["runtime_last_event_time"] is not None
+                    and _datetime_wire(progress["runtime_last_event_time"], 9)
+                    > _datetime_wire(progress["controller_time"], 9))):
+            raise ValueError("Backtest progress differs from its boundary event")
+        progress_parents.add(parent_id)
     for transition in by_family["trading_run_transition_v1"]:
         parent = events_by_id[str(UUID(str(transition["record_id"])))]
         if (parent["category"] != "lifecycle" or parent["entity_type"] != "run"

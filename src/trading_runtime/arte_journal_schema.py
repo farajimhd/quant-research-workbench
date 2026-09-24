@@ -887,6 +887,20 @@ TABLES = (
         "toYYYYMM(event_month)", "run_id, event_month, record_id",
     ),
     TableContract(
+        "trading_backtest_progress_v1",
+        (("record_id", "UUID"), ("run_id", "String"),
+         ("event_month", "Date"), ("batch_id", "UUID"),
+         ("parent_record_id", "UUID"),
+         ("controller_time", "DateTime64(9, 'UTC')"),
+         ("controller_processed_events", "UInt64"),
+         ("controller_warmup_events", "UInt64"),
+         ("controller_processed_frames", "UInt64"),
+         ("runtime_processed_events", "UInt64"),
+         ("runtime_last_event_time", "Nullable(DateTime64(9, 'UTC'))"),
+         ("content_hash", "FixedString(64)")),
+        "toYYYYMM(event_month)", "run_id, parent_record_id, record_id",
+    ),
+    TableContract(
         "trading_commit_v1",
         (
             ("run_id", "String"),
@@ -922,6 +936,8 @@ TABLES = (
             ("intent_slice_hash", "FixedString(64)"),
             ("backtest_cursor_count", "UInt32"),
             ("backtest_cursor_hash", "FixedString(64)"),
+            ("backtest_progress_count", "UInt32"),
+            ("backtest_progress_hash", "FixedString(64)"),
             ("order_context_count", "UInt32"),
             ("order_context_hash", "FixedString(64)"),
             ("oms_group_state_count", "UInt32"),
@@ -1019,6 +1035,20 @@ def backtest_cursor_upgrade_ddl() -> tuple[str, ...]:
         "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
         f"backtest_cursor_hash FixedString(64) DEFAULT '{empty_hash}' "
         "AFTER backtest_cursor_count",
+    )
+
+
+def backtest_progress_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only additive Backtest progress family and commit proof."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_backtest_progress_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "backtest_progress_count UInt32 DEFAULT 0 AFTER backtest_cursor_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"backtest_progress_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER backtest_progress_count",
     )
 
 
