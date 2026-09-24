@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
+import re
 from queue import Full, Queue
 from threading import Thread
 from typing import Any, Mapping
@@ -108,6 +109,40 @@ def _literal(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
+_ISO_INSTANT = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$"
+)
+
+
+def _datetime_wire(value: Any, scale: int) -> str:
+    """Render a timezone-aware instant in ClickHouse's lossless UTC format."""
+    source = value.isoformat() if isinstance(value, datetime) else str(value)
+    match = _ISO_INSTANT.fullmatch(source)
+    if match is None:
+        raise ValueError("Journal timestamps must be timezone-aware ISO instants")
+    fraction = (match.group(3) or "").ljust(9, "0")
+    if scale == 6 and fraction[6:] != "000":
+        raise ValueError("Submicrosecond timestamp cannot fit DateTime64(6)")
+    zone = "+00:00" if match.group(4) == "Z" else match.group(4)
+    parsed = datetime.fromisoformat(
+        f"{match.group(1)}T{match.group(2)}.{fraction[:6]}{zone}"
+    ).astimezone(timezone.utc)
+    result = parsed.strftime("%Y-%m-%d %H:%M:%S.%f")
+    return result + fraction[6:] if scale == 9 else result
+
+
+def _wire_row(name: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for column, kind in _CONTRACTS[name].columns:
+        value = row[column]
+        if kind.startswith("DateTime64(9"):
+            value = _datetime_wire(value, 9)
+        elif kind.startswith("DateTime64(6"):
+            value = _datetime_wire(value, 6)
+        result[column] = value
+    return result
+
+
 def _rows(client: Any, sql: str) -> list[dict[str, Any]]:
     return [json.loads(line) for line in client.execute(sql).splitlines() if line.strip()]
 
@@ -134,7 +169,7 @@ def _insert(client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: 
     if not rows:
         return
     columns = tuple(column for column, _ in _CONTRACTS[name].columns)
-    body = "\n".join(canonical_json({column: row[column] for column in columns}) for row in rows)
+    body = "\n".join(canonical_json(_wire_row(name, row)) for row in rows)
     client.execute(
         f"INSERT INTO arte.{name} ({','.join(columns)}) "
         f"SETTINGS async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"

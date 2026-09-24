@@ -21,6 +21,17 @@ RECORD = "00000000-0000-0000-0000-000000000013"
 ZERO = "00000000-0000-0000-0000-000000000000"
 
 
+def test_clickhouse_wire_time_preserves_utc_nanoseconds() -> None:
+    assert writer_module._datetime_wire("2026-08-18T04:05:00.123456789-04:00", 9) == (
+        "2026-08-18 08:05:00.123456789"
+    )
+    assert writer_module._datetime_wire("2026-08-18T08:05:00+00:00", 6) == (
+        "2026-08-18 08:05:00.000000"
+    )
+    with pytest.raises(ValueError, match="Submicrosecond"):
+        writer_module._datetime_wire("2026-08-18T08:05:00.123456789Z", 6)
+
+
 def batch() -> TypedJournalBatch:
     event = typed_row({
         "run_id": RUN, "event_month": "2026-08-01", "attempt_id": ATTEMPT,
