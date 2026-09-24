@@ -853,6 +853,10 @@ class TradingRuntime:
                     await self._record_intent_rejection(intent, account_id, decision)
                 results.append({"decision": decision.payload(), "order_group": None})
                 continue
+            if getattr(self.portfolio, "_typed_recovery", False):
+                raise RuntimeError(
+                    "Typed portfolio live order submission remains disabled until "
+                    "all state transitions use verified typed receipts")
             assignment = self._assignment_for_intent(approved_intent)
             if str(approved_intent.action) in ENTRY_ACTIONS:
                 funded = getattr(self.strategy, "on_capital_request_funded", None)

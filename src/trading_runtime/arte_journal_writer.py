@@ -46,6 +46,12 @@ _FAMILIES = (
      "intent_decision_hash"),
     ("trading_intent_decision_reason_v1", "intent_decision_reasons",
      "intent_decision_reason_count", "intent_decision_reason_hash"),
+    ("trading_portfolio_decision_v1", "portfolio_decisions",
+     "portfolio_decision_count", "portfolio_decision_hash"),
+    ("trading_portfolio_decision_reason_v1", "portfolio_decision_reasons",
+     "portfolio_decision_reason_count", "portfolio_decision_reason_hash"),
+    ("trading_portfolio_reservation_event_v1", "portfolio_reservation_events",
+     "portfolio_reservation_event_count", "portfolio_reservation_event_hash"),
     ("trading_strategy_signal_v1", "signals", "signal_count", "signal_hash"),
     ("trading_strategy_signal_evidence_node_v1", "signal_evidence_nodes",
      "signal_evidence_node_count", "signal_evidence_node_hash"),
@@ -95,6 +101,8 @@ _EVENT_DETAILS = {
     ("checkpoint", "market_boundary"): "trading_backtest_cursor_v1",
     ("strategy_decision", "intent_rejection"): "trading_intent_decision_v1",
     ("strategy_decision", "intent_deferral"): "trading_intent_decision_v1",
+    ("portfolio_management", "portfolio_decision"): "trading_portfolio_decision_v1",
+    ("portfolio_management", "portfolio_reservation"): "trading_portfolio_reservation_event_v1",
     ("execution", "fill"): "trading_execution_v1",
     ("execution", "commission"): "trading_commission_v1",
     ("order_management", "order_command"): "trading_order_command_v1",
@@ -150,6 +158,9 @@ class TypedJournalBatch:
     account_risk_reasons: tuple[Mapping[str, Any], ...] = ()
     intent_decisions: tuple[Mapping[str, Any], ...] = ()
     intent_decision_reasons: tuple[Mapping[str, Any], ...] = ()
+    portfolio_decisions: tuple[Mapping[str, Any], ...] = ()
+    portfolio_decision_reasons: tuple[Mapping[str, Any], ...] = ()
+    portfolio_reservation_events: tuple[Mapping[str, Any], ...] = ()
     signals: tuple[Mapping[str, Any], ...] = ()
     signal_evidence_nodes: tuple[Mapping[str, Any], ...] = ()
     signal_sources: tuple[Mapping[str, Any], ...] = ()
@@ -225,6 +236,7 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1",
                 "trading_account_risk_reason_v1",
                 "trading_intent_decision_reason_v1",
+                "trading_portfolio_decision_reason_v1",
                 "trading_backtest_progress_v1",
                 "trading_strategy_signal_evidence_node_v1",
             }
@@ -275,6 +287,7 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                     "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1",
                     "trading_account_risk_reason_v1",
                     "trading_intent_decision_reason_v1",
+                    "trading_portfolio_decision_reason_v1",
                     "trading_backtest_progress_v1",
                     "trading_strategy_signal_evidence_node_v1"}:
             continue
@@ -381,6 +394,38 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 != list(range(len(reasons)))
                 or len({str(row["reason"]) for row in reasons}) != len(reasons)):
             raise ValueError("Intent decision or reasons differ from its event")
+    portfolio_decisions = {
+        str(UUID(str(row["record_id"]))): row
+        for row in by_family["trading_portfolio_decision_v1"]
+    }
+    portfolio_reasons: dict[str, list[dict[str, Any]]] = {}
+    for reason in by_family["trading_portfolio_decision_reason_v1"]:
+        parent_id = str(UUID(str(reason["parent_record_id"])))
+        if (parent_id not in portfolio_decisions
+                or reason["account_id"] != portfolio_decisions[parent_id]["account_id"]
+                or not reason["reason"]):
+            raise ValueError("Portfolio decision reason lacks its typed decision")
+        portfolio_reasons.setdefault(parent_id, []).append(reason)
+    for record_id, decision in portfolio_decisions.items():
+        parent = events_by_id[record_id]
+        reasons = portfolio_reasons.get(record_id, [])
+        if (parent["category"] != "portfolio_management"
+                or parent["entity_type"] != "portfolio_decision"
+                or parent["entity_id"] != decision["decision_id"]
+                or parent["account_id"] != decision["account_id"]
+                or _datetime_wire(parent["event_time"], 6)
+                != _datetime_wire(decision["decided_at"], 6)
+                or len(reasons) != int(decision["reason_count"])
+                or sorted(int(row["ordinal"]) for row in reasons)
+                != list(range(len(reasons)))):
+            raise ValueError("Portfolio decision differs from its event or reasons")
+    for reservation in by_family["trading_portfolio_reservation_event_v1"]:
+        parent = events_by_id[str(UUID(str(reservation["record_id"])))]
+        if (parent["category"] != "portfolio_management"
+                or parent["entity_type"] != "portfolio_reservation"
+                or parent["entity_id"] != reservation["reservation_id"]
+                or parent["account_id"] != reservation["account_id"]):
+            raise ValueError("Portfolio reservation differs from its event")
     sources_by_parent: dict[str, list[dict[str, Any]]] = {}
     for row in by_family["trading_signal_source_v1"]:
         parent_id = str(UUID(str(row["parent_record_id"])))

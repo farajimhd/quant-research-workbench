@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
 from src.trading_runtime import arte_portfolio_recovery as recovery
+from src.trading_runtime.arte_portfolio_admission import TypedPortfolioAdmissionAuthority
 from src.trading_runtime.arte_portfolio_snapshot import publish_portfolio_snapshot
 from src.trading_runtime.portfolio import (
     PortfolioAllocationLot, PortfolioManagementEngine, PortfolioReservation, PortfolioSyncState,
@@ -135,3 +139,107 @@ def test_engine_typed_seam_skips_sqlite_and_blocks_admission(monkeypatch) -> Non
         PortfolioManagementEngine(
             (profile,), journal=NoSQLite(), run_id="different", strategy_id="strategy-a",
             strategy_revision=1, typed_recovery=recovered)
+
+
+def test_typed_admission_waits_for_receipt_and_poison_on_uncertain_commit(monkeypatch) -> None:
+    client, profile = _client(monkeypatch)
+    recovered = recovery.recover_portfolio_engine_state(
+        client, run_id="live-run", profiles=(profile,),
+        state_revisions={"account-id": 7}, cutoff_at=AT)
+
+    class NoSQLite:
+        def __getattr__(self, name):
+            raise AssertionError(f"unexpected SQLite access: {name}")
+
+    engine = PortfolioManagementEngine(
+        (profile,), journal=NoSQLite(), run_id="live-run", strategy_id="strategy-a",
+        strategy_revision=1, typed_recovery=recovered)
+    state = engine.states["account-id"]
+    state.sync_state = PortfolioSyncState.SYNCHRONIZED
+    state.summary = object()
+    state.ledger = object()
+    state.component_watermarks = {"summary": AT}
+    ready = asyncio.Event()
+    release = asyncio.Event()
+    fail = False
+    fail_before_publication = False
+
+    class Authority(TypedPortfolioAdmissionAuthority):
+        def __init__(self):
+            pass
+
+        @asynccontextmanager
+        async def claim(self, run_id, account_id, group_ids):
+            assert (run_id, account_id, group_ids) == ("live-run", "account-id", ())
+            yield {"owner_id": "worker", "epoch": 1, "resource_id": "account-id"}
+
+        def claim_is_current(self, lease):
+            return True
+
+        def next_revision(self, run_id, account_id, lease):
+            return 8
+
+        async def publish(self, records, captured, lease):
+            assert {row[0] for row in records} == {"portfolio_decision", "portfolio_reservation"}
+            assert captured.state_revision == 8 and len(captured.reservations) == 2
+            ready.set()
+            await release.wait()
+            if fail:
+                raise OSError("commit failed")
+            return SimpleNamespace(run_id="live-run", account_id="account-id",
+                                   state_revision=8, snapshot_hash="a" * 64)
+
+    def staged_approval(intent, state):
+        @dataclass(frozen=True)
+        class Approved:
+            metadata: dict
+
+        item = replace(engine.reservations["reservation-1"], reservation_id="reservation-2")
+        engine.reservations[item.reservation_id] = item
+        engine._record("portfolio_reservation", item.reservation_id, "account-id", {"event": "created"})
+        engine._record("portfolio_decision", "decision-2", "account-id", {"event": "approved"})
+        engine._persist_state(state)
+        if fail_before_publication:
+            raise ValueError("projection rejected")
+        return SimpleNamespace(status="approved"), Approved(metadata={"seed": "value"})
+
+    monkeypatch.setattr(engine, "_approve_locked", staged_approval)
+
+    async def run_success():
+        task = asyncio.create_task(engine.prepare_typed_admission(
+            None, account_id="account-id", authority=Authority()))
+        await ready.wait()
+        assert not task.done()
+        release.set()
+        return await task
+
+    _, approved = asyncio.run(run_success())
+    assert approved.metadata["typed_admission_snapshot_hash"] == "a" * 64
+    assert "reservation-2" in engine.reservations
+    engine.reservations.pop("reservation-2")
+    fail_before_publication = True
+    with pytest.raises(ValueError, match="projection rejected"):
+        asyncio.run(engine.prepare_typed_admission(
+            None, account_id="account-id", authority=Authority()))
+    assert "reservation-2" not in engine.reservations
+    assert not engine._typed_admission_poisoned
+    fail_before_publication = False
+    ready = asyncio.Event()
+    release = asyncio.Event()
+    fail = True
+
+    async def run_failure():
+        task = asyncio.create_task(engine.prepare_typed_admission(
+            None, account_id="account-id", authority=Authority()))
+        await ready.wait()
+        release.set()
+        with pytest.raises(OSError, match="commit failed"):
+            await task
+
+    asyncio.run(run_failure())
+    assert "reservation-2" in engine.reservations
+    assert engine._typed_admission_poisoned
+    assert engine.states["account-id"].sync_state == PortfolioSyncState.ENTRIES_BLOCKED
+    with pytest.raises(RuntimeError, match="idle recovered engine"):
+        asyncio.run(engine.prepare_typed_admission(
+            None, account_id="account-id", authority=Authority()))

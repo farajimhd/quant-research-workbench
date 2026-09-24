@@ -260,6 +260,114 @@ def project_journal_record(
     )
 
 
+def project_portfolio_admission_records(
+    records: tuple[tuple[str, str, str, dict[str, Any]], ...], *,
+    run_id: str, run_month: date, attempt_id: str, batch_id: str,
+    prior_batch_id: str, first_sequence: int, source_cursor: str,
+) -> TypedJournalBatch:
+    """Project staged Portfolio admission facts to normalized journal families."""
+    from src.trading_runtime.portfolio import PortfolioReservation
+
+    if not records or any(kind not in {"portfolio_decision", "portfolio_reservation"}
+                          for kind, _, _, _ in records):
+        raise ValueError("Portfolio admission has unmodeled staged records")
+    events = []
+    decisions = []
+    reasons = []
+    reservations = []
+    metric_names = ("net_liquidation", "available_funds", "buying_power",
+                    "gross_exposure", "net_exposure", "reserved_notional",
+                    "open_risk", "daily_loss", "drawdown", "position_count")
+    reservation_fields = {field.name for field in fields(PortfolioReservation)}
+    for ordinal, (kind, entity_id, account_id, payload) in enumerate(records):
+        if not account_id or not isinstance(payload, Mapping):
+            raise ValueError("Portfolio admission fact lacks account or typed content")
+        record_id = str(uuid5(NAMESPACE_URL, f"{batch_id}:portfolio:{ordinal}"))
+        if kind == "portfolio_decision":
+            expected = {"event", "ticker", "action", "decision_id", "request_id",
+                        "account_key", "account_id", "policy_id", "policy_revision",
+                        "snapshot_id", "status", "requested_quantity",
+                        "approved_quantity", "approved_notional", "planned_loss",
+                        "reservation_id", "reasons", "metrics_before", "metrics_after",
+                        "decided_at", "correlation_id", "causation_id"}
+            if (set(payload) != expected or payload["event"] != "portfolio_decision"
+                    or payload["decision_id"] != entity_id
+                    or payload["account_id"] != account_id
+                    or payload["status"] not in {"approved", "resized"}
+                    or not isinstance(payload["reasons"], (tuple, list))
+                    or len(payload["reasons"]) > 65535
+                    or any(not isinstance(reason, str) or not reason for reason in payload["reasons"])
+                    or any(not isinstance(payload[name], Mapping)
+                           or set(payload[name]) != set(metric_names)
+                           for name in ("metrics_before", "metrics_after"))):
+                raise ValueError("Portfolio decision admission fact is incomplete")
+            at = payload["decided_at"]
+            if not isinstance(at, datetime) or at.tzinfo is None:
+                raise ValueError("Portfolio decision time is not causal")
+            detail = {
+                "record_id": record_id, "run_id": run_id,
+                "event_month": at.astimezone(timezone.utc).strftime("%Y-%m-01"),
+                "batch_id": batch_id, "account_id": account_id,
+                **{key: payload[key] for key in (
+                    "decision_id", "request_id", "account_key", "ticker", "action",
+                    "policy_id", "policy_revision", "snapshot_id", "status",
+                    "reservation_id")},
+                **{key: _exact_decimal(payload[key], _MEASURE_SCALE) for key in (
+                    "requested_quantity", "approved_quantity", "approved_notional", "planned_loss")},
+                "reason_count": len(payload["reasons"]), "decided_at": at.isoformat(),
+                **{f"{phase}_{metric}": _exact_decimal(payload[f"metrics_{phase}"][metric], _MEASURE_SCALE)
+                   for phase in ("before", "after") for metric in metric_names},
+            }
+            decisions.append(detail)
+            for reason_index, reason in enumerate(payload["reasons"]):
+                reasons.append({"record_id": str(uuid5(NAMESPACE_URL, f"{record_id}:reason:{reason_index}")),
+                                "run_id": run_id, "event_month": detail["event_month"],
+                                "batch_id": batch_id, "parent_record_id": record_id,
+                                "account_id": account_id, "ordinal": reason_index,
+                                "reason": reason})
+        else:
+            extra = {"event", "correlation_id", "causation_id"}
+            if (set(payload) - extra != reservation_fields
+                    or payload["event"] not in {"reservation_created", "cash_tranche_budget_reserved"}
+                    or payload["reservation_id"] != entity_id
+                    or payload["account_id"] != account_id):
+                raise ValueError("Portfolio reservation admission fact is incomplete")
+            at = payload["created_at"]
+            if not isinstance(at, datetime) or at.tzinfo is None:
+                raise ValueError("Portfolio reservation time is not causal")
+            numeric = ("quantity", "remaining_quantity", "reference_price",
+                       "reserved_notional", "reserved_planned_risk", "filled_quantity",
+                       "reserved_entry_fees", "cash_tranche_size", "cash_tranche_budget")
+            detail = {
+                "record_id": record_id, "run_id": run_id,
+                "event_month": at.astimezone(timezone.utc).strftime("%Y-%m-01"),
+                "batch_id": batch_id, "account_id": account_id,
+                "event": payload["event"],
+                **{key: payload[key] for key in reservation_fields - set(numeric) - {"created_at"}},
+                **{key: _exact_decimal(payload[key], _MEASURE_SCALE) for key in numeric},
+                "created_at": at.isoformat(),
+            }
+            reservations.append(detail)
+        events.append({
+            "run_id": run_id, "event_month": at.astimezone(timezone.utc).strftime("%Y-%m-01"),
+            "attempt_id": attempt_id, "batch_id": batch_id, "record_id": record_id,
+            "sequence": first_sequence + ordinal, "event_time": at.isoformat(),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "category": "portfolio_management", "entity_type": kind,
+            "entity_id": entity_id, "account_id": account_id,
+            "correlation_id": str(payload.get("correlation_id") or ""),
+            "causation_id": str(payload.get("causation_id") or ""),
+        })
+    if not decisions or not reservations:
+        raise ValueError("Portfolio admission needs decision and reservation facts")
+    return TypedJournalBatch(
+        run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        first_sequence, first_sequence + len(events) - 1, source_cursor,
+        "running", tuple(events), portfolio_decisions=tuple(decisions),
+        portfolio_decision_reasons=tuple(reasons),
+        portfolio_reservation_events=tuple(reservations))
+
+
 def backtest_cursor_batch(
     record: JournalRecord, *, run_month: date, attempt_id: str,
     batch_id: str, prior_batch_id: str, source_cursor: str,

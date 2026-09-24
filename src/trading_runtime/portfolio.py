@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import math
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field, replace
@@ -414,6 +415,8 @@ class PortfolioManagementEngine:
         }
         self._last_filled_by_reservation: dict[str, float] = {}
         self._active_admission_lease: dict[str, Any] | None = None
+        self._typed_admission_stage: list[tuple[str, str, str, dict[str, Any]]] | None = None
+        self._typed_admission_poisoned = False
         self._typed_recovery = typed_recovery is not None
         if typed_recovery is None:
             self._restore()
@@ -647,6 +650,87 @@ class PortfolioManagementEngine:
     ) -> tuple[PortfolioDecision, StrategyIntent | None]:
         async with self._admission_fence(account_id) as state:
             return self._approve_locked(intent, state)
+
+    async def prepare_typed_admission(
+        self, intent: StrategyIntent, *, account_id: str, authority: Any,
+    ) -> tuple[PortfolioDecision, StrategyIntent]:
+        """Stage an admission under an external Keeper claim and await its fence.
+
+        This is an isolated cutover seam. The live runtime still calls approve,
+        which blocks typed recovery until every state transition has typed
+        persistence. The authority owns Keeper renewal, event projection, and
+        the writer's verified admission receipt.
+        """
+        if (not self._typed_recovery or self._typed_admission_stage is not None
+                or self._typed_admission_poisoned):
+            raise RuntimeError("Typed admission requires an idle recovered engine")
+        from src.trading_runtime.arte_portfolio_admission import TypedPortfolioAdmissionAuthority
+        if not isinstance(authority, TypedPortfolioAdmissionAuthority):
+            raise TypeError("Typed admission requires a verified writer authority")
+        state = self._state(account_id)
+        if (state.sync_state != PortfolioSyncState.SYNCHRONIZED
+                or state.summary is None or state.ledger is None
+                or not state.component_watermarks):
+            raise RuntimeError("Typed admission requires fresh broker synchronization")
+        group_ids = sorted(group.group_id for group in self.groups.values()
+                           if state.profile.account_key in group.account_keys)
+        locks = [self._group_locks[group_id] for group_id in group_ids]
+        for lock in locks:
+            await lock.acquire()
+        try:
+            async with self._account_locks[account_id]:
+                async with authority.claim(self.run_id, account_id, tuple(group_ids)) as lease:
+                    if not authority.claim_is_current(lease):
+                        raise RuntimeError("Typed admission Keeper claim is stale")
+                    revision = authority.next_revision(self.run_id, account_id, lease)
+                    if type(revision) is not int or revision < 1:
+                        raise RuntimeError("Typed admission revision is invalid")
+                    old_state = copy.deepcopy(state)
+                    old_reservations = dict(self.reservations)
+                    old_decisions = list(self.decisions)
+                    self._active_admission_lease = lease
+                    self._typed_admission_stage = []
+                    publication_attempted = False
+                    try:
+                        decision, approved = self._approve_locked(intent, state)
+                        if approved is None:
+                            raise RuntimeError("Typed admission cannot publish a non-approved decision")
+                        captured = self.capture_recovery_snapshot(
+                            account_id, state_revision=revision,
+                            snapshot_at=datetime.now(timezone.utc))
+                        records = tuple(self._typed_admission_stage)
+                        publication_attempted = True
+                        receipt = await authority.publish(records, captured, lease)
+                        if (receipt.run_id != self.run_id or receipt.account_id != account_id
+                                or receipt.state_revision != revision
+                                or not authority.claim_is_current(lease)):
+                            raise RuntimeError("Typed admission receipt or Keeper claim differs")
+                        return decision, replace(approved, metadata={
+                            **approved.metadata,
+                            "typed_admission_snapshot_hash": receipt.snapshot_hash,
+                            "typed_admission_state_revision": revision,
+                        })
+                    except BaseException:
+                        if publication_attempted:
+                            # The writer may have committed even if the receipt
+                            # or readback failed. Only a fresh cold recovery can
+                            # resolve that outcome; never replay the old state.
+                            self._typed_admission_poisoned = True
+                            state.sync_state = PortfolioSyncState.ENTRIES_BLOCKED
+                            state.stale_reason = (
+                                "Typed admission outcome uncertain; cold recovery required")
+                        else:
+                            self.states[account_id] = old_state
+                            self.by_key[old_state.profile.account_key] = old_state
+                            self.reservations = old_reservations
+                            self.decisions = old_decisions
+                        raise
+                    finally:
+                        self._typed_admission_stage = None
+                        self._active_admission_lease = None
+        finally:
+            for lock in reversed(locks):
+                lock.release()
 
     @asynccontextmanager
     async def _admission_fence(self, account_id: str):
@@ -1365,6 +1449,8 @@ class PortfolioManagementEngine:
         lease = self._active_admission_lease
         if lease is None:
             raise RuntimeError("Portfolio reservation requires a fenced admission lease")
+        if self._typed_admission_stage is not None:
+            return
         if not self.journal.portfolio_admission_lease_is_current(
             str(lease["resource_id"]),
             owner_id=str(lease["owner_id"]),
@@ -2028,6 +2114,9 @@ class PortfolioManagementEngine:
         return state
 
     def _record(self, entity_type: str, entity_id: str, account_id: str, payload: dict[str, Any]) -> None:
+        if self._typed_admission_stage is not None:
+            self._typed_admission_stage.append((entity_type, entity_id, account_id, copy.deepcopy(payload)))
+            return
         if self._typed_recovery:
             raise RuntimeError("Typed portfolio recovery cannot append to the SQLite journal")
         self.journal.append(
@@ -2040,6 +2129,8 @@ class PortfolioManagementEngine:
         )
 
     def _persist_state(self, state: PortfolioAccountState) -> None:
+        if self._typed_admission_stage is not None:
+            return
         if self._typed_recovery:
             raise RuntimeError("Typed portfolio recovery cannot overwrite SQLite state")
         self.journal.save_portfolio_state(

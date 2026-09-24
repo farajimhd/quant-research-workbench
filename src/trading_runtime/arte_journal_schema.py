@@ -475,6 +475,59 @@ TABLES = (
         "run_id, parent_record_id, ordinal, record_id",
     ),
     TableContract(
+        "trading_portfolio_decision_v1",
+        (("record_id", "UUID"), ("run_id", "String"), ("event_month", "Date"),
+         ("batch_id", "UUID"), ("account_id", "String"), ("decision_id", "String"),
+         ("request_id", "String"), ("account_key", "String"),
+         ("ticker", "String"), ("action", "String"), ("policy_id", "String"),
+         ("policy_revision", "UInt32"), ("snapshot_id", "String"),
+         ("status", "LowCardinality(String)"),
+         ("requested_quantity", "Decimal(38, 18)"),
+         ("approved_quantity", "Decimal(38, 18)"),
+         ("approved_notional", "Decimal(38, 18)"),
+         ("planned_loss", "Decimal(38, 18)"), ("reservation_id", "String"),
+         ("reason_count", "UInt16"), ("decided_at", "DateTime64(6, 'UTC')"),
+         *((f"{phase}_{metric}", "Decimal(38, 18)")
+           for phase in ("before", "after") for metric in (
+               "net_liquidation", "available_funds", "buying_power", "gross_exposure",
+               "net_exposure", "reserved_notional", "open_risk", "daily_loss",
+               "drawdown", "position_count")),
+         ("content_hash", "FixedString(64)")),
+        "toYYYYMM(event_month)", "run_id, account_id, decided_at, record_id",
+    ),
+    TableContract(
+        "trading_portfolio_decision_reason_v1",
+        (("record_id", "UUID"), ("run_id", "String"), ("event_month", "Date"),
+         ("batch_id", "UUID"), ("parent_record_id", "UUID"),
+         ("account_id", "String"), ("ordinal", "UInt16"),
+         ("reason", "String"), ("content_hash", "FixedString(64)")),
+        "toYYYYMM(event_month)", "run_id, parent_record_id, ordinal, record_id",
+    ),
+    TableContract(
+        "trading_portfolio_reservation_event_v1",
+        (("record_id", "UUID"), ("run_id", "String"), ("event_month", "Date"),
+         ("batch_id", "UUID"), ("account_id", "String"),
+         ("reservation_id", "String"), ("event", "String"),
+         ("decision_id", "String"), ("intent_id", "String"),
+         ("account_key", "String"), ("strategy_id", "String"),
+         ("assignment_id", "String"), ("ticker", "String"), ("action", "String"),
+         ("quantity", "Decimal(38, 18)"),
+         ("remaining_quantity", "Decimal(38, 18)"),
+         ("reference_price", "Decimal(38, 18)"),
+         ("reserved_notional", "Decimal(38, 18)"),
+         ("reserved_planned_risk", "Decimal(38, 18)"),
+         ("created_at", "DateTime64(6, 'UTC')"), ("status", "String"),
+         ("filled_quantity", "Decimal(38, 18)"), ("admission_epoch", "UInt64"),
+         ("admission_owner", "String"),
+         ("reserved_entry_fees", "Decimal(38, 18)"),
+         ("cash_tranche_key", "String"),
+         ("cash_tranche_size", "Decimal(38, 18)"),
+         ("cash_tranche_count", "UInt32"), ("cash_tranche_next", "UInt32"),
+         ("cash_tranche_budget", "Decimal(38, 18)"),
+         ("content_hash", "FixedString(64)")),
+        "toYYYYMM(event_month)", "run_id, account_id, reservation_id, record_id",
+    ),
+    TableContract(
         "trading_signal_source_v1",
         (
             ("record_id", "UUID"),
@@ -964,6 +1017,12 @@ TABLES = (
             ("intent_decision_hash", "FixedString(64)"),
             ("intent_decision_reason_count", "UInt32"),
             ("intent_decision_reason_hash", "FixedString(64)"),
+            ("portfolio_decision_count", "UInt32"),
+            ("portfolio_decision_hash", "FixedString(64)"),
+            ("portfolio_decision_reason_count", "UInt32"),
+            ("portfolio_decision_reason_hash", "FixedString(64)"),
+            ("portfolio_reservation_event_count", "UInt32"),
+            ("portfolio_reservation_event_hash", "FixedString(64)"),
             ("source_cursor", "String"),
             ("status", "LowCardinality(String)"),
             ("committed_at", "DateTime64(6, 'UTC')"),
@@ -1135,6 +1194,27 @@ def intent_decision_upgrade_ddl() -> tuple[str, ...]:
         f"intent_decision_reason_hash FixedString(64) DEFAULT '{empty_hash}' "
         "AFTER intent_decision_reason_count",
     )
+
+
+def portfolio_admission_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only typed Portfolio admission tables and sealed commit fields."""
+    names = ("trading_portfolio_decision_v1",
+             "trading_portfolio_decision_reason_v1",
+             "trading_portfolio_reservation_event_v1")
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    columns = (
+        ("portfolio_decision_count", "UInt32", "0"),
+        ("portfolio_decision_hash", "FixedString(64)", f"'{empty_hash}'"),
+        ("portfolio_decision_reason_count", "UInt32", "0"),
+        ("portfolio_decision_reason_hash", "FixedString(64)", f"'{empty_hash}'"),
+        ("portfolio_reservation_event_count", "UInt32", "0"),
+        ("portfolio_reservation_event_hash", "FixedString(64)", f"'{empty_hash}'"),
+    )
+    return (*tuple(by_name[name].ddl() for name in names),
+            *(f"ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+              f"{name} {kind} DEFAULT {default}"
+              for name, kind, default in columns))
 
 
 def intent_schema_upgrade_ddl() -> tuple[str, ...]:
