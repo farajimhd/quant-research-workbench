@@ -10356,7 +10356,7 @@ def backtest_preflight(
                 count = len(bar_signals["occurrences"])
                 signal_check = {
                     **signal_check, "status": "ready",
-                    "summary": f"{count} causal Early Squeeze ticker-session occurrence(s) certified from pinned 100ms bars; no signal product is created.",
+                    "summary": f"{count} causal Early Squeeze episode start(s) certified from pinned 100ms bars; no signal product is created.",
                     "evidence": bar_signals["authority"],
                 }
             except Exception as exc:
