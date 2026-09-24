@@ -204,6 +204,14 @@ pub fn prepare_batch(
         });
     }
     catalog.sort_by(|a, b| a.field_instance_id.cmp(&b.field_instance_id));
+    fields.sort_by(|a, b| {
+        (a.sequence, &a.event_id, &a.field_instance_id).cmp(&(
+            b.sequence,
+            &b.event_id,
+            &b.field_instance_id,
+        ))
+    });
+    squeeze.sort_by(|a, b| (a.sequence, &a.event_id).cmp(&(b.sequence, &b.event_id)));
     let catalog = FamilyRows::Catalog(catalog);
     let fields = FamilyRows::Fields(fields);
     let squeeze = FamilyRows::Squeeze(squeeze);

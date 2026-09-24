@@ -38,6 +38,7 @@ pub mod session;
 pub mod signal_catalog;
 pub mod signal_stream;
 pub mod signal_stream_typed;
+pub mod signal_stream_typed_hydrate;
 pub mod signal_stream_typed_publish;
 pub mod state;
 pub mod structure_certification;
