@@ -1,8 +1,11 @@
+import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
+from src.backend.replay_run_service import ReplayRunController, RunMode
 from src.trading_runtime.journal_evidence import REFERENCE
 from src.trading_runtime.journal import TradingJournal
 
@@ -115,3 +118,53 @@ def test_operational_assignment_and_campaign_contract_matches_live_journal(tmp_p
         assert not memory.release_campaign_session_reservation(**key, owner_id="s")
     finally:
         live.close()
+
+
+def test_controller_checkpoint_becomes_resumable_only_after_clickhouse_fence():
+    journal = BacktestMemoryJournal(run_id=RUN_ID, max_pending_records=1)
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller.run_id = RUN_ID
+    controller.status = "running"
+    controller._journal = journal
+    controller._checkpoint_projection_cache = None
+    controller._checkpoint_io_task = None
+    controller.stream_snapshot = lambda: {"status": "running"}
+    controller._restart_checkpoint_state = lambda **kwargs: {
+        "schema_version": 1, "controller": {
+            "source_cursor": {"session_date": "2026-08-18", "boundary_ms": 100},
+            "frame_cursor": {}, "processed_events": 1,
+        },
+    }
+    controller._record_stage_time = lambda *_args: None
+    controller._restart_checkpoint_interval_events = lambda: 100
+
+    class Publisher:
+        def __init__(self, *, fail=False):
+            self.fail = fail
+            self.calls = []
+
+        async def fence_checkpoint(self, **kwargs):
+            assert journal.load_checkpoint(RUN_ID) is None
+            self.calls.append(kwargs)
+            if self.fail:
+                raise OSError("commit unavailable")
+            return "fence"
+
+    at = AT
+    failed = Publisher(fail=True)
+    controller._journal_publisher = failed
+    with pytest.raises(OSError, match="commit unavailable"):
+        asyncio.run(controller._save_restart_checkpoint_responsive(at))
+    assert journal.load_checkpoint(RUN_ID) is None
+    assert controller._checkpoint_projection_cache is None
+    assert controller._checkpoint_io_task is None
+
+    succeeded = Publisher()
+    controller._journal_publisher = succeeded
+    asyncio.run(controller._save_restart_checkpoint_responsive(
+        at, checkpoint_status="completed"))
+    assert succeeded.calls[0]["source_cursor"] == journal.load_checkpoint(RUN_ID)["cursor"]
+    assert succeeded.calls[0]["status"] == "completed"
+    assert controller._checkpoint_projection_cache["resume_supported"] is True
+    assert controller._checkpoint_io_task is None

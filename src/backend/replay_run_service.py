@@ -2218,9 +2218,61 @@ class ReplayRunController:
             completed=self._preparation_completed_units if preparing else self.processed_events,
             total=self._preparation_total_units if preparing else None)
 
-    async def _save_restart_checkpoint_responsive(self, event_time):
+    async def _save_restart_checkpoint_responsive(self, event_time, *, checkpoint_status=None):
         if self.definition.mode != RunMode.BACKTEST:
             self._save_restart_checkpoint(event_time)
+            return
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        if isinstance(self._journal, BacktestMemoryJournal):
+            publisher = getattr(self, '_journal_publisher', None)
+            if publisher is None:
+                raise RuntimeError('Fixed Backtest has no ClickHouse journal publisher')
+            snapshot = self.stream_snapshot()
+            self._checkpoint_phase = 'checkpoint_capture'
+            self._checkpoint_started_at = datetime.now(UTC)
+            self._checkpoint_work_snapshot = snapshot
+            try:
+                started = time.perf_counter()
+                state = await asyncio.to_thread(
+                    self._restart_checkpoint_state, reference_authority=True)
+                self._record_stage_time('checkpoint_capture', started)
+                cursor = json.dumps({
+                    'market': state['controller']['source_cursor'],
+                    'frame': state['controller']['frame_cursor'],
+                }, separators=(',', ':'), sort_keys=True)
+                if not self._journal.unfenced_records():
+                    self._journal.append(
+                        run_id=self.run_id, category='checkpoint',
+                        entity_type='market_boundary', entity_id=cursor,
+                        event_time=event_time,
+                        payload={'source_cursor': cursor},
+                    )
+                self._checkpoint_phase = 'checkpoint_persist'
+                started = time.perf_counter()
+                self._checkpoint_io_task = asyncio.create_task(publisher.fence_checkpoint(
+                    state=state, source_cursor=cursor,
+                    status=checkpoint_status or (
+                        self.status if self.status in TERMINAL_REPLAY_STATUSES else 'running'),
+                ))
+                try:
+                    await asyncio.shield(self._checkpoint_io_task)
+                except asyncio.CancelledError:
+                    await self._checkpoint_io_task
+                    raise
+                self._record_stage_time('checkpoint_persist', started)
+                self._journal.save_checkpoint(self.run_id, cursor, state, event_time)
+                self._checkpoint_projection_cache = {
+                    'status': 'available', 'cursor': cursor,
+                    'event_time': event_time.isoformat(),
+                    'updated_at': datetime.now(UTC).isoformat(),
+                    'processed_events': int(state['controller'].get('processed_events') or 0),
+                    'interval_events': self._restart_checkpoint_interval_events(),
+                    'resume_supported': True,
+                    'schema_version': int(state.get('schema_version') or 1),
+                }
+            finally:
+                self._checkpoint_io_task = None
+                self._checkpoint_work_snapshot = None
             return
         # The engine awaits the entire operation: no market/strategy state can
         # advance while the worker captures it. Mutation APIs reject changes;
@@ -5917,7 +5969,8 @@ class ReplayRunController:
             await self._runtime.finish(status=status)
             self._runtime_finished = True
         if self.current_time is not None and (self._source_cursor or self._frame_cursor):
-            await self._save_restart_checkpoint_responsive(self.current_time)
+            await self._save_restart_checkpoint_responsive(
+                self.current_time, checkpoint_status=status)
         self._next_action_after_sequence = None
         self._clear_navigation_search()
         self.status = status
