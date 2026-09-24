@@ -99,6 +99,10 @@ unhealthy; it never drops a record or falls back to disk. The engine must not
 claim durability merely because an enqueue succeeded. Portfolio admission and
 campaign ownership require a single fenced coordinator, not an assumed
 `MergeTree` compare-and-swap.
+The bounded typed command dispatcher transport now enforces receipt-before-send
+and poisons its lane on persistence failure, broker uncertainty, or interruption.
+It is deliberately not wired into live OMS: startup reconciliation of possibly
+sent commands and complete typed strategy-intent evidence are still missing.
 
 Recovery loads the latest verified fence, restores typed state components,
 reconciles live broker orders/executions by stable IDs, and resumes from the
