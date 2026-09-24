@@ -19,6 +19,31 @@ MARKET_READ_TABLES = frozenset({
     "structural_level_coverage_v7", "structural_level_observations_v7",
     "structural_levels_v7",
 })
+POLICY_NUMERIC_FIELDS = (
+    "eligible_equity_fraction", "minimum_cash_reserve", "entry_fee_buffer_bps",
+    "maximum_buying_power_utilization", "maximum_gross_exposure",
+    "maximum_net_long_exposure", "maximum_net_short_exposure",
+    "maximum_position_fraction", "maximum_ticker_fraction",
+    "maximum_strategy_fraction", "maximum_sector_fraction",
+    "maximum_industry_fraction", "maximum_correlated_group_fraction",
+    "maximum_planned_risk_fraction", "maximum_open_risk_fraction",
+    "maximum_order_quantity", "maximum_order_notional", "maximum_daily_loss",
+    "maximum_drawdown", "daily_loss_warning", "emergency_loss",
+)
+POLICY_INTEGER_FIELDS = (
+    "maximum_open_positions", "maximum_snapshot_age_ms",
+    "maximum_protection_slices", "maximum_internal_reaction_ms",
+)
+POLICY_BOOLEAN_FIELDS = (
+    "allow_long", "allow_short", "allow_margin", "allow_unsettled_cash",
+    "allow_outside_rth", "allow_overnight", "block_on_unattributed_position",
+    "allow_stop_limit_protection", "allow_partial_profit_pocket",
+    "allow_emergency_auto_liquidation",
+)
+POLICY_ALLOWED_FIELDS = (
+    "allowed_security_types", "allowed_currencies", "restricted_symbols",
+    "allowed_execution_policies", "allowed_protection_profiles",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +69,29 @@ class TableContract:
 # envelope is intentionally payload-free: a record's detail belongs in its
 # typed family table, keyed by record_id. Do not add a JSON escape hatch here.
 TABLES = (
+    TableContract(
+        "trading_portfolio_policy_v1",
+        (("policy_hash", "FixedString(64)"), ("policy_id", "String"),
+         ("revision", "UInt32"))
+        + tuple((name, "Decimal(38, 18)") for name in POLICY_NUMERIC_FIELDS)
+        + tuple((name, "UInt32") for name in POLICY_INTEGER_FIELDS)
+        + tuple((name, "UInt8") for name in POLICY_BOOLEAN_FIELDS),
+        "cityHash64(policy_hash) % 32", "policy_hash",
+    ),
+    TableContract(
+        "trading_portfolio_policy_allowed_v1",
+        (("policy_hash", "FixedString(64)"),
+         ("field_name", "LowCardinality(String)"), ("ordinal", "UInt16"),
+         ("value", "String")),
+        "cityHash64(policy_hash) % 32", "policy_hash, field_name, ordinal",
+    ),
+    TableContract(
+        "trading_portfolio_policy_commit_v1",
+        (("policy_hash", "FixedString(64)"), ("allowed_count", "UInt32"),
+         ("allowed_hash", "FixedString(64)"),
+         ("committed_at", "DateTime64(6, 'UTC')")),
+        "cityHash64(policy_hash) % 32", "policy_hash",
+    ),
     TableContract(
         "trading_run_v1",
         (
@@ -723,6 +771,14 @@ TABLES = (
 def schema_ddl() -> tuple[str, ...]:
     """Return DDL for a separately authorized installer, never run it here."""
     return tuple(table.ddl() for table in TABLES)
+
+
+def portfolio_policy_schema_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only immutable policy catalog; no market or state table writes."""
+    return tuple(table.ddl() for table in TABLES
+                 if table.name in {"trading_portfolio_policy_v1",
+                                   "trading_portfolio_policy_allowed_v1",
+                                   "trading_portfolio_policy_commit_v1"})
 
 
 def batch_lookup_index_upgrade_ddl() -> tuple[str, ...]:

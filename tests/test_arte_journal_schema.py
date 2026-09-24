@@ -6,6 +6,8 @@ from src.trading_runtime.arte_journal_schema import (
     TABLES, BATCH_LOOKUP_INDEX, batch_lookup_index_upgrade_ddl,
     batch_lookup_index_materialize_ddl,
     intent_decision_upgrade_ddl,
+    portfolio_policy_schema_upgrade_ddl, POLICY_ALLOWED_FIELDS,
+    POLICY_NUMERIC_FIELDS, POLICY_INTEGER_FIELDS, POLICY_BOOLEAN_FIELDS,
     intent_schema_upgrade_ddl, order_context_upgrade_ddl,
     oms_state_upgrade_ddl, intent_use_upgrade_ddl, run_transition_upgrade_ddl,
     operational_fault_upgrade_ddl,
@@ -13,11 +15,12 @@ from src.trading_runtime.arte_journal_schema import (
     journal_permission_preflight,
     schema_ddl, storage_preflight,
 )
+from src.trading_runtime.portfolio import PortfolioPolicy
 
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 29
+    assert len(statements) == len(TABLES) == 32
     for table, statement in zip(TABLES, statements):
         assert f"CREATE TABLE IF NOT EXISTS arte.{table.name}" in statement
         assert "ENGINE = MergeTree" in statement
@@ -53,9 +56,23 @@ def test_intent_decision_upgrade_normalizes_reasons_and_commit_fence() -> None:
                    for sql in statements)
 
 
+def test_portfolio_policy_catalog_covers_all_fields_without_json() -> None:
+    fields = set(PortfolioPolicy.__dataclass_fields__)
+    mapped = ({"policy_id", "revision"} | set(POLICY_NUMERIC_FIELDS)
+              | set(POLICY_INTEGER_FIELDS) | set(POLICY_BOOLEAN_FIELDS)
+              | set(POLICY_ALLOWED_FIELDS))
+    assert mapped == fields
+    statements = portfolio_policy_schema_upgrade_ddl()
+    assert len(statements) == 3
+    assert all("live_market_ssd" in sql and "cityHash64(policy_hash) % 32" in sql
+               for sql in statements)
+
+
 def test_shared_event_and_execution_contract_uses_lossless_identifiers() -> None:
     columns = {table.name: dict(table.columns) for table in TABLES}
-    for name in columns:
+    for name in columns.keys() - {
+            "trading_portfolio_policy_v1", "trading_portfolio_policy_allowed_v1",
+            "trading_portfolio_policy_commit_v1"}:
         assert columns[name]["run_id"] == "String"
     assert columns["trading_event_v1"]["record_id"] == "UUID"
     assert columns["trading_event_v1"]["sequence"] == "UInt64"
