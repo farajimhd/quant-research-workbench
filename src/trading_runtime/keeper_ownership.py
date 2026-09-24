@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from threading import Lock
+from time import monotonic
 from typing import Any
 
 
@@ -82,7 +83,7 @@ class KeeperOwnershipCoordinator:
     def __init__(self, client: Any) -> None:
         self._client = client
         self._lock = Lock()
-        self._deadlines: dict[tuple[str, str, int], datetime] = {}
+        self._monotonic_deadlines: dict[tuple[str, str, int], float] = {}
         self._require_connected()
         for path in (f"{_ROOT}/portfolio", f"{_ROOT}/campaign"):
             self._client.ensure_path(path)
@@ -127,7 +128,8 @@ class KeeperOwnershipCoordinator:
                     continue
                 self._require_connected()
                 deadline = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
-                self._deadlines[(resource_id, owner_id, epoch)] = deadline
+                key = (resource_id, owner_id, epoch)
+                self._monotonic_deadlines[key] = monotonic() + ttl_seconds
                 if not self.portfolio_admission_lease_is_current(
                     resource_id, owner_id=owner_id, epoch=epoch
                 ):
@@ -142,8 +144,9 @@ class KeeperOwnershipCoordinator:
         self, resource_id: str, *, owner_id: str, epoch: int,
     ) -> bool:
         self._require_connected()
-        deadline = self._deadlines.get((resource_id, owner_id, int(epoch)))
-        if deadline is None or datetime.now(timezone.utc) >= deadline:
+        key = (resource_id, owner_id, int(epoch))
+        deadline = self._monotonic_deadlines.get(key)
+        if deadline is None or monotonic() >= deadline:
             return False
         try:
             value, stat = self._client.get(_path("portfolio", resource_id) + "/holder")
@@ -155,6 +158,31 @@ class KeeperOwnershipCoordinator:
         session = self._client.client_id
         return (_decode(value) == (owner_id, int(epoch), "portfolio")
                 and session is not None and stat.ephemeralOwner == session[0])
+
+    def renew_portfolio_admission_lease(
+        self, resource_id: str, *, owner_id: str, epoch: int,
+        ttl_seconds: float = 30.0,
+    ) -> dict[str, Any] | None:
+        """Extend a still-current claim while its durable receipt is pending.
+
+        This is a blocking control-plane operation. A lost or expired claim is
+        never revived; its holder must fail the pending admission instead.
+        """
+        if ttl_seconds <= 0 or ttl_seconds > 300:
+            raise ValueError("Portfolio admission TTL must be in (0, 300] seconds")
+        _identity(owner_id, "owner")
+        with self._lock:
+            if not self.portfolio_admission_lease_is_current(
+                resource_id, owner_id=owner_id, epoch=epoch,
+            ):
+                return None
+            deadline = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+            key = (resource_id, owner_id, int(epoch))
+            self._monotonic_deadlines[key] = monotonic() + ttl_seconds
+            return {
+                "resource_id": resource_id, "owner_id": owner_id,
+                "epoch": int(epoch), "expires_at": deadline.isoformat(),
+            }
 
     def release_portfolio_admission_lease(
         self, resource_id: str, *, owner_id: str, epoch: int,
@@ -178,7 +206,7 @@ class KeeperOwnershipCoordinator:
                 if _contention(exc):
                     return False
                 raise KeeperUnavailable("Could not release Keeper portfolio fence") from exc
-            self._deadlines.pop((resource_id, owner_id, int(epoch)), None)
+            self._monotonic_deadlines.pop((resource_id, owner_id, int(epoch)), None)
             return True
 
     def acquire_campaign_session_ownership(

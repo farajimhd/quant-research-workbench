@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from threading import Lock
-from time import time
+from time import monotonic, time
 
 import pytest
 
@@ -164,6 +165,34 @@ def test_portfolio_admission_fails_closed_when_keeper_session_suspends() -> None
             "account:DU1", owner_id="run-a", epoch=lease["epoch"])
     with pytest.raises(KeeperUnavailable, match="not connected"):
         coordinator.acquire_portfolio_admission_lease("account:DU2", owner_id="run-a")
+
+
+def test_portfolio_claim_renews_only_while_same_fence_is_current() -> None:
+    store = _Store()
+    first = KeeperOwnershipCoordinator(_Client(store, 11))
+    second = KeeperOwnershipCoordinator(_Client(store, 12))
+    lease = first.acquire_portfolio_admission_lease(
+        "account:DU1", owner_id="run-a", ttl_seconds=1)
+    assert lease is not None
+    renewed = first.renew_portfolio_admission_lease(
+        "account:DU1", owner_id="run-a", epoch=lease["epoch"], ttl_seconds=30)
+    assert renewed is not None
+    assert datetime.fromisoformat(renewed["expires_at"]) > datetime.fromisoformat(
+        lease["expires_at"])
+    assert second.renew_portfolio_admission_lease(
+        "account:DU1", owner_id="run-a", epoch=lease["epoch"]) is None
+    first._monotonic_deadlines[("account:DU1", "run-a", lease["epoch"])] = monotonic() - 1
+    assert first.renew_portfolio_admission_lease(
+        "account:DU1", owner_id="run-a", epoch=lease["epoch"]) is None
+    assert not first.portfolio_admission_lease_is_current(
+        "account:DU1", owner_id="run-a", epoch=lease["epoch"])
+    assert first.release_portfolio_admission_lease(
+        "account:DU1", owner_id="run-a", epoch=lease["epoch"])
+    replacement = second.acquire_portfolio_admission_lease(
+        "account:DU1", owner_id="run-b")
+    assert replacement is not None and replacement["epoch"] > lease["epoch"]
+    assert first.renew_portfolio_admission_lease(
+        "account:DU1", owner_id="run-a", epoch=lease["epoch"]) is None
 
 
 def test_campaign_confirmed_ownership_survives_new_client_and_rejects_competitor() -> None:
