@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from decimal import Decimal
 import json
+import re
 from threading import Event
 from uuid import UUID
 
@@ -71,16 +72,13 @@ class MemoryClient:
             return ""
         assert sql.startswith("SELECT ")
         self.selects.append(sql)
-        if " UNION ALL " in sql:
+        if "groupArray((toString(record_id),toString(content_hash)))" in sql:
             batch_id = sql.split("batch_id=toUUID('", 1)[1].split("'", 1)[0]
-            result = []
-            for part in sql.removesuffix(" FORMAT JSONEachRow").split(" UNION ALL "):
-                family = part.split("SELECT '", 1)[1].split("' AS family", 1)[0]
-                result.extend({"family": family, "record_id": row["record_id"],
-                               "content_hash": row["content_hash"]}
-                              for row in self.tables.get(family, [])
-                              if row["batch_id"] == batch_id)
-            return "\n".join(json.dumps(row) for row in result)
+            names = re.findall(r"FROM arte\.([a-z0-9_]+) WHERE batch_id=", sql)
+            return json.dumps({name: [
+                [row["record_id"], row["content_hash"]]
+                for row in self.tables.get(name, []) if row["batch_id"] == batch_id
+            ] for name in names})
         name = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]
         columns = sql.removeprefix("SELECT ").split(" FROM ", 1)[0].split(",")
         if "WHERE run_id=" in sql:

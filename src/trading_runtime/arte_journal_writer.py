@@ -256,19 +256,19 @@ def _family_identities(client: Any, batch_id: str) -> dict[str, list[tuple[str, 
     """Read every typed family in one network request, including empty ones."""
     token = f"batch_id=toUUID({_literal(batch_id)})"
     selects = [
-        f"SELECT {_literal(name)} AS family,record_id,content_hash "
-        f"FROM arte.{name} WHERE {token}"
+        "(SELECT groupArray((toString(record_id),toString(content_hash))) "
+        f"FROM arte.{name} WHERE {token}) AS {name}"
         for name, _, _, _ in _FAMILIES
     ]
-    actual = {name: [] for name, _, _, _ in _FAMILIES}
-    for row in _rows(client, " UNION ALL ".join(selects) + " FORMAT JSONEachRow"):
-        family = str(row["family"])
-        if family not in actual:
-            raise RuntimeError("Typed journal readback returned an unknown family")
-        actual[family].append((str(UUID(str(row["record_id"]))), str(row["content_hash"])))
-    for rows in actual.values():
-        rows.sort()
-    return actual
+    response = _rows(client, "SELECT " + ",".join(selects) + " FORMAT JSONEachRow")
+    names = {name for name, _, _, _ in _FAMILIES}
+    if len(response) != 1 or set(response[0]) != names:
+        raise RuntimeError("Typed journal family readback is incomplete")
+    return {
+        name: sorted((str(UUID(str(record_id))), str(digest))
+                     for record_id, digest in response[0][name])
+        for name in names
+    }
 
 
 def _insert(client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: str) -> None:
