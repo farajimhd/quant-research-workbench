@@ -14,6 +14,7 @@ from src.trading_runtime.arte_journal_projection import commission_revision_batc
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, JournalQueueFull, TypedJournalBatch, load_committed_prefix,
+    load_committed_order_command_page,
     load_typed_run_context, publish_typed_batch, publish_typed_run,
     publish_typed_run_context, typed_row,
 )
@@ -186,19 +187,33 @@ class MemoryClient:
         if "WHERE run_id=" in sql:
             run_id = sql.split("WHERE run_id='", 1)[1].split("'", 1)[0]
             matching = [row for row in self.tables.get(name, []) if row["run_id"] == run_id]
-            for field in ("account_id", "execution_id"):
+            for field in ("account_id", "execution_id", "category", "entity_type"):
                 marker = f"AND {field}='"
                 if marker in sql:
                     value = sql.split(marker, 1)[1].split("'", 1)[0]
                     matching = [row for row in matching if row[field] == value]
+            for operator, pattern in ((">", r"AND sequence>(\d+)"),
+                                      ("<=", r"AND sequence<=(\d+)")):
+                found = re.search(pattern, sql)
+                if found:
+                    bound = int(found.group(1))
+                    matching = [row for row in matching if
+                                (int(row["sequence"]) > bound if operator == ">"
+                                 else int(row["sequence"]) <= bound)]
+            if "AND record_id IN (" in sql:
+                values = set(re.findall(r"toUUID\('([0-9a-f-]+)'\)", sql))
+                matching = [row for row in matching if row["record_id"] in values]
             if "AND batch_id=toUUID('" in sql:
                 value = sql.split("AND batch_id=toUUID('", 1)[1].split("'", 1)[0]
                 matching = [row for row in matching if row["batch_id"] == value]
             descending = "ORDER BY last_sequence DESC" in sql
             if "ORDER BY last_sequence" in sql:
                 matching.sort(key=lambda row: row["last_sequence"], reverse=descending)
+            elif "ORDER BY sequence" in sql:
+                matching.sort(key=lambda row: row["sequence"])
+            limit = re.search(r"LIMIT (\d+)", sql)
             return "\n".join(json.dumps({column: row[column] for column in columns})
-                             for row in (matching[:1] if "LIMIT 1" in sql else matching))
+                             for row in (matching[:int(limit.group(1))] if limit else matching))
         batch_id = sql.split("batch_id=toUUID('", 1)[1].split("')", 1)[0]
         return "\n".join(json.dumps({column: row[column] for column in columns})
                          for row in self.tables.get(name, []) if row["batch_id"] == batch_id)
@@ -293,7 +308,17 @@ def test_order_command_and_transition_have_typed_durable_fences() -> None:
     assert publish_typed_batch(client, item) == BATCH
     assert client.inserts == ["trading_event_v1", "trading_order_command_v1",
                               "trading_order_transition_v1", "trading_commit_v1"]
-    assert load_committed_prefix(client, RUN).last_sequence == 2
+    prefix = load_committed_prefix(client, RUN)
+    assert prefix is not None and prefix.last_sequence == 2
+    page = load_committed_order_command_page(client, prefix, limit=1)
+    assert len(page) == 1
+    assert page[0]["sequence"] == 1
+    assert page[0]["command_id"] == "command-1"
+    assert page[0]["client_order_id"] == "client-1"
+    assert load_committed_order_command_page(client, prefix, after_sequence=1) == ()
+    client.tables["trading_order_command_v1"][0]["account_id"] = "wrong"
+    with pytest.raises(RuntimeError, match="event envelope"):
+        load_committed_order_command_page(client, prefix)
 
 
 def test_position_snapshot_requires_account_snapshot_in_same_batch() -> None:

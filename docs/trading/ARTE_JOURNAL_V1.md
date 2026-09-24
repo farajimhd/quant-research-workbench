@@ -106,6 +106,10 @@ stored causal boundary. Source market arrays are reloaded from certified
 `arte` products, never checkpointed as opaque arrays. Resume must yield the
 same orders, fills, positions, cash, and journal sequence as an uninterrupted
 run. Review uses the same committed prefix without running strategy code.
+The read side can now page typed order commands only after full-prefix
+verification and checks each command against its event envelope. A committed
+command is not proof that the broker received it: a future live dispatcher must
+reconcile by stable client/order IDs before deciding whether to send again.
 
 ## Cutover gate
 
