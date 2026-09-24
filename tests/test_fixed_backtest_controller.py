@@ -45,61 +45,34 @@ def test_backtest_start_rejects_before_legacy_journal_or_disk_write(tmp_path, mo
     assert not controller.run_dir.exists()
 
 
-def test_fixed_registry_resume_uses_verified_clickhouse_fence_without_sqlite(monkeypatch, tmp_path):
-    from src.backend import backtest_journal_clickhouse, backtest_market_data, replay_run_service
+@pytest.mark.parametrize("interval,blocker_name", [
+    ("100ms", "FIXED_EXECUTION_BLOCKER"),
+    ("events", "EVENT_EXECUTION_BLOCKER"),
+])
+@pytest.mark.parametrize("backend", ["arte_clickhouse_v1", "sqlite_v1"])
+def test_backtest_resume_rejects_before_legacy_journal_access(
+    monkeypatch, tmp_path, interval, blocker_name, backend,
+):
+    from src.backend import replay_run_service
+    from src.backend import backtest_market_data
 
     run_dir = tmp_path / RUN
     run_dir.mkdir()
     (run_dir / "manifest.json").write_text(json.dumps({
-        "journal_backend": "arte_clickhouse_v1", "run": {"status": "stopped"},
+        "journal_backend": backend, "run": {"status": "stopped"},
     }), encoding="utf-8")
-    definition = SimpleNamespace(mode=RunMode.BACKTEST, debug_fixture=None,
-        configuration_revision={"revision_id": "revision", "content_hash": "hash"},
-        payload=lambda: {"mode": "backtest"})
-    state = {
-        "schema_version": replay_run_service.RESTART_CHECKPOINT_SCHEMA_VERSION,
-        "complete": True,
-        "identity": {"run_id": RUN, "mode": "backtest",
-                     "configuration_revision_id": "revision",
-                     "configuration_content_hash": "hash",
-                     "debug_fixture_content_hash": "", "account_ids": []},
-        "controller": {"source_cursor": {"market": 12},
-                       "frame_cursor": {"frame": 13},
-                       "historical_liquidity": {}},
-        "journal_command": {"schema_version": 1, "run_id": RUN},
-    }
-    checkpoint = {"status": "stopped", "sequence": 2,
-        "fence_id": "00000000-0000-0000-0000-000000000003",
-        "batch_ids": ("00000000-0000-0000-0000-000000000004",),
-        "source_cursor": json.dumps({"market": {"market": 12}, "frame": {"frame": 13}}),
-        "state": state}
-
-    class Client:
-        def close(self):
-            pass
-
+    definition = SimpleNamespace(mode=RunMode.BACKTEST, execution_interval=interval)
     monkeypatch.setattr(replay_run_service, "_definition_from_manifest", lambda *_a, **_k: definition)
-    monkeypatch.setattr(replay_run_service, "_simulated_account_ids", lambda _definition: ())
-    monkeypatch.setattr(backtest_market_data, "readonly_clickhouse_client", Client)
-    monkeypatch.setattr(backtest_journal_clickhouse, "verify_run_identity", lambda *_a, **_k: None)
-    monkeypatch.setattr(backtest_journal_clickhouse, "backtest_code_hash", lambda _root: "code")
-    monkeypatch.setattr(backtest_journal_clickhouse, "load_fenced_checkpoint", lambda *_a: checkpoint)
+    monkeypatch.setattr(backtest_market_data, "readonly_clickhouse_client", lambda:
+                        (_ for _ in ()).throw(AssertionError("Retired bt_* journal queried")))
     monkeypatch.setattr(replay_run_service.TradingJournal, "__init__", lambda *_a, **_k:
                         (_ for _ in ()).throw(AssertionError("SQLite opened")))
-    controller = SimpleNamespace(start=AsyncMock())
-    captured = {}
-    def controller_factory(*_a, **kwargs):
-        captured.update(kwargs)
-        return controller
-    monkeypatch.setattr(replay_run_service, "ReplayRunController", controller_factory)
+    monkeypatch.setattr(replay_run_service, "ReplayRunController", lambda *_a, **_k:
+                        (_ for _ in ()).throw(AssertionError("Controller constructed")))
     service = ReplayRunService(runtime_root=tmp_path)
-    service._admit = AsyncMock()
-    monkeypatch.setattr("src.backend.historical_liquidity_checkpoint.restore", lambda _state: None)
-
-    assert asyncio.run(service.resume(RUN)) is controller
-    controller.start.assert_awaited_once()
-    assert captured["resume_state"] == state
-    assert captured["resume_journal_prefix"]["sequence"] == 2
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(service.resume(RUN))
+    assert str(exc.value) == getattr(backtest_market_data, blocker_name)
     assert not (run_dir / "journal.sqlite3").exists()
 
 

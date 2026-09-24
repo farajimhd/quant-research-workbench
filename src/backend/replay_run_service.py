@@ -8212,6 +8212,11 @@ class ReplayRunService:
             raise ValueError("Completed historical runs cannot be resumed")
         backend = str(manifest.get("journal_backend") or "sqlite_v1")
         definition = _definition_from_manifest(manifest, run_dir=run_dir)
+        if definition.mode == RunMode.BACKTEST:
+            # A saved run must obey the same admission gate as a new one.
+            # In particular, never open its legacy SQLite journal or retired
+            # bt_* ClickHouse tables before start() rejects execution.
+            raise RuntimeError(_backtest_launch_blocker(definition))
         resume_prefix: dict[str, Any] | None = None
         if backend == "arte_clickhouse_v1" and definition.mode == RunMode.BACKTEST:
             from src.backend.backtest_journal_clickhouse import (
