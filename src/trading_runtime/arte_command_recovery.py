@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from src.trading_runtime.arte_journal_writer import (
-    load_committed_order_command_page, load_committed_order_transition_page,
-    load_committed_prefix,
+    load_committed_order_command_page, load_committed_order_context_page,
+    load_committed_order_transition_page, load_committed_prefix,
 )
 from src.trading_runtime.ibkr_schema import Execution, LiveOrder
 
@@ -97,6 +97,7 @@ async def audit_committed_commands(
         )
         if not page:
             break
+        await asyncio.to_thread(load_committed_order_context_page, client, prefix, page)
         for command in page:
             key = (str(command["account_id"]), str(command["client_order_id"]))
             if not key[1] or key in seen:

@@ -175,7 +175,11 @@ to its strategy intent, OMS group, and policy version without changing or
 rehashing older command rows. Publication requires that the intent be in the
 same batch or exactly one earlier committed intent for the run/account. The
 journal-only two-batch ClickHouse test and SSD placement check passed; this
-link does not yet encode the remaining nested OMS strategy evidence.
+link does not yet encode the remaining nested OMS strategy evidence. Cold
+command audit now pages the context children, checks their hashes and parent
+identities, and proves each referenced intent is one earlier fence-certified
+strategy-intent event. The real two-batch integration run passed that read-only
+audit; missing or ambiguous links fail closed.
 
 Before a new mode uses this authority, verify: schema, SSD policy and actual
 parts; writer/reader grants; all runtime state families mapped without JSON;

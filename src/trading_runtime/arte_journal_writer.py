@@ -920,6 +920,101 @@ def load_committed_order_command_page(
     return tuple(result)
 
 
+def load_committed_order_context_page(
+    client: Any, prefix: CommittedPrefix,
+    commands: tuple[dict[str, Any], ...],
+) -> dict[str, dict[str, Any]]:
+    """Join at most one typed strategy context to each committed command."""
+    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+        raise ValueError("Order recovery requires a verified committed prefix")
+    if not commands or len(commands) > 1000:
+        raise ValueError("Command context page must contain 1-1000 commands")
+    by_id = {str(UUID(str(command["record_id"]))): command for command in commands}
+    if len(by_id) != len(commands) or any(
+        str(command["run_id"]) != prefix.run_id for command in commands
+    ):
+        raise ValueError("Command context page identity is invalid")
+    ids = ",".join(f"toUUID({_literal(value)})" for value in by_id)
+    columns = ",".join(column for column, _ in
+                       _CONTRACTS["trading_order_command_context_v1"].columns)
+    rows = _rows(client,
+        f"SELECT {columns} FROM arte.trading_order_command_context_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND parent_record_id IN ({ids}) "
+        f"LIMIT {len(commands) + 1} FORMAT JSONEachRow")
+    if len(rows) > len(commands):
+        raise RuntimeError("Committed order context page has excess rows")
+    contexts: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        parent_id = str(UUID(str(row["parent_record_id"])))
+        command = by_id.get(parent_id)
+        if command is None or parent_id in contexts:
+            raise RuntimeError("Committed order context lacks one command parent")
+        content = {key: value for key, value in row.items() if key != "content_hash"}
+        digest = sha256(canonical_json(_canonical_typed_content(
+            "trading_order_command_context_v1", content, stored_utc=True,
+        )).encode("utf-8")).hexdigest()
+        if digest != str(row["content_hash"]):
+            raise RuntimeError("Committed order context differs from its row hash")
+        if (str(UUID(str(row["batch_id"]))) != str(UUID(str(command["batch_id"])))
+                or row["event_month"] != command["event_month"]
+                or row["account_id"] != command["account_id"]):
+            raise RuntimeError("Committed order context differs from its command")
+        contexts[parent_id] = row
+    for parent_id, command in by_id.items():
+        has_strategy = bool(str(command.get("strategy_id") or ""))
+        if has_strategy != (parent_id in contexts):
+            raise RuntimeError("Strategy command lacks its typed order context")
+    if contexts:
+        wanted = {
+            (str(row["account_id"]), str(row["strategy_intent_id"]))
+            for row in contexts.values()
+        }
+        intent_ids = ",".join(_literal(value) for value in sorted({value for _, value in wanted}))
+        accounts = ",".join(_literal(value) for value in sorted({value for value, _ in wanted}))
+        candidates = _rows(client,
+            "SELECT record_id,batch_id,account_id,intent_id "
+            "FROM arte.trading_strategy_intent_v1 "
+            f"WHERE run_id={_literal(prefix.run_id)} "
+            f"AND account_id IN ({accounts}) AND intent_id IN ({intent_ids}) "
+            f"LIMIT {len(contexts) + 1} FORMAT JSONEachRow")
+        if len(candidates) > len(contexts):
+            raise RuntimeError("Strategy command has ambiguous intent candidates")
+        intents_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for candidate in candidates:
+            key = (str(candidate["account_id"]), str(candidate["intent_id"]))
+            if key not in wanted or key in intents_by_key:
+                raise RuntimeError("Strategy command has an ambiguous typed intent")
+            intents_by_key[key] = candidate
+        if set(intents_by_key) != wanted:
+            raise RuntimeError("Strategy command lacks its committed typed intent")
+        source_ids = ",".join(f"toUUID({_literal(str(UUID(str(row['record_id']))))})"
+                              for row in candidates)
+        sources = _rows(client,
+            "SELECT record_id,batch_id,sequence,account_id,category,entity_type "
+            "FROM arte.trading_event_v1 "
+            f"WHERE run_id={_literal(prefix.run_id)} "
+            f"AND record_id IN ({source_ids}) "
+            f"LIMIT {len(candidates) + 1} FORMAT JSONEachRow")
+        by_source = {str(UUID(str(row["record_id"]))): row for row in sources}
+        if len(sources) != len(candidates) or len(by_source) != len(candidates):
+            raise RuntimeError("Strategy command intent event is missing or duplicated")
+        allowed_batches = set(prefix.batch_ids)
+        for parent_id, context in contexts.items():
+            command = by_id[parent_id]
+            intent = intents_by_key[(str(context["account_id"]),
+                                     str(context["strategy_intent_id"]))]
+            source = by_source[str(UUID(str(intent["record_id"])))]
+            if (str(UUID(str(source["batch_id"]))) != str(UUID(str(intent["batch_id"])))
+                    or str(UUID(str(source["batch_id"]))) not in allowed_batches
+                    or source["account_id"] != context["account_id"]
+                    or source["category"] != "strategy_decision"
+                    or source["entity_type"] != "intent"
+                    or int(source["sequence"]) >= int(command["sequence"])):
+                raise RuntimeError("Strategy command intent is not an earlier committed event")
+    return contexts
+
+
 def load_committed_order_transition_page(
     client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
     limit: int = 500,

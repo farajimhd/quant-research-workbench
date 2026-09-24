@@ -35,6 +35,8 @@ def install_journal(monkeypatch, commands, transitions=(), status="running"):
                      if command["sequence"] > after_sequence)[:limit]
 
     monkeypatch.setattr(recovery, "load_committed_order_command_page", page)
+    monkeypatch.setattr(recovery, "load_committed_order_context_page",
+                        lambda _client, _prefix, _page: {})
 
     def transition_page(_client, _prefix, *, after_sequence, limit):
         return tuple(row for row in transitions if row["sequence"] > after_sequence)[:limit]
@@ -116,6 +118,17 @@ def test_orphan_transition_fails_recovery(monkeypatch):
          "client_order_id": "C9", "conid": 101, "terminal": 1},
     ])
     with pytest.raises(RuntimeError, match="no matching order command"):
+        asyncio.run(recovery.audit_committed_commands(None, Broker(), "run"))
+
+
+def test_missing_strategy_command_context_fails_recovery(monkeypatch):
+    install_journal(monkeypatch, [{**command(), "strategy_id": "strategy-1"}])
+
+    def missing(_client, _prefix, _page):
+        raise RuntimeError("Strategy command lacks its typed order context")
+
+    monkeypatch.setattr(recovery, "load_committed_order_context_page", missing)
+    with pytest.raises(RuntimeError, match="typed order context"):
         asyncio.run(recovery.audit_committed_commands(None, Broker(), "run"))
 
 

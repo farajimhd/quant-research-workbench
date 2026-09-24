@@ -13,6 +13,7 @@ from src.trading_runtime.arte_intent_projection import (
     restore_strategy_intent, strategy_intent_batch,
 )
 from src.trading_runtime.arte_journal_writer import (
+    load_committed_order_command_page, load_committed_order_context_page,
     load_committed_prefix, publish_typed_batch,
 )
 from src.trading_runtime.arte_journal_projection import order_command_batch
@@ -211,3 +212,19 @@ def test_order_context_can_link_to_prior_committed_intent():
     publish_typed_batch(client, second)
     prefix = load_committed_prefix(client, run_id)
     assert prefix is not None and prefix.last_sequence == 2
+    commands = load_committed_order_command_page(client, prefix)
+    contexts = load_committed_order_context_page(client, prefix, commands)
+    assert len(contexts) == 1
+    assert next(iter(contexts.values()))["strategy_intent_id"] == "intent-1"
+    intent_event = client.tables["trading_event_v1"][0]
+    intent_event["sequence"] = 3
+    with pytest.raises(RuntimeError, match="earlier committed event"):
+        load_committed_order_context_page(client, prefix, commands)
+    intent_event["sequence"] = 1
+    context_row = client.tables["trading_order_command_context_v1"].pop()
+    with pytest.raises(RuntimeError, match="lacks its typed order context"):
+        load_committed_order_context_page(client, prefix, commands)
+    client.tables["trading_order_command_context_v1"].append(context_row)
+    client.tables["trading_order_command_context_v1"][0]["order_group_id"] = "altered"
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_committed_order_context_page(client, prefix, commands)
