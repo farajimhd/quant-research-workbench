@@ -113,12 +113,24 @@ Outputs belong under the configured runtime root:
 ```text
 hindsight-greedy/<date>/<configuration-and-source-hash>/
   plan.json
+  market_action_values.parquet
   listings/<identity>/coefficients.parquet
   listings/<identity>/{long,short,long_short}.parquet
   listings/<identity>/ready.json
   {long,short,long_short}.parquet
   progress.json, summary.json, complete.json
 ```
+
+`market_action_values.parquet` is the published market-wide Phase 2 tensor in
+long, columnar form. Its logical axes are MACD resolution, decision time, stable
+`listing_index` (the order of `plan.selected`), and direction. Every listing and
+both directions have a row at each of the 57,601 decision seconds. All opening,
+holding, price, target, duration and availability columns remain available;
+`wait` is the zero-allocation choice when evaluating those rows. It is written
+in bounded per-listing Parquet row groups, so the physical row order is listing
+then direction/time. The completion marker records the shape and file hash.
+The per-listing files are restart checkpoints; a consumer comparing or splitting
+capital among tickers should read the root tensor, not just the winners below.
 
 The three root tables give the maximum comparison price and the best **flat-state**
 local action at every second. With fractional size and linear costs, allocating

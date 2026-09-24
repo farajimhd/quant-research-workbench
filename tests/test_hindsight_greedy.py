@@ -275,11 +275,12 @@ def test_runnable_builder_resume_stop_and_corrupt_source(tmp_path, monkeypatch):
     monkeypatch.setenv("QW_RUNTIME_ROOT", str(tmp_path))
     source = tmp_path / "source"
     listing = dict(ticker="B", listing_id="listing:B")
+    second = dict(ticker="C", listing_id="listing:C")
     plan = dict(version="hindsight-phase1-macd-v1", date="2026-08-21",
-                selected=[listing], scope="explicit_canary")
+                selected=[listing,second], scope="explicit_canary")
     plan["plan_hash"] = digest(plan)
     write(source/"plan.json", plan)
-    write(source/"complete.json", dict(plan_hash=plan["plan_hash"], listing_count=1, rows=57601))
+    write(source/"complete.json", dict(plan_hash=plan["plan_hash"], listing_count=2, rows=115202))
     folder = source/"listings"/digest(listing)[:20]
     folder.mkdir(parents=True)
     left, right = bounds(date(2026, 8, 21))
@@ -295,11 +296,26 @@ def test_runnable_builder_resume_stop_and_corrupt_source(tmp_path, monkeypatch):
     frame.write_parquet(folder/"opportunities.parquet")
     write(folder/"ready.json", dict(plan_hash=plan["plan_hash"], listing=listing, rows=57601,
                                     files={"opportunities.parquet": file_hash(folder/"opportunities.parquet")}))
+    other = source/"listings"/digest(second)[:20]
+    other.mkdir(parents=True)
+    frame.with_columns(pl.lit('C').alias('ticker'),pl.lit('listing:C').alias('listing_id')).write_parquet(other/"opportunities.parquet")
+    write(other/"ready.json", dict(plan_hash=plan["plan_hash"],listing=second,rows=57601,
+        files={"opportunities.parquet":file_hash(other/"opportunities.parquet")}))
     args = ["build", "--phase1", str(source)]
     assert main(args) == 0
     output = next((tmp_path/"hindsight-greedy"/"2026-08-21").iterdir())
+    tensor = pl.read_parquet(output/'market_action_values.parquet')
+    assert tensor.height == 2*2*57601
+    assert tensor.select('listing_index','ticker','side').unique().sort('listing_index','side').to_dicts() == [
+        dict(listing_index=0,ticker='B',side='long'),dict(listing_index=0,ticker='B',side='short'),
+        dict(listing_index=1,ticker='C',side='long'),dict(listing_index=1,ticker='C',side='short')]
+    one_second = tensor.filter(pl.col('time_us') == left+1_000_000)
+    assert one_second.height == 4
+    assert one_second.filter(pl.col('side') == 'long')['open_value_per_share'].to_list() == pytest.approx(
+        [one_second.filter((pl.col('ticker') == 'B') & (pl.col('side') == 'long'))['open_value_per_share'][0]]*2)
+    assert read(output/'complete.json')['tensor']['rows'] == tensor.height
     assert main(args) == 0
-    assert read(output/"summary.json")["counts"] == dict(completed=0, reused=1, failed=0)
+    assert read(output/"summary.json")["counts"] == dict(completed=0, reused=2, failed=0)
     (output/"STOP").touch()
     assert main(args) == 2 and not (output/"complete.json").exists()
     assert read(output/"summary.json")["status"] == "interrupted"

@@ -21,6 +21,7 @@ import signal
 from time import monotonic
 
 import polars as pl
+import pyarrow.parquet as pq
 from rich.console import Console
 from rich.table import Table
 
@@ -190,6 +191,57 @@ def compile_listing(listing, source, root, plan):
     return dict(ticker=listing["ticker"],status=status,directory=directory,elapsed_seconds=monotonic()-started)
 
 
+def publish_market_values(root, plan):
+    """Publish all alternatives as one bounded-memory market tensor table."""
+    path = root / 'market_action_values.parquet'
+    temporary = path.with_suffix('.parquet.tmp')
+    expected_rows = 2 * 57601 * len(plan['selected'])
+    writer = None
+    rows = 0
+    try:
+        for index, listing in enumerate(plan['selected']):
+            if STOP or (root/'STOP').exists():
+                raise InterruptedError('Market tensor publication interrupted')
+            folder = root/'listings'/digest(listing)[:20]
+            ready = read(folder/'ready.json')
+            if ready['plan_hash'] != plan['plan_hash'] or ready['rows'] != 115202:
+                raise ValueError('Market tensor listing certificate mismatch')
+            verify_files(folder, ready['files'])
+            frame = pl.read_parquet(folder/'coefficients.parquet')
+            if (frame.height != 115202 or frame['ticker'].unique().to_list() != [listing['ticker']]
+                or frame['listing_id'].unique().to_list() != [listing['listing_id']]
+                or frame['side'].to_list()[:57601] != ['long']*57601
+                or frame['side'].to_list()[57601:] != ['short']*57601
+                or not frame['time_us'].head(57601).equals(frame['time_us'].tail(57601))
+                or frame['time_us'].n_unique() != 57601):
+                raise ValueError('Market tensor axes or listing identity mismatch')
+            frame = frame.with_columns(
+                pl.lit(index,dtype=pl.UInt32).alias('listing_index'),
+                pl.lit(plan['discount_policy']['macd_resolution_seconds']).alias('macd_resolution_seconds'))
+            batch = frame.to_arrow()
+            if writer is None:
+                writer = pq.ParquetWriter(temporary, batch.schema, compression='zstd',
+                    write_statistics=True)
+            writer.write_table(batch, row_group_size=57601)
+            rows += frame.height
+        if writer is None or rows != expected_rows:
+            raise ValueError('Market tensor row count mismatch')
+    finally:
+        if writer is not None:
+            writer.close()
+    if path.exists():
+        if file_hash(path) != file_hash(temporary):
+            temporary.unlink()
+            raise ValueError('Existing market tensor differs from rebuilt output')
+        temporary.unlink()
+    else:
+        temporary.replace(path)
+    return dict(file=path.name, rows=rows, listing_count=len(plan['selected']),
+        time_count=57601, side_count=2, resolution_count=1,
+        axis_order=['macd_resolution_seconds','time_us','listing_index','side'],
+        listing_index_source='plan.selected order', file_hash=file_hash(path))
+
+
 def run_build(args, console):
     global STOP
     STOP = False
@@ -210,6 +262,7 @@ def run_build(args, console):
                 sizes="fractional", modes=list(MODES),
                 short_policy="100% synthetic reserve; proceeds locked; no broker margin claim",
                 semantics="Local greedy values; no future reallocations; exact size coefficients",
+                market_tensor='market_action_values.parquet; full candidate axis; root winners are projections',
                 polars_version=pl.__version__,
                 code_hashes={p: sha256((REPO / p).read_text(encoding="utf-8").replace("\r\n", "\n").encode()).hexdigest()
                              for p in ("scripts/build_hindsight_greedy.py", "src/market_engine/hindsight_greedy.py", "src/market_engine/hindsight_batch.py")})
@@ -258,18 +311,24 @@ def run_build(args, console):
             if success:
                 if phase1_plan(source)["plan_hash"] != plan["phase1_plan_hash"]:
                     raise ValueError("Phase 1 completion changed")
+                tensor = publish_market_values(root,plan)
                 for mode in MODES:
                     policy = flat_policy(summaries[mode])
                     if plan.get('liquidation_us') is not None:
                         policy = policy.with_columns((pl.col('time_us') >= plan['liquidation_us']).alias('session_terminal'))
                     parquet(root / f"{mode}.parquet", policy)
-                write(root / "complete.json", dict(plan_hash=plan["plan_hash"], listing_count=len(results),
-                    files={f"{mode}.parquet": file_hash(root / f"{mode}.parquet") for mode in MODES}))
+                completion = dict(plan_hash=plan["plan_hash"], listing_count=len(results),
+                    tensor=tensor,files={**{f"{mode}.parquet": file_hash(root / f"{mode}.parquet") for mode in MODES},
+                        tensor['file']:tensor['file_hash']})
             state = "complete" if success else "failed" if counts["failed"] else "interrupted"
             write(root / "summary.json", dict(status=state, counts=counts, results=results,
+                                               market_tensor=tensor if success else None,
                                                elapsed_seconds=monotonic()-started), immutable=False)
             write(root / "progress.json", dict(status=state, counts=counts, active=0,
                 queued=len(plan["selected"])-len(results), retries=0), immutable=False)
+            if success:
+                write(root / "complete.json", completion)
+                console.print(f"Market values: {tensor['rows']:,} rows across {tensor['listing_count']:,} listings | {tensor['file']}")
             console.print(f"Result: {state}. Rerun to reuse verified listings; failures are never skipped.")
             return 0 if success else 2
     finally:

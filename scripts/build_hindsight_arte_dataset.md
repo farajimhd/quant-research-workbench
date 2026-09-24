@@ -126,6 +126,10 @@ Outputs live under `runtime/hindsight-arte/<configuration-hash>/`. Each session
 has a Phase 1 directory compatible with the shared Phase 2 compiler. Phase 2
 outputs remain under `runtime/hindsight-greedy/`; their paths and market-wide
 available/unavailable counts are recorded in the campaign `summary.json`.
+Each Phase 2 root publishes `market_action_values.parquet`, containing all
+tickers and both directions at every decision second. Its listing index is the
+order in the Phase 2 plan. The three root mode tables are greedy projections;
+they do not replace the complete action-value tensor.
 Phase 1 summaries retain terminal and missing-price counts per ticker/side.
 Every decision grid includes the terminal 20:00 row. Where a current price
 exists, terminal targets close the former end-of-session target gaps. Missing
