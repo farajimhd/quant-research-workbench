@@ -2,7 +2,9 @@ import json
 
 import pytest
 
-from src.trading_runtime.arte_journal_schema import TABLES, schema_ddl, storage_preflight
+from src.trading_runtime.arte_journal_schema import (
+    TABLES, journal_permission_preflight, schema_ddl, storage_preflight,
+)
 
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
@@ -68,3 +70,37 @@ def test_preflight_requires_exact_layout_and_actual_ssd_parts() -> None:
     client.wrong_disk = True
     with pytest.raises(ValueError, match="outside live_market_ssd"):
         storage_preflight(client)
+
+
+def test_journal_principal_cannot_write_market_or_change_schema() -> None:
+    market = {"bars_v1", "indicators_v1", "liquidity_100ms_v1",
+              "structural_level_coverage_v7", "structural_level_observations_v7",
+              "structural_levels_v7"}
+    journal = {table.name for table in TABLES}
+
+    class Grants:
+        extra_grant = ""
+
+        def execute(self, sql: str) -> str:
+            if "FROM system.tables" in sql:
+                return "\n".join(json.dumps({"name": name}) for name in sorted(market | journal))
+            if sql.startswith("CHECK GRANT "):
+                privilege, scope = sql.removeprefix("CHECK GRANT ").split(" ON ")
+                if sql == self.extra_grant:
+                    return "1\n"
+                if privilege == "SELECT" and scope.removeprefix("arte.") in market | journal:
+                    return "1\n"
+                if privilege == "INSERT" and scope.removeprefix("arte.") in journal:
+                    return "1\n"
+                return "0\n"
+            raise AssertionError(sql)
+
+    client = Grants()
+    journal_permission_preflight(client)
+    for grant in ("CHECK GRANT INSERT ON arte.bars_v1",
+                  "CHECK GRANT CREATE TABLE ON arte.*",
+                  "CHECK GRANT DROP TABLE ON arte.bars_v1",
+                  "CHECK GRANT ALTER DELETE ON arte.trading_event_v1"):
+        client.extra_grant = grant
+        with pytest.raises(ValueError):
+            journal_permission_preflight(client)

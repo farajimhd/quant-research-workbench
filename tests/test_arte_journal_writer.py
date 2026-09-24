@@ -347,6 +347,7 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
 
     monkeypatch.setattr(writer_module, "publish_typed_batch", stalled)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=1)
     try:
@@ -393,6 +394,7 @@ def test_writer_coalesces_only_contiguous_unpublished_batches(monkeypatch) -> No
 
     monkeypatch.setattr(writer_module, "publish_typed_batch", record)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=3)
     try:
@@ -418,6 +420,7 @@ def test_writer_failure_poisoning_is_visible_to_all_receipts(monkeypatch) -> Non
 
     monkeypatch.setattr(writer_module, "publish_typed_batch", rejected)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
     try:

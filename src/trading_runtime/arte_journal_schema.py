@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any
 
 
@@ -358,3 +359,40 @@ def storage_preflight(client: Any) -> None:
         "LIMIT 1 FORMAT JSONEachRow")
     if bad_parts:
         raise ValueError("Typed journal has active parts outside live_market_ssd")
+
+
+def journal_permission_preflight(client: Any) -> None:
+    """Fail closed unless this principal can only read market and append journal."""
+    names = _rows(client,
+        "SELECT name FROM system.tables WHERE database='arte' FORMAT JSONEachRow")
+    tables = {str(row["name"]) for row in names}
+    journal = {table.name for table in TABLES}
+    if not journal.issubset(tables):
+        raise ValueError("Typed journal tables are missing from permission audit")
+    market = {"bars_v1", "indicators_v1", "liquidity_100ms_v1",
+              "structural_level_coverage_v7", "structural_level_observations_v7",
+              "structural_levels_v7"}
+    if not market.issubset(tables):
+        raise ValueError("Required market products are missing from permission audit")
+    if any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None for name in tables):
+        raise ValueError("Unsafe table name in permission audit")
+
+    def allowed(privilege: str, scope: str) -> bool:
+        result = client.execute(f"CHECK GRANT {privilege} ON {scope}").strip()
+        if result not in {"0", "1"}:
+            raise ValueError("ClickHouse grant check returned an invalid result")
+        return result == "1"
+
+    if allowed("CREATE TABLE", "arte.*"):
+        raise ValueError("Journal principal may create arte tables")
+    for name in sorted(tables):
+        target = f"arte.{name}"
+        if not allowed("SELECT", target):
+            raise ValueError(f"Journal principal cannot read {target}")
+        if allowed("ALTER", target) or allowed("DROP TABLE", target) or allowed("TRUNCATE", target):
+            raise ValueError(f"Journal principal may alter or remove {target}")
+        if allowed("ALTER DELETE", target) or allowed("ALTER UPDATE", target):
+            raise ValueError(f"Journal principal may mutate {target}")
+        can_insert = allowed("INSERT", target)
+        if can_insert != (name in journal):
+            raise ValueError(f"Journal principal has incorrect insert authority on {target}")

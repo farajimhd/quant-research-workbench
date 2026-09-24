@@ -19,7 +19,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 from uuid import UUID
 
-from src.trading_runtime.arte_journal_schema import TABLES, storage_preflight
+from src.trading_runtime.arte_journal_schema import TABLES, journal_permission_preflight, storage_preflight
 from src.trading_runtime.journal_contract import canonical_json
 
 
@@ -552,6 +552,7 @@ class ArteJournalWriter:
         # Startup/control-plane validation, before a publication thread exists.
         # Never attempt to create tables or repair misplaced parts here.
         storage_preflight(client)
+        journal_permission_preflight(client)
         _verify_run_identity(client, run_id)
         self._client = client
         self._run_id = run_id
