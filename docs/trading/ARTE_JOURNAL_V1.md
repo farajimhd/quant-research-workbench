@@ -147,10 +147,14 @@ additional nested evidence. Until every authoritative member has an explicit
 typed representation and a losslessness test, these categories must remain
 unmapped and the ClickHouse runtime cutover must fail closed. The installed
 table alone is not evidence of complete live-event coverage.
-The staged `arte_intent_projection` flattens the declared `StrategyIntent`,
+The `arte_intent_projection` flattens the declared `StrategyIntent`,
 capital request, execution policy, envelope, and protection profile/slices
-into scalar parent and child rows. It refuses nonempty open-ended metadata;
-these rows are not yet published to ClickHouse. Source-field inventory tests
+into scalar parent and child rows. It refuses nonempty open-ended metadata.
+The two typed intent families are installed in `arte` on `live_market_ssd` and
+participate in the same commit fence as live and Backtest journal families;
+an isolated one-intent, one-slice ClickHouse publication and cold prefix
+verification passed. This does not enable the runtime cutover. Source-field
+inventory tests
 fail if a declared intent or policy field is added without reviewing the
 projection. The reverse projection checks row counts, ordinals, parent intent
 identities, and exact canonical round-trip equality before reconstructing an
