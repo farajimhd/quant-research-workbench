@@ -71,7 +71,7 @@ def journal_clickhouse_client() -> Any:
 
 
 def backtest_code_hash(root: Path) -> str:
-    """Fingerprint the deployed Python source, including research dependencies.
+    """Fingerprint Python source independent of checkout newline convention.
 
     This uses source files rather than a Git checkout because workstation code
     synchronization does not require a ``.git`` directory at execution time.
@@ -88,9 +88,10 @@ def backtest_code_hash(root: Path) -> str:
             relative = path.relative_to(root).as_posix().encode("utf-8")
             digest.update(len(relative).to_bytes(4, "big"))
             digest.update(relative)
-            with path.open("rb") as source_file:
-                while chunk := source_file.read(1024 * 1024):
-                    digest.update(chunk)
+            # Git checkout on Windows may be CRLF while the committed archive
+            # deployed to the workstation is LF. Python treats both the same;
+            # a resume identity must not depend on that transport detail.
+            digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
             count += 1
     if not count:
         raise ValueError("Backtest code identity has no source files")

@@ -35,6 +35,8 @@ def test_source_identity_changes_with_deployed_python(tmp_path):
     (tmp_path / "research" / "helper.py").write_text("x = 1\n", encoding="utf-8")
     first = backtest_code_hash(tmp_path)
     assert first == backtest_code_hash(tmp_path)
+    source.write_bytes(b"VERSION = 1\r\n")
+    assert first == backtest_code_hash(tmp_path)
     source.write_text("VERSION = 2\n", encoding="utf-8")
     assert first != backtest_code_hash(tmp_path)
 
