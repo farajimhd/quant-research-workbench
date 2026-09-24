@@ -1668,6 +1668,11 @@ def _load_committed_execution_detail_page(
     return tuple(result)
 
 
+@dataclass(frozen=True, slots=True)
+class _DurabilityBarrier:
+    """Queue marker ordered after every earlier typed publication."""
+
+
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 
@@ -1684,11 +1689,14 @@ class ArteJournalWriter:
         self._run_id = run_id
         self._max_events_per_commit = max_events_per_commit
         self._queue: Queue[
-            tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot,
+            tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
+                  | _DurabilityBarrier,
                   Future[str]] | None
         ] = Queue(maxsize=capacity)
         self._submission_lock = Lock()
         self._error: BaseException | None = None
+        self._accepted_writes = False
+        self._last_commit_id: str | None = None
         self._closed = False
         self._client_closed = False
         self._thread = Thread(target=self._run, name="arte-journal-writer", daemon=False)
@@ -1708,6 +1716,7 @@ class ArteJournalWriter:
                 self._queue.put_nowait((batch, receipt))
             except Full as exc:
                 raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
+            self._accepted_writes = True
         return receipt
 
     def submit_portfolio_snapshot(self, prepared: PreparedPortfolioSnapshot) -> Future[str]:
@@ -1728,6 +1737,7 @@ class ArteJournalWriter:
                 self._queue.put_nowait((prepared, receipt))
             except Full as exc:
                 raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
+            self._accepted_writes = True
         return receipt
 
     def submit_captured_portfolio_snapshot(
@@ -1750,11 +1760,33 @@ class ArteJournalWriter:
                 self._queue.put_nowait((captured, receipt))
             except Full as exc:
                 raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
+            self._accepted_writes = True
+        return receipt
+
+    def submit_barrier(self) -> Future[str]:
+        """Return immediately; resolve after every prior queued write is durable.
+
+        A Keeper claim can be attached to this single ordered receipt after
+        the admission has queued its event and recovery-state writes.
+        """
+        with self._submission_lock:
+            if self._closed:
+                raise RuntimeError("Typed journal writer is closed")
+            if self._error is not None:
+                raise RuntimeError("Typed journal writer failed") from self._error
+            if not self._accepted_writes:
+                raise ValueError("Durability barrier requires a prior journal write")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((_DurabilityBarrier(), receipt))
+            except Full as exc:
+                raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
         return receipt
 
     def _run(self) -> None:
         held: tuple[
-            TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot,
+            TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
+            | _DurabilityBarrier,
             Future[str],
         ] | None = None
         while True:
@@ -1788,6 +1820,10 @@ class ArteJournalWriter:
                 if isinstance(group[0][0], TypedJournalBatch):
                     batch = _coalesce_unpublished(tuple(row for row, _ in group))
                     committed_id = publish_typed_batch(self._client, batch)
+                elif isinstance(group[0][0], _DurabilityBarrier):
+                    if self._last_commit_id is None:
+                        raise RuntimeError("Durability barrier has no committed predecessor")
+                    committed_id = self._last_commit_id
                 else:
                     from src.trading_runtime.arte_portfolio_snapshot import (
                         CapturedPortfolioSnapshot, prepare_captured_portfolio_snapshot,
@@ -1797,6 +1833,7 @@ class ArteJournalWriter:
                     if isinstance(snapshot, CapturedPortfolioSnapshot):
                         snapshot = prepare_captured_portfolio_snapshot(snapshot)
                     committed_id = publish_prepared_portfolio_snapshot(self._client, snapshot)
+                self._last_commit_id = committed_id
                 for _, receipt in group:
                     if receipt.cancelled():
                         continue

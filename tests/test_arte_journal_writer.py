@@ -810,6 +810,106 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
         journal.close()
 
 
+def test_ordered_barrier_receipt_waits_for_prior_commit_without_blocking_submit(monkeypatch) -> None:
+    entered, release = Event(), Event()
+
+    def stalled(_client, item):
+        entered.set()
+        assert release.wait(5)
+        return item.batch_id
+
+    monkeypatch.setattr(writer_module, "publish_typed_batch", stalled)
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
+    try:
+        with pytest.raises(ValueError, match="prior journal write"):
+            journal.submit_barrier()
+        write_receipt = journal.submit(batch())
+        assert entered.wait(5)
+        barrier = journal.submit_barrier()
+        assert not write_receipt.done() and not barrier.done()
+        release.set()
+        assert write_receipt.result(timeout=5) == BATCH
+        assert barrier.result(timeout=5) == BATCH
+    finally:
+        release.set()
+        journal.close()
+
+
+def test_ordered_barrier_propagates_prior_publication_failure(monkeypatch) -> None:
+    entered, release = Event(), Event()
+
+    def fail(_client, _item):
+        entered.set()
+        assert release.wait(5)
+        raise OSError("ClickHouse unavailable")
+
+    monkeypatch.setattr(writer_module, "publish_typed_batch", fail)
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
+    try:
+        failed = journal.submit(batch())
+        assert entered.wait(5)
+        barrier = journal.submit_barrier()
+        release.set()
+        with pytest.raises(OSError, match="ClickHouse unavailable"):
+            failed.result(timeout=5)
+        with pytest.raises(RuntimeError, match="failed earlier"):
+            barrier.result(timeout=5)
+    finally:
+        release.set()
+        with pytest.raises(RuntimeError, match="did not drain durably"):
+            journal.close()
+
+
+def test_keeper_claim_stays_held_until_typed_writer_barrier(monkeypatch) -> None:
+    from src.trading_runtime.keeper_receipts import KeeperReceiptSupervisor
+
+    entered, release = Event(), Event()
+    released = Event()
+
+    def stalled(_client, item):
+        entered.set()
+        assert release.wait(5)
+        return item.batch_id
+
+    class Coordinator:
+        def portfolio_admission_lease_is_current(self, resource, *, owner_id, epoch):
+            return True
+
+        def renew_portfolio_admission_lease(self, resource, *, owner_id, epoch, ttl_seconds):
+            return {"resource_id": resource, "owner_id": owner_id, "epoch": epoch}
+
+        def release_portfolio_admission_lease(self, resource, *, owner_id, epoch):
+            released.set()
+            return True
+
+    monkeypatch.setattr(writer_module, "publish_typed_batch", stalled)
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
+    supervisor = KeeperReceiptSupervisor(Coordinator())
+    try:
+        journal.submit(batch())
+        assert entered.wait(5)
+        completion = supervisor.watch(({
+            "resource_id": "portfolio-account:DU1", "owner_id": RUN, "epoch": 1,
+        },), journal.submit_barrier())
+        assert not completion.done() and not released.is_set()
+        release.set()
+        assert completion.result(timeout=5) == BATCH
+        assert released.is_set()
+    finally:
+        release.set()
+        journal.close()
+        supervisor.close(timeout_seconds=5)
+
+
 def test_cancelled_receipt_does_not_poison_durable_writer(monkeypatch) -> None:
     entered, release = Event(), Event()
     published = []
