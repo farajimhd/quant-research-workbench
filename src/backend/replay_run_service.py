@@ -2673,75 +2673,23 @@ class ReplayRunController:
             self._dependency_retries.clear()
 
     async def _open_fixed_journal(self) -> None:
-        """Publish one immutable Backtest identity before accepting journal events."""
-        from src.backend.backtest_journal_clickhouse import (
-            BacktestJournalWriter, backtest_code_hash, journal_clickhouse_client,
-            load_fenced_checkpoint, publish_run, storage_preflight,
-            verify_run_identity,
+        """Fail closed at the typed journal boundary until recovery is complete."""
+        from src.trading_runtime.arte_journal_schema import (
+            journal_permission_preflight, storage_preflight,
         )
-        from src.backend.backtest_journal_memory import (
-            BacktestJournalPublisher, BacktestMemoryJournal,
-        )
-
+        from src.trading_runtime.arte_journal_writer import journal_client_from_env
         if self.definition.mode != RunMode.BACKTEST or self._journal is not None:
             raise RuntimeError("ClickHouse Backtest journal requires a new Backtest run")
-        client = await asyncio.to_thread(journal_clickhouse_client)
-        writer = None
+        client = await asyncio.to_thread(journal_client_from_env)
         try:
             await asyncio.to_thread(storage_preflight, client)
-            code_hash = await asyncio.to_thread(
-                backtest_code_hash, Path(__file__).resolve().parents[2])
-            configuration_hash = str(
-                self.definition.configuration_revision.get("content_hash") or "")
-            run_date = self.created_at.astimezone(UTC).date()
-            prior = dict(getattr(self, "_resume_journal_prefix", {}) or {})
-            if getattr(self, "_resume_state", None) is not None and not prior:
-                raise ValueError("Fixed Backtest resume lacks a verified ClickHouse fence")
-            if prior:
-                await asyncio.to_thread(verify_run_identity, client,
-                    run_id=self.run_id, definition=self.definition.payload(),
-                    configuration_hash=configuration_hash, code_hash=code_hash)
-                checkpoint = await asyncio.to_thread(load_fenced_checkpoint, client, self.run_id)
-                if (checkpoint is None or checkpoint["fence_id"] != prior.get("fence_id")
-                        or checkpoint["sequence"] != prior.get("sequence")
-                        or checkpoint["state"] != self._resume_state):
-                    raise ValueError("Fixed Backtest ClickHouse fence changed before resume")
-                from src.backend.backtest_journal_reader import BacktestJournalReader
-                reader = BacktestJournalReader(client, self.run_id,
-                    fenced_sequence=checkpoint["sequence"],
-                    batch_ids=checkpoint["batch_ids"])
-                committed = await asyncio.to_thread(reader.committed_command_records)
-                journal = BacktestMemoryJournal(
-                    run_id=self.run_id, initial_sequence=checkpoint["sequence"])
-                journal.restore_command_checkpoint(
-                    dict(self._resume_state.get("journal_command") or {}))
-                journal.restore_committed_records(committed)
-                publisher_prefix = dict(prior_fence_id=checkpoint["fence_id"],
-                                        committed_batch_ids=checkpoint["batch_ids"])
-            else:
-                await asyncio.to_thread(
-                    publish_run, client,
-                    run_id=self.run_id, run_date=run_date,
-                    definition=self.definition.payload(),
-                    configuration_hash=configuration_hash,
-                    market_plan_token=str(self.definition.market_data_plan["token"]),
-                    v7_plan_token=str(self.definition.causal_v7_plan.get("token") or ""),
-                    code_hash=code_hash,
-                )
-                journal = BacktestMemoryJournal(run_id=self.run_id)
-                publisher_prefix = {}
-            writer = BacktestJournalWriter(client)
-            self._journal = journal
-            self._journal_writer = writer
-            self._journal_publisher = BacktestJournalPublisher(
-                journal, writer, attempt_id=str(uuid4()), run_date=run_date,
-                **publisher_prefix)
-        except BaseException:
-            if writer is None:
-                await asyncio.to_thread(client.close)
-            else:
-                await writer.close()
-            raise
+            await asyncio.to_thread(journal_permission_preflight, client)
+        finally:
+            await asyncio.to_thread(client.close)
+        raise RuntimeError(
+            "Fixed Backtest typed journal publication and cold recovery are incomplete; "
+            "the retired arte.bt_* publisher is not an allowed fallback"
+        )
 
     async def _close_fixed_journal(self) -> None:
         writer = self._journal_writer

@@ -302,8 +302,9 @@ def test_controller_adds_boundary_after_other_pending_records():
         asyncio.run(controller._save_restart_checkpoint_responsive(AT))
 
 
-def test_controller_opens_clickhouse_journal_after_contract_preflight(monkeypatch):
-    import src.backend.backtest_journal_clickhouse as clickhouse_journal
+def test_controller_rejects_retired_publisher_after_typed_preflight(monkeypatch):
+    import src.trading_runtime.arte_journal_schema as typed_schema
+    import src.trading_runtime.arte_journal_writer as typed_writer
 
     calls = []
 
@@ -312,12 +313,11 @@ def test_controller_opens_clickhouse_journal_after_contract_preflight(monkeypatc
             calls.append("closed")
 
     client = Client()
-    monkeypatch.setattr(clickhouse_journal, "journal_clickhouse_client", lambda: client)
-    monkeypatch.setattr(clickhouse_journal, "storage_preflight",
-                        lambda actual: calls.append(("preflight", actual)))
-    monkeypatch.setattr(clickhouse_journal, "backtest_code_hash", lambda _root: "b" * 64)
-    monkeypatch.setattr(clickhouse_journal, "publish_run",
-                        lambda actual, **kwargs: calls.append(("run", actual, kwargs)))
+    monkeypatch.setattr(typed_writer, "journal_client_from_env", lambda: client)
+    monkeypatch.setattr(typed_schema, "storage_preflight",
+                        lambda actual: calls.append(("storage", actual)))
+    monkeypatch.setattr(typed_schema, "journal_permission_preflight",
+                        lambda actual: calls.append(("permission", actual)))
     controller = object.__new__(ReplayRunController)
     controller.definition = SimpleNamespace(
         mode=RunMode.BACKTEST,
@@ -333,12 +333,10 @@ def test_controller_opens_clickhouse_journal_after_contract_preflight(monkeypatc
     controller._journal_publisher = None
 
     async def exercise():
-        await controller._open_fixed_journal()
-        assert isinstance(controller._journal, BacktestMemoryJournal)
-        assert controller._journal_publisher.journal is controller._journal
-        assert calls[0] == ("preflight", client)
-        assert calls[1][2]["market_plan_token"] == "market"
-        await controller._close_fixed_journal()
+        with pytest.raises(RuntimeError, match="typed journal publication and cold recovery"):
+            await controller._open_fixed_journal()
+        assert controller._journal is None
+        assert controller._journal_publisher is None
 
     asyncio.run(exercise())
-    assert calls[-1] == "closed"
+    assert calls == [("storage", client), ("permission", client), "closed"]
