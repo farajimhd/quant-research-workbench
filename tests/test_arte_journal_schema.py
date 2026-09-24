@@ -294,6 +294,8 @@ def test_journal_principal_cannot_write_market_or_change_schema() -> None:
             journal_permission_preflight(client)
     client.extra_grant = ""
     for grant in (f"GRANT INSERT ON arte.{unrelated} TO journal_writer",
+                  "GRANT INSERT ON arte.bt_event_v1 TO journal_writer",
+                  "GRANT INSERT ON arte.bt_blob_v1 TO journal_writer",
                   "GRANT ALTER ON arte.trading_event_v1 TO journal_writer",
                   "GRANT editor TO journal_writer",
                   "GRANT SELECT ON arte.* TO journal_writer"):

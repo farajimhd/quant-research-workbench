@@ -19,6 +19,8 @@ def test_grant_plan_has_only_typed_journal_inserts() -> None:
                and "INSERT ON arte.liquidity_100ms_v1" not in line
                for line in grants)
     assert not any("arte.*" in line or " ON *.* " in line for line in grants)
+    assert not any("arte.bt_" in line for line in grants)
+    assert "GRANT SELECT, INSERT ON arte.trading_backtest_cursor_v1 TO trading_journal_writer" in grants
 
 
 def test_credential_is_reused_and_never_implicitly_rotated(
