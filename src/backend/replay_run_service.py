@@ -2543,12 +2543,6 @@ class ReplayRunController:
                 self.status = "warming"
             self.updated_at = datetime.now(UTC)
             await self._publish(force=True)
-            # Bound commit frequency during backtest playback while retaining
-            # FULL durability at every committed publication/checkpoint prefix.
-            self._journal = TradingJournal(
-                self.run_dir / "journal.sqlite3",
-                synchronous="FULL" if self.definition.mode==RunMode.BACKTEST else "NORMAL",
-            )
             if self.definition.mode == RunMode.BACKTEST:
                 from src.backend.backtest_market_data import (
                     EVENT_EXECUTION_BLOCKER, FIXED_EXECUTION_BLOCKER, ExecutionInterval,
@@ -2557,6 +2551,7 @@ class ReplayRunController:
                 raise RuntimeError(
                     FIXED_EXECUTION_BLOCKER if interval.kind == "fixed" else EVENT_EXECUTION_BLOCKER
                 )
+            self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
             self._preparation_stage = "signal_occurrences"
             await self._publish(force=True)
             self._historical_external_signal_events = (
@@ -2943,7 +2938,8 @@ class ReplayRunController:
         from concurrent.futures import ThreadPoolExecutor
         from itertools import islice
         from src.backend.backtest_market_data import (
-            MarketDayLedger, configuration_tickers, iter_market_day_rows,
+            MarketDayLedger, configuration_tickers, iter_market_boundary_groups,
+            iter_market_day_rows,
             market_day_boundary,
         )
 
@@ -2974,11 +2970,13 @@ class ReplayRunController:
         self._journal.enable_write_batching()
 
         source = iter_market_day_rows(plan)
+        groups = iter_market_boundary_groups(source)
         sequence = 0
         external_index = 0
+        evaluation_ms = int(plan.execution_interval.milliseconds or 100)
 
-        def next_packet() -> list[dict[str, Any]]:
-            return list(islice(source, 4096))
+        def next_packet() -> list[tuple[str, int, str, dict[int, Mapping[str, Any]]]]:
+            return list(islice(groups, 4096))
 
         reader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="backtest-market-reader")
         try:
@@ -2986,22 +2984,20 @@ class ReplayRunController:
                 packet = await asyncio.get_running_loop().run_in_executor(reader, next_packet)
                 if not packet:
                     break
-                for row in packet:
+                for day, boundary_ms, ticker_value, by_resolution in packet:
                     if self._stop_requested:
                         await self._finish("stopped")
                         return
-                    at = market_day_boundary(
-                        str(row["session_date"]), int(row["boundary_ms"])
-                    )
+                    at = market_day_boundary(day, boundary_ms)
                     if at > self.definition.session_end:
                         continue
-                    ticker = _ticker(row["ticker"])
-                    resolution_ms = int(row["resolution_ms"])
+                    ticker = _ticker(ticker_value)
                     sequence += 1
-                    if resolution_ms == 100:
+                    liquidity_row = by_resolution.get(100)
+                    if liquidity_row is not None:
                         if self._runtime is None:
                             raise RuntimeError("Fixed Backtest runtime is not initialized")
-                        await self._runtime.process_liquidity_bar(row, at=at)
+                        await self._runtime.process_liquidity_bar(liquidity_row, at=at)
                     while (
                         external_index < len(self._historical_external_signal_events)
                         and self._historical_external_signal_events[external_index].available_at <= at
@@ -3011,7 +3007,15 @@ class ReplayRunController:
                         )
                         external_index += 1
                     self._apply_historical_watchlist_membership(at)
-                    frame = _persisted_market_day_frame(row, at=at, sequence=sequence)
+                    for resolution, auxiliary in sorted(by_resolution.items()):
+                        if resolution != evaluation_ms and int(auxiliary.get("price_valid") or 0):
+                            self._remember_strategy_frame(_persisted_market_day_frame(
+                                auxiliary, at=at, sequence=sequence))
+                    evaluation_row = by_resolution.get(evaluation_ms)
+                    if evaluation_row is None or not int(evaluation_row.get("price_valid") or 0):
+                        self.current_time = at
+                        continue
+                    frame = _persisted_market_day_frame(evaluation_row, at=at, sequence=sequence)
                     if at >= self.definition.requested_start:
                         if await self._process_strategy_frame(frame):
                             await self._after_event(at)
@@ -3265,10 +3269,9 @@ class ReplayRunController:
             limit_offset_bps=float(configuration["oms"]["limit_offset_bps"]),
         )
         if self._journal is None:
-            self._journal = TradingJournal(
-                self.run_dir / "journal.sqlite3",
-                synchronous="FULL" if self.definition.mode==RunMode.BACKTEST else "NORMAL",
-            )
+            if self.definition.mode == RunMode.BACKTEST:
+                raise RuntimeError("Backtest requires its ClickHouse journal authority; SQLite is forbidden")
+            self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
         if record_configuration:
             self._journal.append(
                 run_id=self.run_id,

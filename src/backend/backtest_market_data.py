@@ -508,7 +508,7 @@ def market_day_rows_sql(plan: CertifiedMarketDayPlan) -> str:
       LEFT JOIN ({pinned('indicators_v1', technical)}) i ON
         i.session_date=m.session_date AND i.ticker=m.ticker
         AND i.resolution_ms=m.resolution_ms AND i.bucket_index=m.bucket_index
-      ORDER BY m.session_date,m.boundary_ms,m.resolution_ms,m.ticker
+      ORDER BY m.session_date,m.boundary_ms,m.ticker,m.resolution_ms
       FORMAT JSONEachRow
     """)
 
@@ -521,6 +521,28 @@ def iter_market_day_rows(plan: CertifiedMarketDayPlan, client=None) -> Iterator[
     finally:
         if close:
             active.close()
+
+
+def iter_market_boundary_groups(
+    rows: Iterable[Mapping[str, Any]],
+) -> Iterator[tuple[str, int, str, dict[int, Mapping[str, Any]]]]:
+    """Preserve one causal boundary across packet splits and sparse resolutions."""
+    key: tuple[str, int, str] | None = None
+    group: dict[int, Mapping[str, Any]] = {}
+    for row in rows:
+        current = (str(row["session_date"]), int(row["boundary_ms"]), str(row["ticker"]))
+        if key is not None and current < key:
+            raise ValueError("Persisted market boundaries are not in causal order")
+        if key is not None and current != key:
+            yield (*key, group)
+            group = {}
+        resolution = int(row["resolution_ms"])
+        if resolution in group:
+            raise ValueError(f"Duplicate persisted resolution at {current}: {resolution}")
+        group[resolution] = row
+        key = current
+    if key is not None:
+        yield (*key, group)
 
 
 def vectorized_candidate_mask(rows: Sequence[Mapping[str, Any]]) -> list[bool]:

@@ -13,6 +13,7 @@ from src.backend.backtest_market_data import (
     assert_select_only,
     market_day_boundary,
     market_day_rows_sql,
+    iter_market_boundary_groups,
     verify_market_day_plan,
     _stable_hash,
 )
@@ -122,6 +123,20 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertIn("WHERE resolution_ms=100", sql)
         self.assertIn("WHERE resolution_ms IN (1000)", sql)
         self.assertIn("UNION ALL SELECT b.session_date", sql)
+        self.assertIn("ORDER BY m.session_date,m.boundary_ms,m.ticker,m.resolution_ms", sql)
+
+    def test_boundary_groups_keep_sparse_quote_buckets_and_completed_seconds(self) -> None:
+        rows = [
+            {"session_date": "2026-08-18", "boundary_ms": 100, "ticker": "AAPL", "resolution_ms": 100},
+            {"session_date": "2026-08-18", "boundary_ms": 1000, "ticker": "AAPL", "resolution_ms": 100},
+            {"session_date": "2026-08-18", "boundary_ms": 1000, "ticker": "AAPL", "resolution_ms": 1000},
+        ]
+        groups = list(iter_market_boundary_groups(iter(rows)))
+        self.assertEqual([set(group[3]) for group in groups], [{100}, {100, 1000}])
+        with self.assertRaisesRegex(ValueError, "Duplicate persisted resolution"):
+            list(iter_market_boundary_groups([rows[0], rows[0]]))
+        with self.assertRaisesRegex(ValueError, "not in causal order"):
+            list(iter_market_boundary_groups([rows[1], rows[0]]))
 
     def test_missing_stage_fails_catalogue_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
