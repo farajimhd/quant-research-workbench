@@ -290,9 +290,42 @@ def _verify_run_identity(client: Any, run_id: str) -> None:
         raise RuntimeError("Typed journal run identity is missing or duplicated")
 
 
+def _verify_commission_links(
+    client: Any, batch: TypedJournalBatch,
+    families: tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
+) -> None:
+    by_family = dict(families)
+    same_batch = {
+        (str(row["account_id"]), str(row["execution_id"]))
+        for row in by_family["trading_execution_v1"]
+    }
+    for fee in by_family["trading_commission_v1"]:
+        account_id, execution_id = str(fee["account_id"]), str(fee["execution_id"])
+        if (account_id, execution_id) in same_batch:
+            continue
+        candidates = _rows(client,
+            "SELECT batch_id,record_id FROM arte.trading_execution_v1 "
+            f"WHERE run_id={_literal(batch.run_id)} "
+            f"AND account_id={_literal(account_id)} "
+            f"AND execution_id={_literal(execution_id)} FORMAT JSONEachRow")
+        committed = 0
+        for candidate in candidates:
+            source_batch = str(UUID(str(candidate["batch_id"])))
+            fences = _rows(client,
+                "SELECT batch_id FROM arte.trading_commit_v1 "
+                f"WHERE run_id={_literal(batch.run_id)} "
+                f"AND batch_id=toUUID({_literal(source_batch)}) FORMAT JSONEachRow")
+            if len(fences) > 1:
+                raise RuntimeError("Commission execution has duplicated commit fences")
+            committed += len(fences)
+        if committed != 1:
+            raise RuntimeError("Commission revision requires one committed execution")
+
+
 def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
     families = _sealed_families(batch)
+    _verify_commission_links(client, batch, families)
     existing = _rows(client,
         f"SELECT {','.join(_COMMIT_COLUMNS)} "
         "FROM arte.trading_commit_v1 "

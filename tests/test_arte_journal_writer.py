@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
+from decimal import Decimal
 import json
 from threading import Event
 from uuid import UUID
@@ -8,6 +9,8 @@ from uuid import UUID
 import pytest
 
 from src.trading_runtime import arte_journal_writer as writer_module
+from src.trading_runtime.arte_journal_projection import commission_revision_batch
+from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, JournalQueueFull, TypedJournalBatch, load_committed_prefix,
     publish_typed_batch, publish_typed_run, typed_row,
@@ -71,6 +74,14 @@ class MemoryClient:
         if "WHERE run_id=" in sql:
             run_id = sql.split("WHERE run_id='", 1)[1].split("'", 1)[0]
             matching = [row for row in self.tables.get(name, []) if row["run_id"] == run_id]
+            for field in ("account_id", "execution_id"):
+                marker = f"AND {field}='"
+                if marker in sql:
+                    value = sql.split(marker, 1)[1].split("'", 1)[0]
+                    matching = [row for row in matching if row[field] == value]
+            if "AND batch_id=toUUID('" in sql:
+                value = sql.split("AND batch_id=toUUID('", 1)[1].split("'", 1)[0]
+                matching = [row for row in matching if row["batch_id"] == value]
             descending = "ORDER BY last_sequence DESC" in sql
             if "ORDER BY last_sequence" in sql:
                 matching.sort(key=lambda row: row["last_sequence"], reverse=descending)
@@ -214,6 +225,39 @@ def test_typed_publication_rejects_orphan_rows_in_empty_family() -> None:
     with pytest.raises(RuntimeError, match="trading_execution_v1 has a conflicting"):
         publish_typed_batch(client, batch())
     assert "trading_commit_v1" not in client.inserts
+
+
+def test_late_commission_requires_a_committed_execution() -> None:
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    fee = CommissionEvent("execution-1", "DU1", Decimal("1.25"), "USD",
+                          source_event_time=at, received_at=at)
+    item = commission_revision_batch(
+        fee, run_id=RUN, run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
+        batch_id=BATCH, prior_batch_id=ZERO, sequence=1,
+        source_cursor="fee-1", run_status="running",
+        time_authority="observation",
+    )
+    client = MemoryClient()
+    with pytest.raises(RuntimeError, match="requires one committed execution"):
+        publish_typed_batch(client, item)
+    source_batch = "00000000-0000-0000-0000-000000000099"
+    client.tables["trading_execution_v1"] = [{
+        "record_id": RECORD, "batch_id": source_batch, "run_id": RUN,
+        "account_id": "DU1", "execution_id": "execution-1",
+    }]
+    with pytest.raises(RuntimeError, match="requires one committed execution"):
+        publish_typed_batch(client, item)
+    client.tables["trading_commit_v1"] = [{
+        "batch_id": source_batch, "run_id": RUN, "last_sequence": 1,
+    }]
+    continued = commission_revision_batch(
+        fee, run_id=RUN, run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
+        batch_id=BATCH, prior_batch_id=source_batch, sequence=2,
+        source_cursor="fee-1", run_status="running",
+        time_authority="observation",
+    )
+    assert publish_typed_batch(client, continued) == BATCH
+    assert "trading_execution_v1" not in client.inserts
 
 
 def test_event_details_are_required_and_unmapped_events_fail_closed() -> None:
