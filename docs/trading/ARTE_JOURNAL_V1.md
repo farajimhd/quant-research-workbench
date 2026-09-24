@@ -133,6 +133,12 @@ additional nested evidence. Until every authoritative member has an explicit
 typed representation and a losslessness test, these categories must remain
 unmapped and the ClickHouse runtime cutover must fail closed. The installed
 table alone is not evidence of complete live-event coverage.
+The simple `OrderRequest` projection now preserves the broker's named flat
+instructions, including security type, listing exchange, `auxPrice`, trailing
+settings, manual/single-group flags, operator/referrer, strategy, and parent
+broker-order identity. It rejects nonempty `raw` and `strategyParameters`;
+strategy-originated orders commonly carry nested canonical metadata, so the
+live OMS command gate is **not** enabled by this projection alone.
 
 Before a new mode uses this authority, verify: schema, SSD policy and actual
 parts; writer/reader grants; all runtime state families mapped without JSON;

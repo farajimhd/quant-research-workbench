@@ -39,6 +39,8 @@ def test_shared_event_and_execution_contract_uses_lossless_identifiers() -> None
     assert columns["trading_commission_v1"]["time_authority"] == "LowCardinality(String)"
     assert columns["trading_strategy_signal_v1"]["score"] == "Decimal(38, 18)"
     assert columns["trading_signal_source_v1"]["parent_record_id"] == "UUID"
+    assert columns["trading_order_command_v1"]["trailing_amount"] == "Nullable(Decimal(38, 10))"
+    assert columns["trading_order_command_v1"]["parent_broker_order_id"] == "String"
     assert columns["trading_runtime_config_v1"]["strategy_revision"] == "UInt32"
     assert columns["trading_run_account_v1"]["ordinal"] == "UInt16"
     assert columns["trading_run_context_commit_v1"]["account_hash"] == "FixedString(64)"

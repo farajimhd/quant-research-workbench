@@ -271,9 +271,13 @@ def test_order_command_and_transition_have_typed_durable_fences() -> None:
               "client_order_id": "client-1", "conid": 123, "ticker": "TEST"}
     command = {**common, "record_id": RECORD, "side": "BUY", "order_type": "LIMIT",
                "time_in_force": "DAY", "quantity": "5.0000000000", "cash_quantity": None,
-               "limit_price": "12.3400000000", "stop_price": None, "outside_rth": 1,
+               "limit_price": "12.3400000000", "aux_price": None, "outside_rth": 1,
                "parent_command_id": "", "oca_group": "", "strategy_id": "strategy-1",
-               "strategy_revision": 2, "created_at": "2026-08-18T08:05:00+00:00"}
+               "strategy_revision": 2, "created_at": "2026-08-18T08:05:00+00:00",
+               "security_type": "STK", "listing_exchange": "SMART",
+               "trailing_amount": None, "trailing_type": "", "single_group": 0,
+               "manual_indicator": 0, "external_operator": "", "referrer": "",
+               "broker_strategy": "", "parent_broker_order_id": ""}
     transition = {**common, "record_id": second_id, "broker_order_id": "broker-1",
                   "status": "submitted", "broker_status": "Submitted",
                   "total_quantity": "5.0000000000", "filled_quantity": "0.0000000000",

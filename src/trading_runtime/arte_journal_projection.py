@@ -15,7 +15,7 @@ from uuid import NAMESPACE_URL, uuid5
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.ibkr_client import _execution as parse_ibkr_execution
-from src.trading_runtime.ibkr_schema import Execution
+from src.trading_runtime.ibkr_schema import Execution, OrderRequest
 from src.trading_runtime.signals import StrategySignal
 
 
@@ -147,6 +147,70 @@ def broker_fill_batch(
         source_cursor, status, tuple(events),
         executions=(details.execution,),
         commissions=(details.commission,) if details.commission is not None else (),
+    )
+
+
+def order_command_batch(
+    request: OrderRequest, *, run_id: str, run_month: date,
+    attempt_id: str, batch_id: str, prior_batch_id: str,
+    sequence: int, source_cursor: str, run_status: str,
+    command_id: str, created_at: datetime, recorded_at: datetime,
+    strategy_id: str = "", strategy_revision: int = 0,
+) -> TypedJournalBatch:
+    """Capture one simple broker command losslessly before external dispatch.
+
+    Strategy metadata and broker algo parameters still need typed child rows;
+    neither may be silently discarded by this projection.
+    """
+    if request.raw or request.strategyParameters:
+        raise ValueError("Order command has unmodeled nested broker or strategy evidence")
+    if (not command_id or not request.cOID or not run_id
+            or created_at.tzinfo is None or recorded_at.tzinfo is None
+            or strategy_revision < 0):
+        raise ValueError("Order command identity or time is incomplete")
+    at = created_at.astimezone(timezone.utc).isoformat()
+    received = recorded_at.astimezone(timezone.utc).isoformat()
+    event_month = created_at.astimezone(timezone.utc).strftime("%Y-%m-01")
+    record_id = str(uuid5(NAMESPACE_URL, f"{run_id}:{batch_id}:{command_id}:order-command"))
+    event = {
+        "run_id": run_id, "event_month": event_month,
+        "attempt_id": attempt_id, "batch_id": batch_id,
+        "record_id": record_id, "sequence": sequence,
+        "event_time": at, "recorded_at": received,
+        "category": "order_management", "entity_type": "order_command",
+        "entity_id": command_id, "account_id": request.acctId,
+        "correlation_id": "", "causation_id": "",
+    }
+    detail = {
+        "record_id": record_id, "run_id": run_id, "event_month": event_month,
+        "batch_id": batch_id, "account_id": request.acctId,
+        "command_id": command_id, "client_order_id": request.cOID,
+        "conid": request.conid, "ticker": request.ticker.upper(),
+        "side": request.side, "order_type": request.orderType,
+        "time_in_force": request.tif,
+        "quantity": _exact_decimal(request.quantity) if request.quantity is not None else None,
+        "cash_quantity": _exact_decimal(request.cashQty) if request.cashQty is not None else None,
+        "limit_price": _exact_decimal(request.price) if request.price is not None else None,
+        "aux_price": _exact_decimal(request.auxPrice) if request.auxPrice is not None else None,
+        "outside_rth": int(request.outsideRTH),
+        "parent_command_id": "", "oca_group": "",
+        "strategy_id": strategy_id, "strategy_revision": strategy_revision,
+        "created_at": at, "security_type": request.secType,
+        "listing_exchange": request.listingExchange,
+        "trailing_amount": (_exact_decimal(request.trailingAmt)
+                            if request.trailingAmt is not None else None),
+        "trailing_type": request.trailingType or "",
+        "single_group": int(request.isSingleGroup),
+        "manual_indicator": int(request.manualIndicator),
+        "external_operator": request.extOperator or "",
+        "referrer": request.referrer or "",
+        "broker_strategy": request.strategy or "",
+        "parent_broker_order_id": request.parentId or "",
+    }
+    return TypedJournalBatch(
+        run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        sequence, sequence, source_cursor, run_status, (event,),
+        order_commands=(detail,),
     )
 
 

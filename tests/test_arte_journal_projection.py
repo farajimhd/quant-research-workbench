@@ -6,16 +6,49 @@ import pytest
 
 from src.trading_runtime.arte_journal_projection import (
     broker_fill_batch, broker_fill_details, commission_revision_batch,
-    strategy_signal_batch,
+    order_command_batch, strategy_signal_batch,
 )
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch, _sealed_families
 from src.trading_runtime.ibkr_client import _execution
+from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.signals import StrategySignal
 
 
 AT = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+
+
+def test_simple_order_command_preserves_every_broker_instruction() -> None:
+    request = OrderRequest(
+        acctId="DU1", conid=123, cOID="client-1", ticker="TEST",
+        orderType="LMT", side="BUY", quantity=5, price=12.34,
+        secType="STK", listingExchange="ARCA", outsideRTH=True,
+        isSingleGroup=True, manualIndicator=True, extOperator="operator-1",
+        referrer="risk-console", strategy="broker-algo",
+    )
+    args = dict(run_id="live:DU1", run_month=date(2026, 8, 1),
+                attempt_id="00000000-0000-0000-0000-000000000011",
+                batch_id="00000000-0000-0000-0000-000000000012",
+                prior_batch_id="00000000-0000-0000-0000-000000000000",
+                sequence=1, source_cursor="command-1", run_status="running",
+                command_id="command-1", created_at=AT, recorded_at=AT,
+                strategy_id="strategy-1", strategy_revision=7)
+    batch = order_command_batch(request, **args)
+    columns = {table.name: {name for name, _ in table.columns} for table in TABLES}
+    detail = dict(batch.order_commands[0])
+    assert set(detail) == columns["trading_order_command_v1"] - {"content_hash"}
+    assert detail["limit_price"] == "12.3400000000"
+    assert detail["listing_exchange"] == "ARCA"
+    assert detail["manual_indicator"] == 1
+    assert detail["broker_strategy"] == "broker-algo"
+    assert dict(_sealed_families(batch))["trading_order_command_v1"]
+    assert order_command_batch(request, **args).events[0]["record_id"] == batch.events[0]["record_id"]
+    with pytest.raises(ValueError, match="unmodeled nested"):
+        order_command_batch(replace(request, raw={"canonical_metadata": {"action": "enter_long"}}),
+                            **args)
+    with pytest.raises(ValueError, match="unmodeled nested"):
+        order_command_batch(replace(request, strategyParameters=({"tag": "x"},)), **args)
 
 
 def source(**changes):
