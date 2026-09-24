@@ -24,8 +24,17 @@ from src.trading_runtime.journal_contract import canonical_json
 
 
 _CONTRACTS = {table.name: table for table in TABLES}
-_FACTS = ("trading_event_v1", "trading_execution_v1", "trading_commission_v1")
+_FAMILIES = (
+    ("trading_event_v1", "events", "event_count", "event_hash"),
+    ("trading_execution_v1", "executions", "execution_count", "execution_hash"),
+    ("trading_commission_v1", "commissions", "commission_count", "commission_hash"),
+    ("trading_order_command_v1", "order_commands", "order_command_count", "order_command_hash"),
+    ("trading_order_transition_v1", "order_transitions", "order_transition_count",
+     "order_transition_hash"),
+)
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
+_COMMIT_COLUMNS = tuple(name for name, _ in _CONTRACTS["trading_commit_v1"].columns
+                        if name not in ("run_month", "committed_at"))
 
 
 class JournalQueueFull(RuntimeError):
@@ -46,6 +55,8 @@ class TypedJournalBatch:
     events: tuple[Mapping[str, Any], ...]
     executions: tuple[Mapping[str, Any], ...] = ()
     commissions: tuple[Mapping[str, Any], ...] = ()
+    order_commands: tuple[Mapping[str, Any], ...] = ()
+    order_transitions: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.run_id or self.first_sequence < 1 or self.last_sequence < self.first_sequence:
@@ -56,13 +67,13 @@ class TypedJournalBatch:
             UUID(value)
         # Copy only the small typed row envelopes at submission. Full schema
         # checks, JSON wire serialization, and hashing happen on the writer.
-        for family in ("events", "executions", "commissions"):
+        for _, family, _, _ in _FAMILIES:
             object.__setattr__(self, family, tuple(
                 MappingProxyType(dict(row)) for row in getattr(self, family)
             ))
 
     def families(self) -> tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...]:
-        return tuple(zip(_FACTS, (self.events, self.executions, self.commissions)))
+        return tuple((name, getattr(self, attribute)) for name, attribute, _, _ in _FAMILIES)
 
 
 def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
@@ -236,9 +247,7 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
     families = _sealed_families(batch)
     existing = _rows(client,
-        "SELECT run_id,attempt_id,batch_id,prior_batch_id,first_sequence,last_sequence,"
-        "event_count,execution_count,commission_count,event_hash,execution_hash,commission_hash,"
-        "source_cursor,status "
+        f"SELECT {','.join(_COMMIT_COLUMNS)} "
         "FROM arte.trading_commit_v1 "
         f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
     if not existing:
@@ -265,25 +274,20 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
         "prior_batch_id": batch.prior_batch_id,
         "first_sequence": batch.first_sequence,
         "last_sequence": batch.last_sequence,
-        "event_count": len(batch.events),
-        "execution_count": len(batch.executions),
-        "commission_count": len(batch.commissions),
-        "event_hash": hashes["trading_event_v1"],
-        "execution_hash": hashes["trading_execution_v1"],
-        "commission_hash": hashes["trading_commission_v1"],
         "source_cursor": batch.source_cursor,
         "status": batch.status,
         "committed_at": datetime.now(timezone.utc).isoformat(),
     }
+    for name, attribute, count_column, hash_column in _FAMILIES:
+        commit[count_column] = len(getattr(batch, attribute))
+        commit[hash_column] = hashes[name]
     expected = {key: value for key, value in commit.items() if key not in ("run_month", "committed_at")}
     if existing and (len(existing) != 1 or existing[0] != expected):
         raise RuntimeError("Typed journal commit conflicts with an existing batch")
     if not existing:
         _insert(client, "trading_commit_v1", (commit,), f"{batch.batch_id}:commit")
         verified = _rows(client,
-            "SELECT run_id,attempt_id,batch_id,prior_batch_id,first_sequence,last_sequence,"
-            "event_count,execution_count,commission_count,event_hash,execution_hash,commission_hash,"
-            "source_cursor,status "
+            f"SELECT {','.join(_COMMIT_COLUMNS)} "
             "FROM arte.trading_commit_v1 "
             f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
         if verified != [expected]:
@@ -296,9 +300,7 @@ def load_committed_prefix(client: Any, run_id: str) -> CommittedPrefix | None:
     if not run_id:
         raise ValueError("Journal run identity is required")
     commits = _rows(client,
-        "SELECT run_id,attempt_id,batch_id,prior_batch_id,first_sequence,last_sequence,"
-        "event_count,execution_count,commission_count,event_hash,execution_hash,commission_hash,"
-        "source_cursor,status FROM arte.trading_commit_v1 "
+        f"SELECT {','.join(_COMMIT_COLUMNS)} FROM arte.trading_commit_v1 "
         f"WHERE run_id={_literal(run_id)} ORDER BY last_sequence,batch_id FORMAT JSONEachRow")
     if not commits:
         return None
@@ -313,11 +315,7 @@ def load_committed_prefix(client: Any, run_id: str) -> CommittedPrefix | None:
                 or int(commit["first_sequence"]) != prior_sequence + 1
                 or int(commit["last_sequence"]) < int(commit["first_sequence"])):
             raise RuntimeError("Typed journal commit chain is not contiguous")
-        for name, count_key, hash_key in (
-            ("trading_event_v1", "event_count", "event_hash"),
-            ("trading_execution_v1", "execution_count", "execution_hash"),
-            ("trading_commission_v1", "commission_count", "commission_hash"),
-        ):
+        for name, _, count_key, hash_key in _FAMILIES:
             rows = _rows(client,
                 f"SELECT record_id,content_hash FROM arte.{name} "
                 f"WHERE batch_id=toUUID({_literal(batch_id)}) FORMAT JSONEachRow")

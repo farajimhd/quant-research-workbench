@@ -95,6 +95,39 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
 
 
+def test_order_command_and_transition_have_typed_durable_fences() -> None:
+    first = dict(batch().events[0])
+    first.pop("content_hash")
+    first.update(category="order_management", entity_type="order_command")
+    second_id = "00000000-0000-0000-0000-000000000014"
+    second = {**first, "record_id": second_id, "sequence": 2,
+              "entity_type": "order_transition"}
+    common = {"run_id": RUN, "event_month": "2026-08-01", "batch_id": BATCH,
+              "account_id": "DU1", "command_id": "command-1",
+              "client_order_id": "client-1", "conid": 123, "ticker": "TEST"}
+    command = {**common, "record_id": RECORD, "side": "BUY", "order_type": "LIMIT",
+               "time_in_force": "DAY", "quantity": "5.0000000000", "cash_quantity": None,
+               "limit_price": "12.3400000000", "stop_price": None, "outside_rth": 1,
+               "parent_command_id": "", "oca_group": "", "strategy_id": "strategy-1",
+               "strategy_revision": 2, "created_at": "2026-08-18T08:05:00+00:00"}
+    transition = {**common, "record_id": second_id, "broker_order_id": "broker-1",
+                  "status": "submitted", "broker_status": "Submitted",
+                  "total_quantity": "5.0000000000", "filled_quantity": "0.0000000000",
+                  "remaining_quantity": "5.0000000000", "average_fill_price": None,
+                  "can_modify": 1, "can_cancel": 1, "terminal": 0,
+                  "rejection_code": "", "rejection_reason": "",
+                  "source_event_time": "2026-08-18T08:05:01+00:00",
+                  "received_at": "2026-08-18T08:05:01+00:00"}
+    item = TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
+                             1, 2, "bucket-2", "completed", (first, second),
+                             order_commands=(command,), order_transitions=(transition,))
+    client = MemoryClient()
+    assert publish_typed_batch(client, item) == BATCH
+    assert client.inserts == ["trading_event_v1", "trading_order_command_v1",
+                              "trading_order_transition_v1", "trading_commit_v1"]
+    assert load_committed_prefix(client, RUN).last_sequence == 2
+
+
 def test_run_identity_is_immutable_and_uses_typed_rows() -> None:
     client = MemoryClient()
     row = run_row()
