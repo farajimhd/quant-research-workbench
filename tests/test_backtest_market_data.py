@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import date, time
 from pathlib import Path
+from unittest.mock import patch
 
 from src.backend.backtest_market_data import (
     ExecutionInterval,
@@ -16,6 +17,7 @@ from src.backend.backtest_market_data import (
     iter_market_boundary_groups,
     iter_market_time_groups,
     iter_persisted_v7_seconds,
+    readonly_clickhouse_client,
     verify_market_day_plan,
     _stable_hash,
 )
@@ -42,6 +44,20 @@ class _CorruptReadClient(_ReadClient):
 
 
 class BacktestMarketDataTests(unittest.TestCase):
+    def test_full_universe_stream_has_bounded_large_query_settings(self) -> None:
+        with patch.dict("os.environ", {
+            "BACKTEST_CLICKHOUSE_URL": "http://localhost:8123",
+            "BACKTEST_CLICKHOUSE_USER": "readonly-test",
+            "BACKTEST_CLICKHOUSE_PASSWORD": "",
+        }):
+            ordinary = readonly_clickhouse_client()
+            stream = readonly_clickhouse_client(market_stream=True)
+        self.assertEqual(ordinary.default_query_params["readonly"], "1")
+        self.assertEqual(ordinary.default_query_params["max_execution_time"], "60")
+        self.assertEqual(stream.default_query_params["max_query_size"], str(16 * 1024 * 1024))
+        self.assertEqual(stream.default_query_params["max_ast_elements"], "500000")
+        self.assertEqual(stream.default_query_params["max_execution_time"], "21600")
+
     def test_persisted_boundary_uses_0400_new_york_clock(self) -> None:
         self.assertEqual(
             market_day_boundary("2026-08-18", 300_100).isoformat(),

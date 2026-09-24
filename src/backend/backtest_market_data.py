@@ -335,7 +335,7 @@ class MarketDayLedger:
         raise ValueError("No complete compatible market-day build: " + "; ".join(errors[:3]))
 
 
-def readonly_clickhouse_client():
+def readonly_clickhouse_client(*, market_stream: bool = False):
     """Create the dedicated Backtest reader; never borrow writer credentials."""
     from research.mlops.clickhouse import ClickHouseHttpClient
 
@@ -347,13 +347,22 @@ def readonly_clickhouse_client():
             "Backtest requires dedicated BACKTEST_CLICKHOUSE_URL and "
             "BACKTEST_CLICKHOUSE_USER read-only credentials"
         )
+    query_params = {"readonly": 1, "max_threads": 4, "max_execution_time": 60}
+    if market_stream:
+        # The certified full-universe read pins thousands of independent
+        # ticker-day attempts in one globally ordered causal stream. Its SQL
+        # exceeds ClickHouse's small default parser limit, and backpressure
+        # from strategy execution can keep the response open for hours.
+        query_params.update(max_query_size=16 * 1024 * 1024,
+                            max_ast_elements=500_000,
+                            max_execution_time=21_600)
     return ClickHouseHttpClient(
         url,
         user,
         password,
         timeout_seconds=60,
         persistent=True,
-        default_query_params={"readonly": 1, "max_threads": 4, "max_execution_time": 60},
+        default_query_params=query_params,
     )
 
 
@@ -514,7 +523,7 @@ def market_day_rows_sql(plan: CertifiedMarketDayPlan) -> str:
 
 
 def iter_market_day_rows(plan: CertifiedMarketDayPlan, client=None) -> Iterator[dict[str, Any]]:
-    active = client or readonly_clickhouse_client()
+    active = client or readonly_clickhouse_client(market_stream=True)
     close = client is None
     try:
         yield from active.iter_json_each_row(market_day_rows_sql(plan))
