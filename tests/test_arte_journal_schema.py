@@ -7,6 +7,7 @@ from src.trading_runtime.arte_journal_schema import (
     batch_lookup_index_materialize_ddl,
     intent_decision_upgrade_ddl,
     portfolio_policy_schema_upgrade_ddl, portfolio_snapshot_schema_upgrade_ddl,
+    portfolio_reconciliation_event_upgrade_ddl,
     portfolio_snapshot_timestamp_upgrade_ddl,
     POLICY_ALLOWED_FIELDS, POLICY_ALLOWED_TABLES,
     POLICY_NUMERIC_FIELDS, POLICY_INTEGER_FIELDS, POLICY_BOOLEAN_FIELDS,
@@ -23,7 +24,7 @@ from src.trading_runtime.portfolio import PortfolioPolicy
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 53
+    assert len(statements) == len(TABLES) == 60
     assert any(table.name == "trading_strategy_signal_evidence_node_v1" for table in TABLES)
     upgrade = backtest_cursor_upgrade_ddl()
     assert len(upgrade) == 3
@@ -93,14 +94,23 @@ def test_portfolio_policy_catalog_covers_all_fields_without_json() -> None:
 
 def test_portfolio_snapshot_is_normalized_and_fenced() -> None:
     statements = portfolio_snapshot_schema_upgrade_ddl()
-    assert len(statements) == 9
-    assert all("live_market_ssd" in sql and "toYYYYMM(snapshot_month)" in sql
+    assert len(statements) == 14
+    assert all("live_market_ssd" in sql and "PARTITION BY" in sql
                for sql in statements)
     names = {sql.split("arte.", 1)[1].split(" ", 1)[0] for sql in statements}
     assert "trading_portfolio_snapshot_commit_v1" in names
     assert "trading_portfolio_request_reason_v1" in names
     assert "snapshot_at Nullable(DateTime64(6, 'UTC'))" in portfolio_snapshot_timestamp_upgrade_ddl()
     assert not any("payload_json" in sql or "blob" in sql for sql in statements)
+
+
+def test_portfolio_reconciliation_upgrade_has_late_fence_and_commit_proof() -> None:
+    statements = portfolio_reconciliation_event_upgrade_ddl()
+    assert len(statements) == 4
+    assert all("live_market_ssd" in sql and "toYYYYMM(" in sql
+               for sql in statements[:2])
+    assert "portfolio_reconciliation_event_count" in statements[2]
+    assert "portfolio_reconciliation_event_hash" in statements[3]
 
 
 def test_shared_event_and_execution_contract_uses_lossless_identifiers() -> None:

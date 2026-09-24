@@ -6,7 +6,7 @@ versioned typed column or child family represents them.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, fields
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
@@ -417,6 +417,58 @@ def project_portfolio_admission_records(
         "running", tuple(events), portfolio_decisions=tuple(decisions),
         portfolio_decision_reasons=tuple(reasons),
         portfolio_reservation_events=tuple(reservations))
+
+
+def portfolio_reconciliation_hash(captured: Any) -> str:
+    """Bind the transition to every normalized snapshot difference row."""
+    rows = sorted((asdict(row) for row in captured.reconciliation),
+                  key=lambda row: (row["account_key"], row["ticker"]))
+    if any(row["account_key"] != captured.account_key for row in rows):
+        raise ValueError("Portfolio reconciliation mixes account keys")
+    return sha256(canonical_json(rows).encode("utf-8")).hexdigest()
+
+
+def project_portfolio_reconciliation_records(
+    records: tuple[tuple[str, str, str, dict[str, Any]], ...], *,
+    captured: Any, run_month: date, attempt_id: str, batch_id: str,
+    prior_batch_id: str, first_sequence: int, source_cursor: str,
+) -> TypedJournalBatch:
+    """Seal exactly one broker reconciliation fact against its recovery image."""
+    if len(records) != 1:
+        raise ValueError("Broker sync requires exactly one typed reconciliation fact")
+    kind, entity_id, account_id, payload = records[0]
+    rows = sorted((asdict(row) for row in captured.reconciliation),
+                  key=lambda row: (row["account_key"], row["ticker"]))
+    if (kind != "portfolio_reconciliation" or entity_id != captured.account_key
+            or account_id != captured.account_id or not isinstance(payload, Mapping)
+            or set(payload) != {"event", "snapshot_id", "difference_count", "differences"}
+            or payload["event"] != "portfolio_reconciliation_completed"
+            or payload["snapshot_id"] != captured.broker_snapshot_id
+            or type(payload["difference_count"]) is not int
+            or payload["difference_count"] != len(rows)
+            or payload["differences"] != rows
+            or captured.observed_at is None or captured.observed_at.tzinfo is None):
+        raise ValueError("Broker reconciliation fact differs from captured snapshot")
+    at = captured.observed_at.astimezone(timezone.utc).isoformat()
+    month = captured.observed_at.astimezone(timezone.utc).strftime("%Y-%m-01")
+    record_id = str(uuid5(NAMESPACE_URL, f"{batch_id}:portfolio:reconciliation"))
+    event = dict(run_id=captured.run_id, event_month=month,
+                 attempt_id=attempt_id, batch_id=batch_id, record_id=record_id,
+                 sequence=first_sequence, event_time=at,
+                 recorded_at=datetime.now(timezone.utc).isoformat(),
+                 category="portfolio_management", entity_type=kind,
+                 entity_id=entity_id, account_id=account_id,
+                 correlation_id="", causation_id="")
+    detail = dict(record_id=record_id, run_id=captured.run_id,
+                  event_month=month, batch_id=batch_id, account_id=account_id,
+                  account_key=entity_id, snapshot_id=captured.broker_snapshot_id,
+                  difference_count=len(rows),
+                  difference_hash=portfolio_reconciliation_hash(captured),
+                  source_event_time=at)
+    return TypedJournalBatch(
+        captured.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        first_sequence, first_sequence, source_cursor, "running", (event,),
+        portfolio_reconciliation_events=(detail,))
 
 
 def backtest_cursor_batch(

@@ -282,7 +282,8 @@ def test_typed_broker_sync_exposes_synchronized_only_after_receipt(monkeypatch) 
         def next_revision(self, run_id, account_id, lease):
             return 8
 
-        async def publish(self, captured, lease):
+        async def publish(self, records, captured, lease):
+            assert len(records) == 1 and records[0][0] == "portfolio_reconciliation"
             assert captured.sync_state == "synchronized"
             assert captured.state_revision == 8
             assert not captured.reconciliation
@@ -338,7 +339,7 @@ def test_uncertain_typed_broker_sync_blocks_until_cold_recovery(monkeypatch) -> 
         def next_revision(self, run_id, account_id, lease):
             return 8
 
-        async def publish(self, captured, lease):
+        async def publish(self, records, captured, lease):
             raise OSError("receipt unavailable")
 
     with pytest.raises(OSError, match="receipt unavailable"):
@@ -350,7 +351,7 @@ def test_uncertain_typed_broker_sync_blocks_until_cold_recovery(monkeypatch) -> 
     assert engine.states["account-id"].sync_state == PortfolioSyncState.ENTRIES_BLOCKED
 
 
-def test_typed_broker_sync_rejects_unmodeled_reconciliation_before_publish(monkeypatch) -> None:
+def test_typed_broker_sync_publishes_changed_reconciliation_before_exposure(monkeypatch) -> None:
     client, profile = _client(monkeypatch)
     restored = recovery.recover_portfolio_engine_state(
         client, run_id="live-run", profiles=(profile,),
@@ -373,13 +374,15 @@ def test_typed_broker_sync_rejects_unmodeled_reconciliation_before_publish(monke
         def next_revision(self, run_id, account_id, lease):
             return 8
 
-        async def publish(self, captured, lease):
-            pytest.fail("unmodeled reconciliation must not be published")
+        async def publish(self, records, captured, lease):
+            assert len(records) == 1 and records[0][0] == "portfolio_reconciliation"
+            assert records[0][3]["difference_count"] == len(captured.reconciliation) == 1
+            return SimpleNamespace(run_id="live-run", account_id="account-id",
+                                   state_revision=8, snapshot_hash="a" * 64)
 
-    with pytest.raises(RuntimeError, match="unmodeled staged journal events"):
-        asyncio.run(engine.synchronize_typed_snapshot(
-            "account-id", summary=summary("account-id"), ledger=ledger("account-id"),
-            positions=[], open_orders=[], authority=Authority()))
-    assert engine.states["account-id"].sync_state == PortfolioSyncState.ENTRIES_BLOCKED
-    assert not engine.differences
+    asyncio.run(engine.synchronize_typed_snapshot(
+        "account-id", summary=summary("account-id"), ledger=ledger("account-id"),
+        positions=[], open_orders=[], authority=Authority()))
+    assert engine.states["account-id"].sync_state == PortfolioSyncState.SYNCHRONIZED
+    assert len(engine.differences) == 1
     assert not engine._typed_admission_poisoned

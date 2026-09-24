@@ -576,9 +576,17 @@ class PortfolioManagementEngine:
                         candidate.peak_net_liquidation, float(summary.netliquidation))
                     self._update_realized_pnl(candidate, float(ledger.realizedpnl))
                     self._reconcile_account(candidate)
-                    if self._typed_admission_stage:
-                        raise RuntimeError(
-                            "Typed broker sync has unmodeled staged journal events")
+                    if not self._typed_admission_stage:
+                        rows = [asdict(value) for key, value in sorted(self.differences.items())
+                                if key[0] == candidate.profile.account_key]
+                        self._record("portfolio_reconciliation", candidate.profile.account_key,
+                                     account_id, {
+                                         "event": "portfolio_reconciliation_completed",
+                                         "snapshot_id": candidate.snapshot_id,
+                                         "difference_count": len(rows),
+                                         "differences": rows,
+                                     })
+                    records = tuple(self._typed_admission_stage)
                     candidate_differences = dict(self.differences)
                     self.differences = before_differences
                     candidate.sync_state = PortfolioSyncState.SYNCHRONIZED
@@ -591,7 +599,7 @@ class PortfolioManagementEngine:
                         allocations=self.allocations.values(),
                         reconciliation=candidate_differences.values())
                     publication_attempted = True
-                    receipt = await authority.publish(captured, lease)
+                    receipt = await authority.publish(records, captured, lease)
                     if (receipt.run_id != self.run_id or receipt.account_id != account_id
                             or receipt.state_revision != revision
                             or not authority.claim_is_current(lease)):

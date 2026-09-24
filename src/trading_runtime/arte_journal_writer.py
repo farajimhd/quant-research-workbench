@@ -52,6 +52,8 @@ _FAMILIES = (
      "portfolio_decision_reason_count", "portfolio_decision_reason_hash"),
     ("trading_portfolio_reservation_event_v1", "portfolio_reservation_events",
      "portfolio_reservation_event_count", "portfolio_reservation_event_hash"),
+    ("trading_portfolio_reconciliation_event_v1", "portfolio_reconciliation_events",
+     "portfolio_reconciliation_event_count", "portfolio_reconciliation_event_hash"),
     ("trading_strategy_signal_v1", "signals", "signal_count", "signal_hash"),
     ("trading_strategy_signal_evidence_node_v1", "signal_evidence_nodes",
      "signal_evidence_node_count", "signal_evidence_node_hash"),
@@ -106,6 +108,7 @@ _EVENT_DETAILS = {
     ("strategy_decision", "intent_deferral"): "trading_intent_decision_v1",
     ("portfolio_management", "portfolio_decision"): "trading_portfolio_decision_v1",
     ("portfolio_management", "portfolio_reservation"): "trading_portfolio_reservation_event_v1",
+    ("portfolio_management", "portfolio_reconciliation"): "trading_portfolio_reconciliation_event_v1",
     ("execution", "fill"): "trading_execution_v1",
     ("execution", "commission"): "trading_commission_v1",
     ("order_management", "order_command"): "trading_order_command_v1",
@@ -164,6 +167,7 @@ class TypedJournalBatch:
     portfolio_decisions: tuple[Mapping[str, Any], ...] = ()
     portfolio_decision_reasons: tuple[Mapping[str, Any], ...] = ()
     portfolio_reservation_events: tuple[Mapping[str, Any], ...] = ()
+    portfolio_reconciliation_events: tuple[Mapping[str, Any], ...] = ()
     signals: tuple[Mapping[str, Any], ...] = ()
     signal_evidence_nodes: tuple[Mapping[str, Any], ...] = ()
     signal_sources: tuple[Mapping[str, Any], ...] = ()
@@ -319,6 +323,17 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 or _datetime_wire(lease["source_event_time"], 9)
                 != _datetime_wire(parent["event_time"], 9)):
             raise ValueError("Prepared V7 lease differs from its journal event")
+    for reconciliation in by_family["trading_portfolio_reconciliation_event_v1"]:
+        parent = events_by_id[str(UUID(str(reconciliation["record_id"]))) ]
+        if (parent["category"] != "portfolio_management"
+                or parent["entity_type"] != "portfolio_reconciliation"
+                or parent["entity_id"] != reconciliation["account_key"]
+                or parent["account_id"] != reconciliation["account_id"]
+                or not reconciliation["snapshot_id"]
+                or not re.fullmatch(r"[0-9a-f]{64}", str(reconciliation["difference_hash"]))
+                or _datetime_wire(parent["event_time"], 9)
+                != _datetime_wire(reconciliation["source_event_time"], 9)):
+            raise ValueError("Portfolio reconciliation differs from its journal event")
     progress_parents: set[str] = set()
     for progress in by_family["trading_backtest_progress_v1"]:
         parent_id = str(UUID(str(progress["parent_record_id"])))
@@ -1806,6 +1821,12 @@ class _AdmissionUnit:
 
 
 @dataclass(frozen=True, slots=True)
+class _PortfolioSyncUnit:
+    batch: TypedJournalBatch
+    captured: CapturedPortfolioSnapshot
+
+
+@dataclass(frozen=True, slots=True)
 class _TerminalBacktestUnit:
     batch: TypedJournalBatch
     captured: tuple[CapturedPortfolioSnapshot, ...]
@@ -1843,7 +1864,7 @@ class ArteJournalWriter:
         self._max_events_per_commit = max_events_per_commit
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
-                  | _DurabilityBarrier | _AdmissionUnit | _TerminalBacktestUnit,
+                  | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit | _TerminalBacktestUnit,
                   Future[str]] | None
         ] = Queue(maxsize=capacity)
         self._submission_lock = Lock()
@@ -1977,6 +1998,30 @@ class ArteJournalWriter:
             self._accepted_writes = True
         return barrier
 
+    def submit_portfolio_sync(
+        self, batch: TypedJournalBatch, captured: CapturedPortfolioSnapshot,
+    ) -> Future[str]:
+        """Queue reconciliation event and snapshot behind one late durable fence."""
+        from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
+
+        if (not isinstance(batch, TypedJournalBatch)
+                or not isinstance(captured, CapturedPortfolioSnapshot)
+                or batch.run_id != self._run_id or captured.run_id != self._run_id
+                or len(batch.events) != 1
+                or len(batch.portfolio_reconciliation_events) != 1
+                or batch.events[0]["account_id"] != captured.account_id):
+            raise ValueError("Typed portfolio sync needs one account reconciliation event")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("Typed journal writer cannot accept portfolio sync")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((_PortfolioSyncUnit(batch, captured), receipt))
+            except Full as exc:
+                raise JournalQueueFull("Typed portfolio sync queue is full") from exc
+            self._accepted_writes = True
+        return receipt
+
     def submit_terminal_backtest(
         self, batch: TypedJournalBatch,
         captured: tuple[CapturedPortfolioSnapshot, ...],
@@ -2014,7 +2059,7 @@ class ArteJournalWriter:
     def _run(self) -> None:
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
-            | _DurabilityBarrier | _AdmissionUnit | _TerminalBacktestUnit,
+            | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit | _TerminalBacktestUnit,
             Future[str],
         ] | None = None
         while True:
@@ -2056,6 +2101,11 @@ class ArteJournalWriter:
                     from src.trading_runtime.arte_admission_fence import publish_fenced_admission
                     unit = group[0][0]
                     committed_id = publish_fenced_admission(
+                        self._client, unit.batch, unit.captured)
+                elif isinstance(group[0][0], _PortfolioSyncUnit):
+                    from src.trading_runtime.arte_portfolio_sync import publish_fenced_portfolio_sync
+                    unit = group[0][0]
+                    committed_id = publish_fenced_portfolio_sync(
                         self._client, unit.batch, unit.captured)
                 elif isinstance(group[0][0], _TerminalBacktestUnit):
                     from src.trading_runtime.arte_backtest_snapshot_anchor import (

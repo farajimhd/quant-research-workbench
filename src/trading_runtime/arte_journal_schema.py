@@ -218,6 +218,18 @@ TABLES = (
         "run_id, account_id, state_revision, phase",
     ),
     TableContract(
+        "trading_portfolio_sync_fence_v1",
+        (("run_id", "String"), ("sync_month", "Date"),
+         ("account_id", "String"), ("state_revision", "UInt64"),
+         ("attempt_id", "UUID"), ("batch_id", "UUID"),
+         ("first_sequence", "UInt64"), ("last_sequence", "UInt64"),
+         ("snapshot_hash", "FixedString(64)"),
+         ("difference_hash", "FixedString(64)"),
+         ("captured_at", "DateTime64(6, 'UTC')"),
+         ("content_hash", "FixedString(64)")),
+        "toYYYYMM(sync_month)", "run_id, account_id, state_revision",
+    ),
+    TableContract(
         "trading_backtest_snapshot_anchor_v1",
         (("run_id", "String"), ("anchor_month", "Date"),
          ("account_id", "String"), ("state_revision", "UInt64"),
@@ -526,6 +538,17 @@ TABLES = (
          ("cash_tranche_budget", "Decimal(38, 18)"),
          ("content_hash", "FixedString(64)")),
         "toYYYYMM(event_month)", "run_id, account_id, reservation_id, record_id",
+    ),
+    TableContract(
+        "trading_portfolio_reconciliation_event_v1",
+        (("record_id", "UUID"), ("run_id", "String"), ("event_month", "Date"),
+         ("batch_id", "UUID"), ("account_id", "String"),
+         ("account_key", "String"), ("snapshot_id", "String"),
+         ("difference_count", "UInt32"),
+         ("difference_hash", "FixedString(64)"),
+         ("source_event_time", "DateTime64(9, 'UTC')"),
+         ("content_hash", "FixedString(64)")),
+        "toYYYYMM(event_month)", "run_id, account_id, source_event_time, record_id",
     ),
     TableContract(
         "trading_signal_source_v1",
@@ -1038,6 +1061,8 @@ TABLES = (
             ("portfolio_decision_reason_hash", "FixedString(64)"),
             ("portfolio_reservation_event_count", "UInt32"),
             ("portfolio_reservation_event_hash", "FixedString(64)"),
+            ("portfolio_reconciliation_event_count", "UInt32"),
+            ("portfolio_reconciliation_event_hash", "FixedString(64)"),
             ("source_cursor", "String"),
             ("status", "LowCardinality(String)"),
             ("committed_at", "DateTime64(6, 'UTC')"),
@@ -1176,6 +1201,22 @@ def portfolio_snapshot_schema_upgrade_ddl() -> tuple[str, ...]:
     return tuple(table.ddl() for table in TABLES
                  if table.name.startswith("trading_portfolio_")
                  and table.name not in policy_names)
+
+
+def portfolio_reconciliation_event_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only typed sync event, late fence, and commit proof columns."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_portfolio_reconciliation_event_v1"].ddl(),
+        by_name["trading_portfolio_sync_fence_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "portfolio_reconciliation_event_count UInt32 DEFAULT 0 "
+        "AFTER portfolio_reservation_event_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"portfolio_reconciliation_event_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER portfolio_reconciliation_event_count",
+    )
 
 
 def portfolio_snapshot_timestamp_upgrade_ddl() -> str:
