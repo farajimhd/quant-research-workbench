@@ -7,16 +7,14 @@
 # database process.
 # =============================================================================
 
-param(
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [object[]]$RemainingArguments
-)
+# Leave parameters unbound so @args forwards named arguments to the implementation.
+# Binding ValueFromRemainingArguments here consumes them before @args can forward them.
 
 $ErrorActionPreference = "Stop"
 $ImplementationScript = Join-Path $PSScriptRoot "stop_clickhouse_wsl.ps1"
 
 Write-Host "Stopping repository-managed ClickHouse and its WSL instance."
-& $ImplementationScript @RemainingArguments
+& $ImplementationScript @args
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
