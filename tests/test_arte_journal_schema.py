@@ -98,6 +98,7 @@ def test_journal_principal_cannot_write_market_or_change_schema() -> None:
     client = Grants()
     journal_permission_preflight(client)
     for grant in ("CHECK GRANT INSERT ON arte.bars_v1",
+                  "CHECK GRANT INSERT ON arte.*",
                   "CHECK GRANT CREATE TABLE ON arte.*",
                   "CHECK GRANT DROP TABLE ON arte.bars_v1",
                   "CHECK GRANT ALTER DELETE ON arte.trading_event_v1"):

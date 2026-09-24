@@ -383,8 +383,9 @@ def journal_permission_preflight(client: Any) -> None:
             raise ValueError("ClickHouse grant check returned an invalid result")
         return result == "1"
 
-    if allowed("CREATE TABLE", "arte.*"):
-        raise ValueError("Journal principal may create arte tables")
+    for privilege in ("CREATE TABLE", "INSERT", "ALTER", "DROP TABLE", "TRUNCATE"):
+        if allowed(privilege, "arte.*"):
+            raise ValueError(f"Journal principal has broad arte {privilege} authority")
     for name in sorted(tables):
         target = f"arte.{name}"
         if not allowed("SELECT", target):
