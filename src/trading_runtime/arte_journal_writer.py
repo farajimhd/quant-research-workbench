@@ -429,6 +429,8 @@ def publish_typed_run(client: Any, run: Mapping[str, Any]) -> str:
         if not re.fullmatch(r"[0-9a-f]{64}", str(run[field])):
             raise ValueError(f"Typed run {field} must be a SHA-256 digest")
     wire = _wire_row("trading_run_v1", run)
+    if wire["run_month"] != wire["started_at"][:7] + "-01":
+        raise ValueError("Typed run partition differs from its UTC start time")
     columns = ",".join(column for column, _ in _CONTRACTS["trading_run_v1"].columns)
     query = (f"SELECT {columns} FROM arte.trading_run_v1 "
              f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
@@ -574,9 +576,16 @@ def load_typed_run_context(client: Any, run_id: str) -> dict[str, Any]:
     accounts.sort(key=lambda row: int(row["ordinal"]))
     if (len(accounts) > 65535
             or [int(row["ordinal"]) for row in accounts] != list(range(len(accounts)))
+            or len({str(row["account_id"]) for row in accounts}) != len(accounts)
+            or any(not str(row["account_id"]).strip() for row in accounts)
             or any(str(row["run_id"]) != run_id or str(row["run_month"]) != month
                    for row in accounts)):
         raise RuntimeError("Typed run account membership is not contiguous")
+    if (not str(config["strategy_id"]).strip()
+            or int(config["checkpoint_interval_events"]) < 1
+            or int(config["safety_supervisor_enabled"]) not in (0, 1)
+            or int(config["write_progress_checkpoints"]) not in (0, 1)):
+        raise RuntimeError("Typed run configuration is invalid")
     account_hash = sha256(canonical_json([
         (int(row["ordinal"]), verified_hash("trading_run_account_v1", row))
         for row in accounts
