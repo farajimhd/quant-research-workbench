@@ -12,6 +12,7 @@ from src.backend.backtest_journal_clickhouse import (
     schema_ddl, storage_preflight,
 )
 from src.backend.backtest_journal_clickhouse import _COLUMNS, _LAYOUT
+from src.backend.backtest_journal_memory import BacktestJournalPublisher, BacktestMemoryJournal
 from src.trading_runtime.clickhouse import _journal_row
 from src.trading_runtime.journal import JournalRecord
 from src.trading_runtime.journal_contract import journal_row
@@ -223,6 +224,70 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
                               run_date=date(2026, 8, 18))
         publish_batch(client, batch)
         self.assertIsNone(load_fenced_checkpoint(client, RUN))
+
+    def test_memory_journal_publishes_and_releases_capacity_only_after_fence(self) -> None:
+        async def exercise() -> None:
+            client = _Client()
+            writer = BacktestJournalWriter(client, pending_batches=1)
+            journal = BacktestMemoryJournal(run_id=RUN, max_pending_records=2)
+            publisher = BacktestJournalPublisher(journal, writer, attempt_id=ATTEMPT,
+                                                 run_date=date(2026, 8, 18), batch_size=1)
+            at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+            def append(number: int) -> None:
+                journal.append(run_id=RUN, category="strategy_decision",
+                               entity_type="signal", entity_id=f"signal-{number}",
+                               payload={"intent_id": f"intent-{number}"}, event_time=at)
+            try:
+                append(1)
+                await publisher.stage_pending()
+                self.assertIsNone(load_fenced_checkpoint(client, RUN))
+                append(2)
+                with self.assertRaisesRegex(RuntimeError, "buffer is full"):
+                    append(3)
+                authority = journal.reference_json({"source": "arte", "v": 1})
+                await publisher.fence_checkpoint(state={"broker": {"cash": 100},
+                                                         "authority": authority},
+                                                 source_cursor="bucket-2")
+                restored_first = load_fenced_checkpoint(client, RUN)
+                self.assertEqual(restored_first["sequence"], 2)
+                self.assertEqual(restored_first["state"]["authority"],
+                                 {"source": "arte", "v": 1})
+                append(3)
+                await publisher.fence_checkpoint(state={"broker": {"cash": 99}},
+                                                 source_cursor="bucket-3")
+                restored = load_fenced_checkpoint(client, RUN)
+                self.assertEqual((restored["sequence"], restored["source_cursor"]),
+                                 (3, "bucket-3"))
+            finally:
+                await writer.close()
+        asyncio.run(exercise())
+
+    def test_failed_fence_does_not_release_memory_journal_capacity(self) -> None:
+        class RejectCommit(_Client):
+            def execute(self, sql: str) -> str:
+                if sql.startswith("INSERT INTO arte.bt_commit_v1"):
+                    raise OSError("commit unavailable")
+                return super().execute(sql)
+
+        async def exercise() -> None:
+            writer = BacktestJournalWriter(RejectCommit())
+            journal = BacktestMemoryJournal(run_id=RUN, max_pending_records=1)
+            publisher = BacktestJournalPublisher(journal, writer, attempt_id=ATTEMPT,
+                                                 run_date=date(2026, 8, 18), batch_size=1)
+            at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+            journal.append(run_id=RUN, category="strategy", entity_type="signal",
+                           entity_id="one", payload={}, event_time=at)
+            try:
+                with self.assertRaisesRegex(OSError, "commit unavailable"):
+                    await publisher.fence_checkpoint(state={"broker": {"cash": 100}},
+                                                     source_cursor="bucket-1")
+                self.assertEqual([row.sequence for row in journal.unfenced_records()], [1])
+                with self.assertRaisesRegex(RuntimeError, "buffer is full"):
+                    journal.append(run_id=RUN, category="strategy", entity_type="signal",
+                                   entity_id="two", payload={}, event_time=at)
+            finally:
+                await writer.close()
+        asyncio.run(exercise())
 
 
 if __name__ == "__main__":

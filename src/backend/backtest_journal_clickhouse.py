@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 from uuid import UUID, uuid5
 
 from src.trading_runtime.journal_contract import VERSION, canonical_json, journal_row, payload_hash
@@ -193,7 +193,8 @@ def prepare_batch(*, records: Sequence[Any], attempt_id: str,
 def prepare_fence(*, batches: Sequence[JournalBatch], checkpoint: dict[str, Any],
                   source_cursor: str, status: str = "running",
                   prior_last_sequence: int = 0,
-                  prior_fence_id: str = "00000000-0000-0000-0000-000000000000") -> JournalFence:
+                  prior_fence_id: str = "00000000-0000-0000-0000-000000000000",
+                  additional_evidence: Mapping[str, str] | None = None) -> JournalFence:
     """Commit already-staged contiguous batches with one recovery snapshot."""
     if not batches or status not in {"running", "completed", "stopped", "failed"}:
         raise ValueError("A journal fence needs batches and a valid run status")
@@ -215,6 +216,12 @@ def prepare_fence(*, batches: Sequence[JournalBatch], checkpoint: dict[str, Any]
     body = canonical_json(encoded)
     checkpoint_hash = sha256(body.encode("utf-8")).hexdigest()
     evidence[checkpoint_hash] = body
+    for digest, raw in (additional_evidence or {}).items():
+        if sha256(raw.encode("utf-8")).hexdigest() != digest:
+            raise ValueError("Backtest journal evidence hash does not match its contents")
+        existing = evidence.setdefault(digest, raw)
+        if existing != raw:
+            raise ValueError("Conflicting Backtest journal evidence contents")
     now = datetime.now(timezone.utc).isoformat()
     blobs = tuple({"sha256": digest, "kind": "checkpoint" if digest == checkpoint_hash else "evidence",
                    "raw_bytes": len(raw.encode("utf-8")), "payload_json": raw,
