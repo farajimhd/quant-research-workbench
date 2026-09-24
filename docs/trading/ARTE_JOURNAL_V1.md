@@ -63,13 +63,24 @@ after all typed family rows and their counts and hashes have been read back or
 otherwise verified. Unfenced rows are ignored for recovery and review. A
 retried prefix with conflicting content is fatal, not last-write-wins.
 
-A dedicated bounded writer thread may batch Backtest facts, with backpressure
-and failure propagation. Live command intent must receive a durable ClickHouse
-acknowledgment before an external order is sent. Broker executions must be
-acknowledged before they are treated as journaled. A full queue or unavailable
-ClickHouse pauses/fails the relevant execution path; it never drops a record
-or falls back to disk. Portfolio admission and campaign ownership require a
-single fenced coordinator, not an assumed `MergeTree` compare-and-swap.
+A dedicated bounded writer lane batches records; the market-data callback and
+Backtest simulation loop never perform ClickHouse I/O or wait for an insert
+receipt. Publication and verification run on separate workers. In Backtest,
+the engine may finish simulation before persistence catches up; the run is not
+durably **completed** or available for review until every prefix fence and
+terminal state is acknowledged. Queue lag and the final drain time are reported
+separately from engine runtime.
+
+For live trading, the market-event callback only enqueues decisions. A separate
+OMS dispatcher awaits the durable command-intent receipt before sending the
+external order; this durability gate must never stall market-data ingestion or
+strategy evaluation. Broker execution publication is likewise asynchronous,
+with pending-versus-durable state made explicit. A full bounded queue or
+unavailable ClickHouse disables new order admission and marks persistence
+unhealthy; it never drops a record or falls back to disk. The engine must not
+claim durability merely because an enqueue succeeded. Portfolio admission and
+campaign ownership require a single fenced coordinator, not an assumed
+`MergeTree` compare-and-swap.
 
 Recovery loads the latest verified fence, restores typed state components,
 reconciles live broker orders/executions by stable IDs, and resumes from the
