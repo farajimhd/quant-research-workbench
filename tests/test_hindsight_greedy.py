@@ -174,6 +174,25 @@ def test_hold_value_does_not_require_new_entry_and_does_not_enter_market_ranking
     assert not unknown['hold_value_available']
 
 
+def test_completed_activity_gates_opening_but_preserves_holding_and_closing():
+    frame = phase1_rows().with_columns(
+        pl.lit(10.).alias('decision_price'),pl.lit(True).alias('price_valid'),
+        pl.lit(12.).alias('long_target_price'),pl.lit(8.).alias('short_target_price'),
+        pl.Series('volume_60s',[0.,19_999.,20_000.]),pl.Series('trades_60s',[0,11,11]))
+    values = coefficients(frame,valuation_basis='price_action',min_volume_60s=20_000.,
+        min_trades_60s=11).filter(pl.col('side')=='long')
+    assert values['can_open'].to_list() == [False,False,True]
+    assert values['can_close'].to_list() == [True]*3
+    assert values['hold_value_available'].to_list() == [True]*3
+    assert values['status'].to_list() == ['liquidity_below_threshold']*2+['available']
+    assert values['open_value_per_share'].to_list()[:2] == [None,None]
+    assert values['hold_value_per_share'][0] is not None
+    with pytest.raises(ValueError,match='completed one-minute activity'):
+        coefficients(frame.drop('volume_60s'),valuation_basis='price_action',min_volume_60s=20_000.)
+    with pytest.raises(ValueError,match='requires arte price-action'):
+        coefficients(phase1_rows(),min_trades_60s=11)
+
+
 def test_negative_after_cost_target_remains_a_known_loss():
     frame = phase1_rows().with_columns(pl.lit(.05).alias('decision_price'),pl.lit(True).alias('price_valid'),
         pl.lit(.02).alias('long_target_price'),pl.lit(.02).alias('short_target_price'))
@@ -301,7 +320,7 @@ def test_runnable_builder_resume_stop_and_corrupt_source(tmp_path, monkeypatch):
     frame.with_columns(pl.lit('C').alias('ticker'),pl.lit('listing:C').alias('listing_id')).write_parquet(other/"opportunities.parquet")
     write(other/"ready.json", dict(plan_hash=plan["plan_hash"],listing=second,rows=57601,
         files={"opportunities.parquet":file_hash(other/"opportunities.parquet")}))
-    args = ["build", "--phase1", str(source)]
+    args = ["build", "--phase1", str(source),"--min-volume-60s","0","--min-trades-60s","0"]
     assert main(args) == 0
     output = next((tmp_path/"hindsight-greedy"/"2026-08-21").iterdir())
     holding = pl.read_parquet(output/'market_hold_values.parquet')

@@ -11,7 +11,7 @@ from typing import Mapping
 
 import polars as pl
 
-VERSION = "hindsight-greedy-fractional-v5"
+VERSION = "hindsight-greedy-fractional-v6"
 MODES = {"long": ("long",), "short": ("short",), "long_short": ("long", "short")}
 DEFAULT_HALF_LIFE_BARS = 30.0
 
@@ -41,13 +41,25 @@ def discount_policy(macd_resolution_seconds=1., *, half_life_bars=None, gamma=No
 
 def coefficients(frame: pl.DataFrame, gamma: float | None = None,
                  cost_per_share: float = 0.0, *, valuation_basis: str = 'quotes',
-                 macd_resolution_seconds: float = 1., half_life_bars: float | None = None) -> pl.DataFrame:
+                 macd_resolution_seconds: float = 1., half_life_bars: float | None = None,
+                 min_volume_60s: float = 0., min_trades_60s: int = 0) -> pl.DataFrame:
     """O(rows) vectorized compilation; keep unavailable outcomes explicitly null."""
     gamma = discount_policy(macd_resolution_seconds,half_life_bars=half_life_bars,gamma=gamma)['gamma_per_second']
     if not math.isfinite(cost_per_share) or cost_per_share < 0:
         raise ValueError("cost_per_share must be finite and nonnegative")
     if valuation_basis not in ('quotes','price_action'):
         raise ValueError('Unknown valuation basis')
+    if not math.isfinite(min_volume_60s) or min_volume_60s < 0 or min_trades_60s < 0:
+        raise ValueError('Liquidity thresholds must be finite and nonnegative')
+    if type(min_trades_60s) is not int:
+        raise ValueError('min_trades_60s must be an integer')
+    if (min_volume_60s or min_trades_60s) and valuation_basis != 'price_action':
+        raise ValueError('Liquidity filter requires arte price-action activity')
+    if (min_volume_60s or min_trades_60s) and not {'volume_60s','trades_60s'} <= set(frame.columns):
+        raise ValueError('Liquidity filter requires completed one-minute activity')
+    liquidity_ok = ((pl.col('volume_60s') >= min_volume_60s) &
+                    (pl.col('trades_60s') >= min_trades_60s)).fill_null(False) if (
+                        min_volume_60s or min_trades_60s) else pl.lit(True)
     terminal = pl.col('session_terminal') if valuation_basis == 'price_action' and 'session_terminal' in frame.columns else pl.lit(False)
     out = []
     for side, sign in (("long", 1), ("short", -1)):
@@ -62,10 +74,11 @@ def coefficients(frame: pl.DataFrame, gamma: float | None = None,
         # Eligibility is based on current observations, never future profitability.
         observation_ok = ((pl.col('price_valid') & (entry_observation > 0) & entry_observation.is_finite()) if price_only else
             (pl.col('quote_valid') & (pl.col('ask_size') >= 1) & (pl.col('bid_size') >= 1))).fill_null(False)
-        new_ok = (observation_ok & ~terminal & (entry > 0) & (capital > 0)
+        base_new_ok = (observation_ok & ~terminal & (entry > 0) & (capital > 0)
                   & entry.is_finite() & capital.is_finite()).fill_null(False)
         if price_only and 'long_entry_us' in frame.columns:
-            new_ok = new_ok & (pl.col(f'{side}_status') == 'available')
+            base_new_ok = base_new_ok & (pl.col(f'{side}_status') == 'available')
+        new_ok = base_new_ok & liquidity_ok
         hold = pl.col(f"{side}_hold_seconds")
         future_status = (pl.col(f'{side}_status').is_in(
             ('available','waiting_for_macd_entry','no_active_macd_swing'))
@@ -85,6 +98,9 @@ def coefficients(frame: pl.DataFrame, gamma: float | None = None,
                 pl.lit(None,dtype=pl.Int64)).alias('target_entry_us'),
             pl.col(f"{side}_target_id").alias("target_id"),
             pl.col(f"{side}_available_us").alias("label_available_us"),
+            (pl.col('volume_60s') if 'volume_60s' in frame.columns else pl.lit(None,dtype=pl.Float64)).alias('volume_60s'),
+            (pl.col('trades_60s') if 'trades_60s' in frame.columns else pl.lit(None,dtype=pl.Int64)).alias('trades_60s'),
+            liquidity_ok.alias('liquidity_eligible'),
             observation_ok.alias("can_close"), new_ok.alias("can_open"),
             terminal.alias('session_terminal'),
             available.alias("value_available"),
@@ -102,6 +118,8 @@ def coefficients(frame: pl.DataFrame, gamma: float | None = None,
             pl.when(terminal).then(pl.lit('session_liquidation'))
             .when(pl.col('phase1_status').is_in(('waiting_for_macd_entry','no_active_macd_swing')))
             .then(pl.col('phase1_status'))
+            .when(~pl.col('liquidity_eligible') & pl.col('can_close'))
+            .then(pl.lit('liquidity_below_threshold'))
             .when(~pl.col("can_open")).then(pl.lit('current_price_or_cost_unavailable' if price_only else 'current_quote_or_cost_unavailable'))
             .when(~pl.col("value_available") & (pl.col("phase1_status") == "available"))
             .then(pl.lit("invalid_target_or_duration"))

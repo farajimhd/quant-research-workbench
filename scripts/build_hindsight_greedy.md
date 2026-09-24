@@ -41,6 +41,21 @@ The build requires `complete.json` from Phase 1. Substitute a completed canary
 directory to validate a subset; its canary scope is retained. Missing completion,
 source hashes, exact dense time grids or listing identity fail explicitly.
 
+For arte price-action Phase 1, Phase 2 V6 defaults to requiring at least 20,000
+shares and 11 trades in the last 60 completed one-second bars before opening a
+new position. Set `--min-volume-60s` and `--min-trades-60s` to change either
+threshold; set both to zero to disable the gate. Both thresholds must pass.
+Before a full minute has elapsed, the window contains only completed session
+seconds since 04:00 ET. Phase 2 computes it from Phase 1's persisted `volume`
+and `trades`; there is no lookahead or Phase 1 rebuild. Missing or invalid
+activity fails the filtered build. Legacy quote-based Phase 1 requires both
+thresholds explicitly set to zero. This is a price-action activity filter, not
+a guarantee of executable liquidity. It affects `can_open` and the sparse
+opening table; held positions retain their hold/close values and forced exit.
+The holding grid records the observed 60-second counts and
+`liquidity_below_threshold` when an entry is filtered. The completion marker
+and terminal output report the number of liquidity-gated rows.
+
 Defaults: fractional shares, `--half-life-bars 30` **MACD bars**, and
 `--cost-per-share 0` per transaction. Costs, if configured, are incorporated once
 into entry and exit prices. A positive cost uses ask+cost / bid-cost for a long,

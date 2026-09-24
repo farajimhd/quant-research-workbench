@@ -189,8 +189,19 @@ def compile_listing(listing, source, root, plan):
             if not frame['session_terminal'].equals(frame['time_us'] >= cutoff) or any(
                     frame.filter(pl.col(side+'_target_us') > cutoff).height for side in ('long','short')):
                 raise ValueError('Phase 1 terminal state or target exceeds the liquidation boundary')
+        if plan['liquidity_filter']['min_volume_60s'] or plan['liquidity_filter']['min_trades_60s']:
+            if not {'volume','trades'} <= set(frame.columns):
+                raise ValueError('Phase 1 completed one-second activity missing')
+            if frame.filter((pl.col('volume') < 0) | ~pl.col('volume').is_finite() |
+                            (pl.col('trades') < 0) | pl.col('volume').is_null() |
+                            pl.col('trades').is_null()).height:
+                raise ValueError('Invalid Phase 1 completed activity')
+            frame = frame.with_columns(
+                pl.col('volume').rolling_sum(60,min_samples=1).alias('volume_60s'),
+                pl.col('trades').rolling_sum(60,min_samples=1).alias('trades_60s'))
         values = coefficients(frame, plan["gamma_per_second"], plan["cost_per_share_per_transaction"],
-                              valuation_basis=plan.get('valuation_basis','quotes'))
+                              valuation_basis=plan.get('valuation_basis','quotes'),
+                              **plan['liquidity_filter'])
         parquet(output / "coefficients.parquet", values)
         for mode in MODES:
             parquet(output / f"{mode}.parquet", summarize_listing(values, mode))
@@ -213,6 +224,7 @@ def publish_market_values(root, plan):
     writer = None
     rows = 0
     opening_rows = 0
+    liquidity_rejected_rows = 0
     try:
         for index, listing in enumerate(plan['selected']):
             if STOP or (root/'STOP').exists():
@@ -240,6 +252,7 @@ def publish_market_values(root, plan):
             writer.write_table(batch, row_group_size=57601)
             rows += frame.height
             opening_rows += frame['can_open'].sum()
+            liquidity_rejected_rows += (frame['status'] == 'liquidity_below_threshold').sum()
         if writer is None or rows != expected_rows:
             raise ValueError('Market tensor row count mismatch')
     finally:
@@ -281,6 +294,7 @@ def publish_market_values(root, plan):
             path.with_suffix('.parquet.ordered.tmp').unlink(missing_ok=True)
     return dict(rows=rows, holding=artifacts[holding_path.name],
         opening=artifacts[opening_path.name],listing_count=len(plan['selected']),
+        liquidity_rejected_rows=liquidity_rejected_rows,
         time_count=57601, side_count=2, resolution_count=1,
         axis_order=['macd_resolution_seconds','time_us','listing_index','side'],
         physical_order=['time_us','listing_index','side'],row_group_target_rows=group_rows,
@@ -297,6 +311,10 @@ def run_build(args, console):
         half_life_bars=getattr(args,'half_life_bars',None),gamma=args.gamma)
     if not math.isfinite(args.cost_per_share) or args.cost_per_share < 0:
         raise ValueError("cost-per-share must be finite and nonnegative")
+    if not math.isfinite(args.min_volume_60s) or args.min_volume_60s < 0 or args.min_trades_60s < 0:
+        raise ValueError('Liquidity thresholds must be finite and nonnegative')
+    if (args.min_volume_60s or args.min_trades_60s) and original.get('valuation_basis') != 'price_action':
+        raise ValueError('Liquidity filter requires arte price-action activity')
     runtime = required_runtime()
     os.environ['POLARS_TEMP_DIR'] = str(runtime)
     plan = dict(version=VERSION, phase1_root=str(source), phase1_plan_hash=original["plan_hash"],
@@ -306,6 +324,8 @@ def run_build(args, console):
                 date=original["date"], scope=original["scope"], selected=original["selected"],
                 gamma_per_second=discount['gamma_per_second'], discount_policy=discount,
                 cost_per_share_per_transaction=args.cost_per_share,
+                liquidity_filter=dict(min_volume_60s=args.min_volume_60s,
+                    min_trades_60s=args.min_trades_60s),
                 sizes="fractional", modes=list(MODES),
                 short_policy="100% synthetic reserve; proceeds locked; no broker margin claim",
                 semantics="Local greedy values; no future reallocations; exact size coefficients",
@@ -322,6 +342,7 @@ def run_build(args, console):
         write(result_file,dict(root=str(root),plan_hash=plan['plan_hash']),immutable=False)
     console.print(f"Greedy labels | {plan['date']} | {len(plan['selected']):,} listings | {plan['scope']}")
     console.print(f"Discount: {discount['mode']} | half-life {discount['half_life_seconds']} seconds | gamma={discount['gamma_per_second']:.9g}/second")
+    console.print(f"Opening liquidity: completed 60s volume >= {args.min_volume_60s:g} shares; trades >= {args.min_trades_60s}")
     console.print("Output: " + str(root), soft_wrap=True)
     workers=worker_budget(getattr(args,"workers",None))
     console.print(f"Workers: {workers}; bounded compilation, deterministic market reduction")
@@ -376,7 +397,7 @@ def run_build(args, console):
                 queued=len(plan["selected"])-len(results), retries=0), immutable=False)
             if success:
                 write(root / "complete.json", completion)
-                console.print(f"Market values: {tensor['holding']['rows']:,} holding rows + {tensor['opening']['rows']:,} opening rows across {tensor['listing_count']:,} listings")
+                console.print(f"Market values: {tensor['holding']['rows']:,} holding rows + {tensor['opening']['rows']:,} opening rows across {tensor['listing_count']:,} listings; liquidity-gated {tensor['liquidity_rejected_rows']:,} rows")
             console.print(f"Result: {state}. Rerun to reuse verified listings; failures are never skipped.")
             return 0 if success else 2
     finally:
@@ -475,6 +496,10 @@ def main(argv=None):
     discount.add_argument('--half-life-bars',type=float,help='Discount half-life in MACD bars; default 30')
     discount.add_argument("--gamma", type=float, default=None, help="Explicit per-second discount override")
     build.add_argument("--cost-per-share", type=float, default=0, help="Per transaction, included in prices; default 0")
+    build.add_argument('--min-volume-60s',type=float,default=20_000.,
+        help='Minimum completed one-minute share volume for new entries; default 20000')
+    build.add_argument('--min-trades-60s',type=int,default=11,
+        help='Minimum completed one-minute trade count for new entries; default 11 (>10)')
     evaluate = commands.add_parser("evaluate", help="Score explicit joint actions from a state/request JSON")
     evaluate.add_argument("--dataset", required=True, type=Path)
     evaluate.add_argument("--request", required=True, type=Path)
