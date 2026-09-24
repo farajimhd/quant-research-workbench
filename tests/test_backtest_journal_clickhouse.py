@@ -11,6 +11,7 @@ from src.backend.backtest_journal_clickhouse import (
     prepare_batch, prepare_fence, publish_batch, publish_fence, publish_run,
     schema_ddl, storage_preflight,
 )
+from src.backend.backtest_journal_clickhouse import _COLUMNS, _LAYOUT
 from src.trading_runtime.clickhouse import _journal_row
 from src.trading_runtime.journal import JournalRecord
 from src.trading_runtime.journal_contract import journal_row
@@ -87,8 +88,21 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
                     return json.dumps({"disks": ["live_market_ssd"]})
                 if "system.tables" in sql:
                     return "\n".join(json.dumps({"name": name,
-                        "storage_policy": "live_market_ssd"}) for name in
-                        ("bt_run_v1", "bt_event_v1", "bt_blob_v1", "bt_commit_v1"))
+                        "storage_policy": "live_market_ssd", "engine": "MergeTree",
+                        "partition_key": _LAYOUT[name][0], "sorting_key": _LAYOUT[name][1]})
+                        for name in _COLUMNS)
+                if "system.columns" in sql:
+                    typed = {
+                        ("bt_event_v1", "event_time"): "DateTime64(9, 'UTC')",
+                        ("bt_event_v1", "sequence"): "UInt64",
+                        ("bt_event_v1", "payload_hash"): "FixedString(64)",
+                        ("bt_blob_v1", "sha256"): "FixedString(64)",
+                        ("bt_commit_v1", "batch_ids"): "Array(UUID)",
+                        ("bt_commit_v1", "checkpoint_hash"): "FixedString(64)",
+                    }
+                    return "\n".join(json.dumps({"table": table, "name": name,
+                        "type": typed.get((table, name), "String")})
+                        for table, names in _COLUMNS.items() for name in names)
                 if "system.parts" in sql:
                     return ""
                 raise AssertionError(sql)
@@ -100,6 +114,15 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
                 return super().execute(sql)
         with self.assertRaisesRegex(ValueError, "outside"):
             storage_preflight(Misplaced())
+        class WrongLayout(Catalog):
+            def execute(self, sql: str) -> str:
+                if "system.tables" in sql:
+                    rows = [json.loads(line) for line in super().execute(sql).splitlines()]
+                    rows[0]["sorting_key"] = "run_month"
+                    return "\n".join(json.dumps(row) for row in rows)
+                return super().execute(sql)
+        with self.assertRaisesRegex(ValueError, "partition/order"):
+            storage_preflight(WrongLayout())
 
     def test_live_and_backtest_share_logical_envelope(self) -> None:
         value = record(1)

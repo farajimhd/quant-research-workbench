@@ -23,6 +23,26 @@ TABLE_PREFIX = "arte.bt_"
 STORAGE_POLICY = "live_market_ssd"
 TABLES = ("bt_run_v1", "bt_event_v1", "bt_blob_v1", "bt_commit_v1")
 _BATCH_NAMESPACE = UUID("9c911ad1-61b5-48ba-a858-6bba42e27f70")
+_LAYOUT = {
+    "bt_run_v1": ("toYYYYMM(run_month)", "run_id"),
+    "bt_event_v1": ("toYYYYMM(run_month)", "run_id, attempt_id, sequence, batch_id"),
+    "bt_blob_v1": ("cityHash64(sha256) % 16", "sha256"),
+    "bt_commit_v1": ("toYYYYMM(run_month)", "run_id, attempt_id, last_sequence, fence_id"),
+}
+_COLUMNS = {
+    "bt_run_v1": ("run_id", "run_month", "contract_version", "definition_hash",
+                  "configuration_hash", "market_plan_token", "v7_plan_token",
+                  "code_hash", "created_at"),
+    "bt_event_v1": ("run_id", "run_month", "attempt_id", "batch_id", "record_id",
+                    "sequence", "event_time", "recorded_at", "category",
+                    "entity_type", "entity_id", "account_id", "payload_hash",
+                    "payload_json"),
+    "bt_blob_v1": ("sha256", "kind", "raw_bytes", "payload_json", "created_at"),
+    "bt_commit_v1": ("run_id", "run_month", "attempt_id", "fence_id",
+                     "prior_fence_id", "first_sequence", "last_sequence", "event_count",
+                     "batch_ids", "batch_hash", "checkpoint_hash", "source_cursor",
+                     "status", "committed_at", "contract_version"),
+}
 
 
 def schema_ddl() -> tuple[str, ...]:
@@ -73,11 +93,33 @@ def storage_preflight(client: Any) -> None:
         raise ValueError("Backtest journal requires an SSD-only live_market_ssd policy")
     names = ",".join(_literal(name) for name in TABLES)
     tables = _rows(client,
-        "SELECT name,storage_policy FROM system.tables WHERE database='arte' "
+        "SELECT name,storage_policy,engine,partition_key,sorting_key "
+        "FROM system.tables WHERE database='arte' "
         f"AND name IN ({names}) FORMAT JSONEachRow")
     if ({row["name"] for row in tables} != set(TABLES)
             or any(row["storage_policy"] != STORAGE_POLICY for row in tables)):
         raise ValueError("Backtest journal tables are missing or have the wrong storage policy")
+    if any((row["engine"], row["partition_key"], row["sorting_key"]) !=
+           ("MergeTree", *_LAYOUT[row["name"]]) for row in tables):
+        raise ValueError("Backtest journal table partition/order contract differs")
+    columns = _rows(client,
+        "SELECT table,name,type FROM system.columns WHERE database='arte' "
+        f"AND table IN ({names}) ORDER BY table,position FORMAT JSONEachRow")
+    actual = {table: tuple(row["name"] for row in columns if row["table"] == table)
+              for table in TABLES}
+    if actual != _COLUMNS:
+        raise ValueError("Backtest journal columns differ from the typed contract")
+    types = {(row["table"], row["name"]): row["type"] for row in columns}
+    required_types = {
+        ("bt_event_v1", "event_time"): "DateTime64(9, 'UTC')",
+        ("bt_event_v1", "sequence"): "UInt64",
+        ("bt_event_v1", "payload_hash"): "FixedString(64)",
+        ("bt_blob_v1", "sha256"): "FixedString(64)",
+        ("bt_commit_v1", "batch_ids"): "Array(UUID)",
+        ("bt_commit_v1", "checkpoint_hash"): "FixedString(64)",
+    }
+    if any(types.get(key) != expected for key, expected in required_types.items()):
+        raise ValueError("Backtest journal key, timestamp, or hash types differ")
     parts = _rows(client,
         "SELECT table,disk_name FROM system.parts WHERE active AND database='arte' "
         f"AND table IN ({names}) AND disk_name!='live_market_ssd' LIMIT 1 FORMAT JSONEachRow")
