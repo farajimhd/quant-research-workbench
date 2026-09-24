@@ -133,11 +133,14 @@ def phase1_plan(root):
         raise ValueError("Duplicate Phase 1 ticker")
     if not plan["selected"] or complete["rows"] != 57601 * len(plan["selected"]):
         raise ValueError("Empty or incomplete Phase 1 decision grid")
-    if plan["version"] not in ("hindsight-phase1-macd-v1", "hindsight-phase1-arte-100ms-v1", "hindsight-phase1-arte-price-action-v2"):
+    if plan["version"] not in ("hindsight-phase1-macd-v1", "hindsight-phase1-arte-100ms-v1", "hindsight-phase1-arte-price-action-v2", "hindsight-phase1-arte-price-action-v3"):
         raise ValueError("Unsupported Phase 1 version")
-    expected_basis = 'price_action' if plan['version'] == 'hindsight-phase1-arte-price-action-v2' else 'quotes'
+    expected_basis = 'price_action' if plan['version'] in ('hindsight-phase1-arte-price-action-v2','hindsight-phase1-arte-price-action-v3') else 'quotes'
     if plan.get('valuation_basis','quotes') != expected_basis:
         raise ValueError('Phase 1 valuation basis does not match its version')
+    if plan['version'] == 'hindsight-phase1-arte-price-action-v3':
+        if plan.get('liquidation_us') != bounds(date.fromisoformat(plan['date']))[1]-120_000_000:
+            raise ValueError('Phase 1 liquidation boundary must be 19:58 ET')
     return plan
 
 
@@ -167,6 +170,11 @@ def compile_listing(listing, source, root, plan):
             or frame["ticker"].unique().to_list() != [listing["ticker"]]
             or frame["listing_id"].unique().to_list() != [listing["listing_id"]]):
             raise ValueError("Phase 1 grid or identity mismatch")
+        cutoff = plan.get('liquidation_us')
+        if cutoff is not None:
+            if not frame['session_terminal'].equals(frame['time_us'] >= cutoff) or any(
+                    frame.filter(pl.col(side+'_target_us') > cutoff).height for side in ('long','short')):
+                raise ValueError('Phase 1 terminal state or target exceeds the liquidation boundary')
         values = coefficients(frame, plan["gamma_per_second"], plan["cost_per_share_per_transaction"],
                               valuation_basis=plan.get('valuation_basis','quotes'))
         parquet(output / "coefficients.parquet", values)
@@ -195,6 +203,7 @@ def run_build(args, console):
     runtime = required_runtime()
     plan = dict(version=VERSION, phase1_root=str(source), phase1_plan_hash=original["plan_hash"],
                 valuation_basis=original.get('valuation_basis','quotes'),
+                liquidation_us=original.get('liquidation_us'),
                 date=original["date"], scope=original["scope"], selected=original["selected"],
                 gamma_per_second=args.gamma, cost_per_share_per_transaction=args.cost_per_share,
                 sizes="fractional", modes=list(MODES),
@@ -249,7 +258,10 @@ def run_build(args, console):
                 if phase1_plan(source)["plan_hash"] != plan["phase1_plan_hash"]:
                     raise ValueError("Phase 1 completion changed")
                 for mode in MODES:
-                    parquet(root / f"{mode}.parquet", flat_policy(summaries[mode]))
+                    policy = flat_policy(summaries[mode])
+                    if plan.get('liquidation_us') is not None:
+                        policy = policy.with_columns((pl.col('time_us') >= plan['liquidation_us']).alias('session_terminal'))
+                    parquet(root / f"{mode}.parquet", policy)
                 write(root / "complete.json", dict(plan_hash=plan["plan_hash"], listing_count=len(results),
                     files={f"{mode}.parquet": file_hash(root / f"{mode}.parquet") for mode in MODES}))
             state = "complete" if success else "failed" if counts["failed"] else "interrupted"

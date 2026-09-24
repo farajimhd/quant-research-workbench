@@ -131,7 +131,7 @@ def test_runnable_phase1_phase2_and_resume(tmp_path,monkeypatch):
     assert runner.main(args) == 0
     root = next((tmp_path/'hindsight-arte').iterdir())
     summary = read(root/'summary.json')
-    assert summary['results'][0]['coverage']['long_short']['unavailable_seconds'] > 0
+    assert summary['results'][0]['coverage']['long_short']['unavailable_seconds'] == 0
     p1 = root/'days'/str(DAY)/'phase1'
     plan = read(p1/'plan.json')
     assert plan['valuation_basis'] == 'price_action' and plan['version'] == labels.VERSION
@@ -166,3 +166,56 @@ def test_price_labels_use_extremum_not_exit_close_and_keep_negative_values():
     later = labels.decision_values(DAY,bars,[{**targets[0],'exit_time':(left+6000000)/1e6}])
     assert later.filter(pl.col('time_us') == left+5000000)['long_status'][0] == 'available'
     assert values['long_status'][-1] == 'no_future_macd_target'
+
+
+def test_liquidation_at_1958_prices_losses_without_future_bars_and_forces_flat():
+    from src.market_engine.hindsight_greedy import coefficients, ActionTable, Position
+    from scripts.build_hindsight_greedy import summarize_listing, flat_policy
+    left,right = bounds(DAY)
+    cutoff = labels.liquidation_time(DAY)
+    assert cutoff == right-120000000
+    bars = bar_frame([(left+100000,10.,10.),(cutoff,8.,8.),(cutoff+100000,100.,100.)])
+    late_target = dict(direction='long',exit_time=(cutoff+100000)/1e6,exit_price=100.,position_number=1,
+                       label_available_at=right/1e6)
+    f = labels.decision_values(DAY,bars,[late_target],liquidation_us=cutoff).with_columns(
+        pl.lit('A').alias('ticker'),pl.lit('A-id').alias('listing_id'))
+    before = f.filter(pl.col('time_us') == cutoff-1000000)
+    assert before['long_target_kind'][0] == 'session_liquidation'
+    assert before['long_target_us'][0] == cutoff
+    assert before['long_target_price'][0] == 8.
+    assert before['long_gross_profit'][0] == -2.
+    assert before['short_gross_profit'][0] == 2.
+    assert before['long_hold_seconds'][0] == 1.
+    assert before['long_available_us'][0] == cutoff
+    terminal = f.filter(pl.col('time_us') >= cutoff)
+    assert terminal.height == 121
+    assert terminal['decision_price'].unique().to_list() == [8.]
+    assert terminal['long_hold_seconds'].unique().to_list() == [0.]
+    values = coefficients(f,valuation_basis='price_action')
+    end = values.filter(pl.col('time_us') == cutoff)
+    assert end['can_open'].sum() == 0 and end['can_close'].sum() == 2
+    table = ActionTable(end.to_dicts(),[Position('A','long',1.,10.,10.)])
+    assert 'terminal_requires_liquidation:A:long' in table.evaluate({})['reasons']
+    assert not table.evaluate({'A:long':-.5})['feasible']
+    exit = table.evaluate({'A:long':-1.})
+    assert exit['feasible'] and exit['realized_pnl_now'] == -2.
+    assert exit['discounted_future_value'] == 0
+    assert not ActionTable(end.to_dicts(),[]).evaluate({'A:long':1.})['feasible']
+    policy = flat_policy(summarize_listing(values,'long_short'))
+    assert policy.filter(pl.col('time_us') >= cutoff)['chosen_action'].unique().to_list() == ['wait']
+
+
+def test_sparse_terminal_price_retains_observation_time_and_dst_clock():
+    from datetime import datetime
+    from src.market_engine.hindsight_phase1 import NY
+    for day in (date(2026,1,5),date(2026,8,21)):
+        cutoff = labels.liquidation_time(day)
+        assert datetime.fromtimestamp(cutoff/1e6,NY).strftime('%H:%M:%S') == '19:58:00'
+        bars = bar_frame([(cutoff-300000000,5.,5.),(cutoff+100000,10.,10.)])
+        f = labels.decision_values(day,bars,[],liquidation_us=cutoff)
+        at = f.filter(pl.col('time_us') == cutoff).row(0,named=True)
+        assert at['decision_price'] == 5. and at['price_age_seconds'] == 300.
+        assert at['liquidation_price_us'] == cutoff-300000000
+    empty = labels.decision_values(DAY,bar_frame([]),[],liquidation_us=labels.liquidation_time(DAY))
+    assert empty['long_target_price'].null_count() == empty.height
+    assert empty['long_status'].unique().to_list() == ['terminal_price_unavailable']

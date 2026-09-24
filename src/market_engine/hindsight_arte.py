@@ -3,7 +3,12 @@ import polars as pl
 
 from src.market_engine.hindsight_phase1 import bounds
 
-VERSION = 'hindsight-phase1-arte-price-action-v2'
+VERSION = 'hindsight-phase1-arte-price-action-v3'
+LIQUIDATION_SECONDS_BEFORE_CLOSE = 120
+
+
+def liquidation_time(day):
+    return bounds(day)[1] - LIQUIDATION_SECONDS_BEFORE_CLOSE * 1_000_000
 
 
 def intervals(indicators, terminal):
@@ -56,7 +61,7 @@ def targets(bars, episodes, lookback=2):
         target_clock='completed_100ms_bar_end')
 
 
-def decision_values(day, bars, selected_targets):
+def decision_values(day, bars, selected_targets, *, liquidation_us=None):
     """Price-action labels; neither quotes nor hypothetical execution eligibility.
 
     The decision reference is the latest completed eligible 100 ms trade close.
@@ -64,12 +69,19 @@ def decision_values(day, bars, selected_targets):
     Future swing extrema are label-side prices, never current observations.
     """
     left,right = bounds(day)
+    if liquidation_us is not None:
+        if not left < liquidation_us < right or liquidation_us % 1_000_000:
+            raise ValueError('Liquidation must be an interior whole-second session boundary')
+        bars = bars.filter(pl.col('time_us') <= liquidation_us)
+        selected_targets = [p for p in selected_targets if round(p['exit_time']*1e6) < liquidation_us]
     grid = pl.DataFrame({'time_us':pl.int_range(left,right+1,1_000_000,eager=True)})
     prices = bars.filter((pl.col('resolution_ms') == 100) & (pl.col('price_valid') == 1)).select(
         pl.col('time_us').alias('price_us'),pl.col('close').alias('decision_price')).sort('price_us')
     if prices['price_us'].n_unique() != prices.height or prices.filter(
             ~((pl.col('decision_price') > 0) & pl.col('decision_price').is_finite()).fill_null(False)).height:
         raise ValueError('Invalid or duplicate certified trade closes')
+    terminal_price = prices['decision_price'][-1] if liquidation_us is not None and prices.height else None
+    terminal_price_us = prices['price_us'][-1] if liquidation_us is not None and prices.height else None
     grid = grid.join_asof(prices,left_on='time_us',right_on='price_us').with_columns(
         pl.col('decision_price').is_not_null().alias('price_valid'),
         ((pl.col('time_us')-pl.col('price_us'))/1e6).alias('price_age_seconds'))
@@ -89,12 +101,30 @@ def decision_values(day, bars, selected_targets):
                 f'{side}_available_us':pl.Int64,f'{side}_target_price':pl.Float64}).sort(f'{side}_target_us')
         grid = grid.with_columns((pl.col('time_us')+1).alias('_next')).join_asof(
             data,left_on='_next',right_on=f'{side}_target_us',strategy='forward').drop('_next')
+        if liquidation_us is not None:
+            fallback = pl.col(f'{side}_target_us').is_null()
+            grid = grid.with_columns(
+                pl.when(fallback).then(pl.lit(liquidation_us)).otherwise(pl.col(f'{side}_target_us')).alias(f'{side}_target_us'),
+                pl.when(fallback).then(pl.lit(0)).otherwise(pl.col(f'{side}_target_id')).alias(f'{side}_target_id'),
+                pl.when(fallback).then(pl.lit(liquidation_us)).otherwise(pl.col(f'{side}_available_us')).alias(f'{side}_available_us'),
+                pl.when(fallback).then(pl.lit(terminal_price,dtype=pl.Float64)).otherwise(pl.col(f'{side}_target_price')).alias(f'{side}_target_price'),
+                pl.when(fallback).then(pl.lit('session_liquidation')).otherwise(pl.lit('macd_swing')).alias(f'{side}_target_kind'))
         grid = grid.with_columns(
             ((pl.col(f'{side}_target_price')-pl.col('decision_price'))*sign).alias(f'{side}_gross_profit'),
             ((pl.col(f'{side}_target_us')-pl.col('time_us'))/1e6).alias(f'{side}_hold_seconds'),
             pl.when(pl.col(f'{side}_target_id').is_null()).then(pl.lit('no_future_macd_target'))
                 .when(~pl.col('price_valid')).then(pl.lit('current_price_unavailable'))
                 .otherwise(pl.lit('available')).alias(f'{side}_status'))
+        if liquidation_us is not None:
+            grid = grid.with_columns(
+                pl.col(f'{side}_hold_seconds').clip(lower_bound=0).alias(f'{side}_hold_seconds'),
+                pl.when(pl.col(f'{side}_target_price').is_null()).then(pl.lit('terminal_price_unavailable'))
+                    .when(pl.col('time_us') >= liquidation_us).then(pl.lit('session_liquidation'))
+                    .otherwise(pl.col(f'{side}_status')).alias(f'{side}_status'))
+    if liquidation_us is not None:
+        grid = grid.with_columns((pl.col('time_us') >= liquidation_us).alias('session_terminal'),
+            pl.lit(liquidation_us).alias('liquidation_us'),
+            pl.lit(terminal_price_us,dtype=pl.Int64).alias('liquidation_price_us'))
     return grid
 
 

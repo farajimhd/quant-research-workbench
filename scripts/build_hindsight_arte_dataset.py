@@ -70,11 +70,17 @@ def listing_work(listing, day, source, plan, root, threads):
             if frame.filter(~pl.col('time_us').is_between(left+1,right)).height:
                 raise ValueError('Persisted row outside completed session')
         stage = 'MACD targets'
-        episodes = labels.intervals(indicators,right)
+        cutoff = plan['liquidation_us']
+        bars = bars.filter(pl.col('time_us') <= cutoff)
+        indicators = indicators.filter(pl.col('time_us') <= cutoff)
+        episodes = labels.intervals(indicators,cutoff)
         target = labels.targets(bars,episodes,plan['lookback_seconds'])
         stage = 'price-action labels'
-        values = labels.decision_values(day,bars,target['positions']).with_columns(
+        values = labels.decision_values(day,bars,target['positions'],liquidation_us=cutoff).with_columns(
             pl.lit(ticker).alias('ticker'),pl.lit(listing['listing_id']).alias('listing_id'))
+        terminal = values.filter(pl.col('time_us') == cutoff).row(0,named=True)
+        target['terminal_liquidation'] = dict(time_us=cutoff,price=terminal['decision_price'],
+            price_us=terminal['price_us'],basis='latest_completed_trade_close_at_or_before_cutoff')
         # Recheck pinned products before publishing; do not trust a mutable latest pointer.
         stage = 'final integrity'
         source_api.verify_listing(c,source,day,ticker)
@@ -102,6 +108,9 @@ def phase1(day, source, listings, population, root, args, console, code):
         lookback_seconds=args.lookback_seconds,code_hashes={k:v for k,v in code.items() if 'greedy' not in k},
         polars_version=pl.__version__,target_clock='completed_100ms_bar_end',
         valuation_basis='price_action',
+        liquidation_us=labels.liquidation_time(day),
+        liquidation_seconds_before_close=labels.LIQUIDATION_SECONDS_BEFORE_CLOSE,
+        session_close='20:00 America/New_York',
         price_policy='latest completed eligible 100ms trade close; retain observation age; no quote gates',
         volume_policy='completed_1s_canonical_volume; rolling_10s; cumulative_from_0400',
         semantics='Local MACD swing supervision; retained target and reward selection; no event parity claim')

@@ -27,8 +27,9 @@ It does not start services or alter source tables.
 
 ## Meaning of the new version
 
-`hindsight-phase1-arte-price-action-v2` replaces quote-valued Phase 1 with
-price-action labels. Prior datasets remain immutable and retain their versions.
+`hindsight-phase1-arte-price-action-v3` uses price-action labels and forced
+liquidation at **19:58 ET**, 120 seconds before the extended session's 20:00 close.
+Prior datasets remain immutable and retain their versions.
 
 - MACD uses completed, sparse 1-second indicator rows with the persisted build's
   seed history. Missing seconds do not create synthetic indicator updates.
@@ -46,8 +47,17 @@ price-action labels. Prior datasets remain immutable and retain their versions.
   short gross labels equal the decision price minus the future swing low.
   Targets use their selected high/low, not the close of the target bar.
   No bid/ask, spread, quote-age, depth, fillability or transaction-cost condition
-  changes Phase 1 labels. Negative values are retained. Missing labels mean no
-  future target or no observed current price, never an unavailable quote.
+  changes Phase 1 labels. Negative values are retained.
+- MACD intervals and swing selection stop at 19:58. When no qualifying target
+  remains before then, either direction receives a terminal target at 19:58,
+  valued at the latest eligible completed trade close at or before that time.
+  It is retained even if it loses money. The target kind is `session_liquidation`
+  with reserved target ID 0; its label-availability timestamp is the cutoff.
+  No bar or indicator after the cutoff can affect labels or the liquidation price.
+- Current prices and terminal prices can still be unavailable if no eligible
+  trade has been observed. No price is invented. Sparse terminal prices carry
+  their observation timestamp (`liquidation_price_us`) and age; this timestamp,
+  like all future target information, is label-side data.
 - Activity uses completed 1-second bar volume/counts. Missing seconds contribute
   zero activity, ten-second volume is a rolling sum, and session volume starts
   at 04:00 ET. Different timeframe volumes are never added together.
@@ -63,6 +73,13 @@ price-action labels. Prior datasets remain immutable and retain their versions.
   values, not executable returns; `can_open`/`can_close` mean that a current
   reference price exists under the comparison model, not that an order can fill.
   Legacy Phase 1 versions still use their original quote-based Phase 2 contract.
+- At and after 19:58, `session_terminal=true` and `can_open=false`. The portfolio
+  action evaluator rejects holding, partial liquidation or opening a new position;
+  existing holdings must be completely liquidated. The flat-state table selects
+  wait because it has no holdings. The grid retains all 57,601 seconds through
+  20:00, with a terminal flag on its final 121 rows. Post-cutoff rows do not
+  represent additional trading opportunities. This is a labeling/evaluation
+  rule; the builder does not place real broker orders.
 
 ## Certification and population
 
@@ -99,9 +116,10 @@ Outputs live under `runtime/hindsight-arte/<configuration-hash>/`. Each session
 has a Phase 1 directory compatible with the shared Phase 2 compiler. Phase 2
 outputs remain under `runtime/hindsight-greedy/`; their paths and market-wide
 available/unavailable counts are recorded in the campaign `summary.json`.
-Phase 1 summaries retain missing-target and missing-current-price counts per ticker/side.
-Every decision grid includes the terminal 20:00 row, which may have no future
-target. Missing labels remain null; no eligible candidate is silently ignored.
+Phase 1 summaries retain terminal and missing-price counts per ticker/side.
+Every decision grid includes the terminal 20:00 row. Where a current price
+exists, terminal targets close the former end-of-session target gaps. Missing
+prices remain null; no eligible candidate is silently ignored.
 
 Plans and successful listing outputs are immutable. Source/configuration/code
 changes produce new dataset identities. Rerun an identical command to reuse
@@ -143,3 +161,12 @@ for 56,615 of 57,600 seconds with an observed current price; the remaining 985
 seconds had no future qualifying target. Each ticker also had one initial second
 without a completed trade price. Fifty focused tests passed, including the
 price-only Phase 1 → Phase 2 handoff and resume/STOP behavior.
+
+The V3 19:58-liquidation canary on the same build/date/tickers passed both phases
+in 12.1 seconds including preflight, with zero unavailable market-policy rows.
+Each listing had 57,479 available pre-cutoff price-action rows, one initial row
+before its first observed price, and 121 terminal rows. Forced liquidation used
+AAPL 309.5259 and SUGP 1.55 from completed bars available by 19:58. Real coefficient
+artifacts rejected holding and accepted complete liquidation at the cutoff.
+Fifty-two focused tests passed, including negative terminal outcomes, sparse
+terminal prices, no post-cutoff influence and daylight-saving time behavior.

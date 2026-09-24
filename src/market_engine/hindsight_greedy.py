@@ -24,6 +24,7 @@ def coefficients(frame: pl.DataFrame, gamma: float = 0.99,
         raise ValueError("cost_per_share must be finite and nonnegative")
     if valuation_basis not in ('quotes','price_action'):
         raise ValueError('Unknown valuation basis')
+    terminal = pl.col('session_terminal') if valuation_basis == 'price_action' and 'session_terminal' in frame.columns else pl.lit(False)
     out = []
     for side, sign in (("long", 1), ("short", -1)):
         price_only = valuation_basis == 'price_action'
@@ -37,7 +38,7 @@ def coefficients(frame: pl.DataFrame, gamma: float = 0.99,
         # Eligibility is based on current observations, never future profitability.
         observation_ok = ((pl.col('price_valid') & (entry_observation > 0) & entry_observation.is_finite()) if price_only else
             (pl.col('quote_valid') & (pl.col('ask_size') >= 1) & (pl.col('bid_size') >= 1))).fill_null(False)
-        new_ok = (observation_ok & (entry > 0) & (capital > 0)
+        new_ok = (observation_ok & ~terminal & (entry > 0) & (capital > 0)
                   & entry.is_finite() & capital.is_finite()).fill_null(False)
         hold = pl.col(f"{side}_hold_seconds")
         available = ((pl.col(f"{side}_status") == "available")
@@ -51,6 +52,7 @@ def coefficients(frame: pl.DataFrame, gamma: float = 0.99,
             pl.col(f"{side}_target_id").alias("target_id"),
             pl.col(f"{side}_available_us").alias("label_available_us"),
             observation_ok.alias("can_close"), new_ok.alias("can_open"),
+            terminal.alias('session_terminal'),
             available.alias("value_available"),
             entry.alias("entry_price"), close.alias("close_price"),
             capital.alias("capital_per_share"), target.alias("target_price"),
@@ -62,7 +64,8 @@ def coefficients(frame: pl.DataFrame, gamma: float = 0.99,
             pl.when(available).then(sign * (target - close) * discount).alias("hold_value_per_share"),
         ).with_columns(
             (pl.col("open_value_per_share") / pl.col("capital_per_share")).alias("open_value_per_dollar"),
-            pl.when(~pl.col("can_open")).then(pl.lit('current_price_or_cost_unavailable' if price_only else 'current_quote_or_cost_unavailable'))
+            pl.when(terminal).then(pl.lit('session_liquidation'))
+            .when(~pl.col("can_open")).then(pl.lit('current_price_or_cost_unavailable' if price_only else 'current_quote_or_cost_unavailable'))
             .when(~pl.col("value_available") & (pl.col("phase1_status") == "available"))
             .then(pl.lit("invalid_target_or_duration"))
             .otherwise(pl.col("phase1_status")).alias("status"),
@@ -185,6 +188,9 @@ class ActionTable:
             quantities[key] = max(0.0, new)
             legs.append(dict(key=key, action=label, change_shares=delta, resulting_shares=max(0.0, new)))
         active = [key.split(":")[0] for key, q in quantities.items() if q > 1e-10]
+        for key,q in quantities.items():
+            if q > 1e-10 and self.rows[key].get('session_terminal',False):
+                reasons.append(f'terminal_requires_liquidation:{key}')
         if len(set(active)) != len(active):
             reasons.append("simultaneous_long_and_short")
         if cash < -1e-8 * max(1.0, self.budget):
