@@ -119,14 +119,11 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
             "BACKTEST_JOURNAL_CLICKHOUSE_PASSWORD": "test-only",
         }
         with patch.dict(os.environ, settings, clear=True):
-            with self.assertRaisesRegex(ValueError, "must not share"):
+            with self.assertRaisesRegex(RuntimeError, "was retired"):
                 journal_clickhouse_client()
             os.environ["BACKTEST_JOURNAL_CLICKHOUSE_USER"] = "journal_writer"
-            with patch("research.mlops.clickhouse.ClickHouseHttpClient") as factory:
+            with self.assertRaisesRegex(RuntimeError, "was retired"):
                 journal_clickhouse_client()
-                args, kwargs = factory.call_args
-                self.assertEqual(args[:2], ("http://localhost:8123", "journal_writer"))
-                self.assertNotIn("readonly", kwargs["default_query_params"])
 
     def test_storage_policy_and_part_placement_fail_closed(self) -> None:
         class Catalog:

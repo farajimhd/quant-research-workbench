@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
-import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from uuid import UUID, uuid5
@@ -49,24 +48,10 @@ _COLUMNS = {
 
 
 def journal_clickhouse_client() -> Any:
-    """Open the separately provisioned journal writer, never market-data credentials.
-
-    The database account must be granted SELECT/INSERT only on the four
-    ``arte.bt_*`` tables. Backtest does not create tables or grant privileges.
-    """
-    from research.mlops.clickhouse import ClickHouseHttpClient
-
-    url = os.environ.get("BACKTEST_JOURNAL_CLICKHOUSE_URL", "").strip()
-    user = os.environ.get("BACKTEST_JOURNAL_CLICKHOUSE_USER", "").strip()
-    password = os.environ.get("BACKTEST_JOURNAL_CLICKHOUSE_PASSWORD", "")
-    market_user = os.environ.get("BACKTEST_CLICKHOUSE_USER", "").strip()
-    if not url or not user or not market_user:
-        raise ValueError("Backtest requires dedicated journal and market-data credentials")
-    if user == market_user:
-        raise ValueError("Backtest journal writer must not share the market-data reader account")
-    return ClickHouseHttpClient(
-        url, user, password, timeout_seconds=60, persistent=True,
-        default_query_params={"max_threads": 2, "max_execution_time": 60},
+    """Fail closed: the opaque ``arte.bt_*`` writer was retired."""
+    raise RuntimeError(
+        "The arte.bt_* journal was retired; fixed Backtest requires the typed "
+        "arte trading-journal runtime and recovery cutover"
     )
 
 

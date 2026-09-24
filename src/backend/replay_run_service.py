@@ -10319,14 +10319,16 @@ def backtest_preflight(
             ),
             "evidence": ",".join(evidence_gaps),
         })
-        from src.backend.backtest_journal_clickhouse import (
-            journal_clickhouse_client, storage_preflight,
+        from src.trading_runtime.arte_journal_schema import (
+            journal_permission_preflight, storage_preflight,
         )
+        from src.trading_runtime.arte_journal_writer import journal_client_from_env
         journal_error = ""
         journal_client = None
         try:
-            journal_client = journal_clickhouse_client()
+            journal_client = journal_client_from_env()
             storage_preflight(journal_client)
+            journal_permission_preflight(journal_client)
         except Exception as exc:
             journal_error = str(exc)
         finally:
@@ -10335,13 +10337,14 @@ def backtest_preflight(
         checks.append({
             "id": "clickhouse_journal",
             "label": "Read-only market data and isolated ClickHouse journal",
-            "status": "blocked" if journal_error else "ready",
+            "status": "blocked",
             "required": True,
             "summary": (
-                "Dedicated journal credentials and live_market_ssd tables are verified."
-                if not journal_error else f"ClickHouse journal is unavailable: {journal_error}"
+                "Typed journal storage and grants are verified, but the runtime mapping "
+                "and cold-recovery cutover are incomplete."
+                if not journal_error else f"Typed ClickHouse journal is unavailable: {journal_error}"
             ),
-            "evidence": "arte.bt_*" if not journal_error else journal_error,
+            "evidence": "arte.trading_*_v1; runtime cutover pending" if not journal_error else journal_error,
         })
     checks.append({
         "id": "persisted_market_products",

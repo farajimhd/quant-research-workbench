@@ -17,6 +17,13 @@ and select required market and journal rows. They cannot create tables or
 insert/update/delete any `arte` market product. Startup checks the table policy
 and actual part placement before admitting a run.
 
+The shared typed-journal client uses `TRADING_JOURNAL_CLICKHOUSE_URL`,
+`TRADING_JOURNAL_CLICKHOUSE_USER`, and `TRADING_JOURNAL_CLICKHOUSE_PASSWORD`.
+It must be a dedicated principal, distinct from market readers. Fixed Backtest
+preflight checks the typed `arte.trading_*_v1` tables and grants, not the retired
+`arte.bt_*` tables; it remains blocked even when those checks pass until every
+runtime record and cold-recovery state is mapped and validated.
+
 No authoritative table has a JSON, blob, raw-payload, or opaque state column.
 Data absent from the typed schema must be rejected at publication, not silently
 stored as an unqueryable side payload or discarded. `Nullable` means genuinely

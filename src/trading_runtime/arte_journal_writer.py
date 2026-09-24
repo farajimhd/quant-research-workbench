@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
+import os
 import re
 from queue import Empty, Full, Queue
 from threading import Thread
@@ -56,6 +57,27 @@ _COMMIT_COLUMNS = tuple(name for name, _ in _CONTRACTS["trading_commit_v1"].colu
 
 class JournalQueueFull(RuntimeError):
     """The bounded persistence lane cannot accept another batch immediately."""
+
+
+def journal_client_from_env() -> Any:
+    """Open the dedicated typed-journal principal, never market credentials."""
+    from research.mlops.clickhouse import ClickHouseHttpClient
+
+    url = os.environ.get("TRADING_JOURNAL_CLICKHOUSE_URL", "").strip()
+    user = os.environ.get("TRADING_JOURNAL_CLICKHOUSE_USER", "").strip()
+    password = os.environ.get("TRADING_JOURNAL_CLICKHOUSE_PASSWORD", "")
+    if not url or not user or not password:
+        raise ValueError("Typed journal requires dedicated ClickHouse URL, user, and password")
+    market_users = {os.environ.get(key, "").strip() for key in (
+        "BACKTEST_CLICKHOUSE_USER", "REAL_LIVE_CLICKHOUSE_READ_USER",
+        "REAL_LIVE_CLICKHOUSE_USER",
+    )}
+    if user in market_users:
+        raise ValueError("Typed journal principal must differ from market-data readers")
+    return ClickHouseHttpClient(
+        url, user, password, timeout_seconds=60, persistent=True,
+        default_query_params={"max_threads": 2, "max_execution_time": 60},
+    )
 
 
 @dataclass(frozen=True, slots=True)

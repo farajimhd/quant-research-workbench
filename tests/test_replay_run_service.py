@@ -2696,6 +2696,8 @@ class BacktestPreflightTests(unittest.TestCase):
         self.assertEqual(payload["experiment_end_time"], "10:15:00")
         checks = {row["id"]: row for row in payload["checks"]}
         self.assertEqual(checks["fixed_execution_contract"]["status"], "blocked")
+        self.assertEqual(checks["clickhouse_journal"]["status"], "blocked")
+        self.assertNotIn("arte.bt_", checks["clickhouse_journal"]["evidence"])
         self.assertEqual(checks["simulated_accounts"]["status"], "ready")
         self.assertEqual(checks["runtime_storage"]["status"], "ready")
         self.assertIn(

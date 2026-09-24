@@ -36,6 +36,27 @@ def test_clickhouse_wire_time_preserves_utc_nanoseconds() -> None:
         writer_module._datetime_wire("2026-08-18T08:05:00.123456789Z", 6)
 
 
+def test_typed_journal_client_requires_a_separate_complete_identity(monkeypatch) -> None:
+    for key in ("TRADING_JOURNAL_CLICKHOUSE_URL", "TRADING_JOURNAL_CLICKHOUSE_USER",
+                "TRADING_JOURNAL_CLICKHOUSE_PASSWORD", "BACKTEST_CLICKHOUSE_USER"):
+        monkeypatch.delenv(key, raising=False)
+    with pytest.raises(ValueError, match="dedicated ClickHouse"):
+        writer_module.journal_client_from_env()
+    monkeypatch.setenv("TRADING_JOURNAL_CLICKHOUSE_URL", "http://localhost:8123")
+    monkeypatch.setenv("TRADING_JOURNAL_CLICKHOUSE_USER", "journal-only")
+    monkeypatch.setenv("TRADING_JOURNAL_CLICKHOUSE_PASSWORD", "test-only")
+    monkeypatch.setenv("BACKTEST_CLICKHOUSE_USER", "journal-only")
+    with pytest.raises(ValueError, match="differ from market-data readers"):
+        writer_module.journal_client_from_env()
+    monkeypatch.setenv("BACKTEST_CLICKHOUSE_USER", "market-reader")
+    client = writer_module.journal_client_from_env()
+    try:
+        assert client.user == "journal-only"
+        assert client.persistent
+    finally:
+        client.close()
+
+
 def batch() -> TypedJournalBatch:
     event = typed_row({
         "run_id": RUN, "event_month": "2026-08-01", "attempt_id": ATTEMPT,
