@@ -801,6 +801,64 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
         journal.close()
 
 
+def test_cancelled_receipt_does_not_poison_durable_writer(monkeypatch) -> None:
+    entered, release = Event(), Event()
+    published = []
+
+    def publish(_client, item):
+        if not published:
+            entered.set()
+            assert release.wait(5)
+        published.append(item.batch_id)
+        return item.batch_id
+
+    monkeypatch.setattr(writer_module, "publish_typed_batch", publish)
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
+    try:
+        cancelled = journal.submit(batch())
+        assert entered.wait(5)
+        assert cancelled.cancel()
+        release.set()
+        assert journal.submit(batch()).result(timeout=5) == BATCH
+        assert cancelled.cancelled() and published == [BATCH, BATCH]
+    finally:
+        release.set()
+        if journal._thread.is_alive():
+            journal.close()
+
+
+def test_cancelled_receipt_does_not_hide_publication_failure(monkeypatch) -> None:
+    entered, release = Event(), Event()
+
+    def fail(_client, _item):
+        entered.set()
+        assert release.wait(5)
+        raise OSError("ClickHouse unavailable")
+
+    monkeypatch.setattr(writer_module, "publish_typed_batch", fail)
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
+    try:
+        cancelled = journal.submit(batch())
+        assert entered.wait(5) and cancelled.cancel()
+        waiting = journal.submit(batch())
+        release.set()
+        with pytest.raises(RuntimeError, match="failed earlier"):
+            waiting.result(timeout=5)
+        assert cancelled.cancelled()
+        with pytest.raises(RuntimeError, match="failed"):
+            journal.submit(batch())
+    finally:
+        release.set()
+        with pytest.raises(RuntimeError, match="did not drain durably"):
+            journal.close()
+
+
 def test_close_cannot_place_stop_sentinel_ahead_of_admitted_submission(monkeypatch) -> None:
     monkeypatch.setattr(writer_module, "publish_typed_batch", lambda _client, item: item.batch_id)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)

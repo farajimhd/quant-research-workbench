@@ -7,7 +7,7 @@ row is verified. No local file is used.
 """
 from __future__ import annotations
 
-from concurrent.futures import Future
+from concurrent.futures import Future, InvalidStateError
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
@@ -1720,11 +1720,24 @@ class ArteJournalWriter:
                 batch = _coalesce_unpublished(tuple(row for row, _ in group))
                 committed_id = publish_typed_batch(self._client, batch)
                 for _, receipt in group:
-                    receipt.set_result(committed_id)
+                    if receipt.cancelled():
+                        continue
+                    try:
+                        receipt.set_result(committed_id)
+                    except InvalidStateError:
+                        if not receipt.cancelled():
+                            raise
             except BaseException as exc:
                 self._error = exc
                 for _, receipt in group:
-                    receipt.set_exception(exc)
+                    if not receipt.done():
+                        try:
+                            receipt.set_exception(exc)
+                        except InvalidStateError:
+                            # The consumer can cancel while this thread settles
+                            # the receipt. A pre-completed receipt cannot mask
+                            # the original publication failure or kill the lane.
+                            pass
             finally:
                 for _ in group:
                     self._queue.task_done()

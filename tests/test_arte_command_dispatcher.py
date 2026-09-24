@@ -133,6 +133,8 @@ def test_cancelled_dispatcher_fails_pending_commands_without_broker_send(monkeyp
         for pending in (ticket, queued):
             with pytest.raises(RuntimeError, match="interrupted"):
                 await asyncio.wait_for(pending, 1)
+        await asyncio.sleep(0)
+        assert writer.receipts[0].cancelled()
         assert broker.calls == []
         with pytest.raises(RuntimeError, match="reconciliation"):
             await dispatcher.close()
