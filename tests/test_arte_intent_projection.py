@@ -14,7 +14,7 @@ from src.trading_runtime.arte_intent_projection import (
 )
 from src.trading_runtime.arte_journal_writer import (
     load_committed_order_command_page, load_committed_order_context_page,
-    load_committed_prefix, publish_typed_batch,
+    load_committed_prefix, publish_typed_batch, _sealed_families,
 )
 from src.trading_runtime.arte_journal_projection import order_command_batch
 from src.trading_runtime.execution_policies import (
@@ -253,3 +253,48 @@ def test_order_context_can_link_to_prior_committed_intent():
     client.tables["trading_order_command_context_v1"][0]["order_group_id"] = "altered"
     with pytest.raises(RuntimeError, match="row hash"):
         load_committed_order_context_page(client, prefix, commands)
+
+
+def test_command_context_uses_exact_intent_revision_when_id_repeats():
+    run_id, attempt_id = "live:command-revision", str(uuid4())
+    first_id, second_id, third_id = str(uuid4()), str(uuid4()), str(uuid4())
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    original = intent(ticker="TEST")
+    revised = replace(original, reference_price=12.6)
+    first = strategy_intent_batch(
+        original, run_id=run_id, run_month=date(2026, 8, 1),
+        account_id="DU1", attempt_id=attempt_id, batch_id=first_id,
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        sequence=1, source_cursor="intent-1", run_status="running", recorded_at=at,
+    )
+    second = strategy_intent_batch(
+        revised, run_id=run_id, run_month=date(2026, 8, 1),
+        account_id="DU1", attempt_id=attempt_id, batch_id=second_id,
+        prior_batch_id=first_id, sequence=2, source_cursor="intent-2",
+        run_status="running", recorded_at=at,
+    )
+    source_hash = dict(_sealed_families(second))["trading_strategy_intent_v1"][0]["content_hash"]
+    request = OrderRequest(acctId="DU1", conid=123, cOID="client-revised",
+                           ticker="TEST", orderType="LMT", side="BUY",
+                           quantity=5, price=12.6)
+    third = order_command_batch(
+        request, run_id=run_id, run_month=date(2026, 8, 1),
+        attempt_id=attempt_id, batch_id=third_id, prior_batch_id=second_id,
+        sequence=3, source_cursor="command", run_status="completed",
+        command_id="command-revised", created_at=at, recorded_at=at,
+        strategy_id="strategy-1", strategy_revision=1,
+        strategy_intent_id=original.intent_id, order_group_id="group-1",
+        policy_version="policy-1",
+        strategy_intent_record_id=second.intents[0]["record_id"],
+        strategy_intent_content_hash=source_hash,
+    )
+    client = MemoryClient()
+    for batch in (first, second, third):
+        publish_typed_batch(client, batch)
+    prefix = load_committed_prefix(client, run_id)
+    assert prefix is not None
+    commands = load_committed_order_command_page(client, prefix)
+    assert len(commands) == 1
+    contexts = load_committed_order_context_page(client, prefix, commands)
+    assert len(contexts) == 1
+    assert third.intent_uses[0]["intent_record_id"] == second.intents[0]["record_id"]

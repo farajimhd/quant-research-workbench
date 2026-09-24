@@ -173,11 +173,17 @@ broker algo parameters fail closed; remaining intent metadata, tactic/runtime
 state, and broker reconciliation must be normalized and restored before SQLite
 can be removed. Live OMS also replaces `group.intent` content under the same
 logical `intent_id` during target/stop amendments. The staged group projector
-rejects any state whose typed intent fingerprint differs from the pinned
-published revision;
-a later contract must persist and link exact typed intent revisions before
-those amendments can be recovered. An intent ID alone is not a safe revision
-key.
+rejects any state whose full typed intent differs from the pinned immutable
+publication batch. `trading_strategy_intent_use_v1` now links an OMS state or
+strategy command to the exact source intent `record_id` and its typed row hash.
+The writer checks the source is fence-committed and earlier than its consumer;
+the cold readers verify the same relation. Writer coalescing rekeys the source
+hash, and a later OMS state takes the actual committed batch ID from the
+asynchronous receipt. A journal-only real ClickHouse run with two revisions of
+one logical intent ID, one OMS state, and one linked command passed a cold read
+on `live_market_ssd`. Old staged OMS rows without this link are not eligible
+for safe resume. This solves revision identity, not open-ended intent metadata
+or the remaining live runtime cutover.
 The simple `OrderRequest` projection now preserves the broker's named flat
 instructions, including security type, listing exchange, `auxPrice`, trailing
 settings, manual/single-group flags, operator/referrer, strategy, and parent

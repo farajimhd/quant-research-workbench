@@ -264,6 +264,19 @@ TABLES = (
         "run_id, account_id, parent_record_id, record_id",
     ),
     TableContract(
+        "trading_strategy_intent_use_v1",
+        (
+            ("record_id", "UUID"), ("parent_record_id", "UUID"),
+            ("run_id", "String"), ("event_month", "Date"),
+            ("batch_id", "UUID"), ("account_id", "String"),
+            ("intent_record_id", "UUID"),
+            ("intent_content_hash", "FixedString(64)"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)",
+        "run_id, account_id, parent_record_id, record_id",
+    ),
+    TableContract(
         "trading_order_transition_v1",
         (
             ("record_id", "UUID"),
@@ -568,6 +581,8 @@ TABLES = (
             ("oms_broker_binding_hash", "FixedString(64)"),
             ("oms_warning_hash", "FixedString(64)"),
             ("oms_cancel_oca_hash", "FixedString(64)"),
+            ("intent_use_count", "UInt32"),
+            ("intent_use_hash", "FixedString(64)"),
             ("source_cursor", "String"),
             ("status", "LowCardinality(String)"),
             ("committed_at", "DateTime64(6, 'UTC')"),
@@ -642,6 +657,19 @@ def oms_state_upgrade_ddl() -> tuple[str, ...]:
         f"oms_warning_hash FixedString(64) DEFAULT '{empty_hash}' AFTER oms_broker_binding_hash",
         "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
         f"oms_cancel_oca_hash FixedString(64) DEFAULT '{empty_hash}' AFTER oms_warning_hash",
+    )
+
+
+def intent_use_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only exact intent-revision links for command and OMS consumers."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_strategy_intent_use_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "intent_use_count UInt32 DEFAULT 0 AFTER oms_cancel_oca_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"intent_use_hash FixedString(64) DEFAULT '{empty_hash}' AFTER intent_use_count",
     )
 
 

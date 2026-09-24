@@ -36,6 +36,8 @@ _FAMILIES = (
     ("trading_order_command_v1", "order_commands", "order_command_count", "order_command_hash"),
     ("trading_order_command_context_v1", "order_contexts", "order_context_count",
      "order_context_hash"),
+    ("trading_strategy_intent_use_v1", "intent_uses", "intent_use_count",
+     "intent_use_hash"),
     ("trading_order_transition_v1", "order_transitions", "order_transition_count",
      "order_transition_hash"),
     ("trading_oms_group_state_v1", "oms_group_states", "oms_group_state_count",
@@ -115,6 +117,7 @@ class TypedJournalBatch:
     commissions: tuple[Mapping[str, Any], ...] = ()
     order_commands: tuple[Mapping[str, Any], ...] = ()
     order_contexts: tuple[Mapping[str, Any], ...] = ()
+    intent_uses: tuple[Mapping[str, Any], ...] = ()
     order_transitions: tuple[Mapping[str, Any], ...] = ()
     oms_group_states: tuple[Mapping[str, Any], ...] = ()
     oms_order_states: tuple[Mapping[str, Any], ...] = ()
@@ -174,7 +177,7 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 "trading_signal_source_v1", "trading_intent_protection_slice_v1",
                 "trading_order_command_context_v1", "trading_oms_order_state_v1",
                 "trading_oms_broker_binding_v1", "trading_oms_warning_v1",
-                "trading_oms_cancel_oca_v1",
+                "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1",
             }
             parent_id = (str(UUID(str(row["parent_record_id"])))
                          if child_family else record_id)
@@ -220,7 +223,7 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                     "trading_intent_protection_slice_v1",
                     "trading_order_command_context_v1", "trading_oms_order_state_v1",
                     "trading_oms_broker_binding_v1", "trading_oms_warning_v1",
-                    "trading_oms_cancel_oca_v1"}:
+                    "trading_oms_cancel_oca_v1", "trading_strategy_intent_use_v1"}:
             continue
         for row in rows:
             record_id = str(UUID(str(row["record_id"])))
@@ -278,6 +281,16 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 or not str(row["policy_version"])):
             raise ValueError("Order command context lacks a unique typed command parent")
         context_parents.add(parent_id)
+    intent_use_parents: set[str] = set()
+    for row in by_family["trading_strategy_intent_use_v1"]:
+        parent_id = str(UUID(str(row["parent_record_id"])))
+        parent = events_by_id[parent_id]
+        if (details_by_record.get(parent_id) not in {
+                "trading_order_command_v1", "trading_oms_group_state_v1"}
+                or parent_id in intent_use_parents
+                or str(row["account_id"]) != str(parent["account_id"])):
+            raise ValueError("Intent revision use lacks a unique strategy consumer")
+        intent_use_parents.add(parent_id)
     oms_orders: dict[str, list[dict[str, Any]]] = {}
     oms_bindings: dict[str, list[dict[str, Any]]] = {}
     oms_warnings: dict[str, list[dict[str, Any]]] = {}
@@ -354,6 +367,15 @@ def _coalesce_unpublished(batches: tuple[TypedJournalBatch, ...]) -> TypedJourna
              "batch_id": last.batch_id}
             for batch in batches for row in getattr(batch, attribute)
         )
+    rekeyed_intents = {
+        str(UUID(str(row["record_id"]))): typed_row("trading_strategy_intent_v1", row)["content_hash"]
+        for row in families["intents"]
+    }
+    families["intent_uses"] = tuple(
+        {**row, "intent_content_hash": rekeyed_intents.get(
+            str(UUID(str(row["intent_record_id"]))), row["intent_content_hash"])}
+        for row in families["intent_uses"]
+    )
     return TypedJournalBatch(
         batches[0].run_id, batches[0].run_month, batches[0].attempt_id,
         last.batch_id, batches[0].prior_batch_id,
@@ -743,6 +765,8 @@ def _verify_order_context_links(
     families: tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
 ) -> None:
     by_family = dict(families)
+    exact_parents = {str(UUID(str(row["parent_record_id"])))
+                     for row in by_family["trading_strategy_intent_use_v1"]}
     same_batch = {
         (str(row["account_id"]), str(row["intent_id"]))
         for row in by_family["trading_strategy_intent_v1"]
@@ -750,9 +774,11 @@ def _verify_order_context_links(
     required = ({
         (str(row["account_id"]), str(row["strategy_intent_id"]))
         for row in by_family["trading_order_command_context_v1"]
+        if str(UUID(str(row["parent_record_id"]))) not in exact_parents
     } | {
         (str(row["account_id"]), str(row["strategy_intent_id"]))
         for row in by_family["trading_oms_group_state_v1"]
+        if str(UUID(str(row["record_id"]))) not in exact_parents
     }) - same_batch
     if not required:
         return
@@ -782,10 +808,68 @@ def _verify_order_context_links(
             raise RuntimeError("Order command requires one committed strategy intent")
 
 
+def _verify_exact_intent_uses(
+    client: Any, batch: TypedJournalBatch,
+    families: tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
+) -> None:
+    by_family = dict(families)
+    uses = by_family["trading_strategy_intent_use_v1"]
+    if not uses:
+        return
+    events = {str(UUID(str(row["record_id"]))): row for row in by_family["trading_event_v1"]}
+    intents = {str(UUID(str(row["record_id"]))): row
+               for row in by_family["trading_strategy_intent_v1"]}
+    contexts = {str(UUID(str(row["parent_record_id"]))): row
+                for row in by_family["trading_order_command_context_v1"]}
+    groups = {str(UUID(str(row["record_id"]))): row
+              for row in by_family["trading_oms_group_state_v1"]}
+    needed = {str(UUID(str(row["intent_record_id"]))) for row in uses} - set(intents)
+    if needed:
+        ids = ",".join(f"toUUID({_literal(value)})" for value in sorted(needed))
+        fence = (
+            "AND batch_id IN (SELECT batch_id FROM arte.trading_commit_v1 "
+            f"WHERE run_id={_literal(batch.run_id)} "
+            f"AND last_sequence<={batch.first_sequence - 1}) "
+        )
+        prior_intents = _rows(client,
+            "SELECT record_id,batch_id,account_id,intent_id,content_hash "
+            "FROM arte.trading_strategy_intent_v1 "
+            f"WHERE run_id={_literal(batch.run_id)} AND record_id IN ({ids}) "
+            f"{fence}FORMAT JSONEachRow")
+        prior_events = _rows(client,
+            "SELECT record_id,batch_id,account_id,sequence,category,entity_type "
+            "FROM arte.trading_event_v1 "
+            f"WHERE run_id={_literal(batch.run_id)} AND record_id IN ({ids}) "
+            f"{fence}FORMAT JSONEachRow")
+        if (len(prior_intents) != len(needed) or len(prior_events) != len(needed)
+                or len({str(UUID(str(row["record_id"]))) for row in prior_intents}) != len(needed)
+                or len({str(UUID(str(row["record_id"]))) for row in prior_events}) != len(needed)):
+            raise RuntimeError("Exact intent revision lacks one earlier committed record")
+        intents.update({str(UUID(str(row["record_id"]))): row for row in prior_intents})
+        events.update({str(UUID(str(row["record_id"]))): row for row in prior_events})
+    for use in uses:
+        parent_id = str(UUID(str(use["parent_record_id"])))
+        intent_id = str(UUID(str(use["intent_record_id"])))
+        parent = events[parent_id]
+        source = events[intent_id]
+        detail = intents[intent_id]
+        consumer = groups.get(parent_id) or contexts.get(parent_id)
+        if (consumer is None or int(source["sequence"]) >= int(parent["sequence"])
+                or source["category"] != "strategy_decision"
+                or source["entity_type"] != "intent"
+                or str(UUID(str(source["batch_id"]))) != str(UUID(str(detail["batch_id"])))
+                or str(source["account_id"]) != str(use["account_id"])
+                or str(detail["account_id"]) != str(use["account_id"])
+                or str(detail["intent_id"]) != str(consumer["strategy_intent_id"])
+                or str(detail["content_hash"]) != str(use["intent_content_hash"])):
+            raise RuntimeError("Intent revision use differs from its committed source or consumer")
+
+
 def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
     families = _sealed_families(batch)
     _verify_commission_links(client, batch, families)
+    _verify_exact_intent_uses(client, batch, families)
     _verify_order_context_links(client, batch, families)
     existing = _rows(client,
         f"SELECT {','.join(_COMMIT_COLUMNS)} "
@@ -1033,46 +1117,95 @@ def load_committed_order_context_page(
         if has_strategy != (parent_id in contexts):
             raise RuntimeError("Strategy command lacks its typed order context")
     if contexts:
-        wanted = {
-            (str(row["account_id"]), str(row["strategy_intent_id"]))
-            for row in contexts.values()
-        }
-        intent_ids = ",".join(_literal(value) for value in sorted({value for _, value in wanted}))
-        accounts = ",".join(_literal(value) for value in sorted({value for value, _ in wanted}))
-        candidates = _rows(client,
-            "SELECT record_id,batch_id,account_id,intent_id "
-            "FROM arte.trading_strategy_intent_v1 "
+        use_columns = ",".join(column for column, _ in
+                               _CONTRACTS["trading_strategy_intent_use_v1"].columns)
+        context_ids = ",".join(f"toUUID({_literal(parent_id)})" for parent_id in contexts)
+        uses = _rows(client,
+            f"SELECT {use_columns} FROM arte.trading_strategy_intent_use_v1 "
             f"WHERE run_id={_literal(prefix.run_id)} "
-            f"AND account_id IN ({accounts}) AND intent_id IN ({intent_ids}) "
+            f"AND parent_record_id IN ({context_ids}) "
             f"{_committed_batch_filter(prefix)}"
             f"LIMIT {len(contexts) + 1} FORMAT JSONEachRow")
-        if len(candidates) > len(contexts):
-            raise RuntimeError("Strategy command has ambiguous intent candidates")
-        intents_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-        for candidate in candidates:
-            key = (str(candidate["account_id"]), str(candidate["intent_id"]))
-            if key not in wanted or key in intents_by_key:
-                raise RuntimeError("Strategy command has an ambiguous typed intent")
-            intents_by_key[key] = candidate
-        if set(intents_by_key) != wanted:
-            raise RuntimeError("Strategy command lacks its committed typed intent")
-        source_ids = ",".join(f"toUUID({_literal(str(UUID(str(row['record_id']))))})"
-                              for row in candidates)
+        if len(uses) > len(contexts):
+            raise RuntimeError("Strategy command has excess intent-revision links")
+        uses_by_parent: dict[str, dict[str, Any]] = {}
+        for use in uses:
+            parent_id = str(UUID(str(use["parent_record_id"])))
+            content = {key: value for key, value in use.items() if key != "content_hash"}
+            digest = sha256(canonical_json(_canonical_typed_content(
+                "trading_strategy_intent_use_v1", content, stored_utc=True,
+            )).encode("utf-8")).hexdigest()
+            if (parent_id not in contexts or parent_id in uses_by_parent
+                    or digest != str(use["content_hash"])
+                    or str(UUID(str(use["batch_id"]))) != str(UUID(str(by_id[parent_id]["batch_id"])))
+                    or use["account_id"] != contexts[parent_id]["account_id"]
+                    or use["event_month"] != contexts[parent_id]["event_month"]):
+                raise RuntimeError("Strategy command has an invalid exact intent-revision link")
+            uses_by_parent[parent_id] = use
+        resolved: dict[str, dict[str, Any]] = {}
+        if uses_by_parent:
+            exact_ids = ",".join(f"toUUID({_literal(str(UUID(str(use['intent_record_id']))))})"
+                                 for use in uses_by_parent.values())
+            exact = _rows(client,
+                "SELECT record_id,batch_id,account_id,intent_id,content_hash "
+                "FROM arte.trading_strategy_intent_v1 "
+                f"WHERE run_id={_literal(prefix.run_id)} AND record_id IN ({exact_ids}) "
+                f"{_committed_batch_filter(prefix)}"
+                f"LIMIT {len(uses_by_parent) + 1} FORMAT JSONEachRow")
+            by_exact = {str(UUID(str(row["record_id"]))): row for row in exact}
+            if len(exact) != len(by_exact):
+                raise RuntimeError("Strategy command has duplicated exact intent revisions")
+            for parent_id, use in uses_by_parent.items():
+                candidate = by_exact.get(str(UUID(str(use["intent_record_id"]))))
+                context = contexts[parent_id]
+                if (candidate is None or candidate["account_id"] != context["account_id"]
+                        or candidate["intent_id"] != context["strategy_intent_id"]
+                        or candidate["content_hash"] != use["intent_content_hash"]):
+                    raise RuntimeError("Strategy command exact intent revision differs from source")
+                resolved[parent_id] = candidate
+        legacy = {parent_id: context for parent_id, context in contexts.items()
+                  if parent_id not in uses_by_parent}
+        if legacy:
+            wanted = {(str(row["account_id"]), str(row["strategy_intent_id"]))
+                      for row in legacy.values()}
+            intent_ids = ",".join(_literal(value) for value in sorted({value for _, value in wanted}))
+            accounts = ",".join(_literal(value) for value in sorted({value for value, _ in wanted}))
+            candidates = _rows(client,
+                "SELECT record_id,batch_id,account_id,intent_id,content_hash "
+                "FROM arte.trading_strategy_intent_v1 "
+                f"WHERE run_id={_literal(prefix.run_id)} "
+                f"AND account_id IN ({accounts}) AND intent_id IN ({intent_ids}) "
+                f"{_committed_batch_filter(prefix)}"
+                f"LIMIT {len(legacy) + 1} FORMAT JSONEachRow")
+            if len(candidates) > len(legacy):
+                raise RuntimeError("Strategy command has ambiguous intent candidates")
+            intents_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+            for candidate in candidates:
+                key = (str(candidate["account_id"]), str(candidate["intent_id"]))
+                if key not in wanted or key in intents_by_key:
+                    raise RuntimeError("Strategy command has an ambiguous typed intent")
+                intents_by_key[key] = candidate
+            if set(intents_by_key) != wanted:
+                raise RuntimeError("Strategy command lacks its committed typed intent")
+            for parent_id, context in legacy.items():
+                resolved[parent_id] = intents_by_key[(str(context["account_id"]),
+                                                     str(context["strategy_intent_id"]))]
+        unique_sources = {str(UUID(str(row["record_id"]))) for row in resolved.values()}
+        source_ids = ",".join(f"toUUID({_literal(value)})" for value in sorted(unique_sources))
         sources = _rows(client,
             "SELECT record_id,batch_id,sequence,account_id,category,entity_type "
             "FROM arte.trading_event_v1 "
             f"WHERE run_id={_literal(prefix.run_id)} "
             f"AND record_id IN ({source_ids}) "
             f"{_committed_batch_filter(prefix)}"
-            f"LIMIT {len(candidates) + 1} FORMAT JSONEachRow")
+            f"LIMIT {len(unique_sources) + 1} FORMAT JSONEachRow")
         by_source = {str(UUID(str(row["record_id"]))): row for row in sources}
-        if len(sources) != len(candidates) or len(by_source) != len(candidates):
+        if len(sources) != len(unique_sources) or set(by_source) != unique_sources:
             raise RuntimeError("Strategy command intent event is missing or duplicated")
         allowed_batches = set(prefix.batch_ids)
         for parent_id, context in contexts.items():
             command = by_id[parent_id]
-            intent = intents_by_key[(str(context["account_id"]),
-                                     str(context["strategy_intent_id"]))]
+            intent = resolved[parent_id]
             source = by_source[str(UUID(str(intent["record_id"])))]
             if (str(UUID(str(source["batch_id"]))) != str(UUID(str(intent["batch_id"])))
                     or str(UUID(str(source["batch_id"]))) not in allowed_batches

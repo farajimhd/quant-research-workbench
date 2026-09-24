@@ -12,28 +12,56 @@ from hashlib import sha256
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from src.trading_runtime.arte_intent_projection import project_strategy_intent
+from src.trading_runtime.arte_intent_projection import strategy_intent_batch
 from src.trading_runtime.arte_journal_projection import _exact_decimal
 from src.trading_runtime.arte_journal_writer import (
     CommittedPrefix, TypedJournalBatch, _CONTRACTS, _canonical_typed_content,
-    _committed_batch_filter, _literal, _rows,
+    _committed_batch_filter, _literal, _rows, _sealed_families, typed_row,
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.journal_contract import canonical_json
-from src.trading_runtime.signals import StrategyIntent
 
 
 def oms_group_state_batch(
     group: Any, *, run_id: str, run_month: date, attempt_id: str,
     batch_id: str, prior_batch_id: str, sequence: int, source_cursor: str,
     run_status: str, strategy_id: str, strategy_revision: int,
-    recorded_at: datetime, published_intent_fingerprint: str,
+    recorded_at: datetime, published_intent_batch: TypedJournalBatch,
+    committed_intent_batch_id: str,
 ) -> TypedJournalBatch:
     """Project the represented group revision and its keyed recovery components."""
     if not run_id or not group.group_id or not group.account_id or not group.intent.intent_id:
         raise ValueError("OMS state identity is incomplete")
-    if oms_intent_fingerprint(group.intent) != published_intent_fingerprint:
+    if (len(published_intent_batch.events) != 1
+            or len(published_intent_batch.intents) != 1
+            or published_intent_batch.run_id != run_id):
+        raise ValueError("OMS requires one pinned typed intent revision")
+    original = published_intent_batch.events[0]
+    original_detail = published_intent_batch.intents[0]
+    rebuilt = strategy_intent_batch(
+        group.intent, run_id=published_intent_batch.run_id,
+        run_month=published_intent_batch.run_month,
+        account_id=str(original_detail["account_id"]),
+        attempt_id=published_intent_batch.attempt_id,
+        batch_id=published_intent_batch.batch_id,
+        prior_batch_id=published_intent_batch.prior_batch_id,
+        sequence=published_intent_batch.first_sequence,
+        source_cursor=published_intent_batch.source_cursor,
+        run_status=published_intent_batch.status,
+        recorded_at=datetime.fromisoformat(str(original["recorded_at"])),
+    )
+    if (rebuilt.events != published_intent_batch.events
+            or rebuilt.intents != published_intent_batch.intents
+            or rebuilt.intent_slices != published_intent_batch.intent_slices):
         raise ValueError("OMS group intent differs from its published typed revision")
+    intent_record_id = str(UUID(str(original_detail["record_id"])))
+    committed_source_id = str(UUID(committed_intent_batch_id))
+    sealed_intent = dict(_sealed_families(published_intent_batch))[
+        "trading_strategy_intent_v1"][0]
+    intent_content_hash = typed_row("trading_strategy_intent_v1", {
+        **{key: value for key, value in sealed_intent.items() if key != "content_hash"},
+        "batch_id": committed_source_id,
+    })["content_hash"]
     if recorded_at.tzinfo is None or group.created_at.tzinfo is None or group.updated_at.tzinfo is None:
         raise ValueError("OMS state timestamps must be timezone-aware")
     if len(group.orders) > 65535 or len(group.broker_order_ids) > 65535:
@@ -99,6 +127,11 @@ def oms_group_state_batch(
         "warning_count": len(group.warning_message_ids),
         "cancel_oca_count": len(group.plan.cancel_oca_groups),
     }
+    intent_use = {
+        **common, "record_id": str(uuid5(NAMESPACE_URL, f"{record_id}:intent-use")),
+        "parent_record_id": record_id, "intent_record_id": intent_record_id,
+        "intent_content_hash": intent_content_hash,
+    }
     batch_ordinals = tuple(index for index, length in enumerate(lengths) for _ in range(length))
     orders = []
     for ordinal, order in enumerate(group.orders):
@@ -155,20 +188,14 @@ def oms_group_state_batch(
         oms_broker_bindings=tuple(bindings),
         oms_warnings=strings(group.warning_message_ids, "warning", "message_id"),
         oms_cancel_ocas=strings(group.plan.cancel_oca_groups, "cancel-oca", "oca_group"),
+        intent_uses=(intent_use,),
     )
-
-
-def oms_intent_fingerprint(intent: StrategyIntent) -> str:
-    """Pin the typed intent content before OMS can replace the same logical ID."""
-    projected = project_strategy_intent(intent)
-    return sha256(canonical_json({
-        "core": projected.core, "slices": projected.protection_slices,
-    }).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
 class RecoveredOmsGroupState:
     sequence: int
+    intent_record_id: str | None
     group: dict[str, Any]
     orders: tuple[OrderRequest, ...]
     order_batch_ordinals: tuple[int, ...]
@@ -192,6 +219,7 @@ def _verified_rows(name: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]
 def load_committed_oms_group_state_page(
     client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
     limit: int = 200, max_children: int = 4096,
+    require_intent_revision: bool = True,
 ) -> tuple[RecoveredOmsGroupState, ...]:
     """Cold-read a bounded, fence-certified OMS group page without disk state."""
     if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
@@ -232,14 +260,39 @@ def load_committed_oms_group_state_page(
     declared_children = sum(sum(int(row[field]) for field in (
         "order_count", "broker_binding_count", "warning_count", "cancel_oca_count",
     )) for row in groups)
-    if declared_children > max_children:
+    if declared_children + len(groups) > max_children:
         raise RuntimeError("Committed OMS page exceeds its total child budget")
     children = {name: family(name, children=True) for name in (
         "trading_oms_order_state_v1", "trading_oms_broker_binding_v1",
         "trading_oms_warning_v1", "trading_oms_cancel_oca_v1",
+        "trading_strategy_intent_use_v1",
     )}
-    if sum(len(rows) for rows in children.values()) != declared_children:
+    links = children["trading_strategy_intent_use_v1"]
+    if (sum(len(rows) for rows in children.values()) != declared_children + len(links)
+            or declared_children + len(links) > max_children):
         raise RuntimeError("Committed OMS page has missing or excess child rows")
+    source_by_id: dict[str, dict[str, Any]] = {}
+    source_events: dict[str, dict[str, Any]] = {}
+    if links:
+        source_ids = {str(UUID(str(row["intent_record_id"]))) for row in links}
+        source_sql = ",".join(f"toUUID({_literal(value)})" for value in sorted(source_ids))
+        columns = ",".join(column for column, _ in _CONTRACTS["trading_strategy_intent_v1"].columns)
+        sources = _verified_rows("trading_strategy_intent_v1", _rows(client,
+            f"SELECT {columns} FROM arte.trading_strategy_intent_v1 "
+            f"WHERE run_id={_literal(prefix.run_id)} AND record_id IN ({source_sql}) "
+            f"{_committed_batch_filter(prefix)}"
+            f"LIMIT {len(source_ids) + 1} FORMAT JSONEachRow"))
+        source_rows = _rows(client,
+            "SELECT record_id,batch_id,sequence,account_id,category,entity_type "
+            "FROM arte.trading_event_v1 "
+            f"WHERE run_id={_literal(prefix.run_id)} AND record_id IN ({source_sql}) "
+            f"{_committed_batch_filter(prefix)}"
+            f"LIMIT {len(source_ids) + 1} FORMAT JSONEachRow")
+        source_by_id = {str(UUID(str(row["record_id"]))): row for row in sources}
+        source_events = {str(UUID(str(row["record_id"]))): row for row in source_rows}
+        if (len(sources) != len(source_ids) or len(source_rows) != len(source_ids)
+                or set(source_by_id) != source_ids or set(source_events) != source_ids):
+            raise RuntimeError("Committed OMS intent revision source is missing or duplicated")
     result = []
     prior = after_sequence
     for event in events:
@@ -254,6 +307,8 @@ def load_committed_oms_group_state_page(
         prior = sequence
         ordered: dict[str, list[dict[str, Any]]] = {}
         for name, rows in children.items():
+            if name == "trading_strategy_intent_use_v1":
+                continue
             selected = [row for row in rows if str(UUID(str(row["parent_record_id"]))) == parent_id]
             selected.sort(key=lambda row: int(row["ordinal"]))
             if ([int(row["ordinal"]) for row in selected] != list(range(len(selected)))
@@ -266,6 +321,27 @@ def load_committed_oms_group_state_page(
         binding_rows = ordered["trading_oms_broker_binding_v1"]
         warning_rows = ordered["trading_oms_warning_v1"]
         cancel_rows = ordered["trading_oms_cancel_oca_v1"]
+        use_rows = [row for row in links
+                    if str(UUID(str(row["parent_record_id"]))) == parent_id]
+        if any(str(UUID(str(row["batch_id"]))) != str(UUID(str(group["batch_id"])))
+               or row["account_id"] != group["account_id"]
+               or row["event_month"] != group["event_month"] for row in use_rows):
+            raise RuntimeError("Committed OMS intent link differs from its group")
+        if len(use_rows) > 1 or (require_intent_revision and len(use_rows) != 1):
+            raise RuntimeError("Committed OMS state lacks one exact intent revision")
+        source_id = str(UUID(str(use_rows[0]["intent_record_id"]))) if use_rows else None
+        if source_id is not None:
+            source = source_by_id[source_id]
+            source_event = source_events[source_id]
+            if (str(source["intent_id"]) != str(group["strategy_intent_id"])
+                    or source["account_id"] != group["account_id"]
+                    or source_event["account_id"] != group["account_id"]
+                    or str(UUID(str(source["batch_id"]))) != str(UUID(str(source_event["batch_id"])))
+                    or source_event["category"] != "strategy_decision"
+                    or source_event["entity_type"] != "intent"
+                    or str(source["content_hash"]) != str(use_rows[0]["intent_content_hash"])
+                    or int(source_event["sequence"]) >= sequence):
+                raise RuntimeError("Committed OMS intent revision differs from its source")
         if (len(order_rows) != int(group["order_count"])
                 or len(binding_rows) != int(group["broker_binding_count"])
                 or len(warning_rows) != int(group["warning_count"])
@@ -301,7 +377,7 @@ def load_committed_oms_group_state_page(
                int(row["request_index"]) >= len(orders) for row in binding_rows):
             raise RuntimeError("Committed OMS broker request index is out of bounds")
         result.append(RecoveredOmsGroupState(
-            sequence, group, orders, batch_ordinals,
+            sequence, source_id, group, orders, batch_ordinals,
             tuple(row["slice_id"] for row in order_rows),
             tuple(binding_rows),
             tuple(row["message_id"] for row in warning_rows),

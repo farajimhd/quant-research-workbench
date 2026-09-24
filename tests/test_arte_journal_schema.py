@@ -4,7 +4,7 @@ import pytest
 
 from src.trading_runtime.arte_journal_schema import (
     TABLES, intent_schema_upgrade_ddl, order_context_upgrade_ddl,
-    oms_state_upgrade_ddl,
+    oms_state_upgrade_ddl, intent_use_upgrade_ddl,
     journal_permission_preflight,
     schema_ddl, storage_preflight,
 )
@@ -12,7 +12,7 @@ from src.trading_runtime.arte_journal_schema import (
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
     statements = schema_ddl()
-    assert len(statements) == len(TABLES) == 22
+    assert len(statements) == len(TABLES) == 23
     for table, statement in zip(TABLES, statements):
         assert f"CREATE TABLE IF NOT EXISTS arte.{table.name}" in statement
         assert "ENGINE = MergeTree" in statement
@@ -83,6 +83,15 @@ def test_oms_upgrade_is_typed_additive_and_journal_only() -> None:
     assert all("IF NOT EXISTS" in sql for sql in statements)
     assert not any("arte.bars_v1" in sql or "arte.indicators_v1" in sql
                    or "arte.liquidity_100ms_v1" in sql for sql in statements)
+
+
+def test_intent_use_upgrade_links_exact_revisions_without_market_writes() -> None:
+    statements = intent_use_upgrade_ddl()
+    assert len(statements) == 3
+    assert "storage_policy = 'live_market_ssd'" in statements[0]
+    assert all("ALTER TABLE arte.trading_commit_v1" in sql for sql in statements[1:])
+    assert all("IF NOT EXISTS" in sql for sql in statements)
+    assert not any("arte.bars_v1" in sql or "arte.indicators_v1" in sql for sql in statements)
 
 
 def test_preflight_requires_exact_layout_and_actual_ssd_parts() -> None:

@@ -9,8 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
+import re
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.domain import CommissionEvent
@@ -157,7 +158,8 @@ def order_command_batch(
     command_id: str, created_at: datetime, recorded_at: datetime,
     strategy_id: str = "", strategy_revision: int = 0,
     strategy_intent_id: str = "", order_group_id: str = "",
-    policy_version: str = "",
+    policy_version: str = "", strategy_intent_record_id: str = "",
+    strategy_intent_content_hash: str = "",
 ) -> TypedJournalBatch:
     """Capture one simple broker command losslessly before external dispatch.
 
@@ -174,6 +176,12 @@ def order_command_batch(
         (strategy_intent_id, order_group_id, policy_version)
     ):
         raise ValueError("Strategy order command context must be complete")
+    if bool(strategy_intent_record_id) != bool(strategy_intent_content_hash):
+        raise ValueError("Exact intent revision identity and hash must be paired")
+    if strategy_intent_record_id and not strategy_intent_id:
+        raise ValueError("Exact intent revision requires strategy command context")
+    if strategy_intent_content_hash and not re.fullmatch(r"[0-9a-f]{64}", strategy_intent_content_hash):
+        raise ValueError("Exact intent revision hash must be SHA-256")
     at = created_at.astimezone(timezone.utc).isoformat()
     received = recorded_at.astimezone(timezone.utc).isoformat()
     event_month = created_at.astimezone(timezone.utc).strftime("%Y-%m-01")
@@ -222,10 +230,18 @@ def order_command_batch(
         "order_group_id": order_group_id,
         "policy_version": policy_version,
     },) if strategy_intent_id else ()
+    intent_use = ({
+        "record_id": str(uuid5(NAMESPACE_URL, f"{record_id}:intent-use")),
+        "parent_record_id": record_id, "run_id": run_id,
+        "event_month": event_month, "batch_id": batch_id,
+        "account_id": request.acctId,
+        "intent_record_id": str(UUID(strategy_intent_record_id)),
+        "intent_content_hash": strategy_intent_content_hash,
+    },) if strategy_intent_record_id else ()
     return TypedJournalBatch(
         run_id, run_month, attempt_id, batch_id, prior_batch_id,
         sequence, sequence, source_cursor, run_status, (event,),
-        order_commands=(detail,), order_contexts=context,
+        order_commands=(detail,), order_contexts=context, intent_uses=intent_use,
     )
 
 
