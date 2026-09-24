@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from math import nan
 
 import pytest
 
-from src.trading_runtime.arte_intent_projection import project_strategy_intent
+from src.trading_runtime.arte_intent_projection import (
+    project_strategy_intent, restore_strategy_intent,
+)
 from src.trading_runtime.execution_policies import (
     ExecutionEnvelope, ExecutionPolicy, ExecutionPolicyName,
     ProtectionProfile, ProtectionSlice, StopRule, StopRuleType,
-    StructuralAnchor, TrailingRule, TrailingRuleType,
+    StopOrderType, StructuralAnchor, TrailingRule, TrailingRuleType,
 )
 from src.trading_runtime.signals import CapitalRequest, StrategyIntent
 
@@ -47,17 +49,22 @@ def test_intent_projection_flattens_all_declared_policy_and_protection_fields():
         execution_policy=policy, protection_profile=profile,
         invalidation_price=11.5, profit_target_price=13.5,
     ))
-    assert result.core["ticker"] == "TEST"
-    assert result.core["capital_maximum_quantity"] == "10"
+    assert result.core["ticker"] == "test"
+    assert Decimal(result.core["capital_maximum_quantity"]) == 10
     assert result.core["execution_policy_name"] == "adaptive_urgent"
     assert result.core["execution_persist_until_cancelled"] == 1
     assert result.core["protection_slice_count"] == 2
     assert result.protection_slices[0]["anchor_observation_id"] == "level-1"
-    assert result.protection_slices[0]["trailing_amount"] == "0.1"
-    assert result.protection_slices[1]["stop_price"] == "11.5"
+    assert Decimal(result.protection_slices[0]["trailing_amount"]) == Decimal("0.1")
+    assert Decimal(result.protection_slices[1]["stop_price"]) == Decimal("11.5")
     assert all(not isinstance(value, (dict, list, tuple))
                for row in (result.core, *result.protection_slices)
                for value in row.values())
+    assert restore_strategy_intent(result) == intent(
+        capital_request=CapitalRequest("fixed_quantity", 5, maximum_quantity=10),
+        execution_policy=policy, protection_profile=profile,
+        invalidation_price=11.5, profit_target_price=13.5,
+    )
 
 
 def test_intent_projection_rejects_unmapped_metadata_instead_of_dropping_it():
@@ -97,3 +104,34 @@ def test_projection_field_inventory_fails_if_source_contract_expands():
     }
     for source, names in expected.items():
         assert {item.name for item in fields(source)} == set(names.split())
+
+
+def test_restore_rejects_missing_slice_and_extra_core_field():
+    profile = ProtectionProfile("stop", 1, (
+        ProtectionSlice("only", 1.0, StopRule(price=11.5)),
+    ))
+    projected = project_strategy_intent(intent(protection_profile=profile))
+    with pytest.raises(ValueError, match="missing, extra, or altered"):
+        restore_strategy_intent(replace(projected, protection_slices=()))
+    with pytest.raises(ValueError, match="missing, extra, or altered"):
+        restore_strategy_intent(replace(projected, core={**projected.core, "unknown": 1}))
+
+
+def test_restore_roundtrips_absent_optional_policy_and_full_rule_values():
+    plain = intent()
+    assert restore_strategy_intent(project_strategy_intent(plain)) == plain
+    anchor = StructuralAnchor("level-2", 11.8,
+                              datetime(2026, 8, 18, 8, 3, tzinfo=timezone.utc))
+    complex_intent = intent(protection_profile=ProtectionProfile("hybrid", 1, (
+        ProtectionSlice("all", 1.0, StopRule(
+            StopRuleType.HYBRID, order_type=StopOrderType.STOP_LIMIT,
+            distance_percent=1.5, distance_bps=150,
+            maximum_cash_risk=20, volatility_multiple=2.25,
+            buffer_bps=5, anchor=anchor, stop_limit_offset_bps=3,
+        ), trailing=TrailingRule(
+            TrailingRuleType.VOLATILITY_TRAIL, percent=1.2,
+            volatility_multiple=1.7, activation_gain_percent=2,
+            breakeven_buffer_bps=4, structural_timeframe="5m",
+        )),
+    )))
+    assert restore_strategy_intent(project_strategy_intent(complex_intent)) == complex_intent

@@ -152,8 +152,11 @@ capital request, execution policy, envelope, and protection profile/slices
 into scalar parent and child rows. It refuses nonempty open-ended metadata;
 these rows are not yet published to ClickHouse. Source-field inventory tests
 fail if a declared intent or policy field is added without reviewing the
-projection. OMS group snapshots and their order/broker associations still
-need distinct normalized families before cold recovery can replace SQLite.
+projection. The reverse projection checks row counts, ordinals, parent intent
+identities, and exact canonical round-trip equality before reconstructing an
+intent; original ticker spelling is preserved. OMS group snapshots and their
+order/broker associations still need distinct normalized families before cold
+recovery can replace SQLite.
 The simple `OrderRequest` projection now preserves the broker's named flat
 instructions, including security type, listing exchange, `auxPrice`, trailing
 settings, manual/single-group flags, operator/referrer, strategy, and parent
