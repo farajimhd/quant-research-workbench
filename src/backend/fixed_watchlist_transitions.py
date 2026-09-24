@@ -83,7 +83,7 @@ def reduce_completed_memberships(
     snapshots: tuple[CompletedMembership, ...],
     *, expected_tickers: tuple[str, ...],
 ) -> tuple[MembershipTransition, ...]:
-    """Emit exact per-Watchlist adds, removals, and rank/score changes."""
+    """Emit exact per-Watchlist adds, removals, and rank changes."""
     if (not expected_tickers
             or tuple(sorted(set(expected_tickers))) != expected_tickers
             or any(_TICKER.fullmatch(ticker) is None for ticker in expected_tickers)):
@@ -109,7 +109,7 @@ def reduce_completed_memberships(
         after = {row.ticker: row for row in snapshot.candidates}
         for ticker in sorted(before.keys() | after.keys()):
             old, new = before.get(ticker), after.get(ticker)
-            if old == new:
+            if old is not None and new is not None and old.rank == new.rank:
                 continue
             event = "removed" if new is None else (
                 "added" if old is None else "rank_changed")
