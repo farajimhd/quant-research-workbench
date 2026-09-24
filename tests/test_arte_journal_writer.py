@@ -812,7 +812,7 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
     monkeypatch.setattr(writer_module, "publish_typed_batch", stalled)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=1)
     try:
         first = journal.submit(batch())
@@ -840,7 +840,7 @@ def test_ordered_barrier_receipt_waits_for_prior_commit_without_blocking_submit(
     monkeypatch.setattr(writer_module, "publish_typed_batch", stalled)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
     try:
         with pytest.raises(ValueError, match="prior journal write"):
@@ -869,7 +869,7 @@ def test_admission_queues_one_persistently_fenced_unit(monkeypatch) -> None:
     monkeypatch.setattr(admission_module, "publish_fenced_admission", publish_admission)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=1)
     try:
         receipt = journal.submit_admission(batch(), captured())
@@ -891,7 +891,7 @@ def test_terminal_backtest_queues_all_account_anchors_after_events(monkeypatch) 
                              item.source_cursor, "completed", (BATCH,))
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run: {"mode": "backtest"})
     monkeypatch.setattr(writer_module, "load_typed_run_context", lambda _client, _run: {
         "mode": "backtest", "account_ids": ("DU1",),
     })
@@ -908,6 +908,8 @@ def test_terminal_backtest_queues_all_account_anchors_after_events(monkeypatch) 
                         persist_anchors)
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=1)
     try:
+        with pytest.raises(ValueError, match="anchored account snapshots"):
+            journal.submit(item)
         receipt = journal.submit_terminal_backtest(item, (snapshot,))
         assert entered.wait(5)
         assert not receipt.done()
@@ -921,10 +923,36 @@ def test_terminal_backtest_queues_all_account_anchors_after_events(monkeypatch) 
         journal.close()
 
 
+def test_writer_rejects_missing_verified_run_mode(monkeypatch) -> None:
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run: None)
+    with pytest.raises(RuntimeError, match="verified run mode"):
+        ArteJournalWriter(object(), run_id=RUN)
+
+
+def test_live_writer_cannot_submit_a_backtest_terminal_unit(monkeypatch) -> None:
+    from tests.test_arte_admission_fence import captured as captured_state
+
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity",
+                        lambda _client, _run: {"mode": "live"})
+    journal = ArteJournalWriter(object(), run_id=RUN)
+    try:
+        snapshot = replace(captured_state(), run_id=RUN)
+        with pytest.raises(ValueError, match="Terminal Backtest"):
+            journal.submit_terminal_backtest(
+                replace(batch(), status="completed"), (snapshot,))
+        assert journal._queue.empty()
+    finally:
+        journal.close()
+
+
 def test_admission_rejects_wrong_account_before_queueing(monkeypatch) -> None:
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=1)
     try:
         with pytest.raises(ValueError, match="one causal account"):
@@ -949,7 +977,7 @@ def test_ordered_barrier_propagates_prior_publication_failure(monkeypatch) -> No
     monkeypatch.setattr(writer_module, "publish_typed_batch", fail)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
     try:
         failed = journal.submit(batch())
@@ -992,7 +1020,7 @@ def test_keeper_claim_stays_held_until_typed_writer_barrier(monkeypatch) -> None
     monkeypatch.setattr(admission_module, "publish_fenced_admission", stalled)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=1)
     supervisor = KeeperReceiptSupervisor(Coordinator())
     try:
@@ -1025,7 +1053,7 @@ def test_cancelled_receipt_does_not_poison_durable_writer(monkeypatch) -> None:
     monkeypatch.setattr(writer_module, "publish_typed_batch", publish)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
     try:
         cancelled = journal.submit(batch())
@@ -1051,7 +1079,7 @@ def test_cancelled_receipt_does_not_hide_publication_failure(monkeypatch) -> Non
     monkeypatch.setattr(writer_module, "publish_typed_batch", fail)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
     try:
         cancelled = journal.submit(batch())
@@ -1073,7 +1101,7 @@ def test_close_cannot_place_stop_sentinel_ahead_of_admitted_submission(monkeypat
     monkeypatch.setattr(writer_module, "publish_typed_batch", lambda _client, item: item.batch_id)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
     entered, release, close_started, close_finished = Event(), Event(), Event(), Event()
     original_put = journal._queue.put_nowait
@@ -1155,7 +1183,7 @@ def test_writer_coalesces_only_contiguous_unpublished_batches(monkeypatch) -> No
     monkeypatch.setattr(writer_module, "publish_typed_batch", record)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=3)
     try:
         first = journal.submit(micro(1))
@@ -1181,7 +1209,7 @@ def test_writer_failure_poisoning_is_visible_to_all_receipts(monkeypatch) -> Non
     monkeypatch.setattr(writer_module, "publish_typed_batch", rejected)
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
     journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
     try:
         first = journal.submit(batch())

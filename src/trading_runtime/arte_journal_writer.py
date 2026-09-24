@@ -864,15 +864,16 @@ def load_typed_run_context(client: Any, run_id: str) -> dict[str, Any]:
     }
 
 
-def _verify_run_identity(client: Any, run_id: str) -> None:
+def _verify_run_identity(client: Any, run_id: str) -> dict[str, Any]:
     rows = _rows(client,
         "SELECT run_id FROM arte.trading_run_v1 "
         f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
     if rows != [{"run_id": run_id}]:
         raise RuntimeError("Typed journal run identity is missing or duplicated")
-    load_typed_run_context(client, run_id)
+    context = load_typed_run_context(client, run_id)
     from src.trading_runtime.arte_admission_fence import verify_no_incomplete_admissions
     verify_no_incomplete_admissions(client, run_id)
+    return context
 
 
 def _verify_commission_links(
@@ -1712,9 +1713,14 @@ class ArteJournalWriter:
         # Never attempt to create tables or repair misplaced parts here.
         storage_preflight(client)
         journal_permission_preflight(client)
-        _verify_run_identity(client, run_id)
+        context = _verify_run_identity(client, run_id)
+        if not isinstance(context, dict) or context.get("mode") not in {
+            "live", "paper", "replay", "backtest", "integration_test",
+        }:
+            raise RuntimeError("Typed journal writer lacks a verified run mode")
         self._client = client
         self._run_id = run_id
+        self._run_mode = context["mode"]
         self._max_events_per_commit = max_events_per_commit
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
@@ -1739,6 +1745,8 @@ class ArteJournalWriter:
                 raise RuntimeError("Typed journal writer failed") from self._error
             if batch.run_id != self._run_id:
                 raise ValueError("Typed journal writer cannot mix runs")
+            if self._run_mode == "backtest" and batch.status != "running":
+                raise ValueError("Terminal Backtest requires anchored account snapshots")
             receipt: Future[str] = Future()
             try:
                 self._queue.put_nowait((batch, receipt))
@@ -1863,6 +1871,7 @@ class ArteJournalWriter:
         from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
 
         if (not isinstance(batch, TypedJournalBatch)
+                or self._run_mode != "backtest"
                 or batch.status not in {"completed", "stopped", "failed"}
                 or batch.run_id != self._run_id or not captured
                 or any(not isinstance(row, CapturedPortfolioSnapshot)

@@ -35,7 +35,7 @@ def _prepared(revision: int = 1):
 def _writer(monkeypatch, *, capacity: int = 2) -> ArteJournalWriter:
     monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
-    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
     return ArteJournalWriter(object(), run_id="live-run", capacity=capacity)
 
 
