@@ -36,9 +36,10 @@ an active controller blocks startup. If an orphan worker still owns a ticker,
 startup fails rather than stealing its lock; let it finish the STOP request
 and rerun. Do not force-kill healthy workers or remove lock files.
 
-The default runtime on the workstation is the **local alias of the same existing
-directory**: `D:\TradingML\runtimes\level-book-v7\all-tradable-20250101-20260912-mle-v1`.
-This removes SMB from its checkpoint writes without copying or forking state.
+The default runtime on the workstation is a **new campaign directory**:
+`D:\TradingML\runtimes\level-book-v7\all-tradable-20250101-20260912-mle-reporting-v1`.
+This removes SMB from its checkpoint writes and never reuses the invalid
+pre-reporting checkpoints.
 Laptop `status`, `monitor` and `stop` use the workstation share automatically.
 
 ```powershell
@@ -100,7 +101,7 @@ are not materialized. Persistent HTTP connections avoid per-query socket churn.
 Python runs the unchanged V7 turning-point and Student-t MLE state machine.
 
 The default output is
-`\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\level-book-v7\all-tradable-20250101-20260912-mle-v1`.
+`\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\level-book-v7\all-tradable-20250101-20260912-mle-reporting-v1`.
 It requires that root; it never redirects to another drive. Compressed daily
 books, source plans, receipts and ready markers preserve source, parent and
 checkpoint hashes. Writes are fsynced and atomically replaced with bounded SMB

@@ -24,6 +24,8 @@ from rich.table import Table
 
 from research.level_book.v7.campaign import discover_clickhouse_env_files, load_env_files
 from research.level_book.v7.campaign_store import read, verified_book
+from research.level_book.v7.campaign_source import REPORTING_REVISION
+from src.market_engine.historical_level_checkpoint import digest
 from research.level_book.v7.clickhouse_persistence import (
     OBSERVATIONS_TABLE, COVERAGE_TABLE, DATABASE, DDL, LEVELS_TABLE, POLICY,
     EXPECTED_COLUMNS, PERSISTENCE_VERSION,
@@ -35,10 +37,11 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
 )
 from src.backend.swing_book_source import session_bounds
+from src.market_engine.derived_trade_policy import POLICY as INPUT_POLICY
 from src.runtime_paths import WORKSTATION_RUNTIME_ROOT
 
-DEFAULT_SOURCE = WORKSTATION_RUNTIME_ROOT / "level-book-v7" / "all-tradable-20250101-20260912-mle-v1"
-DEFAULT_RUNTIME = WORKSTATION_RUNTIME_ROOT / "level-book-v7" / "arte-migration-v2"
+DEFAULT_SOURCE = WORKSTATION_RUNTIME_ROOT / "level-book-v7" / "all-tradable-20250101-20260912-mle-reporting-v1"
+DEFAULT_RUNTIME = WORKSTATION_RUNTIME_ROOT / "level-book-v7" / "arte-migration-reporting-v1"
 STOP = threading.Event()
 GIB = 1024 ** 3
 INSERT_GATE = None
@@ -296,7 +299,22 @@ def run(args: argparse.Namespace) -> int:
         return run_locked(args)
 
 
+def verify_source_archive(source: Path) -> dict:
+    source_plan = read(source / "plan.json")
+    if (source_plan.get("reporting_revision") != REPORTING_REVISION or
+            source_plan.get("input_policy") != INPUT_POLICY):
+        raise ValueError(
+            "V7 source archive predates certified delayed-trade exclusion or 04:05 filtering; "
+            "migration cannot repair fitted checkpoints. Rebuild V7 from certified canonical events "
+            "under a new campaign, then migrate that archive."
+        )
+    if source_plan.get("plan_hash") != digest({k: v for k, v in source_plan.items() if k != "plan_hash"}):
+        raise ValueError("V7 source plan hash mismatch; refusing migration")
+    return source_plan
+
+
 def run_locked(args: argparse.Namespace) -> int:
+    verify_source_archive(args.source)
     budget = worker_budget(args.workers)
     if not 1 <= args.insert_workers <= budget["workers"]:
         raise ValueError(f"insert-workers must be 1..{budget['workers']}")
@@ -399,6 +417,7 @@ def parse() -> argparse.Namespace:
 def main() -> int:
     args = parse()
     if args.command == "preflight":
+        verify_source_archive(args.source)
         load_env_files(discover_clickhouse_env_files()); preflight(client())
         print(f"ready: {DATABASE} tables use {POLICY}; source={args.source}")
         return 0

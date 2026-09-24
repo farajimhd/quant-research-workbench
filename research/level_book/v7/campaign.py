@@ -27,7 +27,8 @@ from src.backend.swing_book_source import session_bounds,HISTORICAL_POLICY
 from scripts.swing_book_paths import ticker_directory
 from src.runtime_paths import WORKSTATION_RUNTIME_ROOT
 from scripts.build_structure_book_clickhouse import canonical_splits
-from .campaign_source import literal,coverage_sql,bars_sql,decode,source_hash
+from .campaign_source import (literal,coverage_sql,bars_sql,decode,source_hash,
+    reporting_coverage_sql,require_reporting_coverage,REPORTING_REVISION)
 
 VERSION='all-tradable-v7-mle-campaign-1'
 TRACKED=('research/level_book/v7/campaign.py','research/level_book/v7/campaign_source.py','research/level_book/v7/campaign_store.py',
@@ -86,6 +87,10 @@ def plan(args):
     for offset in range(0,len(names),128):
         coverage.update({r['ticker']:r for r in query(coverage_sql(args.start,args.end,names[offset:offset+128]))})
         if offset%512==0 or offset+128>=len(names):print(f'Planning certified coverage: {min(offset+128,len(names)):,}/{len(names):,} symbols',flush=True)
+    source_days = [r['source_date'] for r in query(
+        f"SELECT DISTINCT toString(source_date) source_date FROM market_sip_compact.events_ordinal_continuity FINAL "
+        f"WHERE source_date BETWEEN {literal(args.start)} AND {literal(args.end)} ORDER BY source_date")]
+    require_reporting_coverage(source_days, query(reporting_coverage_sql(args.start,args.end)))
     rows=[]
     for ticker,identities in grouped.items():
         reason='';c=coverage.get(ticker)
@@ -100,7 +105,8 @@ def plan(args):
     if not rules:raise ValueError('Trade condition rules missing')
     value=dict(version=VERSION,created_at=now(),start=args.start,end=args.end,universe_date=universe_day,
         population_contract='published tradable membership as of universe_date; not historical membership eligibility',
-        source_policy=HISTORICAL_POLICY,input_policy=POLICY,server=server,source_files=hashes(),git_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=REPO,text=True).strip(),
+        source_policy=HISTORICAL_POLICY,input_policy=POLICY,reporting_revision=REPORTING_REVISION,
+        server=server,source_files=hashes(),git_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=REPO,text=True).strip(),
         band_config=CONFIG,extraction_version=EXTRACTION_VERSION,software=dict(python=sys.version,numpy=np.__version__,scipy=scipy.__version__),rules=rules,rows=rows)
     value['plan_hash']=digest(value);write(root/'plan.json',value)
     print(f"Frozen {len(rows):,} symbols as of {universe_day}; {sum(r['status']=='deferred' for r in rows):,} deferred. Server: {server}",flush=True)
@@ -110,6 +116,7 @@ def checked_plan(root):
     p=read(root/'plan.json')
     if p.get('version')!=VERSION or p.get('plan_hash')!=digest({k:v for k,v in p.items() if k!='plan_hash'}):raise ValueError('Plan identity/hash mismatch')
     if p['source_files']!=hashes():raise ValueError('Pinned source code changed; do not mix algorithms in this campaign')
+    if p.get('reporting_revision')!=REPORTING_REVISION:raise ValueError('Frozen V7 campaign lacks certified delayed-trade exclusion; rebuild under a new campaign')
     if p['software']!=dict(python=sys.version,numpy=np.__version__,scipy=scipy.__version__):raise ValueError('Pinned numerical runtime changed')
     return p
 
@@ -146,6 +153,7 @@ def worker(args):
         if q(RULE_SQL)!=p['rules']:raise ValueError('Trade condition rules changed')
         predicate=f"ticker={literal(args.ticker)} AND source_date BETWEEN {literal(p['start'])} AND {literal(p['end'])}"
         days=q('SELECT * FROM market_sip_compact.events_ordinal_continuity FINAL WHERE '+predicate+' ORDER BY source_date')
+        require_reporting_coverage([d['source_date'] for d in days], q(reporting_coverage_sql(p['start'],p['end'])))
         splits=canonical_splits(q(f"SELECT execution_date,split_from,split_to,inserted_at FROM q_live.market_stock_split_v1 FINAL WHERE provider_ticker={literal(args.ticker)} AND execution_date BETWEEN {literal(p['start'])} AND {literal(p['end'])} ORDER BY execution_date"))
         write(target/'source-plan.json',dict(days=days,splits=splits,plan_hash=p['plan_hash']))
         prior=None
@@ -290,7 +298,7 @@ def run(args):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command',choices=['plan','run','worker','status','monitor','stop'])
-    parser.add_argument('--runtime',type=Path,default=WORKSTATION_RUNTIME_ROOT/'level-book-v7'/'all-tradable-20250101-20260912-mle-v1')
+    parser.add_argument('--runtime',type=Path,default=WORKSTATION_RUNTIME_ROOT/'level-book-v7'/'all-tradable-20250101-20260912-mle-reporting-v1')
     parser.add_argument('--start',default='2025-01-01');parser.add_argument('--end',default='2026-09-12')
     parser.add_argument('--workers',type=int,default=4);parser.add_argument('--threads',type=int,default=2)
     parser.add_argument('--ticker');parser.add_argument('--tickers',nargs='+');parser.add_argument('--retry-failed',action='store_true')

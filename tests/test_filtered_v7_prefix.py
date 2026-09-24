@@ -21,6 +21,8 @@ def test_prefix_resume_extend_matches_full_campaign(tmp_path, monkeypatch):
         if sql==c.RULE_SQL:return []
         if 'GROUP BY ticker ORDER BY ticker' in sql:return [coverage]
         if 'market_stock_split' in sql:return []
+        if 'historical_trade_reporting_coverage_v1' in sql:
+            return [dict(source_date=day,status='complete') for day in days]
         if 'GROUP BY t ORDER BY t' in sql:
             day=next(d for i,d in enumerate(days) if f'ordinal>={35*i} AND' in sql);fetched.append(day);return raw[day]
         if 'events_ordinal_continuity' in sql:

@@ -5,7 +5,7 @@ import re
 import pytest
 from rich.console import Console
 from research.level_book.v7 import campaign as c
-from research.level_book.v7.campaign_source import bars_sql,decode
+from research.level_book.v7.campaign_source import bars_sql,decode,require_reporting_coverage,REPORTING_REVISION
 from research.level_book.v7.campaign_store import read,write
 from src.market_engine.historical_level_checkpoint import digest
 
@@ -16,6 +16,8 @@ def test_planner_bounds_source_metadata_aggregation(tmp_path,monkeypatch):
     def query(sql,threads=2):
         if 'max(universe_date)' in sql:return [dict(day='2026-09-12')]
         if 'feature_tradable_universe' in sql:return universe
+        if 'SELECT DISTINCT toString(source_date)' in sql:return [dict(source_date='2026-09-11')]
+        if 'historical_trade_reporting_coverage_v1' in sql:return [dict(source_date='2026-09-11',status='complete')]
         if 'events_ordinal_continuity' in sql:
             assert 'ticker IN (' in sql
             names=re.findall(r"'(T\d+)'",sql);batches.append(names)
@@ -28,6 +30,7 @@ def test_planner_bounds_source_metadata_aggregation(tmp_path,monkeypatch):
     assert len(batches)==3 and max(map(len,batches))<=128
     assert len(p['rows'])==300 and all(r['status']=='queued' for r in p['rows'])
     assert p['input_policy'] == c.POLICY
+    assert p['reporting_revision'] == REPORTING_REVISION
 
 
 def test_indexed_source_preserves_historical_sip_and_eligibility_contract():
@@ -41,6 +44,13 @@ def test_indexed_source_preserves_historical_sip_and_eligibility_contract():
     assert 'sumIf(toFloat64(size_primary),volume_ok)' in sql
     assert 'GROUP BY t ORDER BY t' in sql
     assert 'AND sec>=14700' in sql  # Filter before OHLCV and discovery-noise fitting.
+    assert 'bitAnd(event_meta,128)=0' in sql
+
+
+def test_reporting_coverage_fails_closed_for_missing_or_incomplete_days():
+    with pytest.raises(ValueError, match='2 missing/incomplete'):
+        require_reporting_coverage(['2025-01-02','2025-01-03'],
+                                   [dict(source_date='2025-01-02',status='staged')])
 
 
 def test_unavailable_seconds_are_counted_not_silently_discarded():
@@ -68,6 +78,7 @@ def test_worker_restarts_after_orphan_book_and_validates_receipts(tmp_path,monke
         if sql==c.RULE_SQL:return []
         if 'GROUP BY ticker ORDER BY ticker' in sql:return [coverage]
         if 'market_stock_split' in sql:return []
+        if 'historical_trade_reporting_coverage_v1' in sql:return [dict(source_date=day,status='complete')]
         if 'GROUP BY t ORDER BY t' in sql:return raw
         if 'events_ordinal_continuity' in sql:return [metadata]
         raise AssertionError(sql)

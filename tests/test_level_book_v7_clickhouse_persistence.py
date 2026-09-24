@@ -1,5 +1,8 @@
 import research.level_book.v7.clickhouse_persistence as persistence
 import scripts.migrate_level_book_v7_to_clickhouse as migration
+from types import SimpleNamespace
+import json
+import pytest
 from research.level_book.v7.clickhouse_persistence import (
     DDL, compact_checkpoints, datetime64_ns, epoch_ns,
 )
@@ -23,6 +26,13 @@ def book(session, stamp, levels, checkpoint):
 def test_nanosecond_timestamp_format_is_exact():
     assert epoch_ns("1780000000.123456789") == 1780000000123456789
     assert datetime64_ns(1780000000123456789).endswith(".123456789")
+
+
+def test_migration_rejects_old_fitted_archive_before_database_work(tmp_path, monkeypatch):
+    (tmp_path / "plan.json").write_text(json.dumps({"input_policy": "exclude-trades-before-0405-et-v1"}), encoding="utf-8")
+    monkeypatch.setattr(migration, "worker_budget", lambda *_: pytest.fail("database preflight reached"))
+    with pytest.raises(ValueError, match="migration cannot repair fitted checkpoints"):
+        migration.run_locked(SimpleNamespace(source=tmp_path, workers=None))
 
 
 def test_retrospective_states_coalesce_and_role_change_closes_prior():

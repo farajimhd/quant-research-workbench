@@ -2,10 +2,14 @@
 
 ## Decision
 
-The existing historical V7 campaign is retained. It is retrospective: each
+Historical V7 checkpoints are retrospective: each
 session's full calculation becomes available only at its recorded session-end
 `available_at`. Migration does not reinterpret its intraday segment timestamps
-as causal confirmations and does not rerun historical V7.
+as causal confirmations and does not rerun historical V7. The original
+`all-tradable-20250101-20260912-mle-v1` archive is not a valid migration source:
+its producer admitted delayed-reported trades. It must be rebuilt from canonical
+SIP after the versioned trade-reporting coverage is complete for every source
+day. The stopped partial publication is not seed authority.
 
 The permanent ClickHouse authority is in the existing `arte` database:
 
@@ -58,12 +62,21 @@ python -B scripts/migrate_level_book_v7_to_clickhouse.py preflight
 python -B scripts/migrate_level_book_v7_to_clickhouse.py run
 ```
 
-Defaults read the frozen campaign at
-`<workstation-runtime>/level-book-v7/all-tradable-20250101-20260912-mle-v1`
+Defaults read the corrected campaign at
+`<workstation-runtime>/level-book-v7/all-tradable-20250101-20260912-mle-reporting-v1`
 and write operational results under
-`<workstation-runtime>/level-book-v7/arte-migration-v2`. `--workers` is bounded
+`<workstation-runtime>/level-book-v7/arte-migration-reporting-v1`. `--workers` is bounded
 to 1..64; the default follows the current CPU/free-RAM budget. Inserts are
 row- and byte-bounded.
+
+The V7 producer excludes trades with the canonical delayed-report flag before
+second-bar fitting and requires completed
+`q_live.historical_trade_reporting_coverage_v1` records for every source day.
+Migration preflight rejects older archives before table DDL or inserts. The
+corrected archive needs a new plan and full checkpoint recomputation; copying
+old books or resuming the old campaign cannot repair their geometry. Existing
+partial V7 rows must be removed through the reviewed replacement procedure
+after the stopped controller and its workers have exited.
 
 One ticker is the durable work unit. Spawned worker processes read its immutable
 daily gzip books, coalesce unchanged consecutive level and observation states,

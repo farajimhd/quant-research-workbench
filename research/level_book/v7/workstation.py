@@ -30,7 +30,7 @@ from rich.text import Text
 from . import campaign as c
 from src.runtime_paths import WORKSTATION_NAME, WORKSTATION_RUNTIME_ROOT
 
-DEFAULT_NAME = 'all-tradable-20250101-20260912-mle-v1'
+DEFAULT_NAME = 'all-tradable-20250101-20260912-mle-reporting-v1'
 EXECUTION_FILES = ('research/level_book/v7/workstation.py', 'scripts/run_level_book_v7_workstation.py')
 GIB = 1024 ** 3
 
