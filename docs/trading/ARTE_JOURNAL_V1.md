@@ -161,9 +161,17 @@ inventory tests
 fail if a declared intent or policy field is added without reviewing the
 projection. The reverse projection checks row counts, ordinals, parent intent
 identities, and exact canonical round-trip equality before reconstructing an
-intent; original ticker spelling is preserved. OMS group snapshots and their
-order/broker associations still need distinct normalized families before cold
-recovery can replace SQLite.
+intent; original ticker spelling is preserved. Five staged OMS families now
+represent one group-state revision and its ordered order requests, broker
+bindings, warning IDs, and cancelled OCA group IDs. Their row counts and hashes
+participate in the same typed commit fence; the cold reader verifies parent
+and child identities, order/broker ordinals, batch membership, and a total
+child-row budget. Operator DDL installed the families on `live_market_ssd`, and
+a journal-only two-batch intent-to-OMS publication and cold read passed. This
+is not a live OMS cutover: strategy orders with `raw` canonical metadata or
+broker algo parameters fail closed; remaining intent metadata, tactic/runtime
+state, and broker reconciliation must be normalized and restored before SQLite
+can be removed.
 The simple `OrderRequest` projection now preserves the broker's named flat
 instructions, including security type, listing exchange, `auxPrice`, trailing
 settings, manual/single-group flags, operator/referrer, strategy, and parent

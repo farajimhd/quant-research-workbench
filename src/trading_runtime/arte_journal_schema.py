@@ -295,6 +295,110 @@ TABLES = (
         "account_id, run_id, broker_order_id, source_event_time, record_id",
     ),
     TableContract(
+        "trading_oms_group_state_v1",
+        (
+            ("record_id", "UUID"), ("run_id", "String"),
+            ("event_month", "Date"), ("batch_id", "UUID"),
+            ("account_id", "String"), ("group_id", "String"),
+            ("strategy_id", "String"), ("strategy_revision", "UInt32"),
+            ("strategy_intent_id", "String"),
+            ("state", "LowCardinality(String)"),
+            ("created_at", "DateTime64(9, 'UTC')"),
+            ("updated_at", "DateTime64(9, 'UTC')"),
+            ("submitted_at", "Nullable(DateTime64(9, 'UTC'))"),
+            ("rejection_reason", "String"),
+            ("decision_to_submit_ms", "Nullable(Decimal(38, 10))"),
+            ("reprice_count", "UInt32"),
+            ("last_reprice_at", "Nullable(DateTime64(9, 'UTC'))"),
+            ("failed_reprice_at", "Nullable(DateTime64(9, 'UTC'))"),
+            ("internal_reaction_ms", "Nullable(Decimal(38, 10))"),
+            ("deferred_reprice_from", "Nullable(Decimal(38, 10))"),
+            ("deferred_reprice_to", "Nullable(Decimal(38, 10))"),
+            ("high_water_price", "Decimal(38, 10)"),
+            ("low_water_price", "Decimal(38, 10)"),
+            ("cancel_strategy_protection", "UInt8"),
+            ("protection_reconciliation_required", "UInt8"),
+            ("filled_quantity", "Decimal(38, 10)"),
+            ("remaining_quantity", "Decimal(38, 10)"),
+            ("current_limit_price", "Nullable(Decimal(38, 10))"),
+            ("protection_required_quantity", "Decimal(38, 10)"),
+            ("protection_coverage_quantity", "Decimal(38, 10)"),
+            ("protection_delegated", "UInt8"),
+            ("order_count", "UInt16"), ("broker_binding_count", "UInt16"),
+            ("warning_count", "UInt16"), ("cancel_oca_count", "UInt16"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, account_id, group_id, updated_at, record_id",
+    ),
+    TableContract(
+        "trading_oms_order_state_v1",
+        (
+            ("record_id", "UUID"), ("parent_record_id", "UUID"),
+            ("run_id", "String"), ("event_month", "Date"),
+            ("batch_id", "UUID"), ("account_id", "String"),
+            ("ordinal", "UInt16"), ("batch_ordinal", "UInt16"),
+            ("slice_id", "String"), ("client_order_id", "String"),
+            ("parent_broker_order_id", "String"),
+            ("conid", "UInt64"), ("ticker", "LowCardinality(String)"),
+            ("security_type", "LowCardinality(String)"),
+            ("listing_exchange", "LowCardinality(String)"),
+            ("side", "LowCardinality(String)"),
+            ("order_type", "LowCardinality(String)"),
+            ("time_in_force", "LowCardinality(String)"),
+            ("quantity", "Nullable(Decimal(38, 10))"),
+            ("cash_quantity", "Nullable(Decimal(38, 10))"),
+            ("limit_price", "Nullable(Decimal(38, 10))"),
+            ("aux_price", "Nullable(Decimal(38, 10))"),
+            ("trailing_amount", "Nullable(Decimal(38, 10))"),
+            ("trailing_type", "String"),
+            ("outside_rth", "UInt8"), ("single_group", "UInt8"),
+            ("manual_indicator", "UInt8"),
+            ("external_operator", "String"), ("referrer", "String"),
+            ("broker_strategy", "String"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, parent_record_id, ordinal, record_id",
+    ),
+    TableContract(
+        "trading_oms_broker_binding_v1",
+        (
+            ("record_id", "UUID"), ("parent_record_id", "UUID"),
+            ("run_id", "String"), ("event_month", "Date"),
+            ("batch_id", "UUID"), ("account_id", "String"),
+            ("ordinal", "UInt16"), ("broker_order_id", "String"),
+            ("has_role", "UInt8"), ("role", "String"),
+            ("has_slice", "UInt8"), ("slice_id", "String"),
+            ("request_index", "Nullable(UInt16)"),
+            ("has_filled_quantity", "UInt8"),
+            ("filled_quantity", "Decimal(38, 10)"),
+            ("terminal", "UInt8"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, parent_record_id, ordinal, record_id",
+    ),
+    TableContract(
+        "trading_oms_warning_v1",
+        (
+            ("record_id", "UUID"), ("parent_record_id", "UUID"),
+            ("run_id", "String"), ("event_month", "Date"),
+            ("batch_id", "UUID"), ("account_id", "String"),
+            ("ordinal", "UInt16"), ("message_id", "String"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, parent_record_id, ordinal, record_id",
+    ),
+    TableContract(
+        "trading_oms_cancel_oca_v1",
+        (
+            ("record_id", "UUID"), ("parent_record_id", "UUID"),
+            ("run_id", "String"), ("event_month", "Date"),
+            ("batch_id", "UUID"), ("account_id", "String"),
+            ("ordinal", "UInt16"), ("oca_group", "String"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, parent_record_id, ordinal, record_id",
+    ),
+    TableContract(
         "trading_account_snapshot_v1",
         (
             ("record_id", "UUID"),
@@ -454,6 +558,16 @@ TABLES = (
             ("intent_slice_hash", "FixedString(64)"),
             ("order_context_count", "UInt32"),
             ("order_context_hash", "FixedString(64)"),
+            ("oms_group_state_count", "UInt32"),
+            ("oms_order_state_count", "UInt32"),
+            ("oms_broker_binding_count", "UInt32"),
+            ("oms_warning_count", "UInt32"),
+            ("oms_cancel_oca_count", "UInt32"),
+            ("oms_group_state_hash", "FixedString(64)"),
+            ("oms_order_state_hash", "FixedString(64)"),
+            ("oms_broker_binding_hash", "FixedString(64)"),
+            ("oms_warning_hash", "FixedString(64)"),
+            ("oms_cancel_oca_hash", "FixedString(64)"),
             ("source_cursor", "String"),
             ("status", "LowCardinality(String)"),
             ("committed_at", "DateTime64(6, 'UTC')"),
@@ -496,6 +610,38 @@ def order_context_upgrade_ddl() -> tuple[str, ...]:
         "order_context_count UInt32 DEFAULT 0 AFTER intent_slice_hash",
         "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
         f"order_context_hash FixedString(64) DEFAULT '{empty_hash}' AFTER order_context_count",
+    )
+
+
+def oms_state_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only additive DDL for normalized OMS recovery components."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        *(by_name[name].ddl() for name in (
+            "trading_oms_group_state_v1", "trading_oms_order_state_v1",
+            "trading_oms_broker_binding_v1", "trading_oms_warning_v1",
+            "trading_oms_cancel_oca_v1")),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "oms_group_state_count UInt32 DEFAULT 0 AFTER order_context_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "oms_order_state_count UInt32 DEFAULT 0 AFTER oms_group_state_count",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "oms_broker_binding_count UInt32 DEFAULT 0 AFTER oms_order_state_count",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "oms_warning_count UInt32 DEFAULT 0 AFTER oms_broker_binding_count",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "oms_cancel_oca_count UInt32 DEFAULT 0 AFTER oms_warning_count",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"oms_group_state_hash FixedString(64) DEFAULT '{empty_hash}' AFTER oms_cancel_oca_count",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"oms_order_state_hash FixedString(64) DEFAULT '{empty_hash}' AFTER oms_group_state_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"oms_broker_binding_hash FixedString(64) DEFAULT '{empty_hash}' AFTER oms_order_state_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"oms_warning_hash FixedString(64) DEFAULT '{empty_hash}' AFTER oms_broker_binding_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"oms_cancel_oca_hash FixedString(64) DEFAULT '{empty_hash}' AFTER oms_warning_hash",
     )
 
 

@@ -38,6 +38,15 @@ _FAMILIES = (
      "order_context_hash"),
     ("trading_order_transition_v1", "order_transitions", "order_transition_count",
      "order_transition_hash"),
+    ("trading_oms_group_state_v1", "oms_group_states", "oms_group_state_count",
+     "oms_group_state_hash"),
+    ("trading_oms_order_state_v1", "oms_order_states", "oms_order_state_count",
+     "oms_order_state_hash"),
+    ("trading_oms_broker_binding_v1", "oms_broker_bindings", "oms_broker_binding_count",
+     "oms_broker_binding_hash"),
+    ("trading_oms_warning_v1", "oms_warnings", "oms_warning_count", "oms_warning_hash"),
+    ("trading_oms_cancel_oca_v1", "oms_cancel_ocas", "oms_cancel_oca_count",
+     "oms_cancel_oca_hash"),
     ("trading_account_snapshot_v1", "account_snapshots", "account_snapshot_count",
      "account_snapshot_hash"),
     ("trading_position_snapshot_v1", "position_snapshots", "position_snapshot_count",
@@ -55,6 +64,7 @@ _EVENT_DETAILS = {
     ("execution", "commission"): "trading_commission_v1",
     ("order_management", "order_command"): "trading_order_command_v1",
     ("order_management", "order_transition"): "trading_order_transition_v1",
+    ("order_management", "order_group_state"): "trading_oms_group_state_v1",
     ("snapshot", "portfolio"): "trading_account_snapshot_v1",
     ("snapshot", "position"): "trading_position_snapshot_v1",
 }
@@ -106,6 +116,11 @@ class TypedJournalBatch:
     order_commands: tuple[Mapping[str, Any], ...] = ()
     order_contexts: tuple[Mapping[str, Any], ...] = ()
     order_transitions: tuple[Mapping[str, Any], ...] = ()
+    oms_group_states: tuple[Mapping[str, Any], ...] = ()
+    oms_order_states: tuple[Mapping[str, Any], ...] = ()
+    oms_broker_bindings: tuple[Mapping[str, Any], ...] = ()
+    oms_warnings: tuple[Mapping[str, Any], ...] = ()
+    oms_cancel_ocas: tuple[Mapping[str, Any], ...] = ()
     account_snapshots: tuple[Mapping[str, Any], ...] = ()
     position_snapshots: tuple[Mapping[str, Any], ...] = ()
     intents: tuple[Mapping[str, Any], ...] = ()
@@ -157,7 +172,9 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
             record_id = str(UUID(str(row["record_id"])))
             child_family = name in {
                 "trading_signal_source_v1", "trading_intent_protection_slice_v1",
-                "trading_order_command_context_v1",
+                "trading_order_command_context_v1", "trading_oms_order_state_v1",
+                "trading_oms_broker_binding_v1", "trading_oms_warning_v1",
+                "trading_oms_cancel_oca_v1",
             }
             parent_id = (str(UUID(str(row["parent_record_id"])))
                          if child_family else record_id)
@@ -201,7 +218,9 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
     for name, rows in result:
         if name in {"trading_event_v1", "trading_signal_source_v1",
                     "trading_intent_protection_slice_v1",
-                    "trading_order_command_context_v1"}:
+                    "trading_order_command_context_v1", "trading_oms_order_state_v1",
+                    "trading_oms_broker_binding_v1", "trading_oms_warning_v1",
+                    "trading_oms_cancel_oca_v1"}:
             continue
         for row in rows:
             record_id = str(UUID(str(row["record_id"])))
@@ -259,6 +278,39 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
                 or not str(row["policy_version"])):
             raise ValueError("Order command context lacks a unique typed command parent")
         context_parents.add(parent_id)
+    oms_orders: dict[str, list[dict[str, Any]]] = {}
+    oms_bindings: dict[str, list[dict[str, Any]]] = {}
+    oms_warnings: dict[str, list[dict[str, Any]]] = {}
+    oms_cancel_ocas: dict[str, list[dict[str, Any]]] = {}
+    for name, target in (("trading_oms_order_state_v1", oms_orders),
+                         ("trading_oms_broker_binding_v1", oms_bindings),
+                         ("trading_oms_warning_v1", oms_warnings),
+                         ("trading_oms_cancel_oca_v1", oms_cancel_ocas)):
+        for row in by_family[name]:
+            parent_id = str(UUID(str(row["parent_record_id"])))
+            parent = events_by_id[parent_id]
+            if (details_by_record.get(parent_id) != "trading_oms_group_state_v1"
+                    or str(row["account_id"]) != str(parent["account_id"])):
+                raise ValueError("OMS component lacks its typed group-state parent")
+            target.setdefault(parent_id, []).append(row)
+    for group in by_family["trading_oms_group_state_v1"]:
+        parent_id = str(UUID(str(group["record_id"])))
+        event = events_by_id[parent_id]
+        orders = oms_orders.get(parent_id, [])
+        bindings = oms_bindings.get(parent_id, [])
+        warnings = oms_warnings.get(parent_id, [])
+        cancel_ocas = oms_cancel_ocas.get(parent_id, [])
+        if (str(group["group_id"]) != str(event["entity_id"])
+                or len(orders) != int(group["order_count"])
+                or len(bindings) != int(group["broker_binding_count"])
+                or len(warnings) != int(group["warning_count"])
+                or len(cancel_ocas) != int(group["cancel_oca_count"])
+                or sorted(int(row["ordinal"]) for row in orders) != list(range(len(orders)))
+                or sorted(int(row["ordinal"]) for row in bindings) != list(range(len(bindings)))
+                or sorted(int(row["ordinal"]) for row in warnings) != list(range(len(warnings)))
+                or sorted(int(row["ordinal"]) for row in cancel_ocas) != list(range(len(cancel_ocas)))
+                or len({str(row["broker_order_id"]) for row in bindings}) != len(bindings)):
+            raise ValueError("OMS components differ from their group-state counts or identity")
     return tuple(result)
 
 
@@ -695,10 +747,13 @@ def _verify_order_context_links(
         (str(row["account_id"]), str(row["intent_id"]))
         for row in by_family["trading_strategy_intent_v1"]
     }
-    required = {
+    required = ({
         (str(row["account_id"]), str(row["strategy_intent_id"]))
         for row in by_family["trading_order_command_context_v1"]
-    } - same_batch
+    } | {
+        (str(row["account_id"]), str(row["strategy_intent_id"]))
+        for row in by_family["trading_oms_group_state_v1"]
+    }) - same_batch
     if not required:
         return
     intent_ids = ",".join(_literal(value) for value in sorted({value for _, value in required}))
