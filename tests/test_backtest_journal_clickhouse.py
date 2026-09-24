@@ -305,6 +305,46 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
                 await writer.close()
         asyncio.run(exercise())
 
+    def test_resumed_publisher_extends_verified_clickhouse_fence_sequence(self) -> None:
+        async def exercise() -> None:
+            client = _Client()
+            first_journal = BacktestMemoryJournal(run_id=RUN)
+            first_writer = BacktestJournalWriter(client)
+            first = BacktestJournalPublisher(
+                first_journal, first_writer, attempt_id=ATTEMPT,
+                run_date=date(2026, 8, 18))
+            first_journal.append(run_id=RUN, category="strategy_decision",
+                entity_type="signal", entity_id="first", payload={},
+                event_time=datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc))
+            await first.fence_checkpoint(state={"broker": {"cash": 100}},
+                                         source_cursor="bucket-1")
+            await first_writer.close()
+            checkpoint = load_fenced_checkpoint(client, RUN)
+            assert checkpoint is not None
+            second_journal = BacktestMemoryJournal(
+                run_id=RUN, initial_sequence=checkpoint["sequence"])
+            second_writer = BacktestJournalWriter(client)
+            second = BacktestJournalPublisher(
+                second_journal, second_writer,
+                attempt_id="00000000-0000-0000-0000-000000000021",
+                run_date=date(2026, 8, 18),
+                prior_fence_id=checkpoint["fence_id"],
+                committed_batch_ids=checkpoint["batch_ids"])
+            try:
+                record = second_journal.append(run_id=RUN, category="strategy_decision",
+                    entity_type="signal", entity_id="second", payload={},
+                    event_time=datetime(2026, 8, 18, 8, 5, 1, tzinfo=timezone.utc))
+                self.assertEqual(record.sequence, 2)
+                await second.fence_checkpoint(state={"broker": {"cash": 99}},
+                                              source_cursor="bucket-2")
+                restored = load_fenced_checkpoint(client, RUN)
+                self.assertEqual(restored["sequence"], 2)
+                self.assertEqual(restored["source_cursor"], "bucket-2")
+                self.assertEqual(len(second.committed_batch_ids), 2)
+            finally:
+                await second_writer.close()
+        asyncio.run(exercise())
+
     def test_failed_fence_does_not_release_memory_journal_capacity(self) -> None:
         class RejectCommit(_Client):
             def execute(self, sql: str) -> str:

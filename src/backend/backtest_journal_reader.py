@@ -127,6 +127,26 @@ class BacktestJournalReader:
             "category='protection'", f"sequence>{int(after_sequence)}",
         ], limit=max(1, self.sequence), ascending=True, sequence_order=True)
 
+    def committed_command_records(self, *, page_size: int = 4096) -> list[JournalRecord]:
+        """Read only the fenced signal/protection prefix needed for resume."""
+        if not 1 <= page_size <= 8192:
+            raise ValueError("Backtest command history page size is out of bounds")
+        result: list[JournalRecord] = []
+        after = 0
+        while True:
+            page = self._select_records([
+                "category IN ('market_discovery_signal','protection')",
+                f"sequence>{after}",
+            ], limit=page_size, ascending=True, sequence_order=True)
+            if not page:
+                return result
+            if any(record.sequence <= after for record in page):
+                raise ValueError("Backtest committed command history is not ordered")
+            result.extend(page)
+            after = page[-1].sequence
+            if len(page) < page_size:
+                return result
+
     def signal_stream_records(
         self, *, run_id: str = "", signal_stream_id: str = "",
         from_time: datetime | None = None, as_of: datetime | None = None,

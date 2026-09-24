@@ -4,22 +4,82 @@ from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import json
 from zoneinfo import ZoneInfo
 
 import pytest
 import src.backend.backtest_market_data as market_data
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
-from src.backend.replay_run_service import ReplayRunController, RunMode, _fixed_market_evidence_gaps
+from src.backend.replay_run_service import ReplayRunController, ReplayRunService, RunMode, _fixed_market_evidence_gaps
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.runtime import RunConfig, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
+from src.trading_runtime.journal_contract import JournalRecord
 from tests.test_trading_runtime import quote
 
 
 NY = ZoneInfo("America/New_York")
 DAY = "2026-08-18"
 RUN = "00000000-0000-0000-0000-000000000001"
+
+
+def test_fixed_registry_resume_uses_verified_clickhouse_fence_without_sqlite(monkeypatch, tmp_path):
+    from src.backend import backtest_journal_clickhouse, backtest_market_data, replay_run_service
+
+    run_dir = tmp_path / RUN
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(json.dumps({
+        "journal_backend": "arte_clickhouse_v1", "run": {"status": "stopped"},
+    }), encoding="utf-8")
+    definition = SimpleNamespace(mode=RunMode.BACKTEST, debug_fixture=None,
+        configuration_revision={"revision_id": "revision", "content_hash": "hash"},
+        payload=lambda: {"mode": "backtest"})
+    state = {
+        "schema_version": replay_run_service.RESTART_CHECKPOINT_SCHEMA_VERSION,
+        "complete": True,
+        "identity": {"run_id": RUN, "mode": "backtest",
+                     "configuration_revision_id": "revision",
+                     "configuration_content_hash": "hash",
+                     "debug_fixture_content_hash": "", "account_ids": []},
+        "controller": {"source_cursor": {"market": 12},
+                       "frame_cursor": {"frame": 13},
+                       "historical_liquidity": {}},
+        "journal_command": {"schema_version": 1, "run_id": RUN},
+    }
+    checkpoint = {"status": "stopped", "sequence": 2,
+        "fence_id": "00000000-0000-0000-0000-000000000003",
+        "batch_ids": ("00000000-0000-0000-0000-000000000004",),
+        "source_cursor": json.dumps({"market": {"market": 12}, "frame": {"frame": 13}}),
+        "state": state}
+
+    class Client:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(replay_run_service, "_definition_from_manifest", lambda *_a, **_k: definition)
+    monkeypatch.setattr(replay_run_service, "_simulated_account_ids", lambda _definition: ())
+    monkeypatch.setattr(backtest_market_data, "readonly_clickhouse_client", Client)
+    monkeypatch.setattr(backtest_journal_clickhouse, "verify_run_identity", lambda *_a, **_k: None)
+    monkeypatch.setattr(backtest_journal_clickhouse, "backtest_code_hash", lambda _root: "code")
+    monkeypatch.setattr(backtest_journal_clickhouse, "load_fenced_checkpoint", lambda *_a: checkpoint)
+    monkeypatch.setattr(replay_run_service.TradingJournal, "__init__", lambda *_a, **_k:
+                        (_ for _ in ()).throw(AssertionError("SQLite opened")))
+    controller = SimpleNamespace(start=AsyncMock())
+    captured = {}
+    def controller_factory(*_a, **kwargs):
+        captured.update(kwargs)
+        return controller
+    monkeypatch.setattr(replay_run_service, "ReplayRunController", controller_factory)
+    service = ReplayRunService(runtime_root=tmp_path)
+    service._admit = AsyncMock()
+    monkeypatch.setattr("src.backend.historical_liquidity_checkpoint.restore", lambda _state: None)
+
+    assert asyncio.run(service.resume(RUN)) is controller
+    controller.start.assert_awaited_once()
+    assert captured["resume_state"] == state
+    assert captured["resume_journal_prefix"]["sequence"] == 2
+    assert not (run_dir / "journal.sqlite3").exists()
 
 
 def test_fixed_market_rejects_event_only_strategy_evidence():
@@ -53,6 +113,68 @@ def test_fixed_engine_opens_clickhouse_journal_before_any_sqlite(monkeypatch):
     controller._open_fixed_journal.assert_awaited_once()
     controller._finish.assert_awaited_once_with("failed")
     assert "journal unavailable" in controller.error
+
+
+def test_fixed_journal_resume_restores_verified_fence_and_command_state(monkeypatch):
+    from src.backend import backtest_journal_clickhouse, backtest_journal_reader
+
+    at = datetime(2026, 8, 18, 4, 5, tzinfo=NY)
+    prior = BacktestMemoryJournal(run_id=RUN)
+    prior.save_portfolio_state("paper", {"reservations": [{"reservation_id": "held"}]})
+    state = {"journal_command": prior.command_checkpoint()}
+    signal = JournalRecord(RUN, RUN, 1, at, at,
+        "market_discovery_signal", "signal_occurrence", "s1", "", {"ticker": "AAPL"})
+    protection = JournalRecord("00000000-0000-0000-0000-000000000002", RUN,
+        2, at, at, "protection", "price", "stop", "paper", {"price": 9.5})
+    checkpoint = dict(fence_id="00000000-0000-0000-0000-000000000003",
+        sequence=2, batch_ids=("00000000-0000-0000-0000-000000000004",),
+        state=state)
+
+    class Client:
+        closed = False
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    monkeypatch.setattr(backtest_journal_clickhouse, "journal_clickhouse_client", lambda: client)
+    monkeypatch.setattr(backtest_journal_clickhouse, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(backtest_journal_clickhouse, "backtest_code_hash", lambda _root: "h" * 64)
+    monkeypatch.setattr(backtest_journal_clickhouse, "verify_run_identity", lambda *_a, **_k: None)
+    monkeypatch.setattr(backtest_journal_clickhouse, "load_fenced_checkpoint",
+                        lambda *_a: checkpoint)
+    monkeypatch.setattr(backtest_journal_reader, "BacktestJournalReader",
+        lambda *_a, **_k: SimpleNamespace(committed_command_records=lambda: [signal, protection]))
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.created_at = at
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST,
+        configuration_revision={"content_hash": "a" * 64},
+        market_data_plan={"token": "market"}, causal_v7_plan={},
+        payload=lambda: {"mode": "backtest"})
+    controller._journal = None
+    controller._journal_writer = None
+    controller._journal_publisher = None
+    controller._resume_state = state
+    controller._resume_journal_prefix = {key: checkpoint[key] for key in
+                                         ("sequence", "fence_id", "batch_ids")}
+
+    async def exercise():
+        await controller._open_fixed_journal()
+        assert controller._journal_publisher.fenced_sequence == 2
+        assert controller._journal.portfolio_reservation("paper", "held") == {
+            "reservation_id": "held"}
+        assert controller._journal.protection_records(RUN) == [protection]
+        assert controller._journal.append_once(run_id=RUN,
+            category="market_discovery_signal", entity_type="signal_occurrence",
+            entity_id="s1", payload={"ticker": "AAPL"}, event_time=at)[1] is False
+        assert controller._journal.append(run_id=RUN, category="strategy",
+            entity_type="decision", entity_id="new", payload={},
+            event_time=at).sequence == 3
+        await controller._close_fixed_journal()
+
+    asyncio.run(exercise())
+    assert client.closed
 
 
 def test_fixed_activity_reads_only_committed_clickhouse_prefix(monkeypatch):

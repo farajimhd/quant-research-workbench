@@ -370,7 +370,8 @@ def publish_run(client: Any, *, run_id: str, run_date: date,
 
 def verify_run_identity(client: Any, *, run_id: str,
                         definition: Mapping[str, Any],
-                        configuration_hash: str) -> None:
+                        configuration_hash: str,
+                        code_hash: str | None = None) -> None:
     """Reject a saved definition that differs from the immutable run row."""
     normalized = str(UUID(run_id))
     expected_definition = sha256(canonical_json(definition).encode("utf-8")).hexdigest()
@@ -385,6 +386,7 @@ def verify_run_identity(client: Any, *, run_id: str,
                 or str(row["configuration_hash"]) != configuration_hash
                 or str(row["market_plan_token"]) != str(dict(definition.get("market_data_plan") or {}).get("token") or "")
                 or str(row["v7_plan_token"]) != str(dict(definition.get("causal_v7_plan") or {}).get("token") or "")
+                or (code_hash is not None and str(row["code_hash"]) != code_hash)
                 or str(row["contract_version"]) != VERSION):
             raise ValueError("Saved Backtest definition differs from its ClickHouse run identity")
 

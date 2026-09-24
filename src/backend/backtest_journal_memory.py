@@ -11,7 +11,7 @@ from hashlib import sha256
 from copy import deepcopy
 from threading import RLock
 from typing import Any, Iterable
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from src.backend.backtest_journal_clickhouse import (
     BacktestJournalWriter, JournalBatch, prepare_batch, prepare_fence,
@@ -24,15 +24,17 @@ from src.trading_runtime.journal_evidence import REFERENCE, encode_evidence
 class BacktestMemoryJournal:
     """Fast deterministic operational state, pending asynchronous publication."""
 
-    def __init__(self, *, run_id: str, max_pending_records: int = 65_536) -> None:
-        if not run_id or max_pending_records < 1:
+    def __init__(self, *, run_id: str, max_pending_records: int = 65_536,
+                 initial_sequence: int = 0) -> None:
+        if (not run_id or max_pending_records < 1
+                or type(initial_sequence) is not int or initial_sequence < 0):
             raise ValueError("Backtest journal requires a run and positive buffer bound")
         self.run_id = run_id
         self.max_pending_records = max_pending_records
         self._records: list[JournalRecord] = []
-        self._base_sequence = 0
-        self._next_sequence = 0
-        self._fenced_sequence = 0
+        self._base_sequence = initial_sequence
+        self._next_sequence = initial_sequence
+        self._fenced_sequence = initial_sequence
         self._by_identity: dict[tuple[str, str, str], JournalRecord] = {}
         self._signal_records: list[JournalRecord] = []
         self._protection_records: list[JournalRecord] = []
@@ -218,6 +220,85 @@ class BacktestMemoryJournal:
     def portfolio_states(self) -> dict[str, dict[str, Any]]:
         return {key: dict(value) for key, value in self._portfolio_states.items()}
 
+    def command_checkpoint(self) -> dict[str, Any]:
+        """Compact mutable command state not derivable from broker/strategy state.
+
+        Journal events and their evidence remain in ClickHouse. Assignments
+        already live in the controller checkpoint and are republished into
+        this adapter when the strategy runtime is restored.
+        """
+        with self._lock:
+            state = {
+                "schema_version": 1,
+                "run_id": self.run_id,
+                "portfolio_states": deepcopy(self._portfolio_states),
+                "order_states": deepcopy(self._order_states),
+                "leases": deepcopy(self._leases),
+                "campaign_ownership": [deepcopy(self._campaign_ownership[key])
+                                       for key in sorted(self._campaign_ownership)],
+            }
+            canonical_json(state)
+            return state
+
+    def restore_command_checkpoint(self, state: dict[str, Any]) -> None:
+        """Restore only a verified fenced command snapshot before runtime init."""
+        if (not isinstance(state, dict) or state.get("schema_version") != 1
+                or state.get("run_id") != self.run_id):
+            raise ValueError("Backtest journal command checkpoint identity changed")
+        names = ("portfolio_states", "order_states", "leases")
+        if any(not isinstance(state.get(name), dict) for name in names):
+            raise ValueError("Backtest journal command checkpoint omitted state maps")
+        if any(not isinstance(row, dict) for name in names
+               for row in state[name].values()):
+            raise ValueError("Backtest journal command checkpoint contains malformed rows")
+        campaigns = state.get("campaign_ownership")
+        if not isinstance(campaigns, list):
+            raise ValueError("Backtest journal command checkpoint omitted campaign ownership")
+        restored_campaigns: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in campaigns:
+            if not isinstance(row, dict):
+                raise ValueError("Backtest journal campaign ownership is malformed")
+            key = (str(row.get("resource_id") or ""), str(row.get("session_key") or ""))
+            if not all(key) or key in restored_campaigns:
+                raise ValueError("Backtest journal campaign ownership is duplicated")
+            restored_campaigns[key] = deepcopy(row)
+        if any(str(row.get("run_id") or "") != self.run_id
+               for row in state["order_states"].values()):
+            raise ValueError("Backtest journal order checkpoint mixed runs")
+        canonical_json(state)
+        with self._lock:
+            self._require_open()
+            if (self._records or self._portfolio_states or self._order_states
+                    or self._leases or self._campaign_ownership):
+                raise ValueError("Backtest journal command state was already initialized")
+            self._portfolio_states = deepcopy(state["portfolio_states"])
+            self._order_states = deepcopy(state["order_states"])
+            self._leases = deepcopy(state["leases"])
+            self._campaign_ownership = restored_campaigns
+
+    def restore_committed_records(self, records: Iterable[JournalRecord]) -> None:
+        """Index only fenced signals/protections needed by resumed command logic."""
+        restored = list(records)
+        if (any(record.run_id != self.run_id
+                or record.sequence > self._fenced_sequence
+                or record.sequence < 1
+                or record.category not in {"market_discovery_signal", "protection"}
+                for record in restored)
+                or any(left.sequence >= right.sequence
+                       for left, right in zip(restored, restored[1:]))):
+            raise ValueError("Backtest journal committed record prefix is invalid")
+        with self._lock:
+            self._require_open()
+            if self._records or self._signal_records or self._protection_records:
+                raise ValueError("Backtest journal committed records were already restored")
+            for record in restored:
+                if record.category == "market_discovery_signal":
+                    self._signal_records.append(record)
+                    self._by_identity.setdefault(
+                        (record.category, record.entity_type, record.entity_id), record)
+                else:
+                    self._protection_records.append(record)
+
     def portfolio_reservation(self, account_id: str, reservation_id: str) -> dict[str, Any] | None:
         for reservation in self._portfolio_states.get(account_id, {}).get("reservations") or ():
             if str(reservation.get("reservation_id") or "") == reservation_id:
@@ -393,18 +474,29 @@ class BacktestJournalPublisher:
     """
 
     def __init__(self, journal: BacktestMemoryJournal, writer: BacktestJournalWriter,
-                 *, attempt_id: str, run_date: date, batch_size: int = 4096) -> None:
+                 *, attempt_id: str, run_date: date, batch_size: int = 4096,
+                 prior_fence_id: str | None = None,
+                 committed_batch_ids: tuple[str, ...] = ()) -> None:
         if batch_size < 1 or batch_size > journal.max_pending_records:
             raise ValueError("Journal batch size must fit the pending bound")
+        initial = journal.latest_sequence(journal.run_id)
+        if initial:
+            if (prior_fence_id is None or UUID(prior_fence_id).int == 0
+                    or not committed_batch_ids):
+                raise ValueError("Resumed Backtest journal lacks its verified fence prefix")
+        elif prior_fence_id is not None or committed_batch_ids:
+            raise ValueError("New Backtest journal cannot inherit a committed prefix")
+        if len(committed_batch_ids) != len(set(committed_batch_ids)):
+            raise ValueError("Backtest journal prefix repeated a batch")
         self.journal = journal
         self.writer = writer
         self.attempt_id = attempt_id
         self.run_date = run_date
         self.batch_size = batch_size
-        self._staged_sequence = 0
-        self._fenced_sequence = 0
-        self._fence_id = "00000000-0000-0000-0000-000000000000"
-        self._committed_batches: list[str] = []
+        self._staged_sequence = initial
+        self._fenced_sequence = initial
+        self._fence_id = str(UUID(prior_fence_id)) if prior_fence_id else "00000000-0000-0000-0000-000000000000"
+        self._committed_batches: list[str] = [str(UUID(value)) for value in committed_batch_ids]
         self._staged: list[JournalBatch] = []
 
     @property

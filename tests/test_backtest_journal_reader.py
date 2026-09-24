@@ -44,6 +44,11 @@ class Client:
         offset = int(re.search(r"OFFSET ([0-9]+)", sql).group(1))
         rows = [row for row in self.rows if row["batch_id"] == BATCH
                 and row["sequence"] <= maximum]
+        if "category IN ('market_discovery_signal','protection')" in sql:
+            rows = [row for row in rows if row["category"] in
+                    {"market_discovery_signal", "protection"}]
+        if match := re.search(r"sequence>([0-9]+)", sql):
+            rows = [row for row in rows if row["sequence"] > int(match.group(1))]
         if "category='protection'" in sql:
             rows = [row for row in rows if row["category"] == "protection"]
         if "category='market_discovery_signal'" in sql:
@@ -133,4 +138,5 @@ def test_saved_reader_reuses_committed_prefix_for_protection_and_signals(monkeyp
     assert [row.sequence for row in reader.protection_records(RUN)] == [1]
     assert [row.sequence for row in reader.signal_stream_records(
         run_id=RUN, signal_stream_id="s", limit=1)] == [2]
+    assert [row.sequence for row in reader.committed_command_records(page_size=1)] == [1, 2]
     assert all("toUUID('" + STAGED + "')" not in query for query in client.queries)

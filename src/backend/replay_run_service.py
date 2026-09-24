@@ -1088,6 +1088,7 @@ class ReplayRunController:
         run_id: str | None = None,
         runtime_root: Path | None = None,
         resume_state: dict[str, Any] | None = None,
+        resume_journal_prefix: dict[str, Any] | None = None,
     ) -> None:
         self.definition = definition
         self.run_id = run_id or str(uuid4())
@@ -1251,6 +1252,7 @@ class ReplayRunController:
         self._historical_structure_prefetch_exhausted = False
         self._data_authority: dict[str, dict[str, Any]] = {}
         self._resume_state = deepcopy(resume_state) if resume_state is not None else None
+        self._resume_journal_prefix = dict(resume_journal_prefix or {})
         self._candle_detector_states = deepcopy((resume_state or {}).get('candle_detector_states') or {})
         self._structural_market_streams = {}
         self._signal_field_projection = None
@@ -2016,6 +2018,7 @@ class ReplayRunController:
 
     def _restart_checkpoint_state(self, *, reference_authority=False) -> dict[str, Any]:
         from .historical_liquidity_checkpoint import checkpoint as liquidity_checkpoint
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
         if self._runtime is None:
             raise RuntimeError("Historical runtime is not ready for checkpointing")
         self._flush_passive_market_events()
@@ -2147,6 +2150,8 @@ class ReplayRunController:
             "assignments": self._checkpoint_assignments(),
             "candle_detector_states": self._checkpoint_candle_detectors(),
             "broker": broker_checkpoint(),
+            **({"journal_command": self._journal.command_checkpoint()}
+               if isinstance(self._journal, BacktestMemoryJournal) else {}),
         }
 
     def _checkpoint_assignments(self):
@@ -2642,7 +2647,8 @@ class ReplayRunController:
         """Publish one immutable Backtest identity before accepting journal events."""
         from src.backend.backtest_journal_clickhouse import (
             BacktestJournalWriter, backtest_code_hash, journal_clickhouse_client,
-            publish_run, storage_preflight,
+            load_fenced_checkpoint, publish_run, storage_preflight,
+            verify_run_identity,
         )
         from src.backend.backtest_journal_memory import (
             BacktestJournalPublisher, BacktestMemoryJournal,
@@ -2659,21 +2665,48 @@ class ReplayRunController:
             configuration_hash = str(
                 self.definition.configuration_revision.get("content_hash") or "")
             run_date = self.created_at.astimezone(UTC).date()
-            await asyncio.to_thread(
-                publish_run, client,
-                run_id=self.run_id, run_date=run_date,
-                definition=self.definition.payload(),
-                configuration_hash=configuration_hash,
-                market_plan_token=str(self.definition.market_data_plan["token"]),
-                v7_plan_token=str(self.definition.causal_v7_plan.get("token") or ""),
-                code_hash=code_hash,
-            )
-            journal = BacktestMemoryJournal(run_id=self.run_id)
+            prior = dict(getattr(self, "_resume_journal_prefix", {}) or {})
+            if getattr(self, "_resume_state", None) is not None and not prior:
+                raise ValueError("Fixed Backtest resume lacks a verified ClickHouse fence")
+            if prior:
+                await asyncio.to_thread(verify_run_identity, client,
+                    run_id=self.run_id, definition=self.definition.payload(),
+                    configuration_hash=configuration_hash, code_hash=code_hash)
+                checkpoint = await asyncio.to_thread(load_fenced_checkpoint, client, self.run_id)
+                if (checkpoint is None or checkpoint["fence_id"] != prior.get("fence_id")
+                        or checkpoint["sequence"] != prior.get("sequence")
+                        or checkpoint["state"] != self._resume_state):
+                    raise ValueError("Fixed Backtest ClickHouse fence changed before resume")
+                from src.backend.backtest_journal_reader import BacktestJournalReader
+                reader = BacktestJournalReader(client, self.run_id,
+                    fenced_sequence=checkpoint["sequence"],
+                    batch_ids=checkpoint["batch_ids"])
+                committed = await asyncio.to_thread(reader.committed_command_records)
+                journal = BacktestMemoryJournal(
+                    run_id=self.run_id, initial_sequence=checkpoint["sequence"])
+                journal.restore_command_checkpoint(
+                    dict(self._resume_state.get("journal_command") or {}))
+                journal.restore_committed_records(committed)
+                publisher_prefix = dict(prior_fence_id=checkpoint["fence_id"],
+                                        committed_batch_ids=checkpoint["batch_ids"])
+            else:
+                await asyncio.to_thread(
+                    publish_run, client,
+                    run_id=self.run_id, run_date=run_date,
+                    definition=self.definition.payload(),
+                    configuration_hash=configuration_hash,
+                    market_plan_token=str(self.definition.market_data_plan["token"]),
+                    v7_plan_token=str(self.definition.causal_v7_plan.get("token") or ""),
+                    code_hash=code_hash,
+                )
+                journal = BacktestMemoryJournal(run_id=self.run_id)
+                publisher_prefix = {}
             writer = BacktestJournalWriter(client)
             self._journal = journal
             self._journal_writer = writer
             self._journal_publisher = BacktestJournalPublisher(
-                journal, writer, attempt_id=str(uuid4()), run_date=run_date)
+                journal, writer, attempt_id=str(uuid4()), run_date=run_date,
+                **publisher_prefix)
         except BaseException:
             if writer is None:
                 await asyncio.to_thread(client.close)
@@ -3728,7 +3761,8 @@ class ReplayRunController:
         from .historical_liquidity_checkpoint import restore as restore_liquidity
         if not review_only or controller.get('historical_liquidity') is not None:
             self._historical_market_quality = restore_liquidity(controller.get('historical_liquidity'))
-        if not review_only and not _checkpoint_has_strategy_observations(state):
+        if (not review_only and self.definition.mode != RunMode.BACKTEST
+                and not _checkpoint_has_strategy_observations(state)):
             raise ValueError("Restart checkpoint lacks causal strategy observations; start a new run")
         self.level_load_contract = controller.get("level_load_contract", LEVEL_LOAD_CONTRACT)
         if self.definition.experimental_structure_book and self.level_load_contract != LEVEL_LOAD_CONTRACT and not review_only:
@@ -8153,32 +8187,62 @@ class ReplayRunService:
             raise ValueError("Historical run directory escaped the runtime root")
         manifest_path = run_dir / "manifest.json"
         journal_path = run_dir / "journal.sqlite3"
-        if not manifest_path.is_file() or not journal_path.is_file():
+        if not manifest_path.is_file():
             raise KeyError(run_id)
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         prior_status = str(dict(manifest.get("run") or {}).get("status") or "")
         if prior_status == "completed":
             raise ValueError("Completed historical runs cannot be resumed")
-        journal = TradingJournal(journal_path)
-        try:
-            persisted = journal.load_checkpoint(normalized)
-        finally:
-            journal.close()
-        state = dict((persisted or {}).get("state") or {})
-        if prior_status == "failed" and state.get("processing_boundary_version") != 1:
+        backend = str(manifest.get("journal_backend") or "sqlite_v1")
+        definition = _definition_from_manifest(manifest, run_dir=run_dir)
+        resume_prefix: dict[str, Any] | None = None
+        if backend == "arte_clickhouse_v1" and definition.mode == RunMode.BACKTEST:
+            from src.backend.backtest_journal_clickhouse import (
+                backtest_code_hash, load_fenced_checkpoint, verify_run_identity,
+            )
+            from src.backend.backtest_market_data import readonly_clickhouse_client
+            with closing(readonly_clickhouse_client()) as client:
+                await asyncio.to_thread(verify_run_identity, client,
+                    run_id=normalized, definition=definition.payload(),
+                    configuration_hash=str(definition.configuration_revision.get("content_hash") or ""),
+                    code_hash=await asyncio.to_thread(
+                        backtest_code_hash, Path(__file__).resolve().parents[2]))
+                checkpoint = await asyncio.to_thread(load_fenced_checkpoint, client, normalized)
+            if checkpoint is None:
+                raise ValueError("Fixed Backtest has no verified ClickHouse recovery fence")
+            if checkpoint["status"] == "completed":
+                raise ValueError("Completed historical runs cannot be resumed")
+            state = dict(checkpoint["state"])
+            cursor = json.loads(checkpoint["source_cursor"])
+            if (cursor.get("market") != dict(state.get("controller") or {}).get("source_cursor")
+                    or cursor.get("frame") != dict(state.get("controller") or {}).get("frame_cursor")
+                    or not isinstance(state.get("journal_command"), dict)):
+                raise ValueError("Fixed Backtest fence and command checkpoint disagree")
+            resume_prefix = {key: checkpoint[key] for key in
+                             ("sequence", "fence_id", "batch_ids")}
+        elif backend == "sqlite_v1" and journal_path.is_file():
+            journal = TradingJournal(journal_path)
+            try:
+                persisted = journal.load_checkpoint(normalized)
+            finally:
+                journal.close()
+            state = dict((persisted or {}).get("state") or {})
+        else:
+            raise KeyError(run_id)
+        if (prior_status == "failed" or
+                (backend == "arte_clickhouse_v1" and checkpoint["status"] == "failed")) and state.get("processing_boundary_version") != 1:
             raise ValueError("Failed historical run lacks a certified processing boundary; start a new run")
         if (
             int(state.get("schema_version") or 0) != RESTART_CHECKPOINT_SCHEMA_VERSION
             or not bool(state.get("complete"))
         ):
             raise ValueError("Historical run has no complete restart-safe checkpoint")
-        if not _checkpoint_has_strategy_observations(state):
+        if backend != "arte_clickhouse_v1" and not _checkpoint_has_strategy_observations(state):
             raise ValueError("Restart checkpoint lacks causal strategy observations; start a new run")
         # Reject legacy or corrupt liquidity state before constructing a controller
         # that can rewrite the manifest or append lifecycle events to this run.
         from .historical_liquidity_checkpoint import restore as restore_liquidity
         restore_liquidity(dict(state.get("controller") or {}).get("historical_liquidity"))
-        definition = _definition_from_manifest(manifest, run_dir=run_dir)
         identity = dict(state.get("identity") or {})
         expected_fixture_hash = (
             definition.debug_fixture.content_hash
@@ -8208,6 +8272,7 @@ class ReplayRunService:
             run_id=normalized,
             runtime_root=self.runtime_root,
             resume_state=state,
+            resume_journal_prefix=resume_prefix,
         )
         await self._admit(controller)
         await controller.start()

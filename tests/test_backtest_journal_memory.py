@@ -84,6 +84,25 @@ def test_signal_idempotence_survives_fence_without_retaining_all_decisions():
     assert len(journal._by_identity) == 1
 
 
+def test_resumed_journal_reindexes_only_fenced_signal_and_protection_records():
+    original = BacktestMemoryJournal(run_id=RUN_ID)
+    signal = dict(_entry("signal"), category="market_discovery_signal")
+    first = original.append_many([signal])[0]
+    protection = original.append(run_id=RUN_ID, category="protection",
+        entity_type="price", entity_id="stop", payload={"price": 9.5},
+        event_time=AT)
+    original.mark_fenced(protection.sequence)
+    resumed = BacktestMemoryJournal(run_id=RUN_ID,
+                                    initial_sequence=protection.sequence)
+    resumed.restore_committed_records([first, protection])
+    assert resumed.append_once_many([signal])[0] == (first, False)
+    assert resumed.protection_records(RUN_ID) == [protection]
+    assert resumed.append_many([_entry("new")])[0].sequence == 3
+    with pytest.raises(ValueError, match="invalid"):
+        BacktestMemoryJournal(run_id=RUN_ID, initial_sequence=1).restore_committed_records(
+            [protection])
+
+
 def test_campaign_ownership_matches_live_reserve_confirm_release_contract():
     journal = BacktestMemoryJournal(run_id=RUN_ID)
     key = dict(resource_id="book:AAPL", session_key="2026-08-18")
@@ -103,6 +122,30 @@ def test_campaign_ownership_matches_live_reserve_confirm_release_contract():
     journal.acquire_campaign_session_ownership(**second, owner_id="strategy-a", state="reserved")
     assert journal.release_campaign_session_reservation(**second, owner_id="strategy-a")
     assert journal.campaign_session_ownership(**second) is None
+
+
+def test_compact_command_checkpoint_restores_operational_state_without_events():
+    journal = BacktestMemoryJournal(run_id=RUN_ID)
+    journal.save_portfolio_state("paper", {"reservations": [{"reservation_id": "r1"}]})
+    journal.save_order_management_state("group-1", run_id=RUN_ID,
+                                        account_id="paper", state={"state": "working"})
+    journal.acquire_campaign_session_ownership(
+        "book:AAPL", session_key="2026-08-18", owner_id="strategy-a",
+        state="confirmed")
+    snapshot = journal.command_checkpoint()
+    assert "events" not in snapshot and "assignments" not in snapshot
+    restored = BacktestMemoryJournal(run_id=RUN_ID)
+    restored.restore_command_checkpoint(snapshot)
+    snapshot["portfolio_states"]["paper"]["reservations"].clear()
+    assert restored.portfolio_reservation("paper", "r1") == {"reservation_id": "r1"}
+    assert restored.order_management_states()[0]["state"] == {"state": "working"}
+    assert restored.campaign_session_ownership(
+        "book:AAPL", session_key="2026-08-18")["state"] == "confirmed"
+    with pytest.raises(ValueError, match="already initialized"):
+        restored.restore_command_checkpoint(journal.command_checkpoint())
+    with pytest.raises(ValueError, match="identity"):
+        BacktestMemoryJournal(run_id=RUN_ID).restore_command_checkpoint(
+            {**journal.command_checkpoint(), "run_id": "other"})
 
 
 def test_assignment_upsert_preserves_identity_and_detaches_mutable_state():
