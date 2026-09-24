@@ -45,6 +45,10 @@ class _Client:
             return ""
         if "FROM arte.bt_event_v1" in sql:
             rows = self.tables.get("arte.bt_event_v1", [])
+            if "AND sequence BETWEEN " in sql:
+                bounds = sql.split("AND sequence BETWEEN ", 1)[1].split(" ORDER BY", 1)[0]
+                start, end = (int(value) for value in bounds.split(" AND "))
+                rows = [row for row in rows if start <= row["sequence"] <= end]
             if "AND batch_id=toUUID('" in sql:
                 selected = sql.split("AND batch_id=toUUID('", 1)[1].split("'", 1)[0]
                 rows = [row for row in rows if row["batch_id"] == selected]
@@ -160,6 +164,12 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
                                    source_cursor="next", prior_last_sequence=2,
                                    prior_fence_id=fence.fence_id)
         publish_fence(client, next_fence)
+        self.assertEqual(load_fenced_checkpoint(client, RUN)["sequence"], 3)
+        # The latest range remains sound, but an older committed event is
+        # corrupt. Recovery must reject the whole chain.
+        client.tables["arte.bt_event_v1"][0]["payload_hash"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "recovery event range"):
+            load_fenced_checkpoint(client, RUN)
 
     def test_run_definition_is_content_addressed_and_idempotent(self) -> None:
         client = _Client()

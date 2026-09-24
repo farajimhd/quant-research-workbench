@@ -447,7 +447,10 @@ def load_fenced_checkpoint(client: Any, run_id: str) -> dict[str, Any] | None:
         current = previous
     if len(chain) != len(fences):
         raise ValueError("Backtest journal has a divergent committed branch")
-    _fence_event_proof(client, latest)
+    # A valid head hash does not prove earlier committed event ranges.  Every
+    # predecessor is part of the same recovery authority and must be checked.
+    for committed in reversed(chain):
+        _fence_event_proof(client, committed)
     cache: dict[str, str] = {}
     def fetch(digest: str) -> str | None:
         if digest in cache:
