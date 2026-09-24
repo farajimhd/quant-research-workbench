@@ -69,6 +69,10 @@ longest verified contiguous commit-fence chain. A fence is inserted last,
 after all typed family rows and their counts and hashes have been read back or
 otherwise verified. Unfenced rows are ignored for recovery and review. A
 retried prefix with conflicting content is fatal, not last-write-wins.
+Row content hashes use canonical persisted types, including UTC `DateTime64`
+precision and fixed-scale decimals, rather than the producer's timestamp
+spelling. Cold recovery reads bounded groups of complete typed rows, recomputes
+each row hash, and then verifies each commit's row count and identity digest.
 
 A dedicated bounded writer lane batches records; the market-data callback and
 Backtest simulation loop never perform ClickHouse I/O or wait for an insert

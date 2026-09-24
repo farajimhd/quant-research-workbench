@@ -36,6 +36,34 @@ def test_clickhouse_wire_time_preserves_utc_nanoseconds() -> None:
         writer_module._datetime_wire("2026-08-18T08:05:00.123456789Z", 6)
 
 
+def test_typed_hash_uses_stored_utc_representation() -> None:
+    source = {key: value for key, value in batch().events[0].items()
+              if key != "content_hash"}
+    source["event_time"] = "2026-08-18T04:05:00-04:00"
+    source["recorded_at"] = "2026-08-18T04:05:01-04:00"
+    row = typed_row("trading_event_v1", source)
+    utc = {**source, "event_time": "2026-08-18T08:05:00Z",
+           "recorded_at": "2026-08-18T08:05:01Z"}
+    assert typed_row("trading_event_v1", utc)["content_hash"] == row["content_hash"]
+    stored = writer_module._wire_row("trading_event_v1", row)
+    assert writer_module._canonical_typed_content(
+        "trading_event_v1", source,
+    ) == writer_module._canonical_typed_content(
+        "trading_event_v1", {key: value for key, value in stored.items()
+                             if key != "content_hash"}, stored_utc=True,
+    )
+
+
+def test_event_partition_must_match_utc_event_month() -> None:
+    source = dict(batch().events[0])
+    source["event_month"] = "2026-07-01"
+    source.pop("content_hash")
+    item = TypedJournalBatch(RUN, date(2026, 8, 1), ATTEMPT, BATCH, ZERO,
+                             1, 1, "bucket-1", "running", (source,))
+    with pytest.raises(ValueError, match="partition differs"):
+        publish_typed_batch(MemoryClient(), item)
+
+
 def test_typed_journal_client_requires_a_separate_complete_identity(monkeypatch) -> None:
     for key in ("TRADING_JOURNAL_CLICKHOUSE_URL", "TRADING_JOURNAL_CLICKHOUSE_USER",
                 "TRADING_JOURNAL_CLICKHOUSE_PASSWORD", "BACKTEST_CLICKHOUSE_USER"):
@@ -58,7 +86,7 @@ def test_typed_journal_client_requires_a_separate_complete_identity(monkeypatch)
 
 
 def batch() -> TypedJournalBatch:
-    event = typed_row({
+    event = typed_row("trading_event_v1", {
         "run_id": RUN, "event_month": "2026-08-01", "attempt_id": ATTEMPT,
         "batch_id": BATCH, "record_id": RECORD, "sequence": 1,
         "event_time": "2026-08-18T08:05:00+00:00",
@@ -107,6 +135,12 @@ class MemoryClient:
                 [row["record_id"], row["content_hash"]]
                 for row in self.tables.get(name, []) if row["batch_id"] == batch_id
             ] for name in names})
+        if "WHERE batch_id IN (" in sql:
+            ids = set(re.findall(r"toUUID\('([0-9a-f-]+)'\)", sql))
+            name = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]
+            columns = sql.removeprefix("SELECT ").split(" FROM ", 1)[0].split(",")
+            return "\n".join(json.dumps({column: row[column] for column in columns})
+                             for row in self.tables.get(name, []) if row["batch_id"] in ids)
         name = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]
         columns = sql.removeprefix("SELECT ").split(" FROM ", 1)[0].split(",")
         if "WHERE run_id=" in sql:
@@ -142,7 +176,7 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     assert len(client.tables["trading_commit_v1"]) == 1
     assert not any("payload_json" in row for rows in client.tables.values() for row in rows)
     prefix = load_committed_prefix(client, RUN)
-    assert len(client.selects) == 9
+    assert len(client.selects) == 17
     assert prefix is not None
     assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
 
@@ -167,13 +201,21 @@ def test_recovery_groups_batches_but_verifies_each_fence() -> None:
     client.selects.clear()
     prefix = load_committed_prefix(client, RUN)
     assert prefix is not None and prefix.last_sequence == 3
-    assert len(client.selects) == 2
+    assert len(client.selects) == 10
     client.tables["trading_commit_v1"][0]["event_count"] = 0
     with pytest.raises(RuntimeError, match="not contiguous"):
         load_committed_prefix(client, RUN)
     client.tables["trading_commit_v1"][0]["event_count"] = 1
     client.tables["trading_event_v1"][1]["content_hash"] = "0" * 64
-    with pytest.raises(RuntimeError, match="differs from committed fence"):
+    with pytest.raises(RuntimeError, match="row content differs from its hash"):
+        load_committed_prefix(client, RUN)
+
+
+def test_recovery_detects_content_change_even_when_hash_column_is_unchanged() -> None:
+    client = MemoryClient()
+    publish_typed_batch(client, batch())
+    client.tables["trading_event_v1"][0]["entity_id"] = "tampered"
+    with pytest.raises(RuntimeError, match="row content differs from its hash"):
         load_committed_prefix(client, RUN)
 
 
@@ -284,7 +326,7 @@ def test_typed_publication_detects_conflicting_readback() -> None:
     client.tables["trading_event_v1"][0]["content_hash"] = "0" * 64
     with pytest.raises(RuntimeError, match="conflicting"):
         publish_typed_batch(client, item)
-    with pytest.raises(RuntimeError, match="differs from committed fence"):
+    with pytest.raises(RuntimeError, match="row content differs from its hash"):
         load_committed_prefix(client, RUN)
 
 
@@ -351,8 +393,9 @@ def test_typed_publication_rejects_out_of_order_prefix() -> None:
     altered = TypedJournalBatch(item.run_id, item.run_month, item.attempt_id,
                                 item.batch_id, item.prior_batch_id, 2, 2,
                                 item.source_cursor, item.status,
-                                (typed_row({**{key: value for key, value in item.events[0].items()
-                                               if key != "content_hash"}, "sequence": 2}),))
+                                (typed_row("trading_event_v1", {
+                                    **{key: value for key, value in item.events[0].items()
+                                       if key != "content_hash"}, "sequence": 2}),))
     with pytest.raises(RuntimeError, match="committed prefix"):
         publish_typed_batch(client, altered)
     assert not client.inserts

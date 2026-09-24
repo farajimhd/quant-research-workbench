@@ -10,6 +10,7 @@ from __future__ import annotations
 from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 import json
 import os
@@ -164,7 +165,11 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
             if any(isinstance(value, (Mapping, list, tuple, bytearray))
                    for value in content.values()):
                 raise ValueError(f"{name} contains an opaque or mutable value")
-            digest = sha256(canonical_json(content).encode("utf-8")).hexdigest()
+            canonical = _canonical_typed_content(name, content)
+            if (name == "trading_event_v1"
+                    and canonical["event_month"] != canonical["event_time"][:7] + "-01"):
+                raise ValueError("Journal event partition differs from its UTC event time")
+            digest = sha256(canonical_json(canonical).encode("utf-8")).hexdigest()
             if "content_hash" in row and str(row["content_hash"]) != digest:
                 raise ValueError(f"{name} has an incorrect content hash")
             sealed.append({**content, "content_hash": digest})
@@ -262,12 +267,14 @@ def _coalesce_unpublished(batches: tuple[TypedJournalBatch, ...]) -> TypedJourna
     )
 
 
-def typed_row(values: Mapping[str, Any]) -> dict[str, Any]:
-    """Seal an explicitly typed family row; JSON is transport only."""
+def typed_row(name: str, values: Mapping[str, Any]) -> dict[str, Any]:
+    """Hash the persisted typed representation, not source-side spellings."""
     row = dict(values)
     if "content_hash" in row:
         raise ValueError("Caller cannot provide a content hash")
-    row["content_hash"] = sha256(canonical_json(row).encode("utf-8")).hexdigest()
+    row["content_hash"] = sha256(
+        canonical_json(_canonical_typed_content(name, row)).encode("utf-8")
+    ).hexdigest()
     return row
 
 
@@ -280,9 +287,13 @@ _ISO_INSTANT = re.compile(
 )
 
 
-def _datetime_wire(value: Any, scale: int) -> str:
+def _datetime_wire(value: Any, scale: int, *, stored_utc: bool = False) -> str:
     """Render a timezone-aware instant in ClickHouse's lossless UTC format."""
     source = value.isoformat() if isinstance(value, datetime) else str(value)
+    if stored_utc:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}(?:\d{3})?", source):
+            raise ValueError("Stored journal timestamp is not a UTC DateTime64 value")
+        source += "+00:00"
     match = _ISO_INSTANT.fullmatch(source)
     if match is None:
         raise ValueError("Journal timestamps must be timezone-aware ISO instants")
@@ -295,6 +306,63 @@ def _datetime_wire(value: Any, scale: int) -> str:
     ).astimezone(timezone.utc)
     result = parsed.strftime("%Y-%m-%d %H:%M:%S.%f")
     return result + fraction[6:] if scale == 9 else result
+
+
+def _canonical_typed_content(
+    name: str, row: Mapping[str, Any], *, stored_utc: bool = False,
+) -> dict[str, Any]:
+    """Canonicalize every persisted field for reproducible row-hash recovery."""
+    if name not in _CONTRACTS:
+        raise ValueError("Unknown typed journal family")
+    expected = {column for column, _ in _CONTRACTS[name].columns} - {"content_hash"}
+    if set(row) != expected:
+        raise ValueError(f"{name} has missing or extra typed columns")
+    canonical: dict[str, Any] = {}
+    for column, kind in _CONTRACTS[name].columns:
+        if column == "content_hash":
+            continue
+        value = row[column]
+        nullable = kind.startswith("Nullable(")
+        if value is None:
+            if not nullable:
+                raise ValueError(f"{name}.{column} cannot be null")
+            canonical[column] = None
+            continue
+        base = kind[9:-1] if nullable else kind
+        if base.startswith("DateTime64(9"):
+            canonical[column] = _datetime_wire(value, 9, stored_utc=stored_utc)
+        elif base.startswith("DateTime64(6"):
+            canonical[column] = _datetime_wire(value, 6, stored_utc=stored_utc)
+        elif base.startswith("Decimal("):
+            scale = int(base.rsplit(",", 1)[1].rstrip(") "))
+            try:
+                with localcontext() as context:
+                    context.prec = 50
+                    number = Decimal(str(value))
+                    quantized = number.quantize(Decimal(1).scaleb(-scale))
+            except (InvalidOperation, ValueError) as exc:
+                raise ValueError(f"{name}.{column} is not a valid decimal") from exc
+            if not number.is_finite() or number != quantized:
+                raise ValueError(f"{name}.{column} loses decimal precision")
+            canonical[column] = format(quantized, f".{scale}f")
+        elif base.startswith("UInt"):
+            if isinstance(value, bool) or not str(value).isdigit():
+                raise ValueError(f"{name}.{column} is not an unsigned integer")
+            number = int(value)
+            if number >= 1 << int(base[4:]):
+                raise ValueError(f"{name}.{column} exceeds its unsigned width")
+            canonical[column] = number
+        elif base == "UUID":
+            canonical[column] = str(UUID(str(value)))
+        elif base == "Date":
+            canonical[column] = date.fromisoformat(str(value)).isoformat()
+        elif base in {"String", "LowCardinality(String)", "FixedString(64)"}:
+            if not isinstance(value, str):
+                raise ValueError(f"{name}.{column} is not a string")
+            canonical[column] = value
+        else:
+            raise ValueError(f"Unsupported typed journal field {name}.{column}: {kind}")
+    return canonical
 
 
 def _wire_row(name: str, row: Mapping[str, Any]) -> dict[str, Any]:
@@ -334,36 +402,6 @@ def _family_identities(client: Any, batch_id: str) -> dict[str, list[tuple[str, 
                      for record_id, digest in response[0][name])
         for name in names
     }
-
-
-def _family_identities_many(
-    client: Any, batch_ids: tuple[str, ...],
-) -> dict[str, dict[str, list[tuple[str, str]]]]:
-    """Bounded recovery readback, retaining each batch's independent fence."""
-    if not batch_ids or len(set(batch_ids)) != len(batch_ids):
-        raise ValueError("Recovery needs distinct committed batch identities")
-    ids = ",".join(f"toUUID({_literal(str(UUID(value)))})" for value in batch_ids)
-    selects = [
-        "(SELECT groupArray((toString(batch_id),toString(record_id),"
-        "toString(content_hash))) "
-        f"FROM arte.{name} WHERE batch_id IN ({ids})) AS {name}"
-        for name, _, _, _ in _FAMILIES
-    ]
-    response = _rows(client, "SELECT " + ",".join(selects) + " FORMAT JSONEachRow")
-    names = {name for name, _, _, _ in _FAMILIES}
-    if len(response) != 1 or set(response[0]) != names:
-        raise RuntimeError("Typed journal grouped recovery readback is incomplete")
-    result = {batch_id: {name: [] for name in names} for batch_id in batch_ids}
-    for name in names:
-        for batch_id, record_id, digest in response[0][name]:
-            normalized = str(UUID(str(batch_id)))
-            if normalized not in result:
-                raise RuntimeError("Typed journal recovery returned an unexpected batch")
-            result[normalized][name].append((str(UUID(str(record_id))), str(digest)))
-    for families in result.values():
-        for identities in families.values():
-            identities.sort()
-    return result
 
 
 def _insert(client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: str) -> None:
@@ -559,10 +597,26 @@ def load_committed_prefix(client: Any, run_id: str) -> CommittedPrefix | None:
 
 def _verify_recovery_chunk(client: Any, commits: list[dict[str, Any]]) -> None:
     batch_ids = tuple(str(UUID(str(commit["batch_id"]))) for commit in commits)
-    actual = _family_identities_many(client, batch_ids)
+    ids = ",".join(f"toUUID({_literal(batch_id)})" for batch_id in batch_ids)
+    actual = {batch_id: {name: [] for name, _, _, _ in _FAMILIES}
+              for batch_id in batch_ids}
+    for name, _, _, _ in _FAMILIES:
+        columns = ",".join(column for column, _ in _CONTRACTS[name].columns)
+        rows = _rows(client, f"SELECT {columns} FROM arte.{name} "
+                     f"WHERE batch_id IN ({ids}) FORMAT JSONEachRow")
+        for row in rows:
+            batch_id = str(UUID(str(row["batch_id"])))
+            if batch_id not in actual:
+                raise RuntimeError("Typed journal recovery returned an unexpected batch")
+            content = {key: value for key, value in row.items() if key != "content_hash"}
+            digest = sha256(canonical_json(_canonical_typed_content(
+                name, content, stored_utc=True)).encode("utf-8")).hexdigest()
+            if digest != str(row["content_hash"]):
+                raise RuntimeError(f"Typed journal {name} row content differs from its hash")
+            actual[batch_id][name].append((str(UUID(str(row["record_id"]))), digest))
     for commit, batch_id in zip(commits, batch_ids):
         for name, _, count_key, hash_key in _FAMILIES:
-            rows = actual[batch_id][name]
+            rows = sorted(actual[batch_id][name])
             digest = sha256(canonical_json(rows).encode("utf-8")).hexdigest()
             if len(rows) != int(commit[count_key]) or digest != str(commit[hash_key]):
                 raise RuntimeError(f"Typed journal {name} differs from committed fence")
