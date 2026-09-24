@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 import pytest
 
@@ -48,6 +49,14 @@ def test_empty_precreation_file_is_restart_safe(
     path.write_text("", encoding="utf-8")
     with pytest.raises(RuntimeError, match="different principal"):
         provision._credential(path, account_exists=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL contract")
+def test_private_acl_is_idempotent(tmp_path: Path) -> None:
+    path = tmp_path / "empty.env"
+    path.touch()
+    provision._restrict_secret_file(path)
+    provision._restrict_secret_file(path)
 
 
 def test_provision_refuses_wrong_host_before_any_database_call(

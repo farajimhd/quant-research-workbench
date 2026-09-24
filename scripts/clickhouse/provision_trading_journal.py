@@ -25,7 +25,7 @@ sys.dont_write_bytecode = True
 from research.mlops.clickhouse import ClickHouseHttpClient
 from research.mlops.env import load_env_file
 from src.trading_runtime.arte_journal_schema import (
-    MARKET_READ_TABLES, TABLES, journal_permission_preflight,
+    MARKET_READ_TABLES, TABLES, journal_permission_preflight, storage_preflight,
 )
 
 
@@ -46,7 +46,27 @@ $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
 $system = New-Object Security.Principal.SecurityIdentifier('S-1-5-18')
 $admins = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
 $allowed = @($owner, $system, $admins)
+function Assert-PrivateAcl($acl, $allowed) {{
+    if (-not $acl.AreAccessRulesProtected) {{ throw 'Secret ACL still inherits permissions' }}
+    $seen = @{{}}
+    foreach ($rule in $acl.Access) {{
+        $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier])
+        if ($rule.AccessControlType -ne 'Allow' -or $rule.IsInherited -or
+            -not ($allowed | Where-Object {{ $_.Value -eq $sid.Value }}) -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {{
+            throw 'Secret ACL contains an unapproved or insufficient rule'
+        }}
+        $seen[$sid.Value] = $true
+    }}
+    foreach ($sid in $allowed) {{
+        if (-not $seen.ContainsKey($sid.Value)) {{ throw 'Secret ACL lacks a required owner' }}
+    }}
+}}
 $acl = Get-Acl -LiteralPath $file
+if ($acl.AreAccessRulesProtected) {{
+    Assert-PrivateAcl $acl $allowed
+    return
+}}
 $acl.SetAccessRuleProtection($true, $false)
 foreach ($sid in $allowed) {{
     $rule = New-Object Security.AccessControl.FileSystemAccessRule(
@@ -56,14 +76,7 @@ foreach ($sid in $allowed) {{
 }}
 Set-Acl -LiteralPath $file -AclObject $acl
 $check = Get-Acl -LiteralPath $file
-if (-not $check.AreAccessRulesProtected) {{ throw 'Secret ACL still inherits permissions' }}
-foreach ($rule in $check.Access) {{
-    $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier])
-    if ($rule.AccessControlType -eq 'Allow' -and
-        -not ($allowed | Where-Object {{ $_.Value -eq $sid.Value }})) {{
-        throw 'Secret ACL contains an unapproved reader'
-    }}
-}}
+Assert-PrivateAcl $check $allowed
 """
     shell_env = dict(os.environ)
     shell_env["PSModulePath"] = os.pathsep.join((
@@ -182,8 +195,9 @@ def provision(url: str, *, apply: bool) -> None:
         )
     for statement in _grants():
         client.execute(statement)
+    storage_preflight(writer)
     journal_permission_preflight(writer)
-    print("Journal principal authenticated; exact grants and market-write denial verified")
+    print("Journal principal authenticated; SSD placement, exact grants, and market-write denial verified")
     print(f"Credential stored with a private ACL: {SECRET_PATH}")
 
 
