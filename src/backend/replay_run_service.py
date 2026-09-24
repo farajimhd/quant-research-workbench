@@ -10469,7 +10469,9 @@ def backtest_preflight(
                 )
             ),
             "evidence": (
-                "Persisted Signal Stream occurrences define the bounded ticker and event-time population; the controller loads causal market and indicator frames only for those tickers."
+                "The complete certified 100ms bar universe is scanned for causal first occurrences; only proven candidates can narrow later execution reads."
+                if source_native_ready and execution_interval.kind == "fixed" and bar_signals is not None
+                else "Persisted Signal Stream occurrences define the bounded ticker and event-time population; the controller loads causal market and indicator frames only for those tickers."
                 if source_native_ready
                 else (
                     "Add a compiled point-in-time identity Watchlist plan; it supplies conids only and does not admit or scan the market population."
@@ -10498,7 +10500,7 @@ def backtest_preflight(
             "label": "Backtest runtime storage",
             "status": "ready" if storage_ready else "blocked",
             "summary": (
-                "Journal and manifests use the external trading runtime root."
+                "Run manifests use the external runtime root; ClickHouse journal durability is checked separately."
                 if storage_ready
                 else "The external Backtest runtime root is not writable."
             ),

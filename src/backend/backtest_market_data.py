@@ -24,9 +24,9 @@ MARKET_DAY_VERSION = "market-day-core-v5"
 MARKET_DAY_TABLES = ("bars_v1", "indicators_v1", "liquidity_100ms_v1")
 MARKET_DAY_STAGES = ("bars", "technical", "broker_100ms")
 FIXED_EXECUTION_BLOCKER = (
-    "Fixed-interval Backtest is not yet causally executable: aggregate 100ms rows "
-    "cannot be converted to synthetic quote/trade events for broker fills or V7 strategy state. "
-    "A native persisted-bar strategy and liquidity-aware broker path must pass equivalence tests first."
+    "Fixed-interval Backtest remains blocked until the native persisted-bar "
+    "strategy, liquidity-bar broker, V7, and ClickHouse journal path passes "
+    "end-to-end integration and fill-equivalence validation."
 )
 EVENT_EXECUTION_BLOCKER = (
     "Event-interval Backtest still prepares a run-local strategy frame spool; "
