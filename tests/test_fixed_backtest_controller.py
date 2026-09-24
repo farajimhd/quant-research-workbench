@@ -49,7 +49,7 @@ def test_backtest_start_rejects_before_legacy_journal_or_disk_write(tmp_path, mo
     ("100ms", "FIXED_EXECUTION_BLOCKER"),
     ("events", "EVENT_EXECUTION_BLOCKER"),
 ])
-@pytest.mark.parametrize("backend", ["arte_clickhouse_v1", "sqlite_v1"])
+@pytest.mark.parametrize("backend", ["arte_typed_journal_v1", "arte_clickhouse_v1", "sqlite_v1"])
 def test_backtest_resume_rejects_before_legacy_journal_access(
     monkeypatch, tmp_path, interval, blocker_name, backend,
 ):
@@ -74,6 +74,67 @@ def test_backtest_resume_rejects_before_legacy_journal_access(
         asyncio.run(service.resume(RUN))
     assert str(exc.value) == getattr(backtest_market_data, blocker_name)
     assert not (run_dir / "journal.sqlite3").exists()
+
+
+def test_future_fixed_manifest_names_typed_journal_without_legacy_identity(
+    monkeypatch, tmp_path,
+):
+    from src.backend import replay_run_service
+
+    controller = object.__new__(ReplayRunController)
+    controller.run_dir = tmp_path / RUN
+    controller.run_dir.mkdir()
+    controller.runtime_root = tmp_path
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, debug_fixture=None,
+        configuration_revision={"revision_id": "r", "content_hash": "a" * 64},
+        payload=lambda: {"mode": "backtest"},
+    )
+    controller.snapshot = lambda **_kwargs: {"run_id": RUN, "mode": "backtest",
+                                             "status": "completed"}
+    monkeypatch.setattr(replay_run_service, "_replay_run_list_projection",
+                        lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(replay_run_service, "_run_selection_projection",
+                        lambda *_args, **_kwargs: {})
+    controller._write_manifest()
+    manifest = json.loads((controller.run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["journal_backend"] == "arte_typed_journal_v1"
+    assert manifest["journal_path"] == ""
+
+
+def test_typed_saved_review_fails_before_retired_or_sqlite_reader(monkeypatch, tmp_path):
+    from src.backend import backtest_review, replay_run_service
+
+    run_dir = tmp_path / RUN
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(json.dumps({
+        "journal_backend": "arte_typed_journal_v1",
+    }), encoding="utf-8")
+    (run_dir / "journal.sqlite3").write_text("must-not-open", encoding="utf-8")
+    monkeypatch.setattr(backtest_review, "ClickHouseSavedBacktestReview",
+                        lambda *_args: (_ for _ in ()).throw(AssertionError("bt_* opened")))
+    monkeypatch.setattr(backtest_review, "SavedBacktestReview",
+                        lambda *_args: (_ for _ in ()).throw(AssertionError("SQLite opened")))
+    service = ReplayRunService(runtime_root=tmp_path)
+    with pytest.raises(ValueError, match="Typed Backtest saved review is not available"):
+        asyncio.run(service._review_saved(RUN))
+
+
+def test_legacy_clickhouse_saved_review_still_dispatches(monkeypatch, tmp_path):
+    from src.backend import backtest_review
+
+    run_dir = tmp_path / RUN
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(json.dumps({
+        "journal_backend": "arte_clickhouse_v1",
+    }), encoding="utf-8")
+    sentinel = SimpleNamespace(review_only=True)
+    monkeypatch.setattr(backtest_review, "ClickHouseSavedBacktestReview",
+                        lambda actual: sentinel if actual == run_dir else None)
+    service = ReplayRunService(runtime_root=tmp_path)
+    service._admit = AsyncMock()
+    assert asyncio.run(service._review_saved(RUN)) is sentinel
+    service._admit.assert_awaited_once_with(sentinel)
 
 
 def test_fixed_market_rejects_event_only_strategy_evidence():

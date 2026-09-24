@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from src.backend.live_assignment_admission import AssignmentAdmissionLane
 from src.backend.qmd_gateway_client import qmd_current_structure_snapshot
 from src.backend.trading_runtime_service import trading_journal
 from src.trading_runtime.domain import InstrumentContract, TradingMode
@@ -46,7 +47,8 @@ def _activation_key(delivery: dict[str, Any]) -> str:
 class LiveStrategyRuntimeSupervisor:
     """Consume accepted Signal Stream deliveries through the shared runtime."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, typed_assignment_admission: AssignmentAdmissionLane | None = None) -> None:
+        self._typed_assignment_admission = typed_assignment_admission
         self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=10_000)
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
@@ -69,6 +71,13 @@ class LiveStrategyRuntimeSupervisor:
         return value if value in {"paper", "live"} else "disabled"
 
     def start(self) -> None:
+        # This bounded lane covers incremental assignment admission only.
+        # Initial assignments and activation recovery are still SQLite-owned.
+        if self._typed_assignment_admission is not None:
+            with self._lock:
+                self._status.update({"running": False, "state": "degraded",
+                                     "last_error": "Typed live cutover is incomplete"})
+            return
         running_under_test = bool(os.environ.get("PYTEST_CURRENT_TEST")) or any(
             name == "tests" or name.startswith("tests.") for name in sys.modules
         )
@@ -326,7 +335,9 @@ class LiveStrategyRuntimeSupervisor:
             runtimes[run_plan_id] = state
             self._update_active_runs(runtimes)
         else:
-            _upsert_runtime_assignments(state, runtime_configuration)
+            _upsert_runtime_assignments(state, runtime_configuration,
+                                        typed_admission=self._typed_assignment_admission,
+                                        configuration_revision_id=revision_id)
 
         occurrence = dict(delivery.get("occurrence") or {})
         observation = strategy_observation_from_signal_occurrence(occurrence)
@@ -463,7 +474,9 @@ class LiveStrategyRuntimeSupervisor:
             runtimes[run_plan_id] = state
             self._update_active_runs(runtimes)
         elif not manual:
-            _upsert_runtime_assignments(state, configuration)
+            _upsert_runtime_assignments(state, configuration,
+                                        typed_admission=self._typed_assignment_admission,
+                                        configuration_revision_id=revision_id)
         return broker, state
 
     def _hydrate_activations(self) -> None:
@@ -662,28 +675,51 @@ def _aware_datetime(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=ZoneInfo("UTC"))
 
 
-def _upsert_runtime_assignments(state: dict[str, Any], configuration: dict[str, Any]) -> None:
+def _upsert_runtime_assignments(
+    state: dict[str, Any], configuration: dict[str, Any], *,
+    typed_admission: AssignmentAdmissionLane | None = None,
+    configuration_revision_id: str = "",
+) -> None:
     bindings = {
         str(row.get("account_key") or ""): row
         for row in dict(configuration.get("accounts") or {}).get("bindings") or []
     }
+    if typed_admission is not None:
+        if not configuration_revision_id:
+            raise ValueError("typed assignment admission requires configuration revision")
+        configured_ids = {str(row.get("assignment_id") or "")
+                          for row in configuration.get("assignments") or []}
+        for admitted in typed_admission.drain_acknowledged(
+            configuration_revision_id=configuration_revision_id,
+            allowed_assignment_ids=configured_ids):
+            _install_runtime_assignment(state, admitted)
     existing = {row.assignment_id for row in state["strategy"].assignments()}
     for payload in configuration.get("assignments") or []:
-        if str(payload.get("assignment_id") or "") in existing:
+        assignment_id = str(payload.get("assignment_id") or "")
+        if assignment_id in existing:
             continue
+        if typed_admission is not None:
+            pending = typed_admission.pending_revision(assignment_id)
+            if pending is not None:
+                if pending != configuration_revision_id:
+                    raise ValueError("pending assignment belongs to another configuration revision")
+                continue
         assignment = _assignment(payload, bindings, configuration)
-        state["strategy"].upsert_assignment(assignment)
-        state["planner"].upsert_instrument(
-            InstrumentContract(
-                instrument_id=f"ibkr:{assignment.conid}",
-                conid=assignment.conid,
-                symbol=assignment.ticker,
-                security_type="STK",
-                currency="USD",
-                exchange="SMART",
-            )
+        if typed_admission is not None:
+            typed_admission.submit(assignment, configuration_revision_id=configuration_revision_id)
+        else:
+            _install_runtime_assignment(state, assignment)
+            trading_journal().save_strategy_assignment(assignment.payload())
+
+
+def _install_runtime_assignment(state: dict[str, Any], assignment: StrategyAssignment) -> None:
+    state["strategy"].upsert_assignment(assignment)
+    state["planner"].upsert_instrument(
+        InstrumentContract(
+            instrument_id=f"ibkr:{assignment.conid}", conid=assignment.conid,
+            symbol=assignment.ticker, security_type="STK", currency="USD", exchange="SMART",
         )
-        trading_journal().save_strategy_assignment(assignment.payload())
+    )
 
 
 def _assignment(

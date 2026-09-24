@@ -6398,7 +6398,7 @@ class ReplayRunController:
                       else self._journal.latest_sequence(self.run_id)),
             journal_batch_ids=(self._journal_publisher.committed_batch_ids if fixed_journal
                                else ()),
-            journal_backend="arte_clickhouse_v1" if fixed_journal else "sqlite_v1",
+            journal_backend="arte_typed_journal_v1" if fixed_journal else "sqlite_v1",
             journal_path="" if fixed_journal else str(self._journal.path),
             assignments=tuple(row[1] for row in frozen.values()),
             assignment_symbols=tuple(requested or ()),assignments_complete=complete,
@@ -8050,7 +8050,7 @@ class ReplayRunController:
                 else str(self.run_dir / "journal.sqlite3")
             ),
             "journal_backend": (
-                "arte_clickhouse_v1" if self.definition.mode == RunMode.BACKTEST
+                "arte_typed_journal_v1" if self.definition.mode == RunMode.BACKTEST
                 else "sqlite_v1"
             ),
         }
@@ -8290,6 +8290,11 @@ class ReplayRunService:
             raise KeyError(run_id)
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         backend = str(manifest.get("journal_backend") or "sqlite_v1")
+        if backend == "arte_typed_journal_v1":
+            raise ValueError(
+                "Typed Backtest saved review is not available until the normalized "
+                "journal reader and recovery views are complete"
+            )
         if backend == "arte_clickhouse_v1":
             from src.backend.backtest_review import ClickHouseSavedBacktestReview
             controller = await asyncio.to_thread(ClickHouseSavedBacktestReview, run_dir)

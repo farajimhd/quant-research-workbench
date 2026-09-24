@@ -18,6 +18,7 @@ import os
 import re
 from queue import Empty, Full, Queue
 from threading import Lock, Thread
+from time import perf_counter_ns
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 from uuid import UUID
@@ -1897,6 +1898,11 @@ class ArteJournalWriter:
         self._last_commit_id: str | None = None
         self._closed = False
         self._client_closed = False
+        self._metrics_lock = Lock()
+        self._committed_units = 0
+        self._failed_units = 0
+        self._publish_ns_total = 0
+        self._publish_ns_max = 0
         self._thread = Thread(target=self._run, name="arte-journal-writer", daemon=False)
         self._thread.start()
 
@@ -1915,6 +1921,19 @@ class ArteJournalWriter:
     @property
     def coalesce_batches(self) -> bool:
         return self._coalesce_batches
+
+    def metrics(self) -> dict[str, int | bool]:
+        """Cheap control-plane snapshot; never waits for the persistence worker."""
+        with self._metrics_lock:
+            return {
+                "queue_depth": self._queue.qsize(),
+                "queue_capacity": self._queue.maxsize,
+                "committed_units": self._committed_units,
+                "failed_units": self._failed_units,
+                "publish_ns_total": self._publish_ns_total,
+                "publish_ns_max": self._publish_ns_max,
+                "failed": self._error is not None,
+            }
 
     def submit(self, batch: TypedJournalBatch) -> Future[str]:
         """Enqueue without waiting; the receipt names the durable combined batch."""
@@ -2128,6 +2147,7 @@ class ArteJournalWriter:
                 else:
                     held = following
                     break
+            started_ns = perf_counter_ns()
             try:
                 if self._error is not None:
                     raise RuntimeError("Typed journal writer failed earlier") from self._error
@@ -2175,6 +2195,11 @@ class ArteJournalWriter:
                         snapshot = prepare_captured_portfolio_snapshot(snapshot)
                     committed_id = publish_prepared_portfolio_snapshot(self._client, snapshot)
                 self._last_commit_id = committed_id
+                elapsed_ns = perf_counter_ns() - started_ns
+                with self._metrics_lock:
+                    self._committed_units += len(group)
+                    self._publish_ns_total += elapsed_ns
+                    self._publish_ns_max = max(self._publish_ns_max, elapsed_ns)
                 for _, receipt in group:
                     if receipt.cancelled():
                         continue
@@ -2185,6 +2210,8 @@ class ArteJournalWriter:
                             raise
             except BaseException as exc:
                 self._error = exc
+                with self._metrics_lock:
+                    self._failed_units += len(group)
                 for _, receipt in group:
                     if not receipt.done():
                         try:

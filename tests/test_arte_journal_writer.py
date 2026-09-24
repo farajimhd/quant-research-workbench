@@ -890,9 +890,17 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
         with pytest.raises(JournalQueueFull):
             journal.submit(batch())
         assert not first.done() and not second.done()
+        pending = journal.metrics()
+        assert pending["queue_depth"] == 1
+        assert pending["committed_units"] == 0
+        assert not pending["failed"]
         release.set()
         assert UUID(first.result(timeout=5)) == UUID(BATCH)
         assert UUID(second.result(timeout=5)) == UUID(BATCH)
+        finished = journal.metrics()
+        assert finished["committed_units"] == 2
+        assert finished["failed_units"] == 0
+        assert finished["publish_ns_total"] >= finished["publish_ns_max"] > 0
     finally:
         release.set()
         journal.close()
@@ -1298,6 +1306,8 @@ def test_writer_failure_poisoning_is_visible_to_all_receipts(monkeypatch) -> Non
         first = journal.submit(batch())
         with pytest.raises(OSError, match="unavailable"):
             first.result(timeout=5)
+        assert journal.metrics()["failed_units"] == 1
+        assert journal.metrics()["failed"]
         with pytest.raises(RuntimeError, match="failed"):
             journal.submit(batch())
     finally:
