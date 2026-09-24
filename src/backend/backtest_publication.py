@@ -129,7 +129,13 @@ class BacktestPublication:
 def _open_publication_journal(packet):
     """Select the pinned journal authority without a disk fallback."""
     from pathlib import Path
-    if packet.get("journal_backend") == "arte_clickhouse_v1":
+    backend = packet.get("journal_backend")
+    if packet.get("run", {}).get("mode") == "backtest":
+        raise ValueError(
+            "Fixed Backtest monitoring requires a typed ClickHouse reader; "
+            "the retired bt_* reader and SQLite are not allowed"
+        )
+    if backend == "arte_clickhouse_v1":
         from src.backend.backtest_market_data import readonly_clickhouse_client
         from src.backend.backtest_journal_reader import BacktestJournalReader
         client = readonly_clickhouse_client()
@@ -143,7 +149,7 @@ def _open_publication_journal(packet):
             client.close()
             raise
         return journal, client.close
-    elif packet.get("journal_backend", "sqlite_v1") == "sqlite_v1":
+    elif (backend or "sqlite_v1") == "sqlite_v1":
         from src.trading_runtime.journal import TradingJournal
         journal = TradingJournal(Path(packet["journal_path"]), read_only=True)
         return journal, journal.close

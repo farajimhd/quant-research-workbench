@@ -39,6 +39,12 @@ def test_fixed_publication_uses_clickhouse_without_sqlite_fallback(monkeypatch):
     assert closed == [True]
     with pytest.raises(ValueError, match="Unknown"):
         _open_publication_journal({"journal_backend": "unsupported"})
+    with pytest.raises(ValueError, match="typed ClickHouse reader"):
+        _open_publication_journal({"run": {"mode": "backtest", "run_id": "run"},
+                                   "journal_path": "should-not-be-opened.sqlite3"})
+    with pytest.raises(ValueError, match="retired bt_"):
+        _open_publication_journal({"run": {"mode": "backtest", "run_id": "run"},
+                                   "journal_backend": "arte_clickhouse_v1"})
 
 
 def slow_render(packet):
@@ -107,7 +113,7 @@ class PublicationTests(IsolatedAsyncioTestCase):
                             await broker.place_orders('SIM', [OrderRequest(acctId='SIM', conid=265598,
                                 cOID=f'order-{i}', ticker='AAPL', orderType='MKT', side='BUY' if i == 0 else 'SELL', quantity=10)])
                         if publication:
-                            publication.publish(dict(run=dict(run_id=runtime.run_id, mode='backtest', status='running',
+                            publication.publish(dict(run=dict(run_id=runtime.run_id, mode='backtest_debug', status='running',
                                 current_time=event.ts.isoformat(), updated_at=str(i)), snapshot=runtime.projected_snapshot(as_of=event.ts),
                                 sequence=journal.latest_sequence(runtime.run_id), journal_path=str(journal.path),
                                 assignments=(), configuration={}, automatic=False, performance_extrema=broker.performance_extrema()))
