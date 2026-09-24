@@ -197,7 +197,8 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
         self.assertEqual(restored["batch_ids"], (batch.batch_id,))
         self.assertEqual(restored["sequence"], 2)
         self.assertEqual(restored["state"], {"broker": {"cash": 100}})
-        self.assertTrue(all("storage_policy='live_market_ssd'" in sql for sql in schema_ddl()))
+        with self.assertRaisesRegex(RuntimeError, "retired"):
+            schema_ddl()
         next_batch = prepare_batch(records=[record(3)], attempt_id=ATTEMPT,
                                    run_date=date(2026, 8, 18))
         with self.assertRaisesRegex(ValueError, "predecessor"):

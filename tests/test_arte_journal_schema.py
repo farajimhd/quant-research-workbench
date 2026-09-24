@@ -1,4 +1,8 @@
-from src.trading_runtime.arte_journal_schema import TABLES, schema_ddl
+import json
+
+import pytest
+
+from src.trading_runtime.arte_journal_schema import TABLES, schema_ddl, storage_preflight
 
 
 def test_operator_schema_has_typed_arte_tables_on_market_ssd() -> None:
@@ -25,3 +29,34 @@ def test_shared_event_and_execution_contract_uses_lossless_identifiers() -> None
     assert columns["trading_execution_v1"]["quantity"] == "Decimal(38, 10)"
     assert columns["trading_execution_v1"]["price"] == "Decimal(38, 10)"
     assert columns["trading_commission_v1"]["commission"] == "Decimal(38, 10)"
+
+
+def test_preflight_requires_exact_layout_and_actual_ssd_parts() -> None:
+    class Catalog:
+        def __init__(self) -> None:
+            self.wrong_disk = False
+
+        def execute(self, sql: str) -> str:
+            if "FROM system.storage_policies" in sql:
+                rows = [{"disks": ["live_market_ssd"]}]
+            elif "FROM system.tables" in sql:
+                rows = [{"name": table.name, "engine": "MergeTree",
+                         "storage_policy": "live_market_ssd",
+                         "partition_key": table.partition, "sorting_key": table.order}
+                        for table in TABLES]
+            elif "FROM system.columns" in sql:
+                rows = [{"table": table.name, "name": name, "type": kind}
+                        for table in sorted(TABLES, key=lambda item: item.name)
+                        for name, kind in table.columns]
+            elif "FROM system.parts" in sql:
+                rows = ([{"table": TABLES[0].name, "disk_name": "default"}]
+                        if self.wrong_disk else [])
+            else:
+                raise AssertionError(sql)
+            return "\n".join(json.dumps(row) for row in rows)
+
+    client = Catalog()
+    storage_preflight(client)
+    client.wrong_disk = True
+    with pytest.raises(ValueError, match="outside live_market_ssd"):
+        storage_preflight(client)

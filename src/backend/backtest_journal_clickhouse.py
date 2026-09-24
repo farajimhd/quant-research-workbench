@@ -99,41 +99,9 @@ def backtest_code_hash(root: Path) -> str:
 
 
 def schema_ddl() -> tuple[str, ...]:
-    """DDL for the separately authorized schema owner; never called by Backtest."""
-    return (
-        """CREATE TABLE IF NOT EXISTS arte.bt_run_v1 (
-            run_id UUID, run_month Date, contract_version LowCardinality(String),
-            definition_hash FixedString(64),
-            configuration_hash FixedString(64), market_plan_token String,
-            v7_plan_token String, code_hash FixedString(64),
-            created_at DateTime64(6, 'UTC'))
-            ENGINE=MergeTree PARTITION BY toYYYYMM(run_month)
-            ORDER BY (run_id) SETTINGS storage_policy='live_market_ssd'""",
-        """CREATE TABLE IF NOT EXISTS arte.bt_event_v1 (
-            run_id UUID, run_month Date, attempt_id UUID, batch_id UUID,
-            record_id UUID, sequence UInt64, event_time DateTime64(9, 'UTC'),
-            recorded_at DateTime64(6, 'UTC'), category LowCardinality(String),
-            entity_type LowCardinality(String), entity_id String, account_id String,
-            payload_hash FixedString(64), payload_json String CODEC(ZSTD(3)))
-            ENGINE=MergeTree PARTITION BY toYYYYMM(run_month)
-            ORDER BY (run_id, attempt_id, sequence, batch_id)
-            SETTINGS storage_policy='live_market_ssd'""",
-        """CREATE TABLE IF NOT EXISTS arte.bt_blob_v1 (
-            sha256 FixedString(64), kind LowCardinality(String), raw_bytes UInt64,
-            payload_json String CODEC(ZSTD(3)), created_at DateTime64(6, 'UTC'))
-            ENGINE=MergeTree PARTITION BY cityHash64(sha256) % 16
-            ORDER BY (sha256) SETTINGS storage_policy='live_market_ssd'""",
-        """CREATE TABLE IF NOT EXISTS arte.bt_commit_v1 (
-            run_id UUID, run_month Date, attempt_id UUID, fence_id UUID,
-            prior_fence_id UUID,
-            first_sequence UInt64, last_sequence UInt64, event_count UInt32,
-            batch_ids Array(UUID),
-            batch_hash FixedString(64), checkpoint_hash FixedString(64),
-            source_cursor String, status LowCardinality(String),
-            committed_at DateTime64(6, 'UTC'), contract_version LowCardinality(String))
-            ENGINE=MergeTree PARTITION BY toYYYYMM(run_month)
-            ORDER BY (run_id, attempt_id, last_sequence, fence_id)
-            SETTINGS storage_policy='live_market_ssd'""",
+    """Never recreate the retired opaque-payload Backtest journal tables."""
+    raise RuntimeError(
+        "arte.bt_* journal tables were retired; use the typed arte trading journal contract"
     )
 
 

@@ -7,6 +7,8 @@ envelope and execution foundation; they are not yet a complete recovery schema.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from typing import Any
 
 
 STORAGE_POLICY = "live_market_ssd"
@@ -142,3 +144,43 @@ TABLES = (
 def schema_ddl() -> tuple[str, ...]:
     """Return DDL for a separately authorized installer, never run it here."""
     return tuple(table.ddl() for table in TABLES)
+
+
+def _rows(client: Any, query: str) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in client.execute(query).splitlines() if line.strip()]
+
+
+def storage_preflight(client: Any) -> None:
+    """Verify the exact typed schema and physical placement without writes."""
+    policies = _rows(client,
+        "SELECT disks FROM system.storage_policies "
+        "WHERE policy_name='live_market_ssd' FORMAT JSONEachRow")
+    if len(policies) != 1 or policies[0].get("disks") != [STORAGE_POLICY]:
+        raise ValueError("Typed journal requires an SSD-only live_market_ssd policy")
+    names = ",".join(f"'{table.name}'" for table in TABLES)
+    actual_tables = _rows(client,
+        "SELECT name,engine,storage_policy,partition_key,sorting_key FROM system.tables "
+        f"WHERE database='arte' AND name IN ({names}) FORMAT JSONEachRow")
+    by_name = {row["name"]: row for row in actual_tables}
+    if set(by_name) != {table.name for table in TABLES}:
+        raise ValueError("Typed journal tables are missing")
+    for table in TABLES:
+        row = by_name[table.name]
+        if (row["engine"], row["storage_policy"], row["partition_key"],
+                row["sorting_key"]) != (
+                    "MergeTree", STORAGE_POLICY, table.partition, table.order):
+            raise ValueError(f"Typed journal layout differs: {table.name}")
+    actual_columns = _rows(client,
+        "SELECT table,name,type FROM system.columns WHERE database='arte' "
+        f"AND table IN ({names}) ORDER BY table,position FORMAT JSONEachRow")
+    for table in TABLES:
+        columns = tuple((row["name"], row["type"])
+                        for row in actual_columns if row["table"] == table.name)
+        if columns != table.columns:
+            raise ValueError(f"Typed journal columns differ: {table.name}")
+    bad_parts = _rows(client,
+        "SELECT table,disk_name FROM system.parts WHERE database='arte' "
+        f"AND table IN ({names}) AND active AND disk_name!='live_market_ssd' "
+        "LIMIT 1 FORMAT JSONEachRow")
+    if bad_parts:
+        raise ValueError("Typed journal has active parts outside live_market_ssd")
