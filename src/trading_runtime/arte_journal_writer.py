@@ -13,7 +13,7 @@ from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
 import re
-from queue import Full, Queue
+from queue import Empty, Full, Queue
 from threading import Thread
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -195,6 +195,45 @@ class CommittedPrefix:
     source_cursor: str
     status: str
     batch_ids: tuple[str, ...]
+
+
+def _can_coalesce(left: TypedJournalBatch, right: TypedJournalBatch,
+                  max_events: int) -> bool:
+    return (
+        left.status == "running"
+        and left.run_id == right.run_id
+        and left.run_month == right.run_month
+        and left.attempt_id == right.attempt_id
+        and right.prior_batch_id == left.batch_id
+        and right.first_sequence == left.last_sequence + 1
+        and right.last_sequence - left.first_sequence + 1 <= max_events
+    )
+
+
+def _coalesce_unpublished(batches: tuple[TypedJournalBatch, ...]) -> TypedJournalBatch:
+    """Rekey contiguous unpublished microbatches under the final batch ID."""
+    if not batches:
+        raise ValueError("Cannot coalesce an empty journal batch")
+    for prior, current in zip(batches, batches[1:]):
+        if not _can_coalesce(prior, current, 2**64 - 1):
+            raise ValueError("Journal microbatches are not contiguous")
+    if len(batches) == 1:
+        return batches[0]
+    last = batches[-1]
+    families: dict[str, tuple[dict[str, Any], ...]] = {}
+    for _, attribute, _, _ in _FAMILIES:
+        families[attribute] = tuple(
+            {**{key: value for key, value in row.items() if key != "content_hash"},
+             "batch_id": last.batch_id}
+            for batch in batches for row in getattr(batch, attribute)
+        )
+    return TypedJournalBatch(
+        batches[0].run_id, batches[0].run_month, batches[0].attempt_id,
+        last.batch_id, batches[0].prior_batch_id,
+        batches[0].first_sequence, last.last_sequence,
+        last.source_cursor, last.status,
+        **families,
+    )
 
 
 def typed_row(values: Mapping[str, Any]) -> dict[str, Any]:
@@ -457,15 +496,17 @@ def load_committed_prefix(client: Any, run_id: str) -> CommittedPrefix | None:
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 
-    def __init__(self, client: Any, *, run_id: str, capacity: int = 8) -> None:
-        if capacity < 1:
-            raise ValueError("Journal queue capacity must be positive")
+    def __init__(self, client: Any, *, run_id: str, capacity: int = 8,
+                 max_events_per_commit: int = 4096) -> None:
+        if capacity < 1 or max_events_per_commit < 1:
+            raise ValueError("Journal queue capacity and commit bound must be positive")
         # Startup/control-plane validation, before a publication thread exists.
         # Never attempt to create tables or repair misplaced parts here.
         storage_preflight(client)
         _verify_run_identity(client, run_id)
         self._client = client
         self._run_id = run_id
+        self._max_events_per_commit = max_events_per_commit
         self._queue: Queue[tuple[TypedJournalBatch, Future[str]] | None] = Queue(maxsize=capacity)
         self._error: BaseException | None = None
         self._closed = False
@@ -473,7 +514,7 @@ class ArteJournalWriter:
         self._thread.start()
 
     def submit(self, batch: TypedJournalBatch) -> Future[str]:
-        """Never wait for network I/O or free queue space on the caller thread."""
+        """Enqueue without waiting; the receipt names the durable combined batch."""
         if self._closed:
             raise RuntimeError("Typed journal writer is closed")
         if self._error is not None:
@@ -488,22 +529,47 @@ class ArteJournalWriter:
         return receipt
 
     def _run(self) -> None:
+        held: tuple[TypedJournalBatch, Future[str]] | None = None
         while True:
-            item = self._queue.get()
-            try:
-                if item is None:
-                    return
-                batch, receipt = item
-                if self._error is not None:
-                    receipt.set_exception(RuntimeError("Typed journal writer failed earlier"))
-                    continue
+            item = held if held is not None else self._queue.get()
+            held = None
+            if item is None:
+                self._queue.task_done()
+                return
+            group = [item]
+            stopping = False
+            while True:
                 try:
-                    receipt.set_result(publish_typed_batch(self._client, batch))
-                except BaseException as exc:
-                    self._error = exc
+                    following = self._queue.get_nowait()
+                except Empty:
+                    break
+                if following is None:
+                    stopping = True
+                    break
+                if (_can_coalesce(group[-1][0], following[0], self._max_events_per_commit)
+                        and following[0].last_sequence - group[0][0].first_sequence + 1
+                        <= self._max_events_per_commit):
+                    group.append(following)
+                else:
+                    held = following
+                    break
+            try:
+                if self._error is not None:
+                    raise RuntimeError("Typed journal writer failed earlier") from self._error
+                batch = _coalesce_unpublished(tuple(row for row, _ in group))
+                committed_id = publish_typed_batch(self._client, batch)
+                for _, receipt in group:
+                    receipt.set_result(committed_id)
+            except BaseException as exc:
+                self._error = exc
+                for _, receipt in group:
                     receipt.set_exception(exc)
             finally:
+                for _ in group:
+                    self._queue.task_done()
+            if stopping:
                 self._queue.task_done()
+                return
 
     def close(self) -> None:
         """Drain only from a control-plane shutdown, never a market callback."""

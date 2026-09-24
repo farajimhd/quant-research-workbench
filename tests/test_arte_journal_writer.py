@@ -327,6 +327,54 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
         journal.close()
 
 
+def test_writer_coalesces_only_contiguous_unpublished_batches(monkeypatch) -> None:
+    entered, release = Event(), Event()
+    published = []
+    ids = ["00000000-0000-0000-0000-000000000021",
+           "00000000-0000-0000-0000-000000000022",
+           "00000000-0000-0000-0000-000000000023"]
+
+    def micro(sequence: int) -> TypedJournalBatch:
+        event = dict(batch().events[0])
+        event.pop("content_hash")
+        event.update(batch_id=ids[sequence - 1], sequence=sequence,
+                     record_id=f"00000000-0000-0000-0000-{sequence:012d}")
+        return TypedJournalBatch(
+            RUN, date(2026, 8, 1), ATTEMPT, ids[sequence - 1],
+            ids[sequence - 2] if sequence > 1 else ZERO,
+            sequence, sequence, f"bucket-{sequence}",
+            "completed" if sequence == 3 else "running", (event,),
+        )
+
+    def record(_client, item):
+        if item.first_sequence == 1:
+            entered.set()
+            assert release.wait(5)
+        writer_module._sealed_families(item)
+        published.append(item)
+        return item.batch_id
+
+    monkeypatch.setattr(writer_module, "publish_typed_batch", record)
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=3)
+    try:
+        first = journal.submit(micro(1))
+        assert entered.wait(5)
+        second = journal.submit(micro(2))
+        third = journal.submit(micro(3))
+        assert not second.done() and not third.done()
+        release.set()
+        assert first.result(timeout=5) == ids[0]
+        assert second.result(timeout=5) == third.result(timeout=5) == ids[2]
+        assert [(row.first_sequence, row.last_sequence, row.batch_id)
+                for row in published] == [(1, 1, ids[0]), (2, 3, ids[2])]
+        assert [row["batch_id"] for row in published[1].events] == [ids[2], ids[2]]
+    finally:
+        release.set()
+        journal.close()
+
+
 def test_writer_failure_poisoning_is_visible_to_all_receipts(monkeypatch) -> None:
     def rejected(_client, _batch):
         raise OSError("ClickHouse unavailable")
