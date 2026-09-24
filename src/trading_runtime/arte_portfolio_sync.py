@@ -55,6 +55,7 @@ def load_fenced_portfolio_sync(client: Any, *, run_id: str, account_id: str,
     if sha256(canonical_json(content).encode("utf-8")).hexdigest() != str(row["content_hash"]):
         raise RuntimeError("Portfolio sync fence content hash differs")
     commits = _rows(client, "SELECT attempt_id,first_sequence,last_sequence,"
+                    "event_count,event_hash,"
                     "portfolio_reconciliation_event_count,portfolio_reconciliation_event_hash "
                     "FROM arte.trading_commit_v1 "
                     f"WHERE run_id={_literal(run_id)} AND batch_id=toUUID({_literal(str(content['batch_id']))}) "
@@ -62,8 +63,30 @@ def load_fenced_portfolio_sync(client: Any, *, run_id: str, account_id: str,
     if (len(commits) != 1 or str(commits[0]["attempt_id"]) != str(content["attempt_id"])
             or int(commits[0]["first_sequence"]) != int(content["first_sequence"])
             or int(commits[0]["last_sequence"]) != int(content["last_sequence"])
+            or int(commits[0]["event_count"]) != 1
+            or int(content["first_sequence"]) != int(content["last_sequence"])
             or int(commits[0]["portfolio_reconciliation_event_count"]) != 1):
         raise RuntimeError("Portfolio sync fence lacks committed reconciliation event")
+    events = _rows(client, "SELECT * FROM arte.trading_event_v1 "
+                   f"WHERE run_id={_literal(run_id)} AND batch_id=toUUID({_literal(str(content['batch_id']))}) "
+                   "FORMAT JSONEachRow")
+    if len(events) != 1:
+        raise RuntimeError("Portfolio sync fence lacks its causal journal event")
+    event = events[0]
+    canonical_event = _canonical_typed_content(
+        "trading_event_v1",
+        {key: value for key, value in event.items() if key != "content_hash"},
+        stored_utc=True)
+    if (sha256(canonical_json(canonical_event).encode("utf-8")).hexdigest()
+            != event["content_hash"]
+            or sha256(canonical_json(_identity(events)).encode("utf-8")).hexdigest()
+            != commits[0]["event_hash"]
+            or event["category"] != "portfolio_management"
+            or event["entity_type"] != "portfolio_reconciliation"
+            or event["account_id"] != account_id
+            or str(event["attempt_id"]) != str(content["attempt_id"])
+            or int(event["sequence"]) != int(content["first_sequence"])):
+        raise RuntimeError("Portfolio sync causal journal event is not sealed")
     details = _rows(client, "SELECT * FROM arte.trading_portfolio_reconciliation_event_v1 "
                     f"WHERE run_id={_literal(run_id)} AND batch_id=toUUID({_literal(str(content['batch_id']))}) "
                     "FORMAT JSONEachRow")
@@ -78,7 +101,10 @@ def load_fenced_portfolio_sync(client: Any, *, run_id: str, account_id: str,
             != detail["content_hash"]
             or sha256(canonical_json(_identity(details)).encode("utf-8")).hexdigest()
             != commits[0]["portfolio_reconciliation_event_hash"]
-            or detail["account_id"] != account_id):
+            or detail["account_id"] != account_id
+            or str(detail["record_id"]) != str(event["record_id"])
+            or detail["account_key"] != event["entity_id"]
+            or canonical_detail["source_event_time"] != canonical_event["event_time"]):
         raise RuntimeError("Portfolio sync reconciliation detail is not sealed")
     snapshot = load_portfolio_snapshot(
         client, run_id=run_id, account_id=account_id, state_revision=state_revision)
