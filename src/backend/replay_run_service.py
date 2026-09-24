@@ -8200,32 +8200,7 @@ class ReplayRunService:
             # In particular, never open its legacy SQLite journal or retired
             # bt_* ClickHouse tables before start() rejects execution.
             raise RuntimeError(_backtest_launch_blocker(definition))
-        resume_prefix: dict[str, Any] | None = None
-        if backend == "arte_clickhouse_v1" and definition.mode == RunMode.BACKTEST:
-            from src.backend.backtest_journal_clickhouse import (
-                backtest_code_hash, load_fenced_checkpoint, verify_run_identity,
-            )
-            from src.backend.backtest_market_data import readonly_clickhouse_client
-            with closing(readonly_clickhouse_client()) as client:
-                await asyncio.to_thread(verify_run_identity, client,
-                    run_id=normalized, definition=definition.payload(),
-                    configuration_hash=str(definition.configuration_revision.get("content_hash") or ""),
-                    code_hash=await asyncio.to_thread(
-                        backtest_code_hash, Path(__file__).resolve().parents[2]))
-                checkpoint = await asyncio.to_thread(load_fenced_checkpoint, client, normalized)
-            if checkpoint is None:
-                raise ValueError("Fixed Backtest has no verified ClickHouse recovery fence")
-            if checkpoint["status"] == "completed":
-                raise ValueError("Completed historical runs cannot be resumed")
-            state = dict(checkpoint["state"])
-            cursor = json.loads(checkpoint["source_cursor"])
-            if (cursor.get("market") != dict(state.get("controller") or {}).get("source_cursor")
-                    or cursor.get("frame") != dict(state.get("controller") or {}).get("frame_cursor")
-                    or not isinstance(state.get("journal_command"), dict)):
-                raise ValueError("Fixed Backtest fence and command checkpoint disagree")
-            resume_prefix = {key: checkpoint[key] for key in
-                             ("sequence", "fence_id", "batch_ids")}
-        elif backend == "sqlite_v1" and journal_path.is_file():
+        if backend == "sqlite_v1" and journal_path.is_file():
             journal = TradingJournal(journal_path)
             try:
                 persisted = journal.load_checkpoint(normalized)
@@ -8234,15 +8209,14 @@ class ReplayRunService:
             state = dict((persisted or {}).get("state") or {})
         else:
             raise KeyError(run_id)
-        if (prior_status == "failed" or
-                (backend == "arte_clickhouse_v1" and checkpoint["status"] == "failed")) and state.get("processing_boundary_version") != 1:
+        if prior_status == "failed" and state.get("processing_boundary_version") != 1:
             raise ValueError("Failed historical run lacks a certified processing boundary; start a new run")
         if (
             int(state.get("schema_version") or 0) != RESTART_CHECKPOINT_SCHEMA_VERSION
             or not bool(state.get("complete"))
         ):
             raise ValueError("Historical run has no complete restart-safe checkpoint")
-        if backend != "arte_clickhouse_v1" and not _checkpoint_has_strategy_observations(state):
+        if not _checkpoint_has_strategy_observations(state):
             raise ValueError("Restart checkpoint lacks causal strategy observations; start a new run")
         # Reject legacy or corrupt liquidity state before constructing a controller
         # that can rewrite the manifest or append lifecycle events to this run.
@@ -8277,7 +8251,6 @@ class ReplayRunService:
             run_id=normalized,
             runtime_root=self.runtime_root,
             resume_state=state,
-            resume_journal_prefix=resume_prefix,
         )
         await self._admit(controller)
         await controller.start()
