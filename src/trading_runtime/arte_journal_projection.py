@@ -74,8 +74,79 @@ def project_journal_record(
     if kind in {("strategy_decision", "intent_rejection"),
                 ("strategy_decision", "intent_deferral")}:
         return intent_decision_batch(record, **identity)
+    if kind == ("checkpoint", "market_boundary"):
+        return backtest_cursor_batch(record, **identity)
     raise ValueError(
         f"Journal record {record.category}/{record.entity_type} lacks a typed projection"
+    )
+
+
+def backtest_cursor_batch(
+    record: JournalRecord, *, run_month: date, attempt_id: str,
+    batch_id: str, prior_batch_id: str, source_cursor: str,
+) -> TypedJournalBatch:
+    """Normalize a completed fixed Backtest market/frame cursor."""
+    if ((record.category, record.entity_type) != ("checkpoint", "market_boundary")
+            or record.account_id or record.event_time.tzinfo is None
+            or record.recorded_at.tzinfo is None):
+        raise ValueError("Backtest cursor envelope is invalid")
+    payload = dict(record.payload)
+    required = {"session_date", "boundary_ms", "market_sequence",
+                "frame_as_of", "frame_ticker", "frame_timeframe", "frame_sequence"}
+    if set(payload) - {"correlation_id", "causation_id"} != required:
+        raise ValueError("Backtest cursor has missing or unmodeled fields")
+    day = payload["session_date"]
+    if isinstance(day, str):
+        day = date.fromisoformat(day)
+    if not isinstance(day, date) or isinstance(day, datetime):
+        raise ValueError("Backtest cursor session date is invalid")
+    boundary = payload["boundary_ms"]
+    market_sequence = payload["market_sequence"]
+    if (type(boundary) is not int or not 0 <= boundary < 86_400_000
+            or type(market_sequence) is not int or market_sequence < 0
+            or record.entity_id != f"{day.isoformat()}:{boundary}"
+            or source_cursor != record.entity_id):
+        raise ValueError("Backtest market boundary identity is invalid")
+    frame = tuple(payload[key] for key in (
+        "frame_as_of", "frame_ticker", "frame_timeframe", "frame_sequence"))
+    if any(value is not None for value in frame):
+        if (any(value is None for value in frame)
+                or not isinstance(frame[0], str)
+                or not isinstance(frame[1], str) or not frame[1]
+                or not isinstance(frame[2], str) or not frame[2]
+                or type(frame[3]) is not int or frame[3] < 0):
+            raise ValueError("Backtest frame cursor is incomplete")
+        frame_at = datetime.fromisoformat(frame[0])
+        if (frame_at.tzinfo is None
+                or frame_at.astimezone(timezone.utc) > record.event_time.astimezone(timezone.utc)):
+            raise ValueError("Backtest frame cursor is not causal")
+    else:
+        frame_at = None
+    at = record.event_time.astimezone(timezone.utc).isoformat()
+    event_month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+    event = {
+        "run_id": record.run_id, "event_month": event_month,
+        "attempt_id": attempt_id, "batch_id": batch_id,
+        "record_id": record.record_id, "sequence": record.sequence,
+        "event_time": at, "recorded_at": record.recorded_at.astimezone(timezone.utc).isoformat(),
+        "category": "checkpoint", "entity_type": "market_boundary",
+        "entity_id": record.entity_id, "account_id": "",
+        "correlation_id": str(payload.get("correlation_id") or ""),
+        "causation_id": str(payload.get("causation_id") or ""),
+    }
+    cursor = {
+        "record_id": record.record_id, "run_id": record.run_id,
+        "event_month": event_month, "batch_id": batch_id, "account_id": "",
+        "session_date": day.isoformat(), "boundary_ms": boundary,
+        "market_sequence": market_sequence,
+        "frame_as_of": frame_at.astimezone(timezone.utc).isoformat() if frame_at else None,
+        "frame_ticker": frame[1], "frame_timeframe": frame[2],
+        "frame_sequence": frame[3],
+    }
+    return TypedJournalBatch(
+        record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        record.sequence, record.sequence, source_cursor, "running", (event,),
+        backtest_cursors=(cursor,),
     )
 
 

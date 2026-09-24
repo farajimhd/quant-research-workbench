@@ -5,12 +5,12 @@ from decimal import Decimal
 import pytest
 
 from src.trading_runtime.arte_journal_projection import (
-    broker_fill_batch, broker_fill_details, commission_revision_batch,
+    backtest_cursor_batch, broker_fill_batch, broker_fill_details, commission_revision_batch,
     order_command_batch, project_journal_record, strategy_signal_batch,
 )
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import (
-    TypedJournalBatch, _sealed_families, publish_typed_batch,
+    TypedJournalBatch, _sealed_families, load_committed_prefix, publish_typed_batch,
 )
 from src.trading_runtime.ibkr_client import _execution
 from src.trading_runtime.ibkr_schema import OrderRequest
@@ -47,6 +47,41 @@ def test_shared_record_projection_is_typed_and_rejects_unknown_payloads() -> Non
             payload={"unmodeled": {"nested": True}}), **identity)
     with pytest.raises(ValueError, match="pinned typed configuration"):
         project_journal_record(record, **identity)
+
+
+def test_backtest_cursor_is_normalized_and_causal() -> None:
+    record = JournalRecord(
+        "00000000-0000-0000-0000-000000000023", "backtest-1", 1,
+        AT, AT, "checkpoint", "market_boundary", "2026-08-18:300000", "",
+        {"session_date": "2026-08-18", "boundary_ms": 300000,
+         "market_sequence": 700, "frame_as_of": AT.isoformat(),
+         "frame_ticker": "TEST", "frame_timeframe": "100ms",
+         "frame_sequence": 33},
+    )
+    identity = dict(run_month=date(2026, 8, 1),
+                    attempt_id="00000000-0000-0000-0000-000000000021",
+                    batch_id="00000000-0000-0000-0000-000000000022",
+                    prior_batch_id="00000000-0000-0000-0000-000000000000",
+                    source_cursor="2026-08-18:300000")
+    batch = backtest_cursor_batch(record, **identity)
+    assert batch.backtest_cursors[0]["market_sequence"] == 700
+    assert dict(_sealed_families(batch))["trading_backtest_cursor_v1"]
+    client = MemoryClient()
+    assert publish_typed_batch(client, batch) == identity["batch_id"]
+    assert client.inserts == ["trading_event_v1", "trading_backtest_cursor_v1",
+                              "trading_commit_v1"]
+    assert load_committed_prefix(client, record.run_id).last_sequence == 1
+    client.tables["trading_backtest_cursor_v1"][0]["market_sequence"] = 701
+    with pytest.raises(RuntimeError, match="differs from its hash"):
+        load_committed_prefix(client, record.run_id)
+    with pytest.raises(ValueError, match="not causal"):
+        backtest_cursor_batch(replace(record, payload={
+            **record.payload, "frame_as_of": "2026-08-18T08:05:00.100000+00:00",
+        }), **identity)
+    with pytest.raises(ValueError, match="unmodeled"):
+        backtest_cursor_batch(replace(record, payload={
+            **record.payload, "checkpoint_json": "{}",
+        }), **identity)
 
 
 def test_simple_order_command_preserves_every_broker_instruction() -> None:

@@ -73,6 +73,8 @@ _FAMILIES = (
     ("trading_strategy_intent_v1", "intents", "intent_count", "intent_hash"),
     ("trading_intent_protection_slice_v1", "intent_slices", "intent_slice_count",
      "intent_slice_hash"),
+    ("trading_backtest_cursor_v1", "backtest_cursors", "backtest_cursor_count",
+     "backtest_cursor_hash"),
 )
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 _EVENT_DETAILS = {
@@ -85,6 +87,7 @@ _EVENT_DETAILS = {
     ("risk", "continuous_risk_state"): "trading_account_risk_state_v1",
     ("strategy_decision", "signal"): "trading_strategy_signal_v1",
     ("strategy", "strategy_intent"): "trading_strategy_intent_v1",
+    ("checkpoint", "market_boundary"): "trading_backtest_cursor_v1",
     ("strategy_decision", "intent_rejection"): "trading_intent_decision_v1",
     ("strategy_decision", "intent_deferral"): "trading_intent_decision_v1",
     ("execution", "fill"): "trading_execution_v1",
@@ -159,6 +162,7 @@ class TypedJournalBatch:
     position_snapshots: tuple[Mapping[str, Any], ...] = ()
     intents: tuple[Mapping[str, Any], ...] = ()
     intent_slices: tuple[Mapping[str, Any], ...] = ()
+    backtest_cursors: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.run_id or self.first_sequence < 1 or self.last_sequence < self.first_sequence:

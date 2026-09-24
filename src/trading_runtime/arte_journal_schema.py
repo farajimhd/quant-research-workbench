@@ -842,6 +842,19 @@ TABLES = (
         "toYYYYMM(event_month)", "run_id, parent_record_id, ordinal, record_id",
     ),
     TableContract(
+        "trading_backtest_cursor_v1",
+        (("record_id", "UUID"), ("run_id", "String"),
+         ("event_month", "Date"), ("batch_id", "UUID"),
+         ("account_id", "String"), ("session_date", "Date"),
+         ("boundary_ms", "UInt32"), ("market_sequence", "UInt64"),
+         ("frame_as_of", "Nullable(DateTime64(6, 'UTC'))"),
+         ("frame_ticker", "Nullable(String)"),
+         ("frame_timeframe", "Nullable(String)"),
+         ("frame_sequence", "Nullable(UInt64)"),
+         ("content_hash", "FixedString(64)")),
+        "toYYYYMM(event_month)", "run_id, event_month, record_id",
+    ),
+    TableContract(
         "trading_commit_v1",
         (
             ("run_id", "String"),
@@ -873,6 +886,8 @@ TABLES = (
             ("intent_slice_count", "UInt32"),
             ("intent_hash", "FixedString(64)"),
             ("intent_slice_hash", "FixedString(64)"),
+            ("backtest_cursor_count", "UInt32"),
+            ("backtest_cursor_hash", "FixedString(64)"),
             ("order_context_count", "UInt32"),
             ("order_context_hash", "FixedString(64)"),
             ("oms_group_state_count", "UInt32"),
@@ -911,6 +926,20 @@ TABLES = (
 def schema_ddl() -> tuple[str, ...]:
     """Return DDL for a separately authorized installer, never run it here."""
     return tuple(table.ddl() for table in TABLES)
+
+
+def backtest_cursor_upgrade_ddl() -> tuple[str, ...]:
+    """Operator-only additive typed Backtest cursor and commit-fence fields."""
+    by_name = {table.name: table for table in TABLES}
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        by_name["trading_backtest_cursor_v1"].ddl(),
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        "backtest_cursor_count UInt32 DEFAULT 0 AFTER intent_slice_hash",
+        "ALTER TABLE arte.trading_commit_v1 ADD COLUMN IF NOT EXISTS "
+        f"backtest_cursor_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER backtest_cursor_count",
+    )
 
 
 def portfolio_policy_schema_upgrade_ddl() -> tuple[str, ...]:
