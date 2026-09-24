@@ -54,6 +54,18 @@ class _MisalignedIndicatorClient(_ReadClient):
         return json.dumps(row) + "\n"
 
 
+class _QuoteOnlyReadClient(_ReadClient):
+    def execute(self, sql: str) -> str:
+        if "arte.indicators_v1" in sql:
+            self.queries.append(sql)
+            return ""
+        row = json.loads(super().execute(sql))
+        if "arte.bars_v1" in sql:
+            row["eligible_keys"] = 0
+            row["key_hash"] = "0"
+        return json.dumps(row) + "\n"
+
+
 class BacktestMarketDataTests(unittest.TestCase):
     def test_projection_preserves_parent_attempts_and_changes_token(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -293,6 +305,20 @@ class BacktestMarketDataTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "indicator.*key coverage"):
                 verify_market_day_plan(plan, _MisalignedIndicatorClient())
+
+    def test_quote_only_session_allows_zero_indicators(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = self._ledger(Path(directory))
+            connection = sqlite3.connect(ledger.path)
+            connection.execute(
+                "UPDATE units SET output_rows=0,output_hash='0' WHERE stage='technical'")
+            connection.commit()
+            connection.close()
+            plan = ledger.certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+            verify_market_day_plan(plan, _QuoteOnlyReadClient())
 
     def test_incomplete_full_population_fails_instead_of_shrinking(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

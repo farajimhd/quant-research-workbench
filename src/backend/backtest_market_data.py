@@ -451,6 +451,11 @@ def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None) -> None:
                                 f"{day} {unit.ticker} expected {unit.output_rows} rows, "
                                 f"found {count}"
                             )
+                        if stage in {"bars", "technical"}:
+                            indicator_keys[(day, unit.ticker, stage)] = (
+                                int(row["eligible_keys"]) if row else 0,
+                                str(row["key_hash"]) if row else "0",
+                            )
                         if row and stage in {"bars", "technical"}:
                             missing = set(plan.required_resolutions_ms).difference(
                                 int(value) for value in row["resolutions"]
@@ -460,9 +465,6 @@ def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None) -> None:
                                     f"Persisted {ARTE_DATABASE}.{table} lacks {day} "
                                     f"{unit.ticker} resolutions {sorted(missing)}"
                                 )
-                            key = (day, unit.ticker, stage)
-                            indicator_keys[key] = (
-                                int(row["eligible_keys"]), str(row["key_hash"]))
         for day, ticker in sorted({(unit.session_date, unit.ticker) for unit in plan.units}):
             if indicator_keys.get((day, ticker, "bars")) != indicator_keys.get(
                 (day, ticker, "technical")):
