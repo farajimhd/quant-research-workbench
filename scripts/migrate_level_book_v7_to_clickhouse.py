@@ -220,13 +220,15 @@ def migrate_ticker(path: Path, plan_hash: str, batch_rows: int, batch_bytes: int
     compact_total_seconds = time.monotonic() - compact_started
     receipts_started = time.monotonic()
     coverage_by_day = {row["session_date"]: row for row in coverage}
-    level_count = 0
-    interval_count = 0
+    carried = {
+        "level_count": 0, "interval_count": 0, "observation_count": 0,
+        "observation_interval_count": 0, "input_policy": "",
+        "source_extraction_version": "", "band_config_hash": "0" * 64,
+    }
     for day in sorted(source_plan["days"], key=lambda row: row["source_date"]):
         session = day["source_date"]
         if session in coverage_by_day:
-            level_count = coverage_by_day[session]["level_count"]
-            interval_count = coverage_by_day[session]["interval_count"]
+            carried.update({key: coverage_by_day[session][key] for key in carried})
             continue
         receipt_path = path / "receipts" / f"{session}.json"
         if not receipt_path.is_file():
@@ -238,7 +240,7 @@ def migrate_ticker(path: Path, plan_hash: str, batch_rows: int, batch_bytes: int
         stamp = epoch_ns(str(end.timestamp()))
         coverage.append({
             "ticker": ticker, "session_date": session, "available_at": datetime64_ns(stamp),
-            "state": "empty", "level_count": level_count, "interval_count": interval_count,
+            "state": "empty", **carried,
             "source_input_hash": str(receipt.get("source_hash") or receipt.get("bar_hash") or ""),
             "source_checkpoint_hash": str(receipt.get("checkpoint_hash") or receipt.get("parent_hash") or ""),
             "parent_checkpoint_hash": str(receipt.get("parent_hash") or ""),

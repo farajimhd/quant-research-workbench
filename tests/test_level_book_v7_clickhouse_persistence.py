@@ -94,6 +94,36 @@ def test_candidates_and_observation_assignment_changes_are_preserved():
     assert all(row["valid_to"] is not None for row in observations[:3])
 
 
+def test_migration_publishes_observations_before_coverage_and_carries_empty_day(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    ticker = tmp_path / "TEST"
+    (ticker / "books").mkdir(parents=True)
+    (ticker / "books" / "2026-01-01.json.gz").touch()
+    (ticker / "receipts").mkdir()
+    (ticker / "receipts" / "2026-01-02.json").touch()
+    source_plan = {"days": [{"ticker": "TEST", "source_date": day}
+        for day in ("2026-01-01", "2026-01-02")]}
+    monkeypatch.setattr(migration, "read", lambda path: source_plan if Path(path).name == "source-plan.json"
+        else {"ticker": "TEST"} if Path(path).name == "ready.json"
+        else {"state": "empty", "source_hash": "empty-source", "parent_hash": "one"})
+    monkeypatch.setattr(migration, "verified_book", lambda _: book("2026-01-01", 1767312000,
+        [level()], "one"))
+    monkeypatch.setattr(migration, "client", lambda: object())
+    writes = []
+    monkeypatch.setattr(migration, "insert", lambda _client, table, rows, *_args, **_kwargs:
+        writes.append((table, rows)))
+    result = migration.migrate_ticker(ticker, "f" * 64, 5000, 16 * 1024**2)
+    assert result["state"] == "completed"
+    assert [table for table, _ in writes] == [persistence.LEVELS_TABLE,
+        persistence.OBSERVATIONS_TABLE, persistence.COVERAGE_TABLE]
+    coverage = writes[-1][1]
+    assert coverage[1]["state"] == "empty"
+    assert coverage[1]["observation_count"] == coverage[0]["observation_count"] == 3
+    assert coverage[1]["input_policy"] == coverage[0]["input_policy"]
+    assert coverage[1]["band_config_hash"] == coverage[0]["band_config_hash"]
+
+
 def test_worker_budget_is_bounded_by_cpu_and_memory(monkeypatch):
     monkeypatch.setattr(migration.os, "cpu_count", lambda: 32)
     monkeypatch.setattr(migration, "available_memory_bytes", lambda: 12 * migration.GIB)
