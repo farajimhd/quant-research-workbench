@@ -1,0 +1,45 @@
+<clickhouse>
+    <users>
+        <default>
+            <password remove="1" />
+            <password_sha256_hex>__CLICKHOUSE_ADMIN_PASSWORD_SHA256_HEX__</password_sha256_hex>
+            <networks replace="1">
+                <ip>127.0.0.1</ip>
+                <ip>::1</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <access_management remove="1" />
+            <named_collection_control remove="1" />
+            <grants replace="1">
+                <query>GRANT ALL ON *.* WITH GRANT OPTION</query>
+            </grants>
+        </default>
+        <trading_dashboard_app>
+            <password_sha256_hex>__CLICKHOUSE_TRADING_DASHBOARD_APP_PASSWORD_SHA256_HEX__</password_sha256_hex>
+            <networks>
+                <ip>127.0.0.1</ip>
+                <ip>::1</ip>
+                <ip>__CLICKHOUSE_WORKSTATION_LAN_IP__</ip>
+                <ip>__CLICKHOUSE_WINDOWS_WSL_GATEWAY_IP__</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <grants>
+__CLICKHOUSE_TRADING_DASHBOARD_APP_GRANTS__
+            </grants>
+        </trading_dashboard_app>
+        <quant_research_workbench>
+            <password_sha256_hex>__CLICKHOUSE_QUANT_RESEARCH_WORKBENCH_PASSWORD_SHA256_HEX__</password_sha256_hex>
+            <networks>
+                <ip>__CLICKHOUSE_QUANT_RESEARCH_WORKBENCH_IP__</ip>
+                <ip>__CLICKHOUSE_WINDOWS_WSL_GATEWAY_IP__</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <grants>
+__CLICKHOUSE_QUANT_RESEARCH_WORKBENCH_GRANTS__
+            </grants>
+        </quant_research_workbench>
+    </users>
+</clickhouse>

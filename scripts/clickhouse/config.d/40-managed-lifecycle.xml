@@ -1,0 +1,34 @@
+<clickhouse>
+    <!--
+        The repository bootstrap owns ClickHouse startup because the external
+        disks must be attached and validated before any database metadata is
+        loaded. Keep database loading asynchronous because this installation's
+        large part catalog cannot reliably finish within the bounded bootstrap
+        timeout. A table's first query may wait for its background attachment.
+    -->
+    <async_load_databases>true</async_load_databases>
+
+    <!--
+        Reserve enough host memory for the kernel, filesystem cache, allocator
+        fragmentation, and ClickHouse cleanup paths. The previous package
+        default allowed 90% of RAM and the server reached that ceiling while
+        cancelling concurrent queries and merges. On the 251 GiB WSL host,
+        80% keeps about 50 GiB outside ClickHouse without reducing CPU or I/O
+        concurrency during ordinary live and historical processing.
+    -->
+    <max_server_memory_usage_to_ram_ratio>0.80</max_server_memory_usage_to_ram_ratio>
+
+    <!--
+        Keep background merges fast, but prevent them from collectively
+        consuming the server's entire memory budget when foreground queries
+        are busy. This is a memory ceiling, not a merge-thread throttle.
+    -->
+    <merges_mutations_memory_usage_to_ram_ratio>0.20</merges_mutations_memory_usage_to_ram_ratio>
+
+    <!--
+        Allow active connections a bounded interval to finish after SIGTERM.
+        This avoids the package default's short wait forcing an otherwise
+        graceful repository-requested shutdown.
+    -->
+    <shutdown_wait_unfinished>60</shutdown_wait_unfinished>
+</clickhouse>

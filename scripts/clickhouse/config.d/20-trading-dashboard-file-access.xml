@@ -1,0 +1,3 @@
+<clickhouse>
+    <user_files_path replace="1">/mnt/d/market-data/</user_files_path>
+</clickhouse>

@@ -1,0 +1,44 @@
+<clickhouse>
+    <!--
+        Repository-owned storage policies for app-created MergeTree tables.
+
+        The hdd policy intentionally uses ClickHouse's existing default disk.
+        In the WSL setup that disk is the current /var/lib/clickhouse mount.
+
+        The sip_raw_ssd and live_market_ssd policies use dedicated ext4 SSD
+        mounts prepared by the WSL bootstrap before ClickHouse starts.
+    -->
+    <storage_configuration>
+        <disks>
+            <sip_raw_ssd>
+                <path>/clickhouse-disks/sip-raw/clickhouse/</path>
+            </sip_raw_ssd>
+            <live_market_ssd>
+                <path>/clickhouse-disks/live-market/clickhouse/</path>
+            </live_market_ssd>
+        </disks>
+        <policies>
+            <hdd>
+                <volumes>
+                    <default>
+                        <disk>default</disk>
+                    </default>
+                </volumes>
+            </hdd>
+            <sip_raw_ssd>
+                <volumes>
+                    <main>
+                        <disk>sip_raw_ssd</disk>
+                    </main>
+                </volumes>
+            </sip_raw_ssd>
+            <live_market_ssd>
+                <volumes>
+                    <main>
+                        <disk>live_market_ssd</disk>
+                    </main>
+                </volumes>
+            </live_market_ssd>
+        </policies>
+    </storage_configuration>
+</clickhouse>
