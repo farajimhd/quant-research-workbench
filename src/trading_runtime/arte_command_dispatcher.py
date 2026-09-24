@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
+from src.trading_runtime.arte_command_recovery import audit_committed_commands
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.ibkr_schema import OrderRequest
 
@@ -51,11 +52,24 @@ class ArteCommandDispatcher:
         self._error: BaseException | None = None
         self._admission_error: CommandQueueFull | None = None
         self._closed = False
+        self._audited_run_id: str | None = None
+        self._starting = False
 
-    def start(self) -> None:
-        if self._task is not None or self._closed:
+    async def start(self, client: Any, run_id: str) -> None:
+        """Audit committed state on the control plane before accepting orders."""
+        if self._task is not None or self._closed or self._starting:
             raise RuntimeError("Command dispatcher cannot start twice")
-        self._task = asyncio.create_task(self._run(), name="arte-command-dispatcher")
+        self._starting = True
+        try:
+            audit = await audit_committed_commands(client, self._broker, run_id)
+            if self._closed:
+                raise RuntimeError("Command dispatcher closed during recovery audit")
+            if audit.run_id != run_id or not audit.admission_safe:
+                raise RuntimeError("Command dispatcher requires complete OMS recovery")
+            self._audited_run_id = run_id
+            self._task = asyncio.create_task(self._run(), name="arte-command-dispatcher")
+        finally:
+            self._starting = False
 
     def submit(
         self, batch: TypedJournalBatch, account_id: str,
@@ -64,6 +78,8 @@ class ArteCommandDispatcher:
         """Enqueue without network or durability wait; queue saturation rejects."""
         if self._task is None or self._closed:
             raise RuntimeError("Command dispatcher is not accepting orders")
+        if batch.run_id != self._audited_run_id:
+            raise ValueError("Command run differs from its audited journal prefix")
         if self._error is not None:
             raise RuntimeError("Command dispatcher requires broker reconciliation") from self._error
         if self._admission_error is not None:

@@ -24,11 +24,11 @@ class Broker:
         return self.executions
 
 
-def install_journal(monkeypatch, commands, transitions=()):
+def install_journal(monkeypatch, commands, transitions=(), status="running"):
     monkeypatch.setattr(recovery, "load_committed_prefix",
                         lambda _client, _run: SimpleNamespace(last_sequence=max(
                             (row["sequence"] for row in (*commands, *transitions)), default=0,
-                        )))
+                        ), status=status))
 
     def page(_client, _prefix, *, after_sequence, limit):
         return tuple(command for command in commands
@@ -117,3 +117,17 @@ def test_orphan_transition_fails_recovery(monkeypatch):
     ])
     with pytest.raises(RuntimeError, match="no matching order command"):
         asyncio.run(recovery.audit_committed_commands(None, Broker(), "run"))
+
+
+def test_terminal_run_never_reopens_command_admission(monkeypatch):
+    install_journal(monkeypatch, [], status="completed")
+    result = asyncio.run(recovery.audit_committed_commands(None, Broker(), "run"))
+    assert result.committed_commands == 0
+    assert result.committed_run_status == "completed"
+    assert not result.admission_safe
+
+
+def test_empty_running_run_can_admit_first_command(monkeypatch):
+    install_journal(monkeypatch, [])
+    result = asyncio.run(recovery.audit_committed_commands(None, Broker(), "run"))
+    assert result.admission_safe

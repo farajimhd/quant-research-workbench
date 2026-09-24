@@ -24,6 +24,7 @@ class RecoveryBroker(Protocol):
 @dataclass(frozen=True, slots=True)
 class CommandRecoveryAudit:
     run_id: str
+    committed_run_status: str
     committed_commands: int
     open_order_matches: int
     execution_matches: int
@@ -34,7 +35,7 @@ class CommandRecoveryAudit:
     @property
     def admission_safe(self) -> bool:
         # Seeing an order or execution is not yet a complete OMS state recovery.
-        return self.committed_commands == 0
+        return self.committed_run_status == "running" and self.committed_commands == 0
 
 
 async def audit_committed_commands(
@@ -52,6 +53,8 @@ async def audit_committed_commands(
     prefix = await asyncio.to_thread(load_committed_prefix, client, run_id)
     if prefix is None:
         raise RuntimeError("No verified committed journal prefix for recovery")
+    if prefix.status not in {"running", "completed", "stopped", "failed"}:
+        raise RuntimeError("Committed journal status is not recognized")
     orders, executions = await asyncio.gather(
         broker.live_orders(), broker.trades(days=7),
     )
@@ -135,6 +138,6 @@ async def audit_committed_commands(
     if set(latest_transition) - seen_command_ids:
         raise RuntimeError("Committed transition has no matching order command")
     return CommandRecoveryAudit(
-        run_id, total, open_matches, execution_matches, terminal_matches,
+        run_id, prefix.status, total, open_matches, execution_matches, terminal_matches,
         unresolved, tuple(sample),
     )

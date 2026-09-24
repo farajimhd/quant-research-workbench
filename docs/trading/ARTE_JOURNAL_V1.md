@@ -101,8 +101,14 @@ campaign ownership require a single fenced coordinator, not an assumed
 `MergeTree` compare-and-swap.
 The bounded typed command dispatcher transport now enforces receipt-before-send
 and poisons its lane on persistence failure, broker uncertainty, or interruption.
-It is deliberately not wired into live OMS: startup reconciliation of possibly
-sent commands and complete typed strategy-intent evidence are still missing.
+It requires a verified running-run recovery audit before startup; that audit
+checks committed command identities against open broker orders, recent
+executions, and the latest committed order transition. An absent broker order
+is never proof of non-delivery. A run with any earlier committed command, or a
+terminal run, cannot restart this dispatcher until complete typed OMS-state
+recovery and single-coordinator fencing exist. It is deliberately not wired
+into live OMS: those facilities and complete typed strategy-intent evidence
+are still missing.
 
 Recovery loads the latest verified fence, restores typed state components,
 reconciles live broker orders/executions by stable IDs, and resumes from the
