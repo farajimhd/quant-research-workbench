@@ -523,6 +523,42 @@ def iter_market_day_rows(plan: CertifiedMarketDayPlan, client=None) -> Iterator[
             active.close()
 
 
+def iter_persisted_v7_seconds(
+    plan: CertifiedMarketDayPlan, *, session_date: str, ticker: str,
+    through_boundary_ms: int, client=None,
+) -> Iterator[dict[str, Any]]:
+    """Read only completed pinned 1s bars needed for lazy intraday V7 catch-up."""
+    if not 0 <= through_boundary_ms <= 57_600_000:
+        raise ValueError("V7 catch-up boundary is outside the market session")
+    if session_date not in plan.sessions or ticker not in plan.tickers:
+        raise ValueError("V7 catch-up scope is outside the certified market-day plan")
+    unit = _unit_map(plan, "bars").get((session_date, ticker))
+    if unit is None:
+        raise ValueError("V7 catch-up lacks a pinned bar attempt")
+    completed_count = through_boundary_ms // 1_000
+    if completed_count == 0:
+        return
+    query = assert_select_only(
+        "SELECT ticker,resolution_ms,bucket_index,price_valid,extremes_valid,"
+        "open_int,high_int,low_int,close_int,volume "
+        "FROM arte.bars_v1 "
+        f"WHERE build_id={_literal(plan.build_id)} "
+        f"AND session_date=toDate({_literal(session_date)}) "
+        f"AND ticker={_literal(ticker)} "
+        f"AND attempt_id=toUUID({_literal(unit.attempt_id)}) "
+        f"AND resolution_ms=1000 AND bucket_index<{completed_count} "
+        "ORDER BY bucket_index FORMAT JSONEachRow"
+    )
+    active = client or readonly_clickhouse_client()
+    try:
+        for line in active.execute(query).splitlines():
+            if line.strip():
+                yield json.loads(line)
+    finally:
+        if client is None:
+            active.close()
+
+
 def iter_market_boundary_groups(
     rows: Iterable[Mapping[str, Any]],
 ) -> Iterator[tuple[str, int, str, dict[int, Mapping[str, Any]]]]:

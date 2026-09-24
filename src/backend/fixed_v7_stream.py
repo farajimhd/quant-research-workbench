@@ -49,7 +49,7 @@ class FixedV7Stream:
         self.engine.update(bar, observed_at=stamp)
         self._latest_completed_second = stamp
 
-    def context(self, *, as_of: datetime) -> dict[str, Any]:
+    def context(self, *, as_of: datetime, price: float = 0.0) -> dict[str, Any]:
         """Return the latest causal structure, never advancing from future bars."""
         if as_of.tzinfo is None or not self.engine.start <= as_of.timestamp() <= self.engine.end:
             raise ValueError("V7 projection time is outside the session")
@@ -59,7 +59,9 @@ class FixedV7Stream:
         if revision != self._last_projection_revision:
             self._levels = projection(self.engine, as_of.timestamp(), {}, False)["unified_levels"]
             self._last_projection_revision = revision
+        from src.backend.experimental_structure_book import context as level_context
         return {
+            **level_context({"unified_levels": self._levels}, price),
             "qmd_structure_unified_levels": self._levels,
             "qmd_structure_session_high": self.engine.hod,
             "qmd_level_book_version": VERSION,

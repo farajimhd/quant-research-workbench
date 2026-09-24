@@ -26,6 +26,7 @@ def test_completed_second_advances_causally_from_empty_seed():
     stream = FixedV7Stream(seed(), ticker="TEST", session=date(2026, 8, 18))
     before = datetime(2026, 8, 18, 4, 5, tzinfo=NY)
     assert stream.context(as_of=before)["qmd_structure_unified_levels"] == []
+    assert stream.context(as_of=before, price=10.0)["qmd_structure_support_price"] is None
     at = datetime(2026, 8, 18, 4, 5, 1, tzinfo=NY)
     row = dict(resolution_ms=1000, price_valid=1, extremes_valid=1,
                open_int=100000, high_int=100100, low_int=99900,

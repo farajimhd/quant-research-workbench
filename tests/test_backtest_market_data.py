@@ -15,6 +15,7 @@ from src.backend.backtest_market_data import (
     market_day_rows_sql,
     iter_market_boundary_groups,
     iter_market_time_groups,
+    iter_persisted_v7_seconds,
     verify_market_day_plan,
     _stable_hash,
 )
@@ -158,6 +159,25 @@ class BacktestMarketDataTests(unittest.TestCase):
                 ("2026-08-18", 100, "AAPL", {}),
                 ("2026-08-18", 100, "AAPL", {}),
             ]))
+
+    def test_v7_catch_up_reads_only_completed_pinned_seconds(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self._ledger(Path(directory)).certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+        client = _ReadClient()
+        rows = list(iter_persisted_v7_seconds(plan, session_date="2026-08-18",
+                                              ticker="SUGP", through_boundary_ms=300_100,
+                                              client=client))
+        assert len(rows) == 1
+        assert "arte.bars_v1" in client.queries[0]
+        assert "AND resolution_ms=1000 AND bucket_index<300" in client.queries[0]
+        assert "attempt_id=toUUID('00000000-0000-0000-0000-000000000001')" in client.queries[0]
+        with self.assertRaisesRegex(ValueError, "outside the certified"):
+            list(iter_persisted_v7_seconds(plan, session_date="2026-08-18",
+                                            ticker="OTHER", through_boundary_ms=300_100,
+                                            client=client))
 
     def test_missing_stage_fails_catalogue_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
