@@ -145,7 +145,7 @@ def publish_fenced_admission(client: Any, batch: TypedJournalBatch,
 
 
 def verify_no_incomplete_admissions(client: Any, run_id: str) -> None:
-    """Fail startup if any prepared admission lacks exactly one commit mate."""
+    """Fail startup on incomplete fences or broken latest recovery heads."""
     if not run_id:
         raise ValueError("Admission run identity is required")
     rows = _rows(client,
@@ -157,3 +157,18 @@ def verify_no_incomplete_admissions(client: Any, run_id: str) -> None:
         "LIMIT 1 FORMAT JSONEachRow")
     if rows:
         raise RuntimeError("Run has an incomplete or duplicate admission fence")
+    # The two fence phases alone do not prove their referenced commits still
+    # exist. Check each account's recovery head before admitting live work.
+    heads = _rows(client,
+        "SELECT account_id,max(state_revision) AS latest_revision "
+        "FROM arte.trading_admission_fence_v1 "
+        f"WHERE run_id={_literal(run_id)} GROUP BY account_id "
+        "LIMIT 4097 FORMAT JSONEachRow")
+    if len(heads) > 4096:
+        raise RuntimeError("Admission recovery has too many accounts for bounded startup audit")
+    for head in heads:
+        if load_fenced_admission(
+            client, run_id=run_id, account_id=str(head["account_id"]),
+            state_revision=int(head["latest_revision"]),
+        ) is None:
+            raise RuntimeError("Admission recovery head disappeared during startup audit")

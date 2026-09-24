@@ -57,6 +57,13 @@ class Client:
     def query(self, sql: str) -> list[dict]:
         if "FROM arte.trading_admission_fence_v1" in sql:
             if "GROUP BY" in sql:
+                if "latest_revision" in sql:
+                    accounts = {}
+                    for row in self.fences:
+                        accounts[row["account_id"]] = max(
+                            row["state_revision"], accounts.get(row["account_id"], 0))
+                    return [{"account_id": account_id, "latest_revision": revision}
+                            for account_id, revision in accounts.items()]
                 groups = {}
                 for row in self.fences:
                     groups.setdefault((row["account_id"], row["state_revision"]), []).append(row)
@@ -151,6 +158,16 @@ def test_writer_startup_checks_for_prepared_only_admissions(monkeypatch) -> None
                         lambda _client, run_id: checked.append(run_id))
     writer._verify_run_identity(object(), RUN)
     assert checked == [RUN]
+
+
+def test_startup_rejects_missing_latest_recovery_commit() -> None:
+    client = Client()
+    with pytest.MonkeyPatch.context() as patch:
+        install_fakes(patch, client)
+        admission.publish_fenced_admission(client, batch(), captured())
+        client.snapshots.clear()
+        with pytest.raises(RuntimeError, match="missing or conflicting commits"):
+            admission.verify_no_incomplete_admissions(client, RUN)
 
 
 def test_admission_fence_rejects_non_hash_snapshot_reference() -> None:
