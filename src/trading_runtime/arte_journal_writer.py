@@ -85,6 +85,16 @@ class TypedJournalBatch:
         return tuple(zip(_FACTS, (self.events, self.executions, self.commissions)))
 
 
+@dataclass(frozen=True, slots=True)
+class CommittedPrefix:
+    run_id: str
+    last_sequence: int
+    last_batch_id: str
+    source_cursor: str
+    status: str
+    batch_ids: tuple[str, ...]
+
+
 def typed_row(values: Mapping[str, Any]) -> dict[str, Any]:
     """Seal an explicitly typed family row; JSON is transport only."""
     row = dict(values)
@@ -188,6 +198,52 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
         if verified != [expected]:
             raise RuntimeError("Typed journal commit was not durably published")
     return batch.batch_id
+
+
+def load_committed_prefix(client: Any, run_id: str) -> CommittedPrefix | None:
+    """Verify the entire contiguous typed prefix; ignore unfenced fact rows."""
+    if not run_id:
+        raise ValueError("Journal run identity is required")
+    commits = _rows(client,
+        "SELECT run_id,attempt_id,batch_id,prior_batch_id,first_sequence,last_sequence,"
+        "event_count,execution_count,commission_count,event_hash,execution_hash,commission_hash,"
+        "source_cursor,status FROM arte.trading_commit_v1 "
+        f"WHERE run_id={_literal(run_id)} ORDER BY last_sequence,batch_id FORMAT JSONEachRow")
+    if not commits:
+        return None
+    prior_id = _ZERO_UUID
+    prior_sequence = 0
+    prior_status = "running"
+    batch_ids: list[str] = []
+    for commit in commits:
+        batch_id = str(UUID(str(commit["batch_id"])))
+        if (str(commit["run_id"]) != run_id
+                or str(UUID(str(commit["prior_batch_id"]))) != prior_id
+                or int(commit["first_sequence"]) != prior_sequence + 1
+                or int(commit["last_sequence"]) < int(commit["first_sequence"])):
+            raise RuntimeError("Typed journal commit chain is not contiguous")
+        for name, count_key, hash_key in (
+            ("trading_event_v1", "event_count", "event_hash"),
+            ("trading_execution_v1", "execution_count", "execution_hash"),
+            ("trading_commission_v1", "commission_count", "commission_hash"),
+        ):
+            rows = _rows(client,
+                f"SELECT record_id,content_hash FROM arte.{name} "
+                f"WHERE batch_id=toUUID({_literal(batch_id)}) FORMAT JSONEachRow")
+            digest = sha256(canonical_json(_identity(rows)).encode("utf-8")).hexdigest()
+            if len(rows) != int(commit[count_key]) or digest != str(commit[hash_key]):
+                raise RuntimeError(f"Typed journal {name} differs from committed fence")
+        if commit["status"] not in {"running", "completed", "stopped", "failed"}:
+            raise RuntimeError("Typed journal commit has invalid status")
+        if batch_ids and prior_status != "running":
+            raise RuntimeError("Typed journal continues after terminal status")
+        prior_id = batch_id
+        prior_sequence = int(commit["last_sequence"])
+        prior_status = str(commit["status"])
+        batch_ids.append(batch_id)
+    return CommittedPrefix(run_id, prior_sequence, prior_id,
+                           str(commits[-1]["source_cursor"]),
+                           str(commits[-1]["status"]), tuple(batch_ids))
 
 
 class ArteJournalWriter:

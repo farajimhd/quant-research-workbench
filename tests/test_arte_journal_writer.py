@@ -9,8 +9,8 @@ import pytest
 
 from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_journal_writer import (
-    ArteJournalWriter, JournalQueueFull, TypedJournalBatch, publish_typed_batch,
-    typed_row,
+    ArteJournalWriter, JournalQueueFull, TypedJournalBatch, load_committed_prefix,
+    publish_typed_batch, typed_row,
 )
 
 
@@ -51,9 +51,10 @@ class MemoryClient:
         if "WHERE run_id=" in sql:
             run_id = sql.split("WHERE run_id='", 1)[1].split("'", 1)[0]
             matching = [row for row in self.tables.get(name, []) if row["run_id"] == run_id]
-            matching.sort(key=lambda row: row["last_sequence"], reverse=True)
+            descending = "ORDER BY last_sequence DESC" in sql
+            matching.sort(key=lambda row: row["last_sequence"], reverse=descending)
             return "\n".join(json.dumps({column: row[column] for column in columns})
-                             for row in matching[:1])
+                             for row in (matching[:1] if "LIMIT 1" in sql else matching))
         batch_id = sql.split("batch_id=toUUID('", 1)[1].split("')", 1)[0]
         return "\n".join(json.dumps({column: row[column] for column in columns})
                          for row in self.tables.get(name, []) if row["batch_id"] == batch_id)
@@ -68,6 +69,9 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     assert client.inserts == ["trading_event_v1", "trading_commit_v1"]
     assert len(client.tables["trading_commit_v1"]) == 1
     assert not any("payload_json" in row for rows in client.tables.values() for row in rows)
+    prefix = load_committed_prefix(client, RUN)
+    assert prefix is not None
+    assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
 
 
 def test_typed_publication_detects_conflicting_readback() -> None:
@@ -77,6 +81,8 @@ def test_typed_publication_detects_conflicting_readback() -> None:
     client.tables["trading_event_v1"][0]["content_hash"] = "0" * 64
     with pytest.raises(RuntimeError, match="conflicting"):
         publish_typed_batch(client, item)
+    with pytest.raises(RuntimeError, match="differs from committed fence"):
+        load_committed_prefix(client, RUN)
 
 
 def test_typed_publication_rejects_out_of_order_prefix() -> None:
