@@ -14,7 +14,7 @@ from src.trading_runtime.arte_journal_projection import commission_revision_batc
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, JournalQueueFull, TypedJournalBatch, load_committed_prefix,
-    load_committed_order_command_page,
+    load_committed_order_command_page, load_committed_order_transition_page,
     load_typed_run_context, publish_typed_batch, publish_typed_run,
     publish_typed_run_context, typed_row,
 )
@@ -316,6 +316,11 @@ def test_order_command_and_transition_have_typed_durable_fences() -> None:
     assert page[0]["command_id"] == "command-1"
     assert page[0]["client_order_id"] == "client-1"
     assert load_committed_order_command_page(client, prefix, after_sequence=1) == ()
+    transitions = load_committed_order_transition_page(client, prefix, limit=1)
+    assert len(transitions) == 1
+    assert transitions[0]["sequence"] == 2
+    assert transitions[0]["status"] == "submitted"
+    assert load_committed_order_transition_page(client, prefix, after_sequence=2) == ()
     client.tables["trading_order_command_v1"][0]["account_id"] = "wrong"
     with pytest.raises(RuntimeError, match="event envelope"):
         load_committed_order_command_page(client, prefix)

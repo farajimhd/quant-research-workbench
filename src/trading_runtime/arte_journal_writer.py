@@ -834,6 +834,57 @@ def load_committed_order_command_page(
     return tuple(result)
 
 
+def load_committed_order_transition_page(
+    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    limit: int = 500,
+) -> tuple[dict[str, Any], ...]:
+    """Read a bounded page of fence-verified order-state transitions."""
+    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+        raise ValueError("Order recovery requires a verified committed prefix")
+    if after_sequence < 0 or not 1 <= limit <= 1000:
+        raise ValueError("Order recovery page bounds are invalid")
+    events = _rows(client,
+        "SELECT record_id,batch_id,sequence,event_month,account_id,event_time "
+        "FROM arte.trading_event_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND sequence>{int(after_sequence)} "
+        f"AND sequence<={int(prefix.last_sequence)} "
+        "AND category='order_management' AND entity_type='order_transition' "
+        f"ORDER BY sequence LIMIT {int(limit)} FORMAT JSONEachRow")
+    if not events:
+        return ()
+    ids = tuple(str(UUID(str(row["record_id"]))) for row in events)
+    if len(set(ids)) != len(ids):
+        raise RuntimeError("Committed transition page repeated an event identity")
+    allowed_batches = set(prefix.batch_ids)
+    if any(str(UUID(str(row["batch_id"]))) not in allowed_batches for row in events):
+        raise RuntimeError("Order transition page contains an unfenced event")
+    names = ",".join(column for column, _ in _CONTRACTS["trading_order_transition_v1"].columns)
+    ids_sql = ",".join(f"toUUID({_literal(value)})" for value in ids)
+    details = _rows(client, f"SELECT {names} FROM arte.trading_order_transition_v1 "
+                    f"WHERE run_id={_literal(prefix.run_id)} "
+                    f"AND record_id IN ({ids_sql}) FORMAT JSONEachRow")
+    if len(details) != len(events):
+        raise RuntimeError("Committed transition page has missing or duplicate details")
+    by_id = {str(UUID(str(row["record_id"]))): row for row in details}
+    if set(by_id) != set(ids):
+        raise RuntimeError("Committed transition page details differ from events")
+    result = []
+    prior = after_sequence
+    for event in events:
+        sequence = int(event["sequence"])
+        detail = by_id[str(UUID(str(event["record_id"])))]
+        if (sequence <= prior
+                or str(UUID(str(detail["batch_id"]))) != str(UUID(str(event["batch_id"])))
+                or str(detail["event_month"]) != str(event["event_month"])
+                or str(detail["account_id"]) != str(event["account_id"])):
+            raise RuntimeError("Committed transition page differs from its event envelope")
+        prior = sequence
+        result.append({"sequence": sequence, "event_time": event["event_time"],
+                       **detail})
+    return tuple(result)
+
+
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 

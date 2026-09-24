@@ -24,9 +24,11 @@ class Broker:
         return self.executions
 
 
-def install_journal(monkeypatch, commands):
+def install_journal(monkeypatch, commands, transitions=()):
     monkeypatch.setattr(recovery, "load_committed_prefix",
-                        lambda _client, _run: SimpleNamespace(last_sequence=len(commands)))
+                        lambda _client, _run: SimpleNamespace(last_sequence=max(
+                            (row["sequence"] for row in (*commands, *transitions)), default=0,
+                        )))
 
     def page(_client, _prefix, *, after_sequence, limit):
         return tuple(command for command in commands
@@ -34,10 +36,15 @@ def install_journal(monkeypatch, commands):
 
     monkeypatch.setattr(recovery, "load_committed_order_command_page", page)
 
+    def transition_page(_client, _prefix, *, after_sequence, limit):
+        return tuple(row for row in transitions if row["sequence"] > after_sequence)[:limit]
+
+    monkeypatch.setattr(recovery, "load_committed_order_transition_page", transition_page)
+
 
 def command(sequence=1):
     return {"sequence": sequence, "account_id": "A", "client_order_id": f"C{sequence}",
-            "conid": 101}
+            "command_id": f"cmd-{sequence}", "conid": 101}
 
 
 def test_command_audit_never_treats_absence_as_safe(monkeypatch):
@@ -48,7 +55,8 @@ def test_command_audit_never_treats_absence_as_safe(monkeypatch):
     )
     result = asyncio.run(recovery.audit_committed_commands(None, broker, "run", page_size=1))
     assert (result.committed_commands, result.open_order_matches,
-            result.execution_matches, result.unresolved_commands) == (3, 1, 1, 1)
+            result.execution_matches, result.terminal_transition_matches,
+            result.unresolved_commands) == (3, 1, 1, 0, 1)
     assert result.unresolved_sample == (("A", "C3"),)
     assert not result.admission_safe
 
@@ -77,3 +85,35 @@ def test_command_audit_propagates_broker_failure(monkeypatch):
         asyncio.run(recovery.audit_committed_commands(
             None, Broker(error=ConnectionError()), "run",
         ))
+
+
+def test_latest_committed_terminal_transition_resolves_absent_broker_order(monkeypatch):
+    install_journal(monkeypatch, [command()], transitions=[
+        {"sequence": 2, "account_id": "A", "command_id": "cmd-1",
+         "client_order_id": "C1", "conid": 101, "terminal": 1},
+    ])
+    result = asyncio.run(recovery.audit_committed_commands(None, Broker(), "run"))
+    assert result.terminal_transition_matches == 1
+    assert result.unresolved_commands == 0
+    assert not result.admission_safe  # Full OMS state recovery remains separate.
+
+
+def test_later_nonterminal_transition_overrides_prior_terminal(monkeypatch):
+    install_journal(monkeypatch, [command()], transitions=[
+        {"sequence": 2, "account_id": "A", "command_id": "cmd-1",
+         "client_order_id": "C1", "conid": 101, "terminal": 1},
+        {"sequence": 3, "account_id": "A", "command_id": "cmd-1",
+         "client_order_id": "C1", "conid": 101, "terminal": 0},
+    ])
+    result = asyncio.run(recovery.audit_committed_commands(None, Broker(), "run"))
+    assert result.terminal_transition_matches == 0
+    assert result.unresolved_commands == 1
+
+
+def test_orphan_transition_fails_recovery(monkeypatch):
+    install_journal(monkeypatch, [command()], transitions=[
+        {"sequence": 2, "account_id": "A", "command_id": "other",
+         "client_order_id": "C9", "conid": 101, "terminal": 1},
+    ])
+    with pytest.raises(RuntimeError, match="no matching order command"):
+        asyncio.run(recovery.audit_committed_commands(None, Broker(), "run"))
