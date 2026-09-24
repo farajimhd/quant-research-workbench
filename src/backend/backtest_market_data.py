@@ -452,8 +452,16 @@ def _unit_map(plan: CertifiedMarketDayPlan, stage: str) -> dict[tuple[str, str],
     return {(unit.session_date, unit.ticker): unit for unit in plan.units if unit.stage == stage}
 
 
-def market_day_rows_sql(plan: CertifiedMarketDayPlan) -> str:
-    """Read only pinned attempts, including both sides of the bounded joins."""
+def market_day_source_sqls(
+    plan: CertifiedMarketDayPlan, *, through_boundary_ms: int | None = None,
+) -> tuple[str, ...]:
+    """Separate pinned, sorted sources that can be merged without UNION ALL."""
+    if through_boundary_ms is not None and (
+        type(through_boundary_ms) is not int
+        or not 0 < through_boundary_ms <= 57_600_000
+        or through_boundary_ms % 100
+    ):
+        raise ValueError("Market-day end boundary must be a positive 100ms market-session clock")
     bars = _unit_map(plan, "bars")
     technical = _unit_map(plan, "technical")
     liquidity = _unit_map(plan, "broker_100ms")
@@ -469,9 +477,15 @@ def market_day_rows_sql(plan: CertifiedMarketDayPlan) -> str:
             f"(toDate({_literal(day)}),{_literal(ticker)},toUUID({_literal(unit.attempt_id)}))"
             for (day, ticker), unit in sorted(units.items())
         )
+        boundary_filter = (
+            "" if through_boundary_ms is None else
+            f" AND (toUInt64(bucket_index)+1)*"
+            f"{'100' if stage == 'liquidity_100ms_v1' else 'resolution_ms'}"
+            f"<={through_boundary_ms}"
+        )
         return (
             f"SELECT * FROM arte.{stage} WHERE build_id={_literal(plan.build_id)} "
-            f"AND (session_date,ticker,attempt_id) IN ({attempts})"
+            f"AND (session_date,ticker,attempt_id) IN ({attempts}){boundary_filter}"
         )
 
     # Every 100 ms bar is copied from its liquidity bucket by the certified
@@ -498,36 +512,52 @@ def market_day_rows_sql(plan: CertifiedMarketDayPlan) -> str:
         b.session_date=l.session_date AND b.ticker=l.ticker
         AND b.bucket_index=l.bucket_index AND b.resolution_ms=100"""
     higher = tuple(value for value in plan.required_resolutions_ms if value > 100)
+    bases = [base_100]
     if higher:
         resolution_sql = ",".join(str(value) for value in higher)
         columns_higher = ",".join(f"b.{name} AS {name}" for name in bar_columns)
         empty_liquidity = ",".join(f"0 AS {name}" for name in liquidity_columns)
-        base_100 += f""" UNION ALL SELECT b.session_date,b.ticker,b.bucket_index,
+        bases.append(f"""SELECT b.session_date,b.ticker,b.bucket_index,
           b.resolution_ms,(toUInt64(b.bucket_index)+1)*b.resolution_ms AS boundary_ms,
           {columns_higher},{empty_liquidity}
           FROM (SELECT * FROM ({pinned('bars_v1', bars)})
-                WHERE resolution_ms IN ({resolution_sql})) b"""
+                WHERE resolution_ms IN ({resolution_sql})) b""")
     indicators = ",".join("i." + name for name in (
         "ema_7", "ema_9", "ema_12", "ema_15", "ema_20", "ema_26", "ema_50",
         "macd_line", "macd_signal", "macd_histogram", "rsi_14", "atr_14",
         "rsi_ready", "atr_ready", "previous_close",
     ))
-    return assert_select_only(f"""
-      SELECT m.*,{indicators} FROM ({base_100}) m
+    return tuple(assert_select_only(f"""
+      SELECT m.*,{indicators} FROM ({base}) m
       LEFT JOIN ({pinned('indicators_v1', technical)}) i ON
         i.session_date=m.session_date AND i.ticker=m.ticker
         AND i.resolution_ms=m.resolution_ms AND i.bucket_index=m.bucket_index
       ORDER BY m.session_date,m.boundary_ms,m.ticker,m.resolution_ms
       FORMAT JSONEachRow
-    """)
+    """) for base in bases)
 
 
-def iter_market_day_rows(plan: CertifiedMarketDayPlan, client=None) -> Iterator[dict[str, Any]]:
+def iter_market_day_rows(
+    plan: CertifiedMarketDayPlan, client=None, *, through_boundary_ms: int | None = None,
+) -> Iterator[dict[str, Any]]:
     active = client or readonly_clickhouse_client(market_stream=True)
     close = client is None
+    sources = []
     try:
-        yield from active.iter_json_each_row(market_day_rows_sql(plan))
+        from heapq import merge
+        sources = [active.iter_json_each_row(sql) for sql in
+                   market_day_source_sqls(plan, through_boundary_ms=through_boundary_ms)]
+        if len(sources) == 1:
+            yield from sources[0]
+        else:
+            yield from merge(*sources, key=lambda row: (
+                str(row["session_date"]), int(row["boundary_ms"]),
+                str(row["ticker"]), int(row["resolution_ms"])))
     finally:
+        for source in sources:
+            close_source = getattr(source, "close", None)
+            if close_source is not None:
+                close_source()
         if close:
             active.close()
 

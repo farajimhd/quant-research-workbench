@@ -3116,7 +3116,11 @@ class ReplayRunController:
                 await asyncio.to_thread(v7_reader.close)
             raise
 
-        source = iter_market_day_rows(plan)
+        end_clock = self.definition.session_end.astimezone(NEW_YORK)
+        through_boundary_ms = int((
+            end_clock - datetime.combine(end_clock.date(), clock_time(4), tzinfo=NEW_YORK)
+        ).total_seconds() * 1_000)
+        source = iter_market_day_rows(plan, through_boundary_ms=through_boundary_ms)
         groups = iter_market_time_groups(iter_market_boundary_groups(source))
         sequence = int(self._source_cursor.get("sequence") or 0)
         boundary_count = 0

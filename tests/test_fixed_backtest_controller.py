@@ -90,7 +90,10 @@ def test_fixed_controller_applies_all_liquidity_before_any_strategy_frame(monkey
     ]
     monkeypatch.setattr(market_data, "MarketDayLedger",
                         lambda: SimpleNamespace(certified_plan=lambda **_kwargs: plan))
-    monkeypatch.setattr(market_data, "iter_market_day_rows", lambda _plan: iter(rows))
+    def persisted_rows(_plan, *, through_boundary_ms):
+        assert through_boundary_ms == 2_000
+        return iter(rows)
+    monkeypatch.setattr(market_data, "iter_market_day_rows", persisted_rows)
     controller = object.__new__(ReplayRunController)
     controller.definition = SimpleNamespace(
         configuration_revision={"payload": {"assignments": []}},

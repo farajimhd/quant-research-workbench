@@ -13,8 +13,9 @@ from src.backend.backtest_market_data import (
     MarketDayLedger,
     assert_select_only,
     market_day_boundary,
-    market_day_rows_sql,
+    market_day_source_sqls,
     iter_market_boundary_groups,
+    iter_market_day_rows,
     iter_market_time_groups,
     iter_persisted_v7_seconds,
     readonly_clickhouse_client,
@@ -129,7 +130,9 @@ class BacktestMarketDataTests(unittest.TestCase):
         verify_market_day_plan(plan, client)
         self.assertEqual(len(client.queries), 3)
         self.assertTrue(all(query.lstrip().startswith("SELECT") for query in client.queries))
-        sql = market_day_rows_sql(plan)
+        sources = market_day_source_sqls(plan)
+        self.assertEqual(len(sources), 2)
+        sql = "\n".join(sources)
         self.assertIn("arte.bars_v1", sql)
         self.assertIn("arte.indicators_v1", sql)
         self.assertIn("arte.liquidity_100ms_v1", sql)
@@ -140,8 +143,14 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertIn("FROM (SELECT * FROM arte.liquidity_100ms_v1", sql)
         self.assertIn("WHERE resolution_ms=100", sql)
         self.assertIn("WHERE resolution_ms IN (1000)", sql)
-        self.assertIn("UNION ALL SELECT b.session_date", sql)
-        self.assertIn("ORDER BY m.session_date,m.boundary_ms,m.ticker,m.resolution_ms", sql)
+        self.assertNotIn("UNION ALL", sql)
+        self.assertTrue(all("ORDER BY m.session_date,m.boundary_ms,m.ticker,m.resolution_ms" in
+                            source for source in sources))
+        premarket_sql = "\n".join(market_day_source_sqls(plan, through_boundary_ms=19_800_000))
+        self.assertIn("(toUInt64(bucket_index)+1)*100<=19800000", premarket_sql)
+        self.assertIn("(toUInt64(bucket_index)+1)*resolution_ms<=19800000", premarket_sql)
+        with self.assertRaisesRegex(ValueError, "positive 100ms"):
+            market_day_source_sqls(plan, through_boundary_ms=19_800_001)
 
     def test_boundary_groups_keep_sparse_quote_buckets_and_completed_seconds(self) -> None:
         rows = [
@@ -155,6 +164,27 @@ class BacktestMarketDataTests(unittest.TestCase):
             list(iter_market_boundary_groups([rows[0], rows[0]]))
         with self.assertRaisesRegex(ValueError, "not in causal order"):
             list(iter_market_boundary_groups([rows[1], rows[0]]))
+
+    def test_separate_market_sources_merge_at_completed_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self._ledger(Path(directory)).certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+        class Sources:
+            def iter_json_each_row(self, sql):
+                if "SELECT l.session_date" in sql:
+                    return iter([
+                        {"session_date": "2026-08-18", "boundary_ms": 100,
+                         "ticker": "SUGP", "resolution_ms": 100},
+                        {"session_date": "2026-08-18", "boundary_ms": 1000,
+                         "ticker": "SUGP", "resolution_ms": 100},
+                    ])
+                return iter([{"session_date": "2026-08-18", "boundary_ms": 1000,
+                              "ticker": "SUGP", "resolution_ms": 1000}])
+        rows = list(iter_market_day_rows(plan, client=Sources(), through_boundary_ms=1000))
+        self.assertEqual([(row["boundary_ms"], row["resolution_ms"]) for row in rows],
+                         [(100, 100), (1000, 100), (1000, 1000)])
 
     def test_time_group_waits_for_all_tickers_at_completed_boundary(self) -> None:
         rows = [
