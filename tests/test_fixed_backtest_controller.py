@@ -27,6 +27,29 @@ def test_fixed_market_rejects_event_only_strategy_evidence():
     assert _fixed_market_evidence_gaps({"assignments": []}) == ()
 
 
+def test_fixed_engine_opens_clickhouse_journal_before_any_sqlite(monkeypatch):
+    from src.backend import replay_run_service
+
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST,
+                                            execution_interval="100ms")
+    controller.status = "created"
+    controller._journal_writer = None
+    controller._prepared_v7 = None
+    controller._session_relative_volume_store = SimpleNamespace(close=lambda: None)
+    controller._publish = AsyncMock()
+    controller._finish = AsyncMock()
+    controller._open_fixed_journal = AsyncMock(side_effect=RuntimeError("journal unavailable"))
+    monkeypatch.setattr(replay_run_service, "TradingJournal", lambda *_args, **_kwargs:
+                        (_ for _ in ()).throw(AssertionError("SQLite opened")))
+
+    asyncio.run(controller._run_engine())
+
+    controller._open_fixed_journal.assert_awaited_once()
+    controller._finish.assert_awaited_once_with("failed")
+    assert "journal unavailable" in controller.error
+
+
 def test_fixed_signal_loader_never_prepares_missing_occurrences(monkeypatch):
     from src.backend import historical_signal_occurrence_service as occurrences
 

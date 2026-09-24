@@ -2684,13 +2684,14 @@ class ReplayRunController:
             await self._publish(force=True)
             if self.definition.mode == RunMode.BACKTEST:
                 from src.backend.backtest_market_data import (
-                    EVENT_EXECUTION_BLOCKER, FIXED_EXECUTION_BLOCKER, ExecutionInterval,
+                    EVENT_EXECUTION_BLOCKER, ExecutionInterval,
                 )
                 interval = ExecutionInterval.parse(self.definition.execution_interval)
-                raise RuntimeError(
-                    FIXED_EXECUTION_BLOCKER if interval.kind == "fixed" else EVENT_EXECUTION_BLOCKER
-                )
-            self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
+                if interval.kind != "fixed":
+                    raise RuntimeError(EVENT_EXECUTION_BLOCKER)
+                await self._open_fixed_journal()
+            else:
+                self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
             self._preparation_stage = "signal_occurrences"
             await self._publish(force=True)
             self._historical_external_signal_events = (
