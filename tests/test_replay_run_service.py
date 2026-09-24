@@ -779,7 +779,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 if controller._journal is not None:
                     controller._journal.close()
 
-    async def test_debug_fixture_runs_strategy_round_trip_to_terminal_flat_state(self) -> None:
+    async def test_debug_fixture_rejects_entry_without_qualified_v7_support(self) -> None:
         assignment = {
             "assignment_id": "round-trip-aapl",
             "account_key": "primary",
@@ -850,11 +850,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(controller._canvas_state_cache, terminal_cache)
 
                 self.assertEqual(controller.processed_events, 4)
-                self.assertGreaterEqual(
-                    len(trading["executions"]),
-                    2,
-                    trading["strategy_activity"],
-                )
+                self.assertEqual(trading["executions"], [], trading["strategy_activity"])
                 self.assertEqual(payload["fills"], [])
                 self.assertEqual(payload["orders"], [])
                 self.assertFalse(
@@ -864,7 +860,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                         if float(row.get("quantity") or 0) != 0
                     ]
                 )
-                self.assertEqual(len(trading["closed_trades"]), 1)
+                self.assertEqual(trading["closed_trades"], [])
                 reviewable_wait = next(row for row in trading["strategy_activity"] if row.get("entity_id") == "reviewable-wait")
                 self.assertEqual(reviewable_wait["action"], "wait")
                 self.assertEqual(reviewable_wait["decision_evidence"], "")
@@ -875,40 +871,9 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                         for row in trading["strategy_chart_activity"]
                     )
                 )
-                chart_entry = next(
-                    row
-                    for row in trading["strategy_chart_activity"]
-                    if row.get("action") == "enter_long"
-                )
-                self.assertNotIn("gate_snapshot", chart_entry)
-                self.assertIn("chart_plan", chart_entry)
-                self.assertTrue(
-                    any(
-                        row.get("action") == "enter_long"
-                        for row in payload["strategy"]["decisions"]
-                    ),
-                    payload["strategy"]["decisions"],
-                )
-                self.assertEqual(
-                    trading["closed_trades"][0]["strategy_id"],
-                    STRATEGY_ID,
-                )
-                self.assertEqual(
-                    trading["closed_trades"][0]["run_id"],
-                    controller.run_id,
-                )
-                self.assertTrue(
-                    any(row.get("action") == "enter_long" for row in journal),
-                    journal,
-                )
-                self.assertTrue(
-                    any(
-                        row.get("action") == "exit"
-                        and row.get("reason") == "failed_breakout"
-                        for row in journal
-                    ),
-                    journal,
-                )
+                self.assertFalse(any(row.get("action") == "enter_long" for row in journal))
+                self.assertTrue(any(row.get("reason") == "qualified_support_unavailable"
+                                    for row in journal), journal)
                 self.assertIsNotNone(controller._journal.load_checkpoint(controller.run_id))
                 qmd_source.assert_not_called()
             finally:
@@ -1079,7 +1044,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 review._journal.close()
 
-    async def test_saved_review_restores_stopped_checkpoint_without_execution(self) -> None:
+    async def test_saved_review_rejects_legacy_sqlite_backtest_without_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = ReplayRunController(
@@ -1104,36 +1069,12 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             original_manifest = manifest_path.read_bytes()
             original_journal = (source.run_dir / "journal.sqlite3").read_bytes()
             service = ReplayRunService(runtime_root=root)
-            with patch.object(ReplayRunController, "start", new_callable=AsyncMock) as start:
-                review = await service.review_saved(source.run_id)
-                try:
-                    self.assertEqual(review.status, "stopped")
-                    self.assertEqual(review.processed_events, 42)
-                    self.assertEqual(review.current_time, source.current_time)
-                    self.assertIsNone(review._task)
-                    self.assertIs(await service.review_saved(source.run_id), review)
-                    with patch.object(review._journal, "load_checkpoint", side_effect=AssertionError("Checkpoint loaded twice")):
-                        self.assertEqual(review.stream_snapshot()["checkpoint"]["processed_events"], 42)
-                    start.assert_not_awaited()
-                finally:
-                    review._journal.close()
+            with patch("src.backend.backtest_market_data.readonly_clickhouse_client",
+                       side_effect=ValueError("ClickHouse authority unavailable")):
+                with self.assertRaisesRegex(ValueError, "ClickHouse authority unavailable"):
+                    await service.review_saved(source.run_id)
             self.assertEqual(manifest_path.read_bytes(), original_manifest)
             self.assertEqual((source.run_dir / "journal.sqlite3").read_bytes(), original_journal)
-
-            manifest = json.loads(original_manifest)
-            manifest["run"]["status"] = "running"
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "Only paused or terminal"):
-                await ReplayRunService(runtime_root=root).review_saved(source.run_id)
-            manifest_path.write_bytes(original_manifest)
-            journal = TradingJournal(source.run_dir / "journal.sqlite3")
-            checkpoint = journal.load_checkpoint(source.run_id)
-            state = checkpoint["state"]
-            state["complete"] = False
-            journal.save_checkpoint(source.run_id, "invalid", state, source.current_time)
-            journal.close()
-            with self.assertRaisesRegex(ValueError, "no complete restart checkpoint"):
-                await ReplayRunService(runtime_root=root).review_saved(source.run_id)
 
     async def test_saved_review_coalesces_requests_and_survives_caller_cancellation(self) -> None:
         service = ReplayRunService()
@@ -2131,34 +2072,13 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
             v18.assert_not_called()
             self.assertEqual(controller._missing_level_book_tickers, set())
 
-    async def test_structural_frames_use_completed_bars_and_not_legacy_structure_or_scanner(self):
+    async def test_structural_recovery_rejects_v6_before_frame_preparation(self):
         configuration = approved_configuration()
         configuration["payload"]["strategy"]["parameters"]["structural_recovery_contract"] = True
-        with patch("src.backend.experimental_structure_book.resolve", return_value={
-            "ticker": "SUGP", "version": "causal-swing-closing-book-6", "start": "2025-01-01",
-            "end": "2026-09-04", "fingerprint": "v6-test",
-        }):
-            definition = ReplayRunDefinition(session_date=date(2026,8,21), start_time=time(4), end_time=time(4,30),
+        with self.assertRaisesRegex(ValueError, "select Level book V7"):
+            ReplayRunDefinition(session_date=date(2026,8,21), start_time=time(4), end_time=time(4,30),
                 mode=RunMode.BACKTEST, tickers=("SUGP",), configuration_revision=configuration,
                 experimental_structure_book="test-v6")
-        with tempfile.TemporaryDirectory() as directory:
-            controller = ReplayRunController(definition, runtime_root=Path(directory))
-            controller._strategy = MagicMock()
-            controller._strategy.assignments.return_value = [MagicMock(ticker="SUGP", parameters={})]
-            controller._strategy_registration = MagicMock()
-            controller._strategy_registration.timeframe_resolver.return_value = {"1s"}
-            with patch("src.backend.replay_run_service.qmd_historical_source_revision", return_value={
-                "token": "v6-source", "source_plan_hash": "source-plan", "complete_for_history": True,
-            }), patch("src.backend.replay_run_service._stream_historical_bar_derived_frames", new_callable=AsyncMock) as bars, patch(
-                "src.backend.replay_run_service._stream_historical_derived_frames", new_callable=AsyncMock,
-            ) as legacy, patch("src.backend.replay_run_service._historical_signal_events", new_callable=AsyncMock) as scanner:
-                await controller._load_strategy_frames()
-            bars.assert_awaited_once()
-            legacy.assert_not_awaited()
-            scanner.assert_not_awaited()
-            columns = bars.call_args.kwargs["indicator_columns"]
-            self.assertIn("atr_14", columns)
-            self.assertFalse(any(c.startswith(("qmd_structure_", "structure_", "flow_structure_")) for c in columns))
 
     async def test_only_resource_and_transport_stream_failures_are_retryable(self) -> None:
         self.assertTrue(
@@ -2709,7 +2629,9 @@ class BacktestPreflightTests(unittest.TestCase):
                 ]) as materialize:
                     result = backtest_preflight(anchor_date=date(2026, 8, 24), session_count=1,
                         tickers=("sugp", "JUNS", "SUGP"), configuration_revision=approved)
-                self.assertTrue(result["strategy_run_ready"])
+                self.assertFalse(result["strategy_run_ready"])
+                self.assertEqual(next(row for row in result["checks"]
+                                      if row["id"] == "fixed_execution_contract")["status"], "blocked")
                 materialize.assert_called_once_with([{"plan_hash": "unchanged"}], projection_tickers=expected)
 
     def test_structural_preflight_empty_tickers_cannot_expand_to_whole_market(self):
@@ -2767,11 +2689,12 @@ class BacktestPreflightTests(unittest.TestCase):
                 configuration_revision=approved,
             )
 
-        self.assertTrue(payload["strategy_run_ready"])
+        self.assertFalse(payload["strategy_run_ready"])
         self.assertEqual(payload["configuration_revision_id"], "configuration-test")
         self.assertEqual(payload["experiment_start_time"], "09:30:00")
         self.assertEqual(payload["experiment_end_time"], "10:15:00")
         checks = {row["id"]: row for row in payload["checks"]}
+        self.assertEqual(checks["fixed_execution_contract"]["status"], "blocked")
         self.assertEqual(checks["simulated_accounts"]["status"], "ready")
         self.assertEqual(checks["runtime_storage"]["status"], "ready")
         self.assertIn(
