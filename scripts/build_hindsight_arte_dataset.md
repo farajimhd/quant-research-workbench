@@ -1,8 +1,6 @@
 # Hindsight dataset from persisted arte products
 
 Use `build_hindsight_arte_dataset.py` for the new Phase 1 → Phase 2 workflow.
-For exact capital-constrained selection among its retained episodes, see the
-[Phase 3 episode oracle](build_hindsight_oracle.md).
 All market observations come from `arte.bars_v1` and `arte.indicators_v1`.
 Phase 1 defines labels exclusively from price action. It never reads quotes,
 liquidity tables, canonical events or QMD History.
