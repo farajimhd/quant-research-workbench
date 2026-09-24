@@ -156,6 +156,24 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
         journal.close()
 
 
+def test_writer_failure_poisoning_is_visible_to_all_receipts(monkeypatch) -> None:
+    def rejected(_client, _batch):
+        raise OSError("ClickHouse unavailable")
+
+    monkeypatch.setattr(writer_module, "publish_typed_batch", rejected)
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
+    try:
+        first = journal.submit(batch())
+        with pytest.raises(OSError, match="unavailable"):
+            first.result(timeout=5)
+        with pytest.raises(RuntimeError, match="failed"):
+            journal.submit(batch())
+    finally:
+        journal.close()
+
+
 def test_invalid_family_row_is_rejected_before_publication() -> None:
     item = batch()
     altered = dict(item.events[0])
