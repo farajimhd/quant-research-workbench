@@ -252,16 +252,23 @@ def _identity(rows: tuple[Mapping[str, Any], ...] | list[dict[str, Any]]) -> lis
     return sorted((str(UUID(str(row["record_id"]))), str(row["content_hash"])) for row in rows)
 
 
-def _verify_family(client: Any, name: str, batch_id: str,
-                   rows: tuple[Mapping[str, Any], ...]) -> bool:
-    actual = _rows(client,
-        f"SELECT record_id,content_hash FROM arte.{name} "
-        f"WHERE batch_id=toUUID({_literal(batch_id)}) FORMAT JSONEachRow")
-    if not actual:
-        return not rows
-    if _identity(actual) != _identity(rows):
-        raise RuntimeError(f"{name} has a conflicting or duplicated batch")
-    return True
+def _family_identities(client: Any, batch_id: str) -> dict[str, list[tuple[str, str]]]:
+    """Read every typed family in one network request, including empty ones."""
+    token = f"batch_id=toUUID({_literal(batch_id)})"
+    selects = [
+        f"SELECT {_literal(name)} AS family,record_id,content_hash "
+        f"FROM arte.{name} WHERE {token}"
+        for name, _, _, _ in _FAMILIES
+    ]
+    actual = {name: [] for name, _, _, _ in _FAMILIES}
+    for row in _rows(client, " UNION ALL ".join(selects) + " FORMAT JSONEachRow"):
+        family = str(row["family"])
+        if family not in actual:
+            raise RuntimeError("Typed journal readback returned an unknown family")
+        actual[family].append((str(UUID(str(row["record_id"]))), str(row["content_hash"])))
+    for rows in actual.values():
+        rows.sort()
+    return actual
 
 
 def _insert(client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: str) -> None:
@@ -364,11 +371,20 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
         if expected_prior != (batch.prior_batch_id, batch.first_sequence - 1):
             raise RuntimeError("Typed journal batch does not extend the committed prefix")
     hashes: dict[str, str] = {}
+    actual = _family_identities(client, batch.batch_id)
+    inserted = False
     for name, rows in families:
-        hashes[name] = sha256(canonical_json(_identity(rows)).encode("utf-8")).hexdigest()
-        if not _verify_family(client, name, batch.batch_id, rows):
+        expected_ids = _identity(rows)
+        hashes[name] = sha256(canonical_json(expected_ids).encode("utf-8")).hexdigest()
+        if actual[name] and actual[name] != expected_ids:
+            raise RuntimeError(f"{name} has a conflicting or duplicated batch")
+        if rows and not actual[name]:
             _insert(client, name, rows, f"{batch.batch_id}:{name}")
-            if not _verify_family(client, name, batch.batch_id, rows):
+            inserted = True
+    if inserted:
+        actual = _family_identities(client, batch.batch_id)
+        for name, rows in families:
+            if actual[name] != _identity(rows):
                 raise RuntimeError(f"{name} did not become durable")
     commit = {
         "run_id": batch.run_id,
@@ -419,11 +435,10 @@ def load_committed_prefix(client: Any, run_id: str) -> CommittedPrefix | None:
                 or int(commit["first_sequence"]) != prior_sequence + 1
                 or int(commit["last_sequence"]) < int(commit["first_sequence"])):
             raise RuntimeError("Typed journal commit chain is not contiguous")
+        identities = _family_identities(client, batch_id)
         for name, _, count_key, hash_key in _FAMILIES:
-            rows = _rows(client,
-                f"SELECT record_id,content_hash FROM arte.{name} "
-                f"WHERE batch_id=toUUID({_literal(batch_id)}) FORMAT JSONEachRow")
-            digest = sha256(canonical_json(_identity(rows)).encode("utf-8")).hexdigest()
+            rows = identities[name]
+            digest = sha256(canonical_json(rows).encode("utf-8")).hexdigest()
             if len(rows) != int(commit[count_key]) or digest != str(commit[hash_key]):
                 raise RuntimeError(f"Typed journal {name} differs from committed fence")
         if commit["status"] not in {"running", "completed", "stopped", "failed"}:

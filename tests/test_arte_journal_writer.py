@@ -61,6 +61,7 @@ class MemoryClient:
     def __init__(self) -> None:
         self.tables: dict[str, list[dict]] = {}
         self.inserts: list[str] = []
+        self.selects: list[str] = []
 
     def execute(self, sql: str) -> str:
         if sql.startswith("INSERT INTO arte."):
@@ -69,6 +70,17 @@ class MemoryClient:
             self.tables.setdefault(name, []).extend(json.loads(line) for line in sql.split("\n", 1)[1].splitlines())
             return ""
         assert sql.startswith("SELECT ")
+        self.selects.append(sql)
+        if " UNION ALL " in sql:
+            batch_id = sql.split("batch_id=toUUID('", 1)[1].split("'", 1)[0]
+            result = []
+            for part in sql.removesuffix(" FORMAT JSONEachRow").split(" UNION ALL "):
+                family = part.split("SELECT '", 1)[1].split("' AS family", 1)[0]
+                result.extend({"family": family, "record_id": row["record_id"],
+                               "content_hash": row["content_hash"]}
+                              for row in self.tables.get(family, [])
+                              if row["batch_id"] == batch_id)
+            return "\n".join(json.dumps(row) for row in result)
         name = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]
         columns = sql.removeprefix("SELECT ").split(" FROM ", 1)[0].split(",")
         if "WHERE run_id=" in sql:
@@ -97,11 +109,14 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     item = batch()
     assert publish_typed_batch(client, item) == BATCH
     assert client.inserts == ["trading_event_v1", "trading_commit_v1"]
+    assert len(client.selects) == 5
     assert publish_typed_batch(client, item) == BATCH
     assert client.inserts == ["trading_event_v1", "trading_commit_v1"]
+    assert len(client.selects) == 7
     assert len(client.tables["trading_commit_v1"]) == 1
     assert not any("payload_json" in row for rows in client.tables.values() for row in rows)
     prefix = load_committed_prefix(client, RUN)
+    assert len(client.selects) == 9
     assert prefix is not None
     assert (prefix.last_sequence, prefix.source_cursor, prefix.batch_ids) == (1, "bucket-1", (BATCH,))
 
