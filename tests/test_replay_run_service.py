@@ -2830,11 +2830,12 @@ class BacktestPreflightTests(unittest.TestCase):
                 configuration_revision=approved,
             )
 
-        self.assertTrue(payload["strategy_run_ready"])
+        self.assertFalse(payload["strategy_run_ready"])
         materialize.assert_not_called()
-        check = {row["id"]: row for row in payload["checks"]}[
-            "strategy_assignments"
-        ]
+        checks = {row["id"]: row for row in payload["checks"]}
+        self.assertEqual(checks["fixed_execution_contract"]["status"], "blocked")
+        check = checks["strategy_assignments"]
+        self.assertEqual(check["status"], "ready")
         self.assertIn("source-native Signal Stream", check["summary"])
         self.assertIn("bounded ticker", check["evidence"])
 

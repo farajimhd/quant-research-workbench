@@ -10131,6 +10131,30 @@ def backtest_preflight(
             ),
             "evidence": ",".join(evidence_gaps),
         })
+        from src.backend.backtest_journal_clickhouse import (
+            journal_clickhouse_client, storage_preflight,
+        )
+        journal_error = ""
+        journal_client = None
+        try:
+            journal_client = journal_clickhouse_client()
+            storage_preflight(journal_client)
+        except Exception as exc:
+            journal_error = str(exc)
+        finally:
+            if journal_client is not None:
+                journal_client.close()
+        checks.append({
+            "id": "clickhouse_journal",
+            "label": "Read-only market data and isolated ClickHouse journal",
+            "status": "blocked" if journal_error else "ready",
+            "required": True,
+            "summary": (
+                "Dedicated journal credentials and live_market_ssd tables are verified."
+                if not journal_error else f"ClickHouse journal is unavailable: {journal_error}"
+            ),
+            "evidence": "arte.bt_*" if not journal_error else journal_error,
+        })
     checks.append({
         "id": "persisted_market_products",
         "label": "Persisted Backtest market products",
