@@ -36,13 +36,14 @@ DEFAULT_LEDGER = Path(
     r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\build-ledger-v2.sqlite3"
 )
 FIXED_RESOLUTIONS_MS = (100, 1_000, 5_000, 10_000, 30_000, 60_000, 300_000, 3_600_000)
+SESSION_OPEN_OFFSET_MS = 14_400_000  # Producer buckets start at New York midnight.
 _INTERVAL = re.compile(r"^(?P<value>[1-9][0-9]*)(?P<unit>ms|s|m|h)$")
 _TICKER = re.compile(r"^[A-Z][A-Z0-9.\-]{0,15}$")
 _NEW_YORK = ZoneInfo("America/New_York")
 
 
 def market_day_boundary(session_date: date | str, boundary_ms: int) -> datetime:
-    """Decode the persisted bucket clock, whose origin is 04:00 New York."""
+    """Decode the Backtest clock, normalized from midnight buckets to 04:00."""
     day = date.fromisoformat(session_date) if isinstance(session_date, str) else session_date
     if not 0 <= boundary_ms <= 57_600_000:
         raise ValueError("Market-day boundary must be within 04:00-20:00 New York")
@@ -502,7 +503,7 @@ def market_day_source_sqls(
             "" if through_boundary_ms is None else
             f" AND (toUInt64(bucket_index)+1)*"
             f"{'100' if stage == 'liquidity_100ms_v1' else 'resolution_ms'}"
-            f"<={through_boundary_ms}"
+            f"<={through_boundary_ms + SESSION_OPEN_OFFSET_MS}"
         )
         return (
             f"SELECT * FROM arte.{stage} WHERE build_id={_literal(plan.build_id)} "
@@ -527,7 +528,7 @@ def market_day_source_sqls(
     columns_100 = ",".join(f"b.{name} AS {name}" for name in bar_columns)
     liquidity_100 = ",".join(f"l.{name} AS {name}" for name in liquidity_columns)
     base_100 = f"""SELECT l.session_date,l.ticker,l.bucket_index,toUInt32(100) AS resolution_ms,
-        (toUInt64(l.bucket_index)+1)*100 AS boundary_ms,{columns_100},{liquidity_100}
+        (toUInt64(l.bucket_index)+1)*100-{SESSION_OPEN_OFFSET_MS} AS boundary_ms,{columns_100},{liquidity_100}
       FROM ({pinned('liquidity_100ms_v1', liquidity)}) l
       LEFT JOIN (SELECT * FROM ({pinned('bars_v1', bars)}) WHERE resolution_ms=100) b ON
         b.session_date=l.session_date AND b.ticker=l.ticker
@@ -539,7 +540,7 @@ def market_day_source_sqls(
         columns_higher = ",".join(f"b.{name} AS {name}" for name in bar_columns)
         empty_liquidity = ",".join(f"0 AS {name}" for name in liquidity_columns)
         bases.append(f"""SELECT b.session_date,b.ticker,b.bucket_index,
-          b.resolution_ms,(toUInt64(b.bucket_index)+1)*b.resolution_ms AS boundary_ms,
+          b.resolution_ms,(toUInt64(b.bucket_index)+1)*b.resolution_ms-{SESSION_OPEN_OFFSET_MS} AS boundary_ms,
           {columns_higher},{empty_liquidity}
           FROM (SELECT * FROM ({pinned('bars_v1', bars)})
                 WHERE resolution_ms IN ({resolution_sql})) b""")
@@ -595,8 +596,8 @@ def iter_persisted_v7_seconds(
     unit = _unit_map(plan, "bars").get((session_date, ticker))
     if unit is None:
         raise ValueError("V7 catch-up lacks a pinned bar attempt")
-    completed_count = through_boundary_ms // 1_000
-    if completed_count == 0:
+    completed_count = (through_boundary_ms + SESSION_OPEN_OFFSET_MS) // 1_000
+    if through_boundary_ms == 0:
         return
     query = assert_select_only(
         "SELECT ticker,resolution_ms,bucket_index,price_valid,extremes_valid,"
@@ -606,7 +607,8 @@ def iter_persisted_v7_seconds(
         f"AND session_date=toDate({_literal(session_date)}) "
         f"AND ticker={_literal(ticker)} "
         f"AND attempt_id=toUUID({_literal(unit.attempt_id)}) "
-        f"AND resolution_ms=1000 AND bucket_index<{completed_count} "
+        f"AND resolution_ms=1000 AND bucket_index>={SESSION_OPEN_OFFSET_MS // 1_000} "
+        f"AND bucket_index<{completed_count} "
         "ORDER BY bucket_index FORMAT JSONEachRow"
     )
     active = client or readonly_clickhouse_client()

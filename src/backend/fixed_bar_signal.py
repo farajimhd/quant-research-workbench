@@ -13,7 +13,7 @@ from datetime import timedelta
 from typing import Any, Mapping
 
 from src.backend.backtest_market_data import (
-    CertifiedMarketDayPlan, _literal, _unit_map, assert_select_only,
+    CertifiedMarketDayPlan, SESSION_OPEN_OFFSET_MS, _literal, _unit_map, assert_select_only,
     market_day_boundary,
 )
 
@@ -98,7 +98,8 @@ def first_squeeze_sql(plan: CertifiedMarketDayPlan, *, through_boundary_ms: int)
         WHERE build_id={_literal(plan.build_id)}
           AND (session_date,ticker,attempt_id) IN ({attempts})
           AND resolution_ms=100 AND price_valid=1
-          AND bucket_index<{through_boundary_ms // 100}
+          AND bucket_index>={SESSION_OPEN_OFFSET_MS // 100}
+          AND bucket_index<{(through_boundary_ms + SESSION_OPEN_OFFSET_MS) // 100}
         WINDOW w AS (PARTITION BY session_date,ticker ORDER BY bucket_index
                      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
       ), candidates AS (
@@ -136,14 +137,15 @@ def load_first_squeeze_occurrences(
         volume, previous_volume = float(row["volume"]), float(row["previous_volume"])
         trades, previous_trades = int(row["trade_count"]), int(row["previous_trade_count"])
         if (key in seen or day not in plan.sessions or ticker not in plan.tickers
-                or not 0 <= bucket < through_boundary_ms // 100
+                or not SESSION_OPEN_OFFSET_MS // 100 <= bucket
+                       < (through_boundary_ms + SESSION_OPEN_OFFSET_MS) // 100
                 or close_int <= 0 or previous_int <= 0
                 or not math.isfinite(volume) or not math.isfinite(previous_volume)
                 or (close_int / previous_int - 1) * 100 < 0.05
                 or volume <= previous_volume or trades <= previous_trades):
             raise ValueError("Completed-bar squeeze query returned invalid or duplicate evidence")
         seen.add(key)
-        at = market_day_boundary(day, (bucket + 1) * 100)
+        at = market_day_boundary(day, (bucket + 1) * 100 - SESSION_OPEN_OFFSET_MS)
         price, anchor = close_int / 10_000, previous_int / 10_000
         move = (price / anchor - 1) * 100
         identity = f"{plan.token}:{STREAM_ID}:{day}:{ticker}:{bucket}"

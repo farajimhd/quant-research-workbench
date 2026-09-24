@@ -11,7 +11,8 @@ from typing import Any, Mapping, Sequence
 
 from src.backend.swing_book_source import session_bounds
 from src.backend.backtest_market_data import (
-    CertifiedMarketDayPlan, iter_persisted_v7_seconds, market_day_boundary,
+    CertifiedMarketDayPlan, SESSION_OPEN_OFFSET_MS,
+    iter_persisted_v7_seconds, market_day_boundary,
 )
 from src.backend.structural_v7_seed import CertifiedSeedPlan, load_seed, split_evidence
 from src.market_engine.streaming_level_book import StreamingLevelBook, VERSION
@@ -137,7 +138,10 @@ class FixedV7Cache:
                 through_boundary_ms=boundary_ms, client=self.client,
             ):
                 if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
-                    bar_at = market_day_boundary(self.session, (int(row["bucket_index"]) + 1) * 1_000)
+                    bar_at = market_day_boundary(
+                        self.session,
+                        (int(row["bucket_index"]) + 1) * 1_000 - SESSION_OPEN_OFFSET_MS,
+                    )
                     stream.update_second(row, at=bar_at)
             self._streams[ticker] = stream
         return stream.context(as_of=as_of, price=price)

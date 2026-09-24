@@ -53,10 +53,10 @@ def test_first_squeeze_is_read_only_and_available_at_completed_boundary():
         def iter_json_each_row(self, sql):
             assert sql.startswith("WITH ordered AS")
             assert "arte.bars_v1" in sql
-            assert "bucket_index<198000" in sql
+            assert "bucket_index<342000" in sql
             assert "INSERT" not in sql
             return iter([{"session_date": DAY, "ticker": TICKER,
-                          "bucket_index": 3000, "open_int": 99_900,
+                          "bucket_index": 147000, "open_int": 99_900,
                           "close_int": 100_100, "previous_close_int": 100_000,
                           "volume": 200., "previous_volume": 100.,
                           "trade_count": 4, "previous_trade_count": 2}])

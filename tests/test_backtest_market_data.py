@@ -160,8 +160,9 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertTrue(all("ORDER BY m.session_date,m.boundary_ms,m.ticker,m.resolution_ms" in
                             source for source in sources))
         premarket_sql = "\n".join(market_day_source_sqls(plan, through_boundary_ms=19_800_000))
-        self.assertIn("(toUInt64(bucket_index)+1)*100<=19800000", premarket_sql)
-        self.assertIn("(toUInt64(bucket_index)+1)*resolution_ms<=19800000", premarket_sql)
+        self.assertIn("(toUInt64(bucket_index)+1)*100<=34200000", premarket_sql)
+        self.assertIn("(toUInt64(bucket_index)+1)*resolution_ms<=34200000", premarket_sql)
+        self.assertIn("*100-14400000 AS boundary_ms", premarket_sql)
         with self.assertRaisesRegex(ValueError, "positive 100ms"):
             market_day_source_sqls(plan, through_boundary_ms=19_800_001)
 
@@ -231,7 +232,8 @@ class BacktestMarketDataTests(unittest.TestCase):
                                               client=client))
         assert len(rows) == 1
         assert "arte.bars_v1" in client.queries[0]
-        assert "AND resolution_ms=1000 AND bucket_index<300" in client.queries[0]
+        assert "AND resolution_ms=1000 AND bucket_index>=14400" in client.queries[0]
+        assert "AND bucket_index<14700" in client.queries[0]
         assert "attempt_id=toUUID('00000000-0000-0000-0000-000000000001')" in client.queries[0]
         with self.assertRaisesRegex(ValueError, "outside the certified"):
             list(iter_persisted_v7_seconds(plan, session_date="2026-08-18",

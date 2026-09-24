@@ -66,7 +66,7 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds():
                     level_count=0, observation_count=0, input_policy="",
                     source_extraction_version="", band_config_hash="0" * 64,
                     source_checkpoint_hash="", source_plan_hash="b" * 64)
-    bar = dict(ticker="TEST", resolution_ms=1000, bucket_index=300,
+    bar = dict(ticker="TEST", resolution_ms=1000, bucket_index=14700,
                price_valid=1, extremes_valid=1, open_int=100000,
                high_int=100100, low_int=99900, close_int=100050, volume=100)
 
@@ -83,7 +83,7 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds():
             elif "market_stock_split_v1" in sql:
                 rows = []
             elif "arte.bars_v1" in sql:
-                rows = [bar] if "bucket_index<301" in sql else []
+                rows = [bar] if "bucket_index<14701" in sql else []
             else:
                 raise AssertionError(sql)
             return "\n".join(json.dumps(row) for row in rows)

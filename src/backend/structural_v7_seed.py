@@ -123,8 +123,8 @@ def certified_seed_plan(market: Any, client: Any) -> CertifiedSeedPlan:
     if missing_coverage or duplicate_coverage or unexpected_coverage:
         raise ValueError(
             "V7 prior coverage is missing or duplicated: "
-            f"missing={len(missing_coverage)} {missing_coverage[:32]}, "
-            f"duplicates={duplicate_coverage}, unexpected={unexpected_coverage[:32]}"
+            f"missing={len(missing_coverage)} {missing_coverage[:128]}, "
+            f"duplicates={duplicate_coverage}, unexpected={unexpected_coverage[:128]}"
         )
     if len(plan_hashes) != 1 or len(next(iter(plan_hashes))) != 64:
         raise ValueError("V7 prior seeds mix source campaigns")
