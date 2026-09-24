@@ -7,7 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from src.trading_runtime.arte_activation_projection import (
-    ACTIVATION_TABLES, load_activation, prepare_activation_rows,
+    ACTIVATION_TABLES, _sealed, load_activation, load_session_activations, prepare_activation_rows,
     project_activation, publish_activation, restore_activation,
 )
 from src.trading_runtime.strategy_activation import strategy_observation_from_signal_occurrence
@@ -54,6 +54,12 @@ class _MemoryClient:
             name = sql.split("arte.", 1)[1].split(" ", 1)[0]
             identity = dict(re.findall(r"(run_id|session_date|run_plan_id|ticker|event_id)='([^']*)'", sql))
             return "\n".join(json.dumps(row) for row in self.rows[name]
+                             if all(str(row[key]) == value for key, value in identity.items()))
+        if sql.startswith("SELECT event_id FROM arte."):
+            name = sql.split("arte.", 1)[1].split(" ", 1)[0]
+            identity = dict(re.findall(r"(run_id|session_date|run_plan_id|ticker)='([^']*)'", sql))
+            return "\n".join(json.dumps({"event_id": row["event_id"]})
+                             for row in self.rows[name]
                              if all(str(row[key]) == value for key, value in identity.items()))
         raise AssertionError(sql)
 
@@ -198,6 +204,34 @@ class ActivationProjectionTests(unittest.TestCase):
         self.assertEqual(evidence["decimal"], Decimal("12.340000000000000000"))
         self.assertIs(evidence["flag"], True)
         self.assertEqual(evidence["label"], "open")
+
+    def test_session_audit_recovers_committed_heads_and_rejects_partial_rows(self) -> None:
+        client = _MemoryClient()
+        projected = project_activation(_delivery())
+        _publish(client, projected)
+        query = dict(session_date=date(2026, 8, 21), run_plan_id="plan-1", ticker="SUGP")
+        recovered = load_session_activations(client, **query)
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0]["event_id"], "event-1")
+        client.rows["trading_activation_commit_v1"].clear()
+        with self.assertRaisesRegex(RuntimeError, "lacks a committed fence"):
+            load_session_activations(client, **query)
+
+    def test_session_audit_rejects_duplicate_commit_and_orphan_evidence(self) -> None:
+        client = _MemoryClient()
+        _publish(client, project_activation(_delivery()))
+        query = dict(session_date=date(2026, 8, 21), run_plan_id="plan-1", ticker="SUGP")
+        client.rows["trading_activation_commit_v1"].append(
+            dict(client.rows["trading_activation_commit_v1"][0]))
+        with self.assertRaisesRegex(RuntimeError, "duplicate parent or commit"):
+            load_session_activations(client, **query)
+        client.rows["trading_activation_commit_v1"].pop()
+        orphan = dict(client.rows["trading_activation_evidence_v1"][0])
+        orphan["event_id"] = "orphan"
+        orphan.pop("content_hash")
+        client.rows["trading_activation_evidence_v1"].append(_sealed(orphan))
+        with self.assertRaisesRegex(RuntimeError, "lacks a committed fence"):
+            load_session_activations(client, **query)
 
 
 if __name__ == "__main__":

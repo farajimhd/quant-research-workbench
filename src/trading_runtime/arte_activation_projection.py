@@ -423,3 +423,35 @@ def load_activation(client: Any, *, session_date: date, run_plan_id: str,
     restored = restore_activation(ActivationProjection(delivery, evidence, field_evidence))
     strategy_observation_from_signal_occurrence(restored["occurrence"])
     return restored
+
+
+def load_session_activations(client: Any, *, session_date: date,
+                             run_plan_id: str, ticker: str) -> tuple[dict[str, Any], ...]:
+    """Audit every current-session row for one plan/ticker before replay.
+
+    Enumerating all families exposes prepared-only parents and orphan evidence,
+    including identities that a commit-only query would silently omit.
+    """
+    if (type(session_date) is not date or not isinstance(run_plan_id, str)
+            or not run_plan_id or not isinstance(ticker, str) or not ticker):
+        raise ValueError("Activation recovery requires a session, run plan, and ticker")
+    identity = {"run_id": ACTIVATION_RUN_ID, "session_date": session_date.isoformat(),
+                "run_plan_id": run_plan_id, "ticker": ticker}
+    where = " AND ".join(f"{key}={_literal(value)}" for key, value in identity.items())
+    event_ids: set[str] = set()
+    for name in _ACTIVATION_CONTRACTS:
+        response = client.execute(
+            f"SELECT event_id FROM arte.{name} WHERE {where} "
+            "LIMIT 4097 FORMAT JSONEachRow")
+        rows = tuple(json.loads(line) for line in response.splitlines() if line.strip())
+        if len(rows) > 4096:
+            raise RuntimeError("Activation session audit exceeds bounded row limit")
+        for row in rows:
+            if set(row) != {"event_id"} or not isinstance(row["event_id"], str) or not row["event_id"]:
+                raise RuntimeError("Activation session audit returned an invalid event identity")
+            event_ids.add(row["event_id"])
+        if len(event_ids) > 4096:
+            raise RuntimeError("Activation session audit exceeds bounded event limit")
+    return tuple(load_activation(client, session_date=session_date,
+                                 run_plan_id=run_plan_id, ticker=ticker, event_id=event_id)
+                 for event_id in sorted(event_ids))
