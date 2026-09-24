@@ -12,6 +12,7 @@ from hashlib import sha256
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from src.trading_runtime.arte_intent_projection import project_strategy_intent
 from src.trading_runtime.arte_journal_projection import _exact_decimal
 from src.trading_runtime.arte_journal_writer import (
     CommittedPrefix, TypedJournalBatch, _CONTRACTS, _canonical_typed_content,
@@ -19,17 +20,20 @@ from src.trading_runtime.arte_journal_writer import (
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.signals import StrategyIntent
 
 
 def oms_group_state_batch(
     group: Any, *, run_id: str, run_month: date, attempt_id: str,
     batch_id: str, prior_batch_id: str, sequence: int, source_cursor: str,
     run_status: str, strategy_id: str, strategy_revision: int,
-    recorded_at: datetime,
+    recorded_at: datetime, published_intent_fingerprint: str,
 ) -> TypedJournalBatch:
     """Project the represented group revision and its keyed recovery components."""
     if not run_id or not group.group_id or not group.account_id or not group.intent.intent_id:
         raise ValueError("OMS state identity is incomplete")
+    if oms_intent_fingerprint(group.intent) != published_intent_fingerprint:
+        raise ValueError("OMS group intent differs from its published typed revision")
     if recorded_at.tzinfo is None or group.created_at.tzinfo is None or group.updated_at.tzinfo is None:
         raise ValueError("OMS state timestamps must be timezone-aware")
     if len(group.orders) > 65535 or len(group.broker_order_ids) > 65535:
@@ -152,6 +156,14 @@ def oms_group_state_batch(
         oms_warnings=strings(group.warning_message_ids, "warning", "message_id"),
         oms_cancel_ocas=strings(group.plan.cancel_oca_groups, "cancel-oca", "oca_group"),
     )
+
+
+def oms_intent_fingerprint(intent: StrategyIntent) -> str:
+    """Pin the typed intent content before OMS can replace the same logical ID."""
+    projected = project_strategy_intent(intent)
+    return sha256(canonical_json({
+        "core": projected.core, "slices": projected.protection_slices,
+    }).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

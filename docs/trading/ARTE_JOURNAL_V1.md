@@ -171,7 +171,13 @@ a journal-only two-batch intent-to-OMS publication and cold read passed. This
 is not a live OMS cutover: strategy orders with `raw` canonical metadata or
 broker algo parameters fail closed; remaining intent metadata, tactic/runtime
 state, and broker reconciliation must be normalized and restored before SQLite
-can be removed.
+can be removed. Live OMS also replaces `group.intent` content under the same
+logical `intent_id` during target/stop amendments. The staged group projector
+rejects any state whose typed intent fingerprint differs from the pinned
+published revision;
+a later contract must persist and link exact typed intent revisions before
+those amendments can be recovered. An intent ID alone is not a safe revision
+key.
 The simple `OrderRequest` projection now preserves the broker's named flat
 instructions, including security type, listing exchange, `auxPrice`, trailing
 settings, manual/single-group flags, operator/referrer, strategy, and parent

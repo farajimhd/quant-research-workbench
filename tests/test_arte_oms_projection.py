@@ -12,6 +12,7 @@ from src.trading_runtime.arte_journal_writer import (
 )
 from src.trading_runtime.arte_oms_projection import (
     load_committed_oms_group_state_page, oms_group_state_batch,
+    oms_intent_fingerprint,
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.order_management import _ManagedOrderGroup, OrderManagementState
@@ -46,6 +47,7 @@ def test_oms_group_projection_has_normalized_children_and_committed_fence() -> N
     run_id, attempt_id = "live:oms-test", str(uuid4())
     first_id, second_id = str(uuid4()), str(uuid4())
     strategy_intent = intent(ticker="Test.a")
+    intent_fingerprint = oms_intent_fingerprint(strategy_intent)
     first = strategy_intent_batch(
         strategy_intent, run_id=run_id, run_month=date(2026, 8, 1),
         account_id="DU1", attempt_id=attempt_id, batch_id=first_id,
@@ -75,6 +77,7 @@ def test_oms_group_projection_has_normalized_children_and_committed_fence() -> N
         attempt_id=attempt_id, batch_id=second_id, prior_batch_id=first_id,
         sequence=2, source_cursor="oms", run_status="completed",
         strategy_id="strategy-1", strategy_revision=1, recorded_at=at,
+        published_intent_fingerprint=intent_fingerprint,
     )
     assert [row["batch_ordinal"] for row in second.oms_order_states] == [0, 1]
     assert [row["ticker"] for row in second.oms_order_states] == ["Test.a", "Test.a"]
@@ -111,4 +114,14 @@ def test_oms_group_projection_has_normalized_children_and_committed_fence() -> N
             batch_id=str(uuid4()), prior_batch_id=first_id, sequence=2,
             source_cursor="oms", run_status="running", strategy_id="strategy-1",
             strategy_revision=1, recorded_at=at,
+            published_intent_fingerprint=intent_fingerprint,
+        )
+    with pytest.raises(ValueError, match="differs from its published typed revision"):
+        oms_group_state_batch(
+            replace(group, intent=replace(strategy_intent, reference_price=12.6)),
+            run_id=run_id, run_month=date(2026, 8, 1), attempt_id=attempt_id,
+            batch_id=str(uuid4()), prior_batch_id=first_id, sequence=2,
+            source_cursor="oms", run_status="running", strategy_id="strategy-1",
+            strategy_revision=1, recorded_at=at,
+            published_intent_fingerprint=intent_fingerprint,
         )
