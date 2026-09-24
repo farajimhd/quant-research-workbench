@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +8,8 @@ from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.replay_run_service import ReplayRunController, RunMode
 from src.trading_runtime.journal_evidence import REFERENCE
 from src.trading_runtime.journal import TradingJournal
+from src.trading_runtime.arte_journal_projection import backtest_cursor_batch
+from src.trading_runtime.arte_journal_writer import _sealed_families
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
@@ -231,6 +233,14 @@ def test_controller_checkpoint_becomes_resumable_only_after_clickhouse_fence():
     assert pending[0].entity_id == "2026-08-18:14400000"
     assert pending[0].payload["market_sequence"] == 1
     assert "source_cursor" not in pending[0].payload
+    typed = backtest_cursor_batch(
+        pending[0], run_month=date(2026, 8, 1),
+        attempt_id="00000000-0000-0000-0000-000000000021",
+        batch_id="00000000-0000-0000-0000-000000000022",
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        source_cursor=pending[0].entity_id,
+    )
+    assert dict(_sealed_families(typed))["trading_backtest_cursor_v1"]
     assert journal.load_checkpoint(RUN_ID) is None
     assert controller._checkpoint_projection_cache is None
     assert controller._checkpoint_io_task is None
