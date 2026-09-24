@@ -185,6 +185,16 @@ def test_typed_publication_detects_conflicting_readback() -> None:
         load_committed_prefix(client, RUN)
 
 
+def test_typed_publication_rejects_orphan_rows_in_empty_family() -> None:
+    client = MemoryClient()
+    client.tables["trading_execution_v1"] = [{
+        "batch_id": BATCH, "record_id": RECORD, "content_hash": "0" * 64,
+    }]
+    with pytest.raises(RuntimeError, match="trading_execution_v1 has a conflicting"):
+        publish_typed_batch(client, batch())
+    assert "trading_commit_v1" not in client.inserts
+
+
 def test_typed_publication_rejects_out_of_order_prefix() -> None:
     client = MemoryClient()
     item = batch()

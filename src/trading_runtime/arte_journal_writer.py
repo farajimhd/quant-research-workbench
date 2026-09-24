@@ -203,7 +203,7 @@ def _verify_family(client: Any, name: str, batch_id: str,
         f"SELECT record_id,content_hash FROM arte.{name} "
         f"WHERE batch_id=toUUID({_literal(batch_id)}) FORMAT JSONEachRow")
     if not actual:
-        return False
+        return not rows
     if _identity(actual) != _identity(rows):
         raise RuntimeError(f"{name} has a conflicting or duplicated batch")
     return True
@@ -278,7 +278,7 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
     hashes: dict[str, str] = {}
     for name, rows in families:
         hashes[name] = sha256(canonical_json(_identity(rows)).encode("utf-8")).hexdigest()
-        if rows and not _verify_family(client, name, batch.batch_id, rows):
+        if not _verify_family(client, name, batch.batch_id, rows):
             _insert(client, name, rows, f"{batch.batch_id}:{name}")
             if not _verify_family(client, name, batch.batch_id, rows):
                 raise RuntimeError(f"{name} did not become durable")
