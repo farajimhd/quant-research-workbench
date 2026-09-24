@@ -34,6 +34,7 @@ class _ReadClient:
         return json.dumps({
             "ticker": "SUGP", "n": 10, "unique_keys": 10,
             "hash": "42", "resolutions": [100, 1000],
+            "eligible_keys": 10, "key_hash": "123",
             "attempt_id": "00000000-0000-0000-0000-000000000001",
         }) + "\n"
 
@@ -42,6 +43,14 @@ class _CorruptReadClient(_ReadClient):
     def execute(self, sql: str) -> str:
         row = json.loads(super().execute(sql))
         row["hash"] = "43"
+        return json.dumps(row) + "\n"
+
+
+class _MisalignedIndicatorClient(_ReadClient):
+    def execute(self, sql: str) -> str:
+        row = json.loads(super().execute(sql))
+        if "arte.indicators_v1" in sql:
+            row["key_hash"] = "124"
         return json.dumps(row) + "\n"
 
 
@@ -148,6 +157,7 @@ class BacktestMarketDataTests(unittest.TestCase):
         sql = "\n".join(sources)
         self.assertIn("arte.bars_v1", sql)
         self.assertIn("arte.indicators_v1", sql)
+        self.assertIn("i.resolution_ms AS indicator_resolution_ms", sql)
         self.assertIn("arte.liquidity_100ms_v1", sql)
         self.assertNotIn("market_day_events", sql)
         self.assertNotIn("WITH scopes", sql)
@@ -274,6 +284,15 @@ class BacktestMarketDataTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "integrity changed"):
                 verify_market_day_plan(plan, _CorruptReadClient())
+
+    def test_replaced_indicator_key_fails_preflight_even_with_matching_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self._ledger(Path(directory)).certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+            with self.assertRaisesRegex(ValueError, "indicator.*key coverage"):
+                verify_market_day_plan(plan, _MisalignedIndicatorClient())
 
     def test_incomplete_full_population_fails_instead_of_shrinking(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

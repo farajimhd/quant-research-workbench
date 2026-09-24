@@ -11141,6 +11141,8 @@ def _persisted_market_day_frame(
     execution_vwap: float | None = None,
 ) -> ReplayDerivedFrame:
     resolution_ms = int(row["resolution_ms"])
+    if int(row.get("indicator_resolution_ms") or 0) != resolution_ms:
+        raise ValueError("Persisted Backtest price bar has no matching indicator row")
     timeframe = (
         f"{resolution_ms // 3_600_000}h" if resolution_ms % 3_600_000 == 0
         else f"{resolution_ms // 60_000}m" if resolution_ms % 60_000 == 0

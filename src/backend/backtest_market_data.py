@@ -401,6 +401,10 @@ def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None) -> None:
             "technical": "indicators_v1",
             "broker_100ms": "liquidity_100ms_v1",
         }
+        # These are computed in the same vectorized scan as each product's
+        # immutable row hash. A matching row count alone would not detect an
+        # indicator key replaced by a different completed bar key.
+        indicator_keys: dict[tuple[str, str, str], tuple[int, str]] = {}
         for stage, table in stage_tables.items():
             units = [unit for unit in plan.units if unit.stage == stage]
             if len(units) != expected:
@@ -413,11 +417,20 @@ def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None) -> None:
                 for offset in range(0, len(ordered), 256):
                     batch = ordered[offset:offset + 256]
                     tickers = ",".join(_literal(unit.ticker) for unit in batch)
+                    key_evidence = (
+                        ",countIf(price_valid) AS eligible_keys,"
+                        "toString(sumIf(cityHash64(tuple(resolution_ms,bucket_index)),price_valid)) AS key_hash"
+                        if stage == "bars" else
+                        ",count() AS eligible_keys,"
+                        "toString(sum(cityHash64(tuple(resolution_ms,bucket_index)))) AS key_hash"
+                        if stage == "technical" else ""
+                    )
                     sql = assert_select_only(
                         "SELECT ticker,toString(attempt_id) AS attempt_id,"
                         "count() AS n,uniqExact((resolution_ms,bucket_index)) AS unique_keys,"
                         "toString(sum(cityHash64(tuple(*)))) AS hash,"
-                        "groupUniqArray(resolution_ms) AS resolutions "
+                        "groupUniqArray(resolution_ms) AS resolutions"
+                        f"{key_evidence} "
                         f"FROM {ARTE_DATABASE}.{table} WHERE build_id={_literal(plan.build_id)} "
                         f"AND session_date=toDate({_literal(day)}) AND ticker IN ({tickers}) "
                         "GROUP BY ticker,attempt_id FORMAT JSONEachRow"
@@ -447,6 +460,15 @@ def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None) -> None:
                                     f"Persisted {ARTE_DATABASE}.{table} lacks {day} "
                                     f"{unit.ticker} resolutions {sorted(missing)}"
                                 )
+                            key = (day, unit.ticker, stage)
+                            indicator_keys[key] = (
+                                int(row["eligible_keys"]), str(row["key_hash"]))
+        for day, ticker in sorted({(unit.session_date, unit.ticker) for unit in plan.units}):
+            if indicator_keys.get((day, ticker, "bars")) != indicator_keys.get(
+                (day, ticker, "technical")):
+                raise ValueError(
+                    f"Persisted {ARTE_DATABASE}.indicators_v1 key coverage differs "
+                    f"from price-valid bars: {day} {ticker}")
     finally:
         if close:
             active.close()
@@ -550,7 +572,7 @@ def market_day_source_sqls(
         "rsi_ready", "atr_ready", "previous_close",
     ))
     return tuple(assert_select_only(f"""
-      SELECT m.*,{indicators} FROM ({base}) m
+      SELECT m.*,i.resolution_ms AS indicator_resolution_ms,{indicators} FROM ({base}) m
       LEFT JOIN ({pinned('indicators_v1', technical)}) i ON
         i.session_date=m.session_date AND i.ticker=m.ticker
         AND i.resolution_ms=m.resolution_ms AND i.bucket_index=m.bucket_index

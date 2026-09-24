@@ -11,7 +11,7 @@ import pytest
 import src.backend.backtest_market_data as market_data
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
-from src.backend.replay_run_service import ReplayRunController, ReplayRunService, RunMode, _fixed_market_evidence_gaps
+from src.backend.replay_run_service import ReplayRunController, ReplayRunService, RunMode, _fixed_market_evidence_gaps, _persisted_market_day_frame
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.runtime import RunConfig, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
@@ -298,10 +298,20 @@ def test_fixed_signal_loader_uses_pinned_bars_without_event_fallback(monkeypatch
 
 def _row(ticker, boundary_ms, resolution_ms):
     return dict(session_date=DAY, ticker=ticker, boundary_ms=boundary_ms,
-                resolution_ms=resolution_ms, bucket_index=boundary_ms // resolution_ms - 1,
+                resolution_ms=resolution_ms, indicator_resolution_ms=resolution_ms,
+                bucket_index=boundary_ms // resolution_ms - 1,
                 price_valid=1, quote_valid=1, close_int=100_000,
                 execution_vwap=(10.0 if ticker == "AAPL" else 20.0)
                 + boundary_ms / 1_000 if resolution_ms == 100 else 0)
+
+
+def test_fixed_frame_rejects_missing_persisted_indicator_join():
+    row = _row("AAPL", 100, 100)
+    row["indicator_resolution_ms"] = 0
+    with pytest.raises(ValueError, match="matching indicator row"):
+        _persisted_market_day_frame(
+            row, at=datetime(2026, 8, 18, 4, 0, 0, 100000, tzinfo=NY),
+            sequence=1)
 
 
 def test_fixed_controller_applies_all_liquidity_before_any_strategy_frame(monkeypatch):
