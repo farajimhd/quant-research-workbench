@@ -13,7 +13,7 @@ import re
 from typing import Any
 
 from src.trading_runtime.arte_journal_schema import (
-    POLICY_ALLOWED_FIELDS, POLICY_BOOLEAN_FIELDS, POLICY_INTEGER_FIELDS,
+    POLICY_ALLOWED_FIELDS, POLICY_ALLOWED_TABLES, POLICY_BOOLEAN_FIELDS, POLICY_INTEGER_FIELDS,
     POLICY_NUMERIC_FIELDS, journal_permission_preflight, storage_preflight,
 )
 from src.trading_runtime.arte_journal_writer import _insert, _literal, _rows, _wire_row
@@ -22,10 +22,19 @@ from src.trading_runtime.portfolio import PortfolioPolicy
 
 
 _POLICY = "trading_portfolio_policy_v1"
-_ALLOWED = "trading_portfolio_policy_allowed_v1"
-_COMMIT = "trading_portfolio_policy_commit_v1"
+_COMMIT = "trading_portfolio_policy_commit_v2"
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _FIELD_ORDER = {name: index for index, name in enumerate(POLICY_ALLOWED_FIELDS)}
+
+
+def _child_rows(children: tuple[dict[str, Any], ...]) -> dict[str, tuple[dict[str, Any], ...]]:
+    """Route finite policy lists to named relations, never a persisted EAV row."""
+    return {
+        table: tuple({"policy_hash": row["policy_hash"], "ordinal": row["ordinal"],
+                      column: row["value"]}
+                     for row in children if row["field_name"] == name)
+        for name, (table, column) in POLICY_ALLOWED_TABLES.items()
+    }
 
 
 def _digest(value: Any) -> str:
@@ -81,7 +90,13 @@ def load_portfolio_policy(client: Any, policy_hash: str) -> PortfolioPolicy | No
     if not commits:
         return None
     roots = _query_rows(client, _POLICY, policy_hash)
-    children = _query_rows(client, _ALLOWED, policy_hash)
+    children = []
+    for name, (table, column) in POLICY_ALLOWED_TABLES.items():
+        for row in _query_rows(client, table, policy_hash):
+            if set(row) != {"policy_hash", "ordinal", column}:
+                raise RuntimeError("Portfolio policy allowed rows differ from typed schema")
+            children.append({"policy_hash": row["policy_hash"], "field_name": name,
+                             "ordinal": row["ordinal"], "value": row[column]})
     if len(commits) != 1 or len(roots) != 1:
         raise RuntimeError("Portfolio policy fence has missing or duplicate root rows")
     root, commit = roots[0], commits[0]
@@ -135,7 +150,7 @@ def publish_portfolio_policy(client: Any, policy: PortfolioPolicy) -> str:
         if load_portfolio_policy(client, policy_hash) != policy:
             raise RuntimeError("Committed portfolio policy differs from its source")
         return policy_hash
-    for table, expected in ((_POLICY, (root,)), (_ALLOWED, children)):
+    for table, expected in ((_POLICY, (root,)), *_child_rows(children).items()):
         actual = _query_rows(client, table, policy_hash)
         expected_wire = [_wire_row(table, row) for row in expected]
         if actual and sorted(actual, key=canonical_json) != sorted(expected_wire, key=canonical_json):

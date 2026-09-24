@@ -9,6 +9,7 @@ from src.trading_runtime.arte_portfolio_policy import (
     _policy_rows, load_portfolio_policy, publish_portfolio_policy,
 )
 from src.trading_runtime.portfolio import PortfolioPolicy
+from src.trading_runtime.arte_journal_schema import POLICY_ALLOWED_TABLES
 
 
 class Catalog:
@@ -47,8 +48,8 @@ def test_policy_catalog_is_typed_and_round_trips_without_json_columns() -> None:
     assert load_portfolio_policy(client, policy_hash) == policy
     assert publish_portfolio_policy(client, policy) == policy_hash
     assert client.inserts == ["trading_portfolio_policy_v1",
-                              "trading_portfolio_policy_allowed_v1",
-                              "trading_portfolio_policy_commit_v1"]
+                              *[table for table, _ in POLICY_ALLOWED_TABLES.values()],
+                              "trading_portfolio_policy_commit_v2"]
 
 
 def test_policy_catalog_ignores_unfenced_rows_and_detects_tampering() -> None:
@@ -58,7 +59,7 @@ def test_policy_catalog_ignores_unfenced_rows_and_detects_tampering() -> None:
     client.tables["trading_portfolio_policy_v1"] = [root]
     assert load_portfolio_policy(client, policy_hash) is None
     assert publish_portfolio_policy(client, policy) == policy_hash
-    client.tables["trading_portfolio_policy_allowed_v1"][0]["value"] = "WRONG"
+    client.tables["trading_portfolio_policy_currency_v1"][0]["currency"] = "WRONG"
     with pytest.raises(RuntimeError, match="allowed rows differ|content differs"):
         load_portfolio_policy(client, policy_hash)
     with pytest.raises(RuntimeError):
@@ -69,3 +70,27 @@ def test_policy_catalog_rejects_unrepresentable_allowed_values() -> None:
     policy = replace(PortfolioPolicy(), allowed_currencies=("USD", "USD"))
     with pytest.raises(ValueError, match="unique string tuple"):
         _policy_rows(policy)
+
+
+def test_each_allowed_policy_domain_has_its_own_relation() -> None:
+    policy = replace(
+        PortfolioPolicy(policy_id="five-domains"),
+        allowed_security_types=("STK",),
+        allowed_currencies=("USD", "CAD"),
+        restricted_symbols=("BAD",),
+        allowed_execution_policies=("market",),
+        allowed_protection_profiles=("bracket",),
+    )
+    client = Catalog()
+    policy_hash = publish_portfolio_policy(client, policy)
+    for name, (table, column) in POLICY_ALLOWED_TABLES.items():
+        rows = client.tables[table]
+        assert [row[column] for row in rows] == list(getattr(policy, name))
+        assert all(set(row) == {"policy_hash", "ordinal", column}
+                   and row["policy_hash"] == policy_hash for row in rows)
+    assert "trading_portfolio_policy_allowed_v1" not in client.tables
+    assert load_portfolio_policy(client, policy_hash) == policy
+    client.tables["trading_portfolio_policy_currency_v1"].append(
+        dict(client.tables["trading_portfolio_policy_currency_v1"][0]))
+    with pytest.raises(RuntimeError, match="incomplete or duplicated"):
+        load_portfolio_policy(client, policy_hash)

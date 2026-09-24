@@ -44,6 +44,13 @@ POLICY_ALLOWED_FIELDS = (
     "allowed_security_types", "allowed_currencies", "restricted_symbols",
     "allowed_execution_policies", "allowed_protection_profiles",
 )
+POLICY_ALLOWED_TABLES = {
+    "allowed_security_types": ("trading_portfolio_policy_security_type_v1", "security_type"),
+    "allowed_currencies": ("trading_portfolio_policy_currency_v1", "currency"),
+    "restricted_symbols": ("trading_portfolio_policy_restricted_symbol_v1", "symbol"),
+    "allowed_execution_policies": ("trading_portfolio_policy_execution_policy_v1", "execution_policy"),
+    "allowed_protection_profiles": ("trading_portfolio_policy_protection_profile_v1", "protection_profile"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,15 +225,13 @@ TABLES = (
         + tuple((name, "UInt8") for name in POLICY_BOOLEAN_FIELDS),
         "cityHash64(policy_hash) % 32", "policy_hash",
     ),
+    *(TableContract(
+        table, (("policy_hash", "FixedString(64)"), ("ordinal", "UInt16"),
+                (column, "String")),
+        "cityHash64(policy_hash) % 32", "policy_hash, ordinal",
+    ) for table, column in POLICY_ALLOWED_TABLES.values()),
     TableContract(
-        "trading_portfolio_policy_allowed_v1",
-        (("policy_hash", "FixedString(64)"),
-         ("field_name", "LowCardinality(String)"), ("ordinal", "UInt16"),
-         ("value", "String")),
-        "cityHash64(policy_hash) % 32", "policy_hash, field_name, ordinal",
-    ),
-    TableContract(
-        "trading_portfolio_policy_commit_v1",
+        "trading_portfolio_policy_commit_v2",
         (("policy_hash", "FixedString(64)"), ("allowed_count", "UInt32"),
          ("allowed_hash", "FixedString(64)"),
          ("committed_at", "DateTime64(6, 'UTC')")),
@@ -944,19 +949,18 @@ def backtest_cursor_upgrade_ddl() -> tuple[str, ...]:
 
 def portfolio_policy_schema_upgrade_ddl() -> tuple[str, ...]:
     """Operator-only immutable policy catalog; no market or state table writes."""
-    return tuple(table.ddl() for table in TABLES
-                 if table.name in {"trading_portfolio_policy_v1",
-                                   "trading_portfolio_policy_allowed_v1",
-                                   "trading_portfolio_policy_commit_v1"})
+    names = {"trading_portfolio_policy_v1", "trading_portfolio_policy_commit_v2"}
+    names.update(table for table, _ in POLICY_ALLOWED_TABLES.values())
+    return tuple(table.ddl() for table in TABLES if table.name in names)
 
 
 def portfolio_snapshot_schema_upgrade_ddl() -> tuple[str, ...]:
     """Operator-only, normalized account recovery snapshot families."""
+    policy_names = {"trading_portfolio_policy_v1", "trading_portfolio_policy_commit_v2"}
+    policy_names.update(table for table, _ in POLICY_ALLOWED_TABLES.values())
     return tuple(table.ddl() for table in TABLES
                  if table.name.startswith("trading_portfolio_")
-                 and table.name not in {"trading_portfolio_policy_v1",
-                                        "trading_portfolio_policy_allowed_v1",
-                                        "trading_portfolio_policy_commit_v1"})
+                 and table.name not in policy_names)
 
 
 def batch_lookup_index_upgrade_ddl() -> tuple[str, ...]:
