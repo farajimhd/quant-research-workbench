@@ -37,6 +37,7 @@ pub mod scanner;
 pub mod session;
 pub mod signal_catalog;
 pub mod signal_stream;
+pub mod signal_stream_typed;
 pub mod state;
 pub mod structure_certification;
 pub mod structure_book_intervals;
