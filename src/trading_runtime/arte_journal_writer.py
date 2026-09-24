@@ -1270,6 +1270,81 @@ def load_committed_order_transition_page(
     return tuple(result)
 
 
+def load_committed_execution_page(
+    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    limit: int = 500,
+) -> tuple[dict[str, Any], ...]:
+    """Read committed fill evidence without admitting interrupted inserts."""
+    return _load_committed_execution_detail_page(
+        client, prefix, "fill", "trading_execution_v1",
+        after_sequence=after_sequence, limit=limit,
+    )
+
+
+def load_committed_commission_page(
+    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    limit: int = 500,
+) -> tuple[dict[str, Any], ...]:
+    """Read committed fee revisions, including those after the original fill."""
+    return _load_committed_execution_detail_page(
+        client, prefix, "commission", "trading_commission_v1",
+        after_sequence=after_sequence, limit=limit,
+    )
+
+
+def _load_committed_execution_detail_page(
+    client: Any, prefix: CommittedPrefix, entity_type: str, table: str,
+    *, after_sequence: int, limit: int,
+) -> tuple[dict[str, Any], ...]:
+    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+        raise ValueError("Execution recovery requires a verified committed prefix")
+    if after_sequence < 0 or not 1 <= limit <= 1000:
+        raise ValueError("Execution recovery page bounds are invalid")
+    events = _rows(client,
+        "SELECT record_id,batch_id,sequence,event_month,account_id,event_time,entity_id "
+        "FROM arte.trading_event_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND sequence>{int(after_sequence)} "
+        f"AND sequence<={int(prefix.last_sequence)} "
+        "AND category='execution' "
+        f"AND entity_type={_literal(entity_type)} "
+        f"{_committed_batch_filter(prefix)}"
+        f"ORDER BY sequence LIMIT {int(limit)} FORMAT JSONEachRow")
+    if not events:
+        return ()
+    ids = tuple(str(UUID(str(row["record_id"]))) for row in events)
+    if len(set(ids)) != len(ids):
+        raise RuntimeError("Committed execution page repeated an event identity")
+    if any(str(UUID(str(row["batch_id"]))) not in prefix.batch_ids for row in events):
+        raise RuntimeError("Execution page contains an unfenced event")
+    columns = ",".join(column for column, _ in _CONTRACTS[table].columns)
+    ids_sql = ",".join(f"toUUID({_literal(value)})" for value in ids)
+    details = _rows(client, f"SELECT {columns} FROM arte.{table} "
+                    f"WHERE run_id={_literal(prefix.run_id)} "
+                    f"AND record_id IN ({ids_sql}) "
+                    f"{_committed_batch_filter(prefix)}FORMAT JSONEachRow")
+    if len(details) != len(events):
+        raise RuntimeError("Committed execution page has missing or duplicate details")
+    by_id = {str(UUID(str(row["record_id"]))): row for row in details}
+    if set(by_id) != set(ids):
+        raise RuntimeError("Committed execution page details differ from events")
+    result = []
+    prior = after_sequence
+    for event in events:
+        sequence = int(event["sequence"])
+        detail = by_id[str(UUID(str(event["record_id"])))]
+        if (sequence <= prior
+                or str(UUID(str(detail["batch_id"]))) != str(UUID(str(event["batch_id"])))
+                or detail["event_month"] != event["event_month"]
+                or detail["account_id"] != event["account_id"]
+                or detail["execution_id"] != event["entity_id"]
+                or detail["source_event_time"] != event["event_time"]):
+            raise RuntimeError("Committed execution page differs from its event envelope")
+        prior = sequence
+        result.append({"sequence": sequence, **detail})
+    return tuple(result)
+
+
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 

@@ -10,10 +10,12 @@ from uuid import UUID
 import pytest
 
 from src.trading_runtime import arte_journal_writer as writer_module
-from src.trading_runtime.arte_journal_projection import commission_revision_batch
+from src.trading_runtime.arte_journal_projection import broker_fill_batch, commission_revision_batch
 from src.trading_runtime.domain import CommissionEvent
+from src.trading_runtime.ibkr_client import _execution
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, JournalQueueFull, TypedJournalBatch, load_committed_prefix,
+    load_committed_commission_page, load_committed_execution_page,
     load_committed_order_command_page, load_committed_order_transition_page,
     load_typed_run_context, publish_typed_batch, publish_typed_run,
     publish_typed_run_context, typed_row,
@@ -349,6 +351,46 @@ def test_order_command_and_transition_have_typed_durable_fences() -> None:
     client.tables["trading_order_command_v1"][0]["account_id"] = "wrong"
     with pytest.raises(RuntimeError, match="event envelope"):
         load_committed_order_command_page(client, prefix)
+
+
+def test_execution_and_commission_pages_require_fenced_typed_details() -> None:
+    execution = _execution({
+        "execution_id": "fill-1", "symbol": "TEST", "side": "B",
+        "trade_time_r": 1787040300000, "size": 1, "price": 10.25,
+        "order_id": "broker-1", "order_ref": "client-1", "account": "DU1",
+        "conid": 123, "currency": "USD", "exchange": "ARCA",
+        "commission": 1.25,
+    })
+    item = broker_fill_batch(
+        execution, run_id=RUN, run_month=date(2026, 8, 1),
+        attempt_id=ATTEMPT, batch_id=BATCH, prior_batch_id=ZERO,
+        first_sequence=1, source_cursor="fill-1", status="completed",
+        received_at=datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc),
+    )
+    client = MemoryClient()
+    publish_typed_batch(client, item)
+    prefix = load_committed_prefix(client, RUN)
+    assert prefix is not None
+    fills = load_committed_execution_page(client, prefix)
+    fees = load_committed_commission_page(client, prefix)
+    assert len(fills) == len(fees) == 1
+    assert fills[0]["sequence"] == 1 and fills[0]["execution_id"] == "fill-1"
+    assert fees[0]["sequence"] == 2 and fees[0]["commission"] == "1.2500000000"
+    assert load_committed_execution_page(client, prefix, after_sequence=1) == ()
+    assert load_committed_commission_page(client, prefix, after_sequence=2) == ()
+    for name in ("trading_event_v1", "trading_execution_v1", "trading_commission_v1"):
+        clone = dict(client.tables[name][0])
+        clone["batch_id"] = "00000000-0000-0000-0000-000000000099"
+        client.tables[name].append(clone)
+    assert len(load_committed_execution_page(client, prefix)) == 1
+    assert len(load_committed_commission_page(client, prefix)) == 1
+    client.tables["trading_execution_v1"][0]["execution_id"] = "wrong"
+    with pytest.raises(RuntimeError, match="event envelope"):
+        load_committed_execution_page(client, prefix)
+    client.tables["trading_execution_v1"][0]["execution_id"] = "fill-1"
+    client.tables["trading_commission_v1"][0]["account_id"] = "wrong"
+    with pytest.raises(RuntimeError, match="event envelope"):
+        load_committed_commission_page(client, prefix)
 
 
 def test_position_snapshot_requires_account_snapshot_in_same_batch() -> None:

@@ -125,6 +125,11 @@ The read side can now page typed order commands only after full-prefix
 verification and checks each command against its event envelope. A committed
 command is not proof that the broker received it: a future live dispatcher must
 reconcile by stable client/order IDs before deciding whether to send again.
+The same bounded, committed-prefix read now covers executions and commission
+revisions. It excludes unfenced inserts before pagination and checks each typed
+detail against its event's batch, account, execution identity, and source time.
+This is recovery evidence, not yet a live broker reconciliation or runtime
+cutover.
 
 ## Cutover gate
 
