@@ -636,11 +636,15 @@ def iter_persisted_v7_seconds(
         "ORDER BY bucket_index FORMAT JSONEachRow"
     )
     active = client or readonly_clickhouse_client()
+    source = None
     try:
-        for line in active.execute(query).splitlines():
-            if line.strip():
-                yield json.loads(line)
+        source = active.iter_json_each_row(query)
+        yield from source
     finally:
+        if source is not None:
+            close_source = getattr(source, "close", None)
+            if close_source is not None:
+                close_source()
         if client is None:
             active.close()
 

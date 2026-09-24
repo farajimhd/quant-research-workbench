@@ -88,6 +88,11 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds():
                 raise AssertionError(sql)
             return "\n".join(json.dumps(row) for row in rows)
 
+        def iter_json_each_row(self, sql):
+            for line in self.execute(sql).splitlines():
+                if line.strip():
+                    yield json.loads(line)
+
     market = CertifiedMarketDayPlan(ExecutionInterval.fixed(100), "market", "definition",
         ("2026-08-18",), ("TEST",),
         (MarketDayUnit("market", "2026-08-18", "TEST", "bars",

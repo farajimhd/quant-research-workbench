@@ -38,6 +38,11 @@ class _ReadClient:
             "attempt_id": "00000000-0000-0000-0000-000000000001",
         }) + "\n"
 
+    def iter_json_each_row(self, sql: str):
+        for line in self.execute(sql).splitlines():
+            if line.strip():
+                yield json.loads(line)
+
 
 class _CorruptReadClient(_ReadClient):
     def execute(self, sql: str) -> str:
@@ -261,6 +266,31 @@ class BacktestMarketDataTests(unittest.TestCase):
             list(iter_persisted_v7_seconds(plan, session_date="2026-08-18",
                                             ticker="OTHER", through_boundary_ms=300_100,
                                             client=client))
+
+    def test_v7_catch_up_closes_stream_when_consumer_stops_early(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self._ledger(Path(directory)).certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+        closed = []
+
+        class StreamingClient(_ReadClient):
+            def iter_json_each_row(self, sql):
+                self.queries.append(sql)
+                try:
+                    yield {"ticker": "SUGP", "bucket_index": 14400}
+                    yield {"ticker": "SUGP", "bucket_index": 14401}
+                finally:
+                    closed.append(True)
+
+        source = iter_persisted_v7_seconds(
+            plan, session_date="2026-08-18", ticker="SUGP",
+            through_boundary_ms=300_100, client=StreamingClient(),
+        )
+        self.assertEqual(next(source)["bucket_index"], 14400)
+        source.close()
+        self.assertEqual(closed, [True])
 
     def test_missing_stage_fails_catalogue_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
