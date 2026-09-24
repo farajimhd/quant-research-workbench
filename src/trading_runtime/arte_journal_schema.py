@@ -13,6 +13,11 @@ from typing import Any
 
 
 STORAGE_POLICY = "live_market_ssd"
+MARKET_READ_TABLES = frozenset({
+    "bars_v1", "indicators_v1", "liquidity_100ms_v1",
+    "structural_level_coverage_v7", "structural_level_observations_v7",
+    "structural_levels_v7",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -843,9 +848,7 @@ def storage_preflight(client: Any) -> None:
 def journal_permission_preflight(client: Any) -> None:
     """Fail closed unless this principal can only read market and append journal."""
     journal = {table.name for table in TABLES}
-    market = {"bars_v1", "indicators_v1", "liquidity_100ms_v1",
-              "structural_level_coverage_v7", "structural_level_observations_v7",
-              "structural_levels_v7"}
+    market = MARKET_READ_TABLES
     required = journal | market
     names = ",".join(f"'{name}'" for name in sorted(required))
     actual = _rows(client,

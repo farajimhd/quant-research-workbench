@@ -46,3 +46,17 @@ has no independent quorum redundancy: stopping the workstation stops both
 ClickHouse and coordination. Existing live trading and Backtest still use
 their guarded old paths until their typed journal cutover is separately
 verified; enabling Keeper alone does not remove SQLite.
+
+## Dedicated typed-journal principal
+
+From the synchronized workstation code checkout, run
+`scripts/clickhouse/provision_trading_journal.py` once without `--apply` to see
+the account and exact-grant plan, then with `--apply` to provision it. The
+command must run on `DESKTOP-SAAI85T`. It writes only ClickHouse access-control
+records and a newly generated `D:\TradingML\secrets\trading_journal.env`;
+it never changes market or journal tables. The credential file receives a
+private Windows ACL before the password is written. An existing account is
+reused only if that saved credential authenticates; no implicit rotation or
+overwrite occurs. The final check logs in as the restricted user and verifies
+that it cannot insert into market tables or alter schema. Do not enable a
+runtime writer until the typed storage-placement and recovery checks pass.
