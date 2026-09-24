@@ -842,19 +842,50 @@ def storage_preflight(client: Any) -> None:
 
 def journal_permission_preflight(client: Any) -> None:
     """Fail closed unless this principal can only read market and append journal."""
-    names = _rows(client,
-        "SELECT name FROM system.tables WHERE database='arte' FORMAT JSONEachRow")
-    tables = {str(row["name"]) for row in names}
     journal = {table.name for table in TABLES}
-    if not journal.issubset(tables):
-        raise ValueError("Typed journal tables are missing from permission audit")
     market = {"bars_v1", "indicators_v1", "liquidity_100ms_v1",
               "structural_level_coverage_v7", "structural_level_observations_v7",
               "structural_levels_v7"}
-    if not market.issubset(tables):
-        raise ValueError("Required market products are missing from permission audit")
-    if any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None for name in tables):
-        raise ValueError("Unsafe table name in permission audit")
+    required = journal | market
+    names = ",".join(f"'{name}'" for name in sorted(required))
+    actual = _rows(client,
+        "SELECT name FROM system.tables WHERE database='arte' "
+        f"AND name IN ({names}) FORMAT JSONEachRow")
+    if {str(row["name"]) for row in actual} != required:
+        raise ValueError("Required journal or market tables are missing from permission audit")
+
+    # An unrestricted catalog scan can block on unrelated tables with very
+    # large part catalogs. Audit this principal's grant *surface* instead: a
+    # new table must not silently become writable just because it was absent
+    # from a startup snapshot. Unknown grant/role syntax fails closed.
+    user = client.execute("SELECT currentUser()").strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", user) is None:
+        raise ValueError("Journal principal has an unsafe identity")
+    grant_lines = client.execute("SHOW GRANTS").splitlines()
+    if not grant_lines:
+        raise ValueError("Journal principal has no inspectable grants")
+    for line in grant_lines:
+        match = re.fullmatch(
+            r"GRANT ([A-Z ,]+) ON ([A-Za-z_][A-Za-z0-9_]*|\*)\."
+            r"([A-Za-z_][A-Za-z0-9_]*|\*) TO ([A-Za-z_][A-Za-z0-9_]*)",
+            line.strip(),
+        )
+        if match is None or match.group(4) != user:
+            raise ValueError("Journal principal has an unrecognized or delegated grant")
+        privileges = {part.strip() for part in match.group(1).split(",")}
+        database, table = match.group(2), match.group(3)
+        if not privileges or "" in privileges:
+            raise ValueError("Journal principal has an invalid grant")
+        for privilege in privileges:
+            if privilege == "INSERT" and database == "arte" and table in journal:
+                continue
+            if privilege == "SELECT" and ((database == "arte" and table in required)
+                                          or (database == "system" and table in {
+                                              "storage_policies", "tables", "columns", "parts"})):
+                continue
+            if privilege in {"SHOW DATABASES", "SHOW TABLES", "SHOW COLUMNS", "CHECK"}:
+                continue
+            raise ValueError(f"Journal principal has unauthorized {privilege} grant")
 
     def allowed(privilege: str, scope: str) -> bool:
         result = client.execute(f"CHECK GRANT {privilege} ON {scope}").strip()
@@ -865,8 +896,8 @@ def journal_permission_preflight(client: Any) -> None:
     for privilege in ("CREATE TABLE", "INSERT", "ALTER", "DROP TABLE", "TRUNCATE"):
         if allowed(privilege, "arte.*"):
             raise ValueError(f"Journal principal has broad arte {privilege} authority")
-    readable = journal | market
-    for name in sorted(tables):
+    readable = required
+    for name in sorted(required):
         target = f"arte.{name}"
         if name in readable and not allowed("SELECT", target):
             raise ValueError(f"Journal principal cannot read {target}")

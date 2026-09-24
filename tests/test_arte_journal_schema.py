@@ -169,10 +169,24 @@ def test_journal_principal_cannot_write_market_or_change_schema() -> None:
 
     class Grants:
         extra_grant = ""
+        grant_line = ""
 
         def execute(self, sql: str) -> str:
             if "FROM system.tables" in sql:
-                return "\n".join(json.dumps({"name": name}) for name in sorted(market | journal | {unrelated}))
+                assert "name IN (" in sql
+                return "\n".join(json.dumps({"name": name}) for name in sorted(market | journal))
+            if sql == "SELECT currentUser()":
+                return "journal_writer\n"
+            if sql == "SHOW GRANTS":
+                grants = [*(f"GRANT SELECT, INSERT ON arte.{name} TO journal_writer"
+                            for name in sorted(journal)),
+                          *(f"GRANT SELECT ON arte.{name} TO journal_writer"
+                            for name in sorted(market)),
+                          *(f"GRANT SELECT ON system.{name} TO journal_writer"
+                            for name in ("storage_policies", "tables", "columns", "parts"))]
+                if self.grant_line:
+                    grants.append(self.grant_line)
+                return "\n".join(grants)
             if sql.startswith("CHECK GRANT "):
                 privilege, scope = sql.removeprefix("CHECK GRANT ").split(" ON ")
                 if sql == self.extra_grant:
@@ -187,11 +201,18 @@ def test_journal_principal_cannot_write_market_or_change_schema() -> None:
     client = Grants()
     journal_permission_preflight(client)
     for grant in ("CHECK GRANT INSERT ON arte.bars_v1",
-                  "CHECK GRANT INSERT ON arte.unrelated_operator_table_v1",
                   "CHECK GRANT INSERT ON arte.*",
                   "CHECK GRANT CREATE TABLE ON arte.*",
                   "CHECK GRANT DROP TABLE ON arte.bars_v1",
                   "CHECK GRANT ALTER DELETE ON arte.trading_event_v1"):
         client.extra_grant = grant
+        with pytest.raises(ValueError):
+            journal_permission_preflight(client)
+    client.extra_grant = ""
+    for grant in (f"GRANT INSERT ON arte.{unrelated} TO journal_writer",
+                  "GRANT ALTER ON arte.trading_event_v1 TO journal_writer",
+                  "GRANT editor TO journal_writer",
+                  "GRANT SELECT ON arte.* TO journal_writer"):
+        client.grant_line = grant
         with pytest.raises(ValueError):
             journal_permission_preflight(client)
