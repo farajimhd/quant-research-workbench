@@ -8,7 +8,8 @@ import re
 import pytest
 
 from src.trading_runtime.arte_portfolio_snapshot import (
-    load_portfolio_snapshot, project_portfolio_snapshot,
+    load_latest_portfolio_snapshot, load_portfolio_snapshot,
+    project_portfolio_snapshot,
     publish_portfolio_snapshot,
 )
 from src.trading_runtime.portfolio import PortfolioReservation
@@ -33,6 +34,10 @@ class SnapshotClient:
             r"(run_id|account_id|state_revision)=('[^']*'|\d+)", sql)}
         run_id = conditions["run_id"]
         account_id = conditions["account_id"]
+        if "ORDER BY state_revision DESC LIMIT 1" in sql:
+            revisions = [row["state_revision"] for row in self.tables.get(table, [])
+                         if row["run_id"] == run_id and row["account_id"] == account_id]
+            return json.dumps({"state_revision": max(revisions)}) if revisions else ""
         revision = int(conditions["state_revision"])
         return "\n".join(json.dumps(row) for row in self.tables.get(table, [])
                          if row["run_id"] == run_id and row["account_id"] == account_id
@@ -72,6 +77,8 @@ def test_snapshot_commit_fences_exact_typed_children_and_retries() -> None:
     loaded = load_portfolio_snapshot(client, run_id="live-run", account_id="account-id",
                                      state_revision=1)
     assert loaded is not None and loaded["state_hash"] == digest
+    assert load_latest_portfolio_snapshot(
+        client, run_id="live-run", account_id="account-id")["state_hash"] == digest
     assert len(loaded["families"]["trading_portfolio_disabled_strategy_v1"]) == 2
     assert loaded["state"]["observed_at"] == "2026-08-18T12:00:00.000000+00:00"
     assert project_portfolio_snapshot("account-id", loaded["state"]) == (
@@ -91,6 +98,8 @@ def test_snapshot_fence_rejects_child_tampering() -> None:
                                 state_revision=1)
     with pytest.raises(RuntimeError):
         _publish(client)
+    with pytest.raises(RuntimeError, match="content differs"):
+        load_latest_portfolio_snapshot(client, run_id="live-run", account_id="account-id")
 
 
 def test_snapshot_round_trips_recovery_children_and_utc_time() -> None:
@@ -120,3 +129,24 @@ def test_snapshot_round_trips_recovery_children_and_utc_time() -> None:
         "2026-08-18T12:00:00.000000+00:00")
     assert project_portfolio_snapshot("account-id", loaded["state"]) == (
         project_portfolio_snapshot("account-id", state))
+
+
+def test_latest_snapshot_rejects_stale_publication_and_corrupt_head() -> None:
+    client = SnapshotClient()
+    _publish(client)
+    changed = _state()
+    changed["peak_net_liquidation"] = 1100.0
+    publish_portfolio_snapshot(
+        client, run_id="live-run", account_id="account-id", state_revision=2,
+        snapshot_at=datetime(2026, 8, 18, 12, 1, tzinfo=timezone.utc),
+        state=changed,
+    )
+    assert load_latest_portfolio_snapshot(
+        client, run_id="live-run", account_id="account-id")["state_revision"] == 2
+    with pytest.raises(RuntimeError, match="older than the committed prefix"):
+        _publish(client)
+    for row in client.tables["trading_portfolio_snapshot_v1"]:
+        if row["state_revision"] == 2:
+            row["peak_net_liquidation"] = "999.000000000000000000"
+    with pytest.raises(RuntimeError, match="content differs"):
+        load_latest_portfolio_snapshot(client, run_id="live-run", account_id="account-id")

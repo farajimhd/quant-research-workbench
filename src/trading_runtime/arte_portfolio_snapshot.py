@@ -390,6 +390,10 @@ def publish_portfolio_snapshot(
     if (not run_id or not account_id or type(state_revision) is not int
             or state_revision < 1 or snapshot_at.tzinfo is None):
         raise ValueError("Portfolio snapshot needs a causal writer identity")
+    latest_revision = _latest_revision(client, run_id=run_id,
+                                       account_id=account_id)
+    if latest_revision is not None and latest_revision > state_revision:
+        raise RuntimeError("Portfolio snapshot revision is older than the committed prefix")
     projected = project_portfolio_snapshot(account_id, state)
     selected = state["selected_policy"]
     if selected is not None:
@@ -472,3 +476,28 @@ def load_portfolio_snapshot(
     return {"state_hash": str(fence["state_hash"]),
             "state_revision": state_revision, "state": _restore_state(families, policy),
             "families": families}
+
+
+def _latest_revision(client: Any, *, run_id: str, account_id: str) -> int | None:
+    if not run_id or not account_id:
+        raise ValueError("Portfolio snapshot identity is invalid")
+    rows = _rows(client,
+        "SELECT state_revision FROM arte.trading_portfolio_snapshot_commit_v1 "
+        f"WHERE run_id={_literal(run_id)} AND account_id={_literal(account_id)} "
+        "ORDER BY state_revision DESC LIMIT 1 FORMAT JSONEachRow")
+    if not rows:
+        return None
+    if len(rows) != 1 or set(rows[0]) != {"state_revision"}:
+        raise RuntimeError("Portfolio snapshot latest fence query is ambiguous")
+    return int(rows[0]["state_revision"])
+
+
+def load_latest_portfolio_snapshot(
+    client: Any, *, run_id: str, account_id: str,
+) -> dict[str, Any] | None:
+    """Recover the highest committed revision; never skip a corrupt head."""
+    revision = _latest_revision(client, run_id=run_id, account_id=account_id)
+    if revision is None:
+        return None
+    return load_portfolio_snapshot(client, run_id=run_id, account_id=account_id,
+                                   state_revision=revision)
