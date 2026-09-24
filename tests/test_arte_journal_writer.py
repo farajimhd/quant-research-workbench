@@ -762,6 +762,7 @@ def test_late_commission_requires_a_committed_execution() -> None:
         publish_typed_batch(client, item)
     client.tables["trading_commit_v1"] = [{
         "batch_id": source_batch, "run_id": RUN, "last_sequence": 1,
+        "status": "running",
     }]
     continued = commission_revision_batch(
         fee, run_id=RUN, run_month=date(2026, 8, 1), attempt_id=ATTEMPT,
@@ -799,6 +800,24 @@ def test_typed_publication_rejects_out_of_order_prefix() -> None:
     with pytest.raises(RuntimeError, match="committed prefix"):
         publish_typed_batch(client, altered)
     assert not client.inserts
+
+
+def test_typed_publication_rejects_extension_after_terminal_without_inserting() -> None:
+    client = MemoryClient()
+    terminal = replace(batch(), status="completed")
+    publish_typed_batch(client, terminal)
+    source = {key: value for key, value in terminal.events[0].items()
+              if key != "content_hash"}
+    next_batch = "00000000-0000-0000-0000-000000000099"
+    source.update(batch_id=next_batch, sequence=2)
+    continued = TypedJournalBatch(
+        RUN, terminal.run_month, ATTEMPT, next_batch, BATCH, 2, 2,
+        "bucket-2", "running", (source,),
+    )
+    inserted_before = list(client.inserts)
+    with pytest.raises(RuntimeError, match="terminal run"):
+        publish_typed_batch(client, continued)
+    assert client.inserts == inserted_before
 
 
 def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:

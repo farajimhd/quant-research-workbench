@@ -1025,9 +1025,11 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
         f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
     if not existing:
         prior = _rows(client,
-            "SELECT batch_id,last_sequence FROM arte.trading_commit_v1 "
+            "SELECT batch_id,last_sequence,status FROM arte.trading_commit_v1 "
             f"WHERE run_id={_literal(batch.run_id)} "
             "ORDER BY last_sequence DESC LIMIT 1 FORMAT JSONEachRow")
+        if prior and prior[0]["status"] != "running":
+            raise RuntimeError("Typed journal cannot extend a terminal run")
         expected_prior = ((str(UUID(str(prior[0]["batch_id"]))), int(prior[0]["last_sequence"]))
                           if prior else (_ZERO_UUID, 0))
         if expected_prior != (batch.prior_batch_id, batch.first_sequence - 1):
