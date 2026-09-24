@@ -1,5 +1,11 @@
 # Multi-day hindsight dataset: Phase 1 and Phase 2
 
+For the new persisted `arte` source, use
+[build_hindsight_arte_dataset.py](build_hindsight_arte_dataset.md). It runs both
+phases without QMD or event reads, uses versioned completed-100 ms targets, and
+retains certified build/population identities. The workflow below remains the
+legacy event-exact dataset for reproducibility.
+
 Use `build_hindsight_dataset.py` for the full workflow. It runs the certified
 Phase 1 extraction followed by the fractional, discounted greedy Phase 2 for
 each requested trading date. It does not change label semantics, train a model,

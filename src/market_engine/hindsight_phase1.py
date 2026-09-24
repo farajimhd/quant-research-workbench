@@ -48,7 +48,7 @@ def opportunities(day, records, quotes, targets):
                      (pl.col('bid')>0)&(pl.col('ask')>=pl.col('bid'))&(pl.col('bid_size')>0)&(pl.col('ask_size')>0)&pl.all_horizontal(pl.col('bid','ask','bid_size','ask_size').is_finite())).fill_null(False).alias('quote_valid'))
     grid=grid.join(q,on='time_us',how='left',validate='1:1')
     if grid['quote_us'].null_count():raise ValueError('Quote query omitted decision seconds')
-    activity=pl.DataFrame({'time_us':[int(r['decision_us']) for r in records],
+    activity=records.select('time_us','trades','volume') if isinstance(records,pl.DataFrame) else pl.DataFrame({'time_us':[int(r['decision_us']) for r in records],
                            'trades':[int(r['trades']) for r in records],
                            'volume':[float(r['volume']) for r in records]},schema={'time_us':pl.Int64,'trades':pl.Int64,'volume':pl.Float64})
     activity=activity.group_by('time_us').agg(pl.col('trades').sum(),pl.col('volume').sum())

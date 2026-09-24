@@ -133,7 +133,7 @@ def phase1_plan(root):
         raise ValueError("Duplicate Phase 1 ticker")
     if not plan["selected"] or complete["rows"] != 57601 * len(plan["selected"]):
         raise ValueError("Empty or incomplete Phase 1 decision grid")
-    if plan["version"] != "hindsight-phase1-macd-v1":
+    if plan["version"] not in ("hindsight-phase1-macd-v1", "hindsight-phase1-arte-100ms-v1"):
         raise ValueError("Unsupported Phase 1 version")
     return plan
 
