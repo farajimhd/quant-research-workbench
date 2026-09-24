@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 import json
 import re
-from threading import Event
+from threading import Event, Thread
 from uuid import UUID
 
 import pytest
@@ -152,12 +152,14 @@ class MemoryClient:
     def __init__(self) -> None:
         self.tables: dict[str, list[dict]] = {}
         self.inserts: list[str] = []
+        self.insert_sql: list[str] = []
         self.selects: list[str] = []
 
     def execute(self, sql: str) -> str:
         if sql.startswith("INSERT INTO arte."):
             name = sql.split("arte.", 1)[1].split(" ", 1)[0]
             self.inserts.append(name)
+            self.insert_sql.append(sql)
             self.tables.setdefault(name, []).extend(json.loads(line) for line in sql.split("\n", 1)[1].splitlines())
             return ""
         assert sql.startswith("SELECT ")
@@ -238,6 +240,8 @@ def test_typed_publication_commits_last_and_retry_is_idempotent() -> None:
     item = batch()
     assert publish_typed_batch(client, item) == BATCH
     assert client.inserts == ["trading_event_v1", "trading_commit_v1"]
+    assert all("async_insert=1,wait_for_async_insert=1" in sql
+               for sql in client.insert_sql)
     assert len(client.selects) == 5
     assert publish_typed_batch(client, item) == BATCH
     assert client.inserts == ["trading_event_v1", "trading_commit_v1"]
@@ -521,6 +525,62 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
         assert UUID(second.result(timeout=5)) == UUID(BATCH)
     finally:
         release.set()
+        journal.close()
+
+
+def test_close_cannot_place_stop_sentinel_ahead_of_admitted_submission(monkeypatch) -> None:
+    monkeypatch.setattr(writer_module, "publish_typed_batch", lambda _client, item: item.batch_id)
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: None)
+    journal = ArteJournalWriter(object(), run_id=RUN, capacity=2)
+    entered, release, close_started, close_finished = Event(), Event(), Event(), Event()
+    original_put = journal._queue.put_nowait
+
+    def paused_put(item):
+        entered.set()
+        assert release.wait(5)
+        return original_put(item)
+
+    monkeypatch.setattr(journal._queue, "put_nowait", paused_put)
+    submitted = []
+    failures = []
+
+    def submit():
+        try:
+            submitted.append(journal.submit(batch()))
+        except BaseException as exc:
+            failures.append(exc)
+
+    def close():
+        close_started.set()
+        try:
+            journal.close()
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            close_finished.set()
+
+    submitting = Thread(target=submit)
+    closing = Thread(target=close)
+    try:
+        submitting.start()
+        assert entered.wait(5)
+        closing.start()
+        assert close_started.wait(5)
+        assert not close_finished.wait(0.1)
+        release.set()
+        submitting.join(5)
+        closing.join(5)
+        assert not submitting.is_alive() and not closing.is_alive()
+        assert not failures
+        assert len(submitted) == 1
+        assert submitted[0].result(timeout=5) == BATCH
+    finally:
+        release.set()
+        submitting.join(5)
+        if closing.ident is not None:
+            closing.join(5)
         journal.close()
 
 

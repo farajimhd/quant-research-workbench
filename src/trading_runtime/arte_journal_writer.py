@@ -16,7 +16,7 @@ import json
 import os
 import re
 from queue import Empty, Full, Queue
-from threading import Thread
+from threading import Lock, Thread
 from types import MappingProxyType
 from typing import Any, Mapping
 from uuid import UUID
@@ -1286,24 +1286,27 @@ class ArteJournalWriter:
         self._run_id = run_id
         self._max_events_per_commit = max_events_per_commit
         self._queue: Queue[tuple[TypedJournalBatch, Future[str]] | None] = Queue(maxsize=capacity)
+        self._submission_lock = Lock()
         self._error: BaseException | None = None
         self._closed = False
+        self._client_closed = False
         self._thread = Thread(target=self._run, name="arte-journal-writer", daemon=False)
         self._thread.start()
 
     def submit(self, batch: TypedJournalBatch) -> Future[str]:
         """Enqueue without waiting; the receipt names the durable combined batch."""
-        if self._closed:
-            raise RuntimeError("Typed journal writer is closed")
-        if self._error is not None:
-            raise RuntimeError("Typed journal writer failed") from self._error
-        if batch.run_id != self._run_id:
-            raise ValueError("Typed journal writer cannot mix runs")
-        receipt: Future[str] = Future()
-        try:
-            self._queue.put_nowait((batch, receipt))
-        except Full as exc:
-            raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
+        with self._submission_lock:
+            if self._closed:
+                raise RuntimeError("Typed journal writer is closed")
+            if self._error is not None:
+                raise RuntimeError("Typed journal writer failed") from self._error
+            if batch.run_id != self._run_id:
+                raise ValueError("Typed journal writer cannot mix runs")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((batch, receipt))
+            except Full as exc:
+                raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
         return receipt
 
     def _run(self) -> None:
@@ -1351,17 +1354,20 @@ class ArteJournalWriter:
 
     def close(self) -> None:
         """Drain only from a control-plane shutdown, never a market callback."""
-        if self._closed:
-            if self._error is not None:
-                raise RuntimeError("Typed journal did not drain durably") from self._error
-            return
-        self._closed = True
-        self._queue.put(None)
+        with self._submission_lock:
+            enqueue_stop = not self._closed
+            self._closed = True
+        if enqueue_stop:
+            self._queue.put(None)
         self._thread.join()
-        close = getattr(self._client, "close", None)
+        with self._submission_lock:
+            close_client = not self._client_closed
+            self._client_closed = True
         try:
-            if close is not None:
-                close()
+            if close_client:
+                close = getattr(self._client, "close", None)
+                if close is not None:
+                    close()
         finally:
             if self._error is not None:
                 raise RuntimeError("Typed journal did not drain durably") from self._error

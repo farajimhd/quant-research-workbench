@@ -80,6 +80,11 @@ Row content hashes use canonical persisted types, including UTC `DateTime64`
 precision and fixed-scale decimals, rather than the producer's timestamp
 spelling. Cold recovery reads bounded groups of complete typed rows, recomputes
 each row hash, and then verifies each commit's row count and identity digest.
+The writer worker sets `wait_for_async_insert=1` and verifies the final fence
+readback before completing a durability receipt. A short queue-admission lock
+orders `submit` against the shutdown sentinel; closing cannot strand a batch
+that was admitted just before shutdown. Neither operation performs ClickHouse
+I/O on the trading or simulation callback.
 
 A dedicated bounded writer lane batches records; the market-data callback and
 Backtest simulation loop never perform ClickHouse I/O or wait for an insert
