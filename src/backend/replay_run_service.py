@@ -9736,8 +9736,8 @@ def backtest_preflight(
                 if needs_v7:
                     if experimental_structure_book not in {"", "level-book-v7"}:
                         raise ValueError("Fixed-interval Backtest requires causal Level Book V7")
-                    from src.backend.causal_v7_reader import certified_plan as certified_v7_plan
-                    causal_v7_plan = certified_v7_plan(certified, None, reader).payload()
+                    from src.backend.structural_v7_seed import certified_seed_plan
+                    causal_v7_plan = certified_seed_plan(certified, reader).payload()
         except Exception as exc:
             if market_data_plan:
                 causal_v7_error = str(exc)
@@ -9828,12 +9828,15 @@ def backtest_preflight(
     })
     if execution_interval.kind == "fixed" and needs_v7:
         checks.append({
-            "id": "causal_v7_product",
-            "label": "Persisted intraday causal V7",
+            "id": "causal_v7_seed",
+            "label": "V7 prior-session seed",
             "status": "ready" if causal_v7_plan else "blocked",
             "required": True,
             "summary": (
-                "Pinned read-only causal V7 state and levels cover the selected ticker-days."
+                ("Pinned read-only V1 legacy seeds cover the selected ticker-days; results are provisional "
+                 "until corrected V2 is approved. Intraday V7 is computed in memory."
+                 if causal_v7_plan.get("provisional") else
+                 "Pinned read-only filtered V7 seeds cover the selected ticker-days; intraday V7 is computed in memory.")
                 if causal_v7_plan else
                 "Causal V7 coverage is unavailable: " +
                 (causal_v7_error or market_data_error or "market-day plan is unavailable")

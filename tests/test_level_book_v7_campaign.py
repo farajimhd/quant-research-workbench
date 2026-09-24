@@ -72,13 +72,15 @@ def test_worker_restarts_after_orphan_book_and_validates_receipts(tmp_path,monke
     raw=[dict(t=start+i+1,open=p,high=p,low=p,close=p,volume=100,trades=1,last_count=1,extrema_count=1) for i,p in enumerate(prices)]
     metadata=dict(source_date=day,event_count=35,next_ordinal=35,last_ordinal=34,first_sip_timestamp_us=start*1000000,last_sip_timestamp_us=(start+36)*1000000)
     coverage=dict(ticker=ticker,days=1,events=35,first=day,last=day,signature='fixture')
-    p=dict(plan_hash='plan',start=day,end=day,rules=[],rows=[dict(ticker=ticker,status='queued',coverage=coverage)])
+    reporting=[dict(source_date=day,status='complete')]
+    p=dict(plan_hash='plan',start=day,end=day,rules=[],reporting_coverage_hash=digest(reporting),
+           rows=[dict(ticker=ticker,status='queued',coverage=coverage)])
     monkeypatch.setattr(c,'checked_plan',lambda _:p)
     def query(sql,threads=2):
         if sql==c.RULE_SQL:return []
         if 'GROUP BY ticker ORDER BY ticker' in sql:return [coverage]
         if 'market_stock_split' in sql:return []
-        if 'historical_trade_reporting_coverage_v1' in sql:return [dict(source_date=day,status='complete')]
+        if 'historical_trade_reporting_coverage_v1' in sql:return reporting
         if 'GROUP BY t ORDER BY t' in sql:return raw
         if 'events_ordinal_continuity' in sql:return [metadata]
         raise AssertionError(sql)

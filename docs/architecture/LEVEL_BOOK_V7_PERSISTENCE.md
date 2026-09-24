@@ -78,6 +78,41 @@ old books or resuming the old campaign cannot repair their geometry. Existing
 partial V7 rows must be removed through the reviewed replacement procedure
 after the stopped controller and its workers have exited.
 
+## Corrected direct V2 producer
+
+`scripts/build_level_book_v7_direct.py` creates a new frozen campaign only
+after every canonical source day has completed version-matched trade-reporting
+coverage. Its ClickHouse source excludes flagged delayed trades before the
+condition-aware completed-second aggregation and V7 MLE fitting. A worker
+keeps only its current cumulative book in memory, compacts changed typed
+level and observation intervals, and publishes them to the separate
+`arte.structural_levels_v7_v2` and
+`arte.structural_level_observations_v7_v2` tables. It acknowledges
+`arte.structural_level_coverage_v7_v2` last, including a reporting revision
+and frozen source-plan hash. No historical book JSON or migration pass is
+created. All three V2 tables require `live_market_ssd` placement.
+
+The restart unit is one ticker: if a worker stops before coverage publication,
+its entire ticker is recalculated from canonical history on resume. This
+avoids redundant disk checkpoints but does not claim mid-ticker restart.
+V1 and V2 table names and campaign roots are distinct. Backtest remains pinned
+to V1 until a separately reviewed V2 source/geometry comparison and explicit
+consumer switch. V1 results using legacy levels must be labeled provisional.
+
+From the committed workstation checkout, after historical reporting coverage
+is complete:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = '1'
+python -B scripts/build_level_book_v7_direct.py plan
+python -B scripts/build_level_book_v7_direct.py run
+```
+
+The run uses a bounded workstation process pool and at most four concurrent
+ClickHouse publishers by default. `stop` prevents new ticker admission and
+lets active workers stop at the next session boundary without publishing a
+partial ticker. The interrupted ticker is recalculated on the next run.
+
 One ticker is the durable work unit. Spawned worker processes read its immutable
 daily gzip books, coalesce unchanged consecutive level and observation states,
 insert compact intervals and publish coverage last. Unqualified candidates are

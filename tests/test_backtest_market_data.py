@@ -118,6 +118,9 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertNotIn("WITH scopes", sql)
         self.assertIn("b.session_date AS session_date", sql)
         self.assertIn("l.quote_timestamp_us AS quote_timestamp_us", sql)
+        self.assertIn("FROM (SELECT * FROM (SELECT * FROM arte.bars_v1", sql)
+        self.assertIn("WHERE resolution_ms IN (100,1000)", sql)
+        self.assertNotIn("FROM (SELECT * FROM arte.bars_v1 WHERE build_id='build-1' AND resolution_ms", sql)
 
     def test_missing_stage_fails_catalogue_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

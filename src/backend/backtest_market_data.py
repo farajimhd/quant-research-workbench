@@ -490,7 +490,8 @@ def market_day_rows_sql(plan: CertifiedMarketDayPlan) -> str:
         l.cumulative_execution_volume AS cumulative_execution_volume,
         l.cumulative_execution_notional AS cumulative_execution_notional,
         l.execution_vwap AS execution_vwap
-      FROM ({pinned('bars_v1', bars)} AND resolution_ms IN ({resolution_sql})) b
+      FROM (SELECT * FROM ({pinned('bars_v1', bars)})
+            WHERE resolution_ms IN ({resolution_sql})) b
       LEFT JOIN ({pinned('indicators_v1', technical)}) i ON
         i.session_date=b.session_date AND i.ticker=b.ticker
         AND i.resolution_ms=b.resolution_ms

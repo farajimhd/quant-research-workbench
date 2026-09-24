@@ -21,7 +21,7 @@ def coverage_sql(start,end,names=None):
 
 
 def reporting_coverage_sql(start, end):
-    return ("SELECT toString(source_date) source_date, status FROM "
+    return ("SELECT toString(source_date) source_date, status,source_digest,updated_at FROM "
             "q_live.historical_trade_reporting_coverage_v1 FINAL "
             f"WHERE source_date BETWEEN {literal(start)} AND {literal(end)} "
             f"AND revision={literal(REPORTING_REVISION)} ORDER BY source_date")

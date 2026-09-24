@@ -14,7 +14,9 @@ def test_prefix_resume_extend_matches_full_campaign(tmp_path, monkeypatch):
         raw[day] = [dict(t=start+i+1,open=p,high=p,low=p,close=p,volume=100,trades=1,last_count=1,extrema_count=1) for i,p in enumerate(prices)]
         metadata.append(dict(ticker='TEST',source_date=day,event_count=35,next_ordinal=35*(index+1),last_ordinal=35*(index+1)-1,first_sip_timestamp_us=start*1000000,last_sip_timestamp_us=(start+36)*1000000))
     coverage = dict(ticker='TEST',days=3,events=105,first=days[0],last=days[-1],signature='fixture')
-    plan = dict(plan_hash='plan',start=days[0],end=days[-1],rules=[],rows=[dict(ticker='TEST',status='queued',coverage=coverage)])
+    reporting=[dict(source_date=day,status='complete') for day in days]
+    plan = dict(plan_hash='plan',start=days[0],end=days[-1],rules=[],reporting_coverage_hash=c.digest(reporting),
+                rows=[dict(ticker='TEST',status='queued',coverage=coverage)])
     monkeypatch.setattr(c,'checked_plan',lambda _:plan)
     fetched=[]
     def query(sql,threads=1):
@@ -22,7 +24,7 @@ def test_prefix_resume_extend_matches_full_campaign(tmp_path, monkeypatch):
         if 'GROUP BY ticker ORDER BY ticker' in sql:return [coverage]
         if 'market_stock_split' in sql:return []
         if 'historical_trade_reporting_coverage_v1' in sql:
-            return [dict(source_date=day,status='complete') for day in days]
+            return reporting
         if 'GROUP BY t ORDER BY t' in sql:
             day=next(d for i,d in enumerate(days) if f'ordinal>={35*i} AND' in sql);fetched.append(day);return raw[day]
         if 'events_ordinal_continuity' in sql:

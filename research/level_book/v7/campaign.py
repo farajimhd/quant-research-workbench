@@ -37,7 +37,8 @@ TRACKED=('research/level_book/v7/campaign.py','research/level_book/v7/campaign_s
  'src/market_engine/reaction_band.py','src/market_engine/reaction_center.py',
  'src/market_engine/historical_session_levels.py','src/market_engine/historical_level_checkpoint.py',
  'src/market_engine/level_book_store.py','src/backend/swing_book_source.py','src/backend/swing_book_indexed_source.py',
- 'scripts/build_structure_book_clickhouse.py','scripts/swing_book_paths.py')
+ 'scripts/build_structure_book_clickhouse.py','scripts/swing_book_paths.py',
+ 'research/level_book/v7/direct_publisher.py','scripts/build_level_book_v7_direct.py')
 RULE_SQL="SELECT token_id,modifier_int,update_high_low,update_last,update_volume FROM market_sip_compact.event_condition_token_reference WHERE source_family='trade_conditions' AND is_join_canonical=1 ORDER BY token_id"
 CLIENTS={}
 atexit.register(lambda:[c.close() for c in CLIENTS.values()])
@@ -90,7 +91,8 @@ def plan(args):
     source_days = [r['source_date'] for r in query(
         f"SELECT DISTINCT toString(source_date) source_date FROM market_sip_compact.events_ordinal_continuity FINAL "
         f"WHERE source_date BETWEEN {literal(args.start)} AND {literal(args.end)} ORDER BY source_date")]
-    require_reporting_coverage(source_days, query(reporting_coverage_sql(args.start,args.end)))
+    reporting_rows=query(reporting_coverage_sql(args.start,args.end))
+    require_reporting_coverage(source_days, reporting_rows)
     rows=[]
     for ticker,identities in grouped.items():
         reason='';c=coverage.get(ticker)
@@ -106,6 +108,8 @@ def plan(args):
     value=dict(version=VERSION,created_at=now(),start=args.start,end=args.end,universe_date=universe_day,
         population_contract='published tradable membership as of universe_date; not historical membership eligibility',
         source_policy=HISTORICAL_POLICY,input_policy=POLICY,reporting_revision=REPORTING_REVISION,
+        reporting_coverage_hash=digest(reporting_rows),
+        output_contract=getattr(args,'output_contract','filesystem-v1'),
         server=server,source_files=hashes(),git_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=REPO,text=True).strip(),
         band_config=CONFIG,extraction_version=EXTRACTION_VERSION,software=dict(python=sys.version,numpy=np.__version__,scipy=scipy.__version__),rules=rules,rows=rows)
     value['plan_hash']=digest(value);write(root/'plan.json',value)
@@ -134,6 +138,8 @@ def fit_day(prior,ticker,day,bars,actions):
 
 def worker(args):
     root=args.runtime;p=checked_plan(root);row=next(r for r in p['rows'] if r['ticker']==args.ticker)
+    if p.get('output_contract','filesystem-v1')!='filesystem-v1':
+        raise ValueError('Direct V7 plan cannot write checkpoint books to disk')
     if row['status']=='deferred':raise ValueError(row['reason'])
     target=paths(root,args.ticker);target.mkdir(parents=True,exist_ok=True);started=time.monotonic()
     progress=dict(ticker=args.ticker,state='active',stage='preflight',completed=0,total=row['coverage']['days'],resumed=0,empty=0,retried=0,pid=os.getpid())
@@ -153,7 +159,10 @@ def worker(args):
         if q(RULE_SQL)!=p['rules']:raise ValueError('Trade condition rules changed')
         predicate=f"ticker={literal(args.ticker)} AND source_date BETWEEN {literal(p['start'])} AND {literal(p['end'])}"
         days=q('SELECT * FROM market_sip_compact.events_ordinal_continuity FINAL WHERE '+predicate+' ORDER BY source_date')
-        require_reporting_coverage([d['source_date'] for d in days], q(reporting_coverage_sql(p['start'],p['end'])))
+        reporting_rows=q(reporting_coverage_sql(p['start'],p['end']))
+        require_reporting_coverage([d['source_date'] for d in days], reporting_rows)
+        if digest(reporting_rows)!=p['reporting_coverage_hash']:
+            raise ValueError('Canonical trade-reporting coverage differs from frozen plan')
         splits=canonical_splits(q(f"SELECT execution_date,split_from,split_to,inserted_at FROM q_live.market_stock_split_v1 FINAL WHERE provider_ticker={literal(args.ticker)} AND execution_date BETWEEN {literal(p['start'])} AND {literal(p['end'])} ORDER BY execution_date"))
         write(target/'source-plan.json',dict(days=days,splits=splits,plan_hash=p['plan_hash']))
         prior=None
@@ -298,7 +307,7 @@ def run(args):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command',choices=['plan','run','worker','status','monitor','stop'])
-    parser.add_argument('--runtime',type=Path,default=WORKSTATION_RUNTIME_ROOT/'level-book-v7'/'all-tradable-20250101-20260912-mle-reporting-v1')
+    parser.add_argument('--runtime',type=Path,default=WORKSTATION_RUNTIME_ROOT/'level-book-v7'/'all-tradable-20250101-20260912-mle-v1')
     parser.add_argument('--start',default='2025-01-01');parser.add_argument('--end',default='2026-09-12')
     parser.add_argument('--workers',type=int,default=4);parser.add_argument('--threads',type=int,default=2)
     parser.add_argument('--ticker');parser.add_argument('--tickers',nargs='+');parser.add_argument('--retry-failed',action='store_true')
