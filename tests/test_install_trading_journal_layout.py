@@ -1,5 +1,6 @@
 """The operator installer is resumable and never inserts market or journal rows."""
 import json
+import sys
 
 import pytest
 
@@ -19,6 +20,9 @@ class Client:
         if sql.startswith("CREATE TABLE IF NOT EXISTS arte."):
             return ""
         raise AssertionError(sql)
+
+    def close(self):
+        pass
 
 
 def test_plan_is_read_only_and_apply_verifies_each_new_table(monkeypatch):
@@ -46,3 +50,15 @@ def test_installer_fails_before_ddl_when_policy_is_not_ssd(monkeypatch):
     client.execute = lambda sql: json.dumps({"disks": ["default"]})
     with pytest.raises(RuntimeError, match="SSD-only"):
         install.install_missing(client, apply=True)
+
+
+def test_cli_defaults_to_read_only_plan_on_workstation(monkeypatch, capsys):
+    client = Client()
+    monkeypatch.setattr(install.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(install, "_admin_client", lambda _: client)
+    monkeypatch.setattr(install, "plan_missing", lambda _: ((), ()))
+    monkeypatch.setattr(install, "storage_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sys, "argv", ["install_trading_journal_layout.py"])
+    assert install.main() == 0
+    assert "Plan only; no ClickHouse state changed" in capsys.readouterr().out
+    assert all(sql.startswith("SELECT ") for sql in client.statements)

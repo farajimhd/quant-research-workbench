@@ -62,9 +62,16 @@ that it cannot insert into market tables or alter schema. Do not enable a
 runtime writer until the typed storage-placement and recovery checks pass.
 
 The default grant plan is the legacy V1 journal profile. For the fixed
-Backtest V2 profile, an operator must first review and install the exact
-typed V2 table DDL from `terminal_v2_operator_provisioning_sql` under
-`src/backend/backtest_terminal_v2_preflight.py`. The journal principal cannot
+Backtest V2 profile, an operator must first inspect the missing typed tables:
+
+```powershell
+python -B scripts/clickhouse/install_trading_journal_layout.py
+```
+
+The default is read-only. On the workstation, `--apply` creates only absent
+normalized journal tables with `live_market_ssd`, verifies each exact schema,
+and is safe to rerun after interruption. It does not insert any rows, alter
+market tables, or grant runtime permissions. The journal principal cannot
 create tables. Then run `provision_trading_journal.py --fixed-backtest-v2`
 without `--apply` to inspect the grant plan, followed by the same command
 with `--apply` only after the tables and SSD placement have been verified.
