@@ -1,8 +1,7 @@
 """Read certified, immutable ARTE market-day rows for compatible chart pages.
 
-The QMD history gateway remains authoritative for unsupported indicators,
-structure, market signals, macro frames, and incomplete market-day products.
-This reader never creates or repairs data.
+The QMD history gateway remains authoritative for non-Backtest history outside
+the persisted product contract. Backtest never generates a missing product.
 """
 from __future__ import annotations
 
@@ -74,7 +73,8 @@ def eligible(*, timeframe: str, stage: str, indicator_columns: list[str] | None,
             and timeframe in _RESOLUTIONS and not include_market_signals
             and not include_structure and stage in {"bars", "full"}
             and (stage == "bars" or indicator_columns is not None)
-            and (stage == "bars" or set(indicator_columns or ()).issubset(_INDICATORS)))
+            and (stage == "bars" or mode == "backtest"
+                 or set(indicator_columns or ()).issubset(_INDICATORS)))
 
 
 def certified_chart_plan(session: date, ticker: str, timeframe: str) -> CertifiedMarketDayPlan | None:

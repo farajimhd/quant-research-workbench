@@ -1853,6 +1853,13 @@ def historical_bar_history_before(
             "as_of": resolved_as_of.isoformat(), "source": persisted["source"],
             "stage": stage,
         }
+    if (mode == "backtest"
+            and resolved_timeframe in {"100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"}):
+        # A Backtest chart must not ask QMD to build a missing bar/indicator
+        # product. The UI can report absence; only a producer may publish it.
+        raise ValueError(
+            f"Certified ARTE chart products are unavailable: "
+            f"{resolved_session_date} {resolved_ticker} {resolved_timeframe}")
     snapshot = qmd_product_request(
         QmdProductRequest(
             "chart",

@@ -82,7 +82,7 @@ class ArteChartReaderTests(unittest.TestCase):
                     include_market_signals=False, include_structure=False,
                     allow_persisted_bars=True, mode="backtest")
         self.assertTrue(eligible(**args))
-        self.assertFalse(eligible(**{**args, "indicator_columns": ["vwap"]}))
+        self.assertTrue(eligible(**{**args, "indicator_columns": ["vwap"]}))
         self.assertFalse(eligible(**{**args, "include_structure": True}))
         self.assertFalse(eligible(**{**args, "mode": "live"}))
 
@@ -169,6 +169,36 @@ class ArteChartReaderTests(unittest.TestCase):
         self.assertEqual(result["source"], "arte.market-day-core-v5")
         self.assertEqual(result["indicators"][0]["ema_9"], 1.04)
         persisted.assert_called_once()
+        gateway.assert_not_called()
+
+    def test_backtest_missing_persisted_page_never_triggers_qmd_build(self):
+        from src.backend.trading_runtime_service import historical_bar_history_before
+
+        with (patch("src.backend.arte_chart_reader.chart_page", return_value=None),
+              patch("src.backend.trading_runtime_service.qmd_product_request") as gateway):
+            with self.assertRaisesRegex(ValueError, "Certified ARTE chart products"):
+                historical_bar_history_before(
+                    before=DAY, session_date=DAY, ticker="SUGP", timeframe="1s",
+                    as_of="2026-08-18T04:06:00-04:00", row_limit=60,
+                    indicator_columns=["bar_start", "vwap"],
+                    include_market_signals=False, include_structure=False,
+                    mode="backtest", stage="full",
+                )
+        gateway.assert_not_called()
+
+    def test_backtest_structure_request_never_triggers_qmd_build(self):
+        from src.backend.trading_runtime_service import historical_bar_history_before
+
+        with (patch("src.backend.arte_chart_reader.chart_page", return_value=None),
+              patch("src.backend.trading_runtime_service.qmd_product_request") as gateway):
+            with self.assertRaisesRegex(ValueError, "Certified ARTE chart products"):
+                historical_bar_history_before(
+                    before=DAY, session_date=DAY, ticker="SUGP", timeframe="1s",
+                    as_of="2026-08-18T04:06:00-04:00", row_limit=60,
+                    indicator_columns=["bar_start"],
+                    include_market_signals=False, include_structure=True,
+                    mode="backtest", stage="full",
+                )
         gateway.assert_not_called()
 
     def test_canvas_cache_key_changes_when_certified_build_changes(self):
