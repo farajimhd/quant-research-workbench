@@ -87,6 +87,19 @@ def test_typed_float_hash_accepts_integral_json_number_from_clickhouse() -> None
         stored_utc=True) == canonical
 
 
+def test_generic_evidence_rows_cannot_be_published() -> None:
+    from src.trading_runtime.arte_journal_projection import project_signal_evidence_nodes
+
+    nodes = project_signal_evidence_nodes(
+        {"ratio": 1.0}, run_id=RUN, event_month="2026-08-01",
+        batch_id=BATCH, parent_record_id=RECORD,
+    )
+    client = MemoryClient()
+    with pytest.raises(ValueError, match="retired for new writes"):
+        publish_typed_batch(client, replace(batch(), signal_evidence_nodes=nodes))
+    assert not client.inserts
+
+
 @pytest.mark.parametrize("encoded", [
     '{"nested":1}', '  ["unmodelled"]', '\ufeff{"nested":1}',
     ' \ufeff ["unmodelled"]',

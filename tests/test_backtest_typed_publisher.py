@@ -2,13 +2,16 @@ import asyncio
 from concurrent.futures import Future
 from datetime import date, timezone
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
+from src.backend.replay_run_service import ReplayRunController
 from src.trading_runtime.arte_journal_writer import JournalQueueFull
+from src.trading_runtime.runtime import RunMode
 
 
 RUN = "00000000-0000-0000-0000-000000000a01"
@@ -191,3 +194,53 @@ def test_slow_projection_runs_off_event_loop(monkeypatch):
         asyncio.run(exercise())
     finally:
         release.set()
+
+
+def test_fixed_controller_fences_only_typed_cursor_without_opaque_checkpoint(monkeypatch):
+    journal = BacktestMemoryJournal(run_id=RUN)
+    journal.append(run_id=RUN, category="lifecycle", entity_type="run",
+                   entity_id=RUN, event_time=AT,
+                   payload={"status": "running", "config": {"mode": "backtest"}})
+    writer = FakeWriter()
+    publisher = _publisher(journal, writer)
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller.run_id = RUN
+    controller.status = "running"
+    controller.processed_events = 2
+    controller._journal = journal
+    controller._journal_publisher = publisher
+    controller._source_cursor = {"session_date": DAY.isoformat(),
+                                 "boundary_ms": 300_000, "sequence": 2}
+    controller._frame_cursor = {}
+    controller._checkpoint_projection_cache = None
+    controller.stream_snapshot = lambda: {}
+    controller._flush_passive_market_events = lambda: None
+    controller._record_stage_time = lambda *_: None
+    controller._restart_checkpoint_interval_events = lambda: None
+    monkeypatch.setattr(journal, "save_checkpoint", lambda *_: pytest.fail("opaque checkpoint"))
+
+    asyncio.run(controller._save_restart_checkpoint_responsive(AT))
+
+    assert len(writer.submitted) == 1
+    assert len(writer.submitted[0].events) == 2
+    assert writer.submitted[0].source_cursor == f"{DAY.isoformat()}:300000"
+    assert publisher.fenced_sequence == 2
+    assert journal.pending_record_count == 0
+    assert controller._checkpoint_projection_cache["resume_supported"] is False
+
+
+def test_fixed_controller_terminal_checkpoint_fails_before_journal_write():
+    journal = BacktestMemoryJournal(run_id=RUN)
+    writer = FakeWriter()
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller._journal = journal
+    controller._journal_publisher = _publisher(journal, writer)
+    controller.status = "completed"
+
+    with pytest.raises(RuntimeError, match="lifecycle-last typed account captures"):
+        asyncio.run(controller._save_restart_checkpoint_responsive(
+            AT, checkpoint_status="completed"))
+    assert not writer.submitted
+    assert journal.pending_record_count == 0

@@ -121,3 +121,27 @@ class BacktestTypedJournalPublisher:
             self.enqueue_pending()
         assert self._task is not None
         return await asyncio.shield(self._task)
+
+    async def fence_checkpoint(
+        self, *, boundary_id: str, status: str = "running",
+    ) -> TypedBacktestReceipt:
+        """Fence one normalized completed cursor, never an opaque state map.
+
+        Terminal publication must instead place the lifecycle event last and
+        attach every typed account capture to that exact event batch. The
+        current controller ordering does not yet meet that contract.
+        """
+        if status != "running":
+            raise ValueError("Terminal Backtest needs lifecycle-last typed account captures")
+        pending = self.journal.unfenced_records()
+        if (not pending or not boundary_id
+                or (pending[-1].category, pending[-1].entity_type,
+                    pending[-1].entity_id) !=
+                   ("checkpoint", "market_boundary", boundary_id)):
+            raise ValueError("Typed Backtest checkpoint needs the last normalized cursor")
+        self.enqueue_pending()
+        receipt = await self.await_fence()
+        if (receipt.source_cursor != boundary_id
+                or receipt.last_sequence != pending[-1].sequence):
+            raise RuntimeError("Typed Backtest checkpoint cursor differs from committed prefix")
+        return receipt

@@ -2250,25 +2250,25 @@ class ReplayRunController:
             publisher = getattr(self, '_journal_publisher', None)
             if publisher is None:
                 raise RuntimeError('Fixed Backtest has no ClickHouse journal publisher')
+            status = checkpoint_status or (
+                self.status if self.status in TERMINAL_REPLAY_STATUSES else 'running')
+            if status != 'running':
+                raise RuntimeError(
+                    'Terminal fixed Backtest requires lifecycle-last typed account captures')
             snapshot = self.stream_snapshot()
             self._checkpoint_phase = 'checkpoint_capture'
             self._checkpoint_started_at = datetime.now(UTC)
             self._checkpoint_work_snapshot = snapshot
             try:
                 started = time.perf_counter()
-                state = await asyncio.to_thread(
-                    self._restart_checkpoint_state, reference_authority=True)
+                self._flush_passive_market_events()
                 self._record_stage_time('checkpoint_capture', started)
-                cursor = json.dumps({
-                    'market': state['controller']['source_cursor'],
-                    'frame': state['controller']['frame_cursor'],
-                }, separators=(',', ':'), sort_keys=True)
                 from src.trading_runtime.arte_journal_projection import (
                     backtest_cursor_record_fields,
                 )
                 boundary_id, boundary_payload = backtest_cursor_record_fields(
-                    state['controller']['source_cursor'],
-                    state['controller']['frame_cursor'],
+                    self._source_cursor,
+                    self._frame_cursor,
                     completed_at=event_time,
                 )
                 pending = self._journal.unfenced_records()
@@ -2292,9 +2292,7 @@ class ReplayRunController:
                 self._checkpoint_phase = 'checkpoint_persist'
                 started = time.perf_counter()
                 self._checkpoint_io_task = asyncio.create_task(publisher.fence_checkpoint(
-                    state=state, source_cursor=cursor,
-                    status=checkpoint_status or (
-                        self.status if self.status in TERMINAL_REPLAY_STATUSES else 'running'),
+                    boundary_id=boundary_id, status='running',
                 ))
                 try:
                     await asyncio.shield(self._checkpoint_io_task)
@@ -2302,15 +2300,13 @@ class ReplayRunController:
                     await self._checkpoint_io_task
                     raise
                 self._record_stage_time('checkpoint_persist', started)
-                self._journal.save_checkpoint(self.run_id, cursor, state, event_time)
                 self._checkpoint_projection_cache = {
-                    'status': 'available', 'cursor': cursor,
+                    'status': 'cursor_fenced', 'cursor': boundary_id,
                     'event_time': event_time.isoformat(),
                     'updated_at': datetime.now(UTC).isoformat(),
-                    'processed_events': int(state['controller'].get('processed_events') or 0),
+                    'processed_events': int(self.processed_events),
                     'interval_events': self._restart_checkpoint_interval_events(),
-                    'resume_supported': True,
-                    'schema_version': int(state.get('schema_version') or 1),
+                    'resume_supported': False,
                 }
             finally:
                 self._checkpoint_io_task = None

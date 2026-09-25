@@ -1167,6 +1167,8 @@ def _verify_exact_intent_uses(
 
 def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
+    if batch.signal_evidence_nodes:
+        raise ValueError("Generic signal evidence nodes are retired for new writes")
     families = _sealed_families(batch)
     _verify_commission_links(client, batch, families)
     _verify_exact_intent_uses(client, batch, families)

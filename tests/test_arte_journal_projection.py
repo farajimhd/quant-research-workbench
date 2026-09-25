@@ -323,27 +323,20 @@ def test_signal_sources_are_normalized_without_dropping_metadata() -> None:
         "source-a", "source-b"
     ]
     assert batch.signals[0]["score"] == "0.750000000000000000"
-    from src.trading_runtime.arte_journal_projection import recover_signal_evidence_nodes
     evidence = {"unmapped": 1, "nested": {"prices": [1.25, None, True]},
                 "sources": ("one", "two")}
-    with_evidence = strategy_signal_batch(replace(signal, metadata=evidence), **args)
-    reordered = strategy_signal_batch(replace(signal, metadata={
-        "sources": ("one", "two"), "nested": {"prices": [1.25, None, True]},
-        "unmapped": 1,
-    }), **args)
-    assert with_evidence.signal_evidence_nodes == reordered.signal_evidence_nodes
-    assert recover_signal_evidence_nodes(
-        list(with_evidence.signal_evidence_nodes),
-        parent_record_id=with_evidence.signals[0]["record_id"]) == evidence
-    assert len(dict(_sealed_families(with_evidence))[
-        "trading_strategy_signal_evidence_node_v1"]) == 10
+    with pytest.raises(ValueError, match="concrete typed catalog"):
+        strategy_signal_batch(replace(signal, metadata=evidence), **args)
+    with pytest.raises(ValueError, match="retired for new writes"):
+        strategy_signal_batch(replace(signal, metadata=evidence),
+                              persist_metadata_nodes=True, **args)
     from src.trading_runtime.arte_journal_projection import project_signal_evidence_nodes
     with pytest.raises(ValueError, match="byte bound"):
         project_signal_evidence_nodes(
             {str(index): "x" * 1_000_000 for index in range(9)},
             run_id=args["run_id"], event_month="2026-08-01",
             batch_id=args["batch_id"],
-            parent_record_id=with_evidence.signals[0]["record_id"],
+            parent_record_id=batch.signals[0]["record_id"],
         )
     with pytest.raises(ValueError, match="out of range"):
         strategy_signal_batch(replace(signal, confidence=1.1), **args)
@@ -357,8 +350,7 @@ def test_signal_sources_are_normalized_without_dropping_metadata() -> None:
         _sealed_families(invalid)
 
 
-def test_signal_evidence_tree_is_committed_and_recovered_losslessly() -> None:
-    from src.trading_runtime.arte_journal_projection import load_committed_signal_evidence
+def test_generic_signal_evidence_cannot_be_published() -> None:
     metadata = {"decision": {"passes": [True, False], "price": 12.5,
                               "reason": None}, "source_ids": ("a", "b")}
     signal = StrategySignal(
@@ -371,20 +363,7 @@ def test_signal_evidence_tree_is_committed_and_recovered_losslessly() -> None:
                 prior_batch_id="00000000-0000-0000-0000-000000000000",
                 sequence=1, source_cursor="signal-tree", run_status="completed",
                 recorded_at=AT)
-    batch = strategy_signal_batch(signal, **args)
     client = MemoryClient()
-    publish_typed_batch(client, batch)
-    prefix = load_committed_prefix(client, args["run_id"])
-    assert prefix is not None
-    assert load_committed_signal_evidence(
-        client, prefix, batch.signals[0]["record_id"]) == metadata
-    assert client.inserts[-1] == "trading_commit_v1"
-    node = client.tables["trading_strategy_signal_evidence_node_v1"][1]
-    original_kind = node["value_kind"]
-    node["value_kind"] = "null"
-    with pytest.raises(RuntimeError, match="row content differs from its hash"):
-        load_committed_prefix(client, args["run_id"])
-    node["value_kind"] = original_kind
-    client.tables["trading_strategy_signal_evidence_node_v1"].pop()
-    with pytest.raises(RuntimeError, match="differs from committed fence"):
-        load_committed_prefix(client, args["run_id"])
+    with pytest.raises(ValueError, match="concrete typed catalog"):
+        strategy_signal_batch(signal, **args)
+    assert not client.inserts

@@ -1279,7 +1279,7 @@ def strategy_signal_batch(
     record_id: str | None = None,
     correlation_id: str = "",
     causation_id: str = "",
-    persist_metadata_nodes: bool = True,
+    persist_metadata_nodes: bool = False,
     decision_metadata: Mapping[str, Any] | None = None,
 ) -> TypedJournalBatch:
     """Project a signal only when every source and evidence field is represented."""
@@ -1306,14 +1306,13 @@ def strategy_signal_batch(
         "entity_id": signal.signal_id, "account_id": account_id,
         "correlation_id": correlation_id, "causation_id": causation_id,
     }
-    if not persist_metadata_nodes and signal.metadata and decision_metadata is None:
-        raise ValueError("Backtest signal metadata lacks a concrete typed catalog")
+    if persist_metadata_nodes:
+        raise ValueError("Generic signal evidence nodes are retired for new writes")
+    if signal.metadata and decision_metadata is None:
+        raise ValueError("Strategy signal metadata lacks a concrete typed catalog")
     if decision_metadata is not None and dict(decision_metadata) != signal.metadata:
         raise ValueError("Strategy signal decision metadata differs from its source")
-    evidence_nodes = (project_signal_evidence_nodes(
-        signal.metadata, run_id=run_id, event_month=month,
-        batch_id=batch_id, parent_record_id=record_id)
-        if persist_metadata_nodes else ())
+    evidence_nodes: tuple[Mapping[str, Any], ...] = ()
     detail = {
         "record_id": record_id, "run_id": run_id, "event_month": month,
         "batch_id": batch_id, "account_id": account_id,
