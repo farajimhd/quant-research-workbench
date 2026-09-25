@@ -1227,6 +1227,73 @@ BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES = (
     ),
 )
 
+# Operator-only cutover for occupied, older V1 facts. Never ALTER the occupied
+# V1 signal or commit tables: added defaults would change the canonical hash
+# input of pre-existing rows. The V2 contract is the complete current typed
+# shape, deliberately staged outside active TABLES/startup validation.
+_JOURNAL_V1_BY_NAME = {table.name: table for table in TABLES}
+VERSIONED_JOURNAL_V2_TABLES = tuple(
+    TableContract(
+        v2_name, _JOURNAL_V1_BY_NAME[v1_name].columns,
+        _JOURNAL_V1_BY_NAME[v1_name].partition,
+        _JOURNAL_V1_BY_NAME[v1_name].order,
+    )
+    for v1_name, v2_name in (
+        ("trading_strategy_signal_v1", "trading_strategy_signal_v2"),
+        ("trading_commit_v1", "trading_commit_v2"),
+    )
+)
+
+# Exact occupied V1 signal shape from the pre-cursor contract at 8764dbc8,
+# independently confirmed against deployed system.columns. This is read-only;
+# it must not replace the active newer V1 contract or generate upgrade DDL.
+LEGACY_STRATEGY_SIGNAL_V1 = TableContract(
+    "trading_strategy_signal_v1",
+    tuple((name, kind) for name, kind in
+          _JOURNAL_V1_BY_NAME["trading_strategy_signal_v1"].columns
+          if name not in {
+              "evidence_node_count", "decision_assignment_id",
+              "decision_reference_price", "decision_status",
+              "decision_reason_detail",
+          }),
+    _JOURNAL_V1_BY_NAME["trading_strategy_signal_v1"].partition,
+    _JOURNAL_V1_BY_NAME["trading_strategy_signal_v1"].order,
+)
+_LEGACY_COMMIT_NAMES = (
+    "run_id", "run_month", "attempt_id", "batch_id", "prior_batch_id",
+    "first_sequence", "last_sequence", "event_count", "signal_count",
+    "signal_source_count", "execution_count", "commission_count",
+    "order_command_count", "order_transition_count", "account_snapshot_count",
+    "position_snapshot_count", "event_hash", "signal_hash",
+    "signal_source_hash", "execution_hash", "commission_hash",
+    "order_command_hash", "order_transition_hash", "account_snapshot_hash",
+    "position_snapshot_hash", "intent_count", "intent_slice_count",
+    "intent_hash", "intent_slice_hash", "order_context_count",
+    "order_context_hash", "oms_group_state_count", "oms_order_state_count",
+    "oms_broker_binding_count", "oms_warning_count", "oms_cancel_oca_count",
+    "oms_group_state_hash", "oms_order_state_hash", "oms_broker_binding_hash",
+    "oms_warning_hash", "oms_cancel_oca_hash", "intent_use_count",
+    "intent_use_hash", "run_transition_count", "run_transition_hash",
+    "operational_fault_count", "operational_fault_hash",
+    "account_risk_state_count", "account_risk_state_hash",
+    "account_risk_reason_count", "account_risk_reason_hash",
+    "intent_decision_count", "intent_decision_hash",
+    "intent_decision_reason_count", "intent_decision_reason_hash",
+    "source_cursor", "status", "committed_at",
+)
+_CURRENT_COMMIT_TYPES = dict(_JOURNAL_V1_BY_NAME["trading_commit_v1"].columns)
+LEGACY_COMMIT_V1 = TableContract(
+    "trading_commit_v1",
+    tuple((name, _CURRENT_COMMIT_TYPES[name]) for name in _LEGACY_COMMIT_NAMES),
+    _JOURNAL_V1_BY_NAME["trading_commit_v1"].partition,
+    _JOURNAL_V1_BY_NAME["trading_commit_v1"].order,
+)
+
+
+def versioned_journal_v2_ddl() -> tuple[str, ...]:
+    """Staged replacement DDL only; active V1 schemas and hashes stay fixed."""
+    return tuple(table.ddl() for table in VERSIONED_JOURNAL_V2_TABLES)
+
 
 def backtest_terminal_snapshot_v2_ddl() -> tuple[str, ...]:
     """Staged DDL only; never executed by a runtime or active schema check."""
