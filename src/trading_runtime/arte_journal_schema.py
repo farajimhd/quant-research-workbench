@@ -1314,6 +1314,24 @@ def versioned_journal_v2_preflight(client: Any) -> None:
     )
 
 
+def fixed_backtest_v2_preflight(client: Any) -> None:
+    """Read-only, exact admission for one V2 running and terminal writer.
+
+    The occupied V1 signal/commit rows remain immutable and readable. Shared
+    typed facts, V2 signal/commit fences, and terminal facts are append-only.
+    """
+    legacy = {"trading_strategy_signal_v1", "trading_commit_v1"}
+    shared = tuple(table for table in TABLES if table.name not in legacy)
+    writable = shared + VERSIONED_JOURNAL_V2_TABLES + BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES
+    contracts = writable + (LEGACY_STRATEGY_SIGNAL_V1, LEGACY_COMMIT_V1)
+    storage_preflight(client, tables=contracts)
+    journal_permission_preflight(
+        client,
+        journal_tables=frozenset(table.name for table in writable),
+        read_only_tables=frozenset(legacy),
+    )
+
+
 def backtest_terminal_snapshot_v2_ddl() -> tuple[str, ...]:
     """Staged DDL only; never executed by a runtime or active schema check."""
     return tuple(table.ddl() for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES)

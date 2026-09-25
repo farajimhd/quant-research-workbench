@@ -2813,13 +2813,11 @@ class ReplayRunController:
     async def _open_fixed_journal(self) -> None:
         """Fail closed at the typed journal boundary until recovery is complete."""
         from src.backend.backtest_terminal_v2_preflight import terminal_v2_operator_preflight
-        from src.trading_runtime.arte_journal_schema import storage_preflight
         from src.trading_runtime.arte_journal_writer import journal_client_from_env
         if self.definition.mode != RunMode.BACKTEST or self._journal is not None:
             raise RuntimeError("ClickHouse Backtest journal requires a new Backtest run")
         client = await asyncio.to_thread(journal_client_from_env)
         try:
-            await asyncio.to_thread(storage_preflight, client)
             await asyncio.to_thread(terminal_v2_operator_preflight, client)
         finally:
             await asyncio.to_thread(client.close)

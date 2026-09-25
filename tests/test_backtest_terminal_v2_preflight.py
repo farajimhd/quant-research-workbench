@@ -10,7 +10,18 @@ from src.backend.backtest_terminal_v2_preflight import (
 )
 from src.trading_runtime.arte_journal_schema import (
     BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES, MARKET_READ_TABLES, TABLES,
+    VERSIONED_JOURNAL_V2_TABLES,
 )
+from tests.test_arte_journal_v2_profile import V2Catalog
+
+
+class FullV2Catalog(V2Catalog):
+    def __init__(self):
+        super().__init__()
+        terminal = {table.name for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES}
+        self.tables += BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES
+        self.writable |= terminal
+        self.readable |= terminal
 
 
 class FakeCatalog:
@@ -86,13 +97,16 @@ class FakeCatalog:
 
 
 def test_operator_preflight_checks_exact_v2_layout_parts_and_narrow_grants():
-    client = FakeCatalog()
+    client = FullV2Catalog()
     terminal_v2_operator_preflight(client)
-    assert all(sql.startswith(("SELECT ", "SHOW GRANTS", "CHECK GRANT "))
-               for sql in client.calls)
-    assert any("system.parts" in sql and "disk_name!='live_market_ssd'" in sql
-               for sql in client.calls)
-    assert any("CHECK GRANT INSERT ON arte.bars_v1" == sql for sql in client.calls)
+    client.legacy_insert = True
+    with pytest.raises(ValueError, match="unauthorized INSERT"):
+        terminal_v2_operator_preflight(client)
+    client.legacy_insert = False
+    client.tables = tuple(table for table in client.tables
+                          if table.name != "trading_backtest_terminal_commit_v2")
+    with pytest.raises(ValueError, match="tables are missing"):
+        terminal_v2_operator_preflight(client)
 
 
 def test_operator_preflight_rejects_wrong_disk_schema_or_unindexed_parts():
@@ -124,10 +138,17 @@ def test_operator_preflight_rejects_market_write_and_broad_grants():
 
 def test_provisioning_sql_stages_v2_and_exact_portfolio_writer_grants():
     sql = terminal_v2_operator_provisioning_sql("terminal_v2")
-    assert len([statement for statement in sql if statement.startswith("CREATE TABLE")]) == 3
+    expected = len(TABLES) - 2 + len(VERSIONED_JOURNAL_V2_TABLES)
+    expected += len(BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES)
+    assert len([statement for statement in sql if statement.startswith("CREATE TABLE")]) == expected
     assert "GRANT INSERT ON arte.trading_backtest_snapshot_anchor_v1 TO terminal_v2" in sql
     assert "GRANT INSERT ON arte.trading_portfolio_snapshot_commit_v1 TO terminal_v2" in sql
     assert "GRANT INSERT ON arte.trading_portfolio_policy_commit_v2 TO terminal_v2" in sql
+    assert "GRANT INSERT ON arte.trading_strategy_signal_v2 TO terminal_v2" in sql
+    assert "GRANT INSERT ON arte.trading_commit_v2 TO terminal_v2" in sql
+    assert "REVOKE INSERT ON arte.trading_strategy_signal_v1 FROM terminal_v2" in sql
+    assert "REVOKE INSERT ON arte.trading_commit_v1 FROM terminal_v2" in sql
+    assert "GRANT INSERT ON arte.trading_commit_v1 TO terminal_v2" not in sql
     assert "GRANT SELECT ON arte.bars_v1 TO terminal_v2" in sql
     assert not any("GRANT INSERT ON arte.bars_v1" in statement for statement in sql)
     with pytest.raises(ValueError, match="unsafe"):

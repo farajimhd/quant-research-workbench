@@ -303,7 +303,7 @@ def test_controller_adds_boundary_after_other_pending_records():
 
 
 def test_controller_rejects_retired_publisher_after_typed_preflight(monkeypatch):
-    import src.trading_runtime.arte_journal_schema as typed_schema
+    import src.backend.backtest_terminal_v2_preflight as typed_preflight
     import src.trading_runtime.arte_journal_writer as typed_writer
 
     calls = []
@@ -314,10 +314,8 @@ def test_controller_rejects_retired_publisher_after_typed_preflight(monkeypatch)
 
     client = Client()
     monkeypatch.setattr(typed_writer, "journal_client_from_env", lambda: client)
-    monkeypatch.setattr(typed_schema, "storage_preflight",
-                        lambda actual: calls.append(("storage", actual)))
-    monkeypatch.setattr(typed_schema, "journal_permission_preflight",
-                        lambda actual: calls.append(("permission", actual)))
+    monkeypatch.setattr(typed_preflight, "terminal_v2_operator_preflight",
+                        lambda actual: calls.append(("v2_preflight", actual)))
     controller = object.__new__(ReplayRunController)
     controller.definition = SimpleNamespace(
         mode=RunMode.BACKTEST,
@@ -339,4 +337,4 @@ def test_controller_rejects_retired_publisher_after_typed_preflight(monkeypatch)
         assert controller._journal_publisher is None
 
     asyncio.run(exercise())
-    assert calls == [("storage", client), ("permission", client), "closed"]
+    assert calls == [("v2_preflight", client), "closed"]

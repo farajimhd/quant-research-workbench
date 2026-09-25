@@ -11,7 +11,8 @@ from typing import Any
 
 from src.trading_runtime.arte_journal_schema import (
     BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES, BATCH_LOOKUP_INDEX,
-    MARKET_READ_TABLES, STORAGE_POLICY, TABLES,
+    LEGACY_COMMIT_V1, LEGACY_STRATEGY_SIGNAL_V1, MARKET_READ_TABLES,
+    STORAGE_POLICY, TABLES, VERSIONED_JOURNAL_V2_TABLES,
 )
 
 
@@ -161,9 +162,10 @@ def terminal_v2_permission_preflight(client: Any) -> None:
 
 
 def terminal_v2_operator_preflight(client: Any) -> None:
-    """Read-only admission; use a dedicated principal, never market writer."""
-    terminal_v2_storage_preflight(client)
-    terminal_v2_permission_preflight(client)
+    """Read-only combined V2 journal and terminal admission."""
+    from src.trading_runtime.arte_journal_schema import fixed_backtest_v2_preflight
+
+    fixed_backtest_v2_preflight(client)
 
 
 def terminal_v2_keeper_proof_preflight(keeper: Any) -> None:
@@ -185,13 +187,17 @@ def terminal_v2_keeper_proof_preflight(keeper: Any) -> None:
 
 
 def terminal_v2_operator_provisioning_sql(principal: str) -> tuple[str, ...]:
-    """Review-only staged DDL/grants; never executed by this module."""
+    """Review-only complete fixed-V2 layout and exact grants; never execute here."""
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", principal) is None:
         raise ValueError("Terminal V2 principal name is unsafe")
+    legacy = {LEGACY_STRATEGY_SIGNAL_V1.name, LEGACY_COMMIT_V1.name}
+    writable = tuple(table for table in TABLES if table.name not in legacy)
+    writable += VERSIONED_JOURNAL_V2_TABLES + BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES
+    readable = {table.name for table in writable} | legacy | MARKET_READ_TABLES
     return (
-        *(table.ddl() for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES),
-        *(f"GRANT SELECT ON arte.{name} TO {principal}" for name in sorted(
-            _READ | MARKET_READ_TABLES)),
-        *(f"GRANT INSERT ON arte.{name} TO {principal}" for name in sorted(_INSERT)),
+        *(table.ddl() for table in writable),
+        *(f"REVOKE INSERT ON arte.{name} FROM {principal}" for name in sorted(legacy)),
+        *(f"GRANT SELECT ON arte.{name} TO {principal}" for name in sorted(readable)),
+        *(f"GRANT INSERT ON arte.{table.name} TO {principal}" for table in writable),
         *(f"GRANT SELECT ON system.{name} TO {principal}" for name in sorted(_SYSTEM_READ)),
     )
