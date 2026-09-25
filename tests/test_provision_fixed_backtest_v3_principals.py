@@ -274,3 +274,21 @@ def test_existing_credential_must_authenticate_exact_user_before_grant(monkeypat
             client_factory=lambda user, _password: FakePrincipal("wrong_user")
             if user == plans[0].principal else FakePrincipal(user))
     assert not any(sql.startswith(("CREATE USER", "GRANT ")) for sql in admin.sql)
+
+
+def test_operator_transport_uses_resolved_ipv4_not_unreachable_hostname(monkeypatch, tmp_path):
+    monkeypatch.setattr(command.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(command, "SECRET_ROOT", tmp_path)
+    monkeypatch.setattr(command.socket, "getaddrinfo", lambda *_args, **_kwargs: [
+        (None, None, None, None, ("192.168.1.218", 18123)),
+    ])
+    seen = []
+    monkeypatch.setattr(command, "_admin_client", lambda url: seen.append(url) or object())
+    monkeypatch.setattr(command, "apply_with_clients", lambda _plans, **kwargs:
+                        seen.append(kwargs["client_factory"]("user", "password").url))
+    class FakeClient:
+        def __init__(self, url, _user, _password, **_kwargs):
+            self.url = url
+    monkeypatch.setattr(command, "ClickHouseHttpClient", FakeClient)
+    command._operator_apply(command.URL, command.desired_plan())
+    assert seen == ["http://192.168.1.218:18123"] * 2

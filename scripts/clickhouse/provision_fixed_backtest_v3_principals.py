@@ -13,6 +13,7 @@ from pathlib import Path
 import platform
 import re
 import secrets
+import socket
 import sys
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -237,10 +238,21 @@ def _operator_apply(url: str, plans: tuple[PrincipalPlan, ...]) -> None:
             parsed.fragment, parsed.username, parsed.password) != (
             "http", "desktop-saai85t", 18123, "", "", "", None, None):
         raise RuntimeError("Unexpected ClickHouse endpoint")
-    admin = _admin_client(url)
+    # The workstation's hostname may resolve to an unreachable IPv6 link-local
+    # address before its managed IPv4 listener. A provisioning campaign issues
+    # many small grant calls, so each IPv6 SYN timeout compounds dramatically.
+    # Keep the published credential URL unchanged, but pin this local operator
+    # session to the workstation's unambiguous resolved IPv4 address.
+    addresses = {result[4][0] for result in socket.getaddrinfo(
+        parsed.hostname, parsed.port, family=socket.AF_INET,
+        type=socket.SOCK_STREAM)}
+    if len(addresses) != 1:
+        raise RuntimeError("Workstation IPv4 endpoint is absent or ambiguous")
+    transport_url = f"http://{addresses.pop()}:{parsed.port}"
+    admin = _admin_client(transport_url)
     apply_with_clients(plans, admin=admin, credential=_private_credential,
         client_factory=lambda user, password: ClickHouseHttpClient(
-            url, user, password, timeout_seconds=20))
+            transport_url, user, password, timeout_seconds=20))
 
 
 def main(argv: list[str] | None = None) -> int:
