@@ -225,7 +225,8 @@ def test_two_state_revisions_reuse_one_immutable_parameter_snapshot(monkeypatch)
         rows, state_commit = project_state_snapshot(state, **identity)
         base = project_base_revision(
             assignment, revision_sequence=revision,
-            **{**CHILD_REFS, "state_snapshot_id": snapshot},
+            **{**CHILD_REFS, "state_snapshot_id": snapshot,
+               "state_snapshot_revision": revision},
             parameter_content_hash=HASH_A,
             state_content_hash=state_commit["content_hash"],
             previous_revision_hash=prior)

@@ -27,7 +27,8 @@ BASE_REVISION = TableContract(
      ("source", "String"), ("created_at", "DateTime64(6, 'UTC')"),
      ("updated_at", "DateTime64(6, 'UTC')"),
      ("parameter_snapshot_id", "UUID"), ("parameter_session", "Date"),
-     ("state_snapshot_id", "UUID"), ("state_session", "Date"),
+     ("state_snapshot_id", "UUID"), ("state_snapshot_revision", "UInt64"),
+     ("state_session", "Date"),
      ("state_run_id", "String"),
      ("parameter_content_hash", "FixedString(64)"),
      ("state_content_hash", "FixedString(64)"),
@@ -56,7 +57,8 @@ def _digest(value: str) -> str:
 def project_base_revision(
     assignment: StrategyAssignment, *, revision_sequence: int,
     parameter_snapshot_id: str, parameter_session: str,
-    state_snapshot_id: str, state_session: str, state_run_id: str,
+    state_snapshot_id: str, state_snapshot_revision: int,
+    state_session: str, state_run_id: str,
     parameter_content_hash: str, state_content_hash: str,
     previous_revision_hash: str,
 ) -> dict[str, Any]:
@@ -90,6 +92,9 @@ def project_base_revision(
         raise ValueError("assignment child snapshot reference is invalid") from exc
     if type(state_run_id) is not str or not state_run_id:
         raise ValueError("assignment state run identity is invalid")
+    if (type(state_snapshot_revision) is not int or state_snapshot_revision < 1
+            or state_snapshot_revision > revision_sequence):
+        raise ValueError("assignment state snapshot revision is invalid")
     row = dict(
         schema_version=1, assignment_id=assignment.assignment_id,
         revision_sequence=revision_sequence, strategy_id=assignment.strategy_id,
@@ -101,7 +106,8 @@ def project_base_revision(
         source=assignment.source, created_at=_time(assignment.created_at),
         updated_at=_time(assignment.updated_at),
         parameter_snapshot_id=parameter_snapshot_id, parameter_session=parameter_session,
-        state_snapshot_id=state_snapshot_id, state_session=state_session,
+        state_snapshot_id=state_snapshot_id,
+        state_snapshot_revision=state_snapshot_revision, state_session=state_session,
         state_run_id=state_run_id,
         parameter_content_hash=_digest(parameter_content_hash),
         state_content_hash=_digest(state_content_hash),
@@ -148,6 +154,7 @@ def recover_base_revision(
             parameter_snapshot_id=row["parameter_snapshot_id"],
             parameter_session=row["parameter_session"],
             state_snapshot_id=row["state_snapshot_id"],
+            state_snapshot_revision=row["state_snapshot_revision"],
             state_session=row["state_session"], state_run_id=row["state_run_id"],
             parameter_content_hash=parameter_content_hash,
             state_content_hash=state_content_hash,

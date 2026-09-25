@@ -22,6 +22,8 @@ from tests.test_arte_journal_writer import MemoryClient
 
 class V2MemoryClient(MemoryClient):
     def execute(self, sql):
+        if "FROM system.tables" in sql and "name='trading_commit_v3'" in sql:
+            return ""
         if "groupArray((toString(record_id),toString(content_hash)))" in sql:
             batch_id = sql.split("batch_id=toUUID('", 1)[1].split("'", 1)[0]
             pairs = re.findall(r"FROM arte\.([a-z0-9_]+) WHERE batch_id=.*?\) AS ([a-z0-9_]+)", sql)

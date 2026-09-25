@@ -24,9 +24,10 @@ from typing import TYPE_CHECKING, Any, Mapping
 from uuid import UUID
 
 from src.trading_runtime.arte_journal_schema import (
-    TABLES, journal_permission_preflight, storage_preflight,
+    POLICY_ALLOWED_TABLES, TABLES, journal_permission_preflight, storage_preflight,
     versioned_journal_v2_contracts, versioned_journal_v2_preflight,
 )
+from src.backend.backtest_squeeze_episode_schema import SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE
 from src.trading_runtime.journal_contract import canonical_json
 
 if TYPE_CHECKING:
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
 
 
 _CONTRACTS = {table.name: table for table in TABLES}
+_CONTRACTS.update({table.name: table for table in (SQUEEZE_EPISODE, SQUEEZE_COMMIT_V3)})
 
 
 def _without_text_prefix(value: str) -> str:
@@ -234,7 +236,23 @@ class TypedJournalBatch:
         return tuple((name, getattr(self, attribute)) for name, attribute, _, _ in _FAMILIES)
 
 
-def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
+@dataclass(frozen=True, slots=True)
+class V3SqueezeBatch:
+    """One immutable closed-family supplement to an ordinary typed batch."""
+
+    base: TypedJournalBatch
+    episodes: tuple[Mapping[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        if self.base.status != "running":
+            raise ValueError("V3 terminal Backtest requires the separate terminal fence")
+        object.__setattr__(self, "episodes", tuple(
+            MappingProxyType(dict(row)) for row in self.episodes))
+
+
+def _sealed_families(
+    batch: TypedJournalBatch, *, v3_episode_ids: tuple[str, ...] = (),
+) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
     """Validate and hash the immutable snapshot on the persistence lane."""
     if len(batch.events) != batch.last_sequence - batch.first_sequence + 1:
         raise ValueError("Journal batch must cover a contiguous event sequence")
@@ -323,12 +341,22 @@ def _sealed_families(batch: TypedJournalBatch) -> tuple[tuple[str, tuple[dict[st
             if record_id in details_by_record:
                 raise ValueError("Journal event has multiple typed detail families")
             details_by_record[record_id] = name
+    expected_details = _EVENT_DETAILS
+    if v3_episode_ids:
+        expected_details = {**_EVENT_DETAILS,
+            ("market_discovery_signal", "signal_occurrence"):
+                SQUEEZE_EPISODE.name}
+        for record_id in v3_episode_ids:
+            identity = str(UUID(str(record_id)))
+            if identity in details_by_record:
+                raise ValueError("Journal event has multiple typed detail families")
+            details_by_record[identity] = SQUEEZE_EPISODE.name
     for event in by_family["trading_event_v1"]:
         key = (str(event["category"]), str(event["entity_type"]))
-        if key not in _EVENT_DETAILS:
+        if key not in expected_details:
             raise ValueError(f"Journal event has no typed contract: {key}")
         record_id = str(UUID(str(event["record_id"])))
-        if details_by_record.get(record_id) != _EVENT_DETAILS[key]:
+        if details_by_record.get(record_id) != expected_details[key]:
             raise ValueError("Journal event lacks its required typed detail")
     for authority in by_family["trading_backtest_market_authority_v1"]:
         parent = events_by_id[str(UUID(str(authority["record_id"]))) ]
@@ -827,6 +855,9 @@ def _profile_table(name: str, journal_profile: str) -> str:
     if journal_profile == "backtest_v2":
         return {"trading_strategy_signal_v1": "trading_strategy_signal_v2",
                 "trading_commit_v1": "trading_commit_v2"}.get(name, name)
+    if journal_profile == "backtest_v3":
+        return {"trading_strategy_signal_v1": "trading_strategy_signal_v2",
+                "trading_commit_v1": "trading_commit_v3"}.get(name, name)
     raise ValueError("Unknown typed journal profile")
 
 
@@ -839,13 +870,17 @@ def _insert(
     dispatch_batch_id: str | None = None, dispatch_run_context: bool = False,
     dispatch_terminal_account_id: str | None = None,
     dispatch_snapshot_account_id: str | None = None,
+    dispatch_policy_hash: str | None = None,
 ) -> str | None:
-    if name not in _CONTRACTS:
+    contract_name = (_profile_table(name, journal_profile)
+                     if journal_profile == "backtest_v3" and name == "trading_commit_v1"
+                     else name)
+    if contract_name not in _CONTRACTS:
         raise ValueError("Journal writer cannot insert outside typed journal tables")
     if not rows:
         return None
-    columns = tuple(column for column, _ in _CONTRACTS[name].columns)
-    body = "\n".join(canonical_json(_wire_row(name, row)) for row in rows)
+    columns = tuple(column for column, _ in _CONTRACTS[contract_name].columns)
+    body = "\n".join(canonical_json(_wire_row(contract_name, row)) for row in rows)
     sql = (
         f"INSERT INTO arte.{_profile_table(name, journal_profile)} ({','.join(columns)}) "
         f"SETTINGS async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
@@ -854,7 +889,25 @@ def _insert(
     dispatch = getattr(client, "typed_insert_dispatch", None)
     if getattr(client, "typed_insert_strict", False) and dispatch is None:
         raise RuntimeError("Strict typed journal INSERT lacks durable dispatch authority")
+    if dispatch_policy_hash is not None and dispatch is None:
+        raise RuntimeError("Policy INSERT lacks durable dispatch authority")
     if dispatch is not None:
+        if dispatch_policy_hash is not None:
+            policy_tables = {"trading_portfolio_policy_v1",
+                             "trading_portfolio_policy_commit_v2"}
+            policy_tables.update(table for table, _ in POLICY_ALLOWED_TABLES.values())
+            if (name not in policy_tables or journal_profile != "v1"
+                    or not re.fullmatch(r"[0-9a-f]{64}", dispatch_policy_hash)
+                    or any(row.get("policy_hash") != dispatch_policy_hash for row in rows)
+                    or any(value is not None for value in (
+                        dispatch_sequence, dispatch_batch_id,
+                        dispatch_terminal_account_id, dispatch_snapshot_account_id))
+                    or dispatch_run_context):
+                raise ValueError("Policy dispatch identity differs from typed rows")
+            dispatch.execute_policy_insert(
+                client, policy_hash=dispatch_policy_hash,
+                table=name, token=token, sql=sql)
+            return sql
         if dispatch_terminal_account_id is not None and (
                 name != "trading_backtest_snapshot_anchor_v1"
                 or any(row.get("account_id") != dispatch_terminal_account_id for row in rows)):
@@ -1258,6 +1311,30 @@ class _V2WriterAuthority:
         self.run_id = run_id
 
 
+def _v3_preflight(client: Any) -> None:
+    """Exact opt-in layout and grants; never included in active Live startup."""
+    contracts = versioned_journal_v2_contracts() + (
+                          SQUEEZE_EPISODE, SQUEEZE_COMMIT_V3)
+    storage_preflight(client, tables=contracts)
+    journal_permission_preflight(
+        client,
+        journal_tables=frozenset(t.name for t in contracts if t.name not in {
+            "trading_strategy_signal_v1", "trading_commit_v1", "trading_commit_v2"}),
+        read_only_tables=frozenset({"trading_strategy_signal_v1", "trading_commit_v1",
+                                   "trading_commit_v2"}),
+    )
+
+
+def _optional_v3_commit_exists(client: Any) -> bool:
+    """Check V3 only if installed; older V2 deployments need no V3 DDL."""
+    installed = _rows(client,
+        "SELECT name FROM system.tables WHERE database='arte' "
+        "AND name='trading_commit_v3' FORMAT JSONEachRow")
+    if installed not in ([], [{"name": "trading_commit_v3"}]):
+        raise RuntimeError("V3 commit table inventory is ambiguous")
+    return bool(installed)
+
+
 def publish_typed_batch(
     client: Any, batch: TypedJournalBatch, *, journal_profile: str = "v1",
 ) -> str:
@@ -1265,20 +1342,37 @@ def publish_typed_batch(
     return _publish_typed_batch(client, batch, journal_profile=journal_profile)
 
 
+def publish_typed_squeeze_batch_v3(
+    client: Any, unit: V3SqueezeBatch,
+) -> str:
+    """Direct opt-in V3 publisher; runs full preflight for each public call."""
+    if not isinstance(unit, V3SqueezeBatch):
+        raise TypeError("V3 publication requires a closed squeeze batch")
+    return _publish_typed_batch(
+        client, unit.base, journal_profile="backtest_v3",
+        squeeze_episodes=unit.episodes)
+
+
 def _publish_typed_batch(
     client: Any, batch: TypedJournalBatch, *, journal_profile: str,
     authority: _V2WriterAuthority | None = None,
+    squeeze_episodes: tuple[Mapping[str, Any], ...] | None = None,
 ) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
     if batch.signal_evidence_nodes:
         raise ValueError("Generic signal evidence nodes are retired for new writes")
-    if journal_profile not in {"v1", "backtest_v2"}:
+    if journal_profile not in {"v1", "backtest_v2", "backtest_v3"}:
         raise ValueError("Unknown typed journal profile")
-    if journal_profile == "backtest_v2" and batch.status != "running":
+    if journal_profile != "backtest_v3" and squeeze_episodes is not None:
+        raise ValueError("Squeeze episodes require a V3-only commit")
+    if journal_profile == "backtest_v3" and squeeze_episodes is None:
+        raise ValueError("V3 commit requires an explicit closed squeeze family")
+    if journal_profile in {"backtest_v2", "backtest_v3"} and batch.status != "running":
         raise ValueError("Terminal Backtest requires separate anchored V2 publication")
-    if journal_profile == "backtest_v2":
+    if journal_profile in {"backtest_v2", "backtest_v3"}:
         if authority is None:
-            versioned_journal_v2_preflight(client)
+            (versioned_journal_v2_preflight if journal_profile == "backtest_v2"
+             else _v3_preflight)(client)
             context = _verify_run_identity(client, batch.run_id)
             if context.get("mode") != "backtest":
                 raise RuntimeError("V2 journal profile requires a verified Backtest run")
@@ -1290,15 +1384,36 @@ def _publish_typed_batch(
             "SELECT batch_id FROM arte.trading_commit_v1 "
             f"WHERE run_id={_literal(batch.run_id)} LIMIT 1 FORMAT JSONEachRow")
         if legacy:
-            raise RuntimeError("V2 journal cannot mix with legacy V1 commits")
+            raise RuntimeError("Versioned journal cannot mix with legacy V1 commits")
+        other = "trading_commit_v3" if journal_profile == "backtest_v2" else "trading_commit_v2"
+        if (journal_profile == "backtest_v3" or _optional_v3_commit_exists(client)) and _rows(
+                client, f"SELECT batch_id FROM arte.{other} "
+                f"WHERE run_id={_literal(batch.run_id)} LIMIT 1 FORMAT JSONEachRow"):
+            raise RuntimeError("Backtest cannot mix V2 and V3 commit fences")
     elif authority is not None:
         raise ValueError("V2 writer authority cannot be used with V1")
-    families = _sealed_families(batch)
+    families = _sealed_families(
+        batch, v3_episode_ids=tuple(str(row["record_id"])
+            for row in squeeze_episodes or ()) if journal_profile == "backtest_v3" else ())
+    if journal_profile == "backtest_v3":
+        from src.backend.backtest_squeeze_episode_v3 import seal_squeeze_family_v3
+        # Validate the closed child and its exact parent before any INSERT.
+        v3_rows = tuple(dict(row) for row in squeeze_episodes or ())
+        seal_squeeze_family_v3(
+            {**{name: "" for name, _ in SQUEEZE_COMMIT_V3.columns if name not in {
+                "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash"}},
+             "run_id": batch.run_id, "batch_id": batch.batch_id},
+            v3_rows, families[0][1])
+    else:
+        v3_rows = ()
     _verify_commission_links(client, batch, families, journal_profile=journal_profile)
     _verify_exact_intent_uses(client, batch, families, journal_profile=journal_profile)
     _verify_order_context_links(client, batch, families, journal_profile=journal_profile)
+    commit_columns = (tuple(name for name, _ in SQUEEZE_COMMIT_V3.columns
+                            if name not in {"run_month", "committed_at"})
+                      if journal_profile == "backtest_v3" else _COMMIT_COLUMNS)
     existing = _rows(client,
-        f"SELECT {','.join(_COMMIT_COLUMNS)} "
+        f"SELECT {','.join(commit_columns)} "
         f"FROM arte.{_profile_table('trading_commit_v1', journal_profile)} "
         f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
     if not existing:
@@ -1339,6 +1454,36 @@ def _publish_typed_batch(
         for name, rows in families:
             if actual[name] != _identity(rows):
                 raise RuntimeError(f"{name} did not become durable")
+    if journal_profile == "backtest_v3":
+        from src.backend.backtest_squeeze_episode_v3 import verify_squeeze_family_v3
+        child_columns = ",".join(
+            f"toString({name}) AS {name}" if kind.startswith("Decimal") else name
+            for name, kind in SQUEEZE_EPISODE.columns)
+        child_query = (
+            f"SELECT {child_columns} FROM arte.{SQUEEZE_EPISODE.name} "
+            f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
+        actual_children = _rows(client, child_query)
+        if not actual_children and v3_rows:
+            _insert(client, SQUEEZE_EPISODE.name, v3_rows,
+                    f"{batch.batch_id}:{SQUEEZE_EPISODE.name}",
+                    journal_profile=journal_profile,
+                    dispatch_batch_id=batch.batch_id,
+                    dispatch_sequence=batch.last_sequence)
+            actual_children = _rows(client, child_query)
+        # The family verifier also rejects missing, duplicate and extra children.
+        base_stub = {name: "" for name, _ in SQUEEZE_COMMIT_V3.columns
+                     if name not in {"backtest_squeeze_episode_count",
+                                     "backtest_squeeze_episode_hash"}}
+        base_stub.update(run_id=batch.run_id, batch_id=batch.batch_id)
+        child_seal = seal_squeeze_family_v3(base_stub, v3_rows, families[0][1])
+        try:
+            verified_children = verify_squeeze_family_v3(
+                child_seal, actual_children, families[0][1], stored_utc=True)
+        except ValueError as exc:
+            raise RuntimeError("V3 squeeze family differs from durable readback") from exc
+        if sorted((r["record_id"], r["content_hash"]) for r in verified_children) != sorted(
+            (r["record_id"], r["content_hash"]) for r in v3_rows):
+            raise RuntimeError("V3 squeeze family differs from durable readback")
     commit = {
         "run_id": batch.run_id,
         "run_month": batch.run_month.isoformat(),
@@ -1354,6 +1499,8 @@ def _publish_typed_batch(
     for name, attribute, count_column, hash_column in _FAMILIES:
         commit[count_column] = len(getattr(batch, attribute))
         commit[hash_column] = hashes[name]
+    if journal_profile == "backtest_v3":
+        commit = seal_squeeze_family_v3(commit, v3_rows, families[0][1])
     expected = {key: value for key, value in commit.items() if key not in ("run_month", "committed_at")}
     if existing and (len(existing) != 1 or existing[0] != expected):
         raise RuntimeError("Typed journal commit conflicts with an existing batch")
@@ -1365,7 +1512,7 @@ def _publish_typed_batch(
                 dispatch_batch_id=batch.batch_id,
                 dispatch_sequence=batch.last_sequence)
         verified = _rows(client,
-            f"SELECT {','.join(_COMMIT_COLUMNS)} "
+            f"SELECT {','.join(commit_columns)} "
             f"FROM arte.{_profile_table('trading_commit_v1', journal_profile)} "
             f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
         if verified != [expected]:
@@ -1381,6 +1528,12 @@ def _publish_typed_batch(
                                              token=token, required=required,
                                              batch_id=batch.batch_id,
                                              batch_last_sequence=batch.last_sequence)
+        if journal_profile == "backtest_v3" and v3_rows:
+            dispatch.seal_verified_operation(
+                run_id=batch.run_id, table=SQUEEZE_EPISODE.name,
+                token=f"{batch.batch_id}:{SQUEEZE_EPISODE.name}",
+                required=required, batch_id=batch.batch_id,
+                batch_last_sequence=batch.last_sequence)
         table = _profile_table("trading_commit_v1", journal_profile)
         dispatch.seal_verified_operation(
             run_id=batch.run_id, table=table,
@@ -1392,7 +1545,9 @@ def _publish_typed_batch(
         operations = tuple((
             _profile_table(name, journal_profile),
             f"{batch.batch_id}:{_profile_table(name, journal_profile)}"
-        ) for name, rows in families if rows) + ((
+        ) for name, rows in families if rows) + (
+            ((SQUEEZE_EPISODE.name, f"{batch.batch_id}:{SQUEEZE_EPISODE.name}"),)
+            if journal_profile == "backtest_v3" and v3_rows else ()) + ((
             table, f"{batch.batch_id}:{table}:commit"),)
         dispatch.compact_verified_batch(
             run_id=batch.run_id, batch_id=batch.batch_id,
@@ -2082,6 +2237,10 @@ class ArteJournalWriter:
             journal_permission_preflight(client)
         elif journal_profile == "backtest_v2":
             versioned_journal_v2_preflight(client)
+        elif journal_profile == "backtest_v3":
+            if coalesce_batches:
+                raise ValueError("V3 squeeze batches require explicit uncoalesced children")
+            _v3_preflight(client)
         else:
             raise ValueError("Unknown typed journal profile")
         context = _verify_run_identity(client, run_id)
@@ -2093,7 +2252,7 @@ class ArteJournalWriter:
         self._run_id = run_id
         self._run_mode = context["mode"]
         self._journal_profile = journal_profile
-        if journal_profile == "backtest_v2" and self._run_mode != "backtest":
+        if journal_profile in {"backtest_v2", "backtest_v3"} and self._run_mode != "backtest":
             raise RuntimeError("V2 journal profile requires a verified Backtest run")
         if self._run_mode == "backtest":
             account_ids = context.get("account_ids")
@@ -2107,7 +2266,7 @@ class ArteJournalWriter:
             self._run_account_ids = frozenset()
         self._v2_authority = (
             _V2WriterAuthority(_V2_AUTHORITY_SEAL, client, run_id)
-            if journal_profile == "backtest_v2" else None
+            if journal_profile in {"backtest_v2", "backtest_v3"} else None
         )
         self._max_events_per_commit = max_events_per_commit
         self._coalesce_batches = coalesce_batches
@@ -2166,6 +2325,8 @@ class ArteJournalWriter:
     def submit(self, batch: TypedJournalBatch) -> Future[str]:
         """Enqueue without waiting; the receipt names the durable combined batch."""
         with self._submission_lock:
+            if self._journal_profile == "backtest_v3":
+                raise RuntimeError("V3 writer requires an explicit squeeze family envelope")
             if self._closed:
                 raise RuntimeError("Typed journal writer is closed")
             if self._error is not None:
@@ -2181,6 +2342,23 @@ class ArteJournalWriter:
                 raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
             self._accepted_writes = True
         return receipt
+
+    def submit_squeeze_v3(self, unit: V3SqueezeBatch) -> Future[str]:
+        """Queue a closed V3 family without waiting for ClickHouse."""
+        if self._journal_profile != "backtest_v3" or not isinstance(unit, V3SqueezeBatch):
+            raise ValueError("V3 squeeze submission requires its opt-in writer profile")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V3 squeeze writer is closed or failed")
+            if unit.base.run_id != self._run_id:
+                raise ValueError("V3 squeeze writer cannot mix runs")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V3 squeeze queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
 
     def submit_portfolio_snapshot(self, prepared: PreparedPortfolioSnapshot) -> Future[str]:
         """Enqueue immutable recovery rows without ClickHouse I/O or waiting."""
@@ -2390,11 +2568,18 @@ class ArteJournalWriter:
             try:
                 if self._error is not None:
                     raise RuntimeError("Typed journal writer failed earlier") from self._error
-                if (self._journal_profile == "backtest_v2"
+                if (self._journal_profile in {"backtest_v2", "backtest_v3"}
                         and not isinstance(group[0][0],
-                                           (TypedJournalBatch, _DurabilityBarrier))):
+                                           (TypedJournalBatch, V3SqueezeBatch,
+                                            _DurabilityBarrier))):
                     raise RuntimeError("V2 profile cannot route V1 snapshot or admission units")
-                if isinstance(group[0][0], TypedJournalBatch):
+                if isinstance(group[0][0], V3SqueezeBatch):
+                    unit = group[0][0]
+                    committed_id = _publish_typed_batch(
+                        self._client, unit.base, journal_profile="backtest_v3",
+                        authority=self._v2_authority,
+                        squeeze_episodes=unit.episodes)
+                elif isinstance(group[0][0], TypedJournalBatch):
                     batch = _coalesce_unpublished(tuple(row for row, _ in group))
                     if self._journal_profile == "v1":
                         committed_id = publish_typed_batch(self._client, batch)

@@ -22,7 +22,8 @@ PARAMETER_SNAPSHOT = "2a2c2393-d13d-4ecb-9fae-b5e26ea9ff6f"
 STATE_SNAPSHOT = "4a2c2393-d13d-4ecb-9fae-b5e26ea9ff6f"
 CHILD_REFS = dict(parameter_snapshot_id=PARAMETER_SNAPSHOT,
                   parameter_session="2026-09-24", state_snapshot_id=STATE_SNAPSHOT,
-                  state_session="2026-09-24", state_run_id="run-1")
+                  state_snapshot_revision=1, state_session="2026-09-24",
+                  state_run_id="run-1")
 
 
 def _assignment():

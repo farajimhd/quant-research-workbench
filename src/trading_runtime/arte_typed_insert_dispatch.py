@@ -25,6 +25,14 @@ _SNAPSHOT_TABLES = frozenset({
     "trading_portfolio_allocation_v1", "trading_portfolio_reconciliation_v1",
     "trading_portfolio_snapshot_commit_v1",
 })
+_POLICY_TABLES = frozenset({
+    "trading_portfolio_policy_v1", "trading_portfolio_policy_commit_v2",
+    "trading_portfolio_policy_security_type_v1",
+    "trading_portfolio_policy_currency_v1",
+    "trading_portfolio_policy_restricted_symbol_v1",
+    "trading_portfolio_policy_execution_policy_v1",
+    "trading_portfolio_policy_protection_profile_v1",
+})
 
 
 def _gate_path(run_id: str) -> str:
@@ -45,6 +53,14 @@ def _terminal_receipt_path(run_id: str, account_id: str) -> str:
 
 def _snapshot_head_path(run_id: str, account_id: str) -> str:
     return _path("typed_dispatch_snapshot_head", run_id, account_id)
+
+
+def _policy_gate_path(policy_hash: str) -> str:
+    return _path("typed_dispatch_policy_gate", policy_hash)
+
+
+def _policy_operation_path(policy_hash: str, query_id: str) -> str:
+    return _path("typed_dispatch_policy_operation", policy_hash, query_id)
 
 
 def typed_insert_query_id(run_id: str, table: str, token: str) -> str:
@@ -118,6 +134,35 @@ def _decode_snapshot_head(value: bytes) -> _SnapshotHead:
     return head
 
 
+@dataclass(frozen=True)
+class _PolicyGate:
+    mode: str
+    inflight: int
+    registered: int
+    fence_hash: str
+
+    def wire(self) -> bytes:
+        return (f"1\n{self.mode}\n{self.inflight}\n{self.registered}\n"
+                f"{self.fence_hash}").encode()
+
+
+def _decode_policy_gate(value: bytes) -> _PolicyGate:
+    try:
+        version, mode, inflight, registered, digest = value.decode("ascii").split("\n")
+        gate = _PolicyGate(mode, int(inflight), int(registered), digest)
+    except (UnicodeError, ValueError) as exc:
+        raise KeeperUnavailable("Portfolio policy dispatch gate is corrupt") from exc
+    if (version != "1" or mode not in {"publishing", "committed"}
+            or gate.inflight < 0 or gate.registered < gate.inflight
+            or re.fullmatch(r"[0-9a-f]{64}", gate.fence_hash) is None
+            or (mode == "publishing" and gate.fence_hash != _ZERO_HASH)
+            or (mode == "committed" and
+                (gate.inflight or gate.registered or gate.fence_hash == _ZERO_HASH))
+            or gate.wire() != value):
+        raise KeeperUnavailable("Portfolio policy dispatch gate is invalid")
+    return gate
+
+
 def _operation_wire(run_id: str, table: str, query_id: str,
                     token: str, sql: str, batch_id: str,
                     sequence: int, status: str) -> bytes:
@@ -146,6 +191,188 @@ class TypedInsertDispatch:
             raise KeeperUnavailable("Typed dispatch run gate is absent or unavailable") from exc
         return _decode_gate(value), stat.version
 
+    def _read_policy_gate(self, policy_hash: str) -> tuple[_PolicyGate, int] | None:
+        if re.fullmatch(r"[0-9a-f]{64}", policy_hash) is None:
+            raise ValueError("Portfolio policy hash is invalid")
+        try:
+            value, stat = self.keeper.get(_policy_gate_path(policy_hash))
+        except Exception as exc:
+            if type(exc).__name__ == "NoNodeError":
+                return None
+            raise KeeperUnavailable("Portfolio policy gate cannot be read") from exc
+        return _decode_policy_gate(value), stat.version
+
+    def begin_policy_publication(self, *, policy_hash: str,
+                                 has_ch_rows: bool) -> str:
+        """Open one immutable policy identity; never adopt legacy CH rows."""
+        if type(has_ch_rows) is not bool:
+            raise ValueError("Portfolio policy source scan result is invalid")
+        observed = self._read_policy_gate(policy_hash)
+        if observed is not None:
+            return observed[0].mode
+        if has_ch_rows:
+            raise KeeperUnavailable("Portfolio policy has unattested legacy rows")
+        self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_policy_gate")
+        self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_policy_operation")
+        try:
+            self.keeper.create(_policy_gate_path(policy_hash),
+                               _PolicyGate("publishing", 0, 0, _ZERO_HASH).wire())
+        except Exception as exc:
+            if type(exc).__name__ != "NodeExistsError":
+                raise KeeperUnavailable("Portfolio policy gate cannot initialize") from exc
+        observed = self._read_policy_gate(policy_hash)
+        if observed is None:
+            raise KeeperUnavailable("Portfolio policy gate disappeared")
+        return observed[0].mode
+
+    def execute_policy_insert(self, client: Any, *, policy_hash: str,
+                              table: str, token: str, sql: str) -> None:
+        if (table not in _POLICY_TABLES
+                or token != f"portfolio-policy:{policy_hash}:"
+                    f"{'commit' if table == 'trading_portfolio_policy_commit_v2' else table}"
+                or not sql.startswith(f"INSERT INTO arte.{table} (")
+                or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1" not in sql
+                or f"insert_deduplication_token='{token}'" not in sql):
+            raise ValueError("Portfolio policy INSERT identity is invalid")
+        query_id = typed_insert_query_id(policy_hash, table, token)
+        path = _policy_operation_path(policy_hash, query_id)
+        pending = _operation_wire(policy_hash, table, query_id, token, sql,
+                                  _ZERO_BATCH, 0, "pending")
+        acknowledged = _operation_wire(policy_hash, table, query_id, token, sql,
+                                       _ZERO_BATCH, 0, "acknowledged")
+        for _ in range(8):
+            observed = self._read_policy_gate(policy_hash)
+            if observed is None or observed[0].mode != "publishing":
+                raise KeeperUnavailable("Portfolio policy is not open for publication")
+            gate, version = observed
+            try:
+                existing, _ = self.keeper.get(path)
+            except Exception as exc:
+                if type(exc).__name__ != "NoNodeError":
+                    raise KeeperUnavailable("Policy operation cannot be inspected") from exc
+            else:
+                if existing == acknowledged:
+                    return
+                raise KeeperUnavailable("Portfolio policy has ambiguous pending INSERT")
+            if gate.registered >= self.max_operations:
+                raise KeeperUnavailable("Portfolio policy dispatch operation cap reached")
+            txn = self.keeper.transaction()
+            txn.check(_policy_gate_path(policy_hash), version=version)
+            txn.create(path, pending, ephemeral=False)
+            txn.set_data(_policy_gate_path(policy_hash), _PolicyGate(
+                "publishing", gate.inflight + 1, gate.registered + 1,
+                _ZERO_HASH).wire(), version=version)
+            if _committed(txn.commit()):
+                break
+        else:
+            raise KeeperUnavailable("Portfolio policy dispatch CAS contended")
+        client.execute(sql, query_id=query_id)
+        for _ in range(8):
+            observed = self._read_policy_gate(policy_hash)
+            if observed is None or observed[0].mode != "publishing":
+                raise KeeperUnavailable("Portfolio policy gate changed before acknowledgement")
+            gate, version = observed
+            value, stat = self.keeper.get(path)
+            if value != pending:
+                raise KeeperUnavailable("Portfolio policy operation changed before acknowledgement")
+            txn = self.keeper.transaction()
+            txn.check(_policy_gate_path(policy_hash), version=version)
+            txn.set_data(path, acknowledged, version=stat.version)
+            if _committed(txn.commit()):
+                return
+        raise KeeperUnavailable("Portfolio policy acknowledgement CAS contended")
+
+    def seal_verified_policy_operation(self, *, policy_hash: str,
+                                       table: str, token: str) -> None:
+        """Invoke only after exact normalized policy fence readback."""
+        query_id = typed_insert_query_id(policy_hash, table, token)
+        path = _policy_operation_path(policy_hash, query_id)
+        for _ in range(8):
+            observed = self._read_policy_gate(policy_hash)
+            if observed is None or observed[0].mode != "publishing":
+                raise KeeperUnavailable("Portfolio policy has no open dispatch gate")
+            gate, version = observed
+            try:
+                value, stat = self.keeper.get(path)
+            except Exception as exc:
+                raise KeeperUnavailable("Portfolio policy lacks dispatch operation") from exc
+            parts = value.decode().split("\n")
+            if (len(parts) != 9 or parts[:5] != ["3", policy_hash, table, query_id,
+                    sha256(token.encode()).hexdigest()]
+                    or parts[6:] not in ([_ZERO_BATCH, "0", "acknowledged"],
+                                         [_ZERO_BATCH, "0", "sealed"])):
+                raise KeeperUnavailable("Portfolio policy operation identity differs")
+            if parts[8] == "sealed":
+                return
+            if gate.inflight < 1:
+                raise KeeperUnavailable("Portfolio policy acknowledgement count is invalid")
+            txn = self.keeper.transaction()
+            txn.check(_policy_gate_path(policy_hash), version=version)
+            txn.set_data(path, ("\n".join((*parts[:8], "sealed"))).encode(),
+                         version=stat.version)
+            txn.set_data(_policy_gate_path(policy_hash), _PolicyGate(
+                "publishing", gate.inflight - 1, gate.registered,
+                _ZERO_HASH).wire(), version=version)
+            if _committed(txn.commit()):
+                return
+        raise KeeperUnavailable("Portfolio policy operation seal CAS contended")
+
+    def compact_verified_policy(self, *, policy_hash: str, fence_hash: str,
+                                operations: tuple[tuple[str, str], ...]) -> None:
+        """Atomically retire policy operations; retain one immutable receipt."""
+        if (re.fullmatch(r"[0-9a-f]{64}", fence_hash) is None
+                or not operations or len(set(operations)) != len(operations)):
+            raise ValueError("Portfolio policy receipt identity is invalid")
+        for _ in range(8):
+            observed = self._read_policy_gate(policy_hash)
+            if observed is None:
+                raise KeeperUnavailable("Portfolio policy lacks dispatch gate")
+            gate, version = observed
+            if gate.mode == "committed":
+                if gate.fence_hash != fence_hash:
+                    raise KeeperUnavailable("Portfolio policy receipt conflicts with fence")
+                return
+            if gate.inflight or gate.registered != len(operations):
+                raise KeeperUnavailable("Portfolio policy has unresolved dispatch operations")
+            paths = []
+            for table, token in operations:
+                suffix = "commit" if table == "trading_portfolio_policy_commit_v2" else table
+                if (table not in _POLICY_TABLES
+                        or token != f"portfolio-policy:{policy_hash}:{suffix}"):
+                    raise KeeperUnavailable("Portfolio policy operation inventory is invalid")
+                query_id = typed_insert_query_id(policy_hash, table, token)
+                path = _policy_operation_path(policy_hash, query_id)
+                try:
+                    value, stat = self.keeper.get(path)
+                except Exception as exc:
+                    raise KeeperUnavailable("Portfolio policy lacks sealed dispatch operation") from exc
+                parts = value.decode().split("\n")
+                if (len(parts) != 9 or parts[:5] != ["3", policy_hash, table,
+                        query_id, sha256(token.encode()).hexdigest()]
+                        or parts[6:] != [_ZERO_BATCH, "0", "sealed"]):
+                    raise KeeperUnavailable("Portfolio policy operation is not sealed")
+                paths.append((path, stat.version))
+            txn = self.keeper.transaction()
+            txn.check(_policy_gate_path(policy_hash), version=version)
+            for path, op_version in paths:
+                txn.delete(path, version=op_version)
+            txn.set_data(_policy_gate_path(policy_hash), _PolicyGate(
+                "committed", 0, 0, fence_hash).wire(), version=version)
+            if _committed(txn.commit()):
+                return
+        raise KeeperUnavailable("Portfolio policy receipt CAS contended")
+
+    def assert_policy_receipt(self, *, policy_hash: str,
+                              fence_hash: str) -> None:
+        observed = self._read_policy_gate(policy_hash)
+        if (observed is None or observed[0] != _PolicyGate(
+                "committed", 0, 0, fence_hash)):
+            raise KeeperUnavailable("Portfolio policy receipt differs from ClickHouse")
+
+    def assert_policy_absent(self, *, policy_hash: str) -> None:
+        if self._read_policy_gate(policy_hash) is not None:
+            raise KeeperUnavailable("Portfolio policy Keeper fact lacks ClickHouse fence")
+
     def initialize_new_run(self, run_id: str) -> None:
         """Only a fresh-run bootstrap may call this; never repair a missing gate."""
         _identity(run_id, "run")
@@ -154,6 +381,7 @@ class TypedInsertDispatch:
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_context_receipt")
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_terminal_receipt")
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_snapshot_head")
+        self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_policy_gate")
         try:
             self.keeper.create(_gate_path(run_id), _Gate(
                 "open", 0, 1, 0, 0, _ZERO_BATCH, _ZERO_HASH,

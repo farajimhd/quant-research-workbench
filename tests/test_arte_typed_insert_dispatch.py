@@ -333,6 +333,69 @@ def test_snapshot_account_reservation_blocks_competing_revision_and_cold() -> No
         authority.acquire_cold_barrier("run-1")
 
 
+def test_policy_dispatch_compacts_to_one_immutable_receipt() -> None:
+    from src.trading_runtime.arte_journal_schema import POLICY_ALLOWED_TABLES
+    from src.trading_runtime.arte_typed_insert_dispatch import _POLICY_TABLES
+    assert _POLICY_TABLES == {
+        "trading_portfolio_policy_v1", "trading_portfolio_policy_commit_v2",
+        *(table for table, _ in POLICY_ALLOWED_TABLES.values()),
+    }
+    policy_hash = "a" * 64
+    authority = TypedInsertDispatch(Keeper(), max_operations=2)
+    assert authority.begin_policy_publication(
+        policy_hash=policy_hash, has_ch_rows=False) == "publishing"
+    client = Client(authority)
+    operations = (("trading_portfolio_policy_v1",
+                   f"portfolio-policy:{policy_hash}:trading_portfolio_policy_v1"),
+                  ("trading_portfolio_policy_commit_v2",
+                   f"portfolio-policy:{policy_hash}:commit"))
+    for table, token in operations:
+        sql = SQL.replace("trading_event_v1", table).replace("batch-1", token)
+        authority.execute_policy_insert(client, policy_hash=policy_hash,
+            table=table, token=token, sql=sql)
+        authority.seal_verified_policy_operation(
+            policy_hash=policy_hash, table=table, token=token)
+    authority.compact_verified_policy(
+        policy_hash=policy_hash, fence_hash="b" * 64, operations=operations)
+    authority.assert_policy_receipt(policy_hash=policy_hash, fence_hash="b" * 64)
+    assert authority._read_policy_gate(policy_hash)[0].registered == 0
+    assert len(client.calls) == 2
+    assert authority.begin_policy_publication(
+        policy_hash=policy_hash, has_ch_rows=True) == "committed"
+    authority.compact_verified_policy(
+        policy_hash=policy_hash, fence_hash="b" * 64, operations=operations)
+    with pytest.raises(KeeperUnavailable, match="receipt differs"):
+        authority.assert_policy_receipt(policy_hash=policy_hash,
+                                        fence_hash="c" * 64)
+
+
+def test_policy_lost_response_and_legacy_rows_fail_closed() -> None:
+    policy_hash = "a" * 64
+    authority = TypedInsertDispatch(Keeper())
+    with pytest.raises(KeeperUnavailable, match="unattested legacy"):
+        authority.begin_policy_publication(
+            policy_hash=policy_hash, has_ch_rows=True)
+    authority.begin_policy_publication(policy_hash=policy_hash, has_ch_rows=False)
+    client = Client(authority, lose_response=True)
+    table = "trading_portfolio_policy_v1"
+    token = f"portfolio-policy:{policy_hash}:{table}"
+    with pytest.raises(TimeoutError, match="response lost"):
+        authority.execute_policy_insert(client, policy_hash=policy_hash,
+            table=table, token=token,
+            sql=SQL.replace("trading_event_v1", table).replace("batch-1", token))
+    with pytest.raises(KeeperUnavailable, match="ambiguous pending"):
+        authority.execute_policy_insert(client, policy_hash=policy_hash,
+            table=table, token=token,
+            sql=SQL.replace("trading_event_v1", table).replace("batch-1", token))
+    with pytest.raises(KeeperUnavailable, match="unresolved"):
+        authority.compact_verified_policy(
+            policy_hash=policy_hash, fence_hash="b" * 64,
+            operations=((table, token),))
+    with pytest.raises(KeeperUnavailable, match="receipt differs"):
+        authority.assert_policy_receipt(policy_hash=policy_hash,
+                                        fence_hash="b" * 64)
+
+
 def test_strict_writer_refuses_unwrapped_insert(monkeypatch) -> None:
     monkeypatch.setattr(writer, "_wire_row", lambda _name, row: row)
     client = Client()

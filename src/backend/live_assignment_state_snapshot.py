@@ -225,7 +225,8 @@ def recover_attested_assignment(
         raise ValueError("assignment base parameter hash differs from attested commit")
     state = recover_state_snapshot(
         state_storage, run_id=row["state_run_id"], assignment_id=assignment_id,
-        revision=revision_sequence, snapshot_id=row["state_snapshot_id"],
+        revision=row["state_snapshot_revision"],
+        snapshot_id=row["state_snapshot_id"],
         session=row["state_session"],
         expected_commit_hash=row["state_content_hash"],
     )

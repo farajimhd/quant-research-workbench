@@ -145,18 +145,43 @@ def load_portfolio_policy(client: Any, policy_hash: str) -> PortfolioPolicy | No
 def publish_portfolio_policy(client: Any, policy: PortfolioPolicy) -> str:
     """Retry-safe control-plane publication, never on a market-data callback."""
     policy_hash, root, children = _policy_rows(policy)
+    dispatch = getattr(client, "typed_insert_dispatch", None)
+    families = ((_POLICY, (root,)), *_child_rows(children).items())
     existing_commit = _query_rows(client, _COMMIT, policy_hash)
     if existing_commit:
         if load_portfolio_policy(client, policy_hash) != policy:
             raise RuntimeError("Committed portfolio policy differs from its source")
+        if dispatch is not None:
+            status = dispatch.begin_policy_publication(
+                policy_hash=policy_hash, has_ch_rows=True)
+            if status == "publishing":
+                _seal_policy_publication(
+                    dispatch, policy_hash, families, existing_commit)
+            else:
+                dispatch.assert_policy_receipt(
+                    policy_hash=policy_hash,
+                    fence_hash=_policy_fence_hash(existing_commit))
         return policy_hash
-    for table, expected in ((_POLICY, (root,)), *_child_rows(children).items()):
-        actual = _query_rows(client, table, policy_hash)
+    actual_families = {
+        table: _query_rows(client, table, policy_hash)
+        for table, _ in families
+    }
+    if dispatch is not None:
+        status = dispatch.begin_policy_publication(
+            policy_hash=policy_hash,
+            has_ch_rows=any(actual_families.values()))
+        if status != "publishing":
+            raise RuntimeError("Committed policy dispatch gate lacks ClickHouse fence")
+    for table, expected in families:
+        actual = actual_families[table]
         expected_wire = [_wire_row(table, row) for row in expected]
         if actual and sorted(actual, key=canonical_json) != sorted(expected_wire, key=canonical_json):
             raise RuntimeError(f"Portfolio policy {table} has conflicting partial rows")
         if not actual and expected:
-            _insert(client, table, expected, f"portfolio-policy:{policy_hash}:{table}")
+            kwargs = ({"dispatch_policy_hash": policy_hash}
+                      if dispatch is not None else {})
+            _insert(client, table, expected,
+                    f"portfolio-policy:{policy_hash}:{table}", **kwargs)
             actual = _query_rows(client, table, policy_hash)
         if sorted(actual, key=canonical_json) != sorted(expected_wire, key=canonical_json):
             raise RuntimeError(f"Portfolio policy {table} did not become durable")
@@ -167,10 +192,56 @@ def publish_portfolio_policy(client: Any, policy: PortfolioPolicy) -> str:
     fence = {"policy_hash": policy_hash, "allowed_count": len(children),
              "allowed_hash": allowed_hash,
              "committed_at": datetime.now(timezone.utc).isoformat()}
-    _insert(client, _COMMIT, (fence,), f"portfolio-policy:{policy_hash}:commit")
+    kwargs = ({"dispatch_policy_hash": policy_hash}
+              if dispatch is not None else {})
+    _insert(client, _COMMIT, (fence,),
+            f"portfolio-policy:{policy_hash}:commit", **kwargs)
     if load_portfolio_policy(client, policy_hash) != policy:
         raise RuntimeError("Portfolio policy fence did not become durable")
+    if dispatch is not None:
+        commits = _query_rows(client, _COMMIT, policy_hash)
+        _seal_policy_publication(dispatch, policy_hash, families, commits)
     return policy_hash
+
+
+def _seal_policy_publication(
+    dispatch: Any, policy_hash: str,
+    families: tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
+    commits: list[dict[str, Any]],
+) -> None:
+    fence_hash = _policy_fence_hash(commits)
+    operations = tuple((table, f"portfolio-policy:{policy_hash}:{table}")
+                       for table, expected in families if expected) + ((
+        _COMMIT, f"portfolio-policy:{policy_hash}:commit"),)
+    for table, token in operations:
+        dispatch.seal_verified_policy_operation(
+            policy_hash=policy_hash, table=table, token=token)
+    dispatch.compact_verified_policy(
+        policy_hash=policy_hash, fence_hash=fence_hash,
+        operations=operations)
+
+
+def _policy_fence_hash(commits: list[dict[str, Any]]) -> str:
+    if len(commits) != 1 or set(commits[0]) != {
+            "policy_hash", "allowed_count", "allowed_hash", "committed_at"}:
+        raise RuntimeError("Portfolio policy fence is absent, duplicate, or malformed")
+    stable = {key: value for key, value in commits[0].items()
+              if key != "committed_at"}
+    return _digest(stable)
+
+
+def load_attested_portfolio_policy(
+    client: Any, dispatch: Any, policy_hash: str,
+) -> PortfolioPolicy | None:
+    """Cold read only an exact committed CH policy with its Keeper receipt."""
+    policy = load_portfolio_policy(client, policy_hash)
+    if policy is None:
+        dispatch.assert_policy_absent(policy_hash=policy_hash)
+        return None
+    dispatch.assert_policy_receipt(
+        policy_hash=policy_hash,
+        fence_hash=_policy_fence_hash(_query_rows(client, _COMMIT, policy_hash)))
+    return policy
 
 
 class ArtePortfolioPolicyStore:

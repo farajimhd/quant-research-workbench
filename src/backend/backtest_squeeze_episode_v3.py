@@ -5,7 +5,7 @@ whole-run V3 chain reader is required before these rows can serve the UI.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import re
@@ -89,6 +89,40 @@ def project_squeeze_row_v3(
     row["batch_id"] = str(UUID(batch_id))
     row["content_hash"] = _digest(_canonical_row(row))
     return row
+
+
+def project_squeeze_batch_v3(
+    record: JournalRecord, *, run_month: date, attempt_id: str,
+    batch_id: str, prior_batch_id: str, source_cursor: str,
+    expected_market_plan_token: str, expected_query_sha256: str,
+) -> Any:
+    """Project one closed occurrence with its ordinary normalized event parent."""
+    from src.trading_runtime.arte_journal_writer import (
+        TypedJournalBatch, V3SqueezeBatch, typed_row,
+    )
+
+    child = project_squeeze_row_v3(
+        record, batch_id=batch_id,
+        expected_market_plan_token=expected_market_plan_token,
+        expected_query_sha256=expected_query_sha256)
+    if (record.event_time.tzinfo is None or record.recorded_at.tzinfo is None
+            or child["event_month"] != run_month.isoformat()):
+        raise ValueError("V3 occurrence lies outside its pinned run month")
+    event = typed_row("trading_event_v1", {
+        "run_id": record.run_id, "event_month": child["event_month"],
+        "attempt_id": attempt_id, "batch_id": batch_id,
+        "record_id": record.record_id, "sequence": record.sequence,
+        "event_time": record.event_time.astimezone(timezone.utc).isoformat(),
+        "recorded_at": record.recorded_at.astimezone(timezone.utc).isoformat(),
+        "category": record.category, "entity_type": record.entity_type,
+        "entity_id": record.entity_id, "account_id": record.account_id,
+        "correlation_id": str(record.payload.get("correlation_id") or ""),
+        "causation_id": str(record.payload.get("causation_id") or ""),
+    })
+    return V3SqueezeBatch(TypedJournalBatch(
+        record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        record.sequence, record.sequence, source_cursor, "running", (event,)),
+        (child,))
 
 
 def seal_squeeze_family_v3(
@@ -193,8 +227,7 @@ def load_verified_squeeze_v3_run(
     if (_HEX.fullmatch(expected_market_plan_token) is None
             or _HEX.fullmatch(expected_query_sha256) is None):
         raise ValueError("V3 squeeze reader requires pinned market authority")
-    contracts = tuple(t for t in versioned_journal_v2_contracts()
-                      if t.name != "trading_commit_v2") + (
+    contracts = versioned_journal_v2_contracts() + (
                           SQUEEZE_EPISODE, SQUEEZE_COMMIT_V3)
     storage_preflight(client, tables=contracts)
     for fence in ("trading_commit_v1", "trading_commit_v2"):

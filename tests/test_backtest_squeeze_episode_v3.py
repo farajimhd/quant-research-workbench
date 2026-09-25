@@ -130,7 +130,7 @@ def test_cold_v3_reader_uses_only_v3_fence_and_verifies_shared_batch(monkeypatch
     assert result[0]["episode_id"] == child["episode_id"]
     assert checked[-1] == (BATCH, "backtest_v2")
     assert any(t.name == "trading_commit_v3" for t in checked[0])
-    assert all(t.name != "trading_commit_v2" for t in checked[0])
+    assert any(t.name == "trading_commit_v2" for t in checked[0])  # mixed-fence check
     assert all("bt_" not in query and "sqlite" not in query.lower() for query in client.queries)
 
 
