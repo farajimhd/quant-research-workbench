@@ -6,6 +6,7 @@ from typing import Any
 
 from src.backend.backtest_squeeze_episode_schema import SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE
 from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
+from src.trading_runtime.arte_market_day_certification import TABLES as MARKET_DAY_CERTIFICATE_TABLES
 from src.trading_runtime.arte_journal_schema import (
     fixed_backtest_v2_contracts, journal_permission_preflight,
     storage_preflight, versioned_journal_v2_contracts,
@@ -78,10 +79,11 @@ def terminal_v3_preflight(client: Any) -> None:
 def read_v3_preflight(client: Any) -> None:
     """A separate cold-audit principal must have no arte INSERT grant."""
     contracts = terminal_v3_contracts()
-    storage_preflight(client, tables=contracts)
+    certificate_names = frozenset(table.name for table in MARKET_DAY_CERTIFICATE_TABLES)
+    storage_preflight(client, tables=contracts + MARKET_DAY_CERTIFICATE_TABLES)
     journal_permission_preflight(
         client, journal_tables=frozenset(),
-        read_only_tables=frozenset(table.name for table in contracts),
+        read_only_tables=frozenset(table.name for table in contracts) | certificate_names,
         reference_read_tables=frozenset({("q_live", "market_stock_split_v1")}))
     _exact_grants(client, frozenset())
 

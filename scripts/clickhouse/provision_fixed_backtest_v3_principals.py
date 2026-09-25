@@ -32,6 +32,7 @@ from src.backend.backtest_fixed_v3_preflight import (
     terminal_v3_contracts, terminal_v3_preflight,
 )
 from src.trading_runtime.arte_journal_schema import MARKET_READ_TABLES, storage_preflight
+from src.trading_runtime.arte_market_day_certification import TABLES as MARKET_DAY_CERTIFICATE_TABLES
 
 
 URL = "http://DESKTOP-SAAI85T:18123"
@@ -84,7 +85,9 @@ def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
         raise RuntimeError("V3 preflight references an unprovisioned table")
     system = frozenset(SYSTEM_READ_TABLES)
     return (
-        PrincipalPlan("read", PRINCIPALS["read"], terminal | MARKET_READ_TABLES,
+        PrincipalPlan("read", PRINCIPALS["read"],
+                      terminal | MARKET_READ_TABLES |
+                      frozenset(table.name for table in MARKET_DAY_CERTIFICATE_TABLES),
                       frozenset(), system,
                       frozenset({("q_live", "market_stock_split_v1")})),
         PrincipalPlan("running", PRINCIPALS["running"], running | MARKET_READ_TABLES,
