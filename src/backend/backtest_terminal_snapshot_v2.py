@@ -5,6 +5,7 @@ contract: finite Python floats are written as Float64 and read back bit-exact.
 """
 from __future__ import annotations
 
+from datetime import timezone
 from hashlib import sha256
 import math
 import struct
@@ -150,7 +151,7 @@ def project_snapshot_group(
     digest = position_set_sha256(scalar_rows)
     if account.payload["position_set_sha256"] != digest:
         raise ValueError("Terminal snapshot full-position hash differs")
-    month = account.event_time.strftime("%Y-%m-01")
+    month = account.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
     parent = {
         "record_id": account.record_id, "run_id": account.run_id,
         "event_month": month, "batch_id": batch_id,

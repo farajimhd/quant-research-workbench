@@ -1,8 +1,10 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 import math
 import asyncio
 from types import SimpleNamespace
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -129,3 +131,12 @@ def test_fixed_runtime_emits_atomic_account_manifest_and_bound_positions() -> No
         project_snapshot_group(manifest, (), batch_id=batch_id)
     with pytest.raises(ValueError, match="hash differs"):
         recover_snapshot_group(parent, (dict(children[0], quantity=2.0),))
+    # The NY session day and UTC storage month diverge at a month-end close.
+    month_end = datetime(2026, 8, 31, 20, 0,
+                         tzinfo=ZoneInfo("America/New_York"))
+    shifted_parent = replace(manifest, event_time=month_end)
+    shifted_child = replace(child, event_time=month_end)
+    parent, children = project_snapshot_group(
+        shifted_parent, (shifted_child,), batch_id=batch_id)
+    assert parent["event_month"] == "2026-09-01"
+    assert children[0]["event_month"] == "2026-09-01"
