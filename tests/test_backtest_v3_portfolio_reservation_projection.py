@@ -69,7 +69,18 @@ def test_reservation_rejects_unmodeled_event_or_extra_payload():
             _project(record)
 
 
-def test_reservation_uses_v3_commit_fence_without_squeeze_child(monkeypatch):
+def test_reservation_updated_is_exact_existing_typed_row_without_extra_reason():
+    item = _project(_record(event="reservation_updated"))
+    sealed = dict(_sealed_families(item))
+    row = sealed["trading_portfolio_reservation_event_v1"][0]
+    assert row["event"] == "reservation_updated"
+    assert row["remaining_quantity"] == "10.000000000000000000"
+    with pytest.raises(ValueError, match="incomplete"):
+        _project(_record(event="reservation_updated", extras={"reason": "extra"}))
+
+
+@pytest.mark.parametrize("event_name", ["cash_tranche_budget_reserved", "reservation_updated"])
+def test_reservation_uses_v3_commit_fence_without_squeeze_child(monkeypatch, event_name):
     class V3Client(MemoryClient):
         def execute(self, sql):
             if "groupArray((toString(record_id),toString(content_hash)))" in sql:
@@ -81,7 +92,7 @@ def test_reservation_uses_v3_commit_fence_without_squeeze_child(monkeypatch):
             return super().execute(sql)
 
     client = V3Client()
-    item = _project(_record(event="cash_tranche_budget_reserved"))
+    item = _project(_record(event=event_name))
     monkeypatch.setattr(writer_module, "_v3_preflight", lambda _client: None)
     monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run: {
         "mode": "backtest"})

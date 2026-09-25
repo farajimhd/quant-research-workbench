@@ -305,7 +305,8 @@ def project_journal_record(
         lineage = {"correlation_id", "causation_id"}
         if (set(payload) - lineage != reservation_fields | {"event"}
                 or payload.get("event") not in {
-                    "reservation_created", "cash_tranche_budget_reserved"}
+                    "reservation_created", "cash_tranche_budget_reserved",
+                    "reservation_updated"}
                 or payload.get("reservation_id") != record.entity_id
                 or not record.account_id
                 or payload.get("account_id") != record.account_id
