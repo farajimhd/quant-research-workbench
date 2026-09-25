@@ -113,6 +113,15 @@ class StrategyExecutorRegistryTests(unittest.TestCase):
         register_numbered_strategy(release)
         self.assertEqual(numbered_strategy(999001), release)
         register_numbered_strategy(release)  # Identical registration is safe.
+        executor = strategy_executor(STRATEGY_ID, 26)
+        with self.assertRaisesRegex(ValueError, "cannot be replaced"):
+            register_strategy_executor(
+                replace(executor, implementation="tests.changed:Strategy"),
+                replace=True,
+            )
+        with self.assertRaisesRegex(ValueError, "cannot be unregistered"):
+            unregister_strategy_executor(STRATEGY_ID, 26)
+        self.assertIs(strategy_executor(STRATEGY_ID, 26), executor)
         changed = replace(release, behavior_specification="Changed entry rule")
         with self.assertRaisesRegex(ValueError, "approved seal"):
             register_numbered_strategy(changed)

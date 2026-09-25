@@ -56,7 +56,9 @@ class NumberedStrategyRelease:
         interval_valid = (self.evaluation_interval == "events"
                           or fixed is not None and int(fixed.group(1)) % 100 == 0)
         if (type(self.number) is not int or self.number < 1
-                or not self.executor_strategy_id or self.executor_revision < 1
+                or not self.executor_strategy_id
+                or self.executor_strategy_id.strip() != self.executor_strategy_id
+                or self.executor_revision < 1
                 or not interval_valid
                 or not self.input_contracts or len(set(self.input_contracts)) != len(self.input_contracts)
                 or not self.rule_set_contracts
@@ -114,8 +116,11 @@ _BUILTINS_REGISTERED = False
 def register_numbered_strategy(release: NumberedStrategyRelease) -> None:
     """Publish once; there is deliberately no replace or mutable edit API."""
     release.verify()
-    strategy_executor(release.executor_strategy_id, release.executor_revision)
+    _ensure_builtin_executors()
     with _LOCK:
+        key = (release.executor_strategy_id.strip(), release.executor_revision)
+        if key not in _REGISTRY:
+            raise ValueError("Numbered Strategy release lacks an installed executor")
         prior = _NUMBERED_RELEASES.get(release.number)
         if prior is not None and prior != release:
             raise ValueError(f"Strategy {release.number} is immutable; assign a new number")
@@ -142,6 +147,14 @@ def register_strategy_executor(
         raise ValueError("Strategy executor implementation identity is required")
     with _LOCK:
         existing = _REGISTRY.get(registration.key)
+        if existing is not registration and any(
+            (release.executor_strategy_id.strip(), release.executor_revision)
+            == registration.key for release in _NUMBERED_RELEASES.values()
+        ):
+            raise ValueError(
+                f"Published Strategy executor {registration.strategy_id}@{registration.revision} "
+                "cannot be replaced"
+            )
         if existing is not None and existing != registration and not replace:
             raise ValueError(
                 f"Strategy executor {registration.strategy_id}@{registration.revision} is already registered"
@@ -153,7 +166,11 @@ def unregister_strategy_executor(strategy_id: str, revision: int) -> None:
     """Remove a registration for isolated tests; application code must not unload executors."""
 
     with _LOCK:
-        _REGISTRY.pop((str(strategy_id), int(revision)), None)
+        key = (str(strategy_id), int(revision))
+        if any((release.executor_strategy_id.strip(), release.executor_revision) == key
+               for release in _NUMBERED_RELEASES.values()):
+            raise ValueError("Published Strategy executor cannot be unregistered")
+        _REGISTRY.pop(key, None)
 
 
 def strategy_executor(
