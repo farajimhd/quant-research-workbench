@@ -397,6 +397,53 @@ def project_journal_record(
             record.sequence, record.sequence, source_cursor, "running", (event,),
             executions=(details.execution,),
         )
+    if kind == ("execution", "commission"):
+        payload = record.payload
+        allowed = {"execution_id", "commission", "currency", "status",
+                   "time_authority", "correlation_id", "causation_id"}
+        if (set(payload) - allowed or not record.account_id
+                or payload.get("execution_id") != record.entity_id
+                or payload.get("status") != "final"
+                or payload.get("time_authority") != "execution"
+                or not isinstance(payload.get("currency"), str)
+                or not payload["currency"]
+                or record.event_time.tzinfo is None
+                or record.recorded_at.tzinfo is None
+                or any(not isinstance(payload[key], str)
+                       for key in ("correlation_id", "causation_id")
+                       if key in payload)):
+            raise ValueError("Commission journal source identity or fields are invalid")
+        month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+        if run_month.isoformat() != month:
+            raise ValueError("Commission journal partition differs from source time")
+        amount = _exact_decimal(payload.get("commission"))
+        common = {
+            "run_id": record.run_id, "event_month": month,
+            "batch_id": batch_id, "account_id": record.account_id,
+            "record_id": record.record_id,
+        }
+        event = {
+            **common, "attempt_id": attempt_id, "sequence": record.sequence,
+            "event_time": record.event_time.astimezone(timezone.utc).isoformat(),
+            "recorded_at": record.recorded_at.astimezone(timezone.utc).isoformat(),
+            "category": "execution", "entity_type": "commission",
+            "entity_id": record.entity_id,
+            "correlation_id": str(payload.get("correlation_id") or ""),
+            "causation_id": str(payload.get("causation_id") or ""),
+        }
+        detail = {
+            **common, "execution_id": record.entity_id,
+            "commission": amount, "currency": payload["currency"],
+            "status": "final", "time_authority": "execution",
+            "realized_pnl": None,
+            "source_event_time": event["event_time"],
+            "received_at": event["recorded_at"],
+        }
+        return TypedJournalBatch(
+            record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+            record.sequence, record.sequence, source_cursor, "running", (event,),
+            commissions=(detail,),
+        )
     raise ValueError(
         f"Journal record {record.category}/{record.entity_type} lacks a typed projection"
     )

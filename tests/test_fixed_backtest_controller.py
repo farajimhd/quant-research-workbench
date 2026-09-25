@@ -586,7 +586,8 @@ def test_fixed_controller_runtime_fills_only_after_decision_boundary(monkeypatch
 
     async def decide(frame):
         observed.append((frame.as_of, len([record for record in
-            controller._journal.records(RUN) if record.category == "execution"])))
+            controller._journal.records(RUN)
+            if record.category == "execution" and record.entity_type == "fill"])))
         if len(observed) == 1:
             await broker.place_orders("TEST", [OrderRequest(
                 acctId="TEST", conid=265598, cOID="fixed-entry", ticker="AAPL",

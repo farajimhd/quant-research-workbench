@@ -342,11 +342,7 @@ class TradingRuntime:
             # the causal market clock instead of machine processing speed.
             await self.order_manager.expire_entry_deadlines(event.ts)
         executions = await self.broker.on_market_event(event)
-        for execution in executions:
-            self.journal.append(
-                run_id=self.run_id, category="execution", entity_type="fill", entity_id=execution.execution_id,
-                account_id=execution.account, event_time=execution.trade_time, payload=execution.to_cpapi(),
-            )
+        self._record_executions(executions)
         if executions and self.order_manager is not None:
             await self.order_manager.reconcile()
         if executions and self._canonical_session is not None:
@@ -400,12 +396,7 @@ class TradingRuntime:
             await self.order_manager.advance_adaptive_execution(at)
             await self.order_manager.expire_entry_deadlines(at)
         executions = await matcher(row, at=at)
-        for execution in executions:
-            self.journal.append(
-                run_id=self.run_id, category="execution", entity_type="fill",
-                entity_id=execution.execution_id, account_id=execution.account,
-                event_time=execution.trade_time, payload=execution.to_cpapi(),
-            )
+        self._record_executions(executions)
         if executions and self.order_manager is not None:
             await self.order_manager.reconcile()
         if executions and self._canonical_session is not None:
@@ -421,6 +412,34 @@ class TradingRuntime:
             f"{ticker}|{int(row.get('bucket_index') or 0)}|liquidity_bar"
         )
         return self.broker.completed_liquidity_quote(ticker)
+
+    def _record_executions(self, executions: Sequence[Any]) -> None:
+        """Keep broker fills and known fees as separate ordered journal facts."""
+        if not executions:
+            return
+        entries: list[dict[str, Any]] = []
+        for execution in executions:
+            fill_payload = replace(execution, commission=None).to_cpapi()
+            fill_payload.pop("commission", None)
+            entries.append({
+                "run_id": self.run_id, "category": "execution",
+                "entity_type": "fill", "entity_id": execution.execution_id,
+                "account_id": execution.account, "event_time": execution.trade_time,
+                "payload": fill_payload,
+            })
+            if execution.commission is not None:
+                entries.append({
+                    "run_id": self.run_id, "category": "execution",
+                    "entity_type": "commission", "entity_id": execution.execution_id,
+                    "account_id": execution.account, "event_time": execution.trade_time,
+                    "payload": {
+                        "execution_id": execution.execution_id,
+                        "commission": execution.commission,
+                        "currency": execution.currency,
+                        "status": "final", "time_authority": "execution",
+                    },
+                })
+        self.journal.append_many(entries)
 
     def process_passive_market_event(self, event: MarketEvent) -> None:
         """Advance market state when no order can match and strategy evaluation is external."""

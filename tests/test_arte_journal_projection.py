@@ -20,6 +20,7 @@ from src.trading_runtime.ibkr_client import _execution
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.journal_contract import JournalRecord
+from src.trading_runtime.runtime import TradingRuntime
 from src.trading_runtime.signals import StrategySignal
 from tests.test_arte_journal_writer import MemoryClient
 
@@ -341,6 +342,46 @@ def test_later_commission_is_a_separate_typed_revision() -> None:
         )
     with pytest.raises(ValueError, match="unmodeled source fields"):
         commission_revision_batch(replace(report, raw={"unknown": 1}), **args)
+
+
+def test_runtime_splits_known_fee_and_shared_projection_preserves_it() -> None:
+    class CapturingJournal:
+        def __init__(self) -> None:
+            self.entries = []
+
+        def append_many(self, entries):
+            self.entries.extend(entries)
+
+    runtime = object.__new__(TradingRuntime)
+    runtime.run_id = "live:DU1"
+    runtime.journal = CapturingJournal()
+    execution = replace(_execution({**source(), "commission": 1.25}),
+                        raw={**source(), "commission": 1.25})
+    runtime._record_executions((execution,))
+    fill, fee = runtime.journal.entries
+    assert [fill["entity_type"], fee["entity_type"]] == ["fill", "commission"]
+    assert "commission" not in fill["payload"]
+    assert fee["payload"]["commission"] == 1.25
+    identity = dict(
+        run_month=date(2026, 8, 1),
+        attempt_id="00000000-0000-0000-0000-000000000004",
+        batch_id="00000000-0000-0000-0000-000000000001",
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        source_cursor="broker-execution:e1",
+    )
+    fee_record = JournalRecord(
+        "00000000-0000-0000-0000-000000000084", runtime.run_id, 2,
+        AT, AT, "execution", "commission", fee["entity_id"], fee["account_id"],
+        fee["payload"],
+    )
+    projected = project_journal_record(fee_record, **identity)
+    assert projected.commissions[0]["commission"] == "1.2500000000"
+    assert projected.commissions[0]["execution_id"] == execution.execution_id
+    assert not projected.executions
+    assert dict(_sealed_families(projected))["trading_commission_v1"]
+    with pytest.raises(ValueError, match="invalid"):
+        project_journal_record(replace(
+            fee_record, payload={**fee_record.payload, "unmodeled": 1}), **identity)
 
 
 def test_signal_sources_are_normalized_without_dropping_metadata() -> None:
