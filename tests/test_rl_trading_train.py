@@ -7,7 +7,7 @@ import torch
 
 from research.rl_trading.v1.common import bounds, digest, file_hash
 from research.rl_trading.v1.features import FEATURE_NAMES, SECONDS
-from research.rl_trading.v1 import train, evaluate_supervised
+from research.rl_trading.v1 import train, evaluate_supervised, evaluate_replay
 from src.market_engine.level_book_store import write
 
 
@@ -15,11 +15,14 @@ def _shard(root: Path, day: date):
     root.mkdir()
     left,_ = bounds(day)
     plan = dict(date=str(day),tickers=['A'],top_n=1,history_seconds=4,max_lots=1,
-        max_orders=1,segment=True,feature_names=FEATURE_NAMES)
+        max_orders=1,segment=True,feature_names=FEATURE_NAMES,initial_cash=100.,
+        allocation_step=50.,liquidity_filter=dict(min_volume_60s=0.,min_trades_60s=0))
     plan['plan_hash'] = digest(plan)
     write(root/'plan.json',plan)
     arrays = dict(features=np.ones((1,SECONDS,len(FEATURE_NAMES)),dtype=np.float32),
         volume_60s=np.ones((1,SECONDS),dtype=np.float64),
+        execution=np.ones((1,SECONDS,3),dtype=np.float64),
+        closeable=np.ones((1,SECONDS),dtype=np.bool_),
         time_us=np.asarray([left,left+1_000_000],dtype=np.int64),
         slots=np.zeros((2,1),dtype=np.int32),rank=np.zeros((2,1),dtype=np.int32),
         held_slots=np.zeros((2,1),dtype=np.bool_),
@@ -34,7 +37,7 @@ def _shard(root: Path, day: date):
         np.save(path,array)
         hashes[path.name] = file_hash(path)
     write(root/'complete.json',dict(plan_hash=plan['plan_hash'],rows=2,
-        teacher_optimality='approximate_beam',files=hashes))
+        teacher_optimality='approximate_beam',teacher_profit=0.,files=hashes))
     return root
 
 
@@ -53,3 +56,5 @@ def test_cuda_training_launcher_reads_disk_shards_and_checkpoints(tmp_path,monke
     test_root = _shard(tmp_path/'test',date(2026,8,22))
     assert evaluate_supervised.main(['--run',str(root),'--test-shards',str(test_root),
         '--batch-size','2','--allow-segment']) == 0
+    assert evaluate_replay.main(['--run',str(root),'--test-shards',str(test_root),
+        '--allow-segment','--max-seconds','2']) == 0

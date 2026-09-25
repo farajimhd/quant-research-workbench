@@ -37,7 +37,7 @@ from src.market_engine.causal_v7_contract import COVERAGE_TABLE, LEVEL_TABLE, ST
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
 
-VERSION = 'rl-trading-causal-shards-v1'
+VERSION = 'rl-trading-causal-shards-v2'
 PRODUCTS = tuple(x.split('.')[1] for x in (STATE_TABLE,LEVEL_TABLE,COVERAGE_TABLE))
 SOURCES = ('build_shards.py','features.py','shard_labels.py','universe.py',
     'phase3_search.py','arte_source.py','arte_sql.py')
@@ -176,6 +176,8 @@ def run(args,console):
             return 0
         bank = _open_bank(root/'features.npy',(len(tickers),SECONDS,len(FEATURE_NAMES)),np.float32)
         volumes = _open_bank(root/'volume_60s.npy',(len(tickers),SECONDS),np.float64)
+        execution = _open_bank(root/'execution.npy',(len(tickers),SECONDS,3),np.float64)
+        closeable = _open_bank(root/'closeable.npy',(len(tickers),SECONDS),np.bool_)
         progress_path = root/'progress.json'
         progress = read(progress_path) if progress_path.exists() else dict(plan_hash=plan['plan_hash'],done={})
         if progress['plan_hash'] != plan['plan_hash']:
@@ -189,7 +191,9 @@ def run(args,console):
             saved = progress['done'].get(ticker)
             if saved:
                 if (saved['features'] != _hash_bytes(bank[index]) or
-                        saved['volume'] != _hash_bytes(volumes[index])):
+                        saved['volume'] != _hash_bytes(volumes[index]) or
+                        saved['execution'] != _hash_bytes(execution[index]) or
+                        saved['closeable'] != _hash_bytes(closeable[index])):
                     raise ValueError('Restart ticker slice changed: '+ticker)
                 continue
             arte_source.verify_listing(client,source,day,ticker)
@@ -199,15 +203,30 @@ def run(args,console):
             folder = phase2/'listings'/digest(listing)[:20]
             ready = read(folder/'ready.json')
             _verified(folder/'coefficients.parquet',ready['files']['coefficients.parquet'])
-            columns = pl.read_parquet(folder/'coefficients.parquet',columns=['side','volume_60s'])
-            expected = columns.filter(pl.col('side') == 'long')['volume_60s'].to_numpy()
+            columns = pl.read_parquet(folder/'coefficients.parquet',columns=[
+                'side','time_us','volume_60s','can_close','entry_price','close_price',
+                'capital_per_share'])
+            long = columns.filter(pl.col('side') == 'long').sort('time_us')
+            expected = long['volume_60s'].to_numpy()
             if len(expected) != SECONDS or not np.allclose(volume60,expected,rtol=1e-9,atol=1e-4):
                 raise ValueError('Arte completed-minute volume differs from Phase 2: '+ticker)
+            times = left+np.arange(SECONDS,dtype=np.int64)*1_000_000
+            if not np.array_equal(long['time_us'].to_numpy(),times):
+                raise ValueError('Phase 2 execution grid differs from training seconds: '+ticker)
+            price_columns = ('entry_price','close_price','capital_per_share')
+            prices = long.select(price_columns).fill_null(0.).to_numpy().astype(np.float64)
+            available = long['can_close'].to_numpy().astype(np.bool_)
+            if (np.any(~np.isfinite(prices)) or np.any(prices < 0) or
+                    np.any(available & (prices[:,1] <= 0))):
+                raise ValueError('Phase 2 execution prices are malformed: '+ticker)
             bank[index] = features
             volumes[index] = volume60
-            bank.flush();volumes.flush()
+            execution[index] = prices
+            closeable[index] = available
+            bank.flush();volumes.flush();execution.flush();closeable.flush()
             progress['done'][ticker] = dict(features=_hash_bytes(bank[index]),
-                volume=_hash_bytes(volumes[index]),v7_attempt=v7_units[ticker].attempt_id)
+                volume=_hash_bytes(volumes[index]),execution=_hash_bytes(execution[index]),
+                closeable=_hash_bytes(closeable[index]),v7_attempt=v7_units[ticker].attempt_id)
             write(progress_path,progress,immutable=False)
             if (index+1)%10 == 0 or index+1 == len(tickers):
                 console.print(f'Features {index+1:,}/{len(tickers):,} listings | queued {len(tickers)-index-1:,} | failed 0')
@@ -217,7 +236,8 @@ def run(args,console):
             allocation_step=plan['allocation_step'],initial_cash=plan['initial_cash'],
             min_volume=float(p2['liquidity_filter']['min_volume_60s']),
             min_trades=int(p2['liquidity_filter']['min_trades_60s']))
-        hashes = {name:file_hash(root/name) for name in ('features.npy','volume_60s.npy')}
+        hashes = {name:file_hash(root/name) for name in (
+            'features.npy','volume_60s.npy','execution.npy','closeable.npy')}
         for name,value in packed.items():
             hashes[name+'.npy'] = _save_array(root/(name+'.npy'),value)
         if (file_hash(phase3/'complete.json') != plan['phase3_complete_hash'] or
@@ -226,6 +246,7 @@ def run(args,console):
             raise ValueError('Training shard source or features changed during publication')
         write(complete_path,dict(plan_hash=plan['plan_hash'],rows=len(trajectory),
             listings=len(tickers),files=hashes,teacher_optimality=teacher['optimality'],
+            teacher_profit=float(teacher_complete['terminal_profit']),
             v7_token=v7.token))
         console.print(f'Complete | {len(trajectory):,} seconds | {len(tickers):,} tickers | {root}',soft_wrap=True)
         return 0

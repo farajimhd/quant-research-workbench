@@ -16,6 +16,7 @@ python -B research/rl_trading/v1/build_phase3.py --phase2 <completed-phase2-root
 python -B research/rl_trading/v1/build_shards.py --phase3 <completed-phase3-root>
 python -B research/rl_trading/v1/train.py --train-shards <chronological-train-shard-roots> --val-shards <later-validation-shard-roots> --run-name <name> --wandb-mode offline
 python -B research/rl_trading/v1/evaluate_supervised.py --run <completed-train-run-root> --test-shards <later-held-out-shard-roots>
+python -B research/rl_trading/v1/evaluate_replay.py --run <completed-train-run-root> --test-shards <later-held-out-shard-roots>
 ```
 
 The Phase 1 launcher invokes Phase 2 for each completed session and records its path in the campaign summary. Phase 3 consumes that Phase 2 path. See [Phase 1](phase1.md), [Phase 2](phase2.md), and [Phase 3](phase3.md) for data contracts, output files, and restart behavior. The source manifest and ledger are selected with `--manifest` and `--ledger` when the runtime defaults do not apply. `STOP` markers and Ctrl+C drain admitted Phase 1 work; source/product integrity checks fail closed.
@@ -24,4 +25,4 @@ The Phase 3 V2 teacher admits new positions only among the top `--top-n` tickers
 
 Use disjoint chronological sessions for training and validation. `train.py` requires CUDA, uses a GPU-resident session bank, bfloat16, AdamW, a sample scheduler, optional Weights & Biases, metrics, restart checkpoints, and an observed GPU-compute fraction gate. `--max-steps`, `--allow-segment`, and `--no-require-gpu-bound` are for bounded smoke validation. Full training must use complete sessions and the default GPU-bound check. Model parameters and the shard contract are recorded in the runtime run manifest.
 
-`evaluate_supervised.py` checks a separate test set and reports masked teacher action accuracy, trade recall, and return error. These metrics measure imitation of the approximate Phase 3 teacher. They do not establish profit, risk, or closed-loop portfolio behavior; that requires a separate replay with the model's own evolving account state.
+`evaluate_supervised.py` checks a separate test set and reports masked teacher action accuracy, trade recall, and return error. `evaluate_replay.py` uses the shard's certified current execution prices to replay the frozen model with its own cash, lots, dynamic top-N-plus-held view, and terminal liquidation. It reports profit, profit to initial cash, drawdown, trade counts, and the difference from the approximate Phase 3 teacher. The latter is a comparison, not an optimality bound. Both evaluators reject any test session present in the training or validation dates.

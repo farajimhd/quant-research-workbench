@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import date
+import math
 
 import numpy as np
 import torch
@@ -11,7 +12,7 @@ from research.rl_trading.v1.common import file_hash, bounds, digest
 from research.rl_trading.v1.features import FEATURE_NAMES, SECONDS
 from src.market_engine.level_book_store import read
 
-ARRAYS = ('features','volume_60s','time_us','slots','rank','held_slots',
+ARRAYS = ('features','volume_60s','execution','closeable','time_us','slots','rank','held_slots',
     'actions','action_mask','lots','lot_slots','account','reward','return_to_go','done')
 
 
@@ -22,11 +23,14 @@ class SessionShard:
         self.complete = read(self.root/'complete.json')
         if (self.plan['plan_hash'] != digest({k:v for k,v in self.plan.items() if k != 'plan_hash'})
                 or self.complete['plan_hash'] != self.plan['plan_hash'] or
+                not math.isfinite(float(self.complete['teacher_profit'])) or
                 self.complete['teacher_optimality'] != 'approximate_beam' and
                 self.complete['teacher_optimality'] != 'proven_within_grid'):
             raise ValueError('Training shard completion mismatch')
         if tuple(self.plan['feature_names']) != FEATURE_NAMES:
             raise ValueError('Training feature contract changed')
+        if set(self.complete['files']) != {name+'.npy' for name in ARRAYS}:
+            raise ValueError('Training shard file certificate is incomplete')
         if verify:
             for name,expected in self.complete['files'].items():
                 if file_hash(self.root/name) != expected:
@@ -36,17 +40,22 @@ class SessionShard:
         rows = self.complete['rows']
         tickers = self.plan['tickers']
         if (self.arrays['features'].shape != (len(tickers),SECONDS,len(FEATURE_NAMES))
+                or self.arrays['execution'].shape != (len(tickers),SECONDS,3)
+                or self.arrays['closeable'].shape != (len(tickers),SECONDS)
                 or self.arrays['slots'].shape != (rows,self.plan['top_n'])
                 or self.arrays['actions'].shape != (rows,self.plan['max_orders'])
                 or self.arrays['action_mask'].shape != (rows,self.plan['max_orders'],
                     1+self.plan['top_n']+self.plan['max_lots'])
+                or self.arrays['time_us'].shape != (rows,)
+                or np.any(np.diff(self.arrays['time_us']) != 1_000_000)
                 or not self.arrays['done'][-1] or np.any(self.arrays['done'][:-1])):
             raise ValueError('Training shard tensor shape or terminal contract changed')
 
     def to_gpu(self, device: torch.device, ticker_vocab: dict[str,int]):
         if device.type != 'cuda':
             raise ValueError('Training data must be assembled on a CUDA GPU')
-        needed = sum(value.nbytes for key,value in self.arrays.items() if key != 'volume_60s')
+        needed = sum(value.nbytes for key,value in self.arrays.items() if key not in
+                     ('volume_60s','execution','closeable'))
         available,_ = torch.cuda.mem_get_info(device)
         if needed > available*.7:
             raise MemoryError(f'Session shard needs {needed/2**30:.1f} GiB before training activations; split the shard')
@@ -58,17 +67,18 @@ class GpuSession:
         self.plan = source.plan
         self.device = device
         self.values = {name:torch.from_numpy(np.asarray(value).copy()).to(device,non_blocking=True)
-                       for name,value in source.arrays.items() if name != 'volume_60s'}
+                       for name,value in source.arrays.items() if name not in
+                       ('volume_60s','execution','closeable')}
         self.ticker_ids = torch.tensor([ticker_vocab.get(ticker,0) for ticker in source.plan['tickers']],
             device=device,dtype=torch.long)
         self.rows = source.complete['rows']
         self.left_us = bounds(date.fromisoformat(source.plan['date']))[0]
         self.offsets = torch.arange(int(source.plan['history_seconds'])-1,-1,-1,device=device)
 
-    def batch(self, indices: torch.Tensor) -> dict[str,torch.Tensor]:
+    def batch(self, indices: torch.Tensor, *, slot_override: torch.Tensor | None = None) -> dict[str,torch.Tensor]:
         values = self.values
         rows = indices.to(self.device,dtype=torch.long)
-        slot = values['slots'][rows].long()
+        slot = values['slots'][rows].long() if slot_override is None else slot_override.long()
         valid = slot >= 0
         selected = slot.clamp_min(0)
         second = ((values['time_us'][rows]-self.left_us)//1_000_000).long()
