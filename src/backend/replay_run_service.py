@@ -2848,6 +2848,18 @@ class ReplayRunController:
             "the retired arte.bt_* publisher is not an allowed fallback"
         )
 
+    def _read_fixed_running_prefix_anchor(self, client, plan):
+        """Inactive cold cursor audit; never restores opaque runtime state."""
+        from src.backend.backtest_fixed_running_anchor import load_fixed_running_prefix_anchor
+        if (self.definition.mode != RunMode.BACKTEST
+                or self._resume_state is not None):
+            raise RuntimeError("Fixed typed prefix cannot adopt a disk checkpoint")
+        return load_fixed_running_prefix_anchor(
+            client, run_id=self.run_id, plan=plan,
+            configuration_hash=str(
+                self.definition.configuration_revision.get("content_hash") or ""),
+            account_ids=tuple(self.account_ids))
+
     async def _close_fixed_journal(self) -> None:
         writer = self._journal_writer
         self._journal_writer = None
