@@ -352,6 +352,50 @@ class ClickHouseHttpClient:
                 f"ClickHouse HTTP {exc.code} {exc.reason}: {body}"
             ) from exc
 
+    def iter_arrow_record_batches(
+        self,
+        sql: str,
+        *,
+        query_id: str | None = None,
+    ) -> Iterator[Any]:
+        """Stream typed Arrow batches without buffering the whole response.
+
+        A partial network/Arrow failure propagates; callers must abort that
+        logical read rather than retrying from the beginning after consuming
+        batches. Fixed Backtest pins an immutable plan and can resume only at
+        a separately committed market boundary.
+        """
+        if not re.search(
+            r"\bFORMAT\s+ArrowStream\s*$",
+            sql.strip().rstrip(";"),
+            flags=re.IGNORECASE,
+        ):
+            raise ValueError("iter_arrow_record_batches requires FORMAT ArrowStream")
+        import pyarrow as pa
+
+        params = dict(self.default_query_params)
+        if query_id:
+            params["query_id"] = query_id
+        req = request.Request(
+            self._request_url(params), data=sql.encode("utf-8"), method="POST",
+        )
+        if self.user:
+            req.add_header("X-ClickHouse-User", self.user)
+        if self.password:
+            req.add_header("X-ClickHouse-Key", self.password)
+        try:
+            with request.urlopen(req, timeout=self.timeout_seconds) as response:
+                reader = pa.ipc.open_stream(response)
+                try:
+                    yield from reader
+                finally:
+                    reader.close()
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"ClickHouse HTTP {exc.code} {exc.reason}: {body}"
+            ) from exc
+
     def close(self) -> None:
         with self._connection_lock:
             self._close_connection_unlocked()

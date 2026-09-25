@@ -95,10 +95,12 @@ never moving downward. These selections are drafted in
 `src/trading_runtime/strategy_one_columnar.py` implements a pure necessary-
 condition entry mask using completed MACD, liquidity quote/VWAP, prior close,
 and the last completed 30s low. It neither owns activation nor suppresses
-management of an existing position. The fixed loader must project these
-certified arrays into this prefilter, and the resulting candidates must still
-pass Candidate 350's surviving stateful entry/lifecycle rules. No path yet
-dispatches this draft from the application.
+management of an existing position. The read-only
+`src/backend/backtest_strategy_one_loader.py` now projects one certified
+ticker/session through bounded Arrow batches into this mask, including exact
+indicator-row checks. Its candidates must still pass Candidate 350's
+surviving stateful entry/lifecycle rules. No path yet dispatches this draft
+from the application.
 The active fixed Backtest preflight also blocks on unfinished ClickHouse-only
 runtime/journal recovery. These contracts must be delivered and verified
 before Strategy 1 can become selectable. Do not bypass them by launching the
