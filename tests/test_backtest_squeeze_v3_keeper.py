@@ -57,6 +57,35 @@ def test_v3_cold_barrier_verifies_context_whole_prefix_and_exact_commit(monkeypa
     assert calls == ["closed", "context", "fenced", "fenced", "release"]
 
 
+def test_retained_closed_v3_gate_is_reaudited_without_release(monkeypatch):
+    dispatch, calls = _setup(monkeypatch)
+    original = dispatch._read_gate
+    dispatch._read_gate = lambda run_id: (
+        SimpleNamespace(**vars(original(run_id)[0]), mode="closed",
+                        inflight=0, registered=0,
+                        active_batch_id="00000000-0000-0000-0000-000000000000",
+                        epoch=7), 1)
+
+    class Barrier:
+        def __init__(self, authority, run_id, epoch):
+            assert authority is dispatch and run_id == RUN and epoch == 7
+            self.prefix_verified = False
+            self.context_verified = False
+        def verify_run_context_receipt(self, client):
+            self.context_verified = True
+            calls.append("context")
+        def assert_fenced(self, run_id):
+            assert run_id == RUN and self.prefix_verified and self.context_verified
+            calls.append("fenced")
+    monkeypatch.setattr(subject, "ColdDispatchBarrier", Barrier)
+    fence = subject.verify_retained_v3_cold_gate(
+        object(), dispatch, run_id=RUN,
+        expected_market_plan_token="a" * 64,
+        expected_query_sha256="b" * 64)
+    assert fence.prefix.last_batch_id == BATCH
+    assert calls == ["context", "fenced"]
+
+
 @pytest.mark.parametrize("change", ["watermark", "duplicate", "tamper", "receipt"])
 def test_v3_cold_barrier_fails_closed_and_releases(monkeypatch, change):
     dispatch, calls = _setup(

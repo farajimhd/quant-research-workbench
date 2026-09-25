@@ -4,21 +4,53 @@ from math import ceil, floor
 from statistics import mean
 
 
+_ANCHOR_GROUP_FIELDS = frozenset({"members", "encountered", "seen_below",
+                                  "grouping_threshold", "broken_at"})
+
+
+def validate_typed_breakout_anchor(row):
+    """Close both passive V7 and grouped-zone anchor variants for typed mode."""
+    from .typed_assignment_input import validate_grouped_resistance_level
+    if not isinstance(row, dict):
+        raise ValueError("typed breakout anchor must be a dictionary")
+    group = set(row) & _ANCHOR_GROUP_FIELDS
+    base = validate_grouped_resistance_level(
+        {key: value for key, value in row.items() if key not in _ANCHOR_GROUP_FIELDS})
+    if not group:
+        return dict(row)
+    required = _ANCHOR_GROUP_FIELDS - {"broken_at"}
+    if group - _ANCHOR_GROUP_FIELDS or required - group:
+        raise ValueError("typed grouped breakout anchor is incomplete")
+    members = row["members"]
+    if (type(members) is not list or not members
+            or any(type(member) is not str or not member for member in members)
+            or len(set(members)) != len(members)
+            or any(type(row[key]) is not bool for key in ("encountered", "seen_below"))):
+        raise ValueError("typed grouped breakout anchor members or flags differ")
+    from math import isfinite
+    for key in ("grouping_threshold", "broken_at"):
+        if key in row and (type(row[key]) not in (int, float) or not isfinite(row[key])):
+            raise ValueError(f"typed grouped breakout anchor {key} is invalid")
+    return {**base, **{key: row[key] for key in group}}
+
+
 def average_gap(market):
     rows = [market['break_rows'][k] for k in market.get('broken', [])]
     gaps = [b['lower']-a['upper'] for a, b in zip(rows, rows[1:]) if b['lower'] > a['upper']]
     return mean(gaps) if gaps else None
 
 
-def breakout_reference(market, hod):
+def breakout_reference(market, hod, *, typed_persistence=False):
     eligible = [r for r in market.get('known', {}).values() if r['upper'] < hod]
-    return deepcopy(max(eligible, key=lambda r:r['upper'])) if eligible else None
+    selected = deepcopy(max(eligible, key=lambda r:r['upper'])) if eligible else None
+    return validate_typed_breakout_anchor(selected) if typed_persistence and selected else selected
 
 
-def breakout_crossing(o, market, previous_price, tick, offset_ticks):
+def breakout_crossing(o, market, previous_price, tick, offset_ticks, *, typed_persistence=False):
     if not o.structural_session_high or previous_price is None:
         return None
-    reference = breakout_reference(market, o.structural_session_high)
+    reference = breakout_reference(market, o.structural_session_high,
+                                   typed_persistence=typed_persistence)
     if not reference:
         return None
     trigger = (ceil(reference['upper']/tick-1e-9)+offset_ticks)*tick
@@ -27,13 +59,15 @@ def breakout_crossing(o, market, previous_price, tick, offset_ticks):
     return None
 
 
-def pending_breakout(o, market, clock, previous_price, tick, offset_ticks, episode, observe):
+def pending_breakout(o, market, clock, previous_price, tick, offset_ticks, episode, observe,
+                     *, typed_persistence=False):
     """Keep a witnessed crossing until confirmation or structural invalidation.
 
     No crossing is invented from an already-above price. The current reference,
     price and episode are checked again on every strategy evaluation.
     """
-    reference = breakout_reference(market, o.structural_session_high or 0)
+    reference = breakout_reference(market, o.structural_session_high or 0,
+                                   typed_persistence=typed_persistence)
     pending = clock.get('pending_breakout')
     def identity(row):
         return tuple(row.get(k) for k in ('unified_level_id', 'lower', 'upper'))
@@ -44,13 +78,18 @@ def pending_breakout(o, market, clock, previous_price, tick, offset_ticks, episo
         clock.pop('pending_breakout', None)
         pending = None
     if observe and episode.get('bullish') and not episode.get('used'):
-        crossing = breakout_crossing(o, market, previous_price, tick, offset_ticks)
+        crossing = breakout_crossing(o, market, previous_price, tick, offset_ticks,
+                                     typed_persistence=typed_persistence)
         if crossing:
             target = midpoint_target(market, crossing['anchor'], tick)
             if target and o.price < target['price']:
                 pending = dict(crossing, witnessed_at=o.observed_at.isoformat(),
                                target_price=target['price'], episode_id=episode.get('started_at'))
                 clock['pending_breakout'] = pending
+    if typed_persistence and pending:
+        from .arte_assignment_pending_breakout import validate_pending_breakout
+        pending = validate_pending_breakout(pending)
+        clock['pending_breakout'] = pending
     return deepcopy(pending)
 
 

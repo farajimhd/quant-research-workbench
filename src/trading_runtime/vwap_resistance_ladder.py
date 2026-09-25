@@ -57,7 +57,7 @@ def macd(o, timeframe):
     return dict(line=values[0], signal=values[1], at=stamps[0]) if stamps[0] == stamps[1] else None
 
 
-def levels(o):
+def levels(o, *, typed_persistence=False):
     now = o.observed_at.timestamp()*1000
     result = {}
     for r in (*o.structural_support_levels, *o.structural_resistance_levels, *o.structural_transition_levels):
@@ -68,8 +68,12 @@ def levels(o):
                        for k in ('lower', 'upper', 'confirmed_at_ms'))
                 or not 0 < r['lower'] <= r['upper'] or r['confirmed_at_ms'] > now):
             continue
-        result[str(identity)] = {k: r[k] for k in ('unified_level_id', 'lower', 'upper', 'price',
+        projected = {k: r[k] for k in ('unified_level_id', 'lower', 'upper', 'price',
             'side', 'role', 'confirmed_at_ms', 'book_version', 'input_policy', 'seed_input_policy') if k in r}
+        if typed_persistence:
+            from .typed_assignment_input import validate_grouped_resistance_level
+            projected = validate_grouped_resistance_level(projected)
+        result[str(identity)] = projected
     return result
 
 

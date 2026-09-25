@@ -85,7 +85,10 @@ def main() -> int:
         missing, ddl = plan_missing(client, profile=args.profile)
     finally:
         client.close()
-    print(f"{args.profile} expected: {len(profile_contracts(args.profile))}; missing: {len(missing)}")
+    print(
+        f"{args.profile} expected: {len(profile_contracts(args.profile))}; "
+        f"not visible to this principal or absent: {len(missing)}"
+    )
     for name in missing:
         print(name)
     if args.show_ddl:
