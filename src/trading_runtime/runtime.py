@@ -378,6 +378,9 @@ class TradingRuntime:
         if matcher is None or validator is None:
             raise RuntimeError("Backtest broker lacks validated liquidity-bar execution")
         validator(row, at=at)
+        # The runtime validates before it wakes OMS. Avoid repeating that
+        # full per-row validation inside the simulated broker hot path.
+        validated_matcher = getattr(self.broker, "_on_validated_liquidity_bar", None)
         ticker = str(row.get("ticker") or "").upper()
         bid = float(row.get("bid_int") or 0) / 10_000
         ask = float(row.get("ask_int") or 0) / 10_000
@@ -403,7 +406,7 @@ class TradingRuntime:
             await self.order_manager.enforce_entry_body_triggers(at)
             await self.order_manager.advance_adaptive_execution(at)
             await self.order_manager.expire_entry_deadlines(at)
-        executions = await matcher(row, at=at)
+        executions = await (validated_matcher or matcher)(row, at=at)
         self._record_executions(executions)
         if executions and self.order_manager is not None:
             await self.order_manager.reconcile()

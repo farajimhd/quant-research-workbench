@@ -369,8 +369,11 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
             side_effect=AssertionError("OMS scan"))
         runtime.order_manager.expire_entry_deadlines = AsyncMock(
             side_effect=AssertionError("OMS scan"))
+        self.broker.validate_liquidity_bar = Mock(
+            wraps=self.broker.validate_liquidity_bar)
         at = START + timedelta(milliseconds=100)
         completed = await runtime.process_liquidity_bar(bar(at), at=at)
+        assert self.broker.validate_liquidity_bar.call_count == 1
         assert completed is not None and completed.ticker == "AAPL"
         runtime.order_manager.on_market_snapshot.assert_called_once()
         first = runtime.execution_market_data.snapshot("AAPL")
@@ -395,6 +398,7 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         invalid["quote_timestamp_us"] = invalid["last_event_us"] + 1
         with self.assertRaisesRegex(ValueError, "invalid quote provenance"):
             await runtime.process_liquidity_bar(invalid, at=invalid_at)
+        assert self.broker.validate_liquidity_bar.call_count == 4
         assert runtime.order_manager.on_market_snapshot.call_count == 2
         assert runtime.order_manager.enforce_entry_body_triggers.await_count == 0
         assert runtime.processed_events == 3

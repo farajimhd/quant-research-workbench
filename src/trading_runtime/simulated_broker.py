@@ -855,6 +855,12 @@ class SimulatedBrokerAdapter:
         bucket, because the aggregate cannot establish trigger/quote ordering.
         """
         self.validate_liquidity_bar(row, at=at)
+        return await self._on_validated_liquidity_bar(row, at=at)
+
+    async def _on_validated_liquidity_bar(
+        self, row: Mapping[str, Any], *, at: datetime,
+    ) -> list[Execution]:
+        """Runtime-only continuation after validation, before any OMS side effect."""
         ticker = str(row["ticker"]).strip().upper()
         bucket_start = at - timedelta(milliseconds=100)
         boundary_us = int(at.timestamp() * 1_000_000)
