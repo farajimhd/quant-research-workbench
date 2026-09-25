@@ -8,6 +8,7 @@ import pytest
 
 from scripts.build_market_day import digest
 from scripts.clickhouse.plan_market_day_certificate import audit_saved_build
+from scripts.clickhouse.publish_market_day_certificate import publish_saved_build
 from test_arte_market_day_source_plan import plan as source_plan_fixture
 
 
@@ -61,3 +62,49 @@ def test_saved_build_audit_rejects_changed_manifest(tmp_path):
     archive.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match="exact core-complete"):
         audit_saved_build(tmp_path, build_id)
+
+
+def test_certificate_publisher_plan_is_read_only_and_apply_is_explicit(tmp_path, monkeypatch):
+    build_id = _saved_build(tmp_path)
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Dry run must not connect or insert")
+    plan = publish_saved_build(tmp_path, build_id, apply=False,
+                               client_factory=forbidden,
+                               keeper_session_factory=forbidden)
+    assert plan["status"] == "plan_only"
+    assert plan["family_rows"]["market_day_stage_certificate_v1"] == 3
+
+    import scripts.clickhouse.publish_market_day_certificate as module
+    monkeypatch.setattr(module.platform, "node", lambda: "DESKTOP-SAAI85T")
+    class Resource:
+        closed = False
+        def close(self):
+            self.closed = True
+    http = Resource()
+    session = Resource()
+    session.client = object()
+    class Reader:
+        def __init__(self, _client):
+            pass
+        def load(self, _build_id):
+            return None
+    class Authority:
+        def __init__(self, _client):
+            pass
+        def acquire(self, _build_id, _owner):
+            return object()
+    called = []
+    monkeypatch.setattr(module, "MarketDayKeeperReader", Reader)
+    monkeypatch.setattr(module, "MarketDayKeeperAuthority", Authority)
+    monkeypatch.setattr(module, "publish_market_day_certificate",
+                        lambda client, source, authority, claim, prepared, *, sessions:
+                        called.append((source, len(prepared), sessions)) or
+                        type("Proof", (), {"definition_hash": "a" * 64})())
+    monkeypatch.setattr(module, "audit_attested_market_day_certificate",
+                        lambda *_args, **_kwargs: None)
+    result = publish_saved_build(tmp_path, build_id, apply=True,
+                                 client_factory=lambda _url: http,
+                                 keeper_session_factory=lambda: session)
+    assert result["status"] == "attested"
+    assert called and called[0][0] is http
+    assert http.closed and session.closed

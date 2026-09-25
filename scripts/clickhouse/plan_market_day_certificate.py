@@ -53,8 +53,8 @@ class ReadOnlyLedger:
                          "prior_build_id", "prior_state_hash"), row)) if row else None
 
 
-def audit_saved_build(runtime: Path, build_id: str) -> dict[str, Any]:
-    """Prepare and internally cold-verify every typed family without side effects."""
+def prepare_saved_build(runtime: Path, build_id: str) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """Read a completed producer archive; never use this in Backtest."""
     runtime = runtime.resolve(strict=True)
     ledger_path = runtime / "build-ledger-v2.sqlite3"
     manifest_path = runtime / "market-day" / f"{build_id}.json"
@@ -82,10 +82,16 @@ def audit_saved_build(runtime: Path, build_id: str) -> dict[str, Any]:
                                                    ReadOnlyLedger(connection))
     finally:
         connection.close()
+    return prepared, tuple(definition["plan"]["requested"])
+
+
+def audit_saved_build(runtime: Path, build_id: str) -> dict[str, Any]:
+    """Prepare and internally cold-verify every typed family without side effects."""
+    prepared, sessions = prepare_saved_build(runtime, build_id)
     fence = prepared["market_day_build_fence_v1"][0]
     return {
         "build_id": build_id,
-        "sessions": tuple(definition["plan"]["requested"]),
+        "sessions": sessions,
         "family_rows": {name: len(rows) for name, rows in sorted(prepared.items())},
         "definition_hash": fence["definition_hash"],
         "source_plan_hash": fence["source_plan_hash"],
