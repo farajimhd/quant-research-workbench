@@ -35,3 +35,22 @@ def test_layout_refuses_wrong_policy_before_ddl():
             return json.dumps({"disks": ["default"]})
     with pytest.raises(RuntimeError, match="SSD-only"):
         command._layout(Client(), apply=True)
+
+
+def test_requested_canary_must_belong_to_certified_scope(monkeypatch):
+    monkeypatch.setattr(command, "prepare_saved_build", lambda *_: ({
+        "market_day_planned_scope_v1": [
+            {"session_date": "2026-08-18", "ticker": "ABCD",
+             "source_event_count": 100}],
+        "market_day_stage_certificate_v1": [
+            {"session_date": "2026-08-18", "ticker": "ABCD",
+             "stage": "broker_100ms", "attempt_id": "attempt"}],
+    }, ("2026-08-18",)))
+    class Manifest:
+        def read_text(self, **_):
+            return json.dumps({"definition": {"plan": {"rules": []},
+                                              "rules_hash": command.digest([])}})
+    monkeypatch.setattr(Path, "read_text", Manifest.read_text)
+    with pytest.raises(ValueError, match="outside certified liquidity scope"):
+        command._plan(Path("D:/TradingML/runtimes"), "build",
+                      date(2026, 8, 18), ("WRONG",))

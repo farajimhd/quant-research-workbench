@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import sys
 from threading import Semaphore, local
 from time import monotonic
@@ -121,7 +122,8 @@ def _layout(client, *, apply: bool) -> tuple[int, int]:
     return len(present), len(names) - len(present)
 
 
-def _plan(runtime: Path, build_id: str, day: date):
+def _plan(runtime: Path, build_id: str, day: date,
+          tickers: tuple[str, ...] = ()):
     prepared, requested = prepare_saved_build(runtime, build_id)
     if day.isoformat() not in requested:
         raise ValueError("Session is outside the certified market-day request")
@@ -142,12 +144,17 @@ def _plan(runtime: Path, build_id: str, day: date):
                     and row["stage"] == "broker_100ms")
     if not scopes or len(scopes) != len({ticker for ticker, _, _ in scopes}):
         raise ValueError("Session has missing or duplicate certified liquidity units")
+    if tickers:
+        selected = set(tickers)
+        if not selected <= {ticker for ticker, _, _ in scopes}:
+            raise ValueError("Requested ticker is outside certified liquidity scope")
+        scopes = [row for row in scopes if row[0] in selected]
     return scopes, rules
 
 
 def run(*, runtime: Path, build_id: str, day: date, workers: int,
-        apply: bool) -> dict[str, int]:
-    scopes, rules = _plan(runtime, build_id, day)
+        apply: bool, tickers: tuple[str, ...] = ()) -> dict[str, int]:
+    scopes, rules = _plan(runtime, build_id, day, tickers)
     counts = {"total": len(scopes), "completed": 0, "skipped": 0,
               "failed": 0, "created_tables": 0}
     print(f"Eligible prices | {day} | {len(scopes)} certified ticker-days | "
@@ -256,6 +263,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--date", type=date.fromisoformat, required=True)
     parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--tickers", default="",
+                        help="Comma-separated certified symbols for a bounded canary; default all")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm-eligible-price-publication", action="store_true")
     args = parser.parse_args(argv)
@@ -263,9 +272,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--workers must be between 1 and 16")
     if args.apply and not args.confirm_eligible_price_publication:
         parser.error("--apply requires --confirm-eligible-price-publication")
+    tickers = tuple(sorted(set(part.strip().upper() for part in
+                               args.tickers.split(",") if part.strip())))
+    if any(not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,15}", ticker)
+           for ticker in tickers):
+        parser.error("--tickers contains an invalid symbol")
     try:
         run(runtime=args.runtime, build_id=args.build_id,
-            day=args.date, workers=args.workers, apply=args.apply)
+            day=args.date, workers=args.workers, apply=args.apply,
+            tickers=tickers)
     except KeyboardInterrupt:
         print("Interrupted; admitted workers drained, rerun to resume.",
               file=sys.stderr)
