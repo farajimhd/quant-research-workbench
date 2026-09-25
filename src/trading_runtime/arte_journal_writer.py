@@ -1410,14 +1410,18 @@ def _valid_prefix(prefix: object) -> bool:
     return isinstance(prefix, (CommittedPrefix, V2CommittedPrefix)) and bool(prefix.batch_ids)
 
 
-def _committed_batch_filter(prefix: VerifiedPrefix) -> str:
+def _committed_batch_filter(
+    prefix: VerifiedPrefix, *, batch_column: str = "batch_id",
+) -> str:
     """Exclude interrupted fact inserts before page LIMIT or duplicate checks."""
     if not _valid_prefix(prefix):
         raise ValueError("Journal page requires a verified committed prefix")
+    if batch_column not in {"batch_id", "c.batch_id"}:
+        raise ValueError("Journal page has an invalid batch column")
     fence = ("trading_commit_v2" if isinstance(prefix, V2CommittedPrefix)
              else "trading_commit_v1")
     return (
-        f"AND batch_id IN (SELECT batch_id FROM arte.{fence} "
+        f"AND {batch_column} IN (SELECT batch_id FROM arte.{fence} "
         f"WHERE run_id={_literal(prefix.run_id)} "
         f"AND last_sequence<={int(prefix.last_sequence)}) "
     )

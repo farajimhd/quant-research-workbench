@@ -17,7 +17,8 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import (
-    CommittedPrefix, TypedJournalBatch, _canonical_typed_content, _literal, _rows,
+    CommittedPrefix, V2CommittedPrefix, VerifiedPrefix, TypedJournalBatch,
+    _canonical_typed_content, _committed_batch_filter, _literal, _rows,
 )
 from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.ibkr_client import _execution as parse_ibkr_execution
@@ -684,9 +685,9 @@ def backtest_cursor_record_fields(
     }
 
 
-def load_latest_backtest_cursor(client: Any, prefix: CommittedPrefix) -> dict[str, Any] | None:
+def load_latest_backtest_cursor(client: Any, prefix: VerifiedPrefix) -> dict[str, Any] | None:
     """Read the latest cursor from a previously verified committed prefix."""
-    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+    if not isinstance(prefix, (CommittedPrefix, V2CommittedPrefix)) or not prefix.batch_ids:
         raise ValueError("Backtest cursor recovery requires a verified prefix")
     rows = _rows(client,
         "SELECT c.*,e.sequence AS event_sequence,e.category AS event_category,"
@@ -696,9 +697,7 @@ def load_latest_backtest_cursor(client: Any, prefix: CommittedPrefix) -> dict[st
         "ON c.run_id=e.run_id AND c.batch_id=e.batch_id AND c.record_id=e.record_id "
         f"WHERE c.run_id={_literal(prefix.run_id)} "
         f"AND e.sequence<={int(prefix.last_sequence)} "
-        "AND c.batch_id IN (SELECT batch_id FROM arte.trading_commit_v1 "
-        f"WHERE run_id={_literal(prefix.run_id)} "
-        f"AND last_sequence<={int(prefix.last_sequence)}) "
+        f"{_committed_batch_filter(prefix, batch_column='c.batch_id')}"
         "ORDER BY e.sequence DESC LIMIT 2 FORMAT JSONEachRow")
     if not rows:
         return None

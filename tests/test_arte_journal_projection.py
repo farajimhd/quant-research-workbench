@@ -13,7 +13,8 @@ from src.trading_runtime.arte_journal_projection import (
 )
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import (
-    TypedJournalBatch, _sealed_families, load_committed_prefix, publish_typed_batch,
+    TypedJournalBatch, V2CommittedPrefix, _sealed_families, load_committed_prefix,
+    publish_typed_batch,
 )
 from src.trading_runtime.ibkr_client import _execution
 from src.trading_runtime.ibkr_schema import OrderRequest
@@ -83,6 +84,15 @@ def test_backtest_cursor_is_normalized_and_causal(monkeypatch) -> None:
                  "event_entity_id": record.entity_id}]
     monkeypatch.setattr(projection_module, "_rows", joined)
     assert load_latest_backtest_cursor(client, prefix)["market_sequence"] == 700
+    v2_prefix = V2CommittedPrefix(
+        prefix.run_id, prefix.last_sequence, prefix.last_batch_id,
+        prefix.source_cursor, prefix.status, prefix.batch_ids,
+    )
+    def joined_v2(_client, sql):
+        assert "AND c.batch_id IN (SELECT batch_id FROM arte.trading_commit_v2 " in sql
+        return joined(_client, sql)
+    monkeypatch.setattr(projection_module, "_rows", joined_v2)
+    assert load_latest_backtest_cursor(client, v2_prefix)["market_sequence"] == 700
     monkeypatch.undo()
     client.tables["trading_backtest_cursor_v1"][0]["market_sequence"] = 701
     with pytest.raises(RuntimeError, match="differs from its hash"):
