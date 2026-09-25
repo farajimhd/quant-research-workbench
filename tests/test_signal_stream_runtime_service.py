@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+from concurrent.futures import Future
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -141,6 +142,94 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "cold-hydrated"):
             SignalStreamRuntime().stage_resolve(
                 self.configuration, [], as_of=datetime(2026, 8, 17, 15, 0, tzinfo=UTC))
+
+    def test_staged_promotion_requires_ack_and_returns_occurrence_once(self) -> None:
+        runtime = SignalStreamRuntime()
+        runtime._hydrated = True
+        at = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+        stage = runtime.stage_resolve(
+            self.configuration, [{"ticker": "AAA", "change_pct": 4.5,
+                                  "market_cap": 500_000_000}], as_of=at)
+
+        class FakePublisher:
+            def __init__(self):
+                self.receipt = Future()
+                self.batch = None
+
+            def submit(self, batch):
+                self.batch = batch
+                return self.receipt
+
+        publisher = FakePublisher()
+        pending = runtime.submit_staged(
+            stage, publisher, batch_sequence=1, previous_commit_hash="0" * 64,
+            configuration_revision="configuration-1", source_revision="source-1",
+            catalogs={})
+        self.assertEqual(publisher.batch.session_key, stage.session_key)
+        self.assertEqual(runtime._states, {})
+        with self.assertRaisesRegex(RuntimeError, "pending"):
+            runtime.promote_staged(pending)
+        with self.assertRaisesRegex(RuntimeError, "awaits durable ACK"):
+            runtime.resolve(self.configuration, [], as_of=at, journal=self.journal)
+        publisher.receipt.set_result("a" * 64)
+        emitted = runtime.promote_staged(pending)
+        self.assertEqual(emitted[0]["event_id"], stage.occurrences[0]["event_id"])
+        self.assertEqual(runtime._session_key, stage.session_key)
+        self.assertTrue(runtime._states["positive-move-signals"]["AAA"]["matching"])
+        with self.assertRaisesRegex(ValueError, "already promoted"):
+            runtime.promote_staged(pending)
+
+    def test_failed_or_stale_staged_receipt_fails_closed(self) -> None:
+        runtime = SignalStreamRuntime()
+        runtime._hydrated = True
+        stage = runtime.stage_resolve(
+            self.configuration, [{"ticker": "AAA", "change_pct": 4.5,
+                                  "market_cap": 500_000_000}],
+            as_of=datetime(2026, 8, 17, 15, 0, tzinfo=UTC))
+
+        class FakePublisher:
+            def __init__(self):
+                self.receipt = Future()
+
+            def submit(self, batch):
+                return self.receipt
+
+        publisher = FakePublisher()
+        pending = runtime.submit_staged(
+            stage, publisher, batch_sequence=1, previous_commit_hash="0" * 64,
+            configuration_revision="configuration-1", source_revision="source-1",
+            catalogs={})
+        publisher.receipt.set_exception(RuntimeError("ambiguous publication"))
+        with self.assertRaisesRegex(RuntimeError, "ambiguous publication"):
+            runtime.promote_staged(pending)
+        self.assertEqual(runtime._states, {})
+        with self.assertRaisesRegex(ValueError, "source state has changed"):
+            runtime.submit_staged(stage, FakePublisher(), batch_sequence=1,
+                                  previous_commit_hash="0" * 64,
+                                  configuration_revision="configuration-1",
+                                  source_revision="source-1", catalogs={})
+
+    def test_staged_promotion_rejects_current_state_divergence(self) -> None:
+        runtime = SignalStreamRuntime()
+        runtime._hydrated = True
+        stage = runtime.stage_resolve(
+            self.configuration, [], as_of=datetime(2026, 8, 17, 15, 0, tzinfo=UTC))
+
+        class FakePublisher:
+            receipt = Future()
+
+            def submit(self, batch):
+                return self.receipt
+
+        publisher = FakePublisher()
+        pending = runtime.submit_staged(
+            stage, publisher, batch_sequence=1, previous_commit_hash="0" * 64,
+            configuration_revision="configuration-1", source_revision="source-1",
+            catalogs={})
+        publisher.receipt.set_result("a" * 64)
+        runtime._states["unexpected"] = {"AAA": {"matching": True}}
+        with self.assertRaisesRegex(ValueError, "lost source fence"):
+            runtime.promote_staged(pending)
 
     def test_projection_materializes_registered_alias_columns(self) -> None:
         row = project_discovery_columns(

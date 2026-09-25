@@ -5,6 +5,7 @@ import json
 import threading
 import time as monotonic_time
 from copy import deepcopy
+from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from types import MappingProxyType
@@ -69,13 +70,47 @@ def _freeze_transition(value: Any) -> Any:
 @dataclass(frozen=True)
 class StagedSignalTransition:
     base_generation: int
+    before_session_key: str
     session_key: str
+    cutoff_at: str
     before_states: Mapping[str, Any]
     after_states: Mapping[str, Any]
     before_admissions: Mapping[str, Any]
     after_admissions: Mapping[str, Any]
     occurrences: tuple[Mapping[str, Any], ...]
     diagnostics: Mapping[str, Any]
+
+
+def _thaw_transition(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_transition(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_transition(item) for item in value]
+    return value
+
+
+class PendingSignalTransition:
+    """A staged transition bound to one publisher receipt, not a dispatch ACK."""
+
+    def __init__(self, owner: SignalStreamRuntime, stage: StagedSignalTransition,
+                 receipt: Future[str]) -> None:
+        self._owner = owner
+        self._stage = stage
+        self._receipt = receipt
+        self._promoted = False
+
+    @property
+    def done(self) -> bool:
+        return self._receipt.done()
+
+    def result(self) -> str:
+        if not self.done:
+            raise RuntimeError("typed Signal Stream publication is pending")
+        head = self._receipt.result()
+        if (not isinstance(head, str) or len(head) != 64
+                or any(char not in "0123456789abcdef" for char in head)):
+            raise ValueError("typed Signal Stream receipt has invalid commit hash")
+        return head
 
 
 class _StagingPort:
@@ -143,6 +178,7 @@ class SignalStreamRuntime:
         self._snapshot_cache: dict[tuple[str, str, int, str], tuple[float, dict[str, Any]]] = {}
         self._live_occurrences: tuple[str, list[dict[str, Any]]] | None = None
         self._generation = 0
+        self._typed_pending: PendingSignalTransition | None = None
 
     def stage_resolve(
         self, configuration: dict[str, Any], candidates: list[dict[str, Any]],
@@ -160,6 +196,7 @@ class SignalStreamRuntime:
             generation = self._generation
             before_states = deepcopy(self._states)
             before_admissions = deepcopy(self._admissions)
+            before_session_key = self._session_key
             clone = SignalStreamRuntime()
             clone._states = deepcopy(before_states)
             clone._admissions = deepcopy(before_admissions)
@@ -173,7 +210,9 @@ class SignalStreamRuntime:
             include_occurrences=False, data_fields_projected=data_fields_projected,
         )
         return StagedSignalTransition(
-            base_generation=generation, session_key=clone._session_key,
+            base_generation=generation, before_session_key=before_session_key,
+            session_key=clone._session_key,
+            cutoff_at=as_of.astimezone(UTC).isoformat(),
             before_states=_freeze_transition(before_states),
             after_states=_freeze_transition(clone._states),
             before_admissions=_freeze_transition(before_admissions),
@@ -181,6 +220,66 @@ class SignalStreamRuntime:
             occurrences=_freeze_transition(port.events),
             diagnostics=_freeze_transition(clone._diagnostics),
         )
+
+    def submit_staged(
+        self, stage: StagedSignalTransition, publisher: Any, *,
+        batch_sequence: int, previous_commit_hash: str,
+        configuration_revision: str, source_revision: str,
+        catalogs: Mapping[str, Any],
+    ) -> PendingSignalTransition:
+        """Enqueue only; no synchronous storage I/O or state promotion."""
+        from src.backend.signal_stream_typed_publication import PublicationBatch
+
+        with self._lock:
+            if (not self._hydrated or stage.base_generation != self._generation
+                    or self._typed_pending is not None
+                    or stage.before_session_key != self._session_key
+                    or _thaw_transition(stage.before_states) != self._states
+                    or _thaw_transition(stage.before_admissions) != self._admissions):
+                raise ValueError("staged Signal Stream source state has changed")
+            batch = PublicationBatch(
+                session_key=stage.session_key, batch_sequence=batch_sequence,
+                cutoff_at=stage.cutoff_at,
+                configuration_revision=configuration_revision,
+                source_revision=source_revision,
+                previous_commit_hash=previous_commit_hash,
+                before_states=_thaw_transition(stage.before_states),
+                after_states=_thaw_transition(stage.after_states),
+                before_admissions=_thaw_transition(stage.before_admissions),
+                after_admissions=_thaw_transition(stage.after_admissions),
+                occurrences=tuple(_thaw_transition(stage.occurrences)),
+                catalogs=dict(catalogs),
+            )
+            receipt = publisher.submit(batch)
+            pending = PendingSignalTransition(self, stage, receipt)
+            self._typed_pending = pending
+            return pending
+
+    def promote_staged(self, pending: PendingSignalTransition) -> list[dict[str, Any]]:
+        """Promote only after durable receipt; return signals once for later dispatch."""
+        if pending._owner is not self:
+            raise ValueError("typed Signal Stream receipt belongs to another runtime")
+        pending.result()  # Nonblocking: pending receipts raise; failures propagate.
+        stage = pending._stage
+        with self._lock:
+            if pending._promoted:
+                raise ValueError("typed Signal Stream transition already promoted")
+            if (self._typed_pending is not pending or not self._hydrated
+                    or stage.base_generation != self._generation
+                    or stage.before_session_key != self._session_key
+                    or _thaw_transition(stage.before_states) != self._states
+                    or _thaw_transition(stage.before_admissions) != self._admissions):
+                raise ValueError("staged Signal Stream promotion lost source fence")
+            self._states = _thaw_transition(stage.after_states)
+            self._admissions = _thaw_transition(stage.after_admissions)
+            self._diagnostics = _thaw_transition(stage.diagnostics)
+            self._session_key = stage.session_key
+            self._generation += 1
+            pending._promoted = True
+            self._typed_pending = None
+            with self._snapshot_lock:
+                self._snapshot_cache.clear()
+            return _thaw_transition(stage.occurrences)
 
     def seed_computation_targets(
         self,
@@ -361,6 +460,8 @@ class SignalStreamRuntime:
         stream_snapshots: list[dict[str, Any]] = []
         new_occurrences: list[dict[str, Any]] = []
         with self._lock:
+            if self._typed_pending is not None:
+                raise RuntimeError("typed Signal Stream transition awaits durable ACK")
             self._hydrate(port)
             dirty = False
             if self._session_key != session["session_key"] or (

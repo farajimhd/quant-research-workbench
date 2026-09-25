@@ -6,6 +6,8 @@ from src.backend import backtest_terminal_v2_publication as publication
 from tests.test_backtest_terminal_v2_fence import (
     AT, ATTEMPT, BATCH, RUN, _suffix,
 )
+from src.backend import backtest_terminal_v2_publication as publication
+from src.trading_runtime.arte_journal_writer import _canonical_typed_content
 
 
 class FakeStorage:
@@ -80,3 +82,43 @@ def test_fake_publisher_rejects_conflicting_uncommitted_fact_before_seal(monkeyp
     with pytest.raises(ValueError, match="row hash differs"):
         publication.publish_terminal_v2_suffix(client, prefix, **kwargs)
     assert not client.tables["trading_backtest_terminal_commit_v2"]
+
+
+def test_portfolio_anchor_is_durable_before_terminal_seal_and_retry_exact(monkeypatch):
+    prefix, kwargs = _kwargs()
+    client = FakeStorage()
+    client.tables["trading_backtest_snapshot_anchor_v1"] = []
+    # A captured worker input; normalization is separately tested.
+    from types import SimpleNamespace
+    capture = SimpleNamespace(run_id=RUN, account_id="DU1",
+                              state_revision=4, snapshot_at=AT)
+    monkeypatch.setattr(publication, "CapturedPortfolioSnapshot", type(capture))
+    monkeypatch.setattr(publication, "prepare_captured_portfolio_snapshot",
+                        lambda row: row)
+    monkeypatch.setattr(publication, "load_committed_prefix", lambda *_: prefix)
+    def stored(_client, _run, account):
+        return [_canonical_typed_content(
+                    "trading_backtest_snapshot_anchor_v1",
+                    {key: value for key, value in row.items() if key != "content_hash"})
+                for row in client.tables["trading_backtest_snapshot_anchor_v1"]
+                if row["account_id"] == account]
+    monkeypatch.setattr(publication, "_stored_anchors", stored)
+    monkeypatch.setattr(publication, "publish_prepared_portfolio_snapshot",
+                        lambda *_: "a" * 64)
+    monkeypatch.setattr(publication, "load_portfolio_snapshot",
+                        lambda *_, **__: {"state_hash": "a" * 64})
+    def insert(_client, table, rows, token):
+        assert table == "trading_backtest_snapshot_anchor_v1"
+        client.insert_order.append(table)
+        client.tables[table].extend(rows)
+    monkeypatch.setattr(publication, "_insert", insert)
+    client.fail_commit_once = True
+    with pytest.raises(RuntimeError, match="fake crash"):
+        publication.publish_terminal_v2_suffix(
+            client, prefix, **kwargs, portfolio_captures=(capture,))
+    assert client.insert_order[-1] == "trading_backtest_snapshot_anchor_v1"
+    assert not client.tables["trading_backtest_terminal_commit_v2"]
+    publication.publish_terminal_v2_suffix(
+        client, prefix, **kwargs, portfolio_captures=(capture,))
+    assert client.insert_order[-1] == "trading_backtest_terminal_commit_v2"
+    assert len(client.tables["trading_backtest_snapshot_anchor_v1"]) == 1

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 
 import pytest
 
 from src.trading_runtime.arte_market_day_cold_preflight import (
-    audit_attested_market_day_certificate,
+    audit_attested_market_day_certificate, verify_attested_market_products,
 )
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperAuthority
 from test_arte_market_day_certification import BUILD, DAY, inventory
@@ -64,3 +65,37 @@ def test_cold_read_rejects_late_duplicate_and_misplaced_part() -> None:
     with pytest.raises(RuntimeError, match="outside live_market_ssd"):
         audit_attested_market_day_certificate(client, keeper, BUILD,
                                                sessions=(DAY,))
+
+
+def test_zero_row_market_products_are_checked_but_source_gate_stays_closed() -> None:
+    class ProductReader(FakeClickHouse):
+        product_disk = "live_market_ssd"
+
+        def execute(self, sql):
+            if "FROM system.tables" in sql and "'bars_v1'" in sql:
+                return "\n".join(json.dumps(dict(
+                    name=name, storage_policy="live_market_ssd")) for name in (
+                    "bars_v1", "indicators_v1", "liquidity_100ms_v1"))
+            if "FROM system.parts" in sql and "'bars_v1'" in sql:
+                return json.dumps(dict(
+                    table="bars_v1", disk_name=self.product_disk))
+            if any(f"FROM arte.{name} " in sql for name in (
+                    "bars_v1", "indicators_v1", "liquidity_100ms_v1")):
+                return ""  # Explicit zero-row stage certificates authorize absence.
+            return super().execute(sql)
+
+    source, keeper = fixture()
+    client = ProductReader()
+    client.rows = deepcopy(source.rows)
+    audit = audit_attested_market_day_certificate(client, keeper, BUILD,
+                                                   sessions=(DAY,))
+    checked = verify_attested_market_products(
+        client, audit, execution_interval="100ms",
+        required_resolutions_ms=(100,))
+    assert checked.market_products_verified
+    assert not checked.source_authority_verified
+    assert not checked.fixed_backtest_ready
+    client.product_disk = "default"
+    with pytest.raises(RuntimeError, match="outside live_market_ssd"):
+        verify_attested_market_products(client, audit,
+            execution_interval="100ms", required_resolutions_ms=(100,))
