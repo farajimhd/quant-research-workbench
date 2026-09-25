@@ -1,13 +1,8 @@
 """The new number is isolated from historical Strategy 350 behavior."""
 from src.trading_runtime.strategy_one_contract import (
-    STRATEGY_NUMBER, ordinal_target, outside_swing_stop,
+    STRATEGY_NUMBER, closed_macd_candidate_mask, completed_30s_low_stop, ordinal_target,
     resistance_group_stop, upward_stop_update,
 )
-
-
-def swing(price, pivot, confirmed, scale):
-    return dict(price=price, pivot_at=pivot, confirmed_at=confirmed,
-                scale=scale, side="support", state="active")
 
 
 def resistance(identifier, midpoint):
@@ -15,22 +10,30 @@ def resistance(identifier, midpoint):
                 upper=midpoint+.01, side="resistance", role="resistance")
 
 
-def test_first_outside_swing_and_local_fallback_are_causal():
+def test_completed_30s_low_is_causal_and_does_not_carry_empty_bucket():
     assert STRATEGY_NUMBER == 1
-    local = [swing(10, 90, 92, "local")]
-    major = [swing(9.4, 80, 83, "major"), swing(9.7, 85, 88, "major"),
-             swing(9.9, 87, 101, "major")]
-    result = outside_swing_stop(local_swings=local, major_swings=major,
-                                now=100, tick=.01)
-    assert result["source"] == "first_outside_swing_low"
-    assert result["selected"]["price"] == 9.7
+    arguments = dict(low_int=97_000, boundary_ms=30_000, now_ms=30_100,
+                     tick=.01, price_valid=True, extremes_valid=True)
+    result = completed_30s_low_stop(**arguments)
+    assert result["source"] == "completed_30s_bar_low"
     assert result["price"] == 9.69
-    fallback = outside_swing_stop(local_swings=local, major_swings=[],
-                                  now=100, tick=.01)
-    assert fallback["source"] == "local_swing_low"
-    assert fallback["price"] == 9.99
-    assert outside_swing_stop(local_swings=[], major_swings=major,
-                              now=100, tick=.01) is None
+    assert completed_30s_low_stop(**{**arguments, "boundary_ms": 30_200}) is None
+    assert completed_30s_low_stop(**{**arguments, "now_ms": 60_000}) is None
+    assert completed_30s_low_stop(**{**arguments, "price_valid": False}) is None
+
+
+def test_closed_macd_gate_is_vectorized_and_rejects_future_or_stale_values():
+    import numpy as np
+    lines = np.full((5, 4), .2)
+    signals = np.full((5, 4), .1)
+    source = np.tile([39_000, 35_000, 30_000, 30_000], (5, 1))
+    source[1, 0] = 40_000  # A future completed second cannot be read at 39.9s.
+    source[2, 3] = 0       # The prior 30s sample is stale by 39.9s.
+    lines[3, 2] = np.nan
+    signals[4, 1] = .2
+    accepted = closed_macd_candidate_mask(lines, signals, source,
+                                          np.full(5, 39_900))
+    assert accepted.tolist() == [True, False, False, False, False]
 
 
 def test_old_target_ordinals_and_never_lower():

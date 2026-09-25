@@ -1,9 +1,9 @@
 """Draft decision rules for the first user-facing Strategy number.
 
 This module is deliberately not registered as an executable Strategy. The
-required QMD major-swing and forming-MACD products and the disk-free fixed
-Backtest path are not yet available. Registering it now would advertise a
-strategy that cannot obey its declared input and execution contracts.
+disk-free fixed Backtest path and its integration tests are not yet complete.
+Registering it now would advertise a strategy that cannot obey its declared
+input and execution contracts.
 
 STRATEGY CREATION RULES (also enforced at publication/preflight boundaries):
 * A trading-behavior change creates the next Strategy number. Never alter the
@@ -35,68 +35,69 @@ from .early_squeeze_fast import below
 
 STRATEGY_NUMBER = 1
 STRATEGY_ID = "early-squeeze-strategy"
-PUBLICATION_STATUS = "draft_missing_persisted_inputs_and_fixed_runtime"
+PUBLICATION_STATUS = "draft_fixed_runtime_not_integrated"
 EVALUATION_INTERVAL = "100ms"
 REQUIRED_INPUTS = (
     "arte.bars_v1@100ms",
     "arte.bars_v1@1s",
+    "arte.bars_v1@30s",
     "arte.indicators_v1@100ms",
+    "arte.indicators_v1@1s",
+    "arte.indicators_v1@5s",
+    "arte.indicators_v1@10s",
+    "arte.indicators_v1@30s",
     "arte.liquidity_100ms_v1@100ms",
-    "qmd.forming_macd@1s/evaluate_100ms",
-    "qmd.forming_macd@5s/evaluate_100ms",
-    "qmd.forming_macd@10s/evaluate_100ms",
-    "qmd.forming_macd@30s/evaluate_100ms",
-    "qmd.execution_vwap@100ms",
-    "qmd.early_squeeze_occurrence@100ms",
-    "qmd.prior_regular_close@session",
-    "qmd.confirmed_local_swing_low@1s",
-    "qmd.confirmed_major_swing_low@1s",
-    "v7.causal_levels@1s",
+    "arte.liquidity_100ms_v1.execution_vwap@100ms",
+    "arte.indicators_v1.previous_close@session",
+    "arte.structural_levels_v7@as_of_1s",
 )
 
 
-def _confirmed_lows(rows: Sequence[Mapping], now: float, scale: str) -> list[Mapping]:
-    found = []
-    for row in rows:
-        if row.get("scale") != scale or row.get("side") not in (1, "support"):
-            continue
-        if row.get("state", "active") != "active":
-            continue
-        value, pivot, confirmed = (row.get(key) for key in
-                                    ("price", "pivot_at", "confirmed_at"))
-        if (not all(type(item) in (int, float) and isfinite(item)
-                    for item in (value, pivot, confirmed))
-                or not 0 < value or not 0 < pivot < confirmed <= now):
-            continue
-        found.append(row)
-    return found
+def closed_macd_candidate_mask(lines, signals, sample_boundaries_ms,
+                               evaluation_boundaries_ms):
+    """Vectorized 1s/5s/10s/30s completed-MACD gate.
 
-
-def outside_swing_stop(
-    *, local_swings: Sequence[Mapping], major_swings: Sequence[Mapping],
-    now: float, tick: float,
-) -> dict | None:
-    """Select the first confirmed major low below the latest local low.
-
-    An empty major-swings sequence means the QMD product certifies no outside
-    low; absence of the product itself must fail dependency preflight. Neither
-    unconfirmed nor future-confirmed pivots may influence this selection.
+    The loader joins pinned indicator rows as-of each completed 100ms boundary
+    within one session. Missing, stale, future, or nonfinite values reject the
+    candidate. This gate never computes an EMA or a forming MACD in Strategy.
     """
-    if not isfinite(tick) or tick <= 0:
-        raise ValueError("Strategy 1 needs a positive tick")
-    local = _confirmed_lows(local_swings, now, "local")
-    if not local:
+    import numpy as np
+
+    line = np.asarray(lines, dtype=np.float64)
+    signal = np.asarray(signals, dtype=np.float64)
+    source = np.asarray(sample_boundaries_ms, dtype=np.int64)
+    boundary = np.asarray(evaluation_boundaries_ms, dtype=np.int64)
+    if (line.ndim != 2 or line.shape[1] != 4 or signal.shape != line.shape
+            or source.shape != line.shape or boundary.shape != (line.shape[0],)):
+        raise ValueError("Strategy 1 completed MACD needs aligned N x 4 arrays")
+    age = boundary[:, None] - source
+    resolution = np.array([1_000, 5_000, 10_000, 30_000], dtype=np.int64)
+    return np.all(np.isfinite(line) & np.isfinite(signal)
+                  & (line > signal) & (source >= 0)
+                  & (age >= 0) & (age < resolution), axis=1)
+
+
+def completed_30s_low_stop(*, low_int: int, boundary_ms: int,
+                           now_ms: int, tick: float,
+                           price_valid: bool, extremes_valid: bool) -> dict | None:
+    """Use only the immediately preceding completed, price-bearing 30s bar.
+
+    The fixed market loader owns row certification and the 1/10000 price unit.
+    No prior bar is carried across an empty bucket. No forming 30s low may
+    enter a 100ms decision. An unavailable bar defers entry/ratcheting.
+    """
+    if (type(now_ms) is not int or type(boundary_ms) is not int
+            or type(low_int) is not int or not isinstance(tick, (int, float))
+            or not isfinite(tick) or tick <= 0):
+        raise ValueError("Strategy 1 needs typed completed-bar inputs")
+    if boundary_ms > now_ms or now_ms - boundary_ms >= 30_000:
         return None
-    inner = max(local, key=lambda row: (row["pivot_at"], row["confirmed_at"],
-                                        row["price"]))
-    outside = [row for row in _confirmed_lows(major_swings, now, "major")
-               if row["price"] < inner["price"]]
-    selected = (max(outside, key=lambda row: (row["price"], row["pivot_at"],
-                                             row["confirmed_at"])) if outside else inner)
-    reason = "first_outside_swing_low" if outside else "local_swing_low"
-    return {"price": below(selected["price"], tick),
-            "source": reason, "reason": reason,
-            "local": dict(inner), "selected": dict(selected)}
+    if not price_valid or not extremes_valid or low_int <= 0:
+        return None
+    low = low_int / 10_000
+    return {"price": below(low, tick), "source": "completed_30s_bar_low",
+            "reason": "completed_30s_bar_low", "low_int": low_int,
+            "boundary_ms": boundary_ms}
 
 
 def ordinal_target(*, rows: Sequence[Mapping], ask: float, tick: float,

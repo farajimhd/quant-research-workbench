@@ -81,15 +81,20 @@ profitability or live-release acceptance.
 
 ## Strategy 1 admission blockers
 
-Strategy 1 retains Candidate 350's entry/lifecycle gates but replaces its
-protection and target with the reviewed outside-swing and historical 3/2/1
-ordinal-resistance rules. These replacement selections are drafted in
+Strategy 1 starts from Candidate 350's entry/lifecycle gates but uses only
+completed MACD at the declared 1s/5s/10s/30s boundaries, not its event-time
+forming-MACD previews. It replaces initial and rising swing protection with
+one tick below the low of the immediately preceding completed price-bearing
+30s bar. A missing/empty latest 30s bucket supplies no stop; it is not
+silently carried forward. Each disjoint group of three accepted resistances
+can also raise the stop under the lowest band in that group. Both paths only
+raise protection, and a simultaneous qualifying update chooses resistance.
+The target reuses the historical 3/2/1 overhead-resistance ordinal rule,
+never moving downward. These selections are drafted in
 `src/trading_runtime/strategy_one_contract.py` and are not registered.
-The current detector publishes local but not major/outer confirmed swings to
-the Strategy observation. The persisted `arte.indicators_v1` loader supplies
-completed MACD values, not the 100 ms-clocked forming 1s/5s/10s/30s MACD
-products that Candidate 350 calculates privately. The active fixed Backtest
-preflight also blocks on unfinished ClickHouse-only runtime/journal recovery.
-Those contracts and their historical coverage must be delivered and verified
+The fixed loader must project the needed completed indicator resolutions and
+the last completed 30s price bar to each 100ms decision without lookahead.
+The active fixed Backtest preflight also blocks on unfinished ClickHouse-only
+runtime/journal recovery. These contracts must be delivered and verified
 before Strategy 1 can become selectable. Do not bypass them by launching the
-legacy event/SQLite path, synthesizing missing inputs, or weakening its gates.
+legacy event/SQLite path or synthesizing missing inputs.
