@@ -50,7 +50,7 @@ class Reader:
             if not self.coverage:
                 return ""
             return json.dumps(dict(session_date="2026-08-18", ticker="ABCD",
-                source_attempt_id=SOURCE, derivation_attempt_id=DERIVED,
+                source_attempt_text=SOURCE, derivation_attempt_text=DERIVED,
                 price_row_count=2, eligible_bucket_count=1,
                 total_execution_volume=40.00000001 if self.legacy else 40.0,
                 content_hash=(legacy_summary_digest(
@@ -58,7 +58,7 @@ class Reader:
                     if self.legacy else _digest(SUMMARY))))
         if "FROM arte.liquidity_execution_price_100ms_v1" in query:
             return json.dumps(dict(session_date="2026-08-18", ticker="ABCD",
-                source_attempt_id=SOURCE, derivation_attempt_id=DERIVED,
+                source_attempt_text=SOURCE, derivation_attempt_text=DERIVED,
                 **{**SUMMARY, "row_hash": "wrong" if self.tampered else "123"}))
         raise AssertionError(query)
 
@@ -71,6 +71,9 @@ def test_certified_child_plan_pins_source_attempt_and_read_only_hash():
     assert result.units[0].derivation_attempt_id == DERIVED
     assert len(result.token) == 64
     assert all(query.startswith("SELECT") and "INSERT" not in query
+               for query in reader.queries)
+    assert all("AS source_attempt_id" not in query and
+               "AS derivation_attempt_id" not in query
                for query in reader.queries)
 
 

@@ -101,8 +101,8 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
             f"(toDate({_literal(day)}),{_literal(ticker)},toUUID({_literal(attempt)}))"
             for (day, ticker), attempt in batch)
         coverage = _rows(client, f"""SELECT session_date,ticker,
-          toString(source_attempt_id) AS source_attempt_id,
-          toString(derivation_attempt_id) AS derivation_attempt_id,
+          toString(source_attempt_id) AS source_attempt_text,
+          toString(derivation_attempt_id) AS derivation_attempt_text,
           price_row_count,eligible_bucket_count,total_execution_volume,content_hash
           FROM {_COVERAGE} WHERE source_build_id={_literal(market.build_id)}
           AND (session_date,ticker,source_attempt_id) IN ({scopes})""")
@@ -115,9 +115,9 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
         covered = {}
         for row in coverage:
             key = (str(row["session_date"]), str(row["ticker"]))
-            if key in covered or expected.get(key) != row["source_attempt_id"]:
+            if key in covered or expected.get(key) != row["source_attempt_text"]:
                 raise RuntimeError("Eligible-price coverage differs from pinned liquidity")
-            UUID(row["derivation_attempt_id"])
+            UUID(row["derivation_attempt_text"])
             count = int(row["price_row_count"])
             buckets = int(row["eligible_bucket_count"])
             volume = float(row["total_execution_volume"])
@@ -125,8 +125,8 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
                     or volume < 0 or not _HASH.fullmatch(row["content_hash"])):
                 raise RuntimeError("Eligible-price coverage contains invalid typed values")
             covered[key] = PriceLevelUnit(
-                key[0], key[1], row["source_attempt_id"],
-                row["derivation_attempt_id"], count, buckets, volume,
+                key[0], key[1], row["source_attempt_text"],
+                row["derivation_attempt_text"], count, buckets, volume,
                 row["content_hash"])
         if set(covered) != {key for key, _ in batch}:
             raise RuntimeError("Eligible-price coverage omits a pinned ticker-day")
@@ -136,8 +136,8 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
             f"toUUID({_literal(unit.derivation_attempt_id)}))"
             for unit in covered.values())
         summaries = _rows(client, f"""SELECT session_date,ticker,
-          toString(source_attempt_id) AS source_attempt_id,
-          toString(derivation_attempt_id) AS derivation_attempt_id,
+          toString(source_attempt_id) AS source_attempt_text,
+          toString(derivation_attempt_id) AS derivation_attempt_text,
           count() AS row_count,uniqExact((bucket_index,price_int)) AS unique_keys,
           uniqExact(bucket_index) AS eligible_bucket_count,
           sum(execution_volume) AS total_execution_volume,
@@ -151,8 +151,8 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
             key = (str(row["session_date"]), str(row["ticker"]))
             unit = covered.get(key)
             if (unit is None or key in seen
-                    or row["source_attempt_id"] != unit.source_attempt_id
-                    or row["derivation_attempt_id"] != unit.derivation_attempt_id
+                    or row["source_attempt_text"] != unit.source_attempt_id
+                    or row["derivation_attempt_text"] != unit.derivation_attempt_id
                     or int(row["row_count"]) != int(row["unique_keys"])
                     or int(row["row_count"]) != unit.price_row_count
                     or int(row["eligible_bucket_count"]) != unit.eligible_bucket_count
