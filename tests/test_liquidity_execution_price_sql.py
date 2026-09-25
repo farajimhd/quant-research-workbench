@@ -41,3 +41,19 @@ def test_price_query_matches_core_execution_eligibility_and_uses_only_canonical_
     assert "file(" not in sidecar.lower()
     assert "FROM classified WHERE execution_valid=1" in sidecar
     assert "GROUP BY bucket_index,price_int" in sidecar
+
+
+def test_price_bucket_parity_rejects_missing_extra_and_corrupt_child_rows():
+    query = prices.bucket_parity_sql(
+        "source-build", DAY, "ABCD", SOURCE_ATTEMPT, PRICE_ATTEMPT)
+    assert query.lstrip().startswith("WITH base AS")
+    assert "FROM arte.liquidity_100ms_v1" in query
+    assert "FROM arte.liquidity_execution_price_100ms_v1" in query
+    assert "FULL OUTER JOIN prices USING bucket_index" in query
+    assert "base_present=0" in query
+    assert "execution_volume>0 AND prices_present=0" in query
+    assert "execution_volume=0 AND prices_present=1" in query
+    assert "price_rows!=distinct_prices OR invalid_prices>0" in query
+    assert "abs(execution_volume-price_volume)" in query
+    assert "source_attempt_id=toUUID(" in query
+    assert "derivation_attempt_id=toUUID(" in query

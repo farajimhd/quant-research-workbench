@@ -96,3 +96,42 @@ def insert_sql(source_build_id: str, session_date: date, ticker: str,
         price_int,sum(size) AS execution_volume
       FROM classified WHERE execution_valid=1
       GROUP BY bucket_index,price_int"""
+
+
+def bucket_parity_sql(source_build_id: str, session_date: date, ticker: str,
+                      source_attempt_id: str, derivation_attempt_id: str) -> str:
+    """Return discrepancies before publishing the sidecar's coverage row.
+
+    A zero-volume liquidity bucket correctly has no child price rows. An
+    eligible bucket must have exactly the same summed volume in both products.
+    The producer must require this query to return no rows; Backtest never
+    repairs a discrepancy.
+    """
+    scope = (f"source_build_id={literal(source_build_id)} "
+             f"AND session_date=toDate({literal(session_date.isoformat())}) "
+             f"AND ticker={literal(ticker)} "
+             f"AND source_attempt_id=toUUID({literal(source_attempt_id)}) "
+             f"AND derivation_attempt_id=toUUID({literal(derivation_attempt_id)})")
+    liquidity_scope = (f"build_id={literal(source_build_id)} "
+                       f"AND session_date=toDate({literal(session_date.isoformat())}) "
+                       f"AND ticker={literal(ticker)} "
+                       f"AND attempt_id=toUUID({literal(source_attempt_id)}) "
+                       "AND resolution_ms=100")
+    return f"""WITH base AS (
+      SELECT bucket_index,execution_volume,toUInt8(1) AS base_present
+      FROM arte.liquidity_100ms_v1 WHERE {liquidity_scope}
+    ), prices AS (
+      SELECT bucket_index,sum(execution_volume) AS price_volume,
+        count() AS price_rows,uniqExact(price_int) AS distinct_prices,
+        countIf(price_int=0 OR execution_volume<=0 OR NOT isFinite(execution_volume))
+          AS invalid_prices,toUInt8(1) AS prices_present
+      FROM {TABLE} WHERE {scope} GROUP BY bucket_index
+    ) SELECT bucket_index,base_present,prices_present,
+      execution_volume,price_volume,price_rows,distinct_prices,invalid_prices
+    FROM base FULL OUTER JOIN prices USING bucket_index
+    WHERE base_present=0 OR (execution_volume>0 AND prices_present=0)
+      OR (execution_volume=0 AND prices_present=1)
+      OR price_rows!=distinct_prices OR invalid_prices>0
+      OR abs(execution_volume-price_volume)>
+         greatest(0.000001,execution_volume*0.000000001)
+    ORDER BY bucket_index LIMIT 100 FORMAT JSONEachRow"""
