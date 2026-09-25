@@ -90,6 +90,8 @@ def completed_30s_low_stop(*, low_int: int, boundary_ms: int,
             or type(low_int) is not int or not isinstance(tick, (int, float))
             or not isfinite(tick) or tick <= 0):
         raise ValueError("Strategy 1 needs typed completed-bar inputs")
+    if boundary_ms <= 0 or boundary_ms % 30_000:
+        raise ValueError("Strategy 1 stop needs a completed 30s boundary")
     if boundary_ms > now_ms or now_ms - boundary_ms >= 30_000:
         return None
     if not price_valid or not extremes_valid or low_int <= 0:

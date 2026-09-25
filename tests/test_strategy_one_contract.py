@@ -1,4 +1,6 @@
 """The new number is isolated from historical Strategy 350 behavior."""
+import pytest
+
 from src.trading_runtime.strategy_one_contract import (
     STRATEGY_NUMBER, closed_macd_candidate_mask, completed_30s_low_stop, ordinal_target,
     resistance_group_stop, upward_stop_update,
@@ -17,9 +19,11 @@ def test_completed_30s_low_is_causal_and_does_not_carry_empty_bucket():
     result = completed_30s_low_stop(**arguments)
     assert result["source"] == "completed_30s_bar_low"
     assert result["price"] == 9.69
-    assert completed_30s_low_stop(**{**arguments, "boundary_ms": 30_200}) is None
+    assert completed_30s_low_stop(**{**arguments, "boundary_ms": 60_000}) is None
     assert completed_30s_low_stop(**{**arguments, "now_ms": 60_000}) is None
     assert completed_30s_low_stop(**{**arguments, "price_valid": False}) is None
+    with pytest.raises(ValueError, match="completed 30s"):
+        completed_30s_low_stop(**{**arguments, "boundary_ms": 29_900})
 
 
 def test_closed_macd_gate_is_vectorized_and_rejects_future_or_stale_values():
