@@ -64,7 +64,10 @@ def run(args):
     model.load_state_dict(saved['model'])
     model.eval()
     totals = dict(seconds=0,orders=0,teacher_actions=0,correct_orders=0,
-                  correct_trades=0,action_loss=0.,value_loss=0.)
+                  correct_trades=0,teacher_buys=0,correct_buys=0,
+                  teacher_sells=0,correct_sells=0,predicted_buys=0,
+                  feasible_first_buys=0,first_order_buys=0,
+                  action_loss=0.,value_loss=0.)
     with torch.inference_mode():
         for shard in shards:
             data = shard.to_gpu(device,vocab)
@@ -83,6 +86,18 @@ def run(args):
                 totals['teacher_actions'] += int((teacher != 0).sum())
                 totals['correct_orders'] += int(correct.sum())
                 totals['correct_trades'] += int((correct & (teacher != 0)).sum())
+                buys = (teacher > 0) & (teacher <= first['top_n'])
+                sells = teacher > first['top_n']
+                totals['teacher_buys'] += int(buys.sum())
+                totals['correct_buys'] += int((correct & buys).sum())
+                totals['teacher_sells'] += int(sells.sum())
+                totals['correct_sells'] += int((correct & sells).sum())
+                totals['predicted_buys'] += int(((prediction > 0) &
+                    (prediction <= first['top_n'])).sum())
+                totals['feasible_first_buys'] += int(batch['action_mask'][:,0,
+                    1:1+first['top_n']].any(dim=-1).sum())
+                totals['first_order_buys'] += int(((prediction[:,0] > 0) &
+                    (prediction[:,0] <= first['top_n'])).sum())
                 totals['action_loss'] += float(metrics['action_loss'])*len(index)
                 totals['value_loss'] += float(metrics['value_loss'])*len(index)
             del data
@@ -92,6 +107,12 @@ def run(args):
         seconds=totals['seconds'],teacher_trade_actions=totals['teacher_actions'],
         order_accuracy=totals['correct_orders']/max(1,totals['orders']),
         teacher_trade_recall=totals['correct_trades']/max(1,totals['teacher_actions']),
+        teacher_buys=totals['teacher_buys'],teacher_sells=totals['teacher_sells'],
+        buy_recall=totals['correct_buys']/max(1,totals['teacher_buys']),
+        sell_recall=totals['correct_sells']/max(1,totals['teacher_sells']),
+        predicted_buys=totals['predicted_buys'],
+        feasible_first_buys=totals['feasible_first_buys'],
+        first_order_buys=totals['first_order_buys'],
         action_loss=totals['action_loss']/max(1,totals['seconds']),
         value_loss=totals['value_loss']/max(1,totals['seconds']))
     Console().print(json.dumps(report,indent=2))
