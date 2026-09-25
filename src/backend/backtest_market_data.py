@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+from types import MappingProxyType
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
@@ -410,17 +411,32 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
     publishes market rows, and the reader has no market INSERT permission.
     """
     from src.trading_runtime.arte_market_day_cold_preflight import (
-        discover_cold_certified_market_day_plan,
+        discover_cold_certified_market_day_plan, market_day_fence_build_ids,
     )
     from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
     from src.trading_runtime.keeper_session import open_workstation_keeper_session
 
     with closing(readonly_clickhouse_client(v3_read_principal=True)) as raw_reader:
+        reader = _MarketCertificateReader(raw_reader)
+        build_ids = market_day_fence_build_ids(reader, configuration)
         with closing(open_workstation_keeper_session()) as session:
-            return discover_cold_certified_market_day_plan(
-                _MarketCertificateReader(raw_reader), MarketDayKeeperReader(session.client),
-                sessions=tuple(str(day) for day in sessions),
-                tickers=tuple(tickers), configuration=configuration)
+            keeper = MarketDayKeeperReader(session.client)
+            proofs = {build_id: keeper.load(build_id) for build_id in build_ids}
+        return discover_cold_certified_market_day_plan(
+            reader, _MarketCertificateProofs(proofs),
+            sessions=tuple(str(day) for day in sessions),
+            tickers=tuple(tickers), configuration=configuration,
+            expected_build_ids=build_ids)
+
+
+class _MarketCertificateProofs:
+    """Immutable Keeper proofs captured before the expensive ClickHouse audit."""
+
+    def __init__(self, proofs: Mapping[str, Any]) -> None:
+        self._proofs = MappingProxyType(dict(proofs))
+
+    def load(self, build_id: str) -> Any:
+        return self._proofs.get(build_id)
 
 
 class _MarketCertificateReader:

@@ -149,7 +149,7 @@ class BacktestMarketDataTests(unittest.TestCase):
             ExecutionInterval.parse("250ms")
 
     def test_fixed_plan_uses_clickhouse_certificate_and_keeper_only(self) -> None:
-        from unittest.mock import patch
+        from unittest.mock import Mock, patch
         from src.backend.backtest_market_data import certified_market_plan_from_arte
 
         class Closed:
@@ -162,10 +162,12 @@ class BacktestMarketDataTests(unittest.TestCase):
         session.client = object()
         with (patch("src.backend.backtest_market_data.readonly_clickhouse_client",
                     return_value=reader) as open_reader,
+              patch("src.trading_runtime.arte_market_day_cold_preflight.market_day_fence_build_ids",
+                    return_value=("a" * 64,)) as fence_ids,
               patch("src.trading_runtime.keeper_session.open_workstation_keeper_session",
                     return_value=session),
               patch("src.trading_runtime.arte_market_day_keeper.MarketDayKeeperReader",
-                    return_value="proof-reader"),
+                    return_value=Mock(load=Mock(return_value="attested"))) as keeper_reader,
               patch("src.trading_runtime.arte_market_day_cold_preflight.discover_cold_certified_market_day_plan",
                     return_value="certified") as discover):
             result = certified_market_plan_from_arte(
@@ -173,6 +175,11 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertEqual(result, "certified")
         open_reader.assert_called_once_with(v3_read_principal=True)
         self.assertEqual(discover.call_args.kwargs["sessions"], ("2026-08-18",))
+        self.assertEqual(discover.call_args.kwargs["expected_build_ids"], ("a" * 64,))
+        self.assertTrue(session.closed)
+        self.assertEqual(discover.call_args.args[1].load("a" * 64), "attested")
+        keeper_reader.return_value.load.assert_called_once_with("a" * 64)
+        fence_ids.assert_called_once()
         self.assertTrue(reader.closed and session.closed)
 
     def test_certificate_reader_retries_only_lost_select_response(self) -> None:

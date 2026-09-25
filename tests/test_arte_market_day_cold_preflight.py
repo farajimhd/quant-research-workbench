@@ -275,4 +275,8 @@ def test_catalogue_discovery_requires_one_compatible_attested_build(monkeypatch)
     with pytest.raises(RuntimeError, match="duplicate identities"):
         discover_cold_certified_market_day_plan(
             Catalogue([BUILD, BUILD]), object(), **args)
+    with pytest.raises(RuntimeError, match="changed during Keeper proof snapshot"):
+        discover_cold_certified_market_day_plan(
+            Catalogue([BUILD, other]), object(),
+            expected_build_ids=(BUILD,), **args)
     assert calls == [BUILD, BUILD, other, BUILD]

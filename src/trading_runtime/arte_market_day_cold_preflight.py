@@ -233,22 +233,15 @@ def cold_certified_market_day_plan(certificate_client: Any,
         configuration=configuration)
 
 
-def discover_cold_certified_market_day_plan(certificate_client: Any,
-                                             keeper: Any, *,
-                                             sessions: tuple[str, ...],
-                                             tickers: tuple[str, ...],
-                                             configuration: Mapping[str, Any]) -> Any:
-    """Select one attested build from arte, never a producer disk manifest.
-
-    An explicit build pin resolves overlapping certified builds. Without one,
-    ambiguity is a preflight error rather than an arbitrary newest-build guess.
-    """
+def market_day_fence_build_ids(certificate_client: Any,
+                               configuration: Mapping[str, Any]) -> tuple[str, ...]:
+    """Read exact published build identities before any Keeper proof lookup."""
     pinned = str(configuration.get("market_day_build_id") or "").strip()
     if pinned and not re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", pinned):
         raise ValueError("Invalid pinned market-day build identity")
     query = ("SELECT build_id FROM arte.market_day_build_fence_v1 "
              + (f"WHERE build_id='{pinned}' " if pinned else "")
-             + "FORMAT JSONEachRow")
+             + "ORDER BY build_id FORMAT JSONEachRow")
     rows = [json.loads(line) for line in certificate_client.execute(query).splitlines()
             if line.strip()]
     ids = [row["build_id"] for row in rows if set(row) == {"build_id"}
@@ -260,6 +253,24 @@ def discover_cold_certified_market_day_plan(certificate_client: Any,
         raise RuntimeError("Pinned market-day build has no unique attested fence")
     if not ids:
         raise RuntimeError("No arte market-day certificate fence is published")
+    return tuple(ids)
+
+
+def discover_cold_certified_market_day_plan(certificate_client: Any,
+                                             keeper: Any, *,
+                                             sessions: tuple[str, ...],
+                                             tickers: tuple[str, ...],
+                                             configuration: Mapping[str, Any],
+                                             expected_build_ids: tuple[str, ...] | None = None) -> Any:
+    """Select one attested build from arte, never a producer disk manifest.
+
+    An explicit build pin resolves overlapping certified builds. A caller may
+    pin the catalogue seen before opening Keeper; a concurrent publication
+    then fails instead of silently selecting a different build.
+    """
+    ids = market_day_fence_build_ids(certificate_client, configuration)
+    if expected_build_ids is not None and ids != expected_build_ids:
+        raise RuntimeError("Market-day fence catalogue changed during Keeper proof snapshot")
     compatible = []
     errors = []
     for build_id in ids:
