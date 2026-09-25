@@ -287,25 +287,39 @@ def test_v3_refusal_upgrade_requires_empty_fence_and_is_resumable(monkeypatch):
             self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-7]) + list(
                 install.SQUEEZE_COMMIT_V3.columns[-3:])
             self.child = False
+            self.child_columns = []
+            self.child_count = "0"
             self.writes = []
 
         def execute(self, sql):
             if sql.startswith("SELECT name,type FROM system.columns"):
+                columns = (self.child_columns if "entry_reprice_rejected_v3'" in sql
+                           else self.columns)
                 return "\n".join(json.dumps({"name": n, "type": t})
-                                 for n, t in self.columns)
+                                 for n, t in columns)
             if sql.startswith("SELECT count() FROM system.tables"):
                 return "1" if self.child else "0"
             if sql == "SELECT count() FROM arte.trading_commit_v3":
                 return self.count
+            if sql == "SELECT count() FROM arte.trading_entry_reprice_rejected_v3":
+                return self.child_count
             if sql.startswith("CREATE TABLE IF NOT EXISTS arte."):
                 self.writes.append(sql)
                 self.child = True
+                self.child_columns = list(install.ENTRY_REPRICE_REJECTED.columns)
                 return ""
             if sql.startswith("ALTER TABLE arte.trading_commit_v3"):
                 self.writes.append(sql)
                 name = sql.split("ADD COLUMN IF NOT EXISTS ", 1)[1].split(" ", 1)[0]
                 self.columns.insert(-3, next(column for column in
                     install.SQUEEZE_COMMIT_V3.columns if column[0] == name))
+                return ""
+            if sql.startswith("ALTER TABLE arte.trading_entry_reprice_rejected_v3"):
+                self.writes.append(sql)
+                name = sql.split("MODIFY COLUMN ", 1)[1].split(" ", 1)[0]
+                self.child_columns = [
+                    (column, "Decimal(38, 18)" if column == name else kind)
+                    for column, kind in self.child_columns]
                 return ""
             raise AssertionError(sql)
 
@@ -324,6 +338,35 @@ def test_v3_refusal_upgrade_requires_empty_fence_and_is_resumable(monkeypatch):
     # installed; they must not mistake the full contract for drift.
     client.columns = list(install.SQUEEZE_COMMIT_V3.columns)
     assert install.upgrade_v3_entry_reprice_rejected(client, apply=True) == "verified"
+
+    legacy = RefusalClient()
+    legacy.columns = list(install.SQUEEZE_COMMIT_V3.columns)
+    legacy.child = True
+    legacy.child_columns = [
+        (name, "Float64" if name in {"price", "remaining_quantity"} else kind)
+        for name, kind in install.ENTRY_REPRICE_REJECTED.columns]
+    assert install.upgrade_v3_entry_reprice_rejected(legacy, apply=False) == "planned"
+    assert legacy.writes == []
+    legacy.child_count = "1"
+    with pytest.raises(RuntimeError, match="has rows"):
+        install.upgrade_v3_entry_reprice_rejected(legacy, apply=True)
+    legacy.child_count = "0"
+    assert install.upgrade_v3_entry_reprice_rejected(legacy, apply=True) == "upgraded"
+    assert len(legacy.writes) == 2
+    assert legacy.child_columns == list(install.ENTRY_REPRICE_REJECTED.columns)
+    assert install.upgrade_v3_entry_reprice_rejected(legacy, apply=False) == "verified"
+
+    interrupted = RefusalClient()
+    interrupted.columns = list(install.SQUEEZE_COMMIT_V3.columns)
+    interrupted.child = True
+    interrupted.child_columns = [
+        (name, "Float64" if name == "remaining_quantity" else kind)
+        for name, kind in install.ENTRY_REPRICE_REJECTED.columns]
+    assert install.upgrade_v3_entry_reprice_rejected(interrupted, apply=False) == "planned"
+    assert install.upgrade_v3_entry_reprice_rejected(interrupted, apply=True) == "upgraded"
+    assert len(interrupted.writes) == 1
+    assert "MODIFY COLUMN remaining_quantity" in interrupted.writes[0]
+    assert interrupted.child_columns == list(install.ENTRY_REPRICE_REJECTED.columns)
 
 
 def test_v3_protected_exit_upgrade_requires_empty_fence_and_is_resumable(monkeypatch):

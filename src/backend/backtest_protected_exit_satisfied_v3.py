@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 from typing import Any, Mapping, Sequence
 from uuid import UUID
 
 from src.trading_runtime.arte_journal_schema import TableContract
+from src.trading_runtime.journal_decimal import (
+    decimal_38_18, source_float_from_decimal,
+)
 from src.trading_runtime.journal_contract import JournalRecord, canonical_json
 
 
@@ -43,20 +45,7 @@ def _utc(value: datetime) -> str:
 
 
 def _quantity(value: Any, *, source: bool) -> str:
-    if (source and type(value) is not float) or (not source and type(value) not in (int, float)):
-        if source or not isinstance(value, (str, Decimal)):
-            raise ValueError("Protected exit quantity type differs")
-    try:
-        number = Decimal(str(value))
-        with localcontext() as context:
-            context.prec = 80
-            exact = number.quantize(Decimal("0.000000000000000001"))
-    except (InvalidOperation, ValueError) as exc:
-        raise ValueError("Protected exit quantity cannot fit Decimal(38, 18)") from exc
-    if (not exact.is_finite() or exact <= 0 or exact != number
-            or exact >= Decimal("100000000000000000000")):
-        raise ValueError("Protected exit quantity cannot fit Decimal(38, 18) losslessly")
-    return format(exact, ".18f")
+    return decimal_38_18(value, source_float=source, positive=True)
 
 
 def _validate_payload(payload: Mapping[str, Any], *, entity_id: str) -> None:
@@ -124,7 +113,8 @@ def recover_protected_exit_satisfied_payload(
                "strategy_id": detail["strategy_id"],
                "strategy_revision": detail["strategy_revision"],
                "reason": detail["reason_code"],
-               "requested_quantity": float(_quantity(detail["requested_quantity"], source=False)),
+               "requested_quantity": source_float_from_decimal(
+                   detail["requested_quantity"], positive=True),
                "correlation_id": event["correlation_id"],
                "causation_id": event["causation_id"]}
     _validate_payload(payload, entity_id=event["entity_id"])

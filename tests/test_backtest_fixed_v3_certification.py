@@ -86,6 +86,65 @@ def test_real_indirect_inventory_resolves_forwarders_and_exposes_unsupported_fam
     assert "portfolio_decision" not in str(failure.value)
     assert "portfolio_reconciliation" not in str(failure.value)
     assert "portfolio_control" not in str(failure.value)
+    assert "adaptive_reprice_skipped" not in str(failure.value)
+
+
+def test_fixed_adaptive_reprice_is_excluded_only_with_three_source_proof(tmp_path):
+    oms = tmp_path / "order_management.py"
+    runtime = tmp_path / "runtime.py"
+    controller = tmp_path / "replay_run_service.py"
+    for target, source in ((oms, cert._RUNTIME_ROOT / "order_management.py"),
+                           (runtime, cert._RUNTIME_ROOT / "runtime.py"),
+                           (controller, cert._CONTROLLER)):
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    original = cert.certify_fixed_adaptive_reprice_unreachable(
+        oms_path=oms, runtime_path=runtime, controller_path=controller)
+    assert len(original) == 64
+    assert original == cert.certify_fixed_adaptive_reprice_unreachable(
+        oms_path=oms, runtime_path=runtime, controller_path=controller)
+
+    runtime_source = runtime.read_text(encoding="utf-8")
+    runtime.write_text(runtime_source + '\n# new emission\nself.journal.append(\n'
+                       '    category="order_management",\n'
+                       '    entity_type="adaptive_reprice_skipped")\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="another or missing source emitter"):
+        cert.certify_fixed_adaptive_reprice_unreachable(
+            oms_path=oms, runtime_path=runtime, controller_path=controller)
+    runtime.write_text(runtime_source, encoding="utf-8")
+
+    oms_source = oms.read_text(encoding="utf-8")
+    controller_source = controller.read_text(encoding="utf-8")
+    for path, before, old, new, message in (
+        (oms, oms_source,
+         "if self.enforce_wall_clock_quote_freshness and age_ms > self.policy.maximum_quote_age_ms:",
+         "if age_ms > self.policy.maximum_quote_age_ms:", "wall-clock guarded"),
+        (runtime, runtime_source,
+         "config.mode in {RunMode.LIVE, RunMode.PAPER}",
+         "config.mode in {RunMode.LIVE, RunMode.PAPER, RunMode.BACKTEST}",
+         "wall-clock freshness exclusion"),
+        (controller, controller_source,
+         "self._runtime = TradingRuntime(\n            RunConfig(\n                mode=self.definition.mode,",
+         "self._runtime = TradingRuntime(\n            RunConfig(\n                mode=RunMode.LIVE,",
+         "mode is not forwarded"),
+    ):
+        assert old in before
+        path.write_text(before.replace(old, new), encoding="utf-8")
+        with pytest.raises(ValueError, match=message):
+            cert.certify_fixed_adaptive_reprice_unreachable(
+                oms_path=oms, runtime_path=runtime, controller_path=controller)
+        path.write_text(before, encoding="utf-8")
+
+
+def test_adaptive_skip_cannot_be_excluded_without_fixed_runtime_source(tmp_path):
+    oms = tmp_path / "order_management.py"
+    oms.write_text('''
+def _record(self, category, entity_type):
+    self.journal.append(category=category, entity_type=entity_type)
+def emit(self):
+    self._record("order_management", "adaptive_reprice_skipped")
+''', encoding="utf-8")
+    with pytest.raises(ValueError, match="fixed-runtime source authority"):
+        cert.certify_indirect_v3_projection((oms,))
 
 
 def test_forwarded_record_requires_literal_callers_and_exact_wrapper(tmp_path):

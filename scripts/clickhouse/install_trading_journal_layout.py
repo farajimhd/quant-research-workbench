@@ -112,7 +112,7 @@ def upgrade_v3_protected_exit_satisfied(client: object, *, apply: bool) -> str:
 
 
 def upgrade_v3_entry_reprice_rejected(client: object, *, apply: bool) -> str:
-    """Install refusal fact only after an exact zero-row V3 fence proof."""
+    """Install or correct the empty refusal fact under an exact V3 fence."""
     actual = tuple((row["name"], row["type"]) for row in (
         json.loads(line) for line in client.execute(
             "SELECT name,type FROM system.columns WHERE database='arte' "
@@ -134,9 +134,31 @@ def upgrade_v3_entry_reprice_rejected(client: object, *, apply: bool) -> str:
         f"AND name='{ENTRY_REPRICE_REJECTED.name}'").strip()
     if exists not in {"0", "1"}:
         raise RuntimeError("V3 refusal table inventory is ambiguous")
+    pending_decimal_columns: tuple[str, ...] = ()
     if exists == "1":
-        storage_preflight(client, tables=(ENTRY_REPRICE_REJECTED,))
-    if present == len(suffix) and exists == "1":
+        child_columns = tuple((row["name"], row["type"]) for row in (
+            json.loads(line) for line in client.execute(
+                "SELECT name,type FROM system.columns WHERE database='arte' "
+                f"AND table='{ENTRY_REPRICE_REJECTED.name}' "
+                "ORDER BY position FORMAT JSONEachRow"
+            ).splitlines() if line.strip()))
+        old_columns = tuple((name, "Float64" if name in {
+            "price", "remaining_quantity"} else kind)
+            for name, kind in ENTRY_REPRICE_REJECTED.columns)
+        if child_columns == ENTRY_REPRICE_REJECTED.columns:
+            storage_preflight(client, tables=(ENTRY_REPRICE_REJECTED,))
+        elif child_columns in (old_columns, tuple(
+                (name, "Decimal(38, 18)" if name == "price" else kind)
+                for name, kind in old_columns)):
+            pending_decimal_columns = tuple(name for name in (
+                "price", "remaining_quantity") if dict(child_columns)[name] == "Float64")
+            storage_preflight(client, tables=(TableContract(
+                ENTRY_REPRICE_REJECTED.name, child_columns,
+                ENTRY_REPRICE_REJECTED.partition,
+                ENTRY_REPRICE_REJECTED.order),))
+        else:
+            raise RuntimeError("V3 refusal fact columns differ from known contracts")
+    if present == len(suffix) and exists == "1" and not pending_decimal_columns:
         return "verified"
     if client.execute("SELECT count() FROM arte.trading_commit_v3").strip() != "0":
         raise RuntimeError("V3 commit has rows; versioned migration required")
@@ -148,6 +170,15 @@ def upgrade_v3_entry_reprice_rejected(client: object, *, apply: bool) -> str:
     ddls = staged_entry_reprice_rejected_ddl()
     if exists == "0":
         client.execute(ddls[0])
+        storage_preflight(client, tables=(ENTRY_REPRICE_REJECTED,))
+    elif pending_decimal_columns:
+        for name in pending_decimal_columns:
+            if client.execute(
+                    f"SELECT count() FROM arte.{ENTRY_REPRICE_REJECTED.name}").strip() != "0":
+                raise RuntimeError("V3 refusal fact became occupied before decimal ALTER")
+            client.execute(
+                f"ALTER TABLE arte.{ENTRY_REPRICE_REJECTED.name} "
+                f"MODIFY COLUMN {name} Decimal(38, 18)")
         storage_preflight(client, tables=(ENTRY_REPRICE_REJECTED,))
     for ddl in ddls[1 + present:]:
         client.execute(ddl)

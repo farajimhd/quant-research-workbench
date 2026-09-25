@@ -20,6 +20,8 @@ _INDIRECT_SOURCES = (_RUNTIME_ROOT / "runtime.py",
                      _RUNTIME_ROOT / "portfolio.py",
                      _RUNTIME_ROOT / "order_management.py",
                      _RUNTIME_ROOT / "risk_supervisor.py")
+_FIXED_UNREACHABLE_ADAPTIVE_REPRICE = (
+    "order_management", "adaptive_reprice_skipped")
 _V3_PROJECTED = frozenset({
     ("checkpoint", "market_boundary"),
     ("data_authority", "source_revision"),
@@ -331,6 +333,90 @@ def indirect_journal_inventory(
     return tuple(sorted(families)), tuple(sorted(dynamic))
 
 
+def certify_fixed_adaptive_reprice_unreachable(
+    *, oms_path: Path = _RUNTIME_ROOT / "order_management.py",
+    runtime_path: Path = _RUNTIME_ROOT / "runtime.py",
+    controller_path: Path = _CONTROLLER,
+) -> str:
+    """Prove the sole adaptive skip is wall-clock-only and fixed mode forwards unchanged.
+
+    The certificate is deliberately source-structural, not a sampled runtime
+    observation. Any emitter, constructor, or controller drift needs review.
+    """
+    sources = tuple(path.read_text(encoding="utf-8") for path in
+                    (oms_path, runtime_path, controller_path))
+    oms, runtime, controller = (ast.parse(source) for source in sources)
+    if sum(isinstance(node, ast.Constant)
+           and node.value == "adaptive_reprice_skipped"
+           for tree in (oms, runtime, controller) for node in ast.walk(tree)) != 1:
+        raise ValueError("Adaptive skip has another or missing source emitter")
+    emitters = [node for node in ast.walk(oms) if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "self" and node.func.attr == "_record"
+                and len(node.args) >= 2
+                and all(isinstance(arg, ast.Constant) for arg in node.args[:2])
+                and tuple(arg.value for arg in node.args[:2])
+                == _FIXED_UNREACHABLE_ADAPTIVE_REPRICE]
+    methods = [node for node in ast.walk(oms)
+               if isinstance(node, ast.AsyncFunctionDef)
+               and node.name == "_attempt_reprice"]
+    if len(emitters) != 1 or len(methods) != 1:
+        raise ValueError("Adaptive skip emitter identity is unproven")
+    guards = [node for node in ast.walk(methods[0]) if isinstance(node, ast.If)
+              and len(node.body) == 2
+              and isinstance(node.body[0], ast.Expr)
+              and node.body[0].value is emitters[0]
+              and isinstance(node.body[1], ast.Return)
+              and isinstance(node.body[1].value, ast.Constant)
+              and node.body[1].value.value is False]
+    expected_guard = ast.parse(
+        "self.enforce_wall_clock_quote_freshness and "
+        "age_ms > self.policy.maximum_quote_age_ms", mode="eval").body
+    if (len(guards) != 1 or ast.dump(guards[0].test) != ast.dump(expected_guard)
+            or guards[0].orelse):
+        raise ValueError("Adaptive skip is not strictly wall-clock guarded")
+
+    constructors = [node for node in ast.walk(runtime)
+                    if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "OrderManagementEngine"]
+    if len(constructors) != 1:
+        raise ValueError("OMS constructor identity is unproven")
+    flags = [keyword.value for keyword in constructors[0].keywords
+             if keyword.arg == "enforce_wall_clock_quote_freshness"]
+    expected_flag = ast.parse(
+        "config.mode in {RunMode.LIVE, RunMode.PAPER} and "
+        "bool(getattr(broker, 'requires_fresh_execution_state', False))",
+        mode="eval").body
+    if len(flags) != 1 or ast.dump(flags[0]) != ast.dump(expected_flag):
+        raise ValueError("Fixed OMS wall-clock freshness exclusion is unproven")
+
+    initializers = [node for node in ast.walk(controller)
+                    if isinstance(node, ast.AsyncFunctionDef)
+                    and node.name == "_initialize_runtime"]
+    if len(initializers) != 1:
+        raise ValueError("Backtest runtime initializer identity is unproven")
+    calls = [node for node in ast.walk(initializers[0])
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+             and node.func.id == "TradingRuntime"]
+    if len(calls) != 1 or not calls[0].args or not isinstance(calls[0].args[0], ast.Call):
+        raise ValueError("Backtest TradingRuntime construction is unproven")
+    config = calls[0].args[0]
+    if not isinstance(config.func, ast.Name) or config.func.id != "RunConfig":
+        raise ValueError("Backtest RunConfig construction is unproven")
+    modes = [keyword.value for keyword in config.keywords if keyword.arg == "mode"]
+    expected_mode = ast.parse("self.definition.mode", mode="eval").body
+    if len(modes) != 1 or ast.dump(modes[0]) != ast.dump(expected_mode):
+        raise ValueError("Backtest mode is not forwarded to OMS")
+    return hashlib.sha256(json.dumps({
+        "version": 1,
+        "family": _FIXED_UNREACHABLE_ADAPTIVE_REPRICE,
+        "sources": tuple(hashlib.sha256(source.encode()).hexdigest()
+                         for source in sources),
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def certify_indirect_v3_projection(
     sources: tuple[Path, ...] = _INDIRECT_SOURCES,
 ) -> str:
@@ -338,7 +424,21 @@ def certify_indirect_v3_projection(
     families, dynamic = indirect_journal_inventory(sources)
     if dynamic:
         raise ValueError(f"V3 indirect journal emitter identity is dynamic: {dynamic}")
-    unsupported = sorted(set(families) - _V3_PROJECTED - {
+    unreachable = set()
+    unreachable_proof = ""
+    if _FIXED_UNREACHABLE_ADAPTIVE_REPRICE in families:
+        if sum(isinstance(node, ast.Constant)
+               and node.value == "adaptive_reprice_skipped"
+               for path in sources
+               for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))) != 1:
+            raise ValueError("Adaptive skip has another indirect source emitter")
+        paths = {path.name: path for path in sources}
+        if "order_management.py" not in paths or "runtime.py" not in paths:
+            raise ValueError("Adaptive skip lacks fixed-runtime source authority")
+        unreachable_proof = certify_fixed_adaptive_reprice_unreachable(
+            oms_path=paths["order_management.py"], runtime_path=paths["runtime.py"])
+        unreachable.add(_FIXED_UNREACHABLE_ADAPTIVE_REPRICE)
+    unsupported = sorted(set(families) - _V3_PROJECTED - unreachable - {
         ("lifecycle", "run"), ("broker", "connection_state"),
         ("risk", "risk_snapshot"), ("risk", "continuous_risk_state"),
         ("strategy", "strategy_intent"),
@@ -350,5 +450,6 @@ def certify_indirect_v3_projection(
         raise ValueError(f"V3 indirect emitters lack typed projection: {unsupported}")
     evidence = [(path.name, hashlib.sha256(path.read_bytes()).hexdigest())
                 for path in sources]
-    return hashlib.sha256(json.dumps({"families": families, "sources": evidence},
+    return hashlib.sha256(json.dumps({"families": families, "sources": evidence,
+                                     "unreachable_proof": unreachable_proof},
                                      sort_keys=True, separators=(",", ":")).encode()).hexdigest()

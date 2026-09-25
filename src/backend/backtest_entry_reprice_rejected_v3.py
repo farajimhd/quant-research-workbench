@@ -4,11 +4,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
-import math
 from typing import Any, Mapping, Sequence
 from uuid import UUID
 
 from src.trading_runtime.arte_journal_schema import TableContract
+from src.trading_runtime.journal_decimal import (
+    decimal_38_18, source_float_from_decimal,
+)
 from src.trading_runtime.journal_contract import JournalRecord, canonical_json
 
 
@@ -16,8 +18,8 @@ REJECTED = TableContract(
     "trading_entry_reprice_rejected_v3",
     (("record_id", "UUID"), ("run_id", "String"), ("event_month", "Date"),
      ("batch_id", "UUID"), ("account_id", "String"),
-     ("reason_detail", "String"), ("price", "Float64"),
-     ("remaining_quantity", "Float64"),
+     ("reason_detail", "String"), ("price", "Decimal(38, 18)"),
+     ("remaining_quantity", "Decimal(38, 18)"),
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(event_month)", "run_id,account_id,record_id",
 )
@@ -37,16 +39,6 @@ def _utc(value: datetime) -> str:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError("Entry reprice refusal lacks timezone-aware event time")
     return value.astimezone(timezone.utc).isoformat(timespec="microseconds")
-
-
-def _float(value: Any, *, source: bool) -> float:
-    if (source and type(value) is not float) or (
-            not source and type(value) not in (int, float)):
-        raise ValueError("Entry reprice refusal numeric type differs")
-    number = float(value)
-    if not math.isfinite(number) or number <= 0:
-        raise ValueError("Entry reprice refusal quantity is not finite positive")
-    return number
 
 
 def project_entry_reprice_rejected_v3(
@@ -69,8 +61,9 @@ def project_entry_reprice_rejected_v3(
             or any(not isinstance(payload[key], str) or not payload[key]
                    for key in ("correlation_id", "causation_id"))):
         raise ValueError("Entry reprice refusal has unmodeled source evidence")
-    price = _float(payload["price"], source=True)
-    remaining = _float(payload["remaining_quantity"], source=True)
+    price = decimal_38_18(payload["price"], source_float=True, positive=True)
+    remaining = decimal_38_18(payload["remaining_quantity"],
+                              source_float=True, positive=True)
     month = _utc(record.event_time)[:7] + "-01"
     event = {"record_id": record.record_id, "run_id": record.run_id,
              "event_month": month, "batch_id": batch_id,
@@ -98,8 +91,9 @@ def recover_entry_reprice_rejected_payload(
         raise ValueError("Entry reprice refusal event/detail identity differs")
     return {"reason": "invalid_protection_at_reprice",
             "detail": detail["reason_detail"],
-            "price": _float(detail["price"], source=False),
-            "remaining_quantity": _float(detail["remaining_quantity"], source=False),
+            "price": source_float_from_decimal(detail["price"], positive=True),
+            "remaining_quantity": source_float_from_decimal(
+                detail["remaining_quantity"], positive=True),
             "correlation_id": event["correlation_id"],
             "causation_id": event["causation_id"]}
 
@@ -137,7 +131,7 @@ def seal_entry_reprice_rejected_v3(
         canonical = {key: value for key, value in detail.items()
                      if key != "content_hash"}
         for field in ("price", "remaining_quantity"):
-            canonical[field] = _float(canonical[field], source=False)
+            canonical[field] = decimal_38_18(canonical[field], positive=True)
         digest = _hash(canonical)
         if detail["content_hash"] != digest:
             raise ValueError("Entry reprice refusal detail hash differs")
