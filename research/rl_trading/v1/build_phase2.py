@@ -18,7 +18,7 @@ from datetime import date
 from hashlib import sha256
 import math
 import signal
-from time import monotonic
+from time import monotonic, sleep
 
 import polars as pl
 import pyarrow.parquet as pq
@@ -33,6 +33,18 @@ from src.runtime_paths import runtime_root
 from src.market_engine.hindsight_batch import ordered_jobs, worker_budget
 
 STOP = False
+
+
+def write_progress(path, value):
+    """Retry the brief Windows sharing race with the campaign progress reader."""
+    for attempt in range(20):
+        try:
+            write(path,value,immutable=False)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            sleep(.05)
 
 
 def file_hash(path):
@@ -356,8 +368,8 @@ def run_build(args, console):
             results = []
             last_log = started
             def heartbeat(submitted,active,waiting):
-                write(root/'progress.json',dict(counts=counts,active=active,awaiting_reduction=waiting,
-                    queued=len(plan['selected'])-submitted,retries=0),immutable=False)
+                write_progress(root/'progress.json',dict(counts=counts,active=active,awaiting_reduction=waiting,
+                    queued=len(plan['selected'])-submitted,retries=0))
             jobs=ordered_jobs(plan["selected"],lambda listing:compile_listing(listing,source,root,plan),workers,
                               lambda:STOP or (root/"STOP").exists(),heartbeat)
             for index, (listing,result) in enumerate(jobs):
@@ -392,8 +404,8 @@ def run_build(args, console):
             write(root / "summary.json", dict(status=state, counts=counts, results=results,
                                                market_tensor=tensor if success else None,
                                                elapsed_seconds=monotonic()-started), immutable=False)
-            write(root / "progress.json", dict(status=state, counts=counts, active=0,
-                queued=len(plan["selected"])-len(results), retries=0), immutable=False)
+            write_progress(root / "progress.json", dict(status=state, counts=counts, active=0,
+                queued=len(plan["selected"])-len(results), retries=0))
             if success:
                 write(root / "complete.json", completion)
                 console.print(f"Market values: {tensor['holding']['rows']:,} holding rows + {tensor['opening']['rows']:,} opening rows across {tensor['listing_count']:,} listings; liquidity-gated {tensor['liquidity_rejected_rows']:,} rows")
