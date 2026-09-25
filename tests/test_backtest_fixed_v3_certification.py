@@ -68,3 +68,26 @@ def test_squeeze_query_certificate_binds_exact_query_stream_and_boundary(monkeyp
         cert.certify_pinned_squeeze_query(
             "pinned", stream={}, activation={}, through_boundary_ms=200,
             expected_query_sha256=digest)
+
+
+def test_real_indirect_inventory_exposes_unsupported_and_dynamic_emitters():
+    families, dynamic = cert.indirect_journal_inventory()
+    assert ("portfolio_management", "portfolio_reservation") in families
+    assert ("order_management", "order_group_state") in families
+    assert ("snapshot", "portfolio") in families
+    assert any(row.startswith("runtime.py:442:") for row in dynamic)
+    with pytest.raises(ValueError, match="identity is dynamic"):
+        cert.certify_indirect_v3_projection()
+
+
+def test_indirect_certificate_rejects_unsupported_and_source_drift(tmp_path):
+    path = tmp_path / "runtime.py"
+    path.write_text('self.journal.append(category="lifecycle", entity_type="run")',
+                    encoding="utf-8")
+    before = cert.certify_indirect_v3_projection((path,))
+    path.write_text(path.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+    assert cert.certify_indirect_v3_projection((path,)) != before
+    path.write_text('self.journal.append(category="unknown", entity_type="x")',
+                    encoding="utf-8")
+    with pytest.raises(ValueError, match="lack typed projection"):
+        cert.certify_indirect_v3_projection((path,))

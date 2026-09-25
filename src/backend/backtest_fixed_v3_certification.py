@@ -15,6 +15,11 @@ from src.backend.fixed_bar_signal import first_squeeze_sql, validate_stream
 
 
 _CONTROLLER = Path(__file__).with_name("replay_run_service.py")
+_RUNTIME_ROOT = Path(__file__).parents[1] / "trading_runtime"
+_INDIRECT_SOURCES = (_RUNTIME_ROOT / "runtime.py",
+                     _RUNTIME_ROOT / "portfolio.py",
+                     _RUNTIME_ROOT / "order_management.py",
+                     _RUNTIME_ROOT / "risk_supervisor.py")
 _V3_PROJECTED = frozenset({
     ("checkpoint", "market_boundary"),
     ("data_authority", "source_revision"),
@@ -133,3 +138,84 @@ def certify_pinned_squeeze_query(
     if digest != expected_query_sha256:
         raise ValueError("Pinned squeeze query hash changed")
     return digest
+
+
+def indirect_journal_inventory(
+    sources: tuple[Path, ...] = _INDIRECT_SOURCES,
+) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
+    """Static inventory of reachable collaborators; unresolved emitters remain visible.
+
+    This is deliberately conservative: all paths in the injected Portfolio,
+    OMS, runtime and risk supervisor are included, even conditional ones.
+    """
+    families: set[tuple[str, str]] = set()
+    dynamic: list[str] = []
+    for path in sources:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            method = node.func.attr
+            owner = node.func.value
+            is_journal = (isinstance(owner, ast.Attribute)
+                          and isinstance(owner.value, ast.Name)
+                          and owner.value.id == "self"
+                          and owner.attr == "journal")
+            is_record = (isinstance(owner, ast.Name) and owner.id == "self"
+                         and method == "_record")
+            if is_journal and method in {"append", "append_many", "append_once",
+                                         "append_once_many"}:
+                pair = _literal_pair(node)
+                if pair is None and node.args:
+                    arg = node.args[0]
+                    if isinstance(arg, (ast.GeneratorExp, ast.ListComp)):
+                        pair = _literal_pair(arg.elt)
+                    elif isinstance(arg, (ast.List, ast.Tuple)):
+                        pairs = [_literal_pair(item) for item in arg.elts]
+                        if pairs and all(item is not None for item in pairs):
+                            families.update(pairs)
+                            continue
+                if pair is None:
+                    dynamic.append(f"{path.name}:{node.lineno}:journal.{method}")
+                else:
+                    families.add(pair)
+            elif is_record and path.name == "portfolio.py":
+                kind = node.args[0] if node.args else None
+                if isinstance(kind, ast.Constant) and isinstance(kind.value, str):
+                    families.add(("portfolio_management", kind.value))
+                else:
+                    dynamic.append(f"{path.name}:{node.lineno}:_record")
+            elif is_record and path.name == "order_management.py":
+                pair = None
+                if len(node.args) >= 2 and all(isinstance(arg, ast.Constant)
+                                                and isinstance(arg.value, str)
+                                                for arg in node.args[:2]):
+                    pair = (node.args[0].value, node.args[1].value)
+                if pair is None:
+                    dynamic.append(f"{path.name}:{node.lineno}:_record")
+                else:
+                    families.add(pair)
+    return tuple(sorted(families)), tuple(sorted(dynamic))
+
+
+def certify_indirect_v3_projection(
+    sources: tuple[Path, ...] = _INDIRECT_SOURCES,
+) -> str:
+    """Reject dynamic or unprojected indirect emitters before V3 bootstrap."""
+    families, dynamic = indirect_journal_inventory(sources)
+    if dynamic:
+        raise ValueError(f"V3 indirect journal emitter identity is dynamic: {dynamic}")
+    unsupported = sorted(set(families) - _V3_PROJECTED - {
+        ("lifecycle", "run"), ("broker", "connection_state"),
+        ("risk", "risk_snapshot"), ("risk", "continuous_risk_state"),
+        ("strategy", "strategy_intent"),
+        ("strategy_decision", "intent_rejection"),
+        ("strategy_decision", "intent_deferral"),
+        ("execution", "fill"), ("execution", "commission"),
+    })
+    if unsupported:
+        raise ValueError(f"V3 indirect emitters lack typed projection: {unsupported}")
+    evidence = [(path.name, hashlib.sha256(path.read_bytes()).hexdigest())
+                for path in sources]
+    return hashlib.sha256(json.dumps({"families": families, "sources": evidence},
+                                     sort_keys=True, separators=(",", ":")).encode()).hexdigest()
