@@ -18,9 +18,10 @@ START = datetime(2026, 8, 18, 14, 0, tzinfo=timezone.utc)
 
 
 def bar(at, *, bid=9.99, ask=10.0, bid_size=100, ask_size=100,
-        low=9.98, high=10.02, execution_volume=100, quote_age_us=10_000):
+        low=9.98, high=10.02, execution_volume=100, quote_age_us=10_000,
+        execution_price_levels=None):
     last_us = int(at.timestamp() * 1_000_000) - 1
-    return {
+    row = {
         "ticker": "AAPL", "resolution_ms": 100,
         "bucket_index": int((at - START).total_seconds() * 10),
         "event_count": 3, "last_event_us": last_us,
@@ -32,6 +33,11 @@ def bar(at, *, bid=9.99, ask=10.0, bid_size=100, ask_size=100,
         "low_int": round(low * 10_000), "high_int": round(high * 10_000),
         "execution_volume": execution_volume,
     }
+    if execution_price_levels is not None:
+        row["execution_price_levels"] = tuple(
+            {"price_int": round(price * 10_000), "volume": volume}
+            for price, volume in execution_price_levels)
+    return row
 
 
 class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
@@ -204,14 +210,16 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         await self.order("LMT", price=9.9, quantity=30)
         at = START + timedelta(milliseconds=100)
         fills = await self.broker.on_liquidity_bar(
-            bar(at, low=9.8, execution_volume=40), at=at)
+            bar(at, low=9.8, execution_volume=40,
+                execution_price_levels=((9.8, 40),)), at=at)
         self.assertEqual([(fill.price, fill.size) for fill in fills], [(9.9, 10.0)])
 
     async def test_resting_limit_matches_unambiguous_quote_then_trade_reference(self):
         await self.order("LMT", price=9.9, quantity=30)
         at = START + timedelta(milliseconds=100)
         fixed = await self.broker.on_liquidity_bar(
-            bar(at, low=9.8, execution_volume=40), at=at)
+            bar(at, low=9.8, execution_volume=40,
+                execution_price_levels=((9.8, 40),)), at=at)
         reference = SimulatedBrokerAdapter(
             ["TEST"], self.broker.config, mode=RunMode.BACKTEST, initial_time=START)
         await reference.initialize()
@@ -227,6 +235,31 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(row.price, row.size) for row in fixed],
                          [(row.price, row.size) for row in event])
 
+    async def test_passive_limit_refuses_uncoupled_low_and_eligible_volume(self):
+        await self.order("LMT", price=9.9, quantity=30)
+        at = START + timedelta(milliseconds=100)
+        with self.assertRaisesRegex(RuntimeError, "certified eligible price-volume"):
+            await self.broker.on_liquidity_bar(
+                bar(at, low=9.8, execution_volume=40), at=at)
+        self.assertNotIn("AAPL", self.broker._bar_boundaries)
+        self.assertNotIn("AAPL", self.broker._quotes_by_ticker)
+
+    async def test_passive_limit_uses_only_eligible_price_volume_at_limit(self):
+        await self.order("LMT", price=9.9, quantity=30)
+        at = START + timedelta(milliseconds=100)
+        fills = await self.broker.on_liquidity_bar(
+            bar(at, low=9.8, execution_volume=40,
+                execution_price_levels=((9.8, 5), (9.95, 35))), at=at)
+        self.assertEqual([(fill.price, fill.size) for fill in fills], [(9.9, 1.0)])
+
+    async def test_price_levels_must_reconcile_before_broker_state_changes(self):
+        at = START + timedelta(milliseconds=100)
+        malformed = bar(at, execution_volume=40,
+                        execution_price_levels=((9.8, 5), (9.95, 30)))
+        with self.assertRaisesRegex(ValueError, "differ from eligible volume"):
+            await self.broker.on_liquidity_bar(malformed, at=at)
+        self.assertNotIn("AAPL", self.broker._bar_boundaries)
+
     async def test_stop_limit_waits_for_next_bucket_and_its_limit(self):
         await self.order("STOP_LIMIT", price=10.05, stop=10.1)
         first = START + timedelta(milliseconds=100)
@@ -234,7 +267,8 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
             bar(first, high=10.2), at=first), [])
         second = first + timedelta(milliseconds=100)
         self.assertEqual(await self.broker.on_liquidity_bar(
-            bar(second, bid=10.19, ask=10.2, low=10.06, high=10.2), at=second), [])
+            bar(second, bid=10.19, ask=10.2, low=10.06, high=10.2,
+                execution_price_levels=((10.1, 100),)), at=second), [])
         third = second + timedelta(milliseconds=100)
         filled = await self.broker.on_liquidity_bar(
             bar(third, bid=10.03, ask=10.04, low=10.03, high=10.04), at=third)

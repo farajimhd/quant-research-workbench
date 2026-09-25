@@ -846,6 +846,45 @@ class SimulatedBrokerAdapter:
         execution_volume = float(row.get("execution_volume") or 0)
         if execution_volume < 0 or (extremes_valid and (low <= 0 or high < low)):
             raise ValueError("Broker liquidity bar contains invalid trade aggregates")
+        levels = row.get("execution_price_levels")
+        if levels is not None:
+            if not isinstance(levels, tuple):
+                raise ValueError("Broker execution price levels need an immutable typed tuple")
+            prior_price = 0
+            total = 0.0
+            for level in levels:
+                if not isinstance(level, Mapping) or set(level) != {"price_int", "volume"}:
+                    raise ValueError("Broker execution price level differs from typed columns")
+                price_int = level["price_int"]
+                volume = level["volume"]
+                if (type(price_int) is not int or price_int <= prior_price
+                        or type(volume) not in (int, float)
+                        or not isfinite(volume) or volume <= 0):
+                    raise ValueError("Broker execution price levels are invalid or unordered")
+                prior_price = price_int
+                total += volume
+            if not isclose(total, execution_volume, rel_tol=1e-9, abs_tol=1e-6):
+                raise ValueError("Broker execution price levels differ from eligible volume")
+        elif execution_volume > 0:
+            # Reject before publishing the new boundary/quote into broker
+            # state. A low/high from a different trade cannot authorize
+            # spending this bucket's aggregate eligible volume.
+            for state in self._orders_by_ticker.get(ticker, ()):
+                order_type = state.request.orderType.upper()
+                if (state.status not in {OrderStatus.SUBMITTED, OrderStatus.PRE_SUBMITTED}
+                        or state.submitted_at > bucket_start
+                        or order_type not in {"LMT", "STOP_LIMIT"}
+                        or (order_type == "STOP_LIMIT" and not state.stop_triggered)
+                        or not self._session_allows(state.request, at)):
+                    continue
+                limit = float(state.request.price or 0)
+                touch = (ask if state.request.side.upper() == "BUY" else bid) if valid_quote else 0.0
+                marketable = touch > 0 and (
+                    touch <= limit if state.request.side.upper() == "BUY"
+                    else touch >= limit)
+                if limit > 0 and not marketable:
+                    raise RuntimeError(
+                        "Passive bar fill requires certified eligible price-volume levels")
 
     async def on_liquidity_bar(
         self, row: Mapping[str, Any], *, at: datetime,
@@ -990,9 +1029,17 @@ class SimulatedBrokerAdapter:
                     if touch > 0 and (touch <= limit if side == "BUY" else touch >= limit):
                         marketable, price = True, touch
                         available = ask_size if side == "BUY" else bid_size
-                    elif execution_volume > 0 and (
-                        0 < low <= limit if side == "BUY" else high >= limit):
-                        price, available = limit, execution_volume
+                    elif execution_volume > 0:
+                        levels = row.get("execution_price_levels")
+                        if levels is None:
+                            raise RuntimeError(
+                                "Passive bar fill requires certified eligible price-volume levels")
+                        available = sum(
+                            level["volume"] for level in levels
+                            if (level["price_int"] <= limit * 10_000 if side == "BUY"
+                                else level["price_int"] >= limit * 10_000))
+                        if available > 0:
+                            price = limit
                 elif order_type == "MIDPRICE" and quote is not None:
                     price, available = quote.midpoint, min(bid_size, ask_size)
                 elif order_type not in {"MKT", "LMT", "MIDPRICE"}:
