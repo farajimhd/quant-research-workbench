@@ -358,6 +358,12 @@ def evaluate(host, a, o, p, old_state, *, typed_persistence=False):
                     invalidation_price=stop, profit_target_price=target,
                     capital_request=CapitalRequest(mode='fixed_notional', value=cap),
                     metadata=dict(addition_index=index+1, slice_notional=cap)))
+        if typed_persistence:
+            from .arte_assignment_vwap_entry_scalars import (
+                INITIAL, OPTIONAL, validate_typed_entry_scalars,
+            )
+            validate_typed_entry_scalars({key: active[key] for key in INITIAL | OPTIONAL
+                                          if key in active})
         if results:
             final = results[-1]
             return replace(final, state=state, evaluation=replace(final.evaluation,
@@ -479,6 +485,12 @@ def evaluate(host, a, o, p, old_state, *, typed_persistence=False):
         from .arte_assignment_vwap_entry_ids import validate_typed_entry_id_lists
         validate_typed_entry_id_lists({name: state['vwap_ladder_entry'][name]
                                        for name in ('broken', 'cross_known')})
+        from .arte_assignment_vwap_entry_scalars import (
+            INITIAL, OPTIONAL, validate_typed_entry_scalars,
+        )
+        validate_typed_entry_scalars({key: state['vwap_ladder_entry'][key]
+                                      for key in INITIAL | OPTIONAL
+                                      if key in state['vwap_ladder_entry']})
     return emit('enter_long', entry_kind if post_move else 'vwap_midpoint_all_macd', Status.ENTRY_PENDING,
         invalidation_price=stop, profit_target_price=target,
         capital_request=CapitalRequest(mode='mandate_fraction', value=settings['cash_fraction']/3),
