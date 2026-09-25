@@ -37,7 +37,8 @@ def _fixture():
                             "portfolio_reservation_reason_hash",
                             "portfolio_reconciliation_difference_count",
                             "portfolio_reconciliation_difference_hash",
-                            "portfolio_control_count", "portfolio_control_hash"}}
+                            "portfolio_control_count", "portfolio_control_hash",
+                            "trade_proposal_child_count", "trade_proposal_child_hash"}}
     base.update(run_id=record.run_id, batch_id=BATCH)
     return record, row, parent, base
 
@@ -45,12 +46,13 @@ def _fixture():
 def test_v3_contract_is_staged_and_v2_unchanged():
     v2 = next(t for t in VERSIONED_JOURNAL_V2_TABLES if t.name == "trading_commit_v2")
     assert "backtest_squeeze_episode_count" not in dict(v2.columns)
-    assert list(dict(SQUEEZE_COMMIT_V3.columns))[-11:-3] == [
+    assert list(dict(SQUEEZE_COMMIT_V3.columns))[-13:-3] == [
         "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
         "portfolio_reservation_reason_count", "portfolio_reservation_reason_hash",
         "portfolio_reconciliation_difference_count",
         "portfolio_reconciliation_difference_hash",
-        "portfolio_control_count", "portfolio_control_hash"]
+        "portfolio_control_count", "portfolio_control_hash",
+        "trade_proposal_child_count", "trade_proposal_child_hash"]
     assert all("live_market_ssd" in ddl for ddl in staged_v3_ddl())
 
 
@@ -114,6 +116,8 @@ class _FakeColdClient:
         elif "FROM arte.trading_event_v1" in sql:
             rows = (getattr(self, "control_events", [])
                     if "entity_type='portfolio_control'" in sql
+                    else getattr(self, "proposal_events", [])
+                    if "category='trade_proposal'" in sql
                     else self.reconciliation_events
                     if "entity_type='portfolio_reconciliation'" in sql
                     else self.reservation_events
@@ -131,6 +135,9 @@ class _FakeColdClient:
             rows = self.reconciliation_differences
         elif "FROM arte.trading_portfolio_control_v3" in sql:
             rows = getattr(self, "portfolio_controls", [])
+        elif "FROM arte.trading_trade_proposal_" in sql:
+            rows = getattr(self, "proposal_rows", {}).get(
+                sql.split("FROM arte.", 1)[1].split(" ", 1)[0], [])
         else:
             raise AssertionError(sql)
         match = re.search(r"batch_id=toUUID\('([^']+)'\)", sql)
@@ -213,7 +220,8 @@ def test_cold_v3_reader_verifies_whole_chain_and_rejects_gap(monkeypatch):
                                   "portfolio_reservation_reason_hash",
                                   "portfolio_reconciliation_difference_count",
                                   "portfolio_reconciliation_difference_hash",
-                                  "portfolio_control_count", "portfolio_control_hash"}}
+                                  "portfolio_control_count", "portfolio_control_hash",
+                                  "trade_proposal_child_count", "trade_proposal_child_hash"}}
     second_base.update(batch_id=second_batch, prior_batch_id=BATCH,
                        first_sequence=2, last_sequence=2, status="completed")
     second = seal_squeeze_family_v3(second_base, [], [])
@@ -270,7 +278,8 @@ def test_cold_v3_reader_verifies_reconciliation_children(monkeypatch):
         "portfolio_reservation_reason_count", "portfolio_reservation_reason_hash",
         "portfolio_reconciliation_difference_count",
         "portfolio_reconciliation_difference_hash",
-        "portfolio_control_count", "portfolio_control_hash"}}
+        "portfolio_control_count", "portfolio_control_hash",
+        "trade_proposal_child_count", "trade_proposal_child_hash"}}
     base.update(event_count=2, last_sequence=2)
     commit = seal_squeeze_family_v3(
         base, (squeeze_child,), (source_squeeze_parent, projected.event),

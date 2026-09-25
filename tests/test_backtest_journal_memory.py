@@ -130,6 +130,40 @@ def test_resumed_journal_reindexes_only_fenced_signal_and_protection_records():
             [protection])
 
 
+def test_protection_history_returns_only_sequence_suffix_after_fences():
+    journal = BacktestMemoryJournal(run_id=RUN_ID, max_pending_records=1)
+    protections = []
+    for index in range(8):
+        record = journal.append(
+            run_id=RUN_ID, category="protection", entity_type="price",
+            entity_id=f"stop-{index}", payload={"price": 9.5 + index},
+            event_time=AT)
+        protections.append(record)
+        journal.mark_fenced(record.sequence)
+    assert journal.protection_records(RUN_ID) == protections
+    assert journal.protection_records(RUN_ID, 4) == protections[4:]
+    assert journal.protection_records(RUN_ID, 8) == []
+    assert journal.protection_records("other", 4) == []
+
+
+def test_navigation_lookup_keeps_earliest_time_across_fenced_and_pending_records():
+    journal = BacktestMemoryJournal(run_id=RUN_ID)
+    later = journal.append(
+        run_id=RUN_ID, category="market_discovery_signal",
+        entity_type="signal_occurrence", entity_id="later", payload={},
+        event_time=AT.replace(minute=2))
+    journal.mark_fenced(later.sequence)
+    earlier = journal.append(
+        run_id=RUN_ID, category="market_discovery_signal",
+        entity_type="signal_occurrence", entity_id="earlier", payload={},
+        event_time=AT.replace(minute=1))
+    assert journal.next_record_after_time(
+        RUN_ID, AT, categories=("market_discovery_signal",)) == earlier
+    assert journal.next_record_after_time(
+        RUN_ID, AT.replace(minute=1),
+        categories=("market_discovery_signal",)) == later
+
+
 def test_campaign_ownership_matches_live_reserve_confirm_release_contract():
     journal = BacktestMemoryJournal(run_id=RUN_ID)
     key = dict(resource_id="book:AAPL", session_key="2026-08-18")

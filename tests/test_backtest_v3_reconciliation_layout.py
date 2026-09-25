@@ -102,6 +102,24 @@ def test_upgrade_rejects_occupied_commit_or_child_without_ddl(monkeypatch):
     assert len(writes) == 1 and HASH in writes[0]
 
 
+def test_reconciliation_upgrade_rejects_invalid_proposal_suffix_without_ddl(monkeypatch):
+    class HashOnlyProposalClient(UpgradeClient):
+        def execute(self, sql):
+            if sql.startswith("SELECT name,type FROM system.columns"):
+                self.statements.append(sql)
+                omitted = {COUNT, HASH, "trade_proposal_child_count"}
+                return "\n".join(json.dumps({"name": name, "type": kind})
+                                 for name, kind in SQUEEZE_COMMIT_V3.columns
+                                 if name not in omitted)
+            return super().execute(sql)
+
+    monkeypatch.setattr(installer, "storage_preflight", lambda *_args, **_kwargs: None)
+    client = HashOnlyProposalClient()
+    with pytest.raises(RuntimeError, match="invalid trade-proposal suffix"):
+        installer.upgrade_v3_reconciliation_difference(client, apply=True)
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+
+
 def test_prior_reason_upgrade_still_accepts_pre_difference_empty_fence(monkeypatch):
     from tests.test_install_trading_journal_layout import V3UpgradeClient
 

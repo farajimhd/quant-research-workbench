@@ -17,6 +17,7 @@ from src.backend.backtest_squeeze_episode_schema import (
     RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
     SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
+from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
 from src.backend.backtest_fixed_run_context import verify_fixed_run_context
 from src.backend.backtest_fixed_v3_preflight import (
@@ -73,6 +74,7 @@ def fixed_journal_operator_check(client: Any) -> dict[str, Any]:
     missing = list(missing_fixed_backtest_v2_tables(client))
     required_v3 = (SQUEEZE_EPISODE, RESERVATION_REASON,
                    RECONCILIATION_DIFFERENCE,
+                   *TRADE_PROPOSAL_TABLES,
                    SQUEEZE_COMMIT_V3, TERMINAL_COMMIT_V3)
     names = ",".join(f"'{table.name}'" for table in required_v3)
     rows = [json.loads(line) for line in client.execute(

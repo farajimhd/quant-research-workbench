@@ -6,8 +6,10 @@ fenced ClickHouse adapter; this buffer is not itself a durability authority.
 """
 from __future__ import annotations
 
+from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from copy import deepcopy
+from itertools import chain
 from threading import RLock
 from typing import Any, Iterable
 from uuid import uuid4
@@ -172,16 +174,25 @@ class BacktestMemoryJournal:
                                categories: tuple[str, ...]) -> JournalRecord | None:
         if run_id != self.run_id or not categories:
             return None
-        records = (*self._signal_records, *self._records)
-        matches = (record for record in records if record.category in categories
-                   and record.event_time > event_time)
-        return min(matches, key=lambda record: (record.event_time, record.sequence), default=None)
+        with self._lock:
+            # Avoid materializing two potentially long record histories for a
+            # read-only navigation lookup. Signals may also still be pending in
+            # _records; retaining the existing min-by-time semantics is safe.
+            matches = (record for record in chain(self._signal_records, self._records)
+                       if record.category in categories and record.event_time > event_time)
+            return min(matches, key=lambda record: (record.event_time, record.sequence),
+                       default=None)
 
     def protection_records(self, run_id: str, after_sequence: int = 0) -> list[JournalRecord]:
         if run_id != self.run_id:
             return []
-        return [record for record in self._protection_records
-                if record.sequence > after_sequence]
+        # These records are appended (and restored) in sequence order. Runtime
+        # snapshots poll only the new suffix; searching the full historical
+        # protection journal on every snapshot becomes quadratic over a run.
+        with self._lock:
+            start = bisect_right(self._protection_records, after_sequence,
+                                 key=lambda record: record.sequence)
+            return self._protection_records[start:]
 
     def save_checkpoint(self, run_id: str, cursor: str,
                         state: dict[str, Any], event_time: datetime) -> None:

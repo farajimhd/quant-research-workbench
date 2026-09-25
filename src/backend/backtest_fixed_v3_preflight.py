@@ -9,6 +9,7 @@ from src.backend.backtest_squeeze_episode_schema import (
     SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
 from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
+from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.trading_runtime.arte_market_day_certification import TABLES as MARKET_DAY_CERTIFICATE_TABLES
 from src.trading_runtime.arte_journal_schema import (
     POLICY_ALLOWED_TABLES, TABLES, fixed_backtest_v2_contracts, journal_permission_preflight,
@@ -29,13 +30,15 @@ def policy_catalog_v3_contracts() -> tuple[Any, ...]:
 def running_v3_contracts() -> tuple[Any, ...]:
     return versioned_journal_v2_contracts() + (
         SQUEEZE_EPISODE, RESERVATION_REASON,
-        RECONCILIATION_DIFFERENCE, PORTFOLIO_CONTROL, SQUEEZE_COMMIT_V3)
+        RECONCILIATION_DIFFERENCE, PORTFOLIO_CONTROL,
+        *TRADE_PROPOSAL_TABLES, SQUEEZE_COMMIT_V3)
 
 
 def terminal_v3_contracts() -> tuple[Any, ...]:
     return fixed_backtest_v2_contracts() + (
         SQUEEZE_EPISODE, RESERVATION_REASON,
-        RECONCILIATION_DIFFERENCE, PORTFOLIO_CONTROL, SQUEEZE_COMMIT_V3,
+        RECONCILIATION_DIFFERENCE, PORTFOLIO_CONTROL,
+        *TRADE_PROPOSAL_TABLES, SQUEEZE_COMMIT_V3,
         TERMINAL_COMMIT_V3)
 
 
@@ -70,7 +73,8 @@ def running_v3_preflight(client: Any) -> None:
                              RECONCILIATION_DIFFERENCE.name,
                              PORTFOLIO_CONTROL.name,
                              SQUEEZE_COMMIT_V3.name}) | frozenset(
-                                 table.name for table in policy_catalog_v3_contracts())
+                                 table.name for table in policy_catalog_v3_contracts()) | frozenset(
+                                     table.name for table in TRADE_PROPOSAL_TABLES)
     available = {table.name for table in contracts}
     if not writable <= available:
         raise RuntimeError("V3 running writer references an unprovisioned family")

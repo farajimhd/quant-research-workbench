@@ -8,6 +8,7 @@ from src.trading_runtime.arte_journal_schema import (
 )
 from src.backend.backtest_reconciliation_v3 import CHILD as RECONCILIATION_DIFFERENCE
 from src.backend.backtest_portfolio_control_v3 import CONTROL as PORTFOLIO_CONTROL
+from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 
 
 SQUEEZE_EPISODE = TableContract(
@@ -57,6 +58,8 @@ _V3_EXTENSION = (
     ("portfolio_reconciliation_difference_hash", "FixedString(64)"),
     ("portfolio_control_count", "UInt32"),
     ("portfolio_control_hash", "FixedString(64)"),
+    ("trade_proposal_child_count", "UInt32"),
+    ("trade_proposal_child_hash", "FixedString(64)"),
 )
 SQUEEZE_COMMIT_V3 = TableContract(
     "trading_commit_v3",
@@ -69,6 +72,7 @@ def staged_v3_ddl() -> tuple[str, ...]:
     """Operator-review DDL only; never run or validate at live startup."""
     return (SQUEEZE_EPISODE.ddl(), RESERVATION_REASON.ddl(),
             RECONCILIATION_DIFFERENCE.ddl(), PORTFOLIO_CONTROL.ddl(),
+            *(table.ddl() for table in TRADE_PROPOSAL_TABLES),
             SQUEEZE_COMMIT_V3.ddl())
 
 
@@ -97,6 +101,19 @@ def staged_portfolio_control_ddl() -> tuple[str, ...]:
         "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
         f"portfolio_control_hash FixedString(64) DEFAULT '{empty_hash}' "
         "AFTER portfolio_control_count",
+    )
+
+
+def staged_trade_proposal_ddl() -> tuple[str, ...]:
+    """Operator-only additive V3 upgrade after an exact empty-fence audit."""
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        *(table.ddl() for table in TRADE_PROPOSAL_TABLES),
+        "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+        "trade_proposal_child_count UInt32 DEFAULT 0 AFTER portfolio_control_hash",
+        "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+        f"trade_proposal_child_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER trade_proposal_child_count",
     )
 
 

@@ -49,6 +49,20 @@ class _Keeper:
         return self.current
 
 
+class _SessionFence:
+    def __init__(self):
+        self.current = True
+        self.releases = 0
+    def acquire(self, session_key, *, owner_id):
+        assert session_key == "2026-08-21"
+        return 1
+    def is_current(self, session_key, *, owner_id, epoch):
+        return self.current
+    def release(self, session_key, *, owner_id, epoch):
+        self.releases += 1
+        return self.current
+
+
 class ArteActivationWriterTests(unittest.TestCase):
     def test_submit_is_nonblocking_and_claim_releases_after_receipt(self) -> None:
         keeper = _Keeper()
@@ -61,6 +75,7 @@ class ArteActivationWriterTests(unittest.TestCase):
 
         with patch("src.trading_runtime.arte_activation_writer.publish_activation", side_effect=publish):
             writer = ArteActivationWriter(object(), keeper, capacity=1,
+                                          session_fence=_SessionFence(),
                                           preflight=lambda _: None,
                                           ttl_seconds=1, renewal_interval_seconds=0.02)
             try:
@@ -86,15 +101,41 @@ class ArteActivationWriterTests(unittest.TestCase):
 
     def test_failed_publication_retains_claim_and_stops_admission(self) -> None:
         keeper = _Keeper()
+        session_fence = _SessionFence()
         with patch("src.trading_runtime.arte_activation_writer.publish_activation",
                    side_effect=RuntimeError("uncertain commit")):
-            writer = ArteActivationWriter(object(), keeper, preflight=lambda _: None)
+            writer = ArteActivationWriter(object(), keeper, session_fence=session_fence,
+                                          preflight=lambda _: None)
             receipt = writer.submit(_projection(), owner_id="worker-1")
             with self.assertRaisesRegex(RuntimeError, "uncertain commit"):
                 receipt.result(timeout=2)
             self.assertEqual(keeper.releases, 0)
+            self.assertEqual(session_fence.releases, 0)
             with self.assertRaisesRegex(RuntimeError, "reconciliation"):
                 writer.submit(_projection("AAPL"), owner_id="worker-1")
+            with self.assertRaisesRegex(RuntimeError, "reconciliation"):
+                writer.close(timeout_seconds=2)
+
+    def test_session_fence_is_held_through_publication_and_loss_fails_closed(self) -> None:
+        keeper, fence = _Keeper(), _SessionFence()
+        entered, release = threading.Event(), threading.Event()
+        def publish(*args, **kwargs):
+            entered.set()
+            self.assertEqual(fence.releases, 0)
+            self.assertTrue(release.wait(2))
+            fence.current = False
+            return "digest"
+        with patch("src.trading_runtime.arte_activation_writer.publish_activation",
+                   side_effect=publish):
+            writer = ArteActivationWriter(object(), keeper, session_fence=fence,
+                                          preflight=lambda _: None)
+            receipt = writer.submit(_projection(), owner_id="worker-1")
+            self.assertTrue(entered.wait(2))
+            self.assertFalse(receipt.done())
+            release.set()
+            with self.assertRaisesRegex(RuntimeError, "fence lost"):
+                receipt.result(timeout=2)
+            self.assertEqual(fence.releases, 0)
             with self.assertRaisesRegex(RuntimeError, "reconciliation"):
                 writer.close(timeout_seconds=2)
 
@@ -108,7 +149,8 @@ class ArteActivationWriterTests(unittest.TestCase):
             return {"resource_id": resource, "owner_id": owner_id, "epoch": 1}
 
         keeper.acquire_portfolio_admission_lease = acquire
-        writer = ArteActivationWriter(object(), keeper, preflight=lambda _: None)
+        writer = ArteActivationWriter(object(), keeper, session_fence=_SessionFence(),
+                                      preflight=lambda _: None)
         with patch("src.trading_runtime.arte_activation_writer.publish_activation", return_value="digest"):
             try:
                 start = time.monotonic()
@@ -125,7 +167,7 @@ class ArteActivationWriterTests(unittest.TestCase):
     def test_invalid_ttl_rejected_before_preflight(self) -> None:
         checked = []
         with self.assertRaisesRegex(ValueError, "renewal interval or TTL"):
-            ArteActivationWriter(object(), _Keeper(), ttl_seconds=1,
+            ArteActivationWriter(object(), _Keeper(), session_fence=_SessionFence(), ttl_seconds=1,
                                  renewal_interval_seconds=1,
                                  preflight=lambda _: checked.append(True))
         self.assertFalse(checked)

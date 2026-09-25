@@ -474,7 +474,9 @@ def load_session_activations(client: Any, *, session_date: date,
 
 
 def load_day_activations(client: Any, *, session_date: date,
-                         page_size: int = 1024) -> tuple[dict[str, Any], ...]:
+                         page_size: int = 1024,
+                         max_inventory_rows_per_family: int = 100_000,
+                         ) -> tuple[dict[str, Any], ...]:
     """Discover and audit every current-day activation, including orphan rows.
 
     This is a control-plane cold-start read. It does not authorize order
@@ -482,12 +484,15 @@ def load_day_activations(client: Any, *, session_date: date,
     the broker before acting on any recovered watch.
     """
     if (type(session_date) is not date or type(page_size) is not int
-            or not 1 <= page_size <= 4096):
+            or not 1 <= page_size <= 4096
+            or type(max_inventory_rows_per_family) is not int
+            or not 0 <= max_inventory_rows_per_family <= 100_000):
         raise ValueError("Activation day inventory requires a date and bounded page")
     day = session_date.isoformat()
     identities: set[tuple[str, str]] = set()
     for name in _ACTIVATION_CONTRACTS:
         after = ("", "", "")
+        inventory_rows = 0
         while True:
             where = (f"run_id={_literal(ACTIVATION_RUN_ID)} "
                      f"AND session_date={_literal(day)}")
@@ -502,6 +507,9 @@ def load_day_activations(client: Any, *, session_date: date,
             rows = tuple(json.loads(line) for line in response.splitlines() if line.strip())
             if len(rows) > page_size:
                 raise RuntimeError("Activation day inventory exceeded its page limit")
+            inventory_rows += len(rows)
+            if inventory_rows > max_inventory_rows_per_family:
+                raise RuntimeError("Activation day inventory exceeds expected coverage")
             if not rows:
                 break
             previous = after

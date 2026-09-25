@@ -103,6 +103,11 @@ def test_exact_three_role_plan_matches_v3_preflight_tables():
     assert catalog <= running.insert_arte
     assert catalog <= read.select_arte & terminal.select_arte
     assert not catalog & (read.insert_arte | terminal.insert_arte)
+    from src.backend.backtest_trade_proposal_v3 import TABLES as PROPOSAL_TABLES
+    proposal = {table.name for table in PROPOSAL_TABLES}
+    assert proposal <= running.insert_arte
+    assert proposal <= read.select_arte & terminal.select_arte
+    assert not proposal & (read.insert_arte | terminal.insert_arte)
     assert read.select_reference == frozenset({
         ("q_live", "market_stock_split_v1")})
     assert running.select_reference == terminal.select_reference == frozenset()

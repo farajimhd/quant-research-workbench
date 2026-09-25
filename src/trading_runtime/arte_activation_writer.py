@@ -15,6 +15,7 @@ from src.trading_runtime.arte_journal_schema import (
     journal_permission_preflight, storage_preflight,
 )
 from src.trading_runtime.keeper_receipts import KeeperReceiptSupervisor
+from src.backend.live_activation_session_fence import ActivationSessionFence
 
 
 class ActivationQueueFull(RuntimeError):
@@ -36,7 +37,9 @@ class ArteActivationWriter:
     Keeper claim for reconciliation.
     """
 
-    def __init__(self, client: Any, keeper: Any, *, capacity: int = 128,
+    def __init__(self, client: Any, keeper: Any, *,
+                 session_fence: ActivationSessionFence,
+                 capacity: int = 128,
                  preflight: Callable[[Any], None] | None = None,
                  ttl_seconds: float = 30.0,
                  renewal_interval_seconds: float = 10.0) -> None:
@@ -46,6 +49,9 @@ class ArteActivationWriter:
                 or renewal_interval_seconds <= 0
                 or renewal_interval_seconds >= ttl_seconds):
             raise ValueError("Activation Keeper renewal interval or TTL is invalid")
+        if session_fence is None or any(not callable(getattr(session_fence, method, None))
+                                        for method in ("acquire", "is_current", "release")):
+            raise TypeError("Activation writer requires a session-wide Keeper fence")
         if preflight is None:
             storage_preflight(client)
             journal_permission_preflight(client)
@@ -53,6 +59,7 @@ class ArteActivationWriter:
             preflight(client)
         self._client = client
         self._keeper = keeper
+        self._session_fence = session_fence
         self._ttl = ttl_seconds
         self._capacity = capacity
         self._lock = Lock()
@@ -112,9 +119,18 @@ class ArteActivationWriter:
                 self._queue.task_done()
                 return
             projected, resource, owner, receipt = item
+            session_key = resource.split(":", 3)[1]
+            session_epoch: int | None = None
+            session_uncertain = False
             try:
                 if self._error is not None:
                     raise RuntimeError("Activation writer requires reconciliation")
+                session_epoch = self._session_fence.acquire(session_key, owner_id=owner)
+                if session_epoch is None:
+                    raise RuntimeError("Activation session Keeper fence is contended")
+                if not self._session_fence.is_current(
+                        session_key, owner_id=owner, epoch=session_epoch):
+                    raise RuntimeError("Activation session Keeper fence was lost")
                 lease = self._keeper.acquire_portfolio_admission_lease(
                     resource, owner_id=owner, ttl_seconds=self._ttl,
                 )
@@ -128,22 +144,35 @@ class ArteActivationWriter:
                 durable: Future[str] = Future()
                 completed = self._claims.watch((lease,), durable)
                 try:
+                    session_uncertain = True
                     commit = publish_activation(
                         self._client, projected, keeper=self._keeper,
                         owner_id=owner, epoch=lease["epoch"],
                     )
                     if not commit:
                         raise RuntimeError("Activation publication returned no commit hash")
+                    if not self._session_fence.is_current(
+                            session_key, owner_id=owner, epoch=session_epoch):
+                        raise RuntimeError("Activation session Keeper fence lost during publication")
                 except BaseException as exc:
                     durable.set_exception(exc)
                 else:
                     durable.set_result(commit)
-                receipt.set_result(completed.result())
+                committed_hash = completed.result()
+                if not self._session_fence.release(
+                        session_key, owner_id=owner, epoch=session_epoch):
+                    raise RuntimeError("Activation session Keeper fence release is uncertain")
+                session_epoch = None
+                session_uncertain = False
+                receipt.set_result(committed_hash)
             except BaseException as exc:
                 with self._lock:
                     self._error = exc
                 receipt.set_exception(exc)
             finally:
+                if session_epoch is not None and not session_uncertain:
+                    self._session_fence.release(
+                        session_key, owner_id=owner, epoch=session_epoch)
                 with self._lock:
                     self._pending -= 1
                     self._pending_resources.discard(resource)

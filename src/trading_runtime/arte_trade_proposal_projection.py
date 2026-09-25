@@ -111,7 +111,9 @@ def project_trade_proposal(record: Any) -> TradeProposalRows:
             if intent[name] is not None:
                 raise ValueError(f"Proposal {name} needs a typed child contract")
         if intent["metadata"] != {}:
-            raise ValueError("Proposal metadata needs a named evidence contract")
+            from .arte_trade_proposal_children import project_market_child
+
+            project_market_child(record)
         if not isinstance(intent["event_time"], datetime) or intent["event_time"] != record.event_time:
             raise ValueError("Proposal intent clock mismatch")
         if intent["intent_id"] != f"proposal:{proposal_id}":
@@ -148,14 +150,17 @@ def project_trade_proposal(record: Any) -> TradeProposalRows:
             "proposal_id", "authority", "status", "decision", "order_group",
         } <= set(payload):
             raise ValueError("Result has unsupported fields")
-        if payload["order_group"] is not None:
-            raise ValueError("OMS order group needs a typed child contract")
         decision = payload["decision"]
         if not isinstance(decision, Mapping) or status != decision.get("status"):
             raise ValueError("Decision status mismatch")
         allowed = {"status", "reason", "held_quantity"}
-        if set(decision) - allowed:
-            raise ValueError("Decision requires a typed Portfolio child contract")
+        if payload["order_group"] is not None or set(decision) - allowed:
+            from .arte_trade_proposal_children import project_result_children
+
+            project_result_children(record)
+            result = {**common, "error": "", "decision_reason": "",
+                      "held_quantity": None}
+            return TradeProposalRows(parent, None, result)
         if status not in {"acquisition_cancellation_requested", "exit_fill_pending",
                           "protection_replacement_deferred", "rejected"}:
             raise ValueError("Unsupported no-order decision status")

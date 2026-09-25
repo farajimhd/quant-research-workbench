@@ -88,7 +88,7 @@ class V3UpgradeClient:
 
     def execute(self, sql):
         self.statements.append(sql)
-        full = install.SQUEEZE_COMMIT_V3.columns
+        full = install._without_proposals(install.SQUEEZE_COMMIT_V3.columns)
         if sql.startswith("SELECT name,type FROM system.columns"):
             omitted = ({"portfolio_reservation_reason_count",
                         "portfolio_reservation_reason_hash"} if self.state == "old"
@@ -141,7 +141,8 @@ class ControlUpgradeClient:
                        if self.state == "old" else {"portfolio_control_hash"}
                        if self.state == "partial" else set())
             return "\n".join(json.dumps({"name": name, "type": kind})
-                             for name, kind in install.SQUEEZE_COMMIT_V3.columns
+                             for name, kind in install._without_proposals(
+                                 install.SQUEEZE_COMMIT_V3.columns)
                              if name not in omitted)
         if sql.startswith("SELECT count() FROM system.tables"):
             return "1" if self.child else "0"
@@ -205,3 +206,46 @@ def test_v3_reason_upgrade_resumes_after_first_alter(monkeypatch):
     assert install.upgrade_v3_reservation_reason(client, apply=True) == "upgraded"
     writes = [sql for sql in client.statements if not sql.startswith("SELECT ")]
     assert len(writes) == 1 and "portfolio_reservation_reason_hash" in writes[0]
+
+
+class TradeProposalUpgradeClient:
+    def __init__(self, *, rows=0):
+        self.rows = rows
+        self.columns = list(install._without_proposals(install.SQUEEZE_COMMIT_V3.columns))
+        self.tables = set()
+        self.statements = []
+
+    def execute(self, sql):
+        self.statements.append(sql)
+        if sql.startswith("SELECT name,type FROM system.columns"):
+            return "\n".join(json.dumps({"name": name, "type": kind})
+                             for name, kind in self.columns)
+        if sql.startswith("SELECT name FROM system.tables"):
+            return "\n".join(json.dumps({"name": name}) for name in sorted(self.tables))
+        if sql == "SELECT count() FROM arte.trading_commit_v3":
+            return str(self.rows)
+        if sql.startswith("SELECT count() FROM arte.trading_trade_proposal_"):
+            return "0"
+        if sql.startswith("CREATE TABLE IF NOT EXISTS arte.trading_trade_proposal_"):
+            self.tables.add(sql.split("arte.", 1)[1].split(" ", 1)[0])
+            return ""
+        if sql.startswith("ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "):
+            name = sql.split("ADD COLUMN IF NOT EXISTS ", 1)[1].split(" ", 1)[0]
+            self.columns = [column for column in install.SQUEEZE_COMMIT_V3.columns
+                            if column[0] in {n for n, _ in self.columns} | {name}]
+            return ""
+        raise AssertionError(sql)
+
+
+def test_v3_trade_proposal_upgrade_is_dry_run_and_empty_fence_only(monkeypatch):
+    monkeypatch.setattr(install, "storage_preflight", lambda *_args, **_kwargs: None)
+    client = TradeProposalUpgradeClient()
+    assert install.upgrade_v3_trade_proposal(client, apply=False) == "planned"
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+    assert install.upgrade_v3_trade_proposal(client, apply=True) == "upgraded"
+    assert len(client.tables) == len(install.TRADE_PROPOSAL_TABLES)
+    assert install.upgrade_v3_trade_proposal(client, apply=True) == "verified"
+    occupied = TradeProposalUpgradeClient(rows=1)
+    with pytest.raises(RuntimeError, match="versioned migration"):
+        install.upgrade_v3_trade_proposal(occupied, apply=True)
+    assert all(sql.startswith("SELECT ") for sql in occupied.statements)

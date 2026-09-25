@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from src.backend import backtest_fixed_v3_preflight as subject
+from src.backend.backtest_trade_proposal_v3 import TABLES as PROPOSAL_TABLES
 
 
 def test_v3_profiles_assign_running_and_terminal_writes_disjointly(monkeypatch):
@@ -29,6 +30,8 @@ def test_v3_profiles_assign_running_and_terminal_writes_disjointly(monkeypatch):
     assert "trading_backtest_terminal_commit_v3" not in running
     assert "trading_portfolio_snapshot_v1" in terminal
     assert "trading_portfolio_snapshot_v1" not in running
+    assert {table.name for table in PROPOSAL_TABLES} <= running
+    assert not {table.name for table in PROPOSAL_TABLES} & terminal
     catalog = {table.name for table in subject.policy_catalog_v3_contracts()}
     assert len(catalog) == 7
     assert catalog <= running
@@ -61,5 +64,6 @@ def test_v3_reader_requires_only_exact_v7_split_reference(monkeypatch):
     from src.trading_runtime.arte_market_day_certification import TABLES as CERTIFICATE_TABLES
     assert {table.name for table in CERTIFICATE_TABLES} <= seen[0]["read_only_tables"]
     assert {table.name for table in subject.policy_catalog_v3_contracts()} <= seen[0]["read_only_tables"]
+    assert {table.name for table in PROPOSAL_TABLES} <= seen[0]["read_only_tables"]
     assert seen[0]["reference_read_tables"] == frozenset({
         ("q_live", "market_stock_split_v1")})

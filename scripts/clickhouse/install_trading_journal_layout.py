@@ -29,7 +29,9 @@ from src.backend.backtest_squeeze_episode_schema import (
     PORTFOLIO_CONTROL, RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
     SQUEEZE_COMMIT_V3, staged_portfolio_control_ddl,
     staged_reconciliation_difference_ddl, staged_reservation_reason_ddl,
+    staged_trade_proposal_ddl,
 )
+from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from scripts.clickhouse.provision_fixed_backtest_v3_principals import WORKSTATION_IPV4
 
 
@@ -40,6 +42,20 @@ _RECONCILIATION_COLUMNS = frozenset({
     "portfolio_reconciliation_difference_hash",
 })
 _CONTROL_COLUMNS = frozenset({"portfolio_control_count", "portfolio_control_hash"})
+_PROPOSAL_COLUMNS = frozenset({"trade_proposal_child_count", "trade_proposal_child_hash"})
+
+
+def _without_proposals(columns):
+    return tuple(column for column in columns if column[0] not in _PROPOSAL_COLUMNS)
+
+
+def _with_existing_proposals(columns, actual):
+    """Preserve an already staged proposal suffix during older empty-fence upgrades."""
+    present = {name for name, _ in actual} & _PROPOSAL_COLUMNS
+    if present not in (set(), {"trade_proposal_child_count"}, _PROPOSAL_COLUMNS):
+        raise RuntimeError("V3 commit has an invalid trade-proposal suffix")
+    return tuple(column for column in columns
+                 if column[0] not in _PROPOSAL_COLUMNS or column[0] in present)
 
 
 def upgrade_v3_portfolio_control(client: object, *, apply: bool) -> str:
@@ -49,7 +65,7 @@ def upgrade_v3_portfolio_control(client: object, *, apply: bool) -> str:
         "AND table='trading_commit_v3' ORDER BY position FORMAT JSONEachRow"
     ).splitlines() if line.strip()]
     actual = tuple((row["name"], row["type"]) for row in columns)
-    full = SQUEEZE_COMMIT_V3.columns
+    full = _with_existing_proposals(SQUEEZE_COMMIT_V3.columns, actual)
     old = tuple(column for column in full
                 if column[0] not in {"portfolio_control_count", "portfolio_control_hash"})
     partial = tuple(column for column in full
@@ -83,7 +99,60 @@ def upgrade_v3_portfolio_control(client: object, *, apply: bool) -> str:
         client.execute(count_ddl)
     if actual in {old, partial}:
         client.execute(hash_ddl)
-    storage_preflight(client, tables=(PORTFOLIO_CONTROL, SQUEEZE_COMMIT_V3))
+    storage_preflight(client, tables=(PORTFOLIO_CONTROL, TableContract(
+        SQUEEZE_COMMIT_V3.name, full, SQUEEZE_COMMIT_V3.partition,
+        SQUEEZE_COMMIT_V3.order)))
+    return "upgraded"
+
+
+def upgrade_v3_trade_proposal(client: object, *, apply: bool) -> str:
+    """Resume the nine child tables and two seal columns only on empty V3."""
+    columns = [json.loads(line) for line in client.execute(
+        "SELECT name,type FROM system.columns WHERE database='arte' "
+        "AND table='trading_commit_v3' ORDER BY position FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    actual = tuple((row["name"], row["type"]) for row in columns)
+    full = SQUEEZE_COMMIT_V3.columns
+    old = _without_proposals(full)
+    partial = tuple(column for column in full
+                    if column[0] != "trade_proposal_child_hash")
+    if actual not in {old, partial, full}:
+        raise RuntimeError("V3 commit has an unknown trade-proposal schema")
+    storage_preflight(client, tables=(TableContract(
+        SQUEEZE_COMMIT_V3.name, actual, SQUEEZE_COMMIT_V3.partition,
+        SQUEEZE_COMMIT_V3.order),))
+    names = ",".join(f"'{table.name}'" for table in TRADE_PROPOSAL_TABLES)
+    rows = [json.loads(line) for line in client.execute(
+        "SELECT name FROM system.tables WHERE database='arte' "
+        f"AND name IN ({names}) FORMAT JSONEachRow").splitlines() if line.strip()]
+    installed = {row["name"] for row in rows}
+    expected = {table.name for table in TRADE_PROPOSAL_TABLES}
+    if (len(installed) != len(rows) or not installed <= expected
+            or any(set(row) != {"name"} for row in rows)):
+        raise RuntimeError("V3 proposal child inventory is ambiguous")
+    for table in TRADE_PROPOSAL_TABLES:
+        if table.name in installed:
+            storage_preflight(client, tables=(table,))
+    if actual == full and installed == expected:
+        return "verified"
+    if client.execute("SELECT count() FROM arte.trading_commit_v3").strip() != "0":
+        raise RuntimeError("V3 commit has rows; versioned migration required")
+    for table in TRADE_PROPOSAL_TABLES:
+        if table.name in installed and client.execute(
+                f"SELECT count() FROM arte.{table.name}").strip() != "0":
+            raise RuntimeError("V3 proposal child has rows; no ALTER attempted")
+    if not apply:
+        return "planned"
+    ddls = staged_trade_proposal_ddl()
+    for table, ddl in zip(TRADE_PROPOSAL_TABLES, ddls):
+        if table.name not in installed:
+            client.execute(ddl)
+            storage_preflight(client, tables=(table,))
+    if actual == old:
+        client.execute(ddls[-2])
+    if actual in {old, partial}:
+        client.execute(ddls[-1])
+    storage_preflight(client, tables=TRADE_PROPOSAL_TABLES + (SQUEEZE_COMMIT_V3,))
     return "upgraded"
 
 
@@ -94,7 +163,7 @@ def upgrade_v3_reconciliation_difference(client: object, *, apply: bool) -> str:
         "AND table='trading_commit_v3' ORDER BY position FORMAT JSONEachRow"
     ).splitlines() if line.strip()]
     actual = tuple((row["name"], row["type"]) for row in columns)
-    full = tuple(column for column in SQUEEZE_COMMIT_V3.columns
+    full = tuple(column for column in _with_existing_proposals(SQUEEZE_COMMIT_V3.columns, actual)
                  if column[0] not in _CONTROL_COLUMNS or
                  column[0] in {name for name, _ in actual})
     old = tuple(column for column in full
@@ -142,7 +211,9 @@ def upgrade_v3_reconciliation_difference(client: object, *, apply: bool) -> str:
         client.execute(count_ddl)
     if actual in {old, partial}:
         client.execute(hash_ddl)
-    storage_preflight(client, tables=(RECONCILIATION_DIFFERENCE, SQUEEZE_COMMIT_V3))
+    storage_preflight(client, tables=(RECONCILIATION_DIFFERENCE, TableContract(
+        SQUEEZE_COMMIT_V3.name, full, SQUEEZE_COMMIT_V3.partition,
+        SQUEEZE_COMMIT_V3.order)))
     print("V3 reconciliation differences: table and commit fence verified; 0 rows inserted")
     return "upgraded"
 
@@ -154,7 +225,7 @@ def upgrade_v3_reservation_reason(client: object, *, apply: bool) -> str:
         "AND table='trading_commit_v3' ORDER BY position FORMAT JSONEachRow"
     ).splitlines() if line.strip()]
     actual = tuple((row["name"], row["type"]) for row in columns)
-    full = tuple(column for column in SQUEEZE_COMMIT_V3.columns
+    full = tuple(column for column in _with_existing_proposals(SQUEEZE_COMMIT_V3.columns, actual)
                  if column[0] not in _CONTROL_COLUMNS or
                  column[0] in {name for name, _ in actual})
     actual_core = tuple(column for column in actual
@@ -274,6 +345,8 @@ def main() -> int:
                         help="verify or install the empty-fence V3 reconciliation child upgrade")
     parser.add_argument("--upgrade-v3-portfolio-control", action="store_true",
                         help="verify or install the empty-fence V3 scalar control upgrade")
+    parser.add_argument("--upgrade-v3-trade-proposal", action="store_true",
+                        help="verify or install the empty-fence V3 proposal children")
     args = parser.parse_args()
     parsed = urlsplit(args.url)
     if (platform.node().upper() != "DESKTOP-SAAI85T"
@@ -291,9 +364,13 @@ def main() -> int:
         try:
             if sum((args.upgrade_v3_reservation_reason,
                     args.upgrade_v3_reconciliation_difference,
-                    args.upgrade_v3_portfolio_control)) > 1:
+                    args.upgrade_v3_portfolio_control,
+                    args.upgrade_v3_trade_proposal)) > 1:
                 parser.error("Select only one V3 upgrade at a time")
-            if args.upgrade_v3_portfolio_control:
+            if args.upgrade_v3_trade_proposal:
+                result = upgrade_v3_trade_proposal(client, apply=args.apply)
+                print(f"V3 trade-proposal layout: {result}; no rows inserted")
+            elif args.upgrade_v3_portfolio_control:
                 result = upgrade_v3_portfolio_control(client, apply=args.apply)
                 print(f"V3 portfolio-control layout: {result}; no rows inserted")
             elif args.upgrade_v3_reconciliation_difference:

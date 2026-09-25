@@ -164,6 +164,17 @@ def project_pending_backtest_v3_prefix(
                 sequence, sequence, cursor, "running", (control.event,))
             unit = V3SqueezeBatch(base, (), portfolio_controls=(control.detail,),
                                   policy_selections=selections)
+        elif (record.category == "trade_proposal" and record.entity_type in
+              {"trade_proposal_confirmed", "trade_proposal_result"}):
+            from src.backend.backtest_trade_proposal_v3 import project_trade_proposal_v3
+
+            proposal = project_trade_proposal_v3(
+                record, attempt_id=attempt, batch_id=batch_id)
+            base = TypedJournalBatch(
+                record.run_id, run_month, attempt, batch_id, previous,
+                sequence, sequence, cursor, "running", (proposal.event,))
+            unit = V3SqueezeBatch(
+                base, (), trade_proposal_rows=proposal.rows)
         else:
             reservation_reasons = ()
             if (record.category, record.entity_type) == (
