@@ -23,7 +23,10 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 from uuid import UUID
 
-from src.trading_runtime.arte_journal_schema import TABLES, journal_permission_preflight, storage_preflight
+from src.trading_runtime.arte_journal_schema import (
+    TABLES, journal_permission_preflight, storage_preflight,
+    versioned_journal_v2_preflight,
+)
 from src.trading_runtime.journal_contract import canonical_json
 
 if TYPE_CHECKING:
@@ -598,6 +601,17 @@ class CommittedPrefix:
     batch_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class V2CommittedPrefix:
+    """Verified V2 chain; intentionally not a V1 page-reader credential."""
+    run_id: str
+    last_sequence: int
+    last_batch_id: str
+    source_cursor: str
+    status: str
+    batch_ids: tuple[str, ...]
+
+
 def _can_coalesce(left: TypedJournalBatch, right: TypedJournalBatch,
                   max_events: int) -> bool:
     return (
@@ -786,12 +800,14 @@ def _identity(rows: tuple[Mapping[str, Any], ...] | list[dict[str, Any]]) -> lis
     return sorted((str(UUID(str(row["record_id"]))), str(row["content_hash"])) for row in rows)
 
 
-def _family_identities(client: Any, batch_id: str) -> dict[str, list[tuple[str, str]]]:
+def _family_identities(
+    client: Any, batch_id: str, *, journal_profile: str = "v1",
+) -> dict[str, list[tuple[str, str]]]:
     """Read every typed family in one network request, including empty ones."""
     token = f"batch_id=toUUID({_literal(batch_id)})"
     selects = [
         "(SELECT groupArray((toString(record_id),toString(content_hash))) "
-        f"FROM arte.{name} WHERE {token}) AS {name}"
+        f"FROM arte.{_profile_table(name, journal_profile)} WHERE {token}) AS {name}"
         for name, _, _, _ in _FAMILIES
     ]
     response = _rows(client, "SELECT " + ",".join(selects) + " FORMAT JSONEachRow")
@@ -805,7 +821,19 @@ def _family_identities(client: Any, batch_id: str) -> dict[str, list[tuple[str, 
     }
 
 
-def _insert(client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: str) -> None:
+def _profile_table(name: str, journal_profile: str) -> str:
+    if journal_profile == "v1":
+        return name
+    if journal_profile == "backtest_v2":
+        return {"trading_strategy_signal_v1": "trading_strategy_signal_v2",
+                "trading_commit_v1": "trading_commit_v2"}.get(name, name)
+    raise ValueError("Unknown typed journal profile")
+
+
+def _insert(
+    client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: str,
+    *, journal_profile: str = "v1",
+) -> None:
     if name not in _CONTRACTS:
         raise ValueError("Journal writer cannot insert outside typed journal tables")
     if not rows:
@@ -813,7 +841,7 @@ def _insert(client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: 
     columns = tuple(column for column, _ in _CONTRACTS[name].columns)
     body = "\n".join(canonical_json(_wire_row(name, row)) for row in rows)
     client.execute(
-        f"INSERT INTO arte.{name} ({','.join(columns)}) "
+        f"INSERT INTO arte.{_profile_table(name, journal_profile)} ({','.join(columns)}) "
         f"SETTINGS async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
         f"insert_deduplication_token={_literal(token)} FORMAT JSONEachRow\n{body}"
     )
@@ -1031,6 +1059,7 @@ def _verify_run_identity(client: Any, run_id: str) -> dict[str, Any]:
 def _verify_commission_links(
     client: Any, batch: TypedJournalBatch,
     families: tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
+    *, journal_profile: str = "v1",
 ) -> None:
     by_family = dict(families)
     same_batch = {
@@ -1050,7 +1079,7 @@ def _verify_commission_links(
         for candidate in candidates:
             source_batch = str(UUID(str(candidate["batch_id"])))
             fences = _rows(client,
-                "SELECT batch_id FROM arte.trading_commit_v1 "
+                f"SELECT batch_id FROM arte.{_profile_table('trading_commit_v1', journal_profile)} "
                 f"WHERE run_id={_literal(batch.run_id)} "
                 f"AND batch_id=toUUID({_literal(source_batch)}) FORMAT JSONEachRow")
             if len(fences) > 1:
@@ -1063,6 +1092,7 @@ def _verify_commission_links(
 def _verify_order_context_links(
     client: Any, batch: TypedJournalBatch,
     families: tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
+    *, journal_profile: str = "v1",
 ) -> None:
     by_family = dict(families)
     exact_parents = {str(UUID(str(row["parent_record_id"])))
@@ -1094,7 +1124,7 @@ def _verify_order_context_links(
     if batch_ids:
         ids = ",".join(f"toUUID({_literal(value)})" for value in sorted(batch_ids))
         fences = _rows(client,
-            "SELECT batch_id FROM arte.trading_commit_v1 "
+            f"SELECT batch_id FROM arte.{_profile_table('trading_commit_v1', journal_profile)} "
             f"WHERE run_id={_literal(batch.run_id)} AND batch_id IN ({ids}) "
             "FORMAT JSONEachRow")
         committed = {str(UUID(str(row["batch_id"]))) for row in fences}
@@ -1111,6 +1141,7 @@ def _verify_order_context_links(
 def _verify_exact_intent_uses(
     client: Any, batch: TypedJournalBatch,
     families: tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
+    *, journal_profile: str = "v1",
 ) -> None:
     by_family = dict(families)
     uses = by_family["trading_strategy_intent_use_v1"]
@@ -1127,7 +1158,7 @@ def _verify_exact_intent_uses(
     if needed:
         ids = ",".join(f"toUUID({_literal(value)})" for value in sorted(needed))
         fence = (
-            "AND batch_id IN (SELECT batch_id FROM arte.trading_commit_v1 "
+            f"AND batch_id IN (SELECT batch_id FROM arte.{_profile_table('trading_commit_v1', journal_profile)} "
             f"WHERE run_id={_literal(batch.run_id)} "
             f"AND last_sequence<={batch.first_sequence - 1}) "
         )
@@ -1165,21 +1196,65 @@ def _verify_exact_intent_uses(
             raise RuntimeError("Intent revision use differs from its committed source or consumer")
 
 
-def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
+_V2_AUTHORITY_SEAL = object()
+
+
+class _V2WriterAuthority:
+    """Private proof that this exact client/run passed constructor preflight."""
+
+    def __init__(self, seal: object, client: Any, run_id: str) -> None:
+        if seal is not _V2_AUTHORITY_SEAL:
+            raise RuntimeError("V2 writer authority cannot be forged")
+        self.client = client
+        self.run_id = run_id
+
+
+def publish_typed_batch(
+    client: Any, batch: TypedJournalBatch, *, journal_profile: str = "v1",
+) -> str:
+    """Public direct publisher; V2 always runs full read-only preflight."""
+    return _publish_typed_batch(client, batch, journal_profile=journal_profile)
+
+
+def _publish_typed_batch(
+    client: Any, batch: TypedJournalBatch, *, journal_profile: str,
+    authority: _V2WriterAuthority | None = None,
+) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
     if batch.signal_evidence_nodes:
         raise ValueError("Generic signal evidence nodes are retired for new writes")
+    if journal_profile not in {"v1", "backtest_v2"}:
+        raise ValueError("Unknown typed journal profile")
+    if journal_profile == "backtest_v2" and batch.status != "running":
+        raise ValueError("Terminal Backtest requires separate anchored V2 publication")
+    if journal_profile == "backtest_v2":
+        if authority is None:
+            versioned_journal_v2_preflight(client)
+            context = _verify_run_identity(client, batch.run_id)
+            if context.get("mode") != "backtest":
+                raise RuntimeError("V2 journal profile requires a verified Backtest run")
+        elif not isinstance(authority, _V2WriterAuthority) or (
+            authority.client is not client or authority.run_id != batch.run_id
+        ):
+            raise RuntimeError("V2 writer authority differs from its client or run")
+        legacy = _rows(client,
+            "SELECT batch_id FROM arte.trading_commit_v1 "
+            f"WHERE run_id={_literal(batch.run_id)} LIMIT 1 FORMAT JSONEachRow")
+        if legacy:
+            raise RuntimeError("V2 journal cannot mix with legacy V1 commits")
+    elif authority is not None:
+        raise ValueError("V2 writer authority cannot be used with V1")
     families = _sealed_families(batch)
-    _verify_commission_links(client, batch, families)
-    _verify_exact_intent_uses(client, batch, families)
-    _verify_order_context_links(client, batch, families)
+    _verify_commission_links(client, batch, families, journal_profile=journal_profile)
+    _verify_exact_intent_uses(client, batch, families, journal_profile=journal_profile)
+    _verify_order_context_links(client, batch, families, journal_profile=journal_profile)
     existing = _rows(client,
         f"SELECT {','.join(_COMMIT_COLUMNS)} "
-        "FROM arte.trading_commit_v1 "
+        f"FROM arte.{_profile_table('trading_commit_v1', journal_profile)} "
         f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
     if not existing:
         prior = _rows(client,
-            "SELECT batch_id,last_sequence,status FROM arte.trading_commit_v1 "
+            f"SELECT batch_id,last_sequence,status FROM arte.{_profile_table('trading_commit_v1', journal_profile)} "
             f"WHERE run_id={_literal(batch.run_id)} "
             "ORDER BY last_sequence DESC LIMIT 1 FORMAT JSONEachRow")
         if prior and prior[0]["status"] != "running":
@@ -1189,7 +1264,7 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
         if expected_prior != (batch.prior_batch_id, batch.first_sequence - 1):
             raise RuntimeError("Typed journal batch does not extend the committed prefix")
     hashes: dict[str, str] = {}
-    actual = _family_identities(client, batch.batch_id)
+    actual = _family_identities(client, batch.batch_id, journal_profile=journal_profile)
     inserted = False
     for name, rows in families:
         expected_ids = _identity(rows)
@@ -1197,10 +1272,11 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
         if actual[name] and actual[name] != expected_ids:
             raise RuntimeError(f"{name} has a conflicting or duplicated batch")
         if rows and not actual[name]:
-            _insert(client, name, rows, f"{batch.batch_id}:{name}")
+            _insert(client, name, rows, f"{batch.batch_id}:{_profile_table(name, journal_profile)}",
+                    journal_profile=journal_profile)
             inserted = True
     if inserted:
-        actual = _family_identities(client, batch.batch_id)
+        actual = _family_identities(client, batch.batch_id, journal_profile=journal_profile)
         for name, rows in families:
             if actual[name] != _identity(rows):
                 raise RuntimeError(f"{name} did not become durable")
@@ -1223,22 +1299,34 @@ def publish_typed_batch(client: Any, batch: TypedJournalBatch) -> str:
     if existing and (len(existing) != 1 or existing[0] != expected):
         raise RuntimeError("Typed journal commit conflicts with an existing batch")
     if not existing:
-        _insert(client, "trading_commit_v1", (commit,), f"{batch.batch_id}:commit")
+        _insert(client, "trading_commit_v1", (commit,),
+                f"{batch.batch_id}:{_profile_table('trading_commit_v1', journal_profile)}:commit",
+                journal_profile=journal_profile)
         verified = _rows(client,
             f"SELECT {','.join(_COMMIT_COLUMNS)} "
-            "FROM arte.trading_commit_v1 "
+            f"FROM arte.{_profile_table('trading_commit_v1', journal_profile)} "
             f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
         if verified != [expected]:
             raise RuntimeError("Typed journal commit was not durably published")
     return batch.batch_id
 
 
-def load_committed_prefix(client: Any, run_id: str) -> CommittedPrefix | None:
+def load_committed_prefix(
+    client: Any, run_id: str, *, journal_profile: str = "v1",
+) -> CommittedPrefix | V2CommittedPrefix | None:
     """Verify the entire contiguous typed prefix; ignore unfenced fact rows."""
     if not run_id:
         raise ValueError("Journal run identity is required")
+    if journal_profile not in {"v1", "backtest_v2"}:
+        raise ValueError("Unknown typed journal profile")
+    if journal_profile == "backtest_v2":
+        versioned_journal_v2_preflight(client)
+        if _rows(client,
+            "SELECT batch_id FROM arte.trading_commit_v1 "
+            f"WHERE run_id={_literal(run_id)} LIMIT 1 FORMAT JSONEachRow"):
+            raise RuntimeError("V2 journal cannot mix with legacy V1 commits")
     commits = _rows(client,
-        f"SELECT {','.join(_COMMIT_COLUMNS)} FROM arte.trading_commit_v1 "
+        f"SELECT {','.join(_COMMIT_COLUMNS)} FROM arte.{_profile_table('trading_commit_v1', journal_profile)} "
         f"WHERE run_id={_literal(run_id)} ORDER BY last_sequence,batch_id FORMAT JSONEachRow")
     if not commits:
         return None
@@ -1271,26 +1359,29 @@ def load_committed_prefix(client: Any, run_id: str) -> CommittedPrefix | None:
     for commit in commits:
         expected_rows = sum(int(commit[count_key]) for _, _, count_key, _ in _FAMILIES)
         if chunk and (len(chunk) >= 32 or row_budget + expected_rows > 50_000):
-            _verify_recovery_chunk(client, chunk)
+            _verify_recovery_chunk(client, chunk, journal_profile=journal_profile)
             chunk = []
             row_budget = 0
         chunk.append(commit)
         row_budget += expected_rows
     if chunk:
-        _verify_recovery_chunk(client, chunk)
-    return CommittedPrefix(run_id, prior_sequence, prior_id,
-                           str(commits[-1]["source_cursor"]),
-                           str(commits[-1]["status"]), tuple(batch_ids))
+        _verify_recovery_chunk(client, chunk, journal_profile=journal_profile)
+    prefix_type = V2CommittedPrefix if journal_profile == "backtest_v2" else CommittedPrefix
+    return prefix_type(run_id, prior_sequence, prior_id,
+                       str(commits[-1]["source_cursor"]),
+                       str(commits[-1]["status"]), tuple(batch_ids))
 
 
-def _verify_recovery_chunk(client: Any, commits: list[dict[str, Any]]) -> None:
+def _verify_recovery_chunk(
+    client: Any, commits: list[dict[str, Any]], *, journal_profile: str = "v1",
+) -> None:
     batch_ids = tuple(str(UUID(str(commit["batch_id"]))) for commit in commits)
     ids = ",".join(f"toUUID({_literal(batch_id)})" for batch_id in batch_ids)
     actual = {batch_id: {name: [] for name, _, _, _ in _FAMILIES}
               for batch_id in batch_ids}
     for name, _, _, _ in _FAMILIES:
         columns = ",".join(column for column, _ in _CONTRACTS[name].columns)
-        rows = _rows(client, f"SELECT {columns} FROM arte.{name} "
+        rows = _rows(client, f"SELECT {columns} FROM arte.{_profile_table(name, journal_profile)} "
                      f"WHERE batch_id IN ({ids}) FORMAT JSONEachRow")
         for row in rows:
             batch_id = str(UUID(str(row["batch_id"])))
@@ -1872,13 +1963,19 @@ class ArteJournalWriter:
 
     def __init__(self, client: Any, *, run_id: str, capacity: int = 8,
                  max_events_per_commit: int = 4096,
-                 coalesce_batches: bool = True) -> None:
+                 coalesce_batches: bool = True,
+                 journal_profile: str = "v1") -> None:
         if capacity < 1 or max_events_per_commit < 1:
             raise ValueError("Journal queue capacity and commit bound must be positive")
         # Startup/control-plane validation, before a publication thread exists.
         # Never attempt to create tables or repair misplaced parts here.
-        storage_preflight(client)
-        journal_permission_preflight(client)
+        if journal_profile == "v1":
+            storage_preflight(client)
+            journal_permission_preflight(client)
+        elif journal_profile == "backtest_v2":
+            versioned_journal_v2_preflight(client)
+        else:
+            raise ValueError("Unknown typed journal profile")
         context = _verify_run_identity(client, run_id)
         if not isinstance(context, dict) or context.get("mode") not in {
             "live", "paper", "replay", "backtest", "integration_test",
@@ -1887,6 +1984,9 @@ class ArteJournalWriter:
         self._client = client
         self._run_id = run_id
         self._run_mode = context["mode"]
+        self._journal_profile = journal_profile
+        if journal_profile == "backtest_v2" and self._run_mode != "backtest":
+            raise RuntimeError("V2 journal profile requires a verified Backtest run")
         if self._run_mode == "backtest":
             account_ids = context.get("account_ids")
             if (not isinstance(account_ids, (tuple, list)) or not account_ids
@@ -1897,6 +1997,10 @@ class ArteJournalWriter:
             self._run_account_ids = frozenset(account_ids)
         else:
             self._run_account_ids = frozenset()
+        self._v2_authority = (
+            _V2WriterAuthority(_V2_AUTHORITY_SEAL, client, run_id)
+            if journal_profile == "backtest_v2" else None
+        )
         self._max_events_per_commit = max_events_per_commit
         self._coalesce_batches = coalesce_batches
         self._queue: Queue[
@@ -1933,6 +2037,10 @@ class ArteJournalWriter:
     @property
     def coalesce_batches(self) -> bool:
         return self._coalesce_batches
+
+    @property
+    def journal_profile(self) -> str:
+        return self._journal_profile
 
     def metrics(self) -> dict[str, int | bool]:
         """Cheap control-plane snapshot; never waits for the persistence worker."""
@@ -2105,6 +2213,9 @@ class ArteJournalWriter:
         """
         from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
 
+        if self._journal_profile == "backtest_v2":
+            raise RuntimeError("V2 terminal publication requires the staged separate fence")
+
         if (not isinstance(batch, TypedJournalBatch)
                 or self._run_mode != "backtest"
                 or batch.status not in {"completed", "stopped", "failed"}
@@ -2163,9 +2274,18 @@ class ArteJournalWriter:
             try:
                 if self._error is not None:
                     raise RuntimeError("Typed journal writer failed earlier") from self._error
+                if (self._journal_profile == "backtest_v2"
+                        and not isinstance(group[0][0],
+                                           (TypedJournalBatch, _DurabilityBarrier))):
+                    raise RuntimeError("V2 profile cannot route V1 snapshot or admission units")
                 if isinstance(group[0][0], TypedJournalBatch):
                     batch = _coalesce_unpublished(tuple(row for row, _ in group))
-                    committed_id = publish_typed_batch(self._client, batch)
+                    if self._journal_profile == "v1":
+                        committed_id = publish_typed_batch(self._client, batch)
+                    else:
+                        committed_id = _publish_typed_batch(
+                            self._client, batch, journal_profile=self._journal_profile,
+                            authority=self._v2_authority)
                 elif isinstance(group[0][0], _DurabilityBarrier):
                     if self._last_commit_id is None:
                         raise RuntimeError("Durability barrier has no committed predecessor")

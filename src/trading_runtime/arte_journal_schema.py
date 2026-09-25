@@ -1295,6 +1295,25 @@ def versioned_journal_v2_ddl() -> tuple[str, ...]:
     return tuple(table.ddl() for table in VERSIONED_JOURNAL_V2_TABLES)
 
 
+def versioned_journal_v2_preflight(client: Any) -> None:
+    """Opt-in, read-only audit of the occupied V1 and replacement V2 layout.
+
+    Legacy V1 facts remain readable but must not be writable under this
+    principal; all other journal families retain their active contracts.
+    """
+    replaced = {"trading_strategy_signal_v1", "trading_commit_v1"}
+    active = tuple(table for table in TABLES if table.name not in replaced)
+    contracts = active + (LEGACY_STRATEGY_SIGNAL_V1, LEGACY_COMMIT_V1)
+    contracts += VERSIONED_JOURNAL_V2_TABLES
+    storage_preflight(client, tables=contracts)
+    journal_permission_preflight(
+        client,
+        journal_tables=frozenset(table.name for table in active
+                                 + VERSIONED_JOURNAL_V2_TABLES),
+        read_only_tables=frozenset(replaced),
+    )
+
+
 def backtest_terminal_snapshot_v2_ddl() -> tuple[str, ...]:
     """Staged DDL only; never executed by a runtime or active schema check."""
     return tuple(table.ddl() for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES)
@@ -1660,21 +1679,21 @@ def _rows(client: Any, query: str) -> list[dict[str, Any]]:
     return [json.loads(line) for line in client.execute(query).splitlines() if line.strip()]
 
 
-def storage_preflight(client: Any) -> None:
+def storage_preflight(client: Any, *, tables: tuple[TableContract, ...] = TABLES) -> None:
     """Verify the exact typed schema and physical placement without writes."""
     policies = _rows(client,
         "SELECT disks FROM system.storage_policies "
         "WHERE policy_name='live_market_ssd' FORMAT JSONEachRow")
     if len(policies) != 1 or policies[0].get("disks") != [STORAGE_POLICY]:
         raise ValueError("Typed journal requires an SSD-only live_market_ssd policy")
-    names = ",".join(f"'{table.name}'" for table in TABLES)
+    names = ",".join(f"'{table.name}'" for table in tables)
     actual_tables = _rows(client,
         "SELECT name,engine,storage_policy,partition_key,sorting_key FROM system.tables "
         f"WHERE database='arte' AND name IN ({names}) FORMAT JSONEachRow")
     by_name = {row["name"]: row for row in actual_tables}
-    if set(by_name) != {table.name for table in TABLES}:
+    if set(by_name) != {table.name for table in tables}:
         raise ValueError("Typed journal tables are missing")
-    for table in TABLES:
+    for table in tables:
         row = by_name[table.name]
         if (row["engine"], row["storage_policy"], row["partition_key"],
                 row["sorting_key"]) != (
@@ -1683,12 +1702,12 @@ def storage_preflight(client: Any) -> None:
     actual_columns = _rows(client,
         "SELECT table,name,type FROM system.columns WHERE database='arte' "
         f"AND table IN ({names}) ORDER BY table,position FORMAT JSONEachRow")
-    for table in TABLES:
+    for table in tables:
         columns = tuple((row["name"], row["type"])
                         for row in actual_columns if row["table"] == table.name)
         if columns != table.columns:
             raise ValueError(f"Typed journal columns differ: {table.name}")
-    indexed = {table.name for table in TABLES
+    indexed = {table.name for table in tables
                if any(column == "batch_id" for column, _ in table.columns)}
     indexes = _rows(client,
         "SELECT table,name,type,expr,granularity FROM system.data_skipping_indices "
@@ -1714,9 +1733,13 @@ def storage_preflight(client: Any) -> None:
         raise ValueError("Typed journal has active parts without materialized batch indexes")
 
 
-def journal_permission_preflight(client: Any) -> None:
+def journal_permission_preflight(
+    client: Any, *, journal_tables: frozenset[str] | None = None,
+    read_only_tables: frozenset[str] = frozenset(),
+) -> None:
     """Fail closed unless this principal can only read market and append journal."""
-    journal = {table.name for table in TABLES}
+    journal = ({table.name for table in TABLES} if journal_tables is None
+               else set(journal_tables))
     market = MARKET_READ_TABLES
     # The staged live-signal profile is an explicit, all-or-nothing extension
     # of this principal. Validate its physical tables before accepting grants.
@@ -1729,7 +1752,7 @@ def journal_permission_preflight(client: Any) -> None:
            for name in staged_names):
         staged_live_signal_storage_preflight(client)
         journal |= staged_names
-    required = journal | market
+    required = journal | market | read_only_tables
     names = ",".join(f"'{name}'" for name in sorted(required))
     actual = _rows(client,
         "SELECT name FROM system.tables WHERE database='arte' "
