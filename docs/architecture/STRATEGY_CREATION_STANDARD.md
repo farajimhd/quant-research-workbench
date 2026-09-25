@@ -101,6 +101,11 @@ ticker/session through bounded Arrow batches into this mask, including exact
 indicator-row checks. Its candidates must still pass Candidate 350's
 surviving stateful entry/lifecycle rules. No path yet dispatches this draft
 from the application.
+`src/backend/backtest_strategy_one_preparation.py` now scans the full certified
+universe for completed-bar Early Squeeze starts, loads only episode-bearing
+tickers in bounded read-only lanes, and merges compact candidate cursors in
+stable boundary/ticker order. This remains preparation, not strategy activation,
+portfolio mutation, or a runnable Backtest controller.
 `src/trading_runtime/strategy_one_position.py` now owns a pure, deterministic
 active-position protection reducer: entry requires the completed 30s stop and
 third overhead target; accepted 1s resistance breaks are deduplicated and
