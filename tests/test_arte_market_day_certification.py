@@ -187,3 +187,32 @@ def test_producer_preparation_preserves_zero_row_scope_without_writing() -> None
 
     with pytest.raises(ValueError, match="lacks completed bars"):
         prepare_market_day_certificate(definition, build_id, MissingStage())
+
+
+def test_producer_normalizes_only_explicit_utc_population_columns() -> None:
+    plan = source_plan_fixture()
+    certificate = plan["population"][0]["certificate"]
+    certificate["available_at_utc"] = "2026-08-18 07:00:00.125"
+    certificate["cutoff_utc"] = "2026-08-18 08:00:00.000"
+    definition = dict(version="market-day-core-v5", plan=plan,
+                      calculation_source=PIN, rules_hash=PIN)
+    build_id = sha256(json.dumps(definition, sort_keys=True, separators=(",", ":"),
+                                 default=str).encode()).hexdigest()
+
+    class Ledger:
+        def unit(self, build, day, ticker, stage):
+            return dict(status="complete", attempt_id="attempt", source_hash="source",
+                        output_rows=0, output_hash="0")
+
+        def seed(self, build, day, ticker):
+            return dict(attempt_id="attempt", mode=0, predecessor_date="",
+                        prior_build_id="", prior_state_hash="")
+
+    prepared = prepare_market_day_certificate(definition, build_id, Ledger())
+    scope = prepared["market_day_planned_scope_v1"][0]
+    assert scope["population_available_at"] == "2026-08-18T07:00:00.125000+00:00"
+    assert scope["population_cutoff_at"] == "2026-08-18T08:00:00+00:00"
+    assert prepared["market_day_source_population_v1"][0]["available_at_utc"] == (
+        "2026-08-18 07:00:00.125")
+    assert verify_market_day_certificate(FakeReader(prepared), build_id,
+                                         sessions=(DAY,)).scopes == ((DAY, "TEST"),)

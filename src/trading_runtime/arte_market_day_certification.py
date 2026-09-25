@@ -177,6 +177,21 @@ def _utc(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _producer_utc_wire(value: Any) -> str:
+    """Decode a ClickHouse DateTime64(..., 'UTC') result at the producer edge.
+
+    ClickHouse JSONEachRow renders this explicitly UTC-typed source column
+    without an offset. The source plan keeps its original wire string and
+    hash; only the typed DateTime64 certificate row gains an explicit offset.
+    """
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise ValueError("Market-day population UTC column has a non-UTC offset")
+    return parsed.isoformat()
+
+
 def prepare_market_day_certificate(definition: Mapping[str, Any], build_id: str,
                                    ledger: Any) -> dict[str, tuple[dict[str, Any], ...]]:
     """Pure producer-side preparation; intentionally does not publish a fence.
@@ -219,8 +234,8 @@ def prepare_market_day_certificate(definition: Mapping[str, Any], build_id: str,
             last_ordinal=int(unit["last_ordinal"]),
             population_snapshot_id=str(certificate["snapshot_id"]),
             population_revision=str(certificate["revision"]),
-            population_available_at=str(certificate["available_at_utc"]),
-            population_cutoff_at=str(certificate["cutoff_utc"]),
+            population_available_at=_producer_utc_wire(certificate["available_at_utc"]),
+            population_cutoff_at=_producer_utc_wire(certificate["cutoff_utc"]),
             population_source_hash=str(certificate["source_hash"])))
         for stage in sorted(STAGES):
             product = ledger.unit(build_id, day, ticker, stage)
