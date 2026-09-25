@@ -8,7 +8,7 @@ import pytest
 
 from src.trading_runtime.arte_market_day_cold_preflight import (
     audit_attested_market_day_certificate, certified_market_day_plan_from_cold_audit,
-    replay_canonical_source_plan_parity,
+    cold_certified_market_day_plan, replay_canonical_source_plan_parity,
     verify_attested_market_products,
 )
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperAuthority
@@ -201,3 +201,50 @@ def test_cold_constructor_requires_source_parity_and_matches_ledger_token() -> N
     with pytest.raises(ValueError, match="outside attested population"):
         certified_market_day_plan_from_cold_audit(client, audit,
             sessions=(DAY,), tickers=("OTHER",), configuration={})
+
+
+def test_cold_plan_entrypoint_replays_canonical_source_before_product_reads(
+        monkeypatch) -> None:
+    from scripts import build_market_day
+
+    class ProductReader(FakeClickHouse):
+        product_reads = 0
+
+        def execute(self, sql):
+            if "FROM system.tables" in sql and "'bars_v1'" in sql:
+                return "\n".join(json.dumps(dict(
+                    name=name, storage_policy="live_market_ssd")) for name in (
+                    "bars_v1", "indicators_v1", "liquidity_100ms_v1"))
+            if "FROM system.parts" in sql and "'bars_v1'" in sql:
+                return ""
+            if any(f"FROM arte.{name} " in sql for name in (
+                    "bars_v1", "indicators_v1", "liquidity_100ms_v1")):
+                self.product_reads += 1
+                return ""
+            return super().execute(sql)
+
+    source, keeper = fixture()
+    client = ProductReader()
+    client.rows = deepcopy(source.rows)
+    canonical = object()
+    expected_plan = audit_attested_market_day_certificate(client, keeper, BUILD,
+                                                             sessions=(DAY,)).source_plan
+    def replay(source_client, args):
+        assert source_client is canonical
+        return deepcopy(expected_plan)
+    monkeypatch.setattr(build_market_day, "source_plan", replay)
+    result = cold_certified_market_day_plan(client, canonical, keeper, BUILD,
+        sessions=(DAY,), tickers=(), configuration={})
+    assert result.tickers == ("TEST",)
+    assert client.product_reads > 0
+
+    client.product_reads = 0
+    def stale(_source_client, _args):
+        plan = deepcopy(expected_plan)
+        plan["rules"][0]["modifier_int"] += 1
+        return plan
+    monkeypatch.setattr(build_market_day, "source_plan", stale)
+    with pytest.raises(RuntimeError, match="differs from attested"):
+        cold_certified_market_day_plan(client, canonical, keeper, BUILD,
+            sessions=(DAY,), tickers=(), configuration={})
+    assert client.product_reads == 0

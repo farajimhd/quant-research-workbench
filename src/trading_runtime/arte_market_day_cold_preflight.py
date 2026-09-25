@@ -226,3 +226,22 @@ def certified_market_day_plan_from_cold_audit(client: Any,
         resolutions, token=_stable_hash(payload))
     verify_market_day_plan(plan, client)
     return plan
+
+
+def cold_certified_market_day_plan(certificate_client: Any, source_client: Any,
+                                   keeper: Any, build_id: str, *,
+                                   sessions: tuple[str, ...],
+                                   tickers: tuple[str, ...],
+                                   configuration: Mapping[str, Any]) -> Any:
+    """Inactive SELECT-only replacement candidate for the SQLite plan read.
+
+    The certificate client and canonical source client are explicit so a
+    certificate cannot certify itself by replaying its own stored plan. This
+    does not authorize the fixed Backtest launch path or grant any writes.
+    """
+    audit = audit_attested_market_day_certificate(
+        certificate_client, keeper, build_id, sessions=sessions)
+    audit = replay_canonical_source_plan_parity(source_client, audit)
+    return certified_market_day_plan_from_cold_audit(
+        certificate_client, audit, sessions=sessions, tickers=tickers,
+        configuration=configuration)

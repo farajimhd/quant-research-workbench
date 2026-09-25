@@ -17,6 +17,25 @@ from tests.test_live_signal_work_completion import Keeper, Storage, _proof_input
 
 
 class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_typed_start_stays_degraded_without_sqlite_or_market_worker(self) -> None:
+        publisher = Mock()
+        supervisor = LiveStrategyRuntimeSupervisor(typed_signal_completion=publisher)
+        with patch.object(supervisor, "_hydrate_activations", side_effect=AssertionError(
+                "typed startup must not read SQLite")), patch.object(
+                supervisor, "_run_thread", side_effect=AssertionError(
+                    "typed startup must not run market worker")):
+            supervisor.start()
+        status = supervisor.snapshot()
+        self.assertFalse(status["running"])
+        self.assertEqual(status["state"], "degraded")
+        self.assertIn("incomplete", status["last_error"])
+        self.assertIsNone(supervisor._thread)
+        publisher.submit.assert_not_called()
+        with self.assertRaisesRegex(RuntimeError, "refusing SQLite fallback"):
+            supervisor.submit([{"run_plan_id": "plan", "ticker": "ABC"}])
+        with self.assertRaisesRegex(RuntimeError, "cutover is incomplete"):
+            supervisor.submit_market_rows([{"ticker": "ABC"}], as_of="2026-01-01")
+
     async def test_typed_work_waits_for_completion_and_cold_replays_exact_row(self) -> None:
         delivery, intents, acks = _proof_inputs()
         proof = prepare_completion_proof(intents, acks, ordinal=0)

@@ -27,8 +27,10 @@ def _verified(monkeypatch):
 
 def test_bootstrap_assembles_bounded_in_memory_lane_without_writes(monkeypatch):
     checked, _ = _verified(monkeypatch)
+    read_client, writer_client, terminal_client, keeper = (
+        object(), object(), object(), object())
     token = bootstrap.prepare_fixed_journal_token(
-        object(), object(), run_id=RUN, account_ids=("DU1",),
+        read_client, terminal_client, keeper, run_id=RUN, account_ids=("DU1",),
         configuration_hash="c" * 64, market_plan_token="market-token",
         projection_certifier=lambda: "a" * 64)
     assert checked == ["schema", "v2", "keeper"]
@@ -41,10 +43,11 @@ def test_bootstrap_assembles_bounded_in_memory_lane_without_writes(monkeypatch):
             pass
     calls = []
     def factory(*args, **kwargs):
-        calls.append(kwargs)
+        calls.append((args, kwargs))
         return Writer()
     assembly = bootstrap.assemble_fixed_journal(
-        object(), object(), token, attempt_id=ATTEMPT,
+        read_client, writer_client, terminal_client, keeper, token,
+        attempt_id=ATTEMPT,
         expected_config={"mode": "backtest"},
         fixed_market_parent_plan=object(), fixed_market_execution_plan=object(),
         expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
@@ -52,8 +55,9 @@ def test_bootstrap_assembles_bounded_in_memory_lane_without_writes(monkeypatch):
     assert assembly.journal.run_id == RUN
     assert assembly.publisher.writer is assembly.writer
     assert assembly.terminal_authority.account_ids == ("DU1",)
-    assert calls == [{"run_id": RUN, "capacity": 8,
-                      "max_events_per_commit": 512, "coalesce_batches": False}]
+    assert calls == [((writer_client,), {"run_id": RUN, "capacity": 8,
+                      "max_events_per_commit": 512, "coalesce_batches": False})]
+    assert assembly.terminal_authority.client._client is terminal_client
     assembly.journal.close()
 
 
@@ -61,12 +65,40 @@ def test_bootstrap_rejects_unverified_context_or_missing_projection(monkeypatch)
     _, context = _verified(monkeypatch)
     with pytest.raises(ValueError, match="projection"):
         bootstrap.prepare_fixed_journal_token(
-            object(), object(), run_id=RUN, account_ids=("DU1",),
+            object(), object(), object(), run_id=RUN, account_ids=("DU1",),
             configuration_hash="c" * 64, market_plan_token="market-token",
             projection_certifier=None)
     context["market_plan_token"] = "changed"
     with pytest.raises(RuntimeError, match="differs"):
         bootstrap.prepare_fixed_journal_token(
-            object(), object(), run_id=RUN, account_ids=("DU1",),
+            object(), object(), object(), run_id=RUN, account_ids=("DU1",),
             configuration_hash="c" * 64, market_plan_token="market-token",
             projection_certifier=lambda: "a" * 64)
+
+
+def test_bootstrap_refuses_shared_clients_or_divergent_writer_view(monkeypatch):
+    _verified(monkeypatch)
+    read_client, writer_client, terminal_client, keeper = (
+        object(), object(), object(), object())
+    token = bootstrap.prepare_fixed_journal_token(
+        read_client, terminal_client, keeper, run_id=RUN, account_ids=("DU1",),
+        configuration_hash="c" * 64, market_plan_token="market-token",
+        projection_certifier=lambda: "a" * 64)
+    kwargs = dict(attempt_id=ATTEMPT, expected_config={"mode": "backtest"},
+                  fixed_market_parent_plan=object(),
+                  fixed_market_execution_plan=object(),
+                  expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
+                  writer_factory=lambda *_, **__: (_ for _ in ()).throw(
+                      AssertionError("writer must not start")))
+    with pytest.raises(ValueError, match="bounded certified inputs"):
+        bootstrap.assemble_fixed_journal(
+            read_client, read_client, terminal_client, keeper, token, **kwargs)
+    context = {"mode": "backtest", "account_ids": ("DU1",),
+               "run_month": "2026-08-01", "configuration_hash": "c" * 64,
+               "market_plan_token": "market-token"}
+    monkeypatch.setattr(bootstrap, "load_typed_run_context",
+                        lambda client, *_: {**context, "market_plan_token": "changed"}
+                        if client is writer_client else context)
+    with pytest.raises(RuntimeError, match="Batch writer observes"):
+        bootstrap.assemble_fixed_journal(
+            read_client, writer_client, terminal_client, keeper, token, **kwargs)
