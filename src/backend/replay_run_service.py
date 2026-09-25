@@ -2329,6 +2329,37 @@ class ReplayRunController:
             self._checkpoint_io_task = None
             self._checkpoint_work_snapshot = None
 
+    def _prepare_terminal_v2_handoff(self, verified_prefix, *, committed_at):
+        """Inactive fixed-Backtest handoff; publication still needs admission.
+
+        Caller must obtain a cold-verified V1 prefix. The current _finish path
+        intentionally does not call this until operator storage preflight and
+        portfolio recovery anchoring are in place.
+        """
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        from src.backend.backtest_terminal_v2_handoff import prepare_terminal_v2_handoff
+        from src.trading_runtime.arte_journal_writer import CommittedPrefix
+
+        publisher = getattr(self, '_journal_publisher', None)
+        task = getattr(publisher, '_task', None)
+        if (self.definition.mode != RunMode.BACKTEST
+                or not isinstance(self._journal, BacktestMemoryJournal)
+                or not isinstance(verified_prefix, CommittedPrefix)
+                or publisher is None
+                or getattr(publisher, '_error', None) is not None
+                or task is not None and not task.done()
+                or publisher.fenced_sequence != verified_prefix.last_sequence
+                or publisher._batch_id != verified_prefix.last_batch_id
+                or publisher._source_cursor != verified_prefix.source_cursor):
+            raise RuntimeError('Terminal V2 handoff lacks one settled typed V1 prefix')
+        if task is not None:
+            task.result()
+        return prepare_terminal_v2_handoff(
+            self._journal, verified_prefix,
+            account_ids=self.account_ids, attempt_id=publisher.attempt_id,
+            run_month=publisher.run_month, committed_at=committed_at,
+        )
+
     def _record_stage_time(self, stage, started):
         elapsed = time.perf_counter() - started
         timings = getattr(self, '_stage_timings', {})

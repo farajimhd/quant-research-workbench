@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.backend.discovery_projection import project_discovery_columns
-from src.backend.signal_stream_runtime_service import SignalStreamRuntime, signal_stream_session
+from src.backend.signal_stream_runtime_service import (
+    SignalStreamRuntime, decide_rule_occurrence, signal_stream_session,
+)
 from src.backend.trading_configuration_service import _default_draft
 from src.backend.watchlist_runtime_service import WatchlistRuntime
 from src.trading_runtime.journal import TradingJournal
@@ -19,6 +21,16 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.journal = TradingJournal(Path(self.temporary.name) / "journal.sqlite3")
         self.configuration = _default_draft()
+        # The default catalog no longer advertises a runnable core-bars QMD
+        # family. These demand tests explicitly provision that capability.
+        self.configuration["market_discovery"]["calculation_catalog"].append({
+            "capability_id": "qmd.family.core_bars",
+            "availability": "implemented",
+            "fields": ["market.change_pct", "price_change_1_bar_pct",
+                       "data.price_change_1_bar_pct@1:value",
+                       "trade_count_change", "volume_change"],
+            "selected_timeframes": [],
+        })
         self.configuration["market_discovery"]["signal_streams"] = [
             {
                 "signal_stream_id": "positive-move-signals",
@@ -51,6 +63,59 @@ class SignalStreamRuntimeTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.journal.close()
         self.temporary.cleanup()
+
+    def test_pure_decision_does_not_mutate_prior_and_respects_rearm(self) -> None:
+        stream = self.configuration["market_discovery"]["signal_streams"][0]
+        at = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+        prior = {"matching": True, "definition_revision": "revision",
+                 "last_emitted_at": (at - timedelta(seconds=1)).isoformat()}
+        decision = decide_rule_occurrence(
+            stream, {"ticker": "AAA", "change_pct": 4.5}, {}, as_of=at,
+            definition_revision="revision", previous=prior, matches=True)
+        self.assertIsNone(decision.occurrence)
+        self.assertEqual(prior["last_emitted_at"], (at - timedelta(seconds=1)).isoformat())
+        stream["rearm_policy"] = "after_cooldown"
+        stream["cooldown_ms"] = 500
+        decision = decide_rule_occurrence(
+            stream, {"ticker": "AAA", "change_pct": 4.5}, {}, as_of=at,
+            definition_revision="revision", previous=prior, matches=True)
+        self.assertIsNotNone(decision.occurrence)
+        self.assertEqual(decision.last_emitted_at, at.isoformat())
+        self.assertEqual(prior["last_emitted_at"], (at - timedelta(seconds=1)).isoformat())
+
+    def test_injected_sync_port_matches_default_journal_and_order(self) -> None:
+        second = TradingJournal(Path(self.temporary.name) / "port.sqlite3")
+        calls = []
+
+        class TrackingPort:
+            def load_checkpoint(self, *args, **kwargs):
+                calls.append("load")
+                return second.load_checkpoint(*args, **kwargs)
+
+            def append_once(self, **kwargs):
+                calls.append("append")
+                return second.append_once(**kwargs)
+
+            def save_checkpoint(self, *args):
+                calls.append("checkpoint")
+                return second.save_checkpoint(*args)
+
+            def signal_stream_records(self, **kwargs):
+                calls.append("read")
+                return second.signal_stream_records(**kwargs)
+
+        try:
+            at = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+            row = {"ticker": "AAA", "change_pct": 4.5, "market_cap": 500_000_000}
+            direct = SignalStreamRuntime().resolve(
+                self.configuration, [row], as_of=at, journal=self.journal)
+            injected = SignalStreamRuntime().resolve(
+                self.configuration, [row], as_of=at, journal=self.journal,
+                persistence=TrackingPort())
+            self.assertEqual(injected, direct)
+            self.assertEqual(calls, ["load", "append", "checkpoint", "read"])
+        finally:
+            second.close()
 
     def test_projection_materializes_registered_alias_columns(self) -> None:
         row = project_discovery_columns(
@@ -225,14 +290,16 @@ class SignalStreamRuntimeTests(unittest.TestCase):
 
     def test_occurrence_freezes_the_configured_interval_column_value(self) -> None:
         discovery = self.configuration["market_discovery"]
-        column = next(row for row in discovery["column_catalog"] if row.get("source_id") == "price_change_pct")
+        column = next(row for row in discovery["column_catalog"]
+                      if row.get("source_id") == "price_change_1_bar_pct")
         stream = discovery["signal_streams"][0]
         stream["columns"] = ["symbol", column["column_id"]]
         stream["column_intervals"] = {column["column_id"]: "5m"}
 
         result = SignalStreamRuntime().resolve(
             self.configuration,
-            [{"ticker": "AAA", "change_pct": 4.5, "technical__price_change_pct__5m": 7.25}],
+            [{"ticker": "AAA", "change_pct": 4.5,
+              "technical__price_change_1_bar_pct__5m": 7.25}],
             as_of=datetime(2026, 8, 17, 15, 0, tzinfo=UTC),
             journal=self.journal,
         )
@@ -434,7 +501,7 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         stream = discovery["signal_streams"][0]
         bar_change = next(
             row for row in discovery["column_catalog"]
-            if row.get("column_id") == "field__price__change"
+            if row.get("source_id") == "price_change_1_bar_pct"
         )
         stream.update({
             "columns": ["symbol", bar_change["column_id"]],

@@ -900,7 +900,21 @@ def transport_compatible_resume(saved, definition):
         {key:value for key,value in definition.items() if key!='controller_source'})
 
 
-def run(args):
+def _publish_injected_typed_certificate(definition, build_id, ledger, publisher):
+    """Optional post-build hook; no default ClickHouse/Keeper credentials or writes."""
+    from src.trading_runtime.arte_market_day_certification import prepare_market_day_certificate
+    from src.trading_runtime.arte_market_day_keeper import (
+        BuildAttestation, require_attested_inventory,
+    )
+
+    prepared = prepare_market_day_certificate(definition, build_id, ledger)
+    proof = publisher(prepared, sessions=tuple(str(day) for day in definition['plan']['requested']))
+    if not isinstance(proof, BuildAttestation):
+        raise RuntimeError("Injected market-day publisher did not return a Keeper CAS proof")
+    require_attested_inventory(proof, prepared['market_day_build_fence_v1'][0])
+
+
+def run(args, *, typed_certificate_publisher=None):
     runtime = args.runtime.resolve()
     if not RUNTIME.is_dir() or not runtime.is_relative_to(RUNTIME.resolve()):
         raise ValueError("Runtime must be beneath the available D:/TradingML/runtimes")
@@ -1051,6 +1065,7 @@ def run(args):
             print("Build failed: "+report['error'],file=sys.stderr,flush=True)
             return 1
         finally:
+            typed_publication_error = None
             if database_ready and ledger is not None:
                 try:
                     ledger.build(build,definition,report['status'])
@@ -1062,6 +1077,17 @@ def run(args):
                         error=report.get('error') or client.clean_error(error))
                     save(report_path,report)
                     raise RuntimeError('Could not publish final build status; inspect latest.json') from None
+                if typed_certificate_publisher is not None and report['status'] == 'core_complete':
+                    try:
+                        _publish_injected_typed_certificate(
+                            definition, build, ledger, typed_certificate_publisher)
+                        report['typed_certificate_status'] = 'attested'
+                    except Exception as error:
+                        # The original ledger remains certified. The typed lane
+                        # may be partially durable and must be cold-reconciled.
+                        report['typed_certificate_status'] = 'requires_reconciliation'
+                        report['typed_certificate_error'] = client.clean_error(error)
+                        typed_publication_error = error
             profiles=list(client.profiles)
             totals=dict(client.profile_totals)
             for worker_client in locals().get('clients',[]):
@@ -1089,13 +1115,17 @@ def run(args):
             save(runs / (report['run_id']+'.json'),report)
             if report.get('build_id') and not args.plan_only:
                 save(runtime / (report['build_id']+'.json'),report)
-            if report['status']=='core_complete':
+            if report['status']=='core_complete' and typed_publication_error is None:
                 print(f"Core build complete: {build}\nManifest: {report_path}",flush=True)
             for worker_client in locals().get('clients',[]):
                 worker_client.close()
             if ledger is not None:
                 ledger.close()
             client.close()
+            if typed_publication_error is not None:
+                raise RuntimeError(
+                    'Injected typed certificate requires reconciliation; inspect latest.json'
+                ) from typed_publication_error
 
 
 def main(argv=None):

@@ -4,8 +4,9 @@ import hashlib
 import json
 import threading
 import time as monotonic_time
+from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
-from typing import Any
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from src.backend.discovery_projection import (
@@ -36,6 +37,46 @@ SIGNAL_STREAM_SCHEMA_VERSION = 1
 SIGNAL_STREAM_SNAPSHOT_CACHE_SECONDS = 1.0
 DEFAULT_CORE_COMPUTATION_CANDIDATE_LIMIT = 512
 MAX_CORE_COMPUTATION_CANDIDATE_LIMIT = 2_000
+
+
+class SignalStreamPersistence(Protocol):
+    """Synchronous legacy boundary; an async typed publisher is not this port."""
+
+    def load_checkpoint(self, run_id: str) -> Any: ...
+    def append_once(self, **kwargs: Any) -> tuple[Any, bool]: ...
+    def save_checkpoint(self, *args: Any) -> Any: ...
+    def signal_stream_records(self, **kwargs: Any) -> Any: ...
+
+
+@dataclass(frozen=True)
+class OccurrenceDecision:
+    occurrence: dict[str, Any] | None
+    last_emitted_at: str | None
+
+
+def decide_rule_occurrence(
+    stream: dict[str, Any], row: dict[str, Any],
+    columns: dict[str, dict[str, Any]], *, as_of: datetime,
+    definition_revision: str, previous: dict[str, Any], matches: bool,
+) -> OccurrenceDecision:
+    """Pure decision; persistence and route/state mutation remain at caller."""
+    previous_match = bool(previous.get("matching")) and str(
+        previous.get("definition_revision") or "") == definition_revision
+    last_emitted = _parse_datetime(previous.get("last_emitted_at"))
+    rearm_policy = str(stream.get("rearm_policy") or "after_false")
+    cooldown_ms = max(0, int(stream.get("cooldown_ms") or 0))
+    cooldown_elapsed = (
+        last_emitted is None
+        or as_of >= last_emitted + timedelta(milliseconds=cooldown_ms)
+    )
+    should_emit = str(stream.get("occurrence_source") or "rule_evaluator") == "rule_evaluator" and matches and (
+        not previous_match or (rearm_policy == "after_cooldown" and cooldown_elapsed)
+    )
+    if not should_emit:
+        return OccurrenceDecision(None, None)
+    return OccurrenceDecision(
+        _occurrence(stream, row, columns, as_of=as_of,
+                    definition_revision=definition_revision), as_of.isoformat())
 
 
 class SignalStreamRuntime:
@@ -183,7 +224,9 @@ class SignalStreamRuntime:
         watchlist_runtime: dict[str, Any] | None = None,
         include_occurrences: bool = True,
         data_fields_projected: bool = False,
+        persistence: SignalStreamPersistence | None = None,
     ) -> dict[str, Any]:
+        port: SignalStreamPersistence = persistence if persistence is not None else journal
         if as_of.tzinfo is None:
             raise ValueError("Signal Stream as_of must be timezone-aware")
         as_of = as_of.astimezone(UTC)
@@ -228,7 +271,7 @@ class SignalStreamRuntime:
         stream_snapshots: list[dict[str, Any]] = []
         new_occurrences: list[dict[str, Any]] = []
         with self._lock:
-            self._hydrate(journal)
+            self._hydrate(port)
             dirty = False
             if self._session_key != session["session_key"] or (
                 not session["active"] and (self._states or self._admissions)
@@ -299,29 +342,14 @@ class SignalStreamRuntime:
                     )
                     matching += int(matches)
                     previous = stream_state.get(ticker, {})
-                    previous_match = bool(previous.get("matching")) and str(
-                        previous.get("definition_revision") or ""
-                    ) == revision_hash
-                    last_emitted = _parse_datetime(previous.get("last_emitted_at"))
-                    rearm_policy = str(stream.get("rearm_policy") or "after_false")
-                    cooldown_ms = max(0, int(stream.get("cooldown_ms") or 0))
-                    cooldown_elapsed = (
-                        last_emitted is None
-                        or as_of >= last_emitted + timedelta(milliseconds=cooldown_ms)
+                    decision = decide_rule_occurrence(
+                        stream, stream_row, columns, as_of=as_of,
+                        definition_revision=revision_hash,
+                        previous=previous, matches=matches,
                     )
-                    should_emit = occurrence_source == "rule_evaluator" and matches and (
-                        not previous_match
-                        or (rearm_policy == "after_cooldown" and cooldown_elapsed)
-                    )
-                    if should_emit:
-                        occurrence = _occurrence(
-                            stream,
-                            stream_row,
-                            columns,
-                            as_of=as_of,
-                            definition_revision=revision_hash,
-                        )
-                        _, inserted = journal.append_once(
+                    if decision.occurrence is not None:
+                        occurrence = decision.occurrence
+                        _, inserted = port.append_once(
                             run_id=SIGNAL_EVENT_RUN_ID,
                             category="market_discovery_signal",
                             entity_type="signal_occurrence",
@@ -335,7 +363,7 @@ class SignalStreamRuntime:
                                 self._snapshot_cache.clear()
                             new_occurrences.append(occurrence)
                         dirty = self._apply_routes(stream, occurrence, as_of) or dirty
-                        previous["last_emitted_at"] = as_of.isoformat()
+                        previous["last_emitted_at"] = decision.last_emitted_at
                     next_state = {
                         **previous,
                         "matching": matches,
@@ -375,7 +403,7 @@ class SignalStreamRuntime:
                 if str(row.get("signal_stream_id") or "")
             }
             if dirty:
-                journal.save_checkpoint(
+                port.save_checkpoint(
                     SIGNAL_STATE_RUN_ID,
                     as_of.isoformat(),
                     {"states": self._states, "admissions": self._admissions, "session_key": self._session_key},
@@ -385,7 +413,7 @@ class SignalStreamRuntime:
             if include_occurrences and session["active"]:
                 occurrences = [
                     record.payload
-                    for record in journal.signal_stream_records(
+                    for record in port.signal_stream_records(
                         from_time=session["start_at"],
                         as_of=as_of,
                         limit=10_000,
@@ -605,7 +633,7 @@ class SignalStreamRuntime:
                 )
         return payload
 
-    def _hydrate(self, journal: TradingJournal) -> None:
+    def _hydrate(self, journal: SignalStreamPersistence) -> None:
         if self._hydrated:
             return
         checkpoint = journal.load_checkpoint(SIGNAL_STATE_RUN_ID)
