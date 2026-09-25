@@ -261,26 +261,34 @@ def test_preflight_requires_exact_layout_and_actual_ssd_parts() -> None:
         storage_preflight(client)
 
 
-def test_journal_principal_cannot_write_market_or_change_schema() -> None:
+def test_journal_principal_cannot_write_market_or_change_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.backend import live_signal_journal_preflight as staged_profile
+
     market = {"bars_v1", "indicators_v1", "liquidity_100ms_v1",
               "structural_level_coverage_v7", "structural_level_observations_v7",
               "structural_levels_v7"}
     journal = {table.name for table in TABLES}
+    staged_journal = {table.name for table in staged_profile.LIVE_SIGNAL_TABLES}
     unrelated = "unrelated_operator_table_v1"
 
     class Grants:
         extra_grant = ""
         grant_line = ""
+        staged = False
 
         def execute(self, sql: str) -> str:
             if "FROM system.tables" in sql:
                 assert "name IN (" in sql
-                return "\n".join(json.dumps({"name": name}) for name in sorted(market | journal))
+                tables = market | journal | (staged_journal if self.staged else set())
+                return "\n".join(json.dumps({"name": name}) for name in sorted(tables))
             if sql == "SELECT currentUser()":
                 return "journal_writer\n"
             if sql == "SHOW GRANTS":
+                writable = journal | (staged_journal if self.staged else set())
                 grants = [*(f"GRANT SELECT, INSERT ON arte.{name} TO journal_writer"
-                            for name in sorted(journal)),
+                            for name in sorted(writable)),
                           *(f"GRANT SELECT ON arte.{name} TO journal_writer"
                             for name in sorted(market)),
                           *(f"GRANT SELECT ON system.{name} TO journal_writer"
@@ -293,15 +301,23 @@ def test_journal_principal_cannot_write_market_or_change_schema() -> None:
                 privilege, scope = sql.removeprefix("CHECK GRANT ").split(" ON ")
                 if sql == self.extra_grant:
                     return "1\n"
-                if privilege == "SELECT" and scope.removeprefix("arte.") in market | journal:
+                writable = journal | (staged_journal if self.staged else set())
+                if privilege == "SELECT" and scope.removeprefix("arte.") in market | writable:
                     return "1\n"
-                if privilege == "INSERT" and scope.removeprefix("arte.") in journal:
+                if privilege == "INSERT" and scope.removeprefix("arte.") in writable:
                     return "1\n"
                 return "0\n"
             raise AssertionError(sql)
 
     client = Grants()
     journal_permission_preflight(client)
+    checked: list[bool] = []
+    monkeypatch.setattr(staged_profile, "staged_live_signal_storage_preflight",
+                        lambda _client: checked.append(True))
+    client.staged = True
+    journal_permission_preflight(client)
+    assert checked == [True]
+    client.staged = False
     for grant in ("CHECK GRANT INSERT ON arte.bars_v1",
                   "CHECK GRANT INSERT ON arte.*",
                   "CHECK GRANT CREATE TABLE ON arte.*",
