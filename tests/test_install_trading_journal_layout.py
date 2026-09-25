@@ -192,8 +192,10 @@ def test_v3_broker_oms_upgrade_requires_empty_fence_and_is_resumable(monkeypatch
     class BrokerClient:
         def __init__(self, count="0"):
             self.count = count
-            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-(3 + 16)]) + list(
-                install.SQUEEZE_COMMIT_V3.columns[-3:])
+            columns = install.SQUEEZE_COMMIT_V3.columns
+            start = next(i for i, (name, _) in enumerate(columns)
+                         if name == "broker_short_order_skip_count")
+            self.columns = list(columns[:start] + columns[-3:])
             self.tables = set()
             self.writes = []
 
@@ -238,8 +240,10 @@ def test_v3_capacity_upgrade_requires_empty_fence_and_is_resumable(monkeypatch):
     class CapacityClient:
         def __init__(self, count="0"):
             self.count = count
-            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-11]) + list(
-                install.SQUEEZE_COMMIT_V3.columns[-3:])
+            columns = install.SQUEEZE_COMMIT_V3.columns
+            start = next(i for i, (name, _) in enumerate(columns)
+                         if name == "entry_reprice_capacity_count")
+            self.columns = list(columns[:start] + columns[-3:])
             self.tables = set()
             self.writes = []
 
@@ -284,8 +288,10 @@ def test_v3_refusal_upgrade_requires_empty_fence_and_is_resumable(monkeypatch):
     class RefusalClient:
         def __init__(self, count="0"):
             self.count = count
-            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-7]) + list(
-                install.SQUEEZE_COMMIT_V3.columns[-3:])
+            columns = install.SQUEEZE_COMMIT_V3.columns
+            start = next(i for i, (name, _) in enumerate(columns)
+                         if name == "entry_reprice_rejected_count")
+            self.columns = list(columns[:start] + columns[-3:])
             self.child = False
             self.child_columns = []
             self.child_count = "0"
@@ -377,8 +383,10 @@ def test_v3_protected_exit_upgrade_requires_empty_fence_and_is_resumable(monkeyp
     class Client:
         def __init__(self, count="0"):
             self.count = count
-            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-5]) + list(
-                install.SQUEEZE_COMMIT_V3.columns[-3:])
+            columns = install.SQUEEZE_COMMIT_V3.columns
+            start = next(i for i, (name, _) in enumerate(columns)
+                         if name == "protected_exit_satisfied_count")
+            self.columns = list(columns[:start] + columns[-3:])
             self.child = False
             self.writes = []
 
@@ -413,6 +421,57 @@ def test_v3_protected_exit_upgrade_requires_empty_fence_and_is_resumable(monkeyp
     assert install.upgrade_v3_protected_exit_satisfied(client, apply=True) == "upgraded"
     assert client.child and len(client.writes) == 3
     assert install.upgrade_v3_protected_exit_satisfied(client, apply=True) == "verified"
+
+
+def test_v3_protection_upgrade_is_empty_fenced_and_resumable(monkeypatch):
+    full = install.SQUEEZE_COMMIT_V3.columns
+    start = next(i for i, (name, _) in enumerate(full)
+                 if name == "protection_change_count")
+
+    class Client:
+        def __init__(self, *, commit_count="0"):
+            self.columns = list(full[:start] + full[-3:])
+            self.tables = set()
+            self.commit_count = commit_count
+            self.statements = []
+
+        def execute(self, sql):
+            if sql.startswith("SELECT name,type FROM system.columns"):
+                return "\n".join(json.dumps({"name": name, "type": kind})
+                                 for name, kind in self.columns)
+            if sql.startswith("SELECT name FROM system.tables"):
+                return "\n".join(json.dumps({"name": name}) for name in sorted(self.tables))
+            if sql == "SELECT count() FROM arte.trading_commit_v3":
+                return self.commit_count
+            if sql.startswith("SELECT count() FROM arte.trading_protection_"):
+                return "0"
+            if sql.startswith("CREATE TABLE IF NOT EXISTS arte."):
+                self.statements.append(sql)
+                self.tables.add(sql.split("arte.", 1)[1].split(" ", 1)[0])
+                return ""
+            if sql.startswith("ALTER TABLE arte.trading_commit_v3"):
+                self.statements.append(sql)
+                name = sql.split("ADD COLUMN IF NOT EXISTS ", 1)[1].split(" ", 1)[0]
+                self.columns.insert(-3, next(row for row in full if row[0] == name))
+                return ""
+            raise AssertionError(sql)
+
+    monkeypatch.setattr(install, "storage_preflight", lambda *_a, **_k: None)
+    occupied = Client(commit_count="1")
+    with pytest.raises(RuntimeError, match="has rows"):
+        install.upgrade_v3_protection_change(occupied, apply=True)
+    assert occupied.statements == []
+    client = Client()
+    assert install.upgrade_v3_protection_change(client, apply=False) == "planned"
+    assert client.statements == []
+    # Simulate interruption after the first table and first seal column.
+    client.execute(install.staged_protection_change_ddl()[0])
+    client.execute(install.staged_protection_change_ddl()[2])
+    assert install.upgrade_v3_protection_change(client, apply=False) == "planned"
+    assert install.upgrade_v3_protection_change(client, apply=True) == "upgraded"
+    assert client.columns == list(full)
+    assert client.tables == {table.name for table in install.PROTECTION_CHANGE_TABLES}
+    assert install.upgrade_v3_protection_change(client, apply=True) == "verified"
 
 
 class ControlUpgradeClient:

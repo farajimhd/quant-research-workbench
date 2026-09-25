@@ -27,14 +27,14 @@ from src.trading_runtime.arte_journal_schema import (
 )
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
-    PROTECTED_EXIT_SATISFIED,
+    PROTECTED_EXIT_SATISFIED, PROTECTION_CHANGE_TABLES,
     PORTFOLIO_CONTROL,
     RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
     SQUEEZE_COMMIT_V3, staged_portfolio_control_ddl,
     staged_reconciliation_difference_ddl, staged_reservation_reason_ddl,
     staged_trade_proposal_ddl, staged_broker_oms_ddl,
     staged_entry_reprice_capacity_ddl, staged_entry_reprice_rejected_ddl,
-    staged_protected_exit_satisfied_ddl,
+    staged_protected_exit_satisfied_ddl, staged_protection_change_ddl,
 )
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.live_plan_membership import TABLES as LIVE_PLAN_MEMBERSHIP_TABLES
@@ -65,6 +65,67 @@ _REJECTED_COLUMNS = frozenset({
 _SATISFIED_COLUMNS = frozenset({
     "protected_exit_satisfied_count", "protected_exit_satisfied_hash",
 })
+_PROTECTION_COLUMNS = frozenset({"protection_change_count", "protection_change_hash"})
+
+
+def _exact_v3_commit_prefix(actual: tuple[tuple[str, str], ...]) -> int:
+    """Return the extension prefix length; reject holes, drift and wrong order."""
+    full = SQUEEZE_COMMIT_V3.columns
+    start = next(i for i, (name, _) in enumerate(full)
+                 if name == "backtest_squeeze_episode_count")
+    for end in range(start, len(full) - 2):
+        if actual == full[:end] + full[-3:]:
+            return end
+    raise RuntimeError("V3 commit extension is not an exact prefix")
+
+
+def upgrade_v3_protection_change(client: object, *, apply: bool) -> str:
+    """Install exact empty-fence protection tables and a restart-safe seal suffix."""
+    actual = tuple((row["name"], row["type"]) for row in (
+        json.loads(line) for line in client.execute(
+            "SELECT name,type FROM system.columns WHERE database='arte' "
+            "AND table='trading_commit_v3' ORDER BY position FORMAT JSONEachRow"
+        ).splitlines() if line.strip()))
+    full = SQUEEZE_COMMIT_V3.columns
+    end = _exact_v3_commit_prefix(actual)
+    start = next(i for i, (name, _) in enumerate(full)
+                 if name == "protection_change_count")
+    if end < start:
+        raise RuntimeError("V3 protection upgrade requires all preceding seal columns")
+    present = end - start
+    storage_preflight(client, tables=(TableContract(
+        SQUEEZE_COMMIT_V3.name, actual, SQUEEZE_COMMIT_V3.partition,
+        SQUEEZE_COMMIT_V3.order),))
+    names = ",".join(f"'{table.name}'" for table in PROTECTION_CHANGE_TABLES)
+    rows = [json.loads(line) for line in client.execute(
+        "SELECT name FROM system.tables WHERE database='arte' "
+        f"AND name IN ({names}) FORMAT JSONEachRow").splitlines() if line.strip()]
+    installed = {row.get("name") for row in rows}
+    expected = {table.name for table in PROTECTION_CHANGE_TABLES}
+    if len(installed) != len(rows) or not installed <= expected:
+        raise RuntimeError("V3 protection table inventory is ambiguous")
+    for table in PROTECTION_CHANGE_TABLES:
+        if table.name in installed:
+            storage_preflight(client, tables=(table,))
+    if present == 2 and installed == expected:
+        return "verified"
+    if client.execute("SELECT count() FROM arte.trading_commit_v3").strip() != "0":
+        raise RuntimeError("V3 commit has rows; versioned migration required")
+    for table in PROTECTION_CHANGE_TABLES:
+        if table.name in installed and client.execute(
+                f"SELECT count() FROM arte.{table.name}").strip() != "0":
+            raise RuntimeError("V3 protection child has rows; no ALTER attempted")
+    if not apply:
+        return "planned"
+    ddls = staged_protection_change_ddl()
+    for table, ddl in zip(PROTECTION_CHANGE_TABLES, ddls):
+        if table.name not in installed:
+            client.execute(ddl)
+            storage_preflight(client, tables=(table,))
+    for ddl in ddls[len(PROTECTION_CHANGE_TABLES) + present:]:
+        client.execute(ddl)
+    storage_preflight(client, tables=PROTECTION_CHANGE_TABLES + (SQUEEZE_COMMIT_V3,))
+    return "upgraded"
 
 
 def upgrade_v3_protected_exit_satisfied(client: object, *, apply: bool) -> str:
@@ -78,10 +139,8 @@ def upgrade_v3_protected_exit_satisfied(client: object, *, apply: bool) -> str:
     start = next(i for i, (name, _) in enumerate(full)
                  if name == "protected_exit_satisfied_count")
     suffix = full[start:start + 2]
-    if actual not in {full[:start] + suffix[:i] + full[-3:]
-                      for i in range(len(suffix) + 1)}:
-        raise RuntimeError("V3 protected-exit commit suffix is not exact")
-    present = len(actual) - (len(full) - len(suffix))
+    end = _exact_v3_commit_prefix(actual)
+    present = max(0, min(len(suffix), end - start))
     storage_preflight(client, tables=(TableContract(
         SQUEEZE_COMMIT_V3.name, actual, SQUEEZE_COMMIT_V3.partition,
         SQUEEZE_COMMIT_V3.order),))
@@ -107,7 +166,9 @@ def upgrade_v3_protected_exit_satisfied(client: object, *, apply: bool) -> str:
         storage_preflight(client, tables=(PROTECTED_EXIT_SATISFIED,))
     for ddl in ddls[1 + present:]:
         client.execute(ddl)
-    storage_preflight(client, tables=(PROTECTED_EXIT_SATISFIED, SQUEEZE_COMMIT_V3))
+    storage_preflight(client, tables=(PROTECTED_EXIT_SATISFIED, TableContract(
+        SQUEEZE_COMMIT_V3.name, full[:max(end, start + 2)] + full[-3:],
+        SQUEEZE_COMMIT_V3.partition, SQUEEZE_COMMIT_V3.order)))
     return "upgraded"
 
 
@@ -122,10 +183,8 @@ def upgrade_v3_entry_reprice_rejected(client: object, *, apply: bool) -> str:
     start = next(i for i, (name, _) in enumerate(full)
                  if name == "entry_reprice_rejected_count")
     suffix = full[start:start + 2]
-    if actual not in {full[:start] + suffix[:i] + full[-3:]
-                      for i in range(len(suffix) + 1)} | {full}:
-        raise RuntimeError("V3 refusal commit suffix is not exact")
-    present = sum(name in {column[0] for column in suffix} for name, _ in actual)
+    end = _exact_v3_commit_prefix(actual)
+    present = max(0, min(len(suffix), end - start))
     storage_preflight(client, tables=(TableContract(
         SQUEEZE_COMMIT_V3.name, actual, SQUEEZE_COMMIT_V3.partition,
         SQUEEZE_COMMIT_V3.order),))
@@ -184,7 +243,7 @@ def upgrade_v3_entry_reprice_rejected(client: object, *, apply: bool) -> str:
         client.execute(ddl)
     storage_preflight(client, tables=(ENTRY_REPRICE_REJECTED, TableContract(
         SQUEEZE_COMMIT_V3.name,
-        full if actual == full else full[:start] + suffix + full[-3:],
+        full[:max(end, start + len(suffix))] + full[-3:],
         SQUEEZE_COMMIT_V3.partition, SQUEEZE_COMMIT_V3.order)))
     return "upgraded"
 
@@ -249,10 +308,8 @@ def upgrade_v3_entry_reprice_capacity(client: object, *, apply: bool) -> str:
     start = next(i for i, (name, _) in enumerate(full)
                  if name == "entry_reprice_capacity_count")
     suffix = full[start:start + 4]
-    if actual not in {full[:start] + suffix[:i] + full[-3:]
-                      for i in range(len(suffix) + 1)} | {full}:
-        raise RuntimeError("V3 capacity commit suffix is not exact")
-    present = sum(name in {column[0] for column in suffix} for name, _ in actual)
+    end = _exact_v3_commit_prefix(actual)
+    present = max(0, min(len(suffix), end - start))
     storage_preflight(client, tables=(TableContract(
         SQUEEZE_COMMIT_V3.name, actual, SQUEEZE_COMMIT_V3.partition,
         SQUEEZE_COMMIT_V3.order),))
@@ -285,7 +342,7 @@ def upgrade_v3_entry_reprice_capacity(client: object, *, apply: bool) -> str:
         client.execute(ddl)
     storage_preflight(client, tables=ENTRY_REPRICE_CAPACITY_TABLES +
                       (TableContract(SQUEEZE_COMMIT_V3.name,
-                       full if actual == full else full[:start] + suffix + full[-3:],
+                       full[:max(end, start + len(suffix))] + full[-3:],
                        SQUEEZE_COMMIT_V3.partition, SQUEEZE_COMMIT_V3.order),))
     return "upgraded"
 
@@ -301,11 +358,8 @@ def upgrade_v3_broker_oms(client: object, *, apply: bool) -> str:
     start = next(i for i, (name, _) in enumerate(full)
                  if name == "broker_short_order_skip_count")
     suffix = full[start:start + 8]
-    if actual not in {full[:start] + suffix[:i] + full[-3:]
-                      for i in range(len(suffix) + 1)} | {
-                          full[:-7] + full[-3:], full[:-5] + full[-3:], full}:
-        raise RuntimeError("V3 broker/OMS commit suffix is not exact")
-    present = sum(name in {column[0] for column in suffix} for name, _ in actual)
+    end = _exact_v3_commit_prefix(actual)
+    present = max(0, min(len(suffix), end - start))
     storage_preflight(client, tables=(TableContract(
         SQUEEZE_COMMIT_V3.name, actual, SQUEEZE_COMMIT_V3.partition,
         SQUEEZE_COMMIT_V3.order),))
@@ -338,9 +392,7 @@ def upgrade_v3_broker_oms(client: object, *, apply: bool) -> str:
         client.execute(ddl)
     storage_preflight(client, tables=BROKER_OMS_TABLES + (TableContract(
         SQUEEZE_COMMIT_V3.name,
-        actual if len(actual) >= len(full) - len(_REJECTED_COLUMNS)
-        - len(_SATISFIED_COLUMNS)
-        else full[:start] + suffix + full[-3:],
+        full[:max(end, start + len(suffix))] + full[-3:],
         SQUEEZE_COMMIT_V3.partition,
         SQUEEZE_COMMIT_V3.order),))
     return "upgraded"
@@ -349,7 +401,7 @@ def upgrade_v3_broker_oms(client: object, *, apply: bool) -> str:
 def _without_proposals(columns):
     return tuple(column for column in columns if column[0] not in
                  (_PROPOSAL_COLUMNS | _BROKER_OMS_COLUMNS | _CAPACITY_COLUMNS
-                  | _REJECTED_COLUMNS | _SATISFIED_COLUMNS))
+                  | _REJECTED_COLUMNS | _SATISFIED_COLUMNS | _PROTECTION_COLUMNS))
 
 
 def _with_existing_proposals(columns, actual):
@@ -370,16 +422,21 @@ def _with_existing_proposals(columns, actual):
     satisfied_expected = [name for name, _ in columns if name in _SATISFIED_COLUMNS]
     if satisfied_present != satisfied_expected[:len(satisfied_present)]:
         raise RuntimeError("V3 commit has an invalid protected-exit suffix")
+    protection_present = [name for name, _ in actual if name in _PROTECTION_COLUMNS]
+    protection_expected = [name for name, _ in columns if name in _PROTECTION_COLUMNS]
+    if protection_present != protection_expected[:len(protection_present)]:
+        raise RuntimeError("V3 commit has an invalid protection-change suffix")
     present = {name for name, _ in actual} & _PROPOSAL_COLUMNS
     if present not in (set(), {"trade_proposal_child_count"}, _PROPOSAL_COLUMNS):
         raise RuntimeError("V3 commit has an invalid trade-proposal suffix")
     return tuple(column for column in columns
                  if column[0] not in (_PROPOSAL_COLUMNS | _BROKER_OMS_COLUMNS
                                      | _CAPACITY_COLUMNS | _REJECTED_COLUMNS
-                                     | _SATISFIED_COLUMNS)
+                                     | _SATISFIED_COLUMNS | _PROTECTION_COLUMNS)
                  or column[0] in present or column[0] in broker_present
                  or column[0] in capacity_present or column[0] in rejected_present
-                 or column[0] in satisfied_present)
+                 or column[0] in satisfied_present
+                 or column[0] in protection_present)
 
 
 def upgrade_v3_portfolio_control(client: object, *, apply: bool) -> str:
@@ -679,6 +736,8 @@ def main() -> int:
                         help="verify or install empty-fence V3 reprice refusal fact")
     parser.add_argument("--upgrade-v3-protected-exit-satisfied", action="store_true",
                         help="verify or install empty-fence V3 protected-exit fact")
+    parser.add_argument("--upgrade-v3-protection-change", action="store_true",
+                        help="verify or install empty-fence V3 protection-change facts")
     parser.add_argument("--install-live-plan-membership", action="store_true",
                         help="verify or install typed live plan membership tables")
     args = parser.parse_args()
@@ -704,11 +763,15 @@ def main() -> int:
                     args.upgrade_v3_entry_reprice_capacity,
                     args.upgrade_v3_entry_reprice_rejected,
                     args.upgrade_v3_protected_exit_satisfied,
+                    args.upgrade_v3_protection_change,
                     args.install_live_plan_membership)) > 1:
                 parser.error("Select only one layout upgrade at a time")
             if args.install_live_plan_membership:
                 result = install_live_plan_membership(client, apply=args.apply)
                 print(f"Live plan membership layout: {result}; no rows inserted")
+            elif args.upgrade_v3_protection_change:
+                result = upgrade_v3_protection_change(client, apply=args.apply)
+                print(f"V3 protection-change layout: {result}; no rows inserted")
             elif args.upgrade_v3_protected_exit_satisfied:
                 result = upgrade_v3_protected_exit_satisfied(client, apply=args.apply)
                 print(f"V3 protected-exit layout: {result}; no rows inserted")

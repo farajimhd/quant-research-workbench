@@ -20,7 +20,9 @@ CHANGE = TableContract(
      ("client_order_id", "String"), ("kind", "LowCardinality(String)"),
      ("phase", "LowCardinality(String)"), ("price", "Decimal(38, 18)"),
      ("active", "Bool"), ("ticker", "LowCardinality(String)"),
-     ("source_intent_id", "String"), ("entry_order_count", "UInt32"),
+     ("source_intent_id", "String"), ("strategy_id", "String"),
+     ("strategy_revision", "UInt32"), ("action", "Nullable(String)"),
+     ("intent_id", "Nullable(String)"), ("entry_order_count", "UInt32"),
      ("entry_order_hash", "FixedString(64)"), ("content_hash", "FixedString(64)")),
     "toYYYYMM(event_month)", "run_id,account_id,record_id",
 )
@@ -52,16 +54,26 @@ def _utc(value: datetime) -> str:
 
 
 def _payload(payload: Mapping[str, Any], *, entity_id: str) -> tuple[str, tuple[str, ...]]:
-    if (not isinstance(payload, Mapping) or set(payload) != {
+    required = {
             "schema_version", "order_group_id", "entry_order_ids", "order_id",
             "client_order_id", "kind", "phase", "price", "active", "ticker",
-            "source_intent_id", "correlation_id", "causation_id"}):
+            "source_intent_id", "strategy_id", "strategy_revision",
+            "correlation_id", "causation_id"}
+    optional = {"action", "intent_id"}
+    if (not isinstance(payload, Mapping) or not required <= set(payload)
+            or set(payload) - required not in (set(), optional)):
         raise ValueError("Protection change has unmodeled evidence")
     identifiers = ("order_group_id", "order_id", "client_order_id", "ticker",
-                   "source_intent_id", "correlation_id", "causation_id")
+                   "source_intent_id", "strategy_id", "correlation_id", "causation_id")
     if (type(payload["schema_version"]) is not int or payload["schema_version"] != 1
+            or type(payload["strategy_revision"]) is not int
+            or not 0 <= payload["strategy_revision"] <= 0xFFFFFFFF
             or any(type(payload[key]) is not str or not payload[key]
                    for key in identifiers)
+            or ("action" in payload and (type(payload["action"]) is not str
+                                        or not payload["action"]))
+            or ("intent_id" in payload and (type(payload["intent_id"]) is not str
+                                           or not payload["intent_id"]))
             or payload["order_id"] != entity_id
             or payload["ticker"] != payload["ticker"].upper()
             or payload["kind"] not in {"stop", "target"}
@@ -113,6 +125,10 @@ def project_protection_change_v3(
               "price": price, "active": record.payload["active"],
               "ticker": record.payload["ticker"],
               "source_intent_id": record.payload["source_intent_id"],
+              "strategy_id": record.payload["strategy_id"],
+              "strategy_revision": record.payload["strategy_revision"],
+              "action": record.payload.get("action"),
+              "intent_id": record.payload.get("intent_id"),
               "entry_order_count": len(children),
               "entry_order_hash": _hash([(row["ordinal"], row["content_hash"])
                                           for row in children])}
@@ -157,8 +173,15 @@ def recover_protection_change_payload(
                "price": source_float_from_decimal(detail["price"], positive=True),
                "active": detail["active"], "ticker": detail["ticker"],
                "source_intent_id": detail["source_intent_id"],
+               "strategy_id": detail["strategy_id"],
+               "strategy_revision": detail["strategy_revision"],
                "correlation_id": event["correlation_id"],
                "causation_id": event["causation_id"]}
+    if detail["action"] is not None or detail["intent_id"] is not None:
+        if detail["action"] is None or detail["intent_id"] is None:
+            raise ValueError("Protection action/intent identity is partial")
+        payload["action"] = detail["action"]
+        payload["intent_id"] = detail["intent_id"]
     _payload(payload, entity_id=event["entity_id"])
     return payload
 

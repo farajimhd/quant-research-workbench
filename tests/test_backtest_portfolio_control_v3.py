@@ -206,6 +206,9 @@ def test_policy_catalog_attested_before_v3_event_insert(monkeypatch):
 
 class _V3Client(MemoryClient):
     def execute(self, sql):
+        # In-memory rows already carry exact decimal wires. ClickHouse needs
+        # toString() to prevent JSON numeric decoding from losing precision.
+        sql = re.sub(r"toString\(([a-z_]+)\) AS \1", r"\1", sql)
         if "groupArray((toString(record_id),toString(content_hash)))" in sql:
             batch_id = re.search(r"batch_id=toUUID\('([0-9a-f-]+)'\)", sql).group(1)
             names = re.findall(

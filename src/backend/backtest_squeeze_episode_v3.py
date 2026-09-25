@@ -16,7 +16,7 @@ from uuid import UUID
 from src.backend.backtest_squeeze_episode_projection import project_fixed_squeeze_episode
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
-    PROTECTED_EXIT_SATISFIED,
+    PROTECTED_EXIT_SATISFIED, PROTECTION_CHANGE_TABLES,
     PORTFOLIO_CONTROL, RESERVATION_REASON,
     SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
@@ -173,6 +173,8 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
     entry_reprice_capacity_reasons = []
     entry_reprice_rejections = []
     protected_exit_satisfied = []
+    protection_changes = []
+    protection_entry_orders = []
     pinned = set()
     for unit in units:
         for row in unit.episodes:
@@ -214,6 +216,8 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
             (unit.entry_reprice_capacity_reasons, entry_reprice_capacity_reasons),
             (unit.entry_reprice_rejections, entry_reprice_rejections),
             (unit.protected_exit_satisfied, protected_exit_satisfied),
+            (unit.protection_changes, protection_changes),
+            (unit.protection_entry_orders, protection_entry_orders),
         ):
             for row in family:
                 values = {key: value for key, value in row.items()
@@ -221,6 +225,19 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
                 values["batch_id"] = base.batch_id
                 values["content_hash"] = _digest(values)
                 collected.append(values)
+    # A protection parent seals its child hashes. Rebatching changes each
+    # child's batch identity and hash, so re-seal that dependent parent too.
+    entry_by_record: dict[str, list[dict[str, Any]]] = {}
+    for row in protection_entry_orders:
+        entry_by_record.setdefault(str(row["record_id"]), []).append(row)
+    for detail in protection_changes:
+        children = sorted(entry_by_record.get(str(detail["record_id"]), ()),
+                          key=lambda row: row["ordinal"])
+        detail["entry_order_count"] = len(children)
+        detail["entry_order_hash"] = _digest([
+            (row["ordinal"], row["content_hash"]) for row in children])
+        detail["content_hash"] = _digest({
+            key: value for key, value in detail.items() if key != "content_hash"})
     if len(pinned) > 1:
         raise ValueError("V3 coalescing cannot mix market plan/query authority")
     if len(episodes) > len(base.events):
@@ -235,7 +252,9 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
                           tuple(entry_reprice_capacities),
                           tuple(entry_reprice_capacity_reasons),
                           tuple(entry_reprice_rejections),
-                          tuple(protected_exit_satisfied))
+                          tuple(protected_exit_satisfied),
+                          tuple(protection_changes),
+                          tuple(protection_entry_orders))
 
 
 def seal_squeeze_family_v3(
@@ -255,6 +274,8 @@ def seal_squeeze_family_v3(
     entry_reprice_capacity_reasons: Sequence[Mapping[str, Any]] = (),
     entry_reprice_rejections: Sequence[Mapping[str, Any]] = (),
     protected_exit_satisfied: Sequence[Mapping[str, Any]] = (),
+    protection_changes: Sequence[Mapping[str, Any]] = (),
+    protection_entry_orders: Sequence[Mapping[str, Any]] = (),
     stored_utc: bool = False,
 ) -> dict[str, Any]:
     """Produce a replacement V3 seal after exact parent/child verification.
@@ -276,7 +297,8 @@ def seal_squeeze_family_v3(
         "entry_reprice_capacity_count", "entry_reprice_capacity_hash",
         "entry_reprice_capacity_reason_count", "entry_reprice_capacity_reason_hash",
         "entry_reprice_rejected_count", "entry_reprice_rejected_hash",
-        "protected_exit_satisfied_count", "protected_exit_satisfied_hash"}:
+        "protected_exit_satisfied_count", "protected_exit_satisfied_hash",
+        "protection_change_count", "protection_change_hash"}:
         raise ValueError("V2 commit columns differ from V3 base")
     batch = str(UUID(str(v2_commit["batch_id"])))
     run = str(v2_commit["run_id"])
@@ -358,6 +380,10 @@ def seal_squeeze_family_v3(
     from src.backend.backtest_protected_exit_satisfied_v3 import seal_protected_exit_satisfied_v3
     sealed.update(seal_protected_exit_satisfied_v3(
         protected_exit_satisfied, parent_events, run_id=run, batch_id=batch))
+    from src.backend.backtest_protection_change_v3 import seal_protection_changes_v3
+    sealed.update(seal_protection_changes_v3(
+        protection_changes, protection_entry_orders, parent_events,
+        run_id=run, batch_id=batch))
     return sealed
 
 
@@ -379,6 +405,8 @@ def verify_squeeze_family_v3(
     entry_reprice_capacity_reasons: Sequence[Mapping[str, Any]] = (),
     entry_reprice_rejections: Sequence[Mapping[str, Any]] = (),
     protected_exit_satisfied: Sequence[Mapping[str, Any]] = (),
+    protection_changes: Sequence[Mapping[str, Any]] = (),
+    protection_entry_orders: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[dict[str, Any], ...]:
     """Verify V3 family seal before exposing a bounded typed occurrence page."""
     if set(commit) != _COMMIT_COLUMNS:
@@ -397,7 +425,8 @@ def verify_squeeze_family_v3(
         "entry_reprice_capacity_count", "entry_reprice_capacity_hash",
         "entry_reprice_capacity_reason_count", "entry_reprice_capacity_reason_hash",
         "entry_reprice_rejected_count", "entry_reprice_rejected_hash",
-        "protected_exit_satisfied_count", "protected_exit_satisfied_hash"}}
+        "protected_exit_satisfied_count", "protected_exit_satisfied_hash",
+        "protection_change_count", "protection_change_hash"}}
     normalized = []
     for row in rows:
         if stored_utc:
@@ -423,6 +452,8 @@ def verify_squeeze_family_v3(
         entry_reprice_capacity_reasons=entry_reprice_capacity_reasons,
         entry_reprice_rejections=entry_reprice_rejections,
         protected_exit_satisfied=protected_exit_satisfied,
+        protection_changes=protection_changes,
+        protection_entry_orders=protection_entry_orders,
         stored_utc=stored_utc)
     if (type(commit["backtest_squeeze_episode_count"]) is not int
             or expected != dict(commit)):
@@ -450,7 +481,7 @@ def load_verified_squeeze_v3_prefix(
                           RECONCILIATION_DIFFERENCE, PORTFOLIO_CONTROL,
                           *TRADE_PROPOSAL_TABLES, *BROKER_OMS_TABLES,
                           *ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
-                          PROTECTED_EXIT_SATISFIED,
+                          PROTECTED_EXIT_SATISFIED, *PROTECTION_CHANGE_TABLES,
                           SQUEEZE_COMMIT_V3)
     storage_preflight(client, tables=contracts)
     for fence in ("trading_commit_v1", "trading_commit_v2"):
@@ -581,9 +612,15 @@ def load_verified_squeeze_v3_prefix(
             "FROM arte.trading_event_v1 "
             f"WHERE {ids} AND category='order_management' "
             "AND entity_type='protected_exit_already_satisfied' FORMAT JSONEachRow")
+        protection_events = _rows(client,
+            "SELECT record_id,run_id,event_month,batch_id,category,entity_type,entity_id,"
+            "account_id,event_time,sequence,correlation_id,causation_id "
+            "FROM arte.trading_event_v1 "
+            f"WHERE {ids} AND category='protection' "
+            "AND entity_type='protection_change' FORMAT JSONEachRow")
         if any(not first <= int(event["sequence"]) <= last
                for event in broker_policy_events + reprice_events + capacity_events
-               + rejected_events + satisfied_events):
+               + rejected_events + satisfied_events + protection_events):
             raise RuntimeError("Broker/OMS parent lies beyond committed causal prefix")
         broker_oms_rows = []
         for contract in BROKER_OMS_TABLES:
@@ -605,6 +642,14 @@ def load_verified_squeeze_v3_prefix(
         satisfied_rows = _rows(client,
             f"SELECT {satisfied_columns} FROM arte.{PROTECTED_EXIT_SATISFIED.name} "
             f"WHERE {ids} FORMAT JSONEachRow")
+        protection_rows = []
+        for contract in PROTECTION_CHANGE_TABLES:
+            columns = ",".join(
+                f"toString({name}) AS {name}" if kind.startswith("Decimal") else name
+                for name, kind in contract.columns)
+            protection_rows.append(_rows(client,
+                f"SELECT {columns} FROM arte.{contract.name} "
+                f"WHERE {ids} FORMAT JSONEachRow"))
         selected_hashes = {row["policy_hash"] for row in portfolio_controls
                            if row["control_event"] == "portfolio_policy_selected"}
         if selected_hashes:
@@ -631,7 +676,8 @@ def load_verified_squeeze_v3_prefix(
         verified = verify_squeeze_family_v3(
             commit, children, parents + reservation_events + reconciliation_events
             + control_events + proposal_events + broker_policy_events
-            + reprice_events + capacity_events + rejected_events + satisfied_events,
+            + reprice_events + capacity_events + rejected_events + satisfied_events
+            + protection_events,
             stored_utc=True,
             reservation_reasons=reasons,
             parent_reservations=reservation_parents,
@@ -646,7 +692,9 @@ def load_verified_squeeze_v3_prefix(
             entry_reprice_capacities=capacity_rows[0],
             entry_reprice_capacity_reasons=capacity_rows[1],
             entry_reprice_rejections=rejected_rows,
-            protected_exit_satisfied=satisfied_rows)
+            protected_exit_satisfied=satisfied_rows,
+            protection_changes=protection_rows[0],
+            protection_entry_orders=protection_rows[1])
         if any(row["market_plan_token"] != expected_market_plan_token
                or row["query_sha256"] != expected_query_sha256 for row in verified):
             raise RuntimeError("V3 squeeze row differs from pinned market authority")

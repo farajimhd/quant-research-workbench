@@ -15,7 +15,7 @@ from uuid import UUID
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_squeeze_episode_schema import (
     RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
-    SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
+    SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE, PROTECTION_CHANGE_TABLES,
 )
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
@@ -75,7 +75,7 @@ def fixed_journal_operator_check(client: Any) -> dict[str, Any]:
     required_v3 = (SQUEEZE_EPISODE, RESERVATION_REASON,
                    RECONCILIATION_DIFFERENCE,
                    *TRADE_PROPOSAL_TABLES,
-                   SQUEEZE_COMMIT_V3, TERMINAL_COMMIT_V3)
+                   *PROTECTION_CHANGE_TABLES, SQUEEZE_COMMIT_V3, TERMINAL_COMMIT_V3)
     names = ",".join(f"'{table.name}'" for table in required_v3)
     rows = [json.loads(line) for line in client.execute(
         "SELECT name FROM system.tables WHERE database='arte' "
