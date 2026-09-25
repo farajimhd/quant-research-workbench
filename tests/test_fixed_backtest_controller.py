@@ -890,8 +890,8 @@ def test_fixed_controller_applies_all_liquidity_before_any_strategy_frame(monkey
         _row("AAPL", 1000, 100), _row("AAPL", 1000, 1000),
         _row("MSFT", 1000, 100), _row("MSFT", 1000, 1000),
     ]
-    monkeypatch.setattr(market_data, "MarketDayLedger",
-                        lambda: SimpleNamespace(certified_plan=lambda **_kwargs: plan))
+    monkeypatch.setattr(market_data, "certified_market_plan_from_arte",
+                        lambda **_kwargs: plan)
     def persisted_rows(_plan, *, through_boundary_ms):
         assert through_boundary_ms == 2_000
         return iter(rows)
@@ -974,8 +974,8 @@ def test_fixed_controller_runtime_fills_only_after_decision_boundary(monkeypatch
                      "bid_size": 100, "ask_size": 100,
                      "low_int": 99_900, "high_int": 100_000,
                      "extremes_valid": 1, "execution_volume": 0})
-    monkeypatch.setattr(market_data, "MarketDayLedger",
-                        lambda: SimpleNamespace(certified_plan=lambda **_kwargs: plan))
+    monkeypatch.setattr(market_data, "certified_market_plan_from_arte",
+                        lambda **_kwargs: plan)
     monkeypatch.setattr(market_data, "iter_market_day_rows",
                         lambda _plan, **_kwargs: iter(rows))
     controller = object.__new__(ReplayRunController)
@@ -1070,8 +1070,8 @@ def test_fixed_resume_does_not_redeliver_committed_source_signals(monkeypatch):
     plan = CertifiedMarketDayPlan(
         ExecutionInterval.fixed(100), "build", "definition", (DAY,),
         ("AAPL",), (), (100, 1000), "pinned-token")
-    monkeypatch.setattr(market_data, "MarketDayLedger",
-                        lambda: SimpleNamespace(certified_plan=lambda **_kwargs: plan))
+    monkeypatch.setattr(market_data, "certified_market_plan_from_arte",
+                        lambda **_kwargs: plan)
     monkeypatch.setattr(market_data, "iter_market_day_rows",
                         lambda _plan, **_kwargs: iter([
                             _row("AAPL", 100, 100), _row("AAPL", 200, 100)]))

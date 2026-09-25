@@ -67,6 +67,27 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.broker.completed_liquidity_quote("AAPL"))
         self.assertNotIn("AAPL", self.broker._bar_marks_by_ticker)
 
+    async def test_other_ticker_bucket_does_not_scan_global_order_book(self):
+        await self.order("MKT", quantity=5)
+        at = START + timedelta(milliseconds=100)
+        other = {**bar(at), "ticker": "MSFT"}
+        self.broker._sorted_orders = Mock(side_effect=AssertionError("global order scan"))
+        self.assertEqual(await self.broker.on_liquidity_bar(other, at=at), [])
+        self.assertEqual(len(await self.broker.on_liquidity_bar(bar(at), at=at)), 1)
+
+    async def test_restored_ticker_index_keeps_fill_priority(self):
+        await self.order("MKT", quantity=5, oid="first")
+        await self.order("MKT", quantity=5, oid="second")
+        restored = SimulatedBrokerAdapter(
+            ["TEST"], self.broker.config, mode=RunMode.BACKTEST,
+            initial_time=START)
+        await restored.initialize()
+        restored.restore_checkpoint_state(self.broker.checkpoint_state())
+        at = START + timedelta(milliseconds=100)
+        fills = await restored.on_liquidity_bar(bar(at, ask_size=6), at=at)
+        self.assertEqual([(fill.order_ref, fill.size) for fill in fills],
+                         [("first", 5.0), ("second", 1.0)])
+
     async def test_ticker_quote_checkpoint_is_not_derivable_from_conid_index(self):
         observed = replace(quote(bid=9.99, ask=10.0),
                            raw={}, ingest_ts=START, ts=START)

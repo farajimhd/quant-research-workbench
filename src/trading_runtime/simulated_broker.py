@@ -215,6 +215,10 @@ class SimulatedBrokerAdapter:
         self._realized_pnl = {account_id: 0.0 for account_id in account_ids}
         self._positions: dict[str, dict[int, _Position]] = {account_id: {} for account_id in account_ids}
         self._orders: dict[str, _OrderState] = {}
+        # Bar matching touches every active ticker boundary. These are
+        # derived indexes, rebuilt on restore, never checkpoint authorities.
+        self._orders_by_ticker: dict[str, list[_OrderState]] = {}
+        self._position_conids_by_ticker: dict[str, set[int]] = {}
         self._order_ids_by_coid: dict[str, str] = {}
         self._executions: list[Execution] = []
         self._quotes: dict[int, QuoteEvent] = {}
@@ -366,6 +370,14 @@ class SimulatedBrokerAdapter:
         self._realized_pnl = realized
         self._positions = positions
         self._orders = orders
+        self._orders_by_ticker = {}
+        for state in orders.values():
+            self._orders_by_ticker.setdefault(state.request.ticker.upper(), []).append(state)
+        self._position_conids_by_ticker = {}
+        for account_positions in positions.values():
+            for position in account_positions.values():
+                self._position_conids_by_ticker.setdefault(
+                    position.ticker.upper(), set()).add(position.conid)
         self._order_ids_by_coid = order_ids_by_coid
         self._executions = executions
         self._quotes = {
@@ -514,6 +526,7 @@ class SimulatedBrokerAdapter:
                     oca_group=standalone_oca_group,
                 )
                 self._orders[order_id] = state
+                self._orders_by_ticker.setdefault(resolved.ticker.upper(), []).append(state)
                 if resolved.cOID:
                     self._order_ids_by_coid[resolved.cOID] = order_id
                 results.append({"order_id": order_id, "order_status": status.value, "local_order_id": resolved.cOID})
@@ -567,6 +580,13 @@ class SimulatedBrokerAdapter:
                 existing_order_filled=state.filled,
                 oca_group=state.oca_group,
             )
+            previous_ticker = state.request.ticker.upper()
+            next_ticker = order.ticker.upper()
+            if previous_ticker != next_ticker:
+                self._orders_by_ticker[previous_ticker].remove(state)
+                if not self._orders_by_ticker[previous_ticker]:
+                    del self._orders_by_ticker[previous_ticker]
+                self._orders_by_ticker.setdefault(next_ticker, []).append(state)
             state.request = order
             state.status = OrderStatus.INACTIVE if order.parentId and not self._parent_filled(order.parentId) else OrderStatus.SUBMITTED
             return [{"order_id": order_id, "order_status": state.status.value, "local_order_id": order.cOID}]
@@ -855,13 +875,12 @@ class SimulatedBrokerAdapter:
         # An empty broker book has no conid-level quote, mark, performance, or
         # fill consumers. Keep the completed ticker snapshot above for order
         # admission and checkpoint recovery, then avoid per-ticker book scans.
-        if not self._orders and not any(self._positions.values()):
+        ticker_orders = self._orders_by_ticker.get(ticker, ())
+        position_conids = self._position_conids_by_ticker.get(ticker, ())
+        if not ticker_orders and not position_conids:
             return []
-        conids = {state.request.conid for state in self._orders.values()
-                  if state.request.ticker.upper() == ticker}
-        for positions in self._positions.values():
-            conids.update(conid for conid, position in positions.items()
-                          if position.ticker.upper() == ticker)
+        conids = {state.request.conid for state in ticker_orders}
+        conids.update(position_conids)
         for conid in conids:
             if quote is not None:
                 self._quotes[conid] = quote
@@ -876,9 +895,8 @@ class SimulatedBrokerAdapter:
         identity = f"{at.isoformat()}:{int(row.get('bucket_index') or 0)}"
         executions: list[Execution] = []
         async with self._lock:
-            eligible = [state for state in self._sorted_orders()
-                        if state.request.ticker.upper() == ticker
-                        and state.status in {OrderStatus.SUBMITTED, OrderStatus.PRE_SUBMITTED}
+            eligible = [state for state in sorted(ticker_orders, key=lambda item: int(item.order_id))
+                        if state.status in {OrderStatus.SUBMITTED, OrderStatus.PRE_SUBMITTED}
                         and state.submitted_at <= bucket_start]
             for state in eligible:
                 if state.status not in {OrderStatus.SUBMITTED, OrderStatus.PRE_SUBMITTED}:
@@ -1352,6 +1370,7 @@ class SimulatedBrokerAdapter:
         account_id = request.acctId
         signed = quantity if request.side.upper() == "BUY" else -quantity
         position = self._positions[account_id].setdefault(request.conid, _Position(request.conid, request.ticker))
+        self._position_conids_by_ticker.setdefault(request.ticker.upper(), set()).add(request.conid)
         old_qty = position.quantity
         new_qty = old_qty + signed
         if old_qty == 0 or old_qty * signed > 0:
