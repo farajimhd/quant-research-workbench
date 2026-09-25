@@ -669,7 +669,8 @@ def market_day_source_sqls(
         ) p ON p.session_date=l.session_date AND p.ticker=l.ticker
           AND p.bucket_index=l.bucket_index"""
         price_column = ",p.execution_price_levels AS execution_price_levels"
-    base_100 = f"""SELECT l.session_date,l.ticker,l.bucket_index,toUInt32(100) AS resolution_ms,
+    base_100 = f"""SELECT l.session_date AS session_date,l.ticker AS ticker,
+        l.bucket_index AS bucket_index,toUInt32(100) AS resolution_ms,
         (toUInt64(l.bucket_index)+1)*100-{SESSION_OPEN_OFFSET_MS} AS boundary_ms,{columns_100},{liquidity_100}{price_column}
       FROM ({pinned('liquidity_100ms_v1', liquidity)}) l
       LEFT JOIN (SELECT * FROM ({pinned('bars_v1', bars)}) WHERE resolution_ms=100) b ON
@@ -682,7 +683,8 @@ def market_day_source_sqls(
         resolution_sql = ",".join(str(value) for value in higher)
         columns_higher = ",".join(f"b.{name} AS {name}" for name in bar_columns)
         empty_liquidity = ",".join(f"0 AS {name}" for name in liquidity_columns)
-        bases.append(f"""SELECT b.session_date,b.ticker,b.bucket_index,
+        bases.append(f"""SELECT b.session_date AS session_date,b.ticker AS ticker,
+          b.bucket_index AS bucket_index,
           b.resolution_ms,(toUInt64(b.bucket_index)+1)*b.resolution_ms-{SESSION_OPEN_OFFSET_MS} AS boundary_ms,
           {columns_higher},{empty_liquidity}
           FROM (SELECT * FROM ({pinned('bars_v1', bars)})
