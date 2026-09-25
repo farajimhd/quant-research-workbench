@@ -77,7 +77,9 @@ class BacktestMemoryJournal:
                 if not isinstance(at, datetime) or at.tzinfo is None:
                     raise ValueError("Backtest journal event time must be timezone-aware")
                 at = at.astimezone(timezone.utc)
-                payload = dict(entry.get("payload") or {})
+                # The caller retains ownership of its observation. Snapshot
+                # nested evidence before an asynchronous typed projector sees it.
+                payload = deepcopy(dict(entry.get("payload") or {}))
                 active_lineage = current_request_identity()
                 needs_lineage = not payload.get("intent_id") or bool(active_lineage)
                 lineage = (causal_identity(correlation_seed=run_id,

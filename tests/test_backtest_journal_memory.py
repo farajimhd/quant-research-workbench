@@ -32,6 +32,19 @@ def test_invalid_batch_does_not_publish_partial_prefix():
     assert journal.latest_sequence(RUN_ID) == 0
 
 
+def test_accepted_nested_payload_is_detached_from_mutable_observation():
+    journal = BacktestMemoryJournal(run_id=RUN_ID)
+    payload = {"levels": [{"price": 12.0}], "flags": {"eligible": True}}
+    record = journal.append(run_id=RUN_ID, category="strategy",
+                            entity_type="signal", entity_id="one",
+                            payload=payload, event_time=AT)
+    payload["levels"][0]["price"] = 99.0
+    payload["flags"]["eligible"] = False
+    assert record.payload["levels"] == [{"price": 12.0}]
+    assert record.payload["flags"] == {"eligible": True}
+    assert journal.unfenced_records()[0].payload == record.payload
+
+
 def test_idempotent_batch_preserves_order_and_first_occurrence():
     journal = BacktestMemoryJournal(run_id=RUN_ID)
     result = journal.append_once_many([_entry("one"), _entry("one"), _entry("two")])
