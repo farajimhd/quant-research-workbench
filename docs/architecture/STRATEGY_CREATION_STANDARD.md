@@ -92,8 +92,13 @@ raise protection, and a simultaneous qualifying update chooses resistance.
 The target reuses the historical 3/2/1 overhead-resistance ordinal rule,
 never moving downward. These selections are drafted in
 `src/trading_runtime/strategy_one_contract.py` and are not registered.
-The fixed loader must project the needed completed indicator resolutions and
-the last completed 30s price bar to each 100ms decision without lookahead.
+`src/trading_runtime/strategy_one_columnar.py` implements a pure necessary-
+condition entry mask using completed MACD, liquidity quote/VWAP, prior close,
+and the last completed 30s low. It neither owns activation nor suppresses
+management of an existing position. The fixed loader must project these
+certified arrays into this prefilter, and the resulting candidates must still
+pass Candidate 350's surviving stateful entry/lifecycle rules. No path yet
+dispatches this draft from the application.
 The active fixed Backtest preflight also blocks on unfinished ClickHouse-only
 runtime/journal recovery. These contracts must be delivered and verified
 before Strategy 1 can become selectable. Do not bypass them by launching the
