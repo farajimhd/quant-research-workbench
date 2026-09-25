@@ -57,6 +57,10 @@ from src.trading_runtime.arte_assignment_post_move_clock import (
 from src.trading_runtime.arte_assignment_vwap_entry import (
     project_vwap_entry, restore_vwap_entry,
 )
+from src.trading_runtime.arte_assignment_v5_episode_identity import (
+    FIELDS as V5_EPISODE_FIELDS,
+    project_v5_episode_identity, restore_v5_episode_identity,
+)
 
 
 _CAMPAIGN_KEYS = frozenset(_IDENTITY) | frozenset(_FLAGS) | {"campaign_policy"}
@@ -75,7 +79,7 @@ _SQUEEZE_BREAKOUT_KEYS = (frozenset({"momentum_requests", "midpoint_add_requests
                           | frozenset(_CLOCK_FIELDS) | _BREAKOUT_LEVEL_KEYS
                           | frozenset(_MACD_KEYS))
 _TOP_LEVEL = (_CAMPAIGN_KEYS | set(COUNTERS) | set(ENTRY_PROTECTION_FIELDS) |
-              set(OBSERVATION_FIELDS) |
+              set(OBSERVATION_FIELDS) | set(V5_EPISODE_FIELDS) |
               {"add_step_uses", "structural_profit_targets",
                "position_entry_level_ids", "position_entry_tranches",
                "vwap_ladder_market", "vwap_ladder_episode", "post_move_entry_clock",
@@ -149,6 +153,10 @@ def project_modeled_assignment_state(
             state["vwap_ladder_entry"], assignment_id=assignment_id,
             revision=revision, snapshot_id=snapshot_id, session=session)
             if "vwap_ladder_entry" in state else None),
+        "v5_episode_identity": project_v5_episode_identity(
+            {key: state[key] for key in V5_EPISODE_FIELDS if key in state},
+            assignment_id=assignment_id, revision=revision,
+            snapshot_id=snapshot_id, session=session),
         "campaign": project_campaign_control_state(
             campaign, assignment_id=assignment_id, revision=revision,
             snapshot_id=snapshot_id, session=session),
@@ -202,7 +210,7 @@ def restore_modeled_assignment_state(
 ) -> dict[str, Any]:
     """Cold restore with cross-family identity and exact reprojection checks."""
     if not isinstance(rows, Mapping) or set(rows) != {
-        "lifecycle_counters", "entry_protection_scalars", "observation_clock", "add_step_uses", "profit_targets", "position_entry_identity", "vwap_episode", "post_move_clock", "vwap_entry", "campaign", "grouped_resistance", "squeeze_purchase", "squeeze_clock",
+        "lifecycle_counters", "entry_protection_scalars", "observation_clock", "add_step_uses", "profit_targets", "position_entry_identity", "vwap_episode", "post_move_clock", "vwap_entry", "v5_episode_identity", "campaign", "grouped_resistance", "squeeze_purchase", "squeeze_clock",
         "squeeze_progress", "squeeze_v7_evidence",
     }:
         raise ValueError("assignment state families are incomplete or unmodeled")
@@ -228,6 +236,7 @@ def restore_modeled_assignment_state(
         result["vwap_ladder_entry"] = restore_vwap_entry(
             rows["vwap_entry"], assignment_id=assignment_id,
             revision=revision, snapshot_id=snapshot_id, session=session)
+    result.update(restore_v5_episode_identity(rows["v5_episode_identity"]))
     result.update(restore_squeeze_purchase_state(rows["squeeze_purchase"]))
     clock = restore_squeeze_breakout_clock(rows["squeeze_clock"])
     progress = restore_squeeze_progress_state(rows["squeeze_progress"])

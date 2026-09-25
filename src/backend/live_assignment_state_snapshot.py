@@ -74,6 +74,9 @@ from src.trading_runtime.arte_assignment_vwap_entry_breakout import (
 from src.trading_runtime.arte_assignment_vwap_pullback_move import (
     TABLE as VWAP_ENTRY_PULLBACK,
 )
+from src.trading_runtime.arte_assignment_v5_episode_identity import (
+    TABLE as V5_EPISODE_IDENTITY_TABLE,
+)
 from src.trading_runtime.arte_campaign_control_projection import TABLES as CAMPAIGN
 from src.trading_runtime.arte_grouped_resistance_projection import TABLES as GROUPED
 from src.trading_runtime.arte_long_momentum_squeeze_purchase_state import (
@@ -130,6 +133,7 @@ _SPECS = (
     (PENDING_BREAKOUT_PARENT_TABLE, "post_move_clock", "pending_parent"),
     (PENDING_BREAKOUT_MEMBER_TABLE, "post_move_clock", "pending_members"),
     *((table, "vwap_entry", key) for table, key in _VWAP_ENTRY_TABLE_KEYS),
+    (V5_EPISODE_IDENTITY_TABLE, "v5_episode_identity", None),
     (CAMPAIGN[0], "campaign", "control"),
     (CAMPAIGN[1], "campaign", "policy"),
     *((table, "grouped_resistance", key) for table, key in zip(
@@ -340,6 +344,10 @@ def recover_state_snapshot(storage: StateStorage, *, run_id: str,
                                    else rows[VWAP_EPISODE_TABLE.name]),
                      post_move_clock=post_move_clock,
                      vwap_entry=vwap_entry,
+                     v5_episode_identity=(rows[V5_EPISODE_IDENTITY_TABLE.name][0]
+                                          if len(rows[V5_EPISODE_IDENTITY_TABLE.name]) == 1
+                                          else None if not rows[V5_EPISODE_IDENTITY_TABLE.name]
+                                          else rows[V5_EPISODE_IDENTITY_TABLE.name]),
                      squeeze_purchase={**purchase, "ledger": purchase["ledger"][0]
                                        if len(purchase["ledger"]) == 1 else purchase["ledger"]},
                      squeeze_clock=clock[0], squeeze_progress=progress,
