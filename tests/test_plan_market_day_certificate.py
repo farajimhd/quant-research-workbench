@@ -8,7 +8,9 @@ import pytest
 
 from scripts.build_market_day import digest
 from scripts.clickhouse.plan_market_day_certificate import audit_saved_build
-from scripts.clickhouse.publish_market_day_certificate import publish_saved_build
+from scripts.clickhouse.publish_market_day_certificate import (
+    CanonicalSourceReader, publish_saved_build,
+)
 from test_arte_market_day_source_plan import plan as source_plan_fixture
 
 
@@ -106,5 +108,19 @@ def test_certificate_publisher_plan_is_read_only_and_apply_is_explicit(tmp_path,
                                  client_factory=lambda _url: http,
                                  keeper_session_factory=lambda: session)
     assert result["status"] == "attested"
-    assert called and called[0][0] is http
+    assert called and isinstance(called[0][0], CanonicalSourceReader)
+    assert called[0][0].http is http
     assert http.closed and session.closed
+
+
+def test_source_verifier_adapter_is_select_only_and_returns_typed_rows():
+    class Http:
+        def execute(self, sql):
+            assert sql == "SELECT ticker FROM q_live.source FORMAT JSONEachRow"
+            return '{"ticker":"TEST"}\n'
+    reader = CanonicalSourceReader(Http())
+    assert reader.query("SELECT ticker FROM q_live.source") == [{"ticker": "TEST"}]
+    with pytest.raises(ValueError, match="one SELECT"):
+        reader.query("INSERT INTO arte.bars_v1 VALUES (1)")
+    with pytest.raises(ValueError, match="one SELECT"):
+        reader.query("SELECT ticker FROM q_live.source", read=False)

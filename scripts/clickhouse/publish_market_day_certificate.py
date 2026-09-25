@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+import json
 import os
 from pathlib import Path
 import platform
+import re
 import sys
 from uuid import uuid4
 
@@ -36,8 +38,38 @@ from src.trading_runtime.arte_market_day_publisher import (
 from src.trading_runtime.keeper_session import open_workstation_keeper_session
 
 
+class CanonicalSourceReader:
+    """Expose only producer source SELECTs to the V5 plan verifier.
+
+    The certificate HTTP client has ``execute``; V5's source-plan contract
+    expects ``query`` returning dictionaries. No DDL or market mutation can
+    pass through this adapter during a certificate publication.
+    """
+
+    def __init__(self, http) -> None:
+        self.http = http
+
+    def query(self, sql: str, label: str = "source_plan", read: bool = True) -> list[dict]:
+        if (not read or not re.match(r"^\s*SELECT\b", sql, re.IGNORECASE)
+                or re.search(r"\b(INSERT|ALTER|CREATE|DROP|TRUNCATE|OPTIMIZE|SYSTEM|KILL)\b",
+                             sql, re.IGNORECASE)
+                or re.search(r"\bFORMAT\b", sql, re.IGNORECASE)):
+            raise ValueError(f"Canonical source {label} must be one SELECT without FORMAT")
+        return [json.loads(line) for line in
+                self.http.execute(sql + " FORMAT JSONEachRow").splitlines() if line.strip()]
+
+
+def _certificate_admin_client(url: str):
+    # Whole-build canonical parity and exact typed-family readback can exceed
+    # the short timeout used by credential provisioning. This is control-plane
+    # work, never a Backtest or live market callback.
+    client = _admin_client(url)
+    client.timeout_seconds = 180
+    return client
+
+
 def publish_saved_build(runtime: Path, build_id: str, *, apply: bool,
-                        client_factory=_admin_client,
+                        client_factory=_certificate_admin_client,
                         keeper_session_factory=open_workstation_keeper_session) -> dict:
     """Prepare exact archive rows; publish only under an explicit producer call."""
     prepared, sessions = prepare_saved_build(runtime, build_id)
@@ -63,7 +95,8 @@ def publish_saved_build(runtime: Path, build_id: str, *, apply: bool,
             if claim is None:
                 raise RuntimeError("Market-day certificate build is owned by another publisher")
             proof = publish_market_day_certificate(
-                client, http, authority, claim, prepared, sessions=sessions)
+                client, CanonicalSourceReader(http), authority, claim, prepared,
+                sessions=sessions)
             audit_attested_market_day_certificate(client, reader, build_id,
                                                    sessions=sessions)
             return {"build_id": build_id, "sessions": sessions,
