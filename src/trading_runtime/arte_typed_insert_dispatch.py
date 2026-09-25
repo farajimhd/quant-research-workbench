@@ -18,6 +18,13 @@ from src.trading_runtime.keeper_ownership import (
 
 _ZERO_BATCH = "00000000-0000-0000-0000-000000000000"
 _ZERO_HASH = "0" * 64
+_SNAPSHOT_TABLES = frozenset({
+    "trading_portfolio_snapshot_v1", "trading_portfolio_disabled_strategy_v1",
+    "trading_portfolio_command_v1", "trading_portfolio_request_v1",
+    "trading_portfolio_request_reason_v1", "trading_portfolio_reservation_v1",
+    "trading_portfolio_allocation_v1", "trading_portfolio_reconciliation_v1",
+    "trading_portfolio_snapshot_commit_v1",
+})
 
 
 def _gate_path(run_id: str) -> str:
@@ -34,6 +41,10 @@ def _context_receipt_path(run_id: str) -> str:
 
 def _terminal_receipt_path(run_id: str, account_id: str) -> str:
     return _path("typed_dispatch_terminal_receipt", run_id, account_id)
+
+
+def _snapshot_head_path(run_id: str, account_id: str) -> str:
+    return _path("typed_dispatch_snapshot_head", run_id, account_id)
 
 
 def typed_insert_query_id(run_id: str, table: str, token: str) -> str:
@@ -80,6 +91,33 @@ def _decode_gate(value: bytes) -> _Gate:
     return gate
 
 
+@dataclass(frozen=True)
+class _SnapshotHead:
+    committed_revision: int
+    fence_hash: str
+    active_revision: int
+
+    def wire(self) -> bytes:
+        return (f"1\n{self.committed_revision}\n{self.fence_hash}\n"
+                f"{self.active_revision}").encode()
+
+
+def _decode_snapshot_head(value: bytes) -> _SnapshotHead:
+    try:
+        version, committed, digest, active = value.decode("ascii").split("\n")
+        head = _SnapshotHead(int(committed), digest, int(active))
+    except (UnicodeError, ValueError) as exc:
+        raise KeeperUnavailable("Portfolio snapshot head is corrupt") from exc
+    if (version != "1" or head.committed_revision < 0
+            or head.active_revision < 0
+            or head.active_revision and head.active_revision <= head.committed_revision
+            or re.fullmatch(r"[0-9a-f]{64}", head.fence_hash) is None
+            or (head.committed_revision == 0) != (head.fence_hash == _ZERO_HASH)
+            or head.wire() != value):
+        raise KeeperUnavailable("Portfolio snapshot head is invalid")
+    return head
+
+
 def _operation_wire(run_id: str, table: str, query_id: str,
                     token: str, sql: str, batch_id: str,
                     sequence: int, status: str) -> bytes:
@@ -115,6 +153,7 @@ class TypedInsertDispatch:
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_operation")
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_context_receipt")
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_terminal_receipt")
+        self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_snapshot_head")
         try:
             self.keeper.create(_gate_path(run_id), _Gate(
                 "open", 0, 1, 0, 0, _ZERO_BATCH, _ZERO_HASH,
@@ -167,7 +206,8 @@ class TypedInsertDispatch:
                              token: str, sql: str,
                              batch_id: str | None = None,
                              batch_last_sequence: int | None = None,
-                             terminal_account_id: str | None = None) -> None:
+                             terminal_account_id: str | None = None,
+                             snapshot_account_id: str | None = None) -> None:
         if (re.fullmatch(r"[a-z][a-z0-9_]*", table) is None
                 or not sql.startswith(f"INSERT INTO arte.{table} (")
                 or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1" not in sql
@@ -175,8 +215,20 @@ class TypedInsertDispatch:
             raise ValueError("Typed dispatch requires the acknowledged arte INSERT contract")
         if (type(batch_last_sequence) is not int or batch_last_sequence < 0
                 or not isinstance(batch_id, str)
-                or (batch_last_sequence == 0) != (batch_id == _ZERO_BATCH)):
+                or (snapshot_account_id is None and
+                    (batch_last_sequence == 0) != (batch_id == _ZERO_BATCH))
+                or (snapshot_account_id is not None and batch_id != _ZERO_BATCH)):
             raise KeeperUnavailable("Strict typed dispatch lacks batch sequence authority")
+        if terminal_account_id is not None and snapshot_account_id is not None:
+            raise ValueError("Typed INSERT has multiple parent families")
+        if snapshot_account_id is not None:
+            _identity(snapshot_account_id, "account")
+            if batch_last_sequence < 1 or table not in _SNAPSHOT_TABLES:
+                raise KeeperUnavailable("Portfolio snapshot dispatch table is invalid")
+            suffix = "commit" if table == "trading_portfolio_snapshot_commit_v1" else table
+            if token != (f"portfolio-state:{run_id}:{snapshot_account_id}:"
+                         f"{batch_last_sequence}:{suffix}"):
+                raise KeeperUnavailable("Portfolio snapshot dispatch token differs from account revision")
         if terminal_account_id is not None:
             _identity(terminal_account_id, "account")
             if table != "trading_backtest_snapshot_anchor_v1" or batch_last_sequence < 1:
@@ -191,9 +243,16 @@ class TypedInsertDispatch:
             gate, version = self._read_gate(run_id)
             if gate.mode != "open":
                 raise KeeperUnavailable("Typed dispatch run is cold-fenced")
-            if terminal_account_id is not None:
+            if snapshot_account_id is not None:
                 self._read_context_receipt(run_id)
-                if (gate.active_batch_id != _ZERO_BATCH
+                head = self._read_snapshot_head(run_id, snapshot_account_id)
+                if (head is None or head[0].active_revision != batch_last_sequence
+                        or gate.active_batch_id != _ZERO_BATCH
+                        or gate.inflight < 1 or gate.registered < 1):
+                    raise KeeperUnavailable("Portfolio snapshot lacks active account reservation")
+            elif terminal_account_id is not None:
+                self._read_context_receipt(run_id)
+                if (gate.inflight or gate.active_batch_id != _ZERO_BATCH
                         or gate.compacted_through != batch_last_sequence
                         or gate.compacted_batch_id != batch_id):
                     raise KeeperUnavailable("Terminal anchor differs from compacted run prefix")
@@ -206,11 +265,11 @@ class TypedInsertDispatch:
                     raise KeeperUnavailable("Terminal account receipt already sealed")
             elif batch_last_sequence and gate.active_batch_id != batch_id:
                 raise KeeperUnavailable("Competing typed batch owns the run prefix")
-            if terminal_account_id is None and batch_last_sequence and batch_last_sequence <= gate.compacted_through:
+            if snapshot_account_id is None and terminal_account_id is None and batch_last_sequence and batch_last_sequence <= gate.compacted_through:
                 return  # Exact CH batch readback and watermark check still follow.
-            if terminal_account_id is None and not batch_last_sequence and gate.active_batch_id != _ZERO_BATCH:
+            if snapshot_account_id is None and terminal_account_id is None and not batch_last_sequence and gate.active_batch_id != _ZERO_BATCH:
                 raise KeeperUnavailable("Run context cannot dispatch during a batch")
-            if terminal_account_id is None and not batch_last_sequence:
+            if snapshot_account_id is None and terminal_account_id is None and not batch_last_sequence:
                 try:
                     self.keeper.get(_context_receipt_path(run_id))
                 except Exception as exc:
@@ -269,7 +328,8 @@ class TypedInsertDispatch:
                                 required: bool = True,
                                 batch_id: str | None = None,
                                 batch_last_sequence: int | None = None,
-                                terminal: bool = False) -> None:
+                                terminal: bool = False,
+                                snapshot: bool = False) -> None:
         """Caller must invoke only after exact parent late-fence readback.
 
         Unwired parent publishers leave acknowledged operations in-flight,
@@ -282,7 +342,7 @@ class TypedInsertDispatch:
             gate, version = self._read_gate(run_id)
             if gate.mode != "open":
                 raise KeeperUnavailable("Typed dispatch cannot seal outside open parent")
-            if (not terminal and type(batch_last_sequence) is int and batch_last_sequence > 0
+            if (not terminal and not snapshot and type(batch_last_sequence) is int and batch_last_sequence > 0
                     and batch_last_sequence <= gate.compacted_through):
                 return
             try:
@@ -398,6 +458,132 @@ class TypedInsertDispatch:
                 or value != ("1\n" + digest).encode()):
             raise KeeperUnavailable("Run-context Keeper receipt is invalid")
         return digest
+
+    def _read_snapshot_head(self, run_id: str, account_id: str) -> tuple[_SnapshotHead, int] | None:
+        try:
+            value, stat = self.keeper.get(_snapshot_head_path(run_id, account_id))
+        except Exception as exc:
+            if type(exc).__name__ == "NoNodeError":
+                return None
+            raise KeeperUnavailable("Portfolio snapshot head cannot be read") from exc
+        return _decode_snapshot_head(value), stat.version
+
+    def reserve_snapshot_revision(self, *, run_id: str, account_id: str,
+                                  revision: int,
+                                  latest_ch_revision: int | None) -> str:
+        """Reserve a strictly newer account revision before any snapshot INSERT."""
+        _identity(account_id, "account")
+        if (type(revision) is not int or revision < 1
+                or (latest_ch_revision is not None and
+                    (type(latest_ch_revision) is not int or latest_ch_revision < 1))):
+            raise ValueError("Portfolio snapshot revision is invalid")
+        self._read_context_receipt(run_id)
+        path = _snapshot_head_path(run_id, account_id)
+        for _ in range(8):
+            gate, gate_version = self._read_gate(run_id)
+            if gate.mode != "open" or gate.active_batch_id != _ZERO_BATCH:
+                raise KeeperUnavailable("Portfolio snapshot run is cold-fenced or batch-active")
+            observed = self._read_snapshot_head(run_id, account_id)
+            if observed is None:
+                if latest_ch_revision is not None:
+                    raise KeeperUnavailable("Portfolio snapshot has unattested legacy commit")
+                proposed = _SnapshotHead(0, _ZERO_HASH, revision)
+            else:
+                head, head_version = observed
+                if head.active_revision:
+                    if (head.active_revision != revision
+                            or latest_ch_revision not in (
+                                head.committed_revision or None, revision)
+                            or gate.inflight < 1 or gate.registered < 1):
+                        raise KeeperUnavailable("Competing portfolio snapshot revision is active")
+                    return "active"
+                if latest_ch_revision != (head.committed_revision or None):
+                    raise KeeperUnavailable("ClickHouse snapshot head differs from Keeper")
+                if revision == head.committed_revision:
+                    return "committed"
+                if revision < head.committed_revision:
+                    raise KeeperUnavailable("Portfolio snapshot revision is stale")
+                proposed = _SnapshotHead(head.committed_revision,
+                                         head.fence_hash, revision)
+            txn = self.keeper.transaction()
+            txn.check(_gate_path(run_id), version=gate_version)
+            if observed is None:
+                txn.create(path, proposed.wire(), ephemeral=False)
+            else:
+                txn.set_data(path, proposed.wire(), version=head_version)
+            txn.set_data(_gate_path(run_id), _Gate(
+                "open", gate.inflight + 1, gate.epoch, gate.registered + 1,
+                gate.compacted_through, gate.compacted_batch_id,
+                gate.compacted_commit_hash, gate.active_batch_id).wire(),
+                version=gate_version)
+            if _committed(txn.commit()):
+                return "active"
+        raise KeeperUnavailable("Portfolio snapshot reservation CAS contended")
+
+    def compact_verified_snapshot(self, *, run_id: str, account_id: str,
+                                  revision: int, fence_hash: str,
+                                  operations: tuple[tuple[str, str], ...]) -> None:
+        """Advance one account head and GC its sealed operations atomically."""
+        _identity(account_id, "account")
+        if (type(revision) is not int or revision < 1
+                or re.fullmatch(r"[0-9a-f]{64}", fence_hash) is None
+                or not operations or len(set(operations)) != len(operations)):
+            raise ValueError("Portfolio snapshot compaction identity is invalid")
+        path = _snapshot_head_path(run_id, account_id)
+        for _ in range(8):
+            gate, gate_version = self._read_gate(run_id)
+            observed = self._read_snapshot_head(run_id, account_id)
+            if observed is None:
+                raise KeeperUnavailable("Portfolio snapshot lacks reserved account head")
+            head, head_version = observed
+            if gate.mode != "open" or gate.active_batch_id != _ZERO_BATCH:
+                raise KeeperUnavailable("Portfolio snapshot cannot compact during batch or cold fence")
+            if head.active_revision == 0:
+                if head.committed_revision == revision and head.fence_hash == fence_hash:
+                    return
+                raise KeeperUnavailable("Portfolio snapshot committed head conflicts")
+            if head.active_revision != revision or gate.inflight < 1:
+                raise KeeperUnavailable("Portfolio snapshot active head conflicts")
+            paths = []
+            for table, token in operations:
+                suffix = "commit" if table == "trading_portfolio_snapshot_commit_v1" else table
+                if (table not in _SNAPSHOT_TABLES
+                        or token != f"portfolio-state:{run_id}:{account_id}:{revision}:{suffix}"):
+                    raise KeeperUnavailable("Portfolio snapshot operation inventory differs from account revision")
+                query_id = typed_insert_query_id(run_id, table, token)
+                op_path = _operation_path(run_id, query_id)
+                try:
+                    value, stat = self.keeper.get(op_path)
+                except Exception as exc:
+                    raise KeeperUnavailable("Portfolio snapshot lacks dispatch operation") from exc
+                parts = value.decode().split("\n")
+                if (len(parts) != 9 or parts[:5] != ["3", run_id, table, query_id,
+                        sha256(token.encode()).hexdigest()]
+                        or parts[6:] != [_ZERO_BATCH, str(revision), "sealed"]):
+                    raise KeeperUnavailable("Portfolio snapshot operation is not sealed")
+                paths.append((op_path, stat.version))
+            if gate.registered < len(paths) + 1:
+                raise KeeperUnavailable("Portfolio snapshot operation count is corrupt")
+            txn = self.keeper.transaction()
+            txn.check(_gate_path(run_id), version=gate_version)
+            for op_path, op_version in paths:
+                txn.delete(op_path, version=op_version)
+            txn.set_data(path, _SnapshotHead(revision, fence_hash, 0).wire(),
+                         version=head_version)
+            txn.set_data(_gate_path(run_id), _Gate(
+                "open", gate.inflight - 1, gate.epoch,
+                gate.registered - len(paths) - 1, gate.compacted_through,
+                gate.compacted_batch_id, gate.compacted_commit_hash,
+                _ZERO_BATCH).wire(), version=gate_version)
+            if _committed(txn.commit()):
+                return
+        raise KeeperUnavailable("Portfolio snapshot compaction CAS contended")
+
+    def assert_snapshot_head(self, *, run_id: str, account_id: str,
+                             revision: int, fence_hash: str) -> None:
+        observed = self._read_snapshot_head(run_id, account_id)
+        if observed is None or observed[0] != _SnapshotHead(revision, fence_hash, 0):
+            raise KeeperUnavailable("Portfolio snapshot head differs from ClickHouse")
 
     def compact_verified_terminal_anchor(self, *, run_id: str, account_id: str,
                                          batch_id: str, last_sequence: int,
@@ -534,7 +720,8 @@ class TypedInsertDispatch:
 
     def acquire_cold_barrier(self, run_id: str) -> "ColdDispatchBarrier":
         gate, version = self._read_gate(run_id)
-        if gate.mode != "open" or gate.inflight or gate.active_batch_id != _ZERO_BATCH:
+        if (gate.mode != "open" or gate.inflight or gate.registered
+                or gate.active_batch_id != _ZERO_BATCH):
             raise KeeperUnavailable("Typed dispatch has pending or ambiguous INSERTs")
         closed = _Gate("closed", 0, gate.epoch + 1, gate.registered,
                        gate.compacted_through, gate.compacted_batch_id,
@@ -617,6 +804,33 @@ class ColdDispatchBarrier:
             run_id=self.run_id, account_id=account_id,
             batch_id=prefix.last_batch_id, last_sequence=prefix.last_sequence,
             anchor_hash=anchor_hash, snapshot_hash=snapshot["state_hash"])
+        self.assert_fenced(self.run_id)
+        return snapshot
+
+    def verify_portfolio_snapshot_head(self, client: Any, *,
+                                       account_id: str) -> dict[str, Any]:
+        """Cold-read latest account snapshot and match its exact Keeper head."""
+        from src.trading_runtime.arte_portfolio_snapshot import (
+            _SNAPSHOT_COMMIT, _stored_rows, load_latest_portfolio_snapshot,
+        )
+        from src.trading_runtime.journal_contract import canonical_json
+
+        self.assert_fenced(self.run_id)
+        snapshot = load_latest_portfolio_snapshot(
+            client, run_id=self.run_id, account_id=account_id)
+        if snapshot is None:
+            raise KeeperUnavailable("Cold portfolio account has no committed snapshot")
+        revision = snapshot["state_revision"]
+        rows = _stored_rows(client, _SNAPSHOT_COMMIT, self.run_id,
+                            account_id, revision)
+        if len(rows) != 1:
+            raise KeeperUnavailable("Cold portfolio snapshot fence is absent or duplicated")
+        stable = {key: value for key, value in rows[0].items()
+                  if key != "committed_at"}
+        digest = sha256(canonical_json(stable).encode()).hexdigest()
+        self.authority.assert_snapshot_head(
+            run_id=self.run_id, account_id=account_id,
+            revision=revision, fence_hash=digest)
         self.assert_fenced(self.run_id)
         return snapshot
 

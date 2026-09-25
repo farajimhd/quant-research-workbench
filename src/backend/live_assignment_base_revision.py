@@ -26,6 +26,9 @@ BASE_REVISION = TableContract(
      ("can_reduce", "Bool"), ("can_exit", "Bool"), ("can_reenter", "Bool"),
      ("source", "String"), ("created_at", "DateTime64(6, 'UTC')"),
      ("updated_at", "DateTime64(6, 'UTC')"),
+     ("parameter_snapshot_id", "UUID"), ("parameter_session", "Date"),
+     ("state_snapshot_id", "UUID"), ("state_session", "Date"),
+     ("state_run_id", "String"),
      ("parameter_content_hash", "FixedString(64)"),
      ("state_content_hash", "FixedString(64)"),
      ("previous_revision_hash", "FixedString(64)"),
@@ -52,6 +55,8 @@ def _digest(value: str) -> str:
 
 def project_base_revision(
     assignment: StrategyAssignment, *, revision_sequence: int,
+    parameter_snapshot_id: str, parameter_session: str,
+    state_snapshot_id: str, state_session: str, state_run_id: str,
     parameter_content_hash: str, state_content_hash: str,
     previous_revision_hash: str,
 ) -> dict[str, Any]:
@@ -72,6 +77,19 @@ def project_base_revision(
         raise ValueError("assignment permissions must be Boolean")
     if not isinstance(assignment.status, AssignmentStatus) or type(assignment.source) is not str:
         raise ValueError("assignment status or source is invalid")
+    from datetime import date
+    from uuid import UUID
+    try:
+        for value in (parameter_snapshot_id, state_snapshot_id):
+            if str(UUID(value)) != value:
+                raise ValueError("assignment snapshot UUID is not canonical")
+        for value in (parameter_session, state_session):
+            if date.fromisoformat(value).isoformat() != value:
+                raise ValueError("assignment snapshot session is invalid")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("assignment child snapshot reference is invalid") from exc
+    if type(state_run_id) is not str or not state_run_id:
+        raise ValueError("assignment state run identity is invalid")
     row = dict(
         schema_version=1, assignment_id=assignment.assignment_id,
         revision_sequence=revision_sequence, strategy_id=assignment.strategy_id,
@@ -82,6 +100,9 @@ def project_base_revision(
         can_exit=assignment.permissions.exit, can_reenter=assignment.permissions.reenter,
         source=assignment.source, created_at=_time(assignment.created_at),
         updated_at=_time(assignment.updated_at),
+        parameter_snapshot_id=parameter_snapshot_id, parameter_session=parameter_session,
+        state_snapshot_id=state_snapshot_id, state_session=state_session,
+        state_run_id=state_run_id,
         parameter_content_hash=_digest(parameter_content_hash),
         state_content_hash=_digest(state_content_hash),
         previous_revision_hash=_digest(previous_revision_hash),
@@ -124,6 +145,10 @@ def recover_base_revision(
         )
         exact = project_base_revision(
             assignment, revision_sequence=expected_sequence,
+            parameter_snapshot_id=row["parameter_snapshot_id"],
+            parameter_session=row["parameter_session"],
+            state_snapshot_id=row["state_snapshot_id"],
+            state_session=row["state_session"], state_run_id=row["state_run_id"],
             parameter_content_hash=parameter_content_hash,
             state_content_hash=state_content_hash,
             previous_revision_hash=previous_revision_hash,

@@ -12,6 +12,7 @@ from typing import Any, Callable
 from uuid import UUID
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
+from src.backend.backtest_fixed_run_context import verify_fixed_run_context
 from src.backend.backtest_terminal_v2_keeper import FixedTerminalKeeperAuthority
 from src.backend.backtest_terminal_v2_preflight import (
     terminal_v2_keeper_proof_preflight, terminal_v2_operator_preflight,
@@ -24,6 +25,7 @@ from src.trading_runtime.arte_journal_schema import (
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, load_typed_run_context,
 )
+from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +82,8 @@ def prepare_fixed_journal_token(
     storage_preflight(read_client, tables=fixed_backtest_v2_contracts())
     terminal_v2_operator_preflight(terminal_client)
     terminal_v2_keeper_proof_preflight(keeper)
-    context = load_typed_run_context(read_client, run_id)
+    context = verify_fixed_run_context(
+        TypedInsertDispatch(keeper), read_client, terminal_client, run_id=run_id)
     if (context["mode"] != "backtest"
             or tuple(context["account_ids"]) != account_ids
             or context["configuration_hash"] != configuration_hash
@@ -89,8 +92,6 @@ def prepare_fixed_journal_token(
     month = date.fromisoformat(context["run_month"])
     if month.day != 1:
         raise RuntimeError("Fixed journal run month is invalid")
-    if load_typed_run_context(terminal_client, run_id) != context:
-        raise RuntimeError("Terminal writer observes a different typed run context")
     projection_certificate = projection_certifier()
     if (not isinstance(projection_certificate, str)
             or re.fullmatch(r"[0-9a-f]{64}", projection_certificate) is None):

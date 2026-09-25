@@ -358,6 +358,9 @@ def test_fixed_controller_prepares_distinct_typed_clients_without_opening_gate(
                    configuration_hash="c" * 64, market_plan_token=parent.token)
     monkeypatch.setattr(bootstrap, "load_typed_run_context",
                         lambda client, run_id: calls.append(("context", client)) or context)
+    monkeypatch.setattr(bootstrap, "verify_fixed_run_context",
+                        lambda _dispatch, read_client, terminal_client, *, run_id:
+                        calls.append(("context_receipt", read_client, terminal_client)) or context)
     class Writer:
         run_id = RUN
         run_mode = "backtest"
@@ -380,7 +383,7 @@ def test_fixed_controller_prepares_distinct_typed_clients_without_opening_gate(
     assert controller._journal_publisher.writer is controller._journal_writer
     assert [item[0] for item in calls] == [
         "read_preflight", "terminal_preflight", "keeper_preflight",
-        "context", "context", "context", "context", "context", "writer"]
+        "context_receipt", "context", "context", "context", "writer"]
     assert not controller.run_dir.exists()
     controller._journal.close()
 

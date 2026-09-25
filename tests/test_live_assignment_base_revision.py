@@ -18,6 +18,11 @@ from src.trading_runtime.strategy_engine import (
 HASH_A = "a" * 64
 HASH_B = "b" * 64
 GENESIS = "0" * 64
+PARAMETER_SNAPSHOT = "2a2c2393-d13d-4ecb-9fae-b5e26ea9ff6f"
+STATE_SNAPSHOT = "4a2c2393-d13d-4ecb-9fae-b5e26ea9ff6f"
+CHILD_REFS = dict(parameter_snapshot_id=PARAMETER_SNAPSHOT,
+                  parameter_session="2026-09-24", state_snapshot_id=STATE_SNAPSHOT,
+                  state_session="2026-09-24", state_run_id="run-1")
 
 
 def _assignment():
@@ -36,6 +41,7 @@ def _assignment():
 def _project(assignment=None):
     return project_base_revision(
         assignment or _assignment(), revision_sequence=1,
+        **CHILD_REFS,
         parameter_content_hash=HASH_A, state_content_hash=HASH_B,
         previous_revision_hash=GENESIS,
     )
@@ -85,6 +91,7 @@ def test_cold_read_requires_single_externally_attested_row():
 def test_projection_rejects_bad_revision_and_timestamps():
     with pytest.raises(ValueError):
         project_base_revision(_assignment(), revision_sequence=2,
+                              **CHILD_REFS,
                               parameter_content_hash=HASH_A, state_content_hash=HASH_B,
                               previous_revision_hash=GENESIS)
     with pytest.raises(ValueError):

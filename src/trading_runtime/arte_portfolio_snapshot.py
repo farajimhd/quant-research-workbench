@@ -564,29 +564,11 @@ def publish_prepared_portfolio_snapshot(
     if prepared.selected_policy is not None:
         if publish_portfolio_policy(client, prepared.selected_policy) != projected.account["selected_policy_hash"]:
             raise RuntimeError("Selected portfolio policy differs from its catalog")
+    dispatch = getattr(client, "typed_insert_dispatch", None)
     families = _snapshot_rows(run_id, account_id, state_revision, month, projected)
     source_families = _snapshot_rows(run_id, account_id, state_revision, month,
                                     projected, wire=False)
     digest = _state_hash(families)
-    existing_fence = _stored_rows(client, _SNAPSHOT_COMMIT, run_id, account_id,
-                                  state_revision)
-    if existing_fence:
-        loaded = load_portfolio_snapshot(client, run_id=run_id,
-                                         account_id=account_id,
-                                         state_revision=state_revision)
-        if loaded is None or loaded["state_hash"] != digest:
-            raise RuntimeError("Portfolio snapshot revision has conflicting content")
-        return digest
-    for table, expected in families.items():
-        actual = _stored_rows(client, table, run_id, account_id, state_revision)
-        if actual and _canonical_family(table, actual) != _canonical_family(table, expected):
-            raise RuntimeError(f"Portfolio snapshot {table} has conflicting partial rows")
-        if not actual and expected:
-            _insert(client, table, source_families[table],
-                    f"portfolio-state:{run_id}:{account_id}:{state_revision}:{table}")
-            actual = _stored_rows(client, table, run_id, account_id, state_revision)
-        if _canonical_family(table, actual) != _canonical_family(table, expected):
-            raise RuntimeError(f"Portfolio snapshot {table} did not become durable")
     fence = {"run_id": run_id, "snapshot_month": month, "account_id": account_id,
              "state_revision": state_revision, "state_hash": digest,
              **{_COUNT_COLUMNS[attribute]: len(families[table])
@@ -594,12 +576,67 @@ def publish_prepared_portfolio_snapshot(
              "committed_at": datetime.now(timezone.utc).isoformat()}
     if set(fence) != {name for name, _ in _CONTRACTS[_SNAPSHOT_COMMIT].columns}:
         raise RuntimeError("Portfolio snapshot fence lacks a typed family count")
-    _insert(client, _SNAPSHOT_COMMIT, (fence,),
-            f"portfolio-state:{run_id}:{account_id}:{state_revision}:commit")
+    stable_fence = {key: value for key, value in fence.items() if key != "committed_at"}
+    fence_hash = sha256(canonical_json(stable_fence).encode("utf-8")).hexdigest()
+    existing_fence = _stored_rows(client, _SNAPSHOT_COMMIT, run_id, account_id,
+                                  state_revision)
+    if dispatch is not None:
+        dispatch.reserve_snapshot_revision(
+            run_id=run_id, account_id=account_id, revision=state_revision,
+            latest_ch_revision=latest_revision)
+    if existing_fence:
+        loaded = load_portfolio_snapshot(client, run_id=run_id,
+                                         account_id=account_id,
+                                         state_revision=state_revision)
+        if loaded is None or loaded["state_hash"] != digest:
+            raise RuntimeError("Portfolio snapshot revision has conflicting content")
+        if len(existing_fence) != 1 or {
+                key: value for key, value in existing_fence[0].items()
+                if key != "committed_at"} != stable_fence:
+            raise RuntimeError("Portfolio snapshot existing fence conflicts with typed rows")
+        if dispatch is None:
+            return digest
+    for table, expected in families.items():
+        actual = _stored_rows(client, table, run_id, account_id, state_revision)
+        if actual and _canonical_family(table, actual) != _canonical_family(table, expected):
+            raise RuntimeError(f"Portfolio snapshot {table} has conflicting partial rows")
+        if not actual and expected:
+            _insert(client, table, source_families[table],
+                    f"portfolio-state:{run_id}:{account_id}:{state_revision}:{table}",
+                    dispatch_sequence=state_revision,
+                    dispatch_snapshot_account_id=account_id)
+            actual = _stored_rows(client, table, run_id, account_id, state_revision)
+        if _canonical_family(table, actual) != _canonical_family(table, expected):
+            raise RuntimeError(f"Portfolio snapshot {table} did not become durable")
+    if not existing_fence:
+        _insert(client, _SNAPSHOT_COMMIT, (fence,),
+                f"portfolio-state:{run_id}:{account_id}:{state_revision}:commit",
+                dispatch_sequence=state_revision,
+                dispatch_snapshot_account_id=account_id)
     loaded = load_portfolio_snapshot(client, run_id=run_id, account_id=account_id,
                                      state_revision=state_revision)
     if loaded is None or loaded["state_hash"] != digest:
         raise RuntimeError("Portfolio snapshot fence did not become durable")
+    actual_fence = _stored_rows(client, _SNAPSHOT_COMMIT, run_id, account_id,
+                                state_revision)
+    if len(actual_fence) != 1 or {
+            key: value for key, value in actual_fence[0].items()
+            if key != "committed_at"} != stable_fence:
+        raise RuntimeError("Portfolio snapshot fence readback differs from prepared rows")
+    if dispatch is not None:
+        operations = tuple((table,
+            f"portfolio-state:{run_id}:{account_id}:{state_revision}:{table}")
+            for table, expected in families.items() if expected) + ((
+            _SNAPSHOT_COMMIT,
+            f"portfolio-state:{run_id}:{account_id}:{state_revision}:commit"),)
+        for table, token in operations:
+            dispatch.seal_verified_operation(
+                run_id=run_id, table=table, token=token, required=False,
+                batch_id="00000000-0000-0000-0000-000000000000",
+                batch_last_sequence=state_revision, snapshot=True)
+        dispatch.compact_verified_snapshot(
+            run_id=run_id, account_id=account_id, revision=state_revision,
+            fence_hash=fence_hash, operations=operations)
     return digest
 
 

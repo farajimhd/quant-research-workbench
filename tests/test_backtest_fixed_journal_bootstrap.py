@@ -46,7 +46,21 @@ def _verified(monkeypatch):
                "run_month": "2026-08-01", "configuration_hash": "c" * 64,
                "market_plan_token": "market-token"}
     monkeypatch.setattr(bootstrap, "load_typed_run_context", lambda *_, **__: context)
+    monkeypatch.setattr(bootstrap, "verify_fixed_run_context",
+                        lambda _dispatch, _read, _terminal, *, run_id: context)
     return checked, context
+
+
+def test_bootstrap_requires_keeper_context_receipt(monkeypatch):
+    _verified(monkeypatch)
+    def no_receipt(*args, **kwargs):
+        raise RuntimeError("Keeper context receipt is missing")
+    monkeypatch.setattr(bootstrap, "verify_fixed_run_context", no_receipt)
+    with pytest.raises(RuntimeError, match="Keeper context receipt"):
+        bootstrap.prepare_fixed_journal_token(
+            object(), object(), object(), run_id=RUN, account_ids=("DU1",),
+            configuration_hash="c" * 64, market_plan_token="market-token",
+            projection_certifier=lambda: "a" * 64)
 
 
 def test_bootstrap_assembles_bounded_in_memory_lane_without_writes(monkeypatch):

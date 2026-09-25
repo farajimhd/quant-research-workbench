@@ -91,6 +91,120 @@ def test_snapshot_commit_fences_exact_typed_children_and_retries() -> None:
     assert client.inserts[-1] == "trading_portfolio_snapshot_commit_v1"
 
 
+def test_strict_snapshot_head_compacts_recurring_revisions(monkeypatch) -> None:
+    from test_arte_typed_insert_dispatch import Keeper, attest_direct
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+
+    authority = TypedInsertDispatch(Keeper(), max_operations=5)
+    authority.initialize_new_run("live-run")
+    attest_direct(authority, "live-run")
+    class StrictSnapshotClient(SnapshotClient):
+        typed_insert_strict = True
+        typed_insert_dispatch = authority
+        def execute(self, sql: str, *, query_id=None) -> str:
+            return super().execute(sql)
+    client = StrictSnapshotClient()
+    for revision in (1, 3, 10):
+        digest = publish_portfolio_snapshot(
+            client, run_id="live-run", account_id="account-id",
+            state_revision=revision,
+            snapshot_at=datetime(2026, 8, 18, 12, tzinfo=timezone.utc),
+            state=_state())
+        assert authority._read_gate("live-run")[0].registered == 0
+        assert authority._read_snapshot_head("live-run", "account-id")[0].committed_revision == revision
+        assert publish_portfolio_snapshot(
+            client, run_id="live-run", account_id="account-id",
+            state_revision=revision,
+            snapshot_at=datetime(2026, 8, 18, 12, tzinfo=timezone.utc),
+            state=_state()) == digest
+    assert len(client.inserts) == 12
+    barrier = authority.acquire_cold_barrier("live-run")
+    barrier.prefix_verified = True  # Prefix and context proof have separate fixtures.
+    barrier.context_verified = True
+    assert barrier.verify_portfolio_snapshot_head(
+        client, account_id="account-id")["state_revision"] == 10
+    client.tables["trading_portfolio_snapshot_commit_v1"][-1]["command_count"] = 99
+    with pytest.raises(RuntimeError, match="fence count"):
+        barrier.verify_portfolio_snapshot_head(client, account_id="account-id")
+    client.tables["trading_portfolio_snapshot_commit_v1"][-1]["command_count"] = 1
+    barrier.release()
+    with pytest.raises(RuntimeError, match="older than the committed prefix"):
+        _publish(client)
+
+
+def test_strict_snapshot_lost_response_blocks_retry_and_cold_barrier() -> None:
+    from test_arte_typed_insert_dispatch import Keeper, attest_direct
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+    from src.trading_runtime.keeper_ownership import KeeperUnavailable
+
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("live-run")
+    attest_direct(authority, "live-run")
+    class LostResponseClient(SnapshotClient):
+        typed_insert_strict = True
+        typed_insert_dispatch = authority
+        lose_once = True
+        def execute(self, sql: str, *, query_id=None) -> str:
+            response = super().execute(sql)
+            if sql.startswith("INSERT ") and self.lose_once:
+                self.lose_once = False
+                raise TimeoutError("response lost after server may have committed")
+            return response
+    client = LostResponseClient()
+    with pytest.raises(TimeoutError, match="response lost"):
+        _publish(client)
+    with pytest.raises(KeeperUnavailable, match="pending or ambiguous"):
+        authority.acquire_cold_barrier("live-run")
+    with pytest.raises(KeeperUnavailable, match="acknowledged"):
+        _publish(client)
+    assert authority._read_snapshot_head("live-run", "account-id")[0].active_revision == 1
+
+
+def test_strict_snapshot_rejects_legacy_commits_without_head() -> None:
+    from test_arte_typed_insert_dispatch import Keeper, attest_direct
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+    from src.trading_runtime.keeper_ownership import KeeperUnavailable
+
+    client = SnapshotClient()
+    _publish(client)
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("live-run")
+    attest_direct(authority, "live-run")
+    client.typed_insert_strict = True
+    client.typed_insert_dispatch = authority
+    with pytest.raises(KeeperUnavailable, match="unattested legacy commit"):
+        _publish(client)
+
+
+def test_strict_snapshot_retries_after_fence_readback_before_keeper_compaction() -> None:
+    from test_arte_typed_insert_dispatch import Keeper, attest_direct
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+    from src.trading_runtime.keeper_ownership import KeeperUnavailable
+
+    authority = TypedInsertDispatch(Keeper(), max_operations=5)
+    authority.initialize_new_run("live-run")
+    attest_direct(authority, "live-run")
+    class StrictSnapshotClient(SnapshotClient):
+        typed_insert_strict = True
+        typed_insert_dispatch = authority
+        def execute(self, sql: str, *, query_id=None) -> str:
+            return super().execute(sql)
+    client = StrictSnapshotClient()
+    compact = authority.compact_verified_snapshot
+    authority.compact_verified_snapshot = lambda **_kwargs: (_ for _ in ()).throw(
+        OSError("crash after fence readback"))
+    with pytest.raises(OSError, match="after fence readback"):
+        _publish(client)
+    before = tuple(client.inserts)
+    with pytest.raises(KeeperUnavailable, match="pending or ambiguous"):
+        authority.acquire_cold_barrier("live-run")
+    authority.compact_verified_snapshot = compact
+    _publish(client)
+    assert tuple(client.inserts) == before
+    assert authority._read_snapshot_head("live-run", "account-id")[0].active_revision == 0
+    authority.acquire_cold_barrier("live-run")
+
+
 def test_snapshot_fence_rejects_child_tampering() -> None:
     client = SnapshotClient()
     _publish(client)
