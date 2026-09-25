@@ -14,7 +14,9 @@ import threading
 from types import MappingProxyType
 from typing import Any, Mapping, Protocol
 
-from src.backend.signal_dispatch_typed_cursor import verify_dispatch_cursor
+from src.backend.signal_dispatch_typed_cursor import (
+    DispatchColdStorage, read_committed_dispatch_prefix, verify_dispatch_cursor,
+)
 from src.backend.live_signal_completion_keeper import completion_resource
 from src.backend.signal_stream_typed_cursor import TypedTable
 from src.backend.signal_stream_typed_readback import canonical_row
@@ -193,6 +195,32 @@ def read_exact_completion(
             epoch=row["keeper_epoch"], content_hash=row["content_hash"]):
         raise ValueError("signal work completion lacks Keeper attestation")
     return expected
+
+
+def read_completed_dispatch_prefix(
+    dispatch_storage: DispatchColdStorage, completion_storage: CompletionStorage,
+    keeper: CompletionKeeper, *, session_key: str,
+    source_commit_hashes: tuple[str, ...], configuration_revision_id: str,
+) -> tuple[CompletionProof, ...]:
+    """Verify every ACKed delivery in a verified source prefix is attested complete.
+
+    An absent completion is uncertain, including when its broker work may have
+    succeeded. This cannot establish whole-session coverage without a sealed
+    source head and a stable cold-read snapshot.
+    """
+    batches = read_committed_dispatch_prefix(
+        dispatch_storage, session_key=session_key,
+        source_commit_hashes=source_commit_hashes,
+        configuration_revision_id=configuration_revision_id)
+    proofs = []
+    for intents, acks in batches:
+        for ordinal in range(len(intents["intents"])):
+            proof = prepare_completion_proof(intents, acks, ordinal=ordinal)
+            if read_exact_completion(completion_storage, intents, acks,
+                                     ordinal=ordinal, keeper=keeper) is None:
+                raise ValueError("ACKed signal work completion is absent or uncertain")
+            proofs.append(proof)
+    return tuple(proofs)
 
 
 class _Receipt(Future[CompletionProjection]):

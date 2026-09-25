@@ -5,7 +5,8 @@ from copy import deepcopy
 import pytest
 
 from src.backend.signal_dispatch_typed_cursor import (
-    DISPATCH_TABLES, project_dispatch_ack, project_dispatch_intents,
+    ACK, ACK_COMMIT, DISPATCH_TABLES, INTENT, INTENT_COMMIT,
+    project_dispatch_ack, project_dispatch_intents, read_committed_dispatch_prefix,
     verify_dispatch_cursor,
 )
 
@@ -111,3 +112,52 @@ def test_cold_verifier_rejects_duplicate_and_corrupt_rows() -> None:
     corrupt["acks"][0]["activation_receipt_hash"] = "d" * 64
     with pytest.raises(ValueError, match="fence"):
         verify_dispatch_cursor(intents, corrupt)
+
+
+class ColdStorage:
+    def __init__(self, intents, acks):
+        self.rows = {
+            INTENT.name: deepcopy(intents["intents"]),
+            INTENT_COMMIT.name: [deepcopy(intents["commit"])],
+            ACK.name: deepcopy(acks["acks"]),
+            ACK_COMMIT.name: [deepcopy(acks["commit"])],
+        }
+
+    def read_dispatch_rows(self, table_name, *, session_key, source_batch_sequence):
+        return [deepcopy(row) for row in self.rows[table_name]
+                if row["session_key"] == session_key
+                and row["source_batch_sequence"] == source_batch_sequence]
+
+    def list_dispatch_commits(self, table_name, *, session_key):
+        return [deepcopy(row) for row in self.rows[table_name]
+                if row["session_key"] == session_key]
+
+
+def test_cold_dispatch_prefix_requires_exact_commits_and_source_hash() -> None:
+    _, delivery = _input()
+    intents = _intents([delivery])
+    acks = project_dispatch_ack(intents, [{"delivery_id": delivery["delivery_id"],
+                                           "ack_kind": "activation_durable",
+                                           "activation_receipt_hash": ACTIVATION_HASH}],
+                                acknowledged_at="2026-09-24T14:00:01+00:00")
+    storage = ColdStorage(intents, acks)
+    with pytest.raises(ValueError, match="nonempty source bound"):
+        read_committed_dispatch_prefix(
+            storage, session_key="2026-09-24", source_commit_hashes=(),
+            configuration_revision_id="approved-revision-1")
+    def recover():
+        return read_committed_dispatch_prefix(
+            storage, session_key="2026-09-24", source_commit_hashes=(SOURCE_HASH,),
+            configuration_revision_id="approved-revision-1")
+    assert recover() == ((intents, acks),)
+    storage.rows[ACK_COMMIT.name].clear()
+    with pytest.raises(ValueError, match="missing"):
+        recover()
+    storage.rows[ACK_COMMIT.name].append(acks["commit"])
+    storage.rows[INTENT.name].append(intents["intents"][0])
+    with pytest.raises(ValueError, match="fence"):
+        recover()
+    storage.rows[INTENT.name].pop()
+    storage.rows[INTENT_COMMIT.name].append(intents["commit"])
+    with pytest.raises(ValueError, match="duplicate"):
+        recover()

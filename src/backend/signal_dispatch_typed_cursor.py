@@ -63,6 +63,12 @@ class OccurrenceAuthority(Protocol):
     def read_exact(self, event_id: str) -> Mapping[str, Any] | None: ...
 
 
+class DispatchColdStorage(Protocol):
+    def read_dispatch_rows(self, table_name: str, *, session_key: str,
+                           source_batch_sequence: int) -> list[Mapping[str, Any]]: ...
+    def list_dispatch_commits(self, table_name: str, *, session_key: str) -> list[Mapping[str, Any]]: ...
+
+
 def _hash(value: Any) -> str:
     return sha256(canonical_json(value).encode()).hexdigest()
 
@@ -211,3 +217,58 @@ def verify_dispatch_cursor(intents: Mapping[str, Any], acks: Mapping[str, Any]) 
                 or (ack["session_key"], ack["source_batch_sequence"])
                 != (intent_commit["session_key"], intent_commit["source_batch_sequence"])):
             raise ValueError("dispatch cursor row identity or order differs")
+
+
+def read_committed_dispatch_prefix(
+    storage: DispatchColdStorage, *, session_key: str,
+    source_commit_hashes: tuple[str, ...], configuration_revision_id: str,
+) -> tuple[tuple[dict[str, Any], dict[str, Any]], ...]:
+    """Verify every dispatch batch through a separately verified source prefix.
+
+    This is not a session-completeness proof: the source head must be sealed
+    externally before its prefix can be used as a cold-start coverage bound.
+    """
+    from src.backend.signal_stream_typed_readback import canonical_row
+
+    if (not isinstance(session_key, str) or not session_key
+            or not isinstance(configuration_revision_id, str)
+            or not configuration_revision_id):
+        raise ValueError("dispatch cold scope is invalid")
+    hashes = tuple(_hex(value) for value in source_commit_hashes)
+    if not hashes:
+        raise ValueError("dispatch cold prefix lacks a sealed nonempty source bound")
+    listed_intents = [canonical_row(INTENT_COMMIT, row) for row in
+                      storage.list_dispatch_commits(INTENT_COMMIT.name, session_key=session_key)]
+    listed_acks = [canonical_row(ACK_COMMIT, row) for row in
+                   storage.list_dispatch_commits(ACK_COMMIT.name, session_key=session_key)]
+    expected_sequences = list(range(1, len(hashes) + 1))
+    for listed in (listed_intents, listed_acks):
+        if sorted(row["source_batch_sequence"] for row in listed) != expected_sequences:
+            raise ValueError("dispatch cold commits are missing, duplicate, or beyond source prefix")
+    recovered = []
+    for sequence, source_hash in enumerate(hashes, 1):
+        families = []
+        for table, commits in ((INTENT, listed_intents), (INTENT_COMMIT, listed_intents),
+                               (ACK, listed_acks), (ACK_COMMIT, listed_acks)):
+            rows = [canonical_row(table, row) for row in storage.read_dispatch_rows(
+                table.name, session_key=session_key, source_batch_sequence=sequence)]
+            if table in (INTENT_COMMIT, ACK_COMMIT):
+                if len(rows) != 1 or rows[0] != next(
+                        row for row in commits if row["source_batch_sequence"] == sequence):
+                    raise ValueError("dispatch cold commit listing differs from exact read")
+                families.append(rows[0])
+            else:
+                families.append(sorted(rows, key=lambda row: row["ordinal"]))
+        intent_rows, intent_commit, ack_rows, ack_commit = families
+        if (intent_commit["session_key"] != session_key
+                or intent_commit["source_batch_sequence"] != sequence
+                or ack_commit["session_key"] != session_key
+                or ack_commit["source_batch_sequence"] != sequence
+                or intent_commit["source_cursor_commit_hash"] != source_hash
+                or intent_commit["configuration_revision_id"] != configuration_revision_id):
+            raise ValueError("dispatch cold commit differs from verified source")
+        intents = {"intents": intent_rows, "commit": intent_commit}
+        acks = {"acks": ack_rows, "commit": ack_commit}
+        verify_dispatch_cursor(intents, acks)
+        recovered.append((intents, acks))
+    return tuple(recovered)

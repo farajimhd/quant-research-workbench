@@ -8,9 +8,10 @@ import pytest
 
 from src.backend.live_signal_work_completion import (
     COMPLETION, CompletionProof, CompletionPublicationQueue, prepare_completion_proof,
-    project_completion, read_exact_completion,
+    project_completion, read_completed_dispatch_prefix, read_exact_completion,
 )
 from src.backend.signal_dispatch_typed_cursor import (
+    ACK, ACK_COMMIT, INTENT, INTENT_COMMIT,
     project_dispatch_ack, project_dispatch_intents,
 )
 
@@ -100,6 +101,46 @@ def _proof_inputs():
                    "activation_receipt_hash": "c" * 64}],
         acknowledged_at="2026-09-24T14:00:01+00:00")
     return delivery, intents, acks
+
+
+def test_cold_prefix_requires_attested_completion_for_every_dispatch_ack() -> None:
+    from src.backend.live_signal_completion_keeper import completion_resource
+
+    _, intents, acks = _proof_inputs()
+    class DispatchStorage:
+        rows = {INTENT.name: intents["intents"],
+                INTENT_COMMIT.name: [intents["commit"]],
+                ACK.name: acks["acks"], ACK_COMMIT.name: [acks["commit"]]}
+
+        def read_dispatch_rows(self, table_name, *, session_key, source_batch_sequence):
+            return deepcopy(self.rows[table_name])
+
+        def list_dispatch_commits(self, table_name, *, session_key):
+            return deepcopy(self.rows[table_name])
+
+    storage, keeper = Storage(), Keeper()
+    def recover():
+        return read_completed_dispatch_prefix(
+            DispatchStorage(), storage, keeper, session_key="2026-09-24",
+            source_commit_hashes=("b" * 64,),
+            configuration_revision_id="approved-1")
+    with pytest.raises(ValueError, match="absent or uncertain"):
+        recover()
+    projected = project_completion(intents, acks, ordinal=0,
+                                   processed_at="2026-09-24T14:00:02+00:00",
+                                   keeper_owner_id="owner-1", keeper_epoch=1)
+    storage.insert_completion_row(projected.row)
+    with pytest.raises(ValueError, match="Keeper attestation"):
+        recover()
+    row = projected.row
+    keeper.proof = (completion_resource(row["session_key"], row["source_batch_sequence"],
+                                        row["ordinal"], row["delivery_id"]),
+                    row["keeper_owner_id"], row["keeper_epoch"], row["content_hash"])
+    proofs = recover()
+    assert len(proofs) == 1 and proofs[0].delivery_id == row["delivery_id"]
+    storage.insert_completion_row(projected.row)
+    with pytest.raises(ValueError, match="duplicate"):
+        recover()
 
 
 def test_immutable_packet_survives_caller_mutation_and_cold_roundtrip() -> None:
