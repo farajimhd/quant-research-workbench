@@ -63,17 +63,12 @@ def _run_validation(model, shards, device, vocab, batch_size, trade_weight):
         for shard in shards:
             data = shard.to_gpu(device,vocab)
             for start in range(0,data.rows,batch_size):
-                end = min(start+batch_size,data.rows)
-                count = end-start
-                index = torch.arange(start,end,device=device)
-                if count < batch_size:
-                    index = torch.cat((index,index[-1:].expand(batch_size-count)))
+                index = torch.arange(start,min(start+batch_size,data.rows),device=device)
                 batch = data.batch(index)
                 with torch.autocast('cuda',dtype=torch.bfloat16):
                     logits,value = model(batch,teacher_actions=batch['actions'])
-                    logits,value = logits[:count],value[:count]
-                    batch = {key:item[:count] for key,item in batch.items()}
                     loss,metrics = teacher_loss(logits,value,batch,trade_weight=trade_weight)
+                count = len(index)
                 totals['loss'] += float(loss.detach())*count
                 totals['action_accuracy'] += float(metrics['action_accuracy'])*count
                 totals['trade_recall'] += float(metrics['trade_recall'])*count
@@ -187,17 +182,12 @@ def run(args):
                 order = torch.randperm(data.rows,device=device,generator=generator)
                 for start in range(0,data.rows,args.batch_size):
                     index = order[start:start+args.batch_size]
-                    count = len(index)
-                    if count < args.batch_size:
-                        index = torch.cat((index,index[-1:].expand(args.batch_size-count)))
                     begin,end = torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
                     begin.record()
                     batch = data.batch(index)
                     optimizer.zero_grad(set_to_none=True)
                     with torch.autocast('cuda',dtype=torch.bfloat16):
                         logits,value = model(batch,teacher_actions=batch['actions'])
-                        logits,value = logits[:count],value[:count]
-                        batch = {key:item[:count] for key,item in batch.items()}
                         loss,measure = teacher_loss(logits,value,batch,
                             trade_weight=args.trade_weight,value_weight=args.value_weight)
                     loss.backward()
@@ -206,6 +196,7 @@ def run(args):
                     end.record()
                     end.synchronize()
                     gpu_ms += begin.elapsed_time(end)
+                    count = len(index)
                     global_step += 1
                     scheduler.step(global_step*args.batch_size)
                     sums['loss'] += float(loss.detach())*count

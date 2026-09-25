@@ -69,29 +69,22 @@ def run(args):
         for shard in shards:
             data = shard.to_gpu(device,vocab)
             for offset in range(0,data.rows,args.batch_size):
-                end = min(offset+args.batch_size,data.rows)
-                n = end-offset
-                index = torch.arange(offset,end,device=device)
-                if n < args.batch_size:
-                    index = torch.cat((index,index[-1:].expand(args.batch_size-n)))
+                index = torch.arange(offset,min(offset+args.batch_size,data.rows),device=device)
                 batch = data.batch(index)
-                with torch.autocast('cuda',dtype=torch.bfloat16):
-                    logits,value = model(batch,teacher_actions=batch['actions'])
-                    logits,value = logits[:n],value[:n]
-                    batch = {key:item[:n] for key,item in batch.items()}
-                    _,metrics = teacher_loss(logits,value,batch,
-                        trade_weight=config['training']['trade_weight'],
-                        value_weight=config['training']['value_weight'])
+                logits,value = model(batch,teacher_actions=batch['actions'])
+                _,metrics = teacher_loss(logits,value,batch,
+                    trade_weight=config['training']['trade_weight'],
+                    value_weight=config['training']['value_weight'])
                 prediction = logits.float().masked_fill(~batch['action_mask'],-1e9).argmax(-1)
                 teacher = batch['actions']
                 correct = prediction == teacher
-                totals['seconds'] += n
+                totals['seconds'] += len(index)
                 totals['orders'] += teacher.numel()
                 totals['teacher_actions'] += int((teacher != 0).sum())
                 totals['correct_orders'] += int(correct.sum())
                 totals['correct_trades'] += int((correct & (teacher != 0)).sum())
-                totals['action_loss'] += float(metrics['action_loss'])*n
-                totals['value_loss'] += float(metrics['value_loss'])*n
+                totals['action_loss'] += float(metrics['action_loss'])*len(index)
+                totals['value_loss'] += float(metrics['value_loss'])*len(index)
             del data
     report = dict(evaluation='teacher_forced_supervised',run=str(root),
         checkpoint_hash=file_hash(checkpoint),test_sessions=[s.plan['date'] for s in shards],

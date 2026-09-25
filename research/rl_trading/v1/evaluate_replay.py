@@ -52,13 +52,13 @@ class ModelSelector:
             batch['lot_slots'][0,i] = state['visible'].index(lot.ticker_index)
             batch['lots'][0,i] = torch.tensor((lot.quantity,lot.entry_price,
                 max(0.,(state['time_us']-lot.entry_us)/1e6)/3600),device=self.device)
-        with torch.inference_mode(),torch.autocast('cuda',dtype=torch.bfloat16):
+        with torch.inference_mode():
             encoded,context,held = self.model.encode(batch)
         previous = torch.zeros_like(context)
 
         def select(step,mask,previous_token):
             nonlocal previous
-            with torch.inference_mode(),torch.autocast('cuda',dtype=torch.bfloat16):
+            with torch.inference_mode():
                 if step:
                     token = torch.tensor([previous_token],device=self.device)
                     previous = self.model.action_embedding(encoded,held,token)
