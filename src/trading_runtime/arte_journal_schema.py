@@ -1813,7 +1813,9 @@ def journal_permission_preflight(
         LIVE_SIGNAL_TABLES, staged_live_signal_storage_preflight,
     )
     staged_names = {table.name for table in LIVE_SIGNAL_TABLES}
-    grant_lines = client.execute("SHOW GRANTS").splitlines()
+    # FINAL expands inherited roles. A single effective grant snapshot is both
+    # faster and more coherent than hundreds of per-table CHECK GRANT calls.
+    grant_lines = client.execute("SHOW GRANTS FINAL").splitlines()
     if any(f"ON arte.{name} " in line for line in grant_lines
            for name in staged_names):
         staged_live_signal_storage_preflight(client)
@@ -1835,6 +1837,7 @@ def journal_permission_preflight(
         raise ValueError("Journal principal has an unsafe identity")
     if not grant_lines:
         raise ValueError("Journal principal has no inspectable grants")
+    effective: set[tuple[str, str, str]] = set()
     for line in grant_lines:
         match = re.fullmatch(
             r"GRANT ([A-Z ,]+) ON ([A-Za-z_][A-Za-z0-9_]*|\*)\."
@@ -1849,15 +1852,27 @@ def journal_permission_preflight(
             raise ValueError("Journal principal has an invalid grant")
         for privilege in privileges:
             if privilege == "INSERT" and database == "arte" and table in journal:
+                effective.add((privilege, database, table))
                 continue
             if privilege == "SELECT" and ((database == "arte" and table in required)
                                           or (database == "system" and table in {
                                               "storage_policies", "tables", "columns", "parts",
                                               "data_skipping_indices"})):
+                effective.add((privilege, database, table))
                 continue
             if privilege in {"SHOW DATABASES", "SHOW TABLES", "SHOW COLUMNS", "CHECK"}:
                 continue
             raise ValueError(f"Journal principal has unauthorized {privilege} grant")
+
+    for name in sorted(required):
+        if ("SELECT", "arte", name) not in effective:
+            raise ValueError(f"Journal principal cannot read arte.{name}")
+        if (("INSERT", "arte", name) in effective) != (name in journal):
+            raise ValueError(f"Journal principal has incorrect insert authority on arte.{name}")
+    for name in ("storage_policies", "tables", "columns", "parts",
+                 "data_skipping_indices"):
+        if ("SELECT", "system", name) not in effective:
+            raise ValueError(f"Journal principal cannot inspect system.{name}")
 
     def allowed(privilege: str, scope: str) -> bool:
         result = client.execute(f"CHECK GRANT {privilege} ON {scope}").strip()
@@ -1868,15 +1883,12 @@ def journal_permission_preflight(
     for privilege in ("CREATE TABLE", "INSERT", "ALTER", "DROP TABLE", "TRUNCATE"):
         if allowed(privilege, "arte.*"):
             raise ValueError(f"Journal principal has broad arte {privilege} authority")
-    readable = required
-    for name in sorted(required):
-        target = f"arte.{name}"
-        if name in readable and not allowed("SELECT", target):
-            raise ValueError(f"Journal principal cannot read {target}")
-        if allowed("ALTER", target) or allowed("DROP TABLE", target) or allowed("TRUNCATE", target):
-            raise ValueError(f"Journal principal may alter or remove {target}")
-        if allowed("ALTER DELETE", target) or allowed("ALTER UPDATE", target):
-            raise ValueError(f"Journal principal may mutate {target}")
-        can_insert = allowed("INSERT", target)
-        if can_insert != (name in journal):
-            raise ValueError(f"Journal principal has incorrect insert authority on {target}")
+    # Independent probes catch an unexpected server-side effective privilege
+    # that is not reflected in SHOW GRANTS FINAL, without making startup O(N).
+    for privilege, target in (
+        ("INSERT", "arte.bars_v1"),
+        ("DROP TABLE", "arte.bars_v1"),
+        ("ALTER DELETE", "arte.trading_event_v1"),
+    ):
+        if allowed(privilege, target):
+            raise ValueError(f"Journal principal has unauthorized {privilege} on {target}")

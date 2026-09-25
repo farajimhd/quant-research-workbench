@@ -45,7 +45,7 @@ class V2Catalog:
         self.legacy_insert = False
 
     def execute(self, sql):
-        if sql == "SHOW GRANTS":
+        if sql == "SHOW GRANTS FINAL":
             lines = [f"GRANT SELECT, INSERT ON arte.{name} TO journal_writer"
                      for name in sorted(self.writable)]
             lines += [f"GRANT SELECT ON arte.{name} TO journal_writer"

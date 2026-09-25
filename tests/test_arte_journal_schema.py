@@ -287,15 +287,21 @@ def test_journal_principal_cannot_write_market_or_change_schema(
         extra_grant = ""
         grant_line = ""
         staged = False
+        missing_select = ""
+        calls: list[str]
+
+        def __init__(self) -> None:
+            self.calls = []
 
         def execute(self, sql: str) -> str:
+            self.calls.append(sql)
             if "FROM system.tables" in sql:
                 assert "name IN (" in sql
                 tables = market | journal | (staged_journal if self.staged else set())
                 return "\n".join(json.dumps({"name": name}) for name in sorted(tables))
             if sql == "SELECT currentUser()":
                 return "journal_writer\n"
-            if sql == "SHOW GRANTS":
+            if sql == "SHOW GRANTS FINAL":
                 writable = journal | (staged_journal if self.staged else set())
                 grants = [*(f"GRANT SELECT, INSERT ON arte.{name} TO journal_writer"
                             for name in sorted(writable)),
@@ -306,6 +312,9 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                                          "data_skipping_indices"))]
                 if self.grant_line:
                     grants.append(self.grant_line)
+                if self.missing_select:
+                    grants = [line for line in grants
+                              if f"ON arte.{self.missing_select} " not in line]
                 return "\n".join(grants)
             if sql.startswith("CHECK GRANT "):
                 privilege, scope = sql.removeprefix("CHECK GRANT ").split(" ON ")
@@ -321,6 +330,12 @@ def test_journal_principal_cannot_write_market_or_change_schema(
 
     client = Grants()
     journal_permission_preflight(client)
+    assert "SHOW GRANTS FINAL" in client.calls
+    assert sum(sql.startswith("CHECK GRANT ") for sql in client.calls) <= 8
+    client.missing_select = "bars_v1"
+    with pytest.raises(ValueError, match="cannot read"):
+        journal_permission_preflight(client)
+    client.missing_select = ""
     checked: list[bool] = []
     monkeypatch.setattr(staged_profile, "staged_live_signal_storage_preflight",
                         lambda _client: checked.append(True))
