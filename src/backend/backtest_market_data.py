@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from contextlib import closing
 from datetime import date, datetime, time, timedelta
 import hashlib
+from http.client import RemoteDisconnected
 import json
 import os
 from pathlib import Path
@@ -414,12 +415,36 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
     from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
     from src.trading_runtime.keeper_session import open_workstation_keeper_session
 
-    with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
+    with closing(readonly_clickhouse_client(v3_read_principal=True)) as raw_reader:
         with closing(open_workstation_keeper_session()) as session:
             return discover_cold_certified_market_day_plan(
-                reader, MarketDayKeeperReader(session.client),
+                _MarketCertificateReader(raw_reader), MarketDayKeeperReader(session.client),
                 sessions=tuple(str(day) for day in sessions),
                 tickers=tuple(tickers), configuration=configuration)
+
+
+class _MarketCertificateReader:
+    """Retry one lost HTTP response only for an idempotent preflight SELECT.
+
+    The persistent client discards a broken connection. ClickHouse can close
+    an idle connection while Python verifies a large typed certificate; a
+    second SELECT on a fresh connection is safe, whereas an INSERT is not.
+    """
+
+    def __init__(self, reader: Any) -> None:
+        self._reader = reader
+
+    def execute(self, sql: str) -> str:
+        # Cold certification also queries read-only system.tables/parts. The
+        # general market SELECT checker rejects the word SYSTEM, so enforce a
+        # single SELECT here while the V3 principal supplies readonly=1.
+        query = sql.strip().rstrip(";")
+        if not re.match(r"^SELECT\b", query, flags=re.IGNORECASE) or ";" in query:
+            raise ValueError("Market certificate access is SELECT-only")
+        try:
+            return self._reader.execute(query)
+        except (RemoteDisconnected, ConnectionResetError, BrokenPipeError):
+            return self._reader.execute(query)
 
 
 def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None) -> None:

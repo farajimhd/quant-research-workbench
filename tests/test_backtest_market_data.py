@@ -175,6 +175,32 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertEqual(discover.call_args.kwargs["sessions"], ("2026-08-18",))
         self.assertTrue(reader.closed and session.closed)
 
+    def test_certificate_reader_retries_only_lost_select_response(self) -> None:
+        from http.client import RemoteDisconnected
+        from unittest.mock import Mock
+        from src.backend.backtest_market_data import _MarketCertificateReader
+
+        raw = Mock()
+        raw.execute.side_effect = [RemoteDisconnected("closed"), "certified"]
+        reader = _MarketCertificateReader(raw)
+        self.assertEqual(reader.execute("SELECT 1 FORMAT TabSeparated"), "certified")
+        self.assertEqual(raw.execute.call_count, 2)
+        raw.execute.side_effect = None
+        raw.execute.return_value = "system metadata"
+        self.assertEqual(reader.execute("SELECT name FROM system.tables"),
+                         "system metadata")
+        with self.assertRaisesRegex(ValueError, "SELECT-only"):
+            reader.execute("INSERT INTO arte.bars_v1 VALUES (1)")
+        self.assertEqual(raw.execute.call_count, 3)
+        with self.assertRaisesRegex(ValueError, "SELECT-only"):
+            reader.execute("SELECT 1; INSERT INTO arte.bars_v1 VALUES (1)")
+        self.assertEqual(raw.execute.call_count, 3)
+        raw.execute.side_effect = [RemoteDisconnected("closed"),
+                                   RemoteDisconnected("closed again")]
+        with self.assertRaises(RemoteDisconnected):
+            reader.execute("SELECT 1 FORMAT TabSeparated")
+        self.assertEqual(raw.execute.call_count, 5)
+
     def test_nested_unsupported_fixed_interval_fails_before_data_access(self) -> None:
         from src.backend.backtest_market_data import compile_required_resolutions
 
