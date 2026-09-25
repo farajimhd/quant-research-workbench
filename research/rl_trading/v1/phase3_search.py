@@ -2,8 +2,9 @@
 from dataclasses import dataclass, replace
 from itertools import combinations, combinations_with_replacement
 import math
+from research.rl_trading.v1.universe import volume_order, slots
 
-VERSION = 'hindsight-phase3-long-grid-v1'
+VERSION = 'hindsight-phase3-long-grid-v2'
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,10 +34,11 @@ class SearchConfig:
     initial_cash: float = 10_000.
     allocation_step: float = 2_500.
     max_lots: int = 4
-    max_orders_per_second: int = 2
+    max_orders_per_second: int = 4
     max_candidates: int = 3  # 0 means all candidates.
     beam_width: int = 16  # 0 means no beam pruning.
     max_frontier: int = 100_000
+    top_n: int = 0  # 0 preserves the V1 unrestricted reference search.
 
     def validate(self):
         if not math.isfinite(self.initial_cash) or self.initial_cash <= 0:
@@ -45,8 +47,13 @@ class SearchConfig:
             raise ValueError('allocation_step must be finite and within initial cash')
         if any(type(v) is not int or v < lower for v, lower in (
                 (self.max_lots,1),(self.max_orders_per_second,1),
-                (self.max_candidates,0),(self.beam_width,0),(self.max_frontier,1))):
+                (self.max_candidates,0),(self.beam_width,0),(self.max_frontier,1),
+                (self.top_n,0))):
             raise ValueError('Search limits must be valid nonnegative integers')
+        if self.top_n and self.top_n < self.max_lots:
+            raise ValueError('top_n must reserve enough slots for all allowed lots')
+        if self.top_n and self.max_orders_per_second < self.max_lots:
+            raise ValueError('Top-N teacher must encode every possible terminal liquidation order')
 
 
 def _finite_positive(value):
@@ -71,20 +78,26 @@ def advance(frontier: list[Node], market_rows: list[dict], time_us: int,
         raise ValueError('Duplicate long market candidate')
     if not long_rows or any(r['time_us'] != time_us for r in long_rows.values()):
         raise ValueError('Incomplete or mismatched market second')
+    volume_rank = volume_order(long_rows.values()) if config.top_n else tuple(long_rows)
     eligible = [] if terminal else [r for r in long_rows.values() if
         r['can_open'] and r['open_value_available'] and _finite_positive(r['entry_price'])
         and _finite_positive(r['capital_per_share']) and
         isinstance(r['open_value_per_dollar'],(int,float)) and
         math.isfinite(r['open_value_per_dollar'])]
     eligible.sort(key=lambda r:(-r['open_value_per_dollar'],r['ticker']))
-    pruned_candidates = max(0,len(eligible)-config.max_candidates) if config.max_candidates else 0
-    if config.max_candidates:
-        eligible = eligible[:config.max_candidates]
+    pruned_candidates = 0
+    pruned_universe = 0
     best_by_lots = {}
     expanded = 0
     for parent in frontier:
         if parent.id is None:
             raise ValueError('Frontier node lacks a checkpoint id')
+        visible = set(slots(volume_rank, (lot.ticker for lot in parent.lots), config.top_n)) if config.top_n else set(volume_rank)
+        openings = [row for row in eligible if row['ticker'] in visible]
+        pruned_universe += len(eligible)-len(openings)
+        if config.max_candidates:
+            pruned_candidates += max(0,len(openings)-config.max_candidates)
+            openings = openings[:config.max_candidates]
         closeable = [i for i,lot in enumerate(parent.lots) if
             lot.ticker in long_rows and long_rows[lot.ticker]['can_close'] and
             _finite_positive(long_rows[lot.ticker]['close_price'])]
@@ -105,25 +118,25 @@ def advance(frontier: list[Node], market_rows: list[dict], time_us: int,
                 profit = lot.quantity*(price-lot.entry_price)
                 realized += profit
                 sells.append(dict(action='sell',ticker=lot.ticker,quantity=lot.quantity,
-                    price=price,capital=0.,realized_pnl=profit))
+                    price=price,capital=0.,realized_pnl=profit,entry_us=lot.entry_us))
             room = min(config.max_lots-len(remaining),
                 max(0,config.max_orders_per_second-len(sold)),
                 max(0,int((cash+1e-8)//config.allocation_step)))
             buy_sets = [()] if terminal else [()] + [combo
-                for n in range(1,room+1) for combo in combinations_with_replacement(range(len(eligible)),n)]
+                for n in range(1,room+1) for combo in combinations_with_replacement(range(len(openings)),n)]
             for bought in buy_sets:
                 current_lots = list(remaining)
                 actions = list(sells)
                 new_cash = cash
                 for j in bought:
-                    row = eligible[j]
+                    row = openings[j]
                     amount = config.allocation_step
                     quantity = amount/float(row['capital_per_share'])
                     new_cash -= amount
                     current_lots.append(Lot(row['ticker'],quantity,float(row['entry_price']),
                         float(row['capital_per_share']),time_us))
                     actions.append(dict(action='buy',ticker=row['ticker'],quantity=quantity,
-                        price=float(row['entry_price']),capital=amount,realized_pnl=0.))
+                        price=float(row['entry_price']),capital=amount,realized_pnl=0.,entry_us=time_us))
                 if new_cash < -1e-7:
                     continue
                 current_lots.sort(key=lambda x:(x.ticker,x.entry_us,x.entry_price,x.quantity))
@@ -165,7 +178,7 @@ def advance(frontier: list[Node], market_rows: list[dict], time_us: int,
     if len(ranked) > config.max_frontier:
         raise ValueError('Exact frontier exceeds max_frontier; no optimality claim is possible')
     return ranked,dict(expanded=expanded,distinct=len(best_by_lots),
-        candidate_pruned=pruned_candidates,beam_pruned=pruned_beam,
+        candidate_pruned=pruned_candidates,universe_pruned=pruned_universe,beam_pruned=pruned_beam,
         retained=len(ranked))
 
 

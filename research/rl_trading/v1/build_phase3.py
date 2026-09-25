@@ -75,7 +75,7 @@ def _database(path,plan_hash,initial_cash):
     else:
         db.execute("INSERT INTO meta VALUES('plan_hash',?)",(plan_hash,))
         db.execute("INSERT INTO meta VALUES('processed','-1')")
-        db.execute("INSERT INTO meta VALUES('stats',?)",(_json(dict(expanded=0,candidate_pruned=0,beam_pruned=0)),))
+        db.execute("INSERT INTO meta VALUES('stats',?)",(_json(dict(expanded=0,candidate_pruned=0,universe_pruned=0,beam_pruned=0)),))
         root = _insert_node(db,initial_node(initial_cash),-1)
         db.execute('INSERT INTO frontier VALUES(0,?)',(root.id,))
         db.commit()
@@ -164,7 +164,7 @@ def run(args,console):
     if source_plan.get('liquidation_us') is None:
         raise ValueError('Phase 2 lacks the 19:58 liquidation boundary')
     config = SearchConfig(args.initial_cash,args.allocation_step,args.max_lots,
-        args.max_orders_per_second,args.max_candidates,args.beam_width,args.max_frontier)
+        args.max_orders_per_second,args.max_candidates,args.beam_width,args.max_frontier,args.top_n)
     config.validate()
     left,_ = bounds(date.fromisoformat(source_plan['date']))
     cutoff = source_plan['liquidation_us']
@@ -192,7 +192,8 @@ def run(args,console):
         reward_contract='Change in marked portfolio equity, including costs; terminal cash minus initial cash',
         code_hashes={p:file_hash(REPO/p) for p in (
             'research/rl_trading/v1/build_phase3.py','research/rl_trading/v1/phase3_search.py',
-            'research/rl_trading/v1/market_values.py','research/rl_trading/v1/common.py')})
+            'research/rl_trading/v1/market_values.py','research/rl_trading/v1/common.py',
+            'research/rl_trading/v1/universe.py')})
     plan['plan_hash'] = digest(plan)
     root = runtime/'hindsight-phase3'/plan['date']/plan['plan_hash'][:16]
     root.mkdir(parents=True,exist_ok=True)
@@ -205,7 +206,7 @@ def run(args,console):
             raise ValueError('Phase 3 completion integrity failure')
         console.print(f"Reused verified Phase 3: {root}")
         return 0
-    console.print(f"Phase 3 | {plan['date']} | long-only | {seconds:,} seconds | {len(source_plan['selected']):,} listings")
+    console.print(f"Phase 3 | {plan['date']} | long-only | {seconds:,} seconds | {len(source_plan['selected']):,} listings | top {config.top_n or 'all'} plus held")
     console.print(f"Cash ${config.initial_cash:,.2f}; allocation unit ${config.allocation_step:,.2f}; beam {config.beam_width or 'unbounded'}; candidate cap {config.max_candidates or 'all'}")
     console.print(f"Optimality: {plan['optimality']} | output: {root}",soft_wrap=True)
     started = monotonic()
@@ -276,12 +277,14 @@ def main(argv=None):
     parser.add_argument('--initial-cash',type=float,default=10_000.)
     parser.add_argument('--allocation-step',type=float,default=2_500.)
     parser.add_argument('--max-lots',type=int,default=4)
-    parser.add_argument('--max-orders-per-second',type=int,default=2)
+    parser.add_argument('--max-orders-per-second',type=int,default=4)
     parser.add_argument('--max-candidates',type=int,default=3,
         help='Top Phase 2 opening values considered per second; 0 considers all')
     parser.add_argument('--beam-width',type=int,default=16,
         help='Maximum portfolio states retained per second; 0 disables beam pruning')
     parser.add_argument('--max-frontier',type=int,default=100_000)
+    parser.add_argument('--top-n',type=int,default=100,
+        help='Maximum visible tickers including all holdings; ranked by completed 60s volume')
     parser.add_argument('--start-second',type=int,default=0,help='Offset from 04:00 ET; for bounded canaries')
     parser.add_argument('--end-second',type=int,default=None,help='Offset from 04:00 ET; default 19:58')
     return run(parser.parse_args(argv),Console())
