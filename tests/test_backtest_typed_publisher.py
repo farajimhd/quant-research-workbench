@@ -72,6 +72,25 @@ def test_fixed_publisher_rejects_legacy_v1_writer():
         _publisher(_journal(), writer)
 
 
+def test_invalid_evidence_fails_projection_before_writer_submission():
+    async def exercise():
+        journal = BacktestMemoryJournal(run_id=RUN)
+        journal.append(
+            run_id=RUN, category="lifecycle", entity_type="run",
+            entity_id=RUN, event_time=AT,
+            payload={"status": "running", "config": {"mode": "backtest",
+                                                      "invalid": float("nan")}},
+        )
+        writer = FakeWriter()
+        publisher = _publisher(journal, writer)
+        with pytest.raises(ValueError, match="Out of range float"):
+            await publisher.enqueue_pending()
+        assert writer.submitted == []
+        assert journal.pending_record_count == 1
+
+    asyncio.run(exercise())
+
+
 async def _wait_for_submission(writer):
     for _ in range(100):
         if writer.submitted:

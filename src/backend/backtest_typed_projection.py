@@ -13,6 +13,7 @@ from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.arte_journal_writer import V3SqueezeBatch
+from src.trading_runtime.journal_contract import canonical_json
 
 
 NIL_BATCH_ID = str(UUID(int=0))
@@ -60,6 +61,7 @@ def project_pending_backtest_prefix(
     for sequence, record in enumerate(records, start=prior_sequence + 1):
         if record.run_id != journal.run_id or record.sequence != sequence:
             raise ValueError("Backtest typed prefix is not one contiguous run")
+        canonical_json(record.payload)
         batch_id = str(uuid5(NAMESPACE_URL,
             f"arte-backtest-v1:{record.run_id}:{attempt}:{record.sequence}:{record.record_id}"))
         if (record.category, record.entity_type) == ("checkpoint", "market_boundary"):
@@ -114,6 +116,7 @@ def project_pending_backtest_v3_prefix(
     for sequence, record in enumerate(records, start=prior_sequence + 1):
         if record.run_id != journal.run_id or record.sequence != sequence:
             raise ValueError("V3 projection is not one contiguous run")
+        canonical_json(record.payload)
         batch_id = str(uuid5(NAMESPACE_URL,
             f"arte-backtest-v3:{record.run_id}:{attempt}:{record.sequence}:{record.record_id}"))
         if (record.category, record.entity_type) == ("checkpoint", "market_boundary"):
@@ -237,6 +240,19 @@ def project_pending_backtest_v3_prefix(
                 sequence, sequence, cursor, "running", (projected.event,))
             unit = V3SqueezeBatch(
                 base, (), entry_reprice_rejections=(projected.detail,))
+        elif (record.category, record.entity_type) == (
+                "order_management", "protected_exit_already_satisfied"):
+            from src.backend.backtest_protected_exit_satisfied_v3 import (
+                project_protected_exit_satisfied_v3,
+            )
+
+            projected = project_protected_exit_satisfied_v3(
+                record, attempt_id=attempt, batch_id=batch_id)
+            base = TypedJournalBatch(
+                record.run_id, run_month, attempt, batch_id, previous,
+                sequence, sequence, cursor, "running", (projected.event,))
+            unit = V3SqueezeBatch(
+                base, (), protected_exit_satisfied=(projected.detail,))
         else:
             reservation_reasons = ()
             if (record.category, record.entity_type) == (

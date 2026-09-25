@@ -14,6 +14,7 @@ from src.backend.backtest_broker_policy_v3 import POLICY_EVENT, MESSAGE as POLIC
 from src.backend.backtest_entry_reprice_deferred_v3 import DEFERRED as ENTRY_REPRICE_DEFERRED
 from src.backend.backtest_entry_reprice_capacity_v3 import TABLES as ENTRY_REPRICE_CAPACITY_TABLES
 from src.backend.backtest_entry_reprice_rejected_v3 import REJECTED as ENTRY_REPRICE_REJECTED
+from src.backend.backtest_protected_exit_satisfied_v3 import SATISFIED as PROTECTED_EXIT_SATISFIED
 
 BROKER_OMS_TABLES = (SHORT_ORDER_SKIP, POLICY_EVENT, POLICY_MESSAGE,
                      ENTRY_REPRICE_DEFERRED)
@@ -82,6 +83,8 @@ _V3_EXTENSION = (
     ("entry_reprice_capacity_reason_hash", "FixedString(64)"),
     ("entry_reprice_rejected_count", "UInt32"),
     ("entry_reprice_rejected_hash", "FixedString(64)"),
+    ("protected_exit_satisfied_count", "UInt32"),
+    ("protected_exit_satisfied_hash", "FixedString(64)"),
 )
 SQUEEZE_COMMIT_V3 = TableContract(
     "trading_commit_v3",
@@ -98,7 +101,22 @@ def staged_v3_ddl() -> tuple[str, ...]:
             *(table.ddl() for table in BROKER_OMS_TABLES),
             *(table.ddl() for table in ENTRY_REPRICE_CAPACITY_TABLES),
             ENTRY_REPRICE_REJECTED.ddl(),
+            PROTECTED_EXIT_SATISFIED.ddl(),
             SQUEEZE_COMMIT_V3.ddl())
+
+
+def staged_protected_exit_satisfied_ddl() -> tuple[str, ...]:
+    """Review-only additive DDL; operator must prove the V3 fence is empty."""
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        PROTECTED_EXIT_SATISFIED.ddl(),
+        "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+        "protected_exit_satisfied_count UInt32 DEFAULT 0 "
+        "AFTER entry_reprice_rejected_hash",
+        "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+        f"protected_exit_satisfied_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER protected_exit_satisfied_count",
+    )
 
 
 def staged_entry_reprice_rejected_ddl() -> tuple[str, ...]:

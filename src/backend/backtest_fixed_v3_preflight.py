@@ -6,6 +6,7 @@ from typing import Any
 
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
+    PROTECTED_EXIT_SATISFIED,
     PORTFOLIO_CONTROL,
     RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
     SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
@@ -35,6 +36,7 @@ def running_v3_contracts() -> tuple[Any, ...]:
         RECONCILIATION_DIFFERENCE, PORTFOLIO_CONTROL,
         *TRADE_PROPOSAL_TABLES, *BROKER_OMS_TABLES,
         *ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
+        PROTECTED_EXIT_SATISFIED,
         SQUEEZE_COMMIT_V3)
 
 
@@ -44,6 +46,7 @@ def terminal_v3_contracts() -> tuple[Any, ...]:
         RECONCILIATION_DIFFERENCE, PORTFOLIO_CONTROL,
         *TRADE_PROPOSAL_TABLES, *BROKER_OMS_TABLES,
         *ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
+        PROTECTED_EXIT_SATISFIED,
         SQUEEZE_COMMIT_V3,
         TERMINAL_COMMIT_V3)
 
@@ -83,7 +86,8 @@ def running_v3_preflight(client: Any) -> None:
                                      table.name for table in (
                                          *TRADE_PROPOSAL_TABLES, *BROKER_OMS_TABLES,
                                          *ENTRY_REPRICE_CAPACITY_TABLES,
-                                         ENTRY_REPRICE_REJECTED))
+                                         ENTRY_REPRICE_REJECTED,
+                                         PROTECTED_EXIT_SATISFIED))
     available = {table.name for table in contracts}
     if not writable <= available:
         raise RuntimeError("V3 running writer references an unprovisioned family")

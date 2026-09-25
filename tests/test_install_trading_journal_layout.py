@@ -192,7 +192,7 @@ def test_v3_broker_oms_upgrade_requires_empty_fence_and_is_resumable(monkeypatch
     class BrokerClient:
         def __init__(self, count="0"):
             self.count = count
-            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-(3 + 14)]) + list(
+            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-(3 + 16)]) + list(
                 install.SQUEEZE_COMMIT_V3.columns[-3:])
             self.tables = set()
             self.writes = []
@@ -238,7 +238,7 @@ def test_v3_capacity_upgrade_requires_empty_fence_and_is_resumable(monkeypatch):
     class CapacityClient:
         def __init__(self, count="0"):
             self.count = count
-            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-9]) + list(
+            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-11]) + list(
                 install.SQUEEZE_COMMIT_V3.columns[-3:])
             self.tables = set()
             self.writes = []
@@ -284,7 +284,7 @@ def test_v3_refusal_upgrade_requires_empty_fence_and_is_resumable(monkeypatch):
     class RefusalClient:
         def __init__(self, count="0"):
             self.count = count
-            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-5]) + list(
+            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-7]) + list(
                 install.SQUEEZE_COMMIT_V3.columns[-3:])
             self.child = False
             self.writes = []
@@ -320,6 +320,52 @@ def test_v3_refusal_upgrade_requires_empty_fence_and_is_resumable(monkeypatch):
     assert install.upgrade_v3_entry_reprice_rejected(client, apply=True) == "upgraded"
     assert client.child and len(client.writes) == 3
     assert install.upgrade_v3_entry_reprice_rejected(client, apply=True) == "verified"
+    # Older operator upgrades remain idempotent after a later V3 suffix is
+    # installed; they must not mistake the full contract for drift.
+    client.columns = list(install.SQUEEZE_COMMIT_V3.columns)
+    assert install.upgrade_v3_entry_reprice_rejected(client, apply=True) == "verified"
+
+
+def test_v3_protected_exit_upgrade_requires_empty_fence_and_is_resumable(monkeypatch):
+    class Client:
+        def __init__(self, count="0"):
+            self.count = count
+            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-5]) + list(
+                install.SQUEEZE_COMMIT_V3.columns[-3:])
+            self.child = False
+            self.writes = []
+
+        def execute(self, sql):
+            if sql.startswith("SELECT name,type FROM system.columns"):
+                return "\n".join(json.dumps({"name": n, "type": t})
+                                 for n, t in self.columns)
+            if sql.startswith("SELECT count() FROM system.tables"):
+                return "1" if self.child else "0"
+            if sql == "SELECT count() FROM arte.trading_commit_v3":
+                return self.count
+            if sql.startswith("CREATE TABLE IF NOT EXISTS arte."):
+                self.writes.append(sql)
+                self.child = True
+                return ""
+            if sql.startswith("ALTER TABLE arte.trading_commit_v3"):
+                self.writes.append(sql)
+                name = sql.split("ADD COLUMN IF NOT EXISTS ", 1)[1].split(" ", 1)[0]
+                self.columns.insert(-3, next(column for column in
+                    install.SQUEEZE_COMMIT_V3.columns if column[0] == name))
+                return ""
+            raise AssertionError(sql)
+
+    monkeypatch.setattr(install, "storage_preflight", lambda *_a, **_k: None)
+    occupied = Client(count="1")
+    with pytest.raises(RuntimeError, match="has rows"):
+        install.upgrade_v3_protected_exit_satisfied(occupied, apply=True)
+    assert occupied.writes == []
+    client = Client()
+    assert install.upgrade_v3_protected_exit_satisfied(client, apply=False) == "planned"
+    assert client.writes == []
+    assert install.upgrade_v3_protected_exit_satisfied(client, apply=True) == "upgraded"
+    assert client.child and len(client.writes) == 3
+    assert install.upgrade_v3_protected_exit_satisfied(client, apply=True) == "verified"
 
 
 class ControlUpgradeClient:

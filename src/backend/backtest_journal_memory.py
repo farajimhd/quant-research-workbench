@@ -83,9 +83,10 @@ class BacktestMemoryJournal:
                                    f"{at.isoformat(timespec='microseconds')}")
                     if needs_lineage else {})
                 payload = {**lineage, **payload}
-                # Verify the same logical JSON envelope that the live writer
-                # hashes, before accepting the record into the in-memory prefix.
-                canonical_json(payload)
+                # The command path owns only a defensive snapshot. The typed
+                # publication worker validates/serializes its bounded prefix;
+                # JSON encoding here would put evidence-sized CPU work on
+                # every simulated market boundary.
                 record = JournalRecord(
                     record_id=str(uuid4()), run_id=run_id,
                     sequence=self._next_sequence + len(result) + 1,

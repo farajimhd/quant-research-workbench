@@ -79,6 +79,23 @@ def test_unsupported_record_rejects_whole_pending_prefix():
     assert journal.pending_record_count == 2
 
 
+def test_hot_path_defers_json_validation_to_bounded_projection_worker():
+    journal = _journal()
+    journal.append(
+        run_id=RUN_ID, category="lifecycle", entity_type="run",
+        entity_id=RUN_ID, event_time=AT,
+        payload={"status": "running", "config": {"mode": "backtest",
+                                                  "invalid": float("nan")}},
+    )
+    # Appending takes a defensive snapshot but does not serialize evidence on
+    # the simulated market callback. The entire prefix is rejected before a
+    # writer can see it when projection runs on the publisher's worker lane.
+    assert journal.pending_record_count == 1
+    with pytest.raises(ValueError, match="Out of range float"):
+        _project(journal)
+    assert journal.pending_record_count == 1
+
+
 def test_runtime_strategy_signal_record_preserves_identity_without_opaque_evidence():
     journal = _journal()
     signal = StrategySignal(

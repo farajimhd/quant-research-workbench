@@ -16,6 +16,7 @@ from uuid import UUID
 from src.backend.backtest_squeeze_episode_projection import project_fixed_squeeze_episode
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
+    PROTECTED_EXIT_SATISFIED,
     PORTFOLIO_CONTROL, RESERVATION_REASON,
     SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
@@ -171,6 +172,7 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
     entry_reprice_capacities = []
     entry_reprice_capacity_reasons = []
     entry_reprice_rejections = []
+    protected_exit_satisfied = []
     pinned = set()
     for unit in units:
         for row in unit.episodes:
@@ -211,6 +213,7 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
             (unit.entry_reprice_capacities, entry_reprice_capacities),
             (unit.entry_reprice_capacity_reasons, entry_reprice_capacity_reasons),
             (unit.entry_reprice_rejections, entry_reprice_rejections),
+            (unit.protected_exit_satisfied, protected_exit_satisfied),
         ):
             for row in family:
                 values = {key: value for key, value in row.items()
@@ -231,7 +234,8 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
                           tuple(entry_reprice_deferred),
                           tuple(entry_reprice_capacities),
                           tuple(entry_reprice_capacity_reasons),
-                          tuple(entry_reprice_rejections))
+                          tuple(entry_reprice_rejections),
+                          tuple(protected_exit_satisfied))
 
 
 def seal_squeeze_family_v3(
@@ -250,6 +254,7 @@ def seal_squeeze_family_v3(
     entry_reprice_capacities: Sequence[Mapping[str, Any]] = (),
     entry_reprice_capacity_reasons: Sequence[Mapping[str, Any]] = (),
     entry_reprice_rejections: Sequence[Mapping[str, Any]] = (),
+    protected_exit_satisfied: Sequence[Mapping[str, Any]] = (),
     stored_utc: bool = False,
 ) -> dict[str, Any]:
     """Produce a replacement V3 seal after exact parent/child verification.
@@ -270,7 +275,8 @@ def seal_squeeze_family_v3(
         "entry_reprice_deferred_count", "entry_reprice_deferred_hash",
         "entry_reprice_capacity_count", "entry_reprice_capacity_hash",
         "entry_reprice_capacity_reason_count", "entry_reprice_capacity_reason_hash",
-        "entry_reprice_rejected_count", "entry_reprice_rejected_hash"}:
+        "entry_reprice_rejected_count", "entry_reprice_rejected_hash",
+        "protected_exit_satisfied_count", "protected_exit_satisfied_hash"}:
         raise ValueError("V2 commit columns differ from V3 base")
     batch = str(UUID(str(v2_commit["batch_id"])))
     run = str(v2_commit["run_id"])
@@ -349,6 +355,9 @@ def seal_squeeze_family_v3(
     from src.backend.backtest_entry_reprice_rejected_v3 import seal_entry_reprice_rejected_v3
     sealed.update(seal_entry_reprice_rejected_v3(
         entry_reprice_rejections, parent_events, run_id=run, batch_id=batch))
+    from src.backend.backtest_protected_exit_satisfied_v3 import seal_protected_exit_satisfied_v3
+    sealed.update(seal_protected_exit_satisfied_v3(
+        protected_exit_satisfied, parent_events, run_id=run, batch_id=batch))
     return sealed
 
 
@@ -369,6 +378,7 @@ def verify_squeeze_family_v3(
     entry_reprice_capacities: Sequence[Mapping[str, Any]] = (),
     entry_reprice_capacity_reasons: Sequence[Mapping[str, Any]] = (),
     entry_reprice_rejections: Sequence[Mapping[str, Any]] = (),
+    protected_exit_satisfied: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[dict[str, Any], ...]:
     """Verify V3 family seal before exposing a bounded typed occurrence page."""
     if set(commit) != _COMMIT_COLUMNS:
@@ -386,7 +396,8 @@ def verify_squeeze_family_v3(
         "entry_reprice_deferred_count", "entry_reprice_deferred_hash",
         "entry_reprice_capacity_count", "entry_reprice_capacity_hash",
         "entry_reprice_capacity_reason_count", "entry_reprice_capacity_reason_hash",
-        "entry_reprice_rejected_count", "entry_reprice_rejected_hash"}}
+        "entry_reprice_rejected_count", "entry_reprice_rejected_hash",
+        "protected_exit_satisfied_count", "protected_exit_satisfied_hash"}}
     normalized = []
     for row in rows:
         if stored_utc:
@@ -411,6 +422,7 @@ def verify_squeeze_family_v3(
         entry_reprice_capacities=entry_reprice_capacities,
         entry_reprice_capacity_reasons=entry_reprice_capacity_reasons,
         entry_reprice_rejections=entry_reprice_rejections,
+        protected_exit_satisfied=protected_exit_satisfied,
         stored_utc=stored_utc)
     if (type(commit["backtest_squeeze_episode_count"]) is not int
             or expected != dict(commit)):
@@ -438,6 +450,7 @@ def load_verified_squeeze_v3_prefix(
                           RECONCILIATION_DIFFERENCE, PORTFOLIO_CONTROL,
                           *TRADE_PROPOSAL_TABLES, *BROKER_OMS_TABLES,
                           *ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
+                          PROTECTED_EXIT_SATISFIED,
                           SQUEEZE_COMMIT_V3)
     storage_preflight(client, tables=contracts)
     for fence in ("trading_commit_v1", "trading_commit_v2"):
@@ -562,9 +575,15 @@ def load_verified_squeeze_v3_prefix(
             "account_id,event_time,sequence FROM arte.trading_event_v1 "
             f"WHERE {ids} AND category='portfolio_management' "
             "AND entity_type='entry_reprice_rejected' FORMAT JSONEachRow")
+        satisfied_events = _rows(client,
+            "SELECT record_id,run_id,event_month,batch_id,category,entity_type,entity_id,"
+            "account_id,event_time,sequence,correlation_id,causation_id "
+            "FROM arte.trading_event_v1 "
+            f"WHERE {ids} AND category='order_management' "
+            "AND entity_type='protected_exit_already_satisfied' FORMAT JSONEachRow")
         if any(not first <= int(event["sequence"]) <= last
                for event in broker_policy_events + reprice_events + capacity_events
-               + rejected_events):
+               + rejected_events + satisfied_events):
             raise RuntimeError("Broker/OMS parent lies beyond committed causal prefix")
         broker_oms_rows = []
         for contract in BROKER_OMS_TABLES:
@@ -581,6 +600,10 @@ def load_verified_squeeze_v3_prefix(
         rejected_columns = ",".join(name for name, _ in ENTRY_REPRICE_REJECTED.columns)
         rejected_rows = _rows(client,
             f"SELECT {rejected_columns} FROM arte.{ENTRY_REPRICE_REJECTED.name} "
+            f"WHERE {ids} FORMAT JSONEachRow")
+        satisfied_columns = ",".join(name for name, _ in PROTECTED_EXIT_SATISFIED.columns)
+        satisfied_rows = _rows(client,
+            f"SELECT {satisfied_columns} FROM arte.{PROTECTED_EXIT_SATISFIED.name} "
             f"WHERE {ids} FORMAT JSONEachRow")
         selected_hashes = {row["policy_hash"] for row in portfolio_controls
                            if row["control_event"] == "portfolio_policy_selected"}
@@ -608,7 +631,7 @@ def load_verified_squeeze_v3_prefix(
         verified = verify_squeeze_family_v3(
             commit, children, parents + reservation_events + reconciliation_events
             + control_events + proposal_events + broker_policy_events
-            + reprice_events + capacity_events + rejected_events,
+            + reprice_events + capacity_events + rejected_events + satisfied_events,
             stored_utc=True,
             reservation_reasons=reasons,
             parent_reservations=reservation_parents,
@@ -622,7 +645,8 @@ def load_verified_squeeze_v3_prefix(
             entry_reprice_deferred=broker_oms_rows[3],
             entry_reprice_capacities=capacity_rows[0],
             entry_reprice_capacity_reasons=capacity_rows[1],
-            entry_reprice_rejections=rejected_rows)
+            entry_reprice_rejections=rejected_rows,
+            protected_exit_satisfied=satisfied_rows)
         if any(row["market_plan_token"] != expected_market_plan_token
                or row["query_sha256"] != expected_query_sha256 for row in verified):
             raise RuntimeError("V3 squeeze row differs from pinned market authority")

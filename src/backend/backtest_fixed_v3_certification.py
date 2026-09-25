@@ -36,6 +36,7 @@ _V3_PROJECTED = frozenset({
     ("broker_policy", "order_reply_suppression"),
     ("broker_policy", "order_warning_decision"),
     ("order_management", "entry_reprice_deferred"),
+    ("order_management", "protected_exit_already_satisfied"),
     ("trade_proposal", "trade_proposal_confirmed"),
     ("trade_proposal", "trade_proposal_result"),
 })
