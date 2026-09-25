@@ -11,7 +11,7 @@ from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
-from tests.test_trading_runtime import quote
+from tests.test_trading_runtime import quote, trade
 
 
 START = datetime(2026, 8, 18, 14, 0, tzinfo=timezone.utc)
@@ -148,6 +148,81 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         fills = await self.broker.on_liquidity_bar(
             bar(at, low=9.8, execution_volume=40), at=at)
         self.assertEqual([(fill.price, fill.size) for fill in fills], [(9.9, 10.0)])
+
+    async def test_resting_limit_matches_unambiguous_quote_then_trade_reference(self):
+        await self.order("LMT", price=9.9, quantity=30)
+        at = START + timedelta(milliseconds=100)
+        fixed = await self.broker.on_liquidity_bar(
+            bar(at, low=9.8, execution_volume=40), at=at)
+        reference = SimulatedBrokerAdapter(
+            ["TEST"], self.broker.config, mode=RunMode.BACKTEST, initial_time=START)
+        await reference.initialize()
+        await reference.on_market_event(replace(
+            quote(bid=9.99, ask=10.0), ts=START, ingest_ts=START))
+        await reference.place_orders("TEST", [OrderRequest(
+            acctId="TEST", conid=265598, cOID="reference-limit", ticker="AAPL",
+            orderType="LMT", side="BUY", quantity=30, price=9.9)])
+        tape_at = at - timedelta(microseconds=1)
+        event = await reference.on_market_event(replace(
+            trade(price=9.8, size=40), ts=tape_at, ingest_ts=tape_at,
+            participant_ts=tape_at))
+        self.assertEqual([(row.price, row.size) for row in fixed],
+                         [(row.price, row.size) for row in event])
+
+    async def test_stop_limit_waits_for_next_bucket_and_its_limit(self):
+        await self.order("STOP_LIMIT", price=10.05, stop=10.1)
+        first = START + timedelta(milliseconds=100)
+        self.assertEqual(await self.broker.on_liquidity_bar(
+            bar(first, high=10.2), at=first), [])
+        second = first + timedelta(milliseconds=100)
+        self.assertEqual(await self.broker.on_liquidity_bar(
+            bar(second, bid=10.19, ask=10.2, low=10.06, high=10.2), at=second), [])
+        third = second + timedelta(milliseconds=100)
+        filled = await self.broker.on_liquidity_bar(
+            bar(third, bid=10.03, ask=10.04, low=10.03, high=10.04), at=third)
+        self.assertEqual([(row.price, row.size) for row in filled], [(10.04, 10.0)])
+
+    async def test_quote_age_cutoff_is_completed_boundary_not_last_event(self):
+        await self.order("MKT", quantity=2)
+        first = START + timedelta(milliseconds=100)
+        self.assertEqual(await self.broker.on_liquidity_bar(
+            bar(first, quote_age_us=1_000_000), at=first), [])
+        second = first + timedelta(milliseconds=100)
+        filled = await self.broker.on_liquidity_bar(
+            bar(second, quote_age_us=999_999), at=second)
+        self.assertEqual(sum(row.size for row in filled), 2)
+
+    async def test_shared_displayed_liquidity_is_partial_and_deterministic(self):
+        await self.order("MKT", quantity=10, oid="first")
+        await self.order("MKT", quantity=10, oid="second")
+        # Simulate a worker reconstructing the order map in a different
+        # insertion order; broker priority remains immutable order ID order.
+        self.broker._orders = dict(reversed(tuple(self.broker._orders.items())))
+        first = START + timedelta(milliseconds=100)
+        fills = await self.broker.on_liquidity_bar(
+            bar(first, ask_size=7), at=first)
+        self.assertEqual([(row.order_id, row.size) for row in fills], [("1", 7.0)])
+        second = first + timedelta(milliseconds=100)
+        fills = await self.broker.on_liquidity_bar(
+            bar(second, ask_size=7), at=second)
+        self.assertEqual([(row.order_id, row.size) for row in fills],
+                         [("1", 3.0), ("2", 4.0)])
+
+    async def test_child_activated_by_parent_fill_waits_for_next_bucket(self):
+        parent = OrderRequest(
+            acctId="TEST", conid=265598, cOID="entry", ticker="AAPL",
+            orderType="MKT", side="BUY", quantity=5)
+        child = OrderRequest(
+            acctId="TEST", conid=265598, cOID="exit", parentId="entry",
+            ticker="AAPL", orderType="LMT", side="SELL", quantity=5,
+            price=9.9)
+        await self.broker.place_orders("TEST", [parent, child])
+        first = START + timedelta(milliseconds=100)
+        fills = await self.broker.on_liquidity_bar(bar(first), at=first)
+        self.assertEqual([row.order_id for row in fills], ["1"])
+        second = first + timedelta(milliseconds=100)
+        fills = await self.broker.on_liquidity_bar(bar(second), at=second)
+        self.assertEqual([row.order_id for row in fills], ["2"])
 
     async def test_stale_quote_cannot_fill_market_order(self):
         await self.order("MKT")

@@ -830,10 +830,13 @@ def _profile_table(name: str, journal_profile: str) -> str:
     raise ValueError("Unknown typed journal profile")
 
 
+_ZERO_DISPATCH_BATCH = "00000000-0000-0000-0000-000000000000"
+
+
 def _insert(
     client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: str,
     *, journal_profile: str = "v1", dispatch_sequence: int | None = None,
-    dispatch_batch_id: str | None = None,
+    dispatch_batch_id: str | None = None, dispatch_run_context: bool = False,
 ) -> str | None:
     if name not in _CONTRACTS:
         raise ValueError("Journal writer cannot insert outside typed journal tables")
@@ -856,8 +859,8 @@ def _insert(
         dispatch.execute_typed_insert(
             client, run_id=next(iter(run_ids)),
             table=_profile_table(name, journal_profile), token=token, sql=sql,
-            batch_id=dispatch_batch_id,
-            batch_last_sequence=dispatch_sequence)
+            batch_id=(_ZERO_DISPATCH_BATCH if dispatch_run_context else dispatch_batch_id),
+            batch_last_sequence=(0 if dispatch_run_context else dispatch_sequence))
     else:
         client.execute(sql)
     return sql
@@ -887,7 +890,8 @@ def publish_typed_run(client: Any, run: Mapping[str, Any]) -> str:
     if existing and (len(existing) != 1 or existing[0] != wire):
         raise RuntimeError("Typed run identity conflicts with existing publication")
     if not existing:
-        _insert(client, "trading_run_v1", (run,), f"run:{run_id}")
+        _insert(client, "trading_run_v1", (run,), f"run:{run_id}",
+                dispatch_run_context=True)
         if _rows(client, query) != [wire]:
             raise RuntimeError("Typed run identity was not durably published")
     return run_id
@@ -956,7 +960,8 @@ def publish_typed_run_context(
         if not actual:
             if fenced:
                 raise RuntimeError("Committed run context has missing typed rows")
-            _insert(client, name, expected_rows, f"run-context:{run_id}:{name}")
+            _insert(client, name, expected_rows, f"run-context:{run_id}:{name}",
+                    dispatch_run_context=True)
             actual = _rows(client, query)
         if sorted(actual, key=canonical_json) != sorted(expected, key=canonical_json):
             raise RuntimeError(f"Typed run {name} did not become durable")
@@ -978,9 +983,25 @@ def publish_typed_run_context(
         raise RuntimeError("Typed run context fence conflicts with existing publication")
     if not existing:
         _insert(client, "trading_run_context_commit_v1", (fence,),
-                f"run-context:{run_id}:commit")
+                f"run-context:{run_id}:commit", dispatch_run_context=True)
         if _rows(client, fence_query) != [stable]:
             raise RuntimeError("Typed run context fence did not become durable")
+    dispatch = getattr(client, "typed_insert_dispatch", None)
+    if dispatch is not None:
+        operations = (("trading_run_v1", f"run:{run_id}"),
+                      ("trading_runtime_config_v1",
+                       f"run-context:{run_id}:trading_runtime_config_v1"),
+                      ("trading_run_account_v1",
+                       f"run-context:{run_id}:trading_run_account_v1"),
+                      ("trading_run_context_commit_v1", f"run-context:{run_id}:commit"))
+        for table, token in operations:
+            dispatch.seal_verified_operation(
+                run_id=run_id, table=table, token=token, required=False,
+                batch_id=_ZERO_DISPATCH_BATCH, batch_last_sequence=0)
+        dispatch.compact_verified_run_context(
+            run_id=run_id,
+            fence_hash=sha256(canonical_json(stable).encode()).hexdigest(),
+            operations=operations)
 
 
 def load_typed_run_context(client: Any, run_id: str) -> dict[str, Any]:

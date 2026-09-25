@@ -28,6 +28,10 @@ def _operation_path(run_id: str, query_id: str) -> str:
     return _path("typed_dispatch_operation", run_id, query_id)
 
 
+def _context_receipt_path(run_id: str) -> str:
+    return _path("typed_dispatch_context_receipt", run_id)
+
+
 def typed_insert_query_id(run_id: str, table: str, token: str) -> str:
     for value, label in ((run_id, "run"), (table, "table"), (token, "token")):
         _identity(value, label)
@@ -77,8 +81,8 @@ def _operation_wire(run_id: str, table: str, query_id: str,
                     sequence: int, status: str) -> bytes:
     if status not in {"pending", "acknowledged", "sealed"}:
         raise ValueError("Typed dispatch operation status is invalid")
-    if type(sequence) is not int or sequence < 1:
-        raise ValueError("Typed dispatch requires a positive batch sequence")
+    if type(sequence) is not int or sequence < 0:
+        raise ValueError("Typed dispatch requires a nonnegative parent sequence")
     return ("3\n" + "\n".join((run_id, table, query_id,
             sha256(token.encode()).hexdigest(), sha256(sql.encode()).hexdigest(),
             batch_id, str(sequence), status))).encode()
@@ -105,6 +109,7 @@ class TypedInsertDispatch:
         _identity(run_id, "run")
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_gate")
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_operation")
+        self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_context_receipt")
         try:
             self.keeper.create(_gate_path(run_id), _Gate(
                 "open", 0, 1, 0, 0, _ZERO_BATCH, _ZERO_HASH,
@@ -124,10 +129,13 @@ class TypedInsertDispatch:
                 raise ValueError("batch identity is not canonical")
         except (TypeError, ValueError) as exc:
             raise ValueError("Typed batch reservation identity is invalid") from exc
+        self._read_context_receipt(run_id)
         for _ in range(8):
             gate, version = self._read_gate(run_id)
             if gate.mode != "open":
                 raise KeeperUnavailable("Typed dispatch run is cold-fenced")
+            if gate.active_batch_id == _ZERO_BATCH and (gate.inflight or gate.registered):
+                raise KeeperUnavailable("Typed batch cannot start with unresolved run-context INSERTs")
             if last_sequence <= gate.compacted_through:
                 if (last_sequence == gate.compacted_through
                         and batch_id == gate.compacted_batch_id):
@@ -159,8 +167,9 @@ class TypedInsertDispatch:
                 or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1" not in sql
                 or "insert_deduplication_token=" not in sql):
             raise ValueError("Typed dispatch requires the acknowledged arte INSERT contract")
-        if (type(batch_last_sequence) is not int or batch_last_sequence < 1
-                or not isinstance(batch_id, str)):
+        if (type(batch_last_sequence) is not int or batch_last_sequence < 0
+                or not isinstance(batch_id, str)
+                or (batch_last_sequence == 0) != (batch_id == _ZERO_BATCH)):
             raise KeeperUnavailable("Strict typed dispatch lacks batch sequence authority")
         query_id = typed_insert_query_id(run_id, table, token)
         path = _operation_path(run_id, query_id)
@@ -172,10 +181,20 @@ class TypedInsertDispatch:
             gate, version = self._read_gate(run_id)
             if gate.mode != "open":
                 raise KeeperUnavailable("Typed dispatch run is cold-fenced")
-            if gate.active_batch_id != batch_id:
+            if batch_last_sequence and gate.active_batch_id != batch_id:
                 raise KeeperUnavailable("Competing typed batch owns the run prefix")
-            if batch_last_sequence <= gate.compacted_through:
+            if batch_last_sequence and batch_last_sequence <= gate.compacted_through:
                 return  # Exact CH batch readback and watermark check still follow.
+            if not batch_last_sequence and gate.active_batch_id != _ZERO_BATCH:
+                raise KeeperUnavailable("Run context cannot dispatch during a batch")
+            if not batch_last_sequence:
+                try:
+                    self.keeper.get(_context_receipt_path(run_id))
+                except Exception as exc:
+                    if type(exc).__name__ != "NoNodeError":
+                        raise KeeperUnavailable("Run-context receipt cannot be inspected") from exc
+                else:
+                    raise KeeperUnavailable("Run-context receipt already sealed")
             if gate.registered >= self.max_operations:
                 raise KeeperUnavailable("Typed dispatch operation cap reached; stop the run")
             try:
@@ -239,7 +258,7 @@ class TypedInsertDispatch:
             gate, version = self._read_gate(run_id)
             if gate.mode != "open":
                 raise KeeperUnavailable("Typed dispatch cannot seal outside open parent")
-            if (type(batch_last_sequence) is int
+            if (type(batch_last_sequence) is int and batch_last_sequence > 0
                     and batch_last_sequence <= gate.compacted_through):
                 return
             try:
@@ -274,6 +293,87 @@ class TypedInsertDispatch:
             if _committed(txn.commit()):
                 return
         raise KeeperUnavailable("Typed dispatch parent seal CAS contended")
+
+    def compact_verified_run_context(self, *, run_id: str, fence_hash: str,
+                                     operations: tuple[tuple[str, str], ...]) -> None:
+        """Retire exact acknowledged bootstrap INSERTs after context-fence readback.
+
+        A fixed receipt survives operation GC. A pending lost-response operation
+        is deliberately not recoverable here: its late server completion is
+        unbounded and requires transport-level quiescence.
+        """
+        if (re.fullmatch(r"[0-9a-f]{64}", fence_hash) is None
+                or not operations or len(set(operations)) != len(operations)):
+            raise ValueError("Run-context receipt identity is invalid")
+        receipt_path = _context_receipt_path(run_id)
+        receipt = ("1\n" + fence_hash).encode()
+        for _ in range(8):
+            gate, version = self._read_gate(run_id)
+            if gate.mode != "open" or gate.inflight or gate.active_batch_id != _ZERO_BATCH:
+                raise KeeperUnavailable("Run context has unresolved INSERTs or active batch")
+            try:
+                existing, _ = self.keeper.get(receipt_path)
+            except Exception as exc:
+                if type(exc).__name__ != "NoNodeError":
+                    raise KeeperUnavailable("Run-context receipt cannot be inspected") from exc
+            else:
+                if existing != receipt:
+                    raise KeeperUnavailable("Run-context receipt conflicts with fence")
+                if gate.registered:
+                    raise KeeperUnavailable("Run-context receipt has orphan operations")
+                return
+            paths = []
+            for table, token in operations:
+                query_id = typed_insert_query_id(run_id, table, token)
+                path = _operation_path(run_id, query_id)
+                try:
+                    value, stat = self.keeper.get(path)
+                except Exception as exc:
+                    raise KeeperUnavailable("Run-context operation lacks durable dispatch identity") from exc
+                parts = value.decode().split("\n")
+                if (len(parts) != 9 or parts[:5] != ["3", run_id, table, query_id,
+                        sha256(token.encode()).hexdigest()]
+                        or parts[6:] != [_ZERO_BATCH, "0", "sealed"]):
+                    raise KeeperUnavailable("Run-context operation is not sealed")
+                paths.append((path, stat.version))
+            if gate.registered != len(paths):
+                raise KeeperUnavailable("Run-context operation inventory is incomplete")
+            txn = self.keeper.transaction()
+            txn.check(_gate_path(run_id), version=version)
+            for path, op_version in paths:
+                txn.delete(path, version=op_version)
+            txn.create(receipt_path, receipt, ephemeral=False)
+            txn.set_data(_gate_path(run_id), _Gate(
+                "open", 0, gate.epoch, 0, gate.compacted_through,
+                gate.compacted_batch_id, gate.compacted_commit_hash,
+                _ZERO_BATCH).wire(), version=version)
+            if _committed(txn.commit()):
+                return
+        raise KeeperUnavailable("Run-context receipt CAS contended")
+
+    def assert_run_context_receipt(self, *, run_id: str, fence_hash: str) -> None:
+        if re.fullmatch(r"[0-9a-f]{64}", fence_hash) is None:
+            raise ValueError("Run-context fence hash is invalid")
+        try:
+            value, _ = self.keeper.get(_context_receipt_path(run_id))
+        except Exception as exc:
+            raise KeeperUnavailable("Run-context Keeper receipt is missing") from exc
+        if value != ("1\n" + fence_hash).encode():
+            raise KeeperUnavailable("Run-context Keeper receipt conflicts with ClickHouse")
+
+    def _read_context_receipt(self, run_id: str) -> str:
+        try:
+            value, _ = self.keeper.get(_context_receipt_path(run_id))
+        except Exception as exc:
+            raise KeeperUnavailable("Typed batch lacks run-context Keeper receipt") from exc
+        try:
+            version, digest = value.decode("ascii").split("\n")
+        except (UnicodeError, ValueError) as exc:
+            raise KeeperUnavailable("Run-context Keeper receipt is invalid") from exc
+        if (version != "1" or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                or value != ("1\n" + digest).encode()):
+            raise KeeperUnavailable("Run-context Keeper receipt is invalid")
+        return digest
 
     def compact_verified_batch(self, *, run_id: str, batch_id: str,
                                prior_batch_id: str, first_sequence: int,
@@ -361,6 +461,7 @@ class ColdDispatchBarrier:
     run_id: str
     epoch: int
     prefix_verified: bool = False
+    context_verified: bool = False
 
     def _assert_gate(self, run_id: str) -> None:
         if run_id != self.run_id:
@@ -374,7 +475,32 @@ class ColdDispatchBarrier:
     def assert_fenced(self, run_id: str) -> None:
         if not self.prefix_verified:
             raise KeeperUnavailable("Typed dispatch prefix is not cold-verified")
+        if not self.context_verified:
+            raise KeeperUnavailable("Typed dispatch run context is not cold-verified")
         self._assert_gate(run_id)
+
+    def verify_run_context_receipt(self, client: Any) -> dict[str, Any]:
+        """Cold-read exact normalized context and its durable Keeper receipt."""
+        from src.trading_runtime.arte_journal_writer import (
+            _literal, _rows, load_typed_run_context,
+        )
+        from src.trading_runtime.journal_contract import canonical_json
+
+        self._assert_gate(self.run_id)
+        self.context_verified = False
+        context = load_typed_run_context(client, self.run_id)
+        columns = "run_id,run_month,run_hash,config_hash,account_count,account_hash"
+        rows = _rows(client,
+            f"SELECT {columns} FROM arte.trading_run_context_commit_v1 "
+            f"WHERE run_id={_literal(self.run_id)} FORMAT JSONEachRow")
+        if len(rows) != 1:
+            raise KeeperUnavailable("Cold run-context fence is absent or duplicated")
+        fence_hash = sha256(canonical_json(rows[0]).encode()).hexdigest()
+        self.authority.assert_run_context_receipt(
+            run_id=self.run_id, fence_hash=fence_hash)
+        self._assert_gate(self.run_id)
+        self.context_verified = True
+        return context
 
     def verify_committed_prefix(self, client: Any, *,
                                 journal_profile: str) -> Any:

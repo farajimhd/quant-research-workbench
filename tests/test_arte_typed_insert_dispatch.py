@@ -21,8 +21,16 @@ ZERO_BATCH = "00000000-0000-0000-0000-000000000000"
 
 
 def reserve_direct(authority):
+    attest_direct(authority, "run-1")
     authority.assert_next_batch(run_id="run-1", batch_id=BATCH_ID,
         prior_batch_id=ZERO_BATCH, first_sequence=1, last_sequence=1)
+
+
+def attest_direct(authority, run_id):
+    from src.trading_runtime.arte_typed_insert_dispatch import _context_receipt_path
+    path = _context_receipt_path(run_id)
+    if path not in authority.keeper.rows:
+        authority.keeper.create(path, b"1\n" + b"a" * 64)
 
 
 def compact_direct(authority, token="batch-1"):
@@ -144,6 +152,7 @@ def test_acknowledged_insert_blocks_cold_until_explicit_parent_seal() -> None:
     with pytest.raises(KeeperUnavailable, match="prefix is not cold-verified"):
         barrier.assert_fenced("run-1")
     barrier.prefix_verified = True  # Gate-only race test; no CH fixture here.
+    barrier.context_verified = True
     barrier.assert_fenced("run-1")
     with pytest.raises(KeeperUnavailable, match="cold-fenced"):
         authority.execute_typed_insert(client, run_id="run-1", table="trading_event_v1",
@@ -171,6 +180,112 @@ def test_lost_response_remains_durable_pending_even_after_late_server_commit() -
                                        token="batch-1", sql=SQL, batch_id=BATCH_ID,
                                        batch_last_sequence=1)
     assert len(client.calls) == 1
+
+
+def test_run_context_receipt_compacts_four_exact_operations_and_survives_retry() -> None:
+    authority = TypedInsertDispatch(Keeper(), max_operations=4)
+    authority.initialize_new_run("run-1")
+    client = Client(authority)
+    operations = tuple((table, f"run-context:run-1:{table}") for table in (
+        "trading_run_v1", "trading_runtime_config_v1",
+        "trading_run_account_v1", "trading_run_context_commit_v1"))
+    for table, token in operations:
+        sql = SQL.replace("trading_event_v1", table)
+        authority.execute_typed_insert(client, run_id="run-1", table=table,
+            token=token, sql=sql, batch_id=ZERO_BATCH, batch_last_sequence=0)
+    with pytest.raises(KeeperUnavailable, match="pending or ambiguous"):
+        authority.acquire_cold_barrier("run-1")
+    for table, token in operations:
+        authority.seal_verified_operation(run_id="run-1", table=table,
+            token=token, batch_id=ZERO_BATCH, batch_last_sequence=0)
+    authority.compact_verified_run_context(run_id="run-1", fence_hash="a" * 64,
+        operations=operations)
+    authority.assert_run_context_receipt(run_id="run-1", fence_hash="a" * 64)
+    assert authority._read_gate("run-1")[0].registered == 0
+    authority.compact_verified_run_context(run_id="run-1", fence_hash="a" * 64,
+        operations=operations)
+    assert len(client.calls) == 4
+    with pytest.raises(KeeperUnavailable, match="conflicts"):
+        authority.compact_verified_run_context(run_id="run-1", fence_hash="b" * 64,
+            operations=operations)
+
+
+def test_run_context_lost_response_cannot_be_compacted_from_late_row() -> None:
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    client = Client(authority, lose_response=True)
+    with pytest.raises(TimeoutError):
+        authority.execute_typed_insert(client, run_id="run-1",
+            table="trading_run_v1", token="run:run-1",
+            sql=SQL.replace("trading_event_v1", "trading_run_v1"),
+            batch_id=ZERO_BATCH, batch_last_sequence=0)
+    with pytest.raises(KeeperUnavailable, match="acknowledged"):
+        authority.seal_verified_operation(run_id="run-1",
+            table="trading_run_v1", token="run:run-1",
+            batch_id=ZERO_BATCH, batch_last_sequence=0)
+    with pytest.raises(KeeperUnavailable, match="unresolved"):
+        authority.compact_verified_run_context(run_id="run-1", fence_hash="a" * 64,
+            operations=(("trading_run_v1", "run:run-1"),))
+
+
+def test_cold_context_rejects_unattested_clickhouse_fence(monkeypatch) -> None:
+    from src.trading_runtime.journal_contract import canonical_json
+    from hashlib import sha256
+
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    barrier = authority.acquire_cold_barrier("run-1")
+    stable = {"run_id": "run-1", "run_month": "2026-09-01",
+              "run_hash": "a" * 64, "config_hash": "b" * 64,
+              "account_count": 1, "account_hash": "c" * 64}
+    monkeypatch.setattr(writer, "load_typed_run_context",
+                        lambda _client, _run_id: {"accounts": ("account-1",)})
+    monkeypatch.setattr(writer, "_rows", lambda _client, _query: [stable])
+    with pytest.raises(KeeperUnavailable, match="receipt is missing"):
+        barrier.verify_run_context_receipt(object())
+    barrier.release()
+    digest = sha256(canonical_json(stable).encode()).hexdigest()
+    from src.trading_runtime.arte_typed_insert_dispatch import _context_receipt_path
+    authority.keeper.create(_context_receipt_path("run-1"), ("1\n" + digest).encode())
+    barrier = authority.acquire_cold_barrier("run-1")
+    assert barrier.verify_run_context_receipt(object()) == {
+        "accounts": ("account-1",)}
+
+
+def test_run_context_cannot_attest_legacy_rows_without_dispatch_operations() -> None:
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    with pytest.raises(KeeperUnavailable, match="lacks durable dispatch identity"):
+        authority.compact_verified_run_context(run_id="run-1", fence_hash="a" * 64,
+            operations=(("trading_run_v1", "run:run-1"),))
+
+
+def test_batch_reservation_rejects_missing_or_invalid_context_receipt() -> None:
+    from src.trading_runtime.arte_typed_insert_dispatch import _context_receipt_path
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    kwargs = dict(run_id="run-1", batch_id=BATCH_ID,
+                  prior_batch_id=ZERO_BATCH, first_sequence=1, last_sequence=1)
+    with pytest.raises(KeeperUnavailable, match="lacks run-context Keeper receipt"):
+        authority.assert_next_batch(**kwargs)
+    assert authority._read_gate("run-1")[0].active_batch_id == ZERO_BATCH
+    authority.keeper.create(_context_receipt_path("run-1"), b"legacy")
+    with pytest.raises(KeeperUnavailable, match="receipt is invalid"):
+        authority.assert_next_batch(**kwargs)
+    assert authority._read_gate("run-1")[0].active_batch_id == ZERO_BATCH
+
+
+def test_sealed_context_refuses_late_context_insert() -> None:
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    attest_direct(authority, "run-1")
+    client = Client(authority)
+    with pytest.raises(KeeperUnavailable, match="already sealed"):
+        authority.execute_typed_insert(client, run_id="run-1",
+            table="trading_run_v1", token="run:run-1",
+            sql=SQL.replace("trading_event_v1", "trading_run_v1"),
+            batch_id=ZERO_BATCH, batch_last_sequence=0)
+    assert client.calls == []
 
 
 def test_strict_writer_refuses_unwrapped_insert(monkeypatch) -> None:
@@ -233,6 +348,7 @@ def test_cold_barrier_is_accepted_by_strict_admission_audit(monkeypatch) -> None
             assert "FROM arte.trading_commit_v2 " in sql
             return ""
     barrier.verify_committed_prefix(EmptyReader(), journal_profile="v1")
+    barrier.context_verified = True  # Prefix-only fixture; context verification is tested separately.
     monkeypatch.setattr(admission_proof, "_rows", lambda *_args: [])
     class EmptyProofs:
         def load_head(self, _run_id):
@@ -267,6 +383,7 @@ def test_typed_batch_seals_dispatched_rows_only_after_commit_readback() -> None:
 
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run(batch().run_id)
+    attest_direct(authority, batch().run_id)
     class WriterClient(MemoryClient):
         typed_insert_strict = True
         typed_insert_dispatch = authority
@@ -280,6 +397,9 @@ def test_typed_batch_seals_dispatched_rows_only_after_commit_readback() -> None:
     assert len(client.query_ids) == 2
     barrier = authority.acquire_cold_barrier(batch().run_id)
     barrier.verify_committed_prefix(client, journal_profile="v1")
+    with pytest.raises(KeeperUnavailable, match="run context is not cold-verified"):
+        barrier.assert_fenced(batch().run_id)
+    barrier.context_verified = True  # This fixture isolates the batch prefix.
     barrier.assert_fenced(batch().run_id)
 
 
@@ -289,6 +409,7 @@ def test_cold_prefix_uses_explicit_v2_fence_and_rejects_mixed_profile(monkeypatc
 
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run(batch().run_id)
+    attest_direct(authority, batch().run_id)
     class WriterClient(MemoryClient):
         typed_insert_strict = True
         typed_insert_dispatch = authority
@@ -323,6 +444,7 @@ def test_retry_seals_prior_acknowledged_ops_after_exact_commit_readback() -> Non
 
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run(batch().run_id)
+    attest_direct(authority, batch().run_id)
     class WriterClient(MemoryClient):
         typed_insert_strict = True
         typed_insert_dispatch = authority
@@ -354,6 +476,7 @@ def test_crash_before_keeper_compaction_retries_without_second_insert() -> None:
 
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run(batch().run_id)
+    attest_direct(authority, batch().run_id)
     class WriterClient(MemoryClient):
         typed_insert_strict = True
         typed_insert_dispatch = authority
@@ -389,6 +512,7 @@ def test_sealed_batch_compaction_reuses_bounded_keeper_window() -> None:
                      events=(writer.typed_row("trading_event_v1", event),))
     authority = TypedInsertDispatch(Keeper(), max_operations=2)
     authority.initialize_new_run(first.run_id)
+    attest_direct(authority, first.run_id)
     class WriterClient(MemoryClient):
         typed_insert_strict = True
         typed_insert_dispatch = authority
@@ -435,6 +559,7 @@ def test_strict_compaction_rejects_unattested_legacy_prefix() -> None:
     writer.publish_typed_batch(client, first)
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run(first.run_id)
+    attest_direct(authority, first.run_id)
     client.typed_insert_strict = True
     client.typed_insert_dispatch = authority
     with pytest.raises(KeeperUnavailable, match="does not extend compacted prefix"):

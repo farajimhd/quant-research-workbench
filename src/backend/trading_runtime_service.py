@@ -27,6 +27,7 @@ from src.backend.qmd_gateway_client import (
     qmd_persisted_indicators,
 )
 from src.backend.session_change_service import session_change_projection
+from src.backend.live_strategy_definition_route import StagedDefinitionReadRoute
 from src.data_provider.calendar import market_sessions
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.orchestrator import historical_run_window
@@ -71,6 +72,28 @@ MACRO_CHART_TIMEFRAMES = {"1d", "1w", "1mo", "1y"}
 HISTORICAL_CHUNK_MINUTES = 15
 MARKET_REFERENCE_DIR = REPO_ROOT / "research" / "market_references" / "massive"
 BUILTIN_STRATEGY_LOCK = threading.Lock()
+_staged_definition_read_route: StagedDefinitionReadRoute | None = None
+
+
+def install_staged_definition_read_route(route: StagedDefinitionReadRoute) -> None:
+    """Inject a read-only, preflighted typed route; never changes write authority."""
+    global _staged_definition_read_route
+    if not isinstance(route, StagedDefinitionReadRoute):
+        raise TypeError("staged definition reader is required")
+    _staged_definition_read_route = route
+
+
+def _definition_read_authority() -> str:
+    value = os.environ.get("TRADING_STRATEGY_DEFINITION_READ_AUTHORITY", "sqlite").strip().lower()
+    if value not in {"sqlite", "typed_staged"}:
+        raise RuntimeError("Strategy definition read authority is invalid")
+    return value
+
+
+def _typed_definition_route() -> StagedDefinitionReadRoute:
+    if _staged_definition_read_route is None:
+        raise RuntimeError("Typed Strategy definition route lacks cold bootstrap")
+    return _staged_definition_read_route
 
 
 @lru_cache(maxsize=1)
@@ -95,6 +118,8 @@ def close_trading_journal() -> None:
 
 
 def save_strategy_definition(payload: dict[str, Any]) -> dict[str, Any]:
+    if _definition_read_authority() != "sqlite":
+        raise RuntimeError("Typed Strategy definition route is read-only; refusing SQLite write")
     strategy_id = str(payload.get("strategy_id") or "").strip()
     name = str(payload.get("name") or "").strip()
     implementation = str(payload.get("implementation") or "").strip()
@@ -129,6 +154,8 @@ def save_strategy_definition(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_strategy_definitions(latest_only: bool = True) -> list[dict[str, Any]]:
+    if _definition_read_authority() == "typed_staged":
+        return _typed_definition_route().list_definitions(latest_only=latest_only)
     ensure_builtin_strategy_definition()
     rows = [
         _strategy_definition_payload(row)
@@ -149,6 +176,8 @@ def list_strategy_definitions(latest_only: bool = True) -> list[dict[str, Any]]:
 
 
 def get_strategy_definition(strategy_id: str, revision: int | None = None) -> dict[str, Any]:
+    if _definition_read_authority() == "typed_staged":
+        return _typed_definition_route().get_definition(strategy_id, revision)
     ensure_builtin_strategy_definition()
     result = trading_journal().strategy(strategy_id, revision)
     if result is None:
@@ -172,6 +201,8 @@ def trading_taxonomy_catalog() -> dict[str, Any]:
 
 
 def ensure_builtin_strategy_definition() -> None:
+    if _definition_read_authority() != "sqlite":
+        raise RuntimeError("Typed Strategy definition route cannot reseed SQLite")
     with BUILTIN_STRATEGY_LOCK:
         for definition in installed_strategy_definitions():
             strategy_id = str(definition["strategy_id"])
@@ -268,10 +299,14 @@ def create_strategy_assignment(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_strategy_assignments(*, account_id: str = "", ticker: str = "", active_only: bool = False) -> list[dict[str, Any]]:
+    if _definition_read_authority() == "typed_staged":
+        raise RuntimeError("Typed Strategy definition staging cannot read SQLite assignments")
     return trading_journal().strategy_assignments(account_id=account_id, ticker=ticker, active_only=active_only)
 
 
 def command_strategy_assignment(assignment_id: str, command: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    if _definition_read_authority() == "typed_staged":
+        raise RuntimeError("Typed Strategy definition staging cannot mutate SQLite assignments")
     row = trading_journal().strategy_assignment(assignment_id)
     if row is None:
         raise KeyError(assignment_id)
@@ -332,6 +367,8 @@ def command_strategy_assignment(assignment_id: str, command: str, payload: dict[
 
 
 def evaluate_strategy_assignment(assignment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if _definition_read_authority() == "typed_staged":
+        raise RuntimeError("Typed Strategy definition staging cannot evaluate SQLite assignments")
     row = trading_journal().strategy_assignment(assignment_id)
     if row is None:
         raise KeyError(assignment_id)
