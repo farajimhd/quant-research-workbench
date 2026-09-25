@@ -10,10 +10,14 @@ from typing import Any, Mapping
 
 from src.trading_runtime.arte_journal_schema import TableContract
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.arte_market_day_source_plan import (
+    TABLES as SOURCE_TABLES, project_source_plan, recover_source_plan,
+    source_inventory_hash,
+)
 
 
 STAGES = frozenset({"bars", "technical", "broker_100ms"})
-TABLES = (
+_BASE_TABLES = (
     TableContract("market_day_build_header_v1", (
         ("build_id", "String"), ("definition_hash", "FixedString(64)"),
         ("version", "String"), ("calculation_source_hash", "FixedString(64)"),
@@ -43,12 +47,15 @@ TABLES = (
     ), "toYYYYMM(session_date)", "build_id,session_date,ticker"),
     TableContract("market_day_build_fence_v1", (
         ("build_id", "String"), ("definition_hash", "FixedString(64)"),
+        ("source_plan_hash", "FixedString(64)"),
+        ("source_inventory_hash", "FixedString(64)"),
         ("header_hash", "FixedString(64)"), ("scope_count", "UInt32"),
         ("scope_hash", "FixedString(64)"), ("stage_count", "UInt32"),
         ("stage_hash", "FixedString(64)"), ("seed_count", "UInt32"),
         ("seed_hash", "FixedString(64)"),
     ), "tuple()", "build_id"),
 )
+TABLES = (*_BASE_TABLES[:-1], *SOURCE_TABLES, _BASE_TABLES[-1])
 _COLUMNS = {table.name: tuple(name for name, _ in table.columns) for table in TABLES}
 
 
@@ -82,7 +89,8 @@ def verify_market_day_certificate(client: Any, build_id: str, *,
                for row in rows):
             raise RuntimeError(f"Invalid {table.name} certificate row")
         families[table.name] = rows
-    header, scopes, stages, seeds, fences = (families[table.name] for table in TABLES)
+    header, scopes, stages, seeds = (families[table.name] for table in _BASE_TABLES[:-1])
+    fences = families[_BASE_TABLES[-1].name]
     if len(header) != 1 or len(fences) != 1:
         raise RuntimeError("Market-day certification requires one header and one final fence")
     head, fence = header[0], fences[0]
@@ -103,6 +111,24 @@ def verify_market_day_certificate(client: Any, build_id: str, *,
         raise RuntimeError("Market-day planned scope, stage, or seed inventory is incomplete or duplicate")
     if not set(sessions).issubset({day for day, _ in scope_keys}):
         raise RuntimeError("Requested session lacks planned market-day scope")
+    source_rows = {table.name: tuple(families[table.name]) for table in SOURCE_TABLES}
+    if (fence["source_plan_hash"] != head["source_plan_hash"]
+            or fence["source_inventory_hash"] != source_inventory_hash(source_rows)):
+        raise RuntimeError("Market-day source inventory differs from final fence")
+    source_plan = recover_source_plan(source_rows, build_id,
+                                      expected_hash=head["source_plan_hash"])
+    expected_scopes = {(row["source_date"], row["ticker"])
+                       for row in source_plan["units"]}
+    source_units = {(row["source_date"], row["ticker"]): row
+                    for row in source_plan["units"]}
+    if (set(scope_keys) != expected_scopes
+            or not set(sessions).issubset(source_plan["requested"])
+            or any((int(scope["source_event_count"]) != int(source_units[key]["event_count"])
+                    or int(scope["first_ordinal"]) != (
+                        int(source_units[key]["next_ordinal"]) - int(source_units[key]["event_count"]))
+                    or int(scope["last_ordinal"]) != int(source_units[key]["last_ordinal"]))
+                   for scope in scopes for key in [(scope["session_date"], scope["ticker"])])):
+        raise RuntimeError("Market-day planned scopes differ from typed source plan")
     for row in scopes:
         if (not row["ticker"] or not row["population_snapshot_id"]
                 or not row["population_revision"] or not row["population_source_hash"]
@@ -219,13 +245,17 @@ def prepare_market_day_certificate(definition: Mapping[str, Any], build_id: str,
         rules_hash=str(definition["rules_hash"]),
         source_plan_hash=producer_digest(plan), scope_count=len(scopes),
         scope_hash=family_hash(scopes))]
+    source_rows = project_source_plan(plan, build_id)
     fence = [dict(build_id=build_id, definition_hash=definition_hash,
+        source_plan_hash=source_rows["market_day_source_plan_v1"][0]["source_plan_hash"],
+        source_inventory_hash=source_inventory_hash(source_rows),
         header_hash=family_hash(header), scope_count=len(scopes),
         scope_hash=family_hash(scopes), stage_count=len(stages),
         stage_hash=family_hash(stages), seed_count=len(seeds),
         seed_hash=family_hash(seeds))]
-    prepared = dict(zip((table.name for table in TABLES),
-                        (header, scopes, stages, seeds, fence)))
+    prepared = {**dict(zip((table.name for table in _BASE_TABLES[:-1]),
+                           (header, scopes, stages, seeds))),
+                **source_rows, _BASE_TABLES[-1].name: fence}
     # Share all structural checks with the cold reader before returning rows.
     class _PreparedReader:
         def execute(self, sql: str) -> str:

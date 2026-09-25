@@ -42,6 +42,8 @@ class BuildClaim:
 class BuildAttestation:
     build_id: str
     definition_hash: str
+    source_plan_hash: str
+    source_inventory_hash: str
     header_hash: str
     scope_hash: str
     stage_hash: str
@@ -53,14 +55,16 @@ class BuildAttestation:
         _identity(self.build_id, self.owner_id)
         if type(self.epoch) is not int or self.epoch < 1 or any(
             not isinstance(value, str) or not _HEX.fullmatch(value)
-            for value in (self.definition_hash, self.header_hash, self.scope_hash,
+            for value in (self.definition_hash, self.source_plan_hash,
+                          self.source_inventory_hash, self.header_hash, self.scope_hash,
                           self.stage_hash, self.seed_hash)
         ):
             raise ValueError("Market-day attestation has invalid epoch or digest")
 
     def wire(self) -> bytes:
-        return ("1\n" + "\n".join(map(str, (
-            self.build_id, self.definition_hash, self.header_hash,
+        return ("2\n" + "\n".join(map(str, (
+            self.build_id, self.definition_hash, self.source_plan_hash,
+            self.source_inventory_hash, self.header_hash,
             self.scope_hash, self.stage_hash, self.seed_hash,
             self.owner_id, self.epoch)))).encode("utf-8")
 
@@ -124,9 +128,11 @@ class MarketDayKeeperAuthority:
                 and stat.ephemeralOwner == self.client.client_id[0])
 
     def attest(self, claim: BuildClaim, *, definition_hash: str,
+               source_plan_hash: str, source_inventory_hash: str,
                header_hash: str, scope_hash: str, stage_hash: str,
                seed_hash: str) -> BuildAttestation:
-        proof = BuildAttestation(claim.build_id, definition_hash, header_hash,
+        proof = BuildAttestation(claim.build_id, definition_hash,
+                                 source_plan_hash, source_inventory_hash, header_hash,
                                  scope_hash, stage_hash, seed_hash,
                                  claim.owner_id, claim.epoch)
         self._connected()
@@ -165,9 +171,9 @@ class MarketDayKeeperAuthority:
             raise KeeperUnavailable("Cannot read market-day attestation") from exc
         try:
             parts = value.decode("utf-8").split("\n")
-            if len(parts) != 9 or parts[0] != "1":
+            if len(parts) != 11 or parts[0] != "2":
                 raise ValueError("unknown attestation wire version")
-            proof = BuildAttestation(*parts[1:8], int(parts[8]))
+            proof = BuildAttestation(*parts[1:10], int(parts[10]))
             if proof.build_id != build_id or proof.wire() != value:
                 raise ValueError("attestation differs from requested build")
             return proof
@@ -179,7 +185,8 @@ def require_attested_inventory(proof: BuildAttestation | None,
                                fence: dict[str, Any]) -> None:
     """Cold admission rejects all CH fences lacking exact historical CAS proof."""
     if proof is None or any(fence.get(name) != getattr(proof, name) for name in (
-        "build_id", "definition_hash", "header_hash", "scope_hash",
+        "build_id", "definition_hash", "source_plan_hash",
+        "source_inventory_hash", "header_hash", "scope_hash",
         "stage_hash", "seed_hash"
     )):
         raise RuntimeError("Market-day fence lacks matching Keeper CAS attestation")

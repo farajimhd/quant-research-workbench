@@ -62,10 +62,15 @@ class BacktestTypedJournalPublisher:
         self._source_cursor = source_cursor
         self._task: asyncio.Task[TypedBacktestReceipt] | None = None
         self._error: BaseException | None = None
+        self._checkpoint_waiters: list[tuple[int, str, asyncio.Future[TypedBacktestReceipt]]] = []
 
     @property
     def fenced_sequence(self) -> int:
         return self._sequence
+
+    @property
+    def checkpoint_pending(self) -> bool:
+        return bool(self._checkpoint_waiters)
 
     def enqueue_pending(self) -> asyncio.Task[TypedBacktestReceipt]:
         """Schedule projection and persistence without hot-path work or I/O.
@@ -83,7 +88,7 @@ class BacktestTypedJournalPublisher:
         self._task = asyncio.create_task(self._drain())
         return self._task
 
-    def _prepare_batches(self) -> tuple[TypedJournalBatch, ...]:
+    def _prepare_batches(self, through_sequence: int | None = None) -> tuple[TypedJournalBatch, ...]:
         """CPU-heavy bounded prefix projection runs outside the event loop."""
         prefix = project_pending_backtest_prefix(
             self.journal, attempt_id=self.attempt_id,
@@ -93,13 +98,16 @@ class BacktestTypedJournalPublisher:
             fixed_market_parent_plan=self.fixed_market_parent_plan,
             fixed_market_execution_plan=self.fixed_market_execution_plan,
             expected_market_start=self.expected_market_start,
+            through_sequence=through_sequence,
         )
         return tuple(_coalesce_unpublished(prefix.batches[offset:offset + self.batch_size])
                      for offset in range(0, len(prefix.batches), self.batch_size))
 
     async def _drain(self) -> TypedBacktestReceipt:
         try:
-            batches = await asyncio.to_thread(self._prepare_batches)
+            through_sequence = (self._checkpoint_waiters[0][0]
+                                if self._checkpoint_waiters else None)
+            batches = await asyncio.to_thread(self._prepare_batches, through_sequence)
             for batch in batches:
                 receipt = self.writer.submit(batch)  # Bounded, nonblocking admission.
                 committed = await asyncio.wrap_future(receipt)
@@ -109,11 +117,54 @@ class BacktestTypedJournalPublisher:
                 self._sequence = batch.last_sequence
                 self._batch_id = batch.batch_id
                 self._source_cursor = batch.source_cursor
+                current = TypedBacktestReceipt(self._sequence, self._batch_id,
+                                               self._source_cursor)
+                remaining = []
+                for sequence, cursor, waiter in self._checkpoint_waiters:
+                    if sequence <= self._sequence:
+                        if not waiter.done():
+                            if (sequence != self._sequence or cursor != self._source_cursor):
+                                waiter.set_exception(RuntimeError(
+                                    "Typed Backtest checkpoint cursor differs from committed prefix"))
+                            else:
+                                waiter.set_result(current)
+                    else:
+                        remaining.append((sequence, cursor, waiter))
+                self._checkpoint_waiters = remaining
             return TypedBacktestReceipt(self._sequence, self._batch_id,
                                         self._source_cursor)
         except BaseException as exc:
             self._error = exc
+            for _, _, waiter in self._checkpoint_waiters:
+                if not waiter.done():
+                    waiter.set_exception(exc)
+            self._checkpoint_waiters.clear()
             raise
+
+    def enqueue_checkpoint(self, *, boundary_id: str,
+                           status: str = "running") -> asyncio.Future[TypedBacktestReceipt]:
+        """Return immediately; resolve only after this exact cursor is durable."""
+        if status != "running":
+            raise ValueError("Terminal Backtest needs lifecycle-last typed account captures")
+        if self._checkpoint_waiters:
+            raise RuntimeError("A typed Backtest checkpoint is already pending")
+        if self._task is not None and not self._task.done():
+            raise RuntimeError("A non-checkpoint typed prefix is already publishing")
+        pending = self.journal.unfenced_records()
+        if (not pending or not boundary_id
+                or (pending[-1].category, pending[-1].entity_type,
+                    pending[-1].entity_id) !=
+                   ("checkpoint", "market_boundary", boundary_id)):
+            raise ValueError("Typed Backtest checkpoint needs the last normalized cursor")
+        waiter: asyncio.Future[TypedBacktestReceipt] = asyncio.get_running_loop().create_future()
+        self._checkpoint_waiters.append((pending[-1].sequence, boundary_id, waiter))
+        try:
+            self.enqueue_pending()
+        except BaseException:
+            self._checkpoint_waiters.pop()
+            waiter.cancel()
+            raise
+        return waiter
 
     async def await_fence(self) -> TypedBacktestReceipt:
         """Wait once at a checkpoint boundary; never once per journal event."""
@@ -131,17 +182,5 @@ class BacktestTypedJournalPublisher:
         attach every typed account capture to that exact event batch. The
         current controller ordering does not yet meet that contract.
         """
-        if status != "running":
-            raise ValueError("Terminal Backtest needs lifecycle-last typed account captures")
-        pending = self.journal.unfenced_records()
-        if (not pending or not boundary_id
-                or (pending[-1].category, pending[-1].entity_type,
-                    pending[-1].entity_id) !=
-                   ("checkpoint", "market_boundary", boundary_id)):
-            raise ValueError("Typed Backtest checkpoint needs the last normalized cursor")
-        self.enqueue_pending()
-        receipt = await self.await_fence()
-        if (receipt.source_cursor != boundary_id
-                or receipt.last_sequence != pending[-1].sequence):
-            raise RuntimeError("Typed Backtest checkpoint cursor differs from committed prefix")
-        return receipt
+        return await asyncio.shield(self.enqueue_checkpoint(
+            boundary_id=boundary_id, status=status))

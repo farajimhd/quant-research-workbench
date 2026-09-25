@@ -67,7 +67,16 @@ def _digest(value: Any) -> str:
 
 
 def _family_hash(rows: list[dict[str, Any]]) -> str:
+    if rows and "ordinal" in rows[0]:
+        rows = sorted(rows, key=lambda row: int(row["ordinal"]))
     return sha256(canonical_json(rows).encode()).hexdigest()
+
+
+def source_inventory_hash(rows: Mapping[str, tuple[Mapping[str, Any], ...]]) -> str:
+    if set(rows) != {table.name for table in TABLES}:
+        raise ValueError("Market-day source inventory has missing or extra typed tables")
+    return sha256(canonical_json([(table.name, _family_hash(
+        [dict(row) for row in rows[table.name]])) for table in TABLES]).encode()).hexdigest()
 
 
 def _exact(row: Mapping[str, Any], fields: tuple[tuple[str, str], ...]) -> dict[str, Any]:

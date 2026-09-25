@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import build_market_day as builder
 
 from src.trading_runtime.arte_market_day_keeper import BuildAttestation
+from test_arte_market_day_source_plan import plan as source_plan_fixture
 
 
 DAY = "2026-08-18"
@@ -17,12 +18,7 @@ PIN = "b" * 64
 
 
 def fixture():
-    plan = dict(requested=[DAY], units=[dict(source_date=DAY, ticker="TEST",
-        event_count=1, next_ordinal=2, last_ordinal=1)], population=[dict(
-        session_date=DAY, certificate=dict(snapshot_id="snapshot",
-        revision="preopen-tradable-snapshot-v3", source_hash=123,
-        available_at_utc="2026-08-18T07:00:00+00:00",
-        cutoff_utc="2026-08-18T08:00:00+00:00"))])
+    plan = source_plan_fixture()
     definition = dict(version="market-day-core-v5", plan=plan,
                       calculation_source=PIN, rules_hash=PIN)
 
@@ -46,6 +42,7 @@ def test_injected_hook_receives_only_prepared_certificate_and_requires_proof() -
         called.append((prepared, sessions))
         fence = prepared["market_day_build_fence_v1"][0]
         return BuildAttestation(build_id, fence["definition_hash"],
+            fence["source_plan_hash"], fence["source_inventory_hash"],
             fence["header_hash"], fence["scope_hash"], fence["stage_hash"],
             fence["seed_hash"], "worker", 1)
 

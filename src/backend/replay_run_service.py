@@ -2241,7 +2241,8 @@ class ReplayRunController:
             completed=self._preparation_completed_units if preparing else self.processed_events,
             total=self._preparation_total_units if preparing else None)
 
-    async def _save_restart_checkpoint_responsive(self, event_time, *, checkpoint_status=None):
+    async def _save_restart_checkpoint_responsive(self, event_time, *, checkpoint_status=None,
+                                                  nonblocking_fixed=False):
         if self.definition.mode != RunMode.BACKTEST:
             self._save_restart_checkpoint(event_time)
             return
@@ -2250,6 +2251,17 @@ class ReplayRunController:
             publisher = getattr(self, '_journal_publisher', None)
             if publisher is None:
                 raise RuntimeError('Fixed Backtest has no ClickHouse journal publisher')
+            prior = getattr(self, '_checkpoint_io_task', None)
+            if prior is not None:
+                if not prior.done():
+                    if nonblocking_fixed:
+                        return
+                    await asyncio.shield(prior)
+                else:
+                    prior.result()
+            publish_error = getattr(self, '_journal_publish_error', None)
+            if publish_error is not None:
+                raise RuntimeError('Fixed Backtest journal publication failed') from publish_error
             status = checkpoint_status or (
                 self.status if self.status in TERMINAL_REPLAY_STATUSES else 'running')
             if status != 'running':
@@ -2291,6 +2303,31 @@ class ReplayRunController:
                     )
                 self._checkpoint_phase = 'checkpoint_persist'
                 started = time.perf_counter()
+                if nonblocking_fixed:
+                    processed_at_enqueue = int(self.processed_events)
+                    interval_at_enqueue = self._restart_checkpoint_interval_events()
+                    receipt = publisher.enqueue_checkpoint(
+                        boundary_id=boundary_id, status='running')
+                    self._checkpoint_io_task = receipt
+                    def completed(done):
+                        try:
+                            durable = done.result()
+                            self._checkpoint_projection_cache = {
+                                'status': 'cursor_fenced', 'cursor': durable.source_cursor,
+                                'event_time': event_time.isoformat(),
+                                'updated_at': datetime.now(UTC).isoformat(),
+                                'processed_events': processed_at_enqueue,
+                                'interval_events': interval_at_enqueue,
+                                'resume_supported': False,
+                            }
+                        except BaseException as exc:
+                            self._journal_publish_error = exc
+                        finally:
+                            if self._checkpoint_io_task is done:
+                                self._checkpoint_io_task = None
+                                self._checkpoint_work_snapshot = None
+                    receipt.add_done_callback(completed)
+                    return
                 self._checkpoint_io_task = asyncio.create_task(publisher.fence_checkpoint(
                     boundary_id=boundary_id, status='running',
                 ))
@@ -2309,8 +2346,9 @@ class ReplayRunController:
                     'resume_supported': False,
                 }
             finally:
-                self._checkpoint_io_task = None
-                self._checkpoint_work_snapshot = None
+                if not nonblocking_fixed or self._checkpoint_io_task is None:
+                    self._checkpoint_io_task = None
+                    self._checkpoint_work_snapshot = None
             return
         # The engine awaits the entire operation: no market/strategy state can
         # advance while the worker captures it. Mutation APIs reject changes;
@@ -2359,6 +2397,70 @@ class ReplayRunController:
             account_ids=self.account_ids, attempt_id=publisher.attempt_id,
             run_month=publisher.run_month, committed_at=committed_at,
         )
+
+    async def _finish_fixed_typed(self, status: str, *, authority) -> dict:
+        """Inactive fixed terminal path; caller supplies a held Keeper writer fence.
+
+        The authority must keep all account claims current throughout its
+        blocking publication and cold audit. It is not constructed here, and
+        the active finish path never calls this method.
+        """
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        from src.backend.backtest_terminal_v2_accounts import (
+            load_terminal_v2_portfolio_accounts,
+        )
+        from src.backend.backtest_terminal_v2_publication import (
+            publish_terminal_v2_suffix,
+        )
+        from src.trading_runtime.arte_journal_writer import load_committed_prefix
+
+        if (self.definition.mode != RunMode.BACKTEST
+                or status not in {"completed", "stopped", "failed"}
+                or self._runtime is None or self._runtime_finished
+                or not isinstance(self._journal, BacktestMemoryJournal)
+                or self._journal_publisher is None
+                or self.current_time is None
+                or not self._source_cursor
+                or authority is None
+                or not callable(getattr(authority, "assert_current", None))
+                or getattr(authority, "client", None) is None):
+            raise RuntimeError("Terminal V2 needs a fixed run and injected Keeper-fenced authority")
+        account_ids = tuple(self.account_ids)
+        if not account_ids or len(set(account_ids)) != len(account_ids):
+            raise RuntimeError("Terminal V2 needs distinct pinned account identities")
+        # A completed market cursor is the final V1 commit. Runtime.finish
+        # then emits account blocks and lifecycle last into the memory journal.
+        await self._save_restart_checkpoint_responsive(self.current_time)
+        await self._runtime.finish(status=status)
+        self._runtime_finished = True
+        committed_at = datetime.now(UTC)
+        client = authority.client
+        if not await asyncio.to_thread(authority.assert_current, self.run_id, account_ids):
+            raise RuntimeError("Terminal V2 Keeper account claims are not current")
+        prefix = await asyncio.to_thread(load_committed_prefix, client, self.run_id)
+        handoff = self._prepare_terminal_v2_handoff(
+            prefix, committed_at=committed_at)
+        event_at = self._journal.unfenced_records()[-1].event_time
+        # Portfolio's mutable maps remain actor-owned; only immutable captures
+        # are handed to the publication worker.
+        captures = tuple(self._runtime.portfolio.capture_recovery_snapshot(
+            account_id, state_revision=handoff.commit["last_sequence"],
+            snapshot_at=event_at)
+            for account_id in sorted(account_ids))
+        def publish_and_audit():
+            if not authority.assert_current(self.run_id, account_ids):
+                raise RuntimeError("Terminal V2 Keeper account claims are not current")
+            seal = publish_terminal_v2_suffix(
+                client, prefix, **handoff.publication_fields(),
+                portfolio_captures=captures)
+            recovered = load_terminal_v2_portfolio_accounts(
+                client, run_id=self.run_id)
+            if (not authority.assert_current(self.run_id, account_ids)
+                    or set(recovered) != set(account_ids)
+                    or seal != handoff.commit):
+                raise RuntimeError("Terminal V2 cold recovery or Keeper fence changed")
+            return {"seal": seal, "accounts": recovered}
+        return await asyncio.to_thread(publish_and_audit)
 
     def _record_stage_time(self, stage, started):
         elapsed = time.perf_counter() - started
@@ -6082,6 +6184,9 @@ class ReplayRunController:
             await asyncio.sleep(min(delay, 0.25))
 
     async def _after_event(self, event_time: datetime) -> None:
+        journal_error = getattr(self, '_journal_publish_error', None)
+        if journal_error is not None:
+            raise RuntimeError('Fixed Backtest journal publication failed') from journal_error
         self._flush_passive_market_events()
         self.current_time = event_time
         self.updated_at = datetime.now(UTC)
@@ -6138,7 +6243,8 @@ class ReplayRunController:
             # bounded writer buffer from filling in a long all-ticker run and
             # makes the resulting source cursor recoverable before playback
             # continues. The worker performs ClickHouse I/O off the event loop.
-            await self._save_restart_checkpoint_responsive(event_time)
+            await self._save_restart_checkpoint_responsive(
+                event_time, nonblocking_fixed=True)
         checkpoint_interval = self._restart_checkpoint_interval_events()
         if checkpoint_interval is not None:
             event_bucket = self.processed_events // checkpoint_interval
@@ -6152,7 +6258,8 @@ class ReplayRunController:
                 and bool(self._frame_cursor)
             )
             if event_checkpoint_due or frame_checkpoint_due:
-                await self._save_restart_checkpoint_responsive(event_time)
+                await self._save_restart_checkpoint_responsive(
+                    event_time, nonblocking_fixed=True)
                 self._last_restart_checkpoint_event_bucket = event_bucket
                 self._last_restart_checkpoint_frame_bucket = frame_bucket
         if transport_boundary:

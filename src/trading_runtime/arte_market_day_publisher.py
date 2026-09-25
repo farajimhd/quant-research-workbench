@@ -14,6 +14,7 @@ from src.trading_runtime.arte_market_day_certification import (
 from src.trading_runtime.arte_market_day_keeper import (
     BuildAttestation, BuildClaim, MarketDayKeeperAuthority, require_attested_inventory,
 )
+from src.trading_runtime.arte_market_day_source_plan import TABLES as SOURCE_TABLES
 
 
 def _read(client: Any, name: str, build_id: str) -> list[dict[str, Any]]:
@@ -62,7 +63,9 @@ def publish_market_day_certificate(client: Any, keeper: MarketDayKeeperAuthority
     cold reconciliation; this routine never deletes or rewrites them.
     """
     names = tuple(table.name for table in TABLES)
-    if set(prepared) != set(names) or any(not prepared[name] for name in names):
+    required = {names[0], names[1], names[2], names[3],
+                SOURCE_TABLES[0].name, names[-1]}
+    if set(prepared) != set(names) or any(not prepared[name] for name in required):
         raise ValueError("Market-day preparation lacks a complete typed inventory")
     build_id = claim.build_id
     if not keeper.current(claim):
@@ -80,8 +83,10 @@ def publish_market_day_certificate(client: Any, keeper: MarketDayKeeperAuthority
         existing = _read(client, name, build_id)
         if existing:
             _exact(client, prepared, build_id, (name,))
-        else:
+        elif prepared[name]:
             client.insert_typed_rows(name, prepared[name])
+            _exact(client, prepared, build_id, (name,))
+        else:
             _exact(client, prepared, build_id, (name,))
     if not keeper.current(claim):
         raise RuntimeError("Market-day build claim changed before final fence")
@@ -102,6 +107,8 @@ def publish_market_day_certificate(client: Any, keeper: MarketDayKeeperAuthority
     if not keeper.current(claim):
         raise RuntimeError("Market-day claim changed before CAS attestation")
     proof = keeper.attest(claim, definition_hash=fence["definition_hash"],
+                          source_plan_hash=fence["source_plan_hash"],
+                          source_inventory_hash=fence["source_inventory_hash"],
                           header_hash=fence["header_hash"],
                           scope_hash=fence["scope_hash"],
                           stage_hash=fence["stage_hash"],

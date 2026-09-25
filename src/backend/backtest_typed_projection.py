@@ -32,6 +32,7 @@ def project_pending_backtest_prefix(
     fixed_market_parent_plan: object | None = None,
     fixed_market_execution_plan: object | None = None,
     expected_market_start: datetime | None = None,
+    through_sequence: int | None = None,
 ) -> ProjectedBacktestPrefix:
     """Project every pending record or reject the entire prefix before writes.
 
@@ -46,6 +47,13 @@ def project_pending_backtest_prefix(
             or (prior_sequence > 0 and previous == NIL_BATCH_ID)):
         raise ValueError("Backtest typed prefix identity is invalid")
     records = journal.unfenced_records(after_sequence=prior_sequence)
+    if through_sequence is not None:
+        if (type(through_sequence) is not int or through_sequence <= prior_sequence
+                or through_sequence > journal.latest_sequence(journal.run_id)):
+            raise ValueError("Backtest typed projection limit is outside pending records")
+        records = [record for record in records if record.sequence <= through_sequence]
+        if len(records) != through_sequence - prior_sequence:
+            raise ValueError("Backtest typed projection limit is not contiguous")
     batches: list[TypedJournalBatch] = []
     cursor = source_cursor
     for sequence, record in enumerate(records, start=prior_sequence + 1):

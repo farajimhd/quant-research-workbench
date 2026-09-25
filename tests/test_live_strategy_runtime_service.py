@@ -5,10 +5,70 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from src.backend.live_strategy_runtime_service import LiveStrategyRuntimeSupervisor
+from src.backend.live_strategy_runtime_service import (
+    LiveStrategyRuntimeSupervisor, RetryableSignalWorkError,
+)
 
 
 class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_signal_work_is_processed_by_existing_queue_consumer(self) -> None:
+        import asyncio
+
+        supervisor = LiveStrategyRuntimeSupervisor()
+        supervisor._process = AsyncMock(return_value=None)
+        delivery = {"delivery_id": "plan-1:event-1", "run_plan_id": "plan-1",
+                    "ticker": "ABC", "occurrence": {"event_id": "event-1"}}
+        receipt = supervisor.submit_signal_work(delivery, intent_content_hash="a" * 64)
+        worker = asyncio.create_task(supervisor._run())
+        try:
+            self.assertEqual(await asyncio.wait_for(asyncio.wrap_future(receipt), 3),
+                             delivery["delivery_id"])
+            supervisor._process.assert_awaited_once()
+        finally:
+            supervisor._stop.set()
+            supervisor._queue.put_nowait(None)
+            await asyncio.wait_for(worker, 3)
+
+    async def test_signal_work_receipt_retries_only_proven_pre_execution_failure(self) -> None:
+        supervisor = LiveStrategyRuntimeSupervisor()
+        delivery = {"delivery_id": "plan-1:event-1", "run_plan_id": "plan-1",
+                    "ticker": "ABC", "occurrence": {"event_id": "event-1"}}
+        supervisor._signal_work_preflight = Mock(side_effect=[
+            RetryableSignalWorkError("not executed"), None])
+        supervisor._process = AsyncMock(return_value=object())
+        first = supervisor.submit_signal_work(delivery, intent_content_hash="a" * 64)
+        self.assertIs(supervisor.submit_signal_work(delivery, intent_content_hash="a" * 64), first)
+        self.assertFalse(first.cancel())
+        with self.assertRaisesRegex(RetryableSignalWorkError, "not executed"):
+            await supervisor._process_signal_work(supervisor._queue.get_nowait(), None, {})
+        self.assertTrue(first.done())
+        second = supervisor.submit_signal_work(delivery, intent_content_hash="a" * 64)
+        self.assertIsNot(second, first)
+        await supervisor._process_signal_work(supervisor._queue.get_nowait(), None, {})
+        self.assertEqual(second.result(), delivery["delivery_id"])
+        self.assertIs(supervisor.submit_signal_work(delivery, intent_content_hash="a" * 64), second)
+        with self.assertRaisesRegex(ValueError, "identity conflicts"):
+            supervisor.submit_signal_work(delivery, intent_content_hash="b" * 64)
+        self.assertEqual(supervisor._signal_work[delivery["delivery_id"]].status,
+                         "completed")
+
+    async def test_signal_work_ambiguous_failure_and_cold_replay_fail_closed(self) -> None:
+        supervisor = LiveStrategyRuntimeSupervisor()
+        delivery = {"delivery_id": "plan-1:event-1", "run_plan_id": "plan-1",
+                    "ticker": "ABC", "occurrence": {"event_id": "event-1"}}
+        with self.assertRaisesRegex(RuntimeError, "cold signal replay"):
+            supervisor.submit_signal_work(delivery, intent_content_hash="a" * 64,
+                                          cold_replay=True)
+        supervisor._process = AsyncMock(side_effect=RuntimeError("broker uncertain"))
+        receipt = supervisor.submit_signal_work(delivery, intent_content_hash="a" * 64)
+        with self.assertRaisesRegex(RuntimeError, "broker uncertain"):
+            await supervisor._process_signal_work(supervisor._queue.get_nowait(), None, {})
+        self.assertTrue(receipt.done())
+        with self.assertRaisesRegex(RuntimeError, "outcome is uncertain"):
+            supervisor.submit_signal_work(delivery, intent_content_hash="a" * 64)
+        self.assertEqual(supervisor._signal_work[delivery["delivery_id"]].status,
+                         "uncertain")
+
     async def test_early_squeeze_admits_one_persistent_watch_per_run_and_ticker(self) -> None:
         supervisor = LiveStrategyRuntimeSupervisor()
         first = {"delivery_id": "one", "run_plan_id": "plan-1", "ticker": "SUGP"}

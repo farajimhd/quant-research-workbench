@@ -191,6 +191,59 @@ def test_fixed_engine_opens_clickhouse_journal_before_any_sqlite(monkeypatch):
     assert "journal unavailable" in controller.error
 
 
+def test_inactive_fixed_terminal_handoff_orders_cursor_finish_capture_worker_audit(monkeypatch):
+    from src.backend import backtest_terminal_v2_publication as publication
+    from src.backend import backtest_terminal_v2_accounts as recovery
+    from src.backend import replay_run_service
+    from tests.test_backtest_terminal_v2_fence import RUN as V2_RUN, _suffix
+    from src.trading_runtime import arte_journal_writer
+
+    prefix, *_ = _suffix()
+    events = []
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = V2_RUN
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller._account_map = {"primary": "DU1"}
+    controller._journal = BacktestMemoryJournal(run_id=V2_RUN, initial_sequence=1)
+    controller._journal_publisher = SimpleNamespace()
+    controller._runtime_finished = False
+    controller.current_time = datetime(2026, 8, 18, 14, 0, tzinfo=NY)
+    controller._source_cursor = {"session_date": DAY, "boundary_ms": 36000000}
+    def capture(account_id, *, state_revision, snapshot_at):
+        events.append("capture")
+        assert account_id == "DU1" and state_revision == 3
+        return SimpleNamespace(account_id=account_id)
+    async def finish(*, status):
+        events.append("runtime_finish")
+        controller._journal.append(
+            run_id=V2_RUN, category="lifecycle", entity_type="run", entity_id=V2_RUN,
+            payload={"status": status}, event_time=controller.current_time)
+    controller._runtime = SimpleNamespace(
+        finish=finish, portfolio=SimpleNamespace(capture_recovery_snapshot=capture))
+    async def checkpoint(at):
+        events.append("cursor")
+        assert at == controller.current_time
+    controller._save_restart_checkpoint_responsive = checkpoint
+    seal = {"last_sequence": 3}
+    handoff = SimpleNamespace(commit=seal, publication_fields=lambda: {"account_ids": ("DU1",)})
+    controller._prepare_terminal_v2_handoff = lambda got, **_: handoff if got == prefix else None
+    monkeypatch.setattr(arte_journal_writer, "load_committed_prefix", lambda *_: prefix)
+    monkeypatch.setattr(publication, "publish_terminal_v2_suffix",
+                        lambda *_, **__: events.append("publish") or seal)
+    monkeypatch.setattr(recovery, "load_terminal_v2_portfolio_accounts",
+                        lambda *_, **__: events.append("cold_audit") or {"DU1": {}})
+    class Authority:
+        client = object()
+        def assert_current(self, *_):
+            events.append("keeper")
+            return True
+    result = asyncio.run(controller._finish_fixed_typed("completed", authority=Authority()))
+    assert result == {"seal": seal, "accounts": {"DU1": {}}}
+    assert events.index("cursor") < events.index("runtime_finish") < events.index("capture")
+    assert events.index("capture") < events.index("publish") < events.index("cold_audit")
+    assert controller._runtime_finished
+
+
 def test_fixed_journal_refuses_retired_bt_resume_even_after_typed_preflight(monkeypatch):
     from src.backend import backtest_journal_clickhouse
     from src.trading_runtime import arte_journal_schema, arte_journal_writer
@@ -320,7 +373,8 @@ def test_fixed_journal_fences_at_completed_boundary_before_buffer_fills():
     controller._save_restart_checkpoint_responsive = AsyncMock()
     controller._restart_checkpoint_interval_events = lambda: None
     asyncio.run(controller._after_event(at))
-    controller._save_restart_checkpoint_responsive.assert_awaited_once_with(at)
+    controller._save_restart_checkpoint_responsive.assert_awaited_once_with(
+        at, nonblocking_fixed=True)
 
 
 def test_fixed_signal_loader_uses_pinned_bars_without_event_fallback(monkeypatch):

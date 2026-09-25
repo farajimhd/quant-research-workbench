@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import re
 
 import pytest
 
@@ -21,12 +22,25 @@ class FakeClickHouse:
 
     def execute(self, sql):
         assert sql.startswith("SELECT ")
+        if "FROM system.storage_policies" in sql:
+            return json.dumps({"disks": ["live_market_ssd"]})
+        selected = set(re.findall(r"'(market_day_[^']+)'", sql))
         if "FROM system.tables" in sql:
+            detailed = "engine,storage_policy,partition_key,sorting_key" in sql
             return "\n".join(json.dumps(dict(name=table.name,
-                storage_policy="live_market_ssd")) for table in TABLES)
+                storage_policy="live_market_ssd",
+                **(dict(engine="MergeTree", partition_key=table.partition,
+                        sorting_key=table.order) if detailed else {})))
+                for table in TABLES if table.name in selected)
+        if "FROM system.columns" in sql:
+            return "\n".join(json.dumps(dict(table=table.name, name=name, type=kind))
+                for table in TABLES if table.name in selected
+                for name, kind in table.columns)
         if "FROM system.parts" in sql:
+            if "disk_name!='live_market_ssd'" in sql and self.disk == "live_market_ssd":
+                return ""
             return "\n".join(json.dumps(dict(table=name, disk_name=self.disk))
-                for name, rows in self.rows.items() if rows)
+                for name, rows in self.rows.items() if rows and name in selected)
         name = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]
         columns = sql.split("SELECT ", 1)[1].split(" FROM", 1)[0].split(",")
         return "\n".join(json.dumps({key: row[key] for key in columns})
@@ -51,11 +65,12 @@ def test_publishes_fence_last_and_attests_only_exact_readback() -> None:
     client, _, keeper, claim = setup()
     prepared = {name: tuple(rows) for name, rows in inventory().items()}
     publish_market_day_certificate(client, keeper, claim, prepared, sessions=(DAY,))
-    assert client.inserts == [table.name for table in TABLES]
+    expected_inserts = [table.name for table in TABLES if prepared[table.name]]
+    assert client.inserts == expected_inserts
     assert keeper.load(BUILD) is not None
     # Exact already-persisted retry is idempotent; it cannot append duplicates.
     publish_market_day_certificate(client, keeper, claim, prepared, sessions=(DAY,))
-    assert client.inserts == [table.name for table in TABLES]
+    assert client.inserts == expected_inserts
 
 
 def test_stale_owner_after_child_insert_never_reaches_fence_or_attestation() -> None:

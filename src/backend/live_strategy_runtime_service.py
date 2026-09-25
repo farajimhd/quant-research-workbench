@@ -7,7 +7,7 @@ import queue
 import sys
 import threading
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -44,6 +44,23 @@ def _activation_key(delivery: dict[str, Any]) -> str:
     )
 
 
+class RetryableSignalWorkError(RuntimeError):
+    """Only the preflight phase may classify a failure as retryable."""
+
+
+class _SignalWorkReceipt(concurrent.futures.Future[str]):
+    def cancel(self) -> bool:
+        return False
+
+
+@dataclass
+class _SignalWork:
+    activation_key: str
+    intent_content_hash: str
+    status: str
+    receipt: concurrent.futures.Future[str]
+
+
 class LiveStrategyRuntimeSupervisor:
     """Consume accepted Signal Stream deliveries through the shared runtime."""
 
@@ -54,6 +71,7 @@ class LiveStrategyRuntimeSupervisor:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._activations: dict[str, dict[str, Any]] = {}
+        self._signal_work: dict[str, _SignalWork] = {}
         self._status: dict[str, Any] = {
             "running": False,
             "state": "stopped",
@@ -153,6 +171,47 @@ class LiveStrategyRuntimeSupervisor:
             self._status["queued"] = self._queue.qsize()
         return accepted
 
+    def submit_signal_work(
+        self, delivery: dict[str, Any], *, intent_content_hash: str,
+        cold_replay: bool = False,
+    ) -> concurrent.futures.Future[str]:
+        """Inactive per-delivery receipt path on the existing bounded queue.
+
+        A fresh cold replay is uncertain without a durable execution receipt.
+        Only proven pre-execution failures may retry in this process.
+        """
+        delivery_id = delivery.get("delivery_id")
+        activation_key = _activation_key(delivery)
+        if (not isinstance(delivery_id, str) or not delivery_id
+                or not activation_key.strip("|")
+                or not isinstance(intent_content_hash, str)
+                or len(intent_content_hash) != 64
+                or any(char not in "0123456789abcdef" for char in intent_content_hash)):
+            raise ValueError("signal work requires delivery and activation identity")
+        with self._lock:
+            prior = self._signal_work.get(delivery_id)
+            if prior is not None:
+                if (prior.activation_key != activation_key
+                        or prior.intent_content_hash != intent_content_hash):
+                    raise ValueError("signal delivery identity conflicts with prior work")
+                if prior.status in {"queued", "processing", "completed"}:
+                    return prior.receipt
+                if prior.status != "failed_pre_execution":
+                    raise RuntimeError("signal work outcome is uncertain; reconciliation required")
+            elif cold_replay:
+                raise RuntimeError("cold signal replay lacks durable execution receipt")
+            receipt: concurrent.futures.Future[str] = _SignalWorkReceipt()
+            try:
+                # O(1) ownership handoff. Caller must not mutate before receipt.
+                self._queue.put_nowait({"kind": "signal", "delivery": delivery,
+                                        "result": receipt, "signal_work_id": delivery_id})
+            except queue.Full as exc:
+                raise RuntimeError("Strategy activation queue capacity is exhausted") from exc
+            self._signal_work[delivery_id] = _SignalWork(
+                activation_key, intent_content_hash, "queued", receipt)
+            self._status["queued"] = self._queue.qsize()
+            return receipt
+
     def submit_market_rows(self, rows: list[dict[str, Any]], *, as_of: Any) -> int:
         if self._typed_delivery_requested():
             raise RuntimeError("Typed live market delivery cutover is incomplete")
@@ -243,6 +302,43 @@ class LiveStrategyRuntimeSupervisor:
     def _run_thread(self) -> None:
         asyncio.run(self._run())
 
+    def _signal_work_preflight(self, delivery: dict[str, Any]) -> None:
+        """Pure local check before broker/runtime side effects begin."""
+        if not isinstance(delivery.get("occurrence"), dict):
+            raise RetryableSignalWorkError("signal work lacks occurrence payload")
+
+    async def _process_signal_work(
+        self, envelope: dict[str, Any], broker: Any, runtimes: dict[str, Any],
+    ) -> Any:
+        work_id = envelope["signal_work_id"]
+        with self._lock:
+            self._signal_work[work_id].status = "processing"
+        try:
+            signal_delivery = deepcopy(envelope["delivery"])
+            self._signal_work_preflight(signal_delivery)
+        except Exception as exc:
+            with self._lock:
+                self._signal_work[work_id].status = "failed_pre_execution"
+            receipt = envelope["result"]
+            if not receipt.done():
+                receipt.set_exception(exc)
+            raise
+        try:
+            result = await self._process(signal_delivery, broker, runtimes)
+        except Exception as exc:
+            with self._lock:
+                self._signal_work[work_id].status = "uncertain"
+            receipt = envelope["result"]
+            if not receipt.done():
+                receipt.set_exception(exc)
+            raise
+        with self._lock:
+            self._signal_work[work_id].status = "completed"
+        receipt = envelope["result"]
+        if not receipt.done():
+            receipt.set_result(work_id)
+        return result
+
     async def _run(self) -> None:
         broker: IbkrClientPortalAdapter | None = None
         runtimes: dict[str, dict[str, Any]] = {}
@@ -257,6 +353,7 @@ class LiveStrategyRuntimeSupervisor:
                     break
                 try:
                     kind = str(delivery.get("kind") or "signal")
+                    work_id = delivery.get("signal_work_id") if kind == "signal" else None
                     if kind == "market_row":
                         broker = await self._process_market_row(delivery, broker, runtimes)
                     elif kind == "external_intent":
@@ -265,7 +362,9 @@ class LiveStrategyRuntimeSupervisor:
                         )
                         delivery["result"].set_result(external_result)
                     else:
-                        broker = await self._process(dict(delivery.get("delivery") or delivery), broker, runtimes)
+                        broker = (await self._process_signal_work(delivery, broker, runtimes)
+                                  if work_id is not None else await self._process(
+                                      dict(delivery.get("delivery") or delivery), broker, runtimes))
                 except Exception as exc:
                     result = delivery.get("result")
                     if isinstance(result, concurrent.futures.Future) and not result.done():

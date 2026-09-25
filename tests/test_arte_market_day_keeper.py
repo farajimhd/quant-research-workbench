@@ -99,7 +99,8 @@ class FakeKeeper:
 
 
 def args():
-    return dict(definition_hash=DIGEST, header_hash=DIGEST, scope_hash=DIGEST,
+    return dict(definition_hash=DIGEST, source_plan_hash=DIGEST,
+                source_inventory_hash=DIGEST, header_hash=DIGEST, scope_hash=DIGEST,
                 stage_hash=DIGEST, seed_hash=DIGEST)
 
 

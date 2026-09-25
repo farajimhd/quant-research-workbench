@@ -99,6 +99,67 @@ def test_delayed_writer_does_not_stall_engine_and_one_receipt_fences_batch():
     asyncio.run(exercise())
 
 
+def test_checkpoint_enqueue_does_not_wait_for_clickhouse_receipt():
+    async def exercise():
+        journal = _journal()
+        writer = FakeWriter(automatic=False)
+        publisher = _publisher(journal, writer)
+        receipt = publisher.enqueue_checkpoint(
+            boundary_id=f"{DAY.isoformat()}:300000")
+        assert not receipt.done()
+        assert publisher.checkpoint_pending
+        await _wait_for_submission(writer)
+        assert publisher.fenced_sequence == 0
+        with pytest.raises(RuntimeError, match="already pending"):
+            publisher.enqueue_checkpoint(boundary_id=f"{DAY.isoformat()}:300000")
+        writer.receipts[0].set_result(writer.submitted[0].batch_id)
+        committed = await receipt
+        assert committed.source_cursor == f"{DAY.isoformat()}:300000"
+        assert committed.last_sequence == 2
+        assert not publisher.checkpoint_pending
+        assert journal.pending_record_count == 0
+
+    asyncio.run(exercise())
+
+
+def test_async_checkpoint_does_not_absorb_later_unfenced_records(monkeypatch):
+    import src.backend.backtest_typed_publisher as publisher_module
+
+    real_project = publisher_module.project_pending_backtest_prefix
+    started = Event()
+    release = Event()
+
+    def delayed_project(*args, **kwargs):
+        started.set()
+        assert release.wait(2)
+        return real_project(*args, **kwargs)
+
+    monkeypatch.setattr(publisher_module, "project_pending_backtest_prefix", delayed_project)
+
+    async def exercise():
+        journal = _journal()
+        writer = FakeWriter()
+        publisher = _publisher(journal, writer)
+        receipt = publisher.enqueue_checkpoint(
+            boundary_id=f"{DAY.isoformat()}:300000")
+        for _ in range(100):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.001)
+        assert started.is_set()
+        journal.append(run_id=RUN, category="test", entity_type="later",
+                       entity_id="later", event_time=AT, payload={})
+        release.set()
+        assert (await receipt).last_sequence == 2
+        assert journal.pending_record_count == 1
+        assert len(writer.submitted[0].events) == 2
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()
+
+
 def test_unsupported_record_rejects_entire_prefix_before_submit():
     journal = _journal()
     journal.append(run_id=RUN, category="watchlist_membership",
@@ -228,6 +289,47 @@ def test_fixed_controller_fences_only_typed_cursor_without_opaque_checkpoint(mon
     assert publisher.fenced_sequence == 2
     assert journal.pending_record_count == 0
     assert controller._checkpoint_projection_cache["resume_supported"] is False
+
+
+def test_fixed_controller_queues_checkpoint_without_waiting_for_writer():
+    journal = BacktestMemoryJournal(run_id=RUN)
+    journal.append(run_id=RUN, category="lifecycle", entity_type="run",
+                   entity_id=RUN, event_time=AT,
+                   payload={"status": "running", "config": {"mode": "backtest"}})
+    writer = FakeWriter(automatic=False)
+    publisher = _publisher(journal, writer)
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller.run_id = RUN
+    controller.status = "running"
+    controller.processed_events = 2
+    controller._journal = journal
+    controller._journal_publisher = publisher
+    controller._source_cursor = {"session_date": DAY.isoformat(),
+                                 "boundary_ms": 300_000, "sequence": 2}
+    controller._frame_cursor = {}
+    controller._checkpoint_projection_cache = None
+    controller._checkpoint_io_task = None
+    controller.stream_snapshot = lambda: {}
+    controller._flush_passive_market_events = lambda: None
+    controller._record_stage_time = lambda *_: None
+    controller._restart_checkpoint_interval_events = lambda: None
+
+    async def exercise():
+        await controller._save_restart_checkpoint_responsive(
+            AT, nonblocking_fixed=True)
+        assert controller._checkpoint_io_task is not None
+        assert not controller._checkpoint_io_task.done()
+        await _wait_for_submission(writer)
+        assert publisher.fenced_sequence == 0
+        writer.receipts[0].set_result(writer.submitted[0].batch_id)
+        await controller._checkpoint_io_task
+        await asyncio.sleep(0)
+        assert publisher.fenced_sequence == 2
+        assert controller._checkpoint_io_task is None
+        assert controller._checkpoint_projection_cache["status"] == "cursor_fenced"
+
+    asyncio.run(exercise())
 
 
 def test_fixed_controller_terminal_checkpoint_fails_before_journal_write():

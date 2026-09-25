@@ -9,6 +9,10 @@ import pytest
 from src.trading_runtime.arte_market_day_certification import (
     TABLES, family_hash, prepare_market_day_certificate, verify_market_day_certificate,
 )
+from src.trading_runtime.arte_market_day_source_plan import (
+    project_source_plan, source_inventory_hash,
+)
+from test_arte_market_day_source_plan import plan as source_plan_fixture
 
 
 BUILD = "a" * 64
@@ -29,9 +33,10 @@ class FakeReader:
 
 
 def inventory():
-    names = [table.name for table in TABLES]
+    source_rows = project_source_plan(source_plan_fixture(), BUILD)
+    source_hash = source_rows["market_day_source_plan_v1"][0]["source_plan_hash"]
     header = [dict(build_id=BUILD, definition_hash=PIN, version="market-day-core-v5",
-                   calculation_source_hash=PIN, rules_hash=PIN, source_plan_hash=PIN,
+                   calculation_source_hash=PIN, rules_hash=PIN, source_plan_hash=source_hash,
                    scope_count=1, scope_hash="")]
     scopes = [dict(build_id=BUILD, session_date=DAY, ticker="TEST",
                    source_event_count=1, first_ordinal=1, last_ordinal=1,
@@ -45,10 +50,18 @@ def inventory():
     seeds = [dict(build_id=BUILD, session_date=DAY, ticker="TEST", attempt_id="attempt",
                   mode=0, predecessor_date="", prior_build_id="", prior_state_hash="")]
     header[0]["scope_hash"] = family_hash(scopes)
-    fence = [dict(build_id=BUILD, definition_hash=PIN, header_hash=family_hash(header),
+    fence = [dict(build_id=BUILD, definition_hash=PIN,
+                  source_plan_hash=source_hash,
+                  source_inventory_hash=source_inventory_hash(source_rows),
+                  header_hash=family_hash(header),
                   scope_count=1, scope_hash=family_hash(scopes), stage_count=3,
                   stage_hash=family_hash(stages), seed_count=1, seed_hash=family_hash(seeds))]
-    return dict(zip(names, (header, scopes, stages, seeds, fence)))
+    return {"market_day_build_header_v1": header,
+            "market_day_planned_scope_v1": scopes,
+            "market_day_stage_certificate_v1": stages,
+            "market_day_seed_v1": seeds,
+            **{name: list(rows) for name, rows in source_rows.items()},
+            "market_day_build_fence_v1": fence}
 
 
 def test_zero_row_planned_unit_is_certified_by_explicit_stage_rows() -> None:
@@ -57,17 +70,24 @@ def test_zero_row_planned_unit_is_certified_by_explicit_stage_rows() -> None:
     assert proof.scopes == ((DAY, "TEST"),)
     assert len(proof.stages) == 3
     assert all(stage[4:6] == (0, "0") for stage in proof.stages)
-    assert len(client.calls) == 5
+    assert len(client.calls) == len(TABLES)
 
 
 def test_planned_scope_with_no_source_events_remains_certifiable() -> None:
     tables = inventory()
+    source = source_plan_fixture()
+    source["units"][0].update(event_count=0, next_ordinal=0, last_ordinal=0)
+    source_rows = project_source_plan(source, BUILD)
+    tables.update({name: list(rows) for name, rows in source_rows.items()})
     scope = tables["market_day_planned_scope_v1"][0]
     scope.update(source_event_count=0, first_ordinal=0, last_ordinal=0)
     header = tables["market_day_build_header_v1"][0]
     fence = tables["market_day_build_fence_v1"][0]
     header["scope_hash"] = family_hash(tables["market_day_planned_scope_v1"])
+    header["source_plan_hash"] = source_rows["market_day_source_plan_v1"][0]["source_plan_hash"]
     fence["scope_hash"] = header["scope_hash"]
+    fence["source_plan_hash"] = header["source_plan_hash"]
+    fence["source_inventory_hash"] = source_inventory_hash(source_rows)
     fence["header_hash"] = family_hash(tables["market_day_build_header_v1"])
     assert verify_market_day_certificate(FakeReader(tables), BUILD,
                                          sessions=(DAY,)).scopes == ((DAY, "TEST"),)
@@ -107,6 +127,30 @@ def test_conflicting_stage_and_seed_hashes_fail_closed() -> None:
         verify_market_day_certificate(FakeReader(tables), BUILD, sessions=(DAY,))
 
 
+def test_source_children_are_sealed_independent_of_clickhouse_row_order() -> None:
+    tables = inventory()
+    rules = tables["market_day_source_rule_v1"]
+    rules.append({**rules[0], "ordinal": 1, "token_id": 2})
+    # New source rows require a new producer plan and Keeper proof; unsealed
+    # addition must fail even if all ordinary stage rows remain unchanged.
+    with pytest.raises(RuntimeError, match="source inventory"):
+        verify_market_day_certificate(FakeReader(tables), BUILD, sessions=(DAY,))
+    tables = inventory()
+    plan = source_plan_fixture()
+    plan["rules"].append({**plan["rules"][0], "token_id": 2})
+    source_rows = project_source_plan(plan, BUILD)
+    tables.update({name: list(rows) for name, rows in source_rows.items()})
+    header = tables["market_day_build_header_v1"][0]
+    fence = tables["market_day_build_fence_v1"][0]
+    header["source_plan_hash"] = source_rows["market_day_source_plan_v1"][0]["source_plan_hash"]
+    fence["source_plan_hash"] = header["source_plan_hash"]
+    fence["source_inventory_hash"] = source_inventory_hash(source_rows)
+    fence["header_hash"] = family_hash(tables["market_day_build_header_v1"])
+    tables["market_day_source_rule_v1"].reverse()
+    assert verify_market_day_certificate(FakeReader(tables), BUILD,
+                                         sessions=(DAY,)).scopes == ((DAY, "TEST"),)
+
+
 def test_population_time_and_unrequested_session_fail_closed() -> None:
     tables = inventory()
     tables["market_day_planned_scope_v1"][0]["population_available_at"] = "2026-08-18T09:00:00+00:00"
@@ -118,12 +162,7 @@ def test_population_time_and_unrequested_session_fail_closed() -> None:
 
 
 def test_producer_preparation_preserves_zero_row_scope_without_writing() -> None:
-    plan = dict(requested=[DAY], units=[dict(source_date=DAY, ticker="TEST",
-        event_count=1, next_ordinal=2, last_ordinal=1)], population=[dict(
-        session_date=DAY, certificate=dict(snapshot_id="snapshot",
-        revision="preopen-tradable-snapshot-v3", source_hash=123,
-        available_at_utc="2026-08-18T07:00:00+00:00",
-        cutoff_utc="2026-08-18T08:00:00+00:00"))])
+    plan = source_plan_fixture()
     definition = dict(version="market-day-core-v5", plan=plan,
                       calculation_source=PIN, rules_hash=PIN)
     build_id = sha256(json.dumps(definition, sort_keys=True, separators=(",", ":"),
