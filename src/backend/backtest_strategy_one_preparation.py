@@ -7,10 +7,10 @@ broker, or journal state; the coordinator consumes the stable merged cursor.
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from heapq import merge
+from threading import Lock, local
 from typing import Any, Callable, Iterator, Mapping
 
 import numpy as np
@@ -97,11 +97,25 @@ def prepare_strategy_one_session(
     if not episodes:
         return ()
 
+    worker_state = local()
+    clients: list[Any] = []
+    clients_lock = Lock()
+
+    def worker_client() -> Any:
+        client = getattr(worker_state, "client", None)
+        if client is None:
+            client = client_factory()
+            if client is None or not callable(getattr(client, "close", None)):
+                raise TypeError("Strategy 1 worker needs a closable read-only client")
+            with clients_lock:
+                clients.append(client)
+            worker_state.client = client
+        return client
+
     def load(ticker: str) -> PreparedStrategyOneTicker:
-        with closing(client_factory()) as client:
-            batch = load_strategy_one_entry_batch(
-                plan, session_date=session_date, ticker=ticker,
-                through_boundary_ms=through_boundary_ms, client=client)
+        batch = load_strategy_one_entry_batch(
+            plan, session_date=session_date, ticker=ticker,
+            through_boundary_ms=through_boundary_ms, client=worker_client())
         schedule = schedule_strategy_one_entries(batch, episodes[ticker])
         rows = schedule.row_index
         return PreparedStrategyOneTicker(
@@ -112,22 +126,26 @@ def prepare_strategy_one_session(
 
     results: dict[str, PreparedStrategyOneTicker] = {}
     tickers = iter(sorted(episodes))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        pending = {}
-        for ticker in tickers:
-            pending[pool.submit(load, ticker)] = ticker
-            if len(pending) == max_workers:
-                break
-        while pending:
-            done, _ = wait(pending, return_when=FIRST_COMPLETED)
-            for future in done:
-                ticker = pending.pop(future)
-                results[ticker] = future.result()
-                try:
-                    successor = next(tickers)
-                except StopIteration:
-                    continue
-                pending[pool.submit(load, successor)] = successor
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            pending = {}
+            for ticker in tickers:
+                pending[pool.submit(load, ticker)] = ticker
+                if len(pending) == max_workers:
+                    break
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    ticker = pending.pop(future)
+                    results[ticker] = future.result()
+                    try:
+                        successor = next(tickers)
+                    except StopIteration:
+                        continue
+                    pending[pool.submit(load, successor)] = successor
+    finally:
+        for client in clients:
+            client.close()
     return tuple(results[ticker] for ticker in sorted(results))
 
 

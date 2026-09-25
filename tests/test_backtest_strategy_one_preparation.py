@@ -83,6 +83,7 @@ def test_bounded_preparation_prunes_untriggered_tickers_and_merges_stably(monkey
     stream, activation = _contract()
     results = []
     for workers in (1, 2):
+        before = len(opened)
         prepared = prepare_strategy_one_session(
             _plan(), session_date=DAY, through_boundary_ms=30_100,
             stream=stream, activation=activation, scan_client=Scanner(),
@@ -91,12 +92,13 @@ def test_bounded_preparation_prunes_untriggered_tickers_and_merges_stably(monkey
         results.append([(row.boundary_ms, row.ticker, row.source_row_index,
                          row.episode_start_ms)
                         for row in iter_strategy_one_entries(prepared)])
+        assert 1 <= len(opened) - before <= workers
     assert results[0] == results[1] == [
         (30_000, "AAA", 0, 30_000),
         (30_000, "BBB", 0, 30_000),
         (30_100, "BBB", 1, 30_000),
     ]
-    assert len(opened) == 4 and all(reader.closed for reader in opened)
+    assert len(opened) <= 3 and all(reader.closed for reader in opened)
 
 
 def test_preparation_rejects_non_100ms_strategy_contract():
@@ -111,3 +113,35 @@ def test_preparation_rejects_non_100ms_strategy_contract():
             wrong, session_date=DAY, through_boundary_ms=30_100,
             stream=stream, activation=activation, scan_client=Scanner(),
             client_factory=lambda: None)
+
+
+def test_worker_client_closes_after_candidate_failure(monkeypatch):
+    opened = []
+
+    class Reader:
+        def __init__(self):
+            self.closed = False
+            opened.append(self)
+
+        def close(self):
+            self.closed = True
+
+    def fail_on_second(_plan, *, ticker, client, **_kwargs):
+        assert client is opened[0] and not client.closed
+        if ticker == "BBB":
+            raise ValueError("candidate source failed")
+        return StrategyOneCandidateBatch(
+            np.array([30_000]), np.array([True]),
+            np.zeros(1, dtype=np.uint8), np.full((1, 4), 30_000),
+            np.full(1, 30_000), np.full(1, 97_000))
+
+    monkeypatch.setattr(
+        "src.backend.backtest_strategy_one_preparation.load_strategy_one_entry_batch",
+        fail_on_second)
+    stream, activation = _contract()
+    with pytest.raises(ValueError, match="candidate source failed"):
+        prepare_strategy_one_session(
+            _plan(), session_date=DAY, through_boundary_ms=30_100,
+            stream=stream, activation=activation, scan_client=Scanner(),
+            client_factory=Reader, max_workers=1)
+    assert len(opened) == 1 and opened[0].closed
