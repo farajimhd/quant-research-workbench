@@ -208,7 +208,7 @@ def test_v2_terminal_review_pages_only_attested_suffix(monkeypatch):
 
 
 def test_running_page_uses_v2_prefix_without_terminal_claim(monkeypatch):
-    client = V2MemoryClient()
+    client = scoped(V2MemoryClient())
     selected = v2_batch()
     publish_typed_run(client, {**run_row(), "run_id": selected.run_id,
                                "mode": "backtest"})
@@ -218,12 +218,37 @@ def test_running_page_uses_v2_prefix_without_terminal_claim(monkeypatch):
     monkeypatch.setattr(writer, "versioned_journal_v2_preflight", lambda *_: None)
     monkeypatch.setattr(writer, "storage_preflight", lambda *_, **__: None)
     writer.publish_typed_batch(client, selected, journal_profile="backtest_v2")
-    page = review.load_typed_backtest_running_page(client, selected.run_id)
+    loads = []
+    real_prefix = review.load_committed_prefix
+    def audited_prefix(*args, **kwargs):
+        loads.append(1)
+        return real_prefix(*args, **kwargs)
+    monkeypatch.setattr(review, "load_committed_prefix", audited_prefix)
+    cache = review.AuditedSessionCache()
+    page = review.load_typed_backtest_running_page(
+        client, selected.run_id, cache=cache)
     assert page["running_prefix_only"] and page["terminal_status_unknown"]
     assert page["verified_prefix_sequence"] == page["next_sequence"] == 1
     assert page["events"][0]["detail_family"] == "trading_strategy_signal_v2"
     assert review.load_typed_backtest_running_page(
-        client, selected.run_id, after_sequence=1)["events"] == ()
+        client, selected.run_id, after_sequence=1, cache=cache)["events"] == ()
+    assert len(loads) == 1
+    client.tables["trading_commit_v1"] = [{
+        "run_id": selected.run_id,
+        "batch_id": "00000000-0000-0000-0000-000000000099",
+    }]
+    with pytest.raises(RuntimeError, match="cannot mix"):
+        review.load_typed_backtest_running_page(
+            client, selected.run_id, cache=cache)
+    client.tables.pop("trading_commit_v1")
+    second = v2_batch(
+        batch_id="00000000-0000-0000-0000-000000000006",
+        prior_batch_id=selected.batch_id, sequence=2, signal_id="signal-2")
+    writer.publish_typed_batch(client, second, journal_profile="backtest_v2")
+    advanced = review.load_typed_backtest_running_page(
+        client, selected.run_id, after_sequence=1, cache=cache)
+    assert advanced["next_sequence"] == 2
+    assert len(loads) == 3
     with pytest.raises(ValueError, match="exceeds"):
         review.load_typed_backtest_running_page(
-            client, selected.run_id, after_sequence=2)
+            client, selected.run_id, after_sequence=3, cache=cache)

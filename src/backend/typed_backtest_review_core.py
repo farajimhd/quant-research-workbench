@@ -77,6 +77,7 @@ class AuditedSessionCache:
 
 
 _SESSION_CACHE = AuditedSessionCache()
+_RUNNING_CACHE = AuditedSessionCache()
 
 
 def _client_scope(client: Any) -> str:
@@ -91,9 +92,15 @@ def _client_scope(client: Any) -> str:
 
 def _head_matches(client: Any, run_id: str, prefix: Any) -> bool:
     """Cheap terminal head check; full chain was verified on audit cache miss."""
+    if isinstance(prefix, V2CommittedPrefix) and _rows(client,
+        "SELECT batch_id FROM arte.trading_commit_v1 "
+        f"WHERE run_id={_literal(run_id)} LIMIT 1 FORMAT JSONEachRow"):
+        return False
+    commit_table = ("trading_commit_v2" if isinstance(prefix, V2CommittedPrefix)
+                    else "trading_commit_v1")
     rows = _rows(client,
         "SELECT run_id,batch_id,last_sequence,status,source_cursor "
-        "FROM arte.trading_commit_v1 "
+        f"FROM arte.{commit_table} "
         f"WHERE run_id={_literal(run_id)} "
         "ORDER BY last_sequence DESC,batch_id DESC LIMIT 2 FORMAT JSONEachRow")
     if not rows or len(rows) > 2:
@@ -242,17 +249,31 @@ def load_typed_backtest_review_core_v2(
 
 def load_typed_backtest_running_page(
     client: Any, run_id: str, *, after_sequence: int = 0,
-    limit: int = 500,
+    limit: int = 500, cache: AuditedSessionCache | None = None,
 ) -> dict[str, Any]:
     """Expose only a verified V2 running prefix, never a terminal review claim."""
     if (not isinstance(run_id, str) or not run_id
             or type(after_sequence) is not int or after_sequence < 0
-            or type(limit) is not int or not 1 <= limit <= 1000):
+            or type(limit) is not int or not 1 <= limit <= 1000
+            or (cache is not None and not isinstance(cache, AuditedSessionCache))):
         raise ValueError("Typed Backtest running page has invalid bounds")
+    selected_cache = cache if cache is not None else _RUNNING_CACHE
     context = load_typed_run_context(client, run_id)
     if context.get("mode") != "backtest":
         raise ValueError("Typed running page accepts Backtest runs only")
-    prefix = load_committed_prefix(client, run_id, journal_profile="backtest_v2")
+    prefix = None
+    for key in selected_cache.candidate_keys(_client_scope(client), run_id):
+        candidate = selected_cache.get(key)
+        if (candidate is not None and candidate["context"] == context
+                and isinstance(candidate["prefix"], V2CommittedPrefix)
+                and _head_matches(client, run_id, candidate["prefix"])):
+            prefix = candidate["prefix"]
+            break
+    if prefix is None:
+        prefix = load_committed_prefix(client, run_id, journal_profile="backtest_v2")
+        if isinstance(prefix, V2CommittedPrefix) and _head_matches(client, run_id, prefix):
+            selected_cache.put(_cache_key(client, run_id, context, prefix),
+                               {"context": context, "prefix": prefix})
     if not isinstance(prefix, V2CommittedPrefix) or prefix.status != "running":
         raise ValueError("Typed running page requires a verified V2 running prefix")
     if after_sequence > prefix.last_sequence:
@@ -261,8 +282,7 @@ def load_typed_backtest_running_page(
         client, prefix, after_sequence=after_sequence, limit=limit)
     next_sequence = int(rows[-1].event["sequence"]) if rows else after_sequence
     if (load_typed_run_context(client, run_id) != context
-            or load_committed_prefix(
-                client, run_id, journal_profile="backtest_v2") != prefix):
+            or not _head_matches(client, run_id, prefix)):
         raise RuntimeError("Typed running authority changed during page read")
     return {
         "schema_version": "typed-backtest-running-page-v2",
