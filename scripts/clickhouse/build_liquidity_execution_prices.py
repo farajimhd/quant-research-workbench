@@ -29,6 +29,7 @@ sys.dont_write_bytecode = True
 
 from pipelines.market_sip.events import liquidity_execution_price_sql as price_sql
 from pipelines.market_sip.events.liquidity_execution_price_producer import publish_unit
+from research.mlops.clickhouse import ClickHouseHttpClient
 from scripts.build_market_day import digest
 from scripts.clickhouse.install_market_day_certificate_layout import workstation_clickhouse_url
 from scripts.clickhouse.plan_market_day_certificate import DEFAULT_RUNTIME, prepare_saved_build
@@ -47,15 +48,18 @@ def _rows(client, query: str) -> list[dict]:
 
 def _producer_client(url: str):
     """One bounded ClickHouse query lane per ticker worker."""
-    client = _admin_client(url)
-    client.timeout_seconds = 630
-    client.default_query_params = {
+    credential = _admin_client(url)
+    try:
+        user, password = credential.user, credential.password
+    finally:
+        credential.close()
+    return ClickHouseHttpClient(url, user, password,
+        timeout_seconds=630, persistent=True, default_query_params={
         "max_threads": "4", "max_insert_threads": "1",
         "max_memory_usage": str(2 * 1024**3),
         "max_execution_time": "600", "max_result_rows": "100000",
         "result_overflow_mode": "throw",
-    }
-    return client
+    })
 
 
 def _layout(client, *, apply: bool) -> tuple[int, int]:

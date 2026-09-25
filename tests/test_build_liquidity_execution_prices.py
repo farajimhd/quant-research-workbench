@@ -54,3 +54,21 @@ def test_requested_canary_must_belong_to_certified_scope(monkeypatch):
     with pytest.raises(ValueError, match="outside certified liquidity scope"):
         command._plan(Path("D:/TradingML/runtimes"), "build",
                       date(2026, 8, 18), ("WRONG",))
+
+
+def test_worker_reuses_one_persistent_http_connection(monkeypatch):
+    class Credential:
+        user = "operator"
+        password = "secret"
+        def close(self):
+            self.closed = True
+    credential = Credential()
+    monkeypatch.setattr(command, "_admin_client", lambda *_: credential)
+    client = command._producer_client("http://127.0.0.1:18123")
+    try:
+        assert credential.closed
+        assert client.persistent
+        assert client.default_query_params["max_memory_usage"] == str(2 * 1024**3)
+        assert client.timeout_seconds == 630
+    finally:
+        client.close()
