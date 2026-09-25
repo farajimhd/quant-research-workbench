@@ -35,6 +35,7 @@ from src.trading_runtime.arte_journal_schema import MARKET_READ_TABLES, storage_
 
 
 URL = "http://DESKTOP-SAAI85T:18123"
+WORKSTATION_IPV4 = "192.168.1.218"
 PRINCIPALS = {
     "read": "backtest_v3_reader",
     "running": "backtest_v3_runner",
@@ -242,13 +243,15 @@ def _operator_apply(url: str, plans: tuple[PrincipalPlan, ...]) -> None:
     # address before its managed IPv4 listener. A provisioning campaign issues
     # many small grant calls, so each IPv6 SYN timeout compounds dramatically.
     # Keep the published credential URL unchanged, but pin this local operator
-    # session to the workstation's unambiguous resolved IPv4 address.
+    # session to the workstation IPv4 explicitly supplied for this campaign.
+    # The host has several WSL/VPN adapter addresses, so selecting an
+    # arbitrary DNS A record would be unsafe.
     addresses = {result[4][0] for result in socket.getaddrinfo(
         parsed.hostname, parsed.port, family=socket.AF_INET,
         type=socket.SOCK_STREAM)}
-    if len(addresses) != 1:
-        raise RuntimeError("Workstation IPv4 endpoint is absent or ambiguous")
-    transport_url = f"http://{addresses.pop()}:{parsed.port}"
+    if WORKSTATION_IPV4 not in addresses:
+        raise RuntimeError("Pinned workstation IPv4 is not in hostname resolution")
+    transport_url = f"http://{WORKSTATION_IPV4}:{parsed.port}"
     admin = _admin_client(transport_url)
     apply_with_clients(plans, admin=admin, credential=_private_credential,
         client_factory=lambda user, password: ClickHouseHttpClient(

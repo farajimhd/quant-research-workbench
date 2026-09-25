@@ -280,6 +280,7 @@ def test_operator_transport_uses_resolved_ipv4_not_unreachable_hostname(monkeypa
     monkeypatch.setattr(command.platform, "node", lambda: "DESKTOP-SAAI85T")
     monkeypatch.setattr(command, "SECRET_ROOT", tmp_path)
     monkeypatch.setattr(command.socket, "getaddrinfo", lambda *_args, **_kwargs: [
+        (None, None, None, None, ("172.25.144.1", 18123)),
         (None, None, None, None, ("192.168.1.218", 18123)),
     ])
     seen = []
