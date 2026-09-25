@@ -44,6 +44,7 @@ def test_prefix_resume_extend_matches_full_campaign(tmp_path, monkeypatch):
     monkeypatch.setattr(c,'write',original)
     worker(args)
     assert fetched==[days[0],days[0]]
+    assert c.read(target/'source-plan.json')['reporting_coverage_hash']==c.digest(reporting)
     assert c.read(target/'books'/f'{days[0]}.json.gz')==first
     publication=c.read(target/'prefixes'/f'{days[1]}.json')
     worker(args)
@@ -57,3 +58,18 @@ def test_prefix_resume_extend_matches_full_campaign(tmp_path, monkeypatch):
         assert c.read(target/'books'/f'{day}.json.gz')==c.read(full/'tickers/TEST/books'/f'{day}.json.gz')
     receipt=target/'receipts'/f'{days[1]}.json';value=c.read(receipt);value['parent_hash']='corrupt';c.write(receipt,value,immutable=False)
     with pytest.raises(ValueError,match='Resume source/parent'):worker(args)
+
+
+def test_prefix_rejects_missing_trade_reporting_coverage(tmp_path,monkeypatch):
+    plan=dict(plan_hash='plan',start='2026-08-20',end='2026-08-20',rules=[],
+        rows=[dict(ticker='TEST',status='queued',coverage=dict(ticker='TEST'))])
+    monkeypatch.setattr(c,'checked_plan',lambda _:plan)
+    def query(sql,threads=1):
+        if 'GROUP BY ticker ORDER BY ticker' in sql:return [dict(ticker='TEST')]
+        if sql==c.RULE_SQL:return []
+        if 'historical_trade_reporting_coverage_v1' in sql:return []
+        if 'events_ordinal_continuity' in sql:return [dict(ticker='TEST',source_date='2026-08-20')]
+        raise AssertionError(sql)
+    monkeypatch.setattr(c,'query',query)
+    with pytest.raises(ValueError,match='completed.*coverage'):
+        worker(SimpleNamespace(runtime=tmp_path/'prefix',ticker='TEST',threads=1,before='2026-08-21'))

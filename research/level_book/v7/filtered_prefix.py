@@ -61,8 +61,12 @@ def worker(args):
                 raise ValueError('Trade condition rules changed')
             predicate = f"ticker={c.literal(args.ticker)} AND source_date BETWEEN {c.literal(plan['start'])} AND {c.literal(plan['end'])}"
             days = query('SELECT * FROM market_sip_compact.events_ordinal_continuity FINAL WHERE '+predicate+' ORDER BY source_date')
+            reporting_rows = query(c.reporting_coverage_sql(plan['start'],plan['end']))
+            c.require_reporting_coverage([d['source_date'] for d in days],reporting_rows)
+            reporting_hash = c.digest(reporting_rows)
             splits = c.canonical_splits(query(f"SELECT execution_date,split_from,split_to,inserted_at FROM q_live.market_stock_split_v1 FINAL WHERE provider_ticker={c.literal(args.ticker)} AND execution_date BETWEEN {c.literal(plan['start'])} AND {c.literal(plan['end'])} ORDER BY execution_date"))
-            source = dict(days=days, splits=splits, plan_hash=plan['plan_hash'])
+            source = dict(days=days, splits=splits, plan_hash=plan['plan_hash'],
+                          reporting_coverage_hash=reporting_hash)
             c.write(target/'source-plan.json', source)
             prefix = [d for d in days if d['source_date'] < before]
             if not prefix:
@@ -125,6 +129,8 @@ def worker(args):
                 publish(completed=progress['completed']+1,session=day,stage='checkpoint saved')
             if query(c.coverage_sql(plan['start'],plan['end'],[args.ticker])) != [row['coverage']] or query(c.RULE_SQL) != plan['rules']:
                 raise ValueError('Source or rules changed before prefix publication')
+            if c.digest(query(c.reporting_coverage_sql(plan['start'],plan['end']))) != reporting_hash:
+                raise ValueError('Trade-reporting coverage changed before prefix publication')
             value = dict(version=1,plan_hash=plan['plan_hash'],ticker=args.ticker,before=before,
                          sessions=len(prefix),through=prefix[-1]['source_date'],
                          source_plan_hash=c.digest(source),checkpoint_hash=prior['checkpoint_hash'] if prior else None)

@@ -14,6 +14,7 @@ def publish(root, target, parent, ticker='TEST'):
     output = folder/'tickers'/ticker
     source = read(target/'source-plan.json')
     source['plan_hash'] = plan['plan_hash']
+    source['reporting_coverage_hash'] = '0'*64
     write(output/'source-plan.json', source)
     book = read(target/'books'/'2026-08-20.json.gz')
     book['input_policy'] = V.POLICY
@@ -23,6 +24,11 @@ def publish(root, target, parent, ticker='TEST'):
     receipt['checkpoint_hash'] = book['checkpoint_hash']
     write(output/'receipts'/'2026-08-20.json', receipt)
     return output, plan
+
+
+def publish_ready(output,plan):
+    write(output/'ready.json',dict(plan_hash=plan['plan_hash'],
+        source_plan_hash=digest(read(output/'source-plan.json'))))
 
 
 def test_qmd_catalog_sees_atomic_successor_without_restart_or_hash_drift(tmp_path, monkeypatch):
@@ -35,7 +41,7 @@ def test_qmd_catalog_sees_atomic_successor_without_restart_or_hash_drift(tmp_pat
     output,plan = publish(tmp_path,target,parent)
     # Incomplete builds cannot replace the serving authority.
     assert catalog.select('TEST','2026-08-21')[1]['campaign']=='main'
-    write(output/'ready.json',dict(plan_hash=plan['plan_hash']))
+    publish_ready(output,plan)
     book,provenance = catalog.select('TEST','2026-08-21')
     assert book['input_policy']==V.POLICY
     assert provenance['campaign'].replace('\\','/').startswith('filtered-v7-on-demand-v1/')
@@ -139,7 +145,7 @@ def test_preparation_builds_unfiltered_ticker_then_reuses_publication(tmp_path,m
             child.returncode=1
             return child
         output,plan=publish(tmp_path,target,read(tmp_path/'main'/'plan.json'))
-        write(output/'ready.json',dict(plan_hash=plan['plan_hash']))
+        publish_ready(output,plan)
         child.returncode=0
         return child
     monkeypatch.setattr('src.backend.filtered_v7_preparation.subprocess.Popen',spawn)
@@ -186,6 +192,6 @@ def test_published_filtered_empty_history_cannot_serve_legacy_book(tmp_path,monk
     receipt=read(output/'receipts'/'2026-08-20.json')
     receipt.update(state='empty',parent_hash=None);receipt.pop('checkpoint_hash')
     write(output/'receipts'/'2026-08-20.json',receipt,immutable=False)
-    write(output/'ready.json',dict(plan_hash=plan['plan_hash']))
+    publish_ready(output,plan)
     with pytest.raises(V.CoverageUnavailable,match='No eligible preceding filtered'):
         V.Catalog(tmp_path).select('TEST','2026-08-21')

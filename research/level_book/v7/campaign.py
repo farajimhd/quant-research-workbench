@@ -161,10 +161,15 @@ def worker(args):
         days=q('SELECT * FROM market_sip_compact.events_ordinal_continuity FINAL WHERE '+predicate+' ORDER BY source_date')
         reporting_rows=q(reporting_coverage_sql(p['start'],p['end']))
         require_reporting_coverage([d['source_date'] for d in days], reporting_rows)
-        if digest(reporting_rows)!=p['reporting_coverage_hash']:
+        reporting_hash=digest(reporting_rows)
+        if p.get('reporting_coverage_hash') is not None and reporting_hash!=p['reporting_coverage_hash']:
             raise ValueError('Canonical trade-reporting coverage differs from frozen plan')
+        if p.get('reporting_coverage_hash') is None and p.get('reporting_coverage_contract')!='source-plan-v1':
+            raise ValueError('Frozen plan lacks trade-reporting coverage authority')
         splits=canonical_splits(q(f"SELECT execution_date,split_from,split_to,inserted_at FROM q_live.market_stock_split_v1 FINAL WHERE provider_ticker={literal(args.ticker)} AND execution_date BETWEEN {literal(p['start'])} AND {literal(p['end'])} ORDER BY execution_date"))
-        write(target/'source-plan.json',dict(days=days,splits=splits,plan_hash=p['plan_hash']))
+        source=dict(days=days,splits=splits,plan_hash=p['plan_hash'],
+                    reporting_coverage_hash=reporting_hash)
+        write(target/'source-plan.json',source)
         prior=None
         for metadata in days:
             day=metadata['source_date']
@@ -203,8 +208,11 @@ def worker(args):
             publish(completed=progress['completed']+1,session=day,stage='checkpoint saved')
         if q(coverage_sql(p['start'],p['end'],[args.ticker]))!=[row['coverage']]:raise ValueError('Source changed before publication')
         if q(RULE_SQL)!=p['rules']:raise ValueError('Rules changed before publication')
+        if digest(q(reporting_coverage_sql(p['start'],p['end'])))!=reporting_hash:
+            raise ValueError('Trade-reporting coverage changed before publication')
         write(target/'ready.json',dict(plan_hash=p['plan_hash'],ticker=args.ticker,first_session=days[0]['source_date'],last_session=days[-1]['source_date'],
-            sessions=len(days),empty=progress['empty'],book_session=prior['session'] if prior else None,checkpoint_hash=prior['checkpoint_hash'] if prior else None,available_after_session_close=True))
+            sessions=len(days),empty=progress['empty'],book_session=prior['session'] if prior else None,checkpoint_hash=prior['checkpoint_hash'] if prior else None,
+            source_plan_hash=digest(source),available_after_session_close=True))
         publish(state='complete',stage='verified',levels=sum(r['qualified'] for r in prior['levels']) if prior else 0)
       except BaseException as exc:
         publish(state='failed',stage='failed',reason=str(exc));write(target/'error.json',dict(at=now(),error=str(exc),traceback=traceback.format_exc()),immutable=False);raise

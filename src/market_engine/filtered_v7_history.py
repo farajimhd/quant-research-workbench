@@ -6,6 +6,7 @@ import sys
 
 from .derived_trade_policy import POLICY
 from .historical_level_checkpoint import digest
+from pipelines.market_sip.events.trade_reporting_flags import REVISION as REPORTING_REVISION
 
 VERSION = 'filtered-v7-on-demand-v1'
 
@@ -26,6 +27,8 @@ def successor(root, parent, ticker):
         raise ValueError('Cannot rebuild an unresolved V7 identity: '+ticker)
     plan = deepcopy({k:v for k,v in parent.items() if k not in ('rows','plan_hash')})
     plan.update(kernel(), rows=[deepcopy(row)], input_policy=POLICY,
+                reporting_revision=REPORTING_REVISION,
+                reporting_coverage_contract='source-plan-v1',
                 parent_plan_hash=parent['plan_hash'], derivation=VERSION,
                 git_commit='content-addressed-source-files')
     plan['plan_hash'] = digest(plan)
@@ -57,11 +60,16 @@ def available_sources(root, ticker, candidates, session=None):
         source = read(target / 'source-plan.json')
         if source['plan_hash'] != plan['plan_hash']:
             raise ValueError('Filtered V7 publication identity mismatch')
+        if (not isinstance(source.get('reporting_coverage_hash'),str)
+                or len(source['reporting_coverage_hash']) != 64):
+            raise ValueError('Filtered V7 source lacks frozen trade-reporting coverage')
         days = [d['source_date'] for d in source['days']]
         if days != sorted(set(days)) or any(d['ticker'] != ticker for d in source['days']):
             raise ValueError('Filtered V7 source sessions must be unique and ticker-specific')
         if (target / 'ready.json').exists():
-            if read(target / 'ready.json')['plan_hash'] != plan['plan_hash']:
+            ready = read(target / 'ready.json')
+            if (ready['plan_hash'] != plan['plan_hash']
+                    or ready.get('source_plan_hash') != digest(source)):
                 raise ValueError('Filtered V7 publication identity mismatch')
         elif session:
             required = [d for d in days if d < session]
