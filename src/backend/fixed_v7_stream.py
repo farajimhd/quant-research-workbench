@@ -149,3 +149,17 @@ class FixedV7Cache:
                     stream.update_second(row, at=bar_at)
             self._streams[ticker] = stream
         return stream.context(as_of=as_of, price=price)
+
+    def strategy_one_levels(self, ticker: str, *, as_of: datetime,
+                            price: float) -> tuple[Mapping[str, Any], ...]:
+        """Admit only geometry matching this ticker's certified seed policy."""
+        from src.market_engine.derived_trade_policy import POLICY
+        from src.trading_runtime.strategy_one_v7 import admitted_v7_levels
+
+        pinned = self._coverage.get(ticker)
+        if pinned is None:
+            raise ValueError("Strategy 1 V7 ticker lacks pinned prior coverage")
+        policy = str(pinned["input_policy"]) if int(pinned["level_count"]) else POLICY
+        return admitted_v7_levels(
+            self.context(ticker, as_of=as_of, price=price), as_of=as_of,
+            seed_policy=policy)

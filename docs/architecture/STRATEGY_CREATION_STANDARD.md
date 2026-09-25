@@ -119,6 +119,12 @@ resistance precedence; target re-ranking only follows a completed
 price-bearing evaluation bar. It returns amendments for the coordinator and
 does not submit orders or write a journal. Stateful activation, surviving
 Candidate 350 entry gates, OMS wiring, and run dispatch remain unfinished.
+`src/trading_runtime/strategy_one_v7.py` checks each projected level against
+its own preflight-pinned prior seed policy. This admits the explicitly approved
+provisional V1 seed without relaxing legacy strategies or implicitly switching
+to filtered V2; an empty prior seed uses the filtered runtime policy. A stale
+projection supplies no entry geometry, while mixed policy or future geometry
+fails closed.
 The active fixed Backtest preflight also blocks on unfinished ClickHouse-only
 runtime/journal recovery. These contracts must be delivered and verified
 before Strategy 1 can become selectable. Do not bypass them by launching the

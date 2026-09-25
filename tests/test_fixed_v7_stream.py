@@ -107,6 +107,7 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds():
     assert not cache.has_stream("TEST")
     before = datetime(2026, 8, 18, 4, 5, 0, 100000, tzinfo=NY)
     assert cache.context("TEST", as_of=before, price=10.0)["qmd_structure_unified_levels"] == []
+    assert cache.strategy_one_levels("TEST", as_of=before, price=10.0) == ()
     assert cache.has_stream("TEST")
     assert cache._streams["TEST"].engine.bars_processed == 0
     completed = datetime(2026, 8, 18, 4, 5, 1, tzinfo=NY)
