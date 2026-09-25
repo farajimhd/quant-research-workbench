@@ -46,3 +46,15 @@ def test_seed_preflight_reports_every_uncertified_listing(monkeypatch):
     assert rf.missing_seeds(object(),date(2026,8,21),['NVDA','MISSING','AAPL']) == ['MISSING']
     assert 'arte.structural_level_coverage_v7 FINAL' in statements[0]
     assert "session_date<toDate('2026-08-21')" in statements[0]
+
+
+def test_v7_population_excludes_missing_and_empty_before_ranking(monkeypatch):
+    monkeypatch.setattr(rf,'query',lambda *_args:[
+        dict(ticker='A',state='complete',session_date='2026-08-20',level_count=3,
+             available_at='2026-08-20 23:00:00',source_checkpoint_hash='hash',
+             observation_count=2,input_policy='policy'),
+        dict(ticker='B',state='empty',session_date='2026-08-20',level_count=0)])
+    monkeypatch.setattr(rf,'_validate_coverage',lambda *_args,**_kwargs:None)
+    result = rf.nonempty_v7_population(object(),date(2026,8,21),['A','B','C'])
+    assert result['included'] == ['A']
+    assert result['excluded'] == {'B':'empty_prior_levels','C':'missing_prior_coverage'}

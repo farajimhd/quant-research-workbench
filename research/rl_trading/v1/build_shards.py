@@ -162,8 +162,18 @@ def run(args,console):
     if not args.allow_segment and (teacher['first_us'] != left or
             teacher['end_us'] != teacher['true_session_cutoff_us']):
         raise ValueError('Training shards require a complete 04:00–19:58 teacher session')
-    tickers = [item['ticker'] for item in p2['selected']]
-    if len(tickers) != len(set(tickers)) or set(tickers) != set(p1['source_units']):
+    population = teacher.get('v7_population')
+    if population is None or population.get('contract') != 'nonempty-prior-v7-at-0400-v1':
+        raise ValueError('Training requires Phase 3 V7-filtered population')
+    tickers = population['included']
+    source_tickers = [item['ticker'] for item in p2['selected']]
+    included = set(tickers)
+    if (len(tickers) != len(included) or
+            tickers != [ticker for ticker in source_tickers if ticker in included] or
+            set(source_tickers) != included | set(population['excluded']) or
+            included & set(population['excluded'])):
+        raise ValueError('Teacher V7 population differs from pinned Phase 2 listings')
+    if set(source_tickers) != set(p1['source_units']):
         raise ValueError('Teacher ticker population differs from pinned arte units')
     load_env_files(discover_clickhouse_env_files(),verbose=False)
     client = ArteReader(args.query_threads)
@@ -214,7 +224,8 @@ def run(args,console):
             raise ValueError('Shard restart provenance changed')
         source = dict(build_id=p1['source_build_id'],units={str(day):p1['source_units']})
         pending = []
-        for index,listing in enumerate(p2['selected']):
+        for index,listing in enumerate(item for item in p2['selected']
+                if item['ticker'] in included):
             ticker = listing['ticker']
             if (root/'STOP').exists():
                 console.print(f'Stopped after {index} listings; rerun to resume')

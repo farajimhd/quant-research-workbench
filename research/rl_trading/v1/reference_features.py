@@ -11,6 +11,7 @@ import numpy as np
 
 from research.rl_trading.v1.arte_sql import POLICY, literal, query
 from src.backend.structural_v7_seed import load_seed
+from src.backend.structural_v7_seed import _validate_coverage
 
 STRUCTURAL = ('structural_levels_v7', 'structural_level_observations_v7',
               'structural_level_coverage_v7')
@@ -40,6 +41,37 @@ def missing_seeds(client, day: date, tickers: list[str]) -> list[str]:
         "AND state IN ('complete','empty')")
     available = {str(row['ticker']) for row in rows}
     return sorted(set(tickers)-available)
+
+
+def nonempty_v7_population(client, day: date, tickers: list[str]) -> dict:
+    """Pin the latest pre-open V7 certificate and exclude absent/empty seeds."""
+    cutoff = f"toDateTime64({literal(opening(day))},9,'UTC')"
+    rows = query(client, 'SELECT * FROM arte.structural_level_coverage_v7 FINAL '
+        f'WHERE available_at<={cutoff} AND ticker IN (' +
+        ','.join(literal(ticker) for ticker in tickers) + ') '
+        'ORDER BY ticker,available_at DESC LIMIT 1 BY ticker')
+    by_ticker = {str(row['ticker']): row for row in rows}
+    if len(by_ticker) != len(rows) or not set(by_ticker) <= set(tickers):
+        raise ValueError('Malformed V7 coverage population')
+    included, excluded, certificates = [], {}, {}
+    for ticker in tickers:
+        row = by_ticker.get(ticker)
+        if row is None:
+            excluded[ticker] = 'missing_prior_coverage'
+        elif row['state'] not in ('complete', 'empty') or str(row['session_date']) >= str(day):
+            excluded[ticker] = 'uncertified_prior_coverage'
+        elif int(row['level_count']) == 0:
+            excluded[ticker] = 'empty_prior_levels'
+        else:
+            _validate_coverage(row,ticker=ticker,session=day)
+            included.append(ticker)
+            certificates[ticker] = {key:row[key] for key in (
+                'session_date','available_at','source_checkpoint_hash','level_count',
+                'observation_count','input_policy')}
+    if not included:
+        raise ValueError('No tickers have certified nonempty prior V7 levels')
+    return dict(contract='nonempty-prior-v7-at-0400-v1',included=included,
+        excluded=excluded,certificates=certificates)
 
 
 def _identity(listing: dict) -> str:

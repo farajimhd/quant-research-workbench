@@ -67,3 +67,6 @@ def test_phase3_subset_preserves_full_market_search_with_held_outside_top_n():
         full_eligible_count=count)
     assert actual == expected
     assert actual_stats == expected_stats
+    filtered,filtered_count = market.at_subset(1,2,set(),{'B','C','D'})
+    assert set(filtered['ticker']) == {'B','C'}
+    assert filtered_count == 3

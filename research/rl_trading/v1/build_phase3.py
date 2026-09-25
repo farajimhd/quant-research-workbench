@@ -21,7 +21,11 @@ import polars as pl
 from rich.console import Console
 
 from research.rl_trading.v1.common import bounds, digest
+from research.rl_trading.v1.arte_sql import ArteReader
 from research.rl_trading.v1.market_values import MarketValues
+from research.rl_trading.v1.reference_features import nonempty_v7_population, storage_check
+from research.mlops.env import load_env_files
+from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.rl_trading.v1.phase3_search import (VERSION,Lot,Node,SearchConfig,
     advance,initial_node,with_id)
 from src.market_engine.level_book_store import read,write
@@ -180,20 +184,32 @@ def run(args,console):
     runtime = runtime_root()
     if not runtime.is_dir():
         raise ValueError(f'Required runtime root unavailable: {runtime}')
+    v7_population = None
+    if getattr(args,'require_v7_levels',False):
+        load_env_files(discover_clickhouse_env_files(),verbose=False)
+        client = ArteReader(2)
+        try:
+            storage_check(client)
+            v7_population = nonempty_v7_population(client,date.fromisoformat(source_plan['date']),
+                [item['ticker'] for item in source_plan['selected']])
+        finally:
+            client.close()
+    eligible_tickers = set(v7_population['included']) if v7_population else None
     plan = dict(version=VERSION,phase2_root=str(source),phase2_plan_hash=source_plan['plan_hash'],
         phase2_plan_file_hash=file_hash(source/'plan.json'),
         phase2_complete_file_hash=file_hash(source/'complete.json'),date=source_plan['date'],
         phase2_tensor_file_hashes={name:source_complete['files'][name] for name in (
             source_complete['tensor']['holding']['file'],source_complete['tensor']['opening']['file'])},
         scope=source_plan['scope'],mode='long',first_us=first_us,end_us=left+end_second*1_000_000,
-        true_session_cutoff_us=cutoff,config=asdict(config),
+        true_session_cutoff_us=cutoff,config=asdict(config),v7_population=v7_population,
         optimality='proven_within_grid' if not config.beam_width and not config.max_candidates else 'approximate_beam',
         observation_contract='Join only causal current-time market features; never use Phase 2 targets or values as model observations',
         reward_contract='Change in marked portfolio equity, including costs; terminal cash minus initial cash',
         code_hashes={p:file_hash(REPO/p) for p in (
             'research/rl_trading/v1/build_phase3.py','research/rl_trading/v1/phase3_search.py',
             'research/rl_trading/v1/market_values.py','research/rl_trading/v1/common.py',
-            'research/rl_trading/v1/universe.py')})
+            'research/rl_trading/v1/universe.py','research/rl_trading/v1/reference_features.py',
+            'research/rl_trading/v1/arte_sql.py')})
     plan['plan_hash'] = digest(plan)
     root = runtime/'hindsight-phase3'/plan['date']/plan['plan_hash'][:16]
     root.mkdir(parents=True,exist_ok=True)
@@ -206,7 +222,11 @@ def run(args,console):
             raise ValueError('Phase 3 completion integrity failure')
         console.print(f"Reused verified Phase 3: {root}")
         return 0
-    console.print(f"Phase 3 | {plan['date']} | long-only | {seconds:,} seconds | {len(source_plan['selected']):,} listings | top {config.top_n or 'all'} plus held")
+    console.print(f"Phase 3 | {plan['date']} | long-only | {seconds:,} seconds | {len(eligible_tickers) if eligible_tickers is not None else len(source_plan['selected']):,} listings | top {config.top_n or 'all'} plus held")
+    if v7_population:
+        console.print(f"V7 excluded {len(v7_population['excluded']):,} listings: " +
+            str({reason:list(v7_population['excluded'].values()).count(reason)
+                 for reason in sorted(set(v7_population['excluded'].values()))}))
     console.print(f"Cash ${config.initial_cash:,.2f}; allocation unit ${config.allocation_step:,.2f}; beam {config.beam_width or 'unbounded'}; candidate cap {config.max_candidates or 'all'}")
     console.print(f"Optimality: {plan['optimality']} | output: {root}",soft_wrap=True)
     started = monotonic()
@@ -225,14 +245,18 @@ def run(args,console):
                 time_us = first_us+index*1_000_000
                 if config.top_n:
                     held = {lot.ticker for node in frontier for lot in node.lots}
-                    snapshot,eligible_count = market.at_subset(time_us,config.top_n,held)
+                    snapshot,eligible_count = market.at_subset(time_us,config.top_n,held,
+                        eligible_tickers)
                     if index == seconds-1:
                         eligible_count = 0
                     candidates,stats = advance(frontier,snapshot.to_dicts(),time_us,
                         config,terminal=index==seconds-1,
                         full_eligible_count=eligible_count)
                 else:
-                    candidates,stats = advance(frontier,market.at(time_us).to_dicts(),time_us,
+                    snapshot = market.at(time_us)
+                    if eligible_tickers is not None:
+                        snapshot = snapshot.filter(pl.col('ticker').is_in(eligible_tickers))
+                    candidates,stats = advance(frontier,snapshot.to_dicts(),time_us,
                         config,terminal=index==seconds-1)
                 frontier = [_insert_node(db,n,time_us) for n in candidates]
                 for key in totals:
@@ -294,6 +318,8 @@ def main(argv=None):
     parser.add_argument('--max-frontier',type=int,default=100_000)
     parser.add_argument('--top-n',type=int,default=100,
         help='Maximum visible tickers including all holdings; ranked by completed 60s volume')
+    parser.add_argument('--require-v7-levels',action='store_true',
+        help='Exclude tickers without certified nonempty prior ARTE V7 levels before search')
     parser.add_argument('--start-second',type=int,default=0,help='Offset from 04:00 ET; for bounded canaries')
     parser.add_argument('--end-second',type=int,default=None,help='Offset from 04:00 ET; default 19:58')
     return run(parser.parse_args(argv),Console())

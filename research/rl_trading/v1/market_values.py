@@ -114,7 +114,7 @@ class MarketValues:
                 pl.col('value_available').fill_null(False))
         return result
 
-    def at_subset(self, time_us, top_n, held_tickers):
+    def at_subset(self, time_us, top_n, held_tickers, eligible_tickers=None):
         """Return the global volume leaders and every frontier holding.
 
         The complete grid is still verified before narrowing. Phase 3 only
@@ -131,6 +131,10 @@ class MarketValues:
         longs = holding.filter(pl.col('side') == 'long')
         if longs.height * 2 != self.expected_rows:
             raise ValueError('Incomplete long market snapshot')
+        if eligible_tickers is not None:
+            longs = longs.filter(pl.col('ticker').is_in(eligible_tickers))
+            if longs.is_empty():
+                raise ValueError('No V7-eligible market rows')
         volumes = longs['volume_60s'].to_numpy()
         if not np.isfinite(volumes).all() or (volumes < 0).any():
             raise ValueError('Top-N selection requires finite completed 60s volume')
@@ -153,7 +157,8 @@ class MarketValues:
         eligible = openings.filter(
             (pl.col('side') == 'long') & pl.col('open_value_available') &
             (pl.col('entry_price') > 0) & (pl.col('capital_per_share') > 0) &
-            pl.col('open_value_per_dollar').is_finite()).height
+            pl.col('open_value_per_dollar').is_finite() &
+            pl.col('listing_index').is_in(longs['listing_index'].to_list())).height
         openings = openings.filter((pl.col('side') == 'long') &
             pl.col('listing_index').is_in(visible_indices))
         result = result.join(openings,on=keys,how='left',validate='1:1',maintain_order='left')
