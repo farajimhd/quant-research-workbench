@@ -96,7 +96,10 @@ class LiveStrategyRuntimeSupervisor:
         return value if value in {"paper", "live"} else "disabled"
 
     def _typed_delivery_requested(self) -> bool:
-        return (self._typed_assignment_admission is not None or
+        # Real trading must not silently fall back to the SQLite activation
+        # checkpoint when the typed cutover is incomplete.
+        return (self.mode == "live" or
+                self._typed_assignment_admission is not None or
                 self._typed_signal_completion is not None or
                 os.environ.get("TRADING_SIGNAL_DELIVERY_AUTHORITY", "sqlite").strip().lower()
                 != "sqlite")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import concurrent.futures
+import os
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -17,6 +18,18 @@ from tests.test_live_signal_work_completion import Keeper, Storage, _proof_input
 
 
 class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_live_mode_cannot_start_sqlite_fallback_without_typed_authority(self) -> None:
+        with patch.dict(os.environ, {"TRADING_STRATEGY_RUNTIME_MODE": "live",
+                                  "TRADING_SIGNAL_DELIVERY_AUTHORITY": "sqlite"}), patch(
+                "src.backend.live_strategy_runtime_service.trading_journal",
+                side_effect=AssertionError("live startup opened SQLite")):
+            supervisor = LiveStrategyRuntimeSupervisor()
+            supervisor.start()
+            self.assertEqual(supervisor.snapshot()["state"], "degraded")
+            self.assertIsNone(supervisor._thread)
+            with self.assertRaisesRegex(RuntimeError, "refusing SQLite fallback"):
+                supervisor.submit([{"run_plan_id": "plan", "ticker": "ABC"}])
+
     async def test_typed_start_stays_degraded_without_sqlite_or_market_worker(self) -> None:
         publisher = Mock()
         supervisor = LiveStrategyRuntimeSupervisor(typed_signal_completion=publisher)
