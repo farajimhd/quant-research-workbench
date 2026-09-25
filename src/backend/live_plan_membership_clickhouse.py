@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Mapping, Protocol, Sequence
+from uuid import UUID
 
 from src.backend.live_plan_membership import MEMBER, PARENT, TABLES, WATCH
 from src.trading_runtime.arte_journal_schema import storage_preflight
@@ -76,27 +77,32 @@ class LivePlanMembershipClickHouseRows:
 
     def read_members(self, *, configuration_revision_id: str,
                      session_key: str, membership_sequence: int,
+                     publication_id: str,
                      limit: int) -> list[Mapping[str, Any]]:
         where = self._child_where(configuration_revision_id, session_key,
-                                  membership_sequence)
+                                  membership_sequence, publication_id)
         return _read(self._client, MEMBER.name, where, "assignment_id", limit)
 
     def read_watches(self, *, configuration_revision_id: str,
                      session_key: str, membership_sequence: int,
+                     publication_id: str,
                      limit: int) -> list[Mapping[str, Any]]:
         where = self._child_where(configuration_revision_id, session_key,
-                                  membership_sequence)
+                                  membership_sequence, publication_id)
         return _read(self._client, WATCH.name, where, "run_plan_id,ticker", limit)
 
     @staticmethod
     def _child_where(configuration_revision_id: str, session_key: str,
-                     membership_sequence: int) -> str:
+                     membership_sequence: int, publication_id: str) -> str:
         if (type(membership_sequence) is not int or
                 not 1 <= membership_sequence <= 100_000):
             raise ValueError("plan membership sequence is invalid")
+        if type(publication_id) is not str or str(UUID(publication_id)) != publication_id:
+            raise ValueError("plan membership publication ID is invalid")
         return (f"configuration_revision_id={_literal(configuration_revision_id)} "
                 f"AND session_key=toDate({_literal(session_key)}) "
-                f"AND membership_sequence={membership_sequence}")
+                f"AND membership_sequence={membership_sequence} "
+                f"AND publication_id=toUUID({_literal(publication_id)})")
 
     def insert_members(self, rows: Sequence[Mapping[str, Any]]) -> None:
         self._insert_child(MEMBER.name, rows)
@@ -108,7 +114,7 @@ class LivePlanMembershipClickHouseRows:
         _insert(self._client, PARENT.name, (row,),
                 f"plan-membership:{row['configuration_revision_id']}:"
                 f"{row['session_key']}:{row['membership_sequence']}:parent:"
-                f"{row['content_hash']}")
+                f"{row['publication_id']}:{row['content_hash']}")
 
     def _insert_child(self, table: str,
                       rows: Sequence[Mapping[str, Any]]) -> None:
@@ -116,9 +122,10 @@ class LivePlanMembershipClickHouseRows:
             return
         first = rows[0]
         scope = (first["configuration_revision_id"], first["session_key"],
-                 first["membership_sequence"])
+                 first["membership_sequence"], first["publication_id"])
         if any((row["configuration_revision_id"], row["session_key"],
-                row["membership_sequence"]) != scope for row in rows):
+                row["membership_sequence"], row["publication_id"]) != scope
+               for row in rows):
             raise ValueError("plan membership child batch mixes scopes")
-        token = f"plan-membership:{scope[0]}:{scope[1]}:{scope[2]}:{table}"
+        token = f"plan-membership:{scope[0]}:{scope[1]}:{scope[2]}:{scope[3]}:{table}"
         _insert(self._client, table, rows, token)

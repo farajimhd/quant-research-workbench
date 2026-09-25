@@ -82,15 +82,31 @@ def test_cli_defaults_to_read_only_plan_on_workstation(monkeypatch, capsys):
 def test_live_membership_layout_is_typed_read_only_and_restart_safe(monkeypatch):
     class MembershipClient:
         def __init__(self):
-            self.installed = set()
+            self.installed = {}
+            self.rows = 0
             self.statements = []
         def execute(self, sql):
             self.statements.append(sql)
             if sql.startswith("SELECT name FROM system.tables"):
                 return "\n".join(json.dumps({"name": name})
                                  for name in sorted(self.installed))
+            if sql.startswith("SELECT name,type FROM system.columns"):
+                name = sql.split("AND table='", 1)[1].split("'", 1)[0]
+                return "\n".join(json.dumps({"name": column, "type": kind})
+                                 for column, kind in self.installed[name])
+            if sql.startswith("SELECT count() FROM arte."):
+                return str(self.rows)
             if sql.startswith("CREATE TABLE IF NOT EXISTS arte."):
-                self.installed.add(sql.split("arte.", 1)[1].split(" ", 1)[0])
+                name = sql.split("arte.", 1)[1].split(" ", 1)[0]
+                self.installed[name] = next(
+                    table.columns for table in install.LIVE_PLAN_MEMBERSHIP_TABLES
+                    if table.name == name)
+                return ""
+            if sql.startswith("ALTER TABLE arte."):
+                name = sql.split("arte.", 1)[1].split(" ", 1)[0]
+                self.installed[name] = next(
+                    table.columns for table in install.LIVE_PLAN_MEMBERSHIP_TABLES
+                    if table.name == name)
                 return ""
             raise AssertionError(sql)
     verified = []
@@ -101,7 +117,7 @@ def test_live_membership_layout_is_typed_read_only_and_restart_safe(monkeypatch)
     assert all(sql.startswith("SELECT ") for sql in client.statements)
     assert install.install_live_plan_membership(client, apply=True) == "upgraded"
     names = {table.name for table in install.LIVE_PLAN_MEMBERSHIP_TABLES}
-    assert client.installed == names
+    assert set(client.installed) == names
     assert set(verified) == names
     writes = [sql for sql in client.statements if sql.startswith("CREATE TABLE")]
     assert len(writes) == 3
@@ -109,6 +125,18 @@ def test_live_membership_layout_is_typed_read_only_and_restart_safe(monkeypatch)
     assert all(" JSON " not in sql and " payload" not in sql for sql in writes)
     assert install.install_live_plan_membership(client, apply=False) == "verified"
     assert len([sql for sql in client.statements if sql.startswith("CREATE TABLE")]) == 3
+    for table in install.LIVE_PLAN_MEMBERSHIP_TABLES:
+        client.installed[table.name] = tuple(
+            column for column in table.columns if column[0] != "publication_id")
+    client.rows = 1
+    with pytest.raises(RuntimeError, match="Occupied membership"):
+        install.install_live_plan_membership(client, apply=True)
+    assert not any(sql.startswith("ALTER TABLE") for sql in client.statements)
+    client.rows = 0
+    assert install.install_live_plan_membership(client, apply=False) == "planned"
+    assert install.install_live_plan_membership(client, apply=True) == "upgraded"
+    assert len([sql for sql in client.statements if sql.startswith("ALTER TABLE")]) == 3
+    assert install.install_live_plan_membership(client, apply=False) == "verified"
 
 
 class V3UpgradeClient:

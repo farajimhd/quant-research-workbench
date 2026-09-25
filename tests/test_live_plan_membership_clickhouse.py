@@ -28,6 +28,7 @@ def _row(contract):
     for name, kind in contract.columns:
         values[name] = (1 if kind.startswith("UInt") else
                         "2026-09-24" if kind == "Date" else
+                        "00000000-0000-0000-0000-000000000001" if kind == "UUID" else
                         "a" * 64 if kind == "FixedString(64)" else "x")
     return values
 
@@ -43,18 +44,23 @@ def test_reads_are_keyed_bounded_and_exactly_projected():
     assert "ORDER BY membership_sequence LIMIT 2" in client.calls[-1]
     client.response = json.dumps(_row(MEMBER)) + "\n"
     rows.read_members(configuration_revision_id="cfg", session_key="2026-09-24",
-                      membership_sequence=1, limit=2)
-    assert "AND membership_sequence=1 ORDER BY assignment_id" in client.calls[-1]
+                      membership_sequence=1,
+                      publication_id="00000000-0000-0000-0000-000000000001", limit=2)
+    assert "AND membership_sequence=1 AND publication_id=toUUID(" in client.calls[-1]
+    assert "ORDER BY assignment_id" in client.calls[-1]
     client.response = json.dumps(_row(WATCH)) + "\n"
     rows.read_watches(configuration_revision_id="cfg", session_key="2026-09-24",
-                      membership_sequence=1, limit=2)
+                      membership_sequence=1,
+                      publication_id="00000000-0000-0000-0000-000000000001", limit=2)
     assert "ORDER BY run_plan_id,ticker" in client.calls[-1]
     with pytest.raises(ValueError, match="bound"):
         rows.read_revisions(configuration_revision_id="cfg",
                             session_key="2026-09-24", limit=100_002)
     with pytest.raises(ValueError, match="sequence"):
         rows.read_members(configuration_revision_id="cfg",
-                          session_key="2026-09-24", membership_sequence=0, limit=1)
+                          session_key="2026-09-24", membership_sequence=0,
+                          publication_id="00000000-0000-0000-0000-000000000001",
+                          limit=1)
     client.response = json.dumps({**_row(PARENT), "payload_json": "{}"})
     with pytest.raises(RuntimeError, match="projection"):
         rows.read_revisions(configuration_revision_id="cfg",

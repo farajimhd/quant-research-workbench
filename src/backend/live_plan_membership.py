@@ -8,6 +8,7 @@ from __future__ import annotations
 from hashlib import sha256
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
+from uuid import UUID
 
 from src.backend.live_assignment_activation_join import (
     AttestedPlanMembership, PinnedAssignmentMember, PinnedWatch,
@@ -23,7 +24,8 @@ PARENT = TableContract(
     (("schema_version", "UInt16"), ("configuration_revision_id", "String"),
      ("configuration_content_hash", "FixedString(64)"),
      ("session_key", "Date"), ("source_cursor_commit_hash", "FixedString(64)"),
-     ("membership_sequence", "UInt64"), ("previous_hash", "FixedString(64)"),
+     ("membership_sequence", "UInt64"), ("publication_id", "UUID"),
+     ("previous_hash", "FixedString(64)"),
      ("member_count", "UInt32"), ("member_hash", "FixedString(64)"),
      ("watch_count", "UInt32"), ("watch_hash", "FixedString(64)"),
      ("content_hash", "FixedString(64)")),
@@ -34,6 +36,7 @@ MEMBER = TableContract(
     "live_plan_assignment_member_typed_v1",
     (("schema_version", "UInt16"), ("configuration_revision_id", "String"),
      ("session_key", "Date"), ("membership_sequence", "UInt64"),
+     ("publication_id", "UUID"),
      ("assignment_id", "String"), ("run_plan_id", "String"),
      ("base_sequence", "UInt64"), ("base_hash", "FixedString(64)"),
      ("content_hash", "FixedString(64)")),
@@ -44,6 +47,7 @@ WATCH = TableContract(
     "live_plan_activated_watch_typed_v1",
     (("schema_version", "UInt16"), ("configuration_revision_id", "String"),
      ("session_key", "Date"), ("membership_sequence", "UInt64"),
+     ("publication_id", "UUID"),
      ("run_plan_id", "String"), ("ticker", "String"),
      ("profile_id", "String"), ("book_id", "String"),
      ("content_hash", "FixedString(64)")),
@@ -85,12 +89,24 @@ def _identity(value: Any) -> str:
     return value
 
 
+def _publication_id(value: Any) -> str:
+    if type(value) is not str:
+        raise ValueError("plan membership publication ID is invalid")
+    try:
+        parsed = UUID(value)
+    except (ValueError, AttributeError) as exc:
+        raise ValueError("plan membership publication ID is invalid") from exc
+    if str(parsed) != value or parsed.int == 0:
+        raise ValueError("plan membership publication ID is invalid")
+    return value
+
+
 def project_plan_membership(
     members: Sequence[PinnedAssignmentMember],
     watches: Sequence[PlanWatchMember], *,
     configuration_revision_id: str, configuration_content_hash: str,
     session_key: str, source_cursor_commit_hash: str,
-    membership_sequence: int, previous_hash: str,
+    membership_sequence: int, publication_id: str, previous_hash: str,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...],
            tuple[dict[str, Any], ...]]:
     from datetime import date
@@ -98,6 +114,7 @@ def project_plan_membership(
     _digest(configuration_content_hash)
     _digest(source_cursor_commit_hash)
     _digest(previous_hash)
+    _publication_id(publication_id)
     if (type(session_key) is not str
             or date.fromisoformat(session_key).isoformat() != session_key
             or type(membership_sequence) is not int
@@ -118,6 +135,7 @@ def project_plan_membership(
         row = dict(schema_version=1,
                    configuration_revision_id=configuration_revision_id,
                    session_key=session_key, membership_sequence=membership_sequence,
+                   publication_id=publication_id,
                    assignment_id=assignment_id,
                    run_plan_id=_identity(member.run_plan_id),
                    base_sequence=member.base_sequence,
@@ -135,6 +153,7 @@ def project_plan_membership(
         row = dict(schema_version=1,
                    configuration_revision_id=configuration_revision_id,
                    session_key=session_key, membership_sequence=membership_sequence,
+                   publication_id=publication_id,
                    run_plan_id=key[0], ticker=key[1],
                    profile_id=_identity(watch.profile_id),
                    book_id=_identity(watch.book_id))
@@ -145,6 +164,7 @@ def project_plan_membership(
                   session_key=session_key,
                   source_cursor_commit_hash=source_cursor_commit_hash,
                   membership_sequence=membership_sequence,
+                  publication_id=publication_id,
                   previous_hash=previous_hash,
                   member_count=len(children), member_hash=_hash(children),
                   watch_count=len(watch_rows), watch_hash=_hash(watch_rows))
@@ -157,9 +177,11 @@ class PlanMembershipRows(Protocol):
                        session_key: str, limit: int) -> list[Mapping[str, Any]]: ...
     def read_members(self, *, configuration_revision_id: str,
                      session_key: str, membership_sequence: int,
+                     publication_id: str,
                      limit: int) -> list[Mapping[str, Any]]: ...
     def read_watches(self, *, configuration_revision_id: str,
                      session_key: str, membership_sequence: int,
+                     publication_id: str,
                      limit: int) -> list[Mapping[str, Any]]: ...
 
 
@@ -231,24 +253,41 @@ def recover_attested_plan_membership(
         raise ValueError("plan membership Keeper head is invalid")
     _digest(first[1])
     parents = rows.read_revisions(configuration_revision_id=configuration_revision_id,
-                                  session_key=session_key, limit=max_revisions + 1)
-    if len(parents) != first[0]:
-        raise ValueError("plan membership revision chain has gap or orphan")
-    by_seq = {row.get("membership_sequence"): row for row in parents}
-    if len(by_seq) != first[0] or set(by_seq) != set(range(1, first[0] + 1)):
-        raise ValueError("plan membership revision chain has duplicate or gap")
+                                  session_key=session_key, limit=100_001)
+    if len(parents) > 100_000:
+        raise ValueError("plan membership attempt bound exceeded")
+    # A delayed INSERT from an owner whose Keeper claim expired can add rows
+    # after a newer publication was attested. Only the hash chain ending at
+    # Keeper's accepted head is authoritative; other attempts are inert.
+    by_hash: dict[str, list[Mapping[str, Any]]] = {}
+    for row in parents:
+        by_hash.setdefault(str(row.get("content_hash")), []).append(row)
+    accepted: dict[int, Mapping[str, Any]] = {}
+    expected_hash = first[1]
+    for sequence in range(first[0], 0, -1):
+        matches = [row for row in by_hash.get(expected_hash, ())
+                   if row.get("membership_sequence") == sequence]
+        if len(matches) != 1:
+            raise ValueError("plan membership accepted chain has duplicate or gap")
+        accepted[sequence] = matches[0]
+        expected_hash = _digest(matches[0].get("previous_hash"))
+    if expected_hash != ZERO_HASH:
+        raise ValueError("plan membership accepted chain has an invalid root")
     previous = ZERO_HASH
     result = ()
     result_watches = ()
     for sequence in range(1, first[0] + 1):
-        parent = by_seq[sequence]
+        parent = accepted[sequence]
+        publication_id = _publication_id(parent.get("publication_id"))
         children = rows.read_members(
             configuration_revision_id=configuration_revision_id,
             session_key=session_key, membership_sequence=sequence,
+            publication_id=publication_id,
             limit=100_001)
         watch_rows = rows.read_watches(
             configuration_revision_id=configuration_revision_id,
             session_key=session_key, membership_sequence=sequence,
+            publication_id=publication_id,
             limit=100_001)
         if (len(children) > 100_000
                 or len(watch_rows) > 100_000
@@ -272,7 +311,8 @@ def recover_attested_plan_membership(
             configuration_content_hash=configuration_content_hash,
             session_key=session_key,
             source_cursor_commit_hash=_digest(parent["source_cursor_commit_hash"]),
-            membership_sequence=sequence, previous_hash=previous)
+            membership_sequence=sequence, publication_id=publication_id,
+            previous_hash=previous)
         if (dict(parent) != expected
                 or tuple(map(dict, children)) != expected_children
                 or tuple(map(dict, watch_rows)) != expected_watches):
@@ -281,7 +321,7 @@ def recover_attested_plan_membership(
                                             decoded, decoded_watches)
     if previous != first[1]:
         raise ValueError("plan membership chain differs from Keeper head")
-    if by_seq[first[0]]["source_cursor_commit_hash"] != _digest(source_cursor_commit_hash):
+    if accepted[first[0]]["source_cursor_commit_hash"] != _digest(source_cursor_commit_hash):
         raise ValueError("plan membership latest source cursor differs")
     if keeper.read_head(configuration_revision_id=configuration_revision_id,
                         session_key=session_key) != first:

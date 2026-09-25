@@ -17,6 +17,8 @@ from tests.test_live_signal_completion_keeper import FakeKazoo
 
 CONFIG = "config-1"
 SESSION = "2026-09-24"
+PUBLICATION_ONE = "00000000-0000-0000-0000-000000000001"
+PUBLICATION_TWO = "00000000-0000-0000-0000-000000000002"
 
 
 def _fixture():
@@ -29,24 +31,25 @@ def _fixture():
         members, watches, configuration_revision_id=CONFIG,
         configuration_content_hash="c" * 64, session_key=SESSION,
         source_cursor_commit_hash="d" * 64,
-        membership_sequence=1, previous_hash=ZERO_HASH)
+        membership_sequence=1, publication_id=PUBLICATION_ONE,
+        previous_hash=ZERO_HASH)
     return parent, children, watch_rows, members, watches
 
 
 class Rows:
     def __init__(self, parent, children, watches):
         self.parents = [deepcopy(parent)]
-        self.children = {1: list(map(deepcopy, children))}
-        self.watches = {1: list(map(deepcopy, watches))}
+        self.children = {(1, parent["publication_id"]): list(map(deepcopy, children))}
+        self.watches = {(1, parent["publication_id"]): list(map(deepcopy, watches))}
     def read_revisions(self, *, configuration_revision_id, session_key, limit):
         assert configuration_revision_id == CONFIG and session_key == SESSION
         return deepcopy(self.parents[:limit])
     def read_members(self, *, configuration_revision_id, session_key,
-                     membership_sequence, limit):
-        return deepcopy(self.children[membership_sequence][:limit])
+                     membership_sequence, publication_id, limit):
+        return deepcopy(self.children[(membership_sequence, publication_id)][:limit])
     def read_watches(self, *, configuration_revision_id, session_key,
-                     membership_sequence, limit):
-        return deepcopy(self.watches[membership_sequence][:limit])
+                     membership_sequence, publication_id, limit):
+        return deepcopy(self.watches[(membership_sequence, publication_id)][:limit])
 
 
 class Keeper:
@@ -67,7 +70,7 @@ def test_compact_full_roster_membership_roundtrip_and_storage_policy():
     parent, children, watch_rows, members, watches = _fixture()
     assert {name for name, _ in MEMBER.columns} == {
         "schema_version", "configuration_revision_id", "session_key",
-        "membership_sequence", "assignment_id", "run_plan_id",
+        "membership_sequence", "publication_id", "assignment_id", "run_plan_id",
         "base_sequence", "base_hash", "content_hash"}
     assert "ticker" not in dict(MEMBER.columns)
     assert "profile_id" not in dict(MEMBER.columns)
@@ -88,18 +91,19 @@ def test_membership_cold_read_rejects_orphan_gap_and_content(mutation):
     if mutation == "extra":
         rows.parents.append(deepcopy(parent))
     elif mutation == "missing":
-        rows.children[1].pop()
+        rows.children[(1, PUBLICATION_ONE)].pop()
     elif mutation == "child_hash":
-        rows.children[1][0]["content_hash"] = "e" * 64
+        rows.children[(1, PUBLICATION_ONE)][0]["content_hash"] = "e" * 64
     else:
         if mutation == "wrong_plan":
-            rows.children[1][0]["run_plan_id"] = "other"
+            rows.children[(1, PUBLICATION_ONE)][0]["run_plan_id"] = "other"
         elif mutation == "missing_watch":
-            rows.watches[1].clear()
+            rows.watches[(1, PUBLICATION_ONE)].clear()
         elif mutation == "extra_watch":
-            rows.watches[1].append(dict(rows.watches[1][0], ticker="XYZ"))
+            rows.watches[(1, PUBLICATION_ONE)].append(dict(
+                rows.watches[(1, PUBLICATION_ONE)][0], ticker="XYZ"))
         else:
-            rows.watches[1][0]["content_hash"] = "e" * 64
+            rows.watches[(1, PUBLICATION_ONE)][0]["content_hash"] = "e" * 64
     with pytest.raises(ValueError):
         _recover(rows, Keeper(parent))
 
@@ -111,7 +115,8 @@ def test_membership_rejects_deployment_id_as_authority_and_unpinned_source():
             members, watches, configuration_revision_id=CONFIG,
             configuration_content_hash="c" * 64, session_key=SESSION,
             source_cursor_commit_hash="unverified",
-            membership_sequence=1, previous_hash=ZERO_HASH)
+            membership_sequence=1, publication_id=PUBLICATION_ONE,
+            previous_hash=ZERO_HASH)
     # There is deliberately no deployment_id field in either typed table.
     assert "deployment_id" not in dict(PARENT.columns)
     assert "deployment_id" not in dict(MEMBER.columns)
@@ -145,17 +150,35 @@ def test_membership_chain_allows_new_source_cursor_without_rewriting_prior_revis
         members, watches, configuration_revision_id=CONFIG,
         configuration_content_hash="c" * 64, session_key=SESSION,
         source_cursor_commit_hash="e" * 64,
-        membership_sequence=2, previous_hash=first["content_hash"])
+        membership_sequence=2, publication_id=PUBLICATION_TWO,
+        previous_hash=first["content_hash"])
     rows = Rows(first, first_children, first_watches)
     rows.parents.append(second)
-    rows.children[2] = list(second_children)
-    rows.watches[2] = list(second_watches)
+    rows.children[(2, PUBLICATION_TWO)] = list(second_children)
+    rows.watches[(2, PUBLICATION_TWO)] = list(second_watches)
     keeper = Keeper(second)
     keeper.head = (2, second["content_hash"], 1)
     assert recover_attested_plan_membership(
         rows, keeper, configuration_revision_id=CONFIG,
         configuration_content_hash="c" * 64, session_key=SESSION,
         source_cursor_commit_hash="e" * 64).assignments == members
+
+
+def test_late_unattested_attempt_at_same_sequence_is_not_recovered():
+    accepted, children, watches, members, expected_watches = _fixture()
+    stale, stale_children, stale_watches = project_plan_membership(
+        members, expected_watches, configuration_revision_id=CONFIG,
+        configuration_content_hash="c" * 64, session_key=SESSION,
+        source_cursor_commit_hash="f" * 64, membership_sequence=1,
+        publication_id=PUBLICATION_TWO, previous_hash=ZERO_HASH)
+    rows = Rows(accepted, children, watches)
+    rows.parents.append(stale)
+    rows.children[(1, PUBLICATION_TWO)] = list(stale_children)
+    rows.watches[(1, PUBLICATION_TWO)] = list(stale_watches)
+    recovered = _recover(rows, Keeper(accepted))
+    assert recovered.assignments == members
+    assert recovered.watches == expected_watches
+    assert recovered.head_hash == accepted["content_hash"]
 
 
 def test_selected_plan_adapter_uses_stored_watch_rows_not_observed_activations():

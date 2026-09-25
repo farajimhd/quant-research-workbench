@@ -59,7 +59,7 @@ _CAPACITY_COLUMNS = frozenset({
 
 
 def install_live_plan_membership(client: object, *, apply: bool) -> str:
-    """Install the three typed control-plane tables; never insert rows."""
+    """Install or safely upgrade empty typed control-plane tables; no rows."""
     names = ",".join(f"'{table.name}'" for table in LIVE_PLAN_MEMBERSHIP_TABLES)
     result = [json.loads(line) for line in client.execute(
         "SELECT name FROM system.tables WHERE database='arte' "
@@ -68,16 +68,41 @@ def install_live_plan_membership(client: object, *, apply: bool) -> str:
     if (len(installed) != len(result) or
             any(set(row) != {"name"} for row in result)):
         raise RuntimeError("Live membership table inventory is ambiguous")
+    legacy = []
     for table in LIVE_PLAN_MEMBERSHIP_TABLES:
-        if table.name in installed:
+        if table.name not in installed:
+            continue
+        columns = tuple((row["name"], row["type"]) for row in (
+            json.loads(line) for line in client.execute(
+                "SELECT name,type FROM system.columns WHERE database='arte' "
+                f"AND table='{table.name}' ORDER BY position FORMAT JSONEachRow"
+            ).splitlines() if line.strip()))
+        old_columns = tuple(column for column in table.columns
+                            if column[0] != "publication_id")
+        if columns == table.columns:
             storage_preflight(client, tables=(table,))
-    if len(installed) == len(LIVE_PLAN_MEMBERSHIP_TABLES):
+        elif columns == old_columns:
+            storage_preflight(client, tables=(TableContract(
+                table.name, old_columns, table.partition, table.order),))
+            if client.execute(f"SELECT count() FROM arte.{table.name}").strip() != "0":
+                raise RuntimeError("Occupied membership table requires versioned migration")
+            legacy.append(table)
+        else:
+            raise RuntimeError(f"Live membership columns differ: {table.name}")
+    if len(installed) == len(LIVE_PLAN_MEMBERSHIP_TABLES) and not legacy:
         return "verified"
     if not apply:
         return "planned"
     for table in LIVE_PLAN_MEMBERSHIP_TABLES:
         if table.name not in installed:
             client.execute(table.ddl())
+            storage_preflight(client, tables=(table,))
+        elif table in legacy:
+            if client.execute(f"SELECT count() FROM arte.{table.name}").strip() != "0":
+                raise RuntimeError("Membership table became occupied before ALTER")
+            client.execute(
+                f"ALTER TABLE arte.{table.name} ADD COLUMN IF NOT EXISTS "
+                "publication_id UUID AFTER membership_sequence")
             storage_preflight(client, tables=(table,))
     return "upgraded"
 

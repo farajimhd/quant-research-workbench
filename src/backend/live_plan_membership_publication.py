@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
+from uuid import uuid4
 
 from src.backend.live_assignment_activation_join import PinnedAssignmentMember
 from src.backend.live_plan_membership import (
@@ -38,9 +39,11 @@ class WritableMembershipRows(Protocol):
                        session_key: str, limit: int) -> list[Mapping[str, Any]]: ...
     def read_members(self, *, configuration_revision_id: str,
                      session_key: str, membership_sequence: int,
+                     publication_id: str,
                      limit: int) -> list[Mapping[str, Any]]: ...
     def read_watches(self, *, configuration_revision_id: str,
                      session_key: str, membership_sequence: int,
+                     publication_id: str,
                      limit: int) -> list[Mapping[str, Any]]: ...
     def insert_members(self, rows: Sequence[Mapping[str, Any]]) -> None: ...
     def insert_watches(self, rows: Sequence[Mapping[str, Any]]) -> None: ...
@@ -178,14 +181,18 @@ def publish_plan_membership(
             configuration_revision_id=configuration_revision_id,
             session_key=session_key, limit=100_001)
         prior_sequence = 0 if prior is None else prior[0]
-        if (len(existing) != prior_sequence
-                or (prior is not None and (
-                    existing[-1].get("content_hash") != prior[1]
-                    or existing[-1].get("membership_sequence") != prior_sequence))):
+        if len(existing) > 100_000:
             uncertain = True
             raise UncertainMembershipPublication(
-                "plan membership has missing, duplicate, or orphan revisions")
+                "plan membership publication attempt bound exceeded")
         if prior is not None:
+            latest = [row for row in existing
+                      if row.get("membership_sequence") == prior_sequence
+                      and row.get("content_hash") == prior[1]]
+            if len(latest) != 1:
+                uncertain = True
+                raise UncertainMembershipPublication(
+                    "plan membership accepted head is missing or duplicate")
             class _PinnedHead:
                 def read_head(self, *, configuration_revision_id: str,
                               session_key: str) -> tuple[int, str, int]:
@@ -202,7 +209,7 @@ def publish_plan_membership(
                     configuration_revision_id=configuration_revision_id,
                     configuration_content_hash=approved_revision.content_hash,
                     session_key=session_key,
-                    source_cursor_commit_hash=existing[-1]["source_cursor_commit_hash"],
+                    source_cursor_commit_hash=latest[0]["source_cursor_commit_hash"],
                     max_revisions=100_000,
                 )
             except BaseException as exc:
@@ -212,11 +219,14 @@ def publish_plan_membership(
         sequence = prior_sequence + 1
         if sequence > 100_000:
             raise ValueError("plan membership revision bound exceeded")
+        publication_id = str(uuid4())
         if (rows.read_members(configuration_revision_id=configuration_revision_id,
                               session_key=session_key, membership_sequence=sequence,
+                              publication_id=publication_id,
                               limit=1)
                 or rows.read_watches(configuration_revision_id=configuration_revision_id,
                                      session_key=session_key, membership_sequence=sequence,
+                                     publication_id=publication_id,
                                      limit=1)):
             uncertain = True
             raise UncertainMembershipPublication(
@@ -226,7 +236,7 @@ def publish_plan_membership(
             configuration_content_hash=approved_revision.content_hash,
             session_key=session_key,
             source_cursor_commit_hash=source_cursor.content_hash,
-            membership_sequence=sequence,
+            membership_sequence=sequence, publication_id=publication_id,
             previous_hash=ZERO_HASH if prior is None else prior[1])
         approved_revision.assert_current()
         source_cursor.assert_current()
@@ -251,13 +261,17 @@ def publish_plan_membership(
             actual_members = rows.read_members(
                 configuration_revision_id=configuration_revision_id,
                 session_key=session_key, membership_sequence=sequence,
+                publication_id=publication_id,
                 limit=100_001)
             actual_watches = rows.read_watches(
                 configuration_revision_id=configuration_revision_id,
                 session_key=session_key, membership_sequence=sequence,
+                publication_id=publication_id,
                 limit=100_001)
-            if (len(actual_parents) != sequence
-                    or actual_parents[-1] != parent
+            accepted_attempt = [row for row in actual_parents
+                                if row.get("membership_sequence") == sequence
+                                and row.get("publication_id") == publication_id]
+            if (len(accepted_attempt) != 1 or accepted_attempt[0] != parent
                     or tuple(actual_members) != member_rows
                     or tuple(actual_watches) != watch_rows):
                 raise ValueError("plan membership exact readback differs")
