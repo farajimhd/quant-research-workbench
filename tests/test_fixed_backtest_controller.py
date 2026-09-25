@@ -224,14 +224,16 @@ def test_inactive_fixed_terminal_handoff_orders_cursor_finish_capture_worker_aud
     controller._runtime = SimpleNamespace(
         finish=finish, portfolio=SimpleNamespace(capture_recovery_snapshot=capture))
     async def checkpoint(at):
-        events.append("cursor")
-        assert at == controller.current_time
+        raise AssertionError("fixed terminal handoff cannot write a disk checkpoint")
     controller._save_restart_checkpoint_responsive = checkpoint
     seal = {"last_sequence": 3, "run_id": V2_RUN,
             "batch_id": "00000000-0000-0000-0000-000000000b04"}
     handoff = SimpleNamespace(commit=seal, publication_fields=lambda: {"account_ids": ("DU1",)})
     controller._prepare_terminal_v2_handoff = lambda got, **_: handoff if got == prefix else None
-    monkeypatch.setattr(arte_journal_writer, "load_committed_prefix", lambda *_: prefix)
+    def verified_v2_prefix(*_args, **kwargs):
+        assert kwargs == {"journal_profile": "backtest_v2"}
+        return prefix
+    monkeypatch.setattr(arte_journal_writer, "load_committed_prefix", verified_v2_prefix)
     monkeypatch.setattr(publication, "publish_terminal_v2_suffix",
                         lambda *_, **__: events.append("publish") or seal)
     monkeypatch.setattr(recovery, "load_terminal_v2_portfolio_accounts",
@@ -249,7 +251,7 @@ def test_inactive_fixed_terminal_handoff_orders_cursor_finish_capture_worker_aud
                 "completed", authority=authority)
     result = asyncio.run(run())
     assert result == {"seal": seal, "accounts": {"DU1": {"state_hash": "a" * 64}}}
-    assert events.index("cursor") < events.index("runtime_finish") < events.index("capture")
+    assert events.index("runtime_finish") < events.index("capture")
     assert events.index("capture") < events.index("publish") < events.index("cold_audit")
     assert events.index("cold_audit") < events.index("attest") < events.index("attested_audit")
     assert controller._runtime_finished
@@ -258,7 +260,7 @@ def test_inactive_fixed_terminal_handoff_orders_cursor_finish_capture_worker_aud
 def test_fixed_journal_refuses_retired_bt_resume_even_after_typed_preflight(monkeypatch):
     from src.backend import backtest_journal_clickhouse
     from src.backend import backtest_terminal_v2_preflight
-    from src.trading_runtime import arte_journal_schema, arte_journal_writer
+    from src.trading_runtime import arte_journal_writer
 
     class Client:
         closed = False
@@ -268,8 +270,6 @@ def test_fixed_journal_refuses_retired_bt_resume_even_after_typed_preflight(monk
     client = Client()
     checked = []
     monkeypatch.setattr(arte_journal_writer, "journal_client_from_env", lambda: client)
-    monkeypatch.setattr(arte_journal_schema, "storage_preflight",
-                        lambda value: checked.append(("storage", value)))
     monkeypatch.setattr(backtest_terminal_v2_preflight, "terminal_v2_operator_preflight",
                         lambda value: checked.append(("v2_storage_and_grants", value)))
     monkeypatch.setattr(backtest_journal_clickhouse, "load_fenced_checkpoint",
@@ -283,7 +283,7 @@ def test_fixed_journal_refuses_retired_bt_resume_even_after_typed_preflight(monk
 
     with pytest.raises(RuntimeError, match="typed journal publication and cold recovery"):
         asyncio.run(controller._open_fixed_journal())
-    assert checked == [("storage", client), ("v2_storage_and_grants", client)]
+    assert checked == [("v2_storage_and_grants", client)]
     assert client.closed
 
 
