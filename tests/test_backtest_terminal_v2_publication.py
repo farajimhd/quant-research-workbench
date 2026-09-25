@@ -50,7 +50,7 @@ def test_fake_publisher_commits_last_and_retries_exact_partial_facts(monkeypatch
     prefix, kwargs = _kwargs()
     client = FakeStorage()
     monkeypatch.setattr(publication, "load_committed_prefix",
-                        lambda _client, run_id: prefix if run_id == RUN else None)
+                        lambda _client, run_id, **kwargs: prefix if run_id == RUN and kwargs.get("journal_profile") == "backtest_v2" else None)
     client.fail_commit_once = True
     with pytest.raises(RuntimeError, match="fake crash"):
         publication.publish_terminal_v2_suffix(client, prefix, **kwargs)
@@ -67,7 +67,7 @@ def test_fake_publisher_commits_last_and_retries_exact_partial_facts(monkeypatch
     assert publication.publish_terminal_v2_suffix(client, prefix, **kwargs) == seal
     assert len(client.insert_order) == 5
     monkeypatch.setattr(publication, "load_committed_prefix",
-                        lambda _client, run_id: prefix if run_id == RUN else None)
+                        lambda _client, run_id, **kwargs: prefix if run_id == RUN and kwargs.get("journal_profile") == "backtest_v2" else None)
     assert publication.audit_terminal_v2_run(client, run_id=RUN,
                                               account_ids=("DU1",)) == seal
 
@@ -76,7 +76,7 @@ def test_fake_publisher_rejects_conflicting_uncommitted_fact_before_seal(monkeyp
     prefix, kwargs = _kwargs()
     client = FakeStorage()
     monkeypatch.setattr(publication, "load_committed_prefix",
-                        lambda _client, run_id: prefix if run_id == RUN else None)
+                        lambda _client, run_id, **kwargs: prefix if run_id == RUN and kwargs.get("journal_profile") == "backtest_v2" else None)
     client.tables["trading_backtest_account_snapshot_v2"].append(
         {**kwargs["accounts"][0], "account_id": "OTHER"})
     with pytest.raises(ValueError, match="row hash differs"):
@@ -95,7 +95,7 @@ def test_portfolio_anchor_is_durable_before_terminal_seal_and_retry_exact(monkey
     monkeypatch.setattr(publication, "CapturedPortfolioSnapshot", type(capture))
     monkeypatch.setattr(publication, "prepare_captured_portfolio_snapshot",
                         lambda row: row)
-    monkeypatch.setattr(publication, "load_committed_prefix", lambda *_: prefix)
+    monkeypatch.setattr(publication, "load_committed_prefix", lambda *_, **__: prefix)
     def stored(_client, _run, account):
         return [_canonical_typed_content(
                     "trading_backtest_snapshot_anchor_v1",

@@ -9,7 +9,9 @@ from src.backend.backtest_terminal_v2_fence import (
     load_terminal_v2_commit, project_terminal_v2_commit, seal_v2_row,
 )
 from src.trading_runtime.arte_journal_projection import runtime_lifecycle_batch
-from src.trading_runtime.arte_journal_writer import CommittedPrefix, typed_row
+from src.trading_runtime.arte_journal_writer import (
+    CommittedPrefix, V2CommittedPrefix, typed_row,
+)
 from src.trading_runtime.ibkr_schema import AccountSummary, PortfolioPosition
 from src.trading_runtime.journal_contract import canonical_json
 
@@ -64,7 +66,7 @@ def _suffix():
         batch_id=BATCH, prior_batch_id=PRIOR, source_cursor="start")
     transitions = (typed_row("trading_run_transition_v1",
                              lifecycle.run_transitions[0]),)
-    prefix = CommittedPrefix(RUN, 1, PRIOR, "start", "running", (PRIOR,))
+    prefix = V2CommittedPrefix(RUN, 1, PRIOR, "start", "running", (PRIOR,))
     return prefix, tuple(events), transitions, accounts, positions
 
 
@@ -74,7 +76,7 @@ def test_v2_terminal_commit_seals_exact_sequence_and_cold_fake_rows():
         prefix, attempt_id=ATTEMPT, batch_id=BATCH, account_ids=("DU1",), source_cursor="start",
         status="completed", committed_at=AT, events=events,
         transitions=transitions, accounts=accounts, positions=positions)
-    assert seal["prior_v1_batch_id"] == PRIOR
+    assert seal["prior_v2_batch_id"] == PRIOR
     assert (seal["first_sequence"], seal["last_sequence"]) == (2, 4)
     assert (seal["event_count"], seal["account_count"], seal["position_count"]) == (3, 1, 1)
     for key in ("event_hash", "run_transition_hash", "account_hash", "position_hash"):
@@ -99,6 +101,21 @@ def test_v2_terminal_commit_seals_exact_sequence_and_cold_fake_rows():
         load_terminal_v2_commit(Client(), prefix, account_ids=("DU1",))
 
 
+def test_v2_terminal_refuses_a_legacy_v1_running_prefix():
+    prefix, events, transitions, accounts, positions = _suffix()
+    legacy = CommittedPrefix(
+        prefix.run_id, prefix.last_sequence, prefix.last_batch_id,
+        prefix.source_cursor, prefix.status, prefix.batch_ids,
+    )
+    with pytest.raises(ValueError, match="running prefix"):
+        project_terminal_v2_commit(
+            legacy, attempt_id=ATTEMPT, batch_id=BATCH,
+            account_ids=("DU1",), source_cursor="start", status="completed",
+            committed_at=AT, events=events, transitions=transitions,
+            accounts=accounts, positions=positions,
+        )
+
+
 def test_v2_terminal_commit_rejects_missing_child_and_lifecycle_reordering():
     prefix, events, transitions, accounts, positions = _suffix()
     kwargs = dict(attempt_id=ATTEMPT, batch_id=BATCH, account_ids=("DU1",), source_cursor="start",
@@ -106,7 +123,7 @@ def test_v2_terminal_commit_rejects_missing_child_and_lifecycle_reordering():
                   transitions=transitions, accounts=accounts, positions=positions)
     with pytest.raises(ValueError, match="do not cover exactly"):
         project_terminal_v2_commit(prefix, **dict(kwargs, positions=()))
-    with pytest.raises(ValueError, match="do not extend the V1 sequence"):
+    with pytest.raises(ValueError, match="do not extend the running sequence"):
         project_terminal_v2_commit(prefix, **dict(kwargs, events=(events[2], *events[:2])))
     with pytest.raises(ValueError, match="population differs"):
         project_terminal_v2_commit(prefix, **dict(kwargs, account_ids=("OTHER",)))
@@ -114,5 +131,5 @@ def test_v2_terminal_commit_rejects_missing_child_and_lifecycle_reordering():
         **{key: value for key, value in events[0].items() if key != "content_hash"},
         "attempt_id": "00000000-0000-0000-0000-000000000b06",
     })
-    with pytest.raises(ValueError, match="do not extend the V1 sequence"):
+    with pytest.raises(ValueError, match="do not extend the running sequence"):
         project_terminal_v2_commit(prefix, **dict(kwargs, events=(wrong_attempt, *events[1:])))

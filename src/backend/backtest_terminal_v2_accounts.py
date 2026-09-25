@@ -38,9 +38,9 @@ def _instant(value: Any) -> datetime:
 def load_terminal_v2_portfolio_accounts(
     client: Any, *, run_id: str,
 ) -> dict[str, dict[str, Any]]:
-    """Verify full V1/V2 authority and every pinned account's anchored state."""
+    """Verify the V2 authority and every pinned account's anchored state."""
     context = load_typed_run_context(client, run_id)
-    prefix = load_committed_prefix(client, run_id)
+    prefix = load_committed_prefix(client, run_id, journal_profile="backtest_v2")
     accounts = tuple(context.get("account_ids") or ())
     if (context.get("mode") != "backtest"
             or prefix is None or prefix.status != "running"
@@ -98,7 +98,7 @@ def load_terminal_v2_portfolio_accounts(
                 or _instant(snapshot.get("snapshot_at")) != terminal_at):
             raise RuntimeError("Terminal V2 anchor differs from committed portfolio state")
         result[account_id] = snapshot
-    if (load_committed_prefix(client, run_id) != prefix
+    if (load_committed_prefix(client, run_id, journal_profile="backtest_v2") != prefix
             or load_typed_run_context(client, run_id) != context
             or load_terminal_v2_commit(client, prefix, account_ids=accounts) != seal):
         raise RuntimeError("Terminal V2 recovery authority changed during audit")

@@ -9,7 +9,7 @@ from src.backend.backtest_terminal_snapshot_v2 import (
     position_set_sha256, project_position_scalars,
 )
 from src.backend.replay_run_service import ReplayRunController, RunMode
-from src.trading_runtime.arte_journal_writer import CommittedPrefix
+from src.trading_runtime.arte_journal_writer import V2CommittedPrefix
 from src.trading_runtime.ibkr_schema import AccountSummary, PortfolioPosition
 from tests.test_backtest_terminal_v2_publication import FakeStorage
 
@@ -43,7 +43,7 @@ def _controller():
     journal.append(run_id=RUN, category="lifecycle", entity_type="run",
                    entity_id=RUN, event_time=AT,
                    payload={"status": "completed", "processed_events": 10})
-    prefix = CommittedPrefix(RUN, 1, PRIOR, "start", "running", (PRIOR,))
+    prefix = V2CommittedPrefix(RUN, 1, PRIOR, "start", "running", (PRIOR,))
     controller = object.__new__(ReplayRunController)
     controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
     controller._account_map = {"DU1": "DU1"}
@@ -65,7 +65,7 @@ def test_controller_prepares_exact_terminal_suffix_and_fake_publisher_seals(monk
     assert handoff.positions[0]["parent_snapshot_id"] == handoff.accounts[0]["snapshot_id"]
     client = FakeStorage()
     monkeypatch.setattr(publication, "load_committed_prefix",
-                        lambda _client, run_id: prefix if run_id == RUN else None)
+                        lambda _client, run_id, **kwargs: prefix if run_id == RUN and kwargs.get("journal_profile") == "backtest_v2" else None)
     assert publication.publish_terminal_v2_suffix(
         client, prefix, **handoff.publication_fields()) == handoff.commit
     assert len(client.tables["trading_backtest_terminal_commit_v2"]) == 1
@@ -74,7 +74,7 @@ def test_controller_prepares_exact_terminal_suffix_and_fake_publisher_seals(monk
 def test_controller_handoff_rejects_stale_prefix_and_unmodeled_suffix():
     controller, prefix = _controller()
     controller._journal_publisher._batch_id = "00000000-0000-0000-0000-000000000c05"
-    with pytest.raises(RuntimeError, match="settled typed V1 prefix"):
+    with pytest.raises(RuntimeError, match="settled typed V2 prefix"):
         controller._prepare_terminal_v2_handoff(prefix, committed_at=AT)
     controller._journal_publisher._batch_id = PRIOR
     controller._journal.append(run_id=RUN, category="snapshot",

@@ -15,7 +15,7 @@ from src.backend.backtest_terminal_v2_fence import (
     load_terminal_v2_commit, project_terminal_v2_commit,
 )
 from src.trading_runtime.arte_journal_writer import (
-    CommittedPrefix, _canonical_typed_content, _insert, _literal, _rows,
+    V2CommittedPrefix, _canonical_typed_content, _insert, _literal, _rows,
     load_committed_prefix, typed_row,
 )
 from src.trading_runtime.arte_backtest_snapshot_anchor import _stored as _stored_anchors
@@ -87,7 +87,7 @@ def _insert_missing(
 
 
 def publish_terminal_v2_suffix(
-    client: Any, prefix: CommittedPrefix, *, account_ids: tuple[str, ...],
+    client: Any, prefix: V2CommittedPrefix, *, account_ids: tuple[str, ...],
     attempt_id: str, batch_id: str, source_cursor: str, status: str,
     committed_at: datetime, events: tuple[Mapping[str, Any], ...],
     transitions: tuple[Mapping[str, Any], ...],
@@ -97,11 +97,11 @@ def publish_terminal_v2_suffix(
 ) -> dict[str, Any]:
     """Publish exact typed facts, then the V2 terminal commit last.
 
-    The passed prefix must already be a whole-run verified V1 prefix. This
+    The passed prefix must already be a whole-run verified V2 prefix. This
     module deliberately does not create tables or open a ClickHouse client.
     """
-    if load_committed_prefix(client, prefix.run_id) != prefix:
-        raise RuntimeError("Terminal V2 publication lost its verified V1 prefix")
+    if load_committed_prefix(client, prefix.run_id, journal_profile="backtest_v2") != prefix:
+        raise RuntimeError("Terminal V2 publication lost its verified V2 prefix")
     expected = project_terminal_v2_commit(
         prefix, account_ids=account_ids, attempt_id=attempt_id,
         batch_id=batch_id, source_cursor=source_cursor, status=status,
@@ -122,8 +122,8 @@ def publish_terminal_v2_suffix(
     if checked and (len(checked) != 1 or checked[0] != expected):
         raise RuntimeError("Terminal V2 commit conflicts with an existing seal")
     if not checked:
-        if load_committed_prefix(client, prefix.run_id) != prefix:
-            raise RuntimeError("Terminal V2 publication lost its verified V1 prefix")
+        if load_committed_prefix(client, prefix.run_id, journal_profile="backtest_v2") != prefix:
+            raise RuntimeError("Terminal V2 publication lost its verified V2 prefix")
         columns = tuple(expected)
         client.execute(
             f"INSERT INTO arte.{_COMMIT} ({','.join(columns)}) "
@@ -135,7 +135,7 @@ def publish_terminal_v2_suffix(
 
 
 def _publish_portfolio_anchors(
-    client: Any, *, prefix: CommittedPrefix, seal: Mapping[str, Any],
+    client: Any, *, prefix: V2CommittedPrefix, seal: Mapping[str, Any],
     account_ids: tuple[str, ...], events: tuple[Mapping[str, Any], ...],
     captures: tuple[CapturedPortfolioSnapshot, ...],
 ) -> None:
@@ -196,8 +196,8 @@ def _publish_portfolio_anchors(
 def audit_terminal_v2_run(
     client: Any, *, run_id: str, account_ids: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Cold whole-run V1 chain verification followed by the V2 terminal seal."""
-    prefix = load_committed_prefix(client, run_id)
+    """Cold whole-run V2 chain verification followed by the V2 terminal seal."""
+    prefix = load_committed_prefix(client, run_id, journal_profile="backtest_v2")
     if prefix is None or prefix.status != "running":
-        raise RuntimeError("Terminal V2 audit lacks a verified running V1 prefix")
+        raise RuntimeError("Terminal V2 audit lacks a verified running V2 prefix")
     return load_terminal_v2_commit(client, prefix, account_ids=account_ids)

@@ -1207,8 +1207,8 @@ BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES = (
         (
             ("run_id", "String"), ("run_month", "Date"),
             ("attempt_id", "UUID"), ("batch_id", "UUID"),
-            ("prior_v1_batch_id", "UUID"),
-            ("prior_v1_sequence", "UInt64"),
+            ("prior_v2_batch_id", "UUID"),
+            ("prior_v2_sequence", "UInt64"),
             ("first_sequence", "UInt64"), ("last_sequence", "UInt64"),
             ("source_cursor", "String"),
             ("status", "LowCardinality(String)"),

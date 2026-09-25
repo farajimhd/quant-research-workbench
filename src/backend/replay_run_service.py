@@ -2372,26 +2372,26 @@ class ReplayRunController:
     def _prepare_terminal_v2_handoff(self, verified_prefix, *, committed_at):
         """Inactive fixed-Backtest handoff; publication still needs admission.
 
-        Caller must obtain a cold-verified V1 prefix. The current _finish path
+        Caller must obtain a cold-verified V2 prefix. The current _finish path
         intentionally does not call this until operator storage preflight and
         portfolio recovery anchoring are in place.
         """
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
         from src.backend.backtest_terminal_v2_handoff import prepare_terminal_v2_handoff
-        from src.trading_runtime.arte_journal_writer import CommittedPrefix
+        from src.trading_runtime.arte_journal_writer import V2CommittedPrefix
 
         publisher = getattr(self, '_journal_publisher', None)
         task = getattr(publisher, '_task', None)
         if (self.definition.mode != RunMode.BACKTEST
                 or not isinstance(self._journal, BacktestMemoryJournal)
-                or not isinstance(verified_prefix, CommittedPrefix)
+                or not isinstance(verified_prefix, V2CommittedPrefix)
                 or publisher is None
                 or getattr(publisher, '_error', None) is not None
                 or task is not None and not task.done()
                 or publisher.fenced_sequence != verified_prefix.last_sequence
                 or publisher._batch_id != verified_prefix.last_batch_id
                 or publisher._source_cursor != verified_prefix.source_cursor):
-            raise RuntimeError('Terminal V2 handoff lacks one settled typed V1 prefix')
+            raise RuntimeError('Terminal V2 handoff lacks one settled typed V2 prefix')
         if task is not None:
             task.result()
         return prepare_terminal_v2_handoff(
@@ -2430,16 +2430,18 @@ class ReplayRunController:
         account_ids = tuple(self.account_ids)
         if not account_ids or len(set(account_ids)) != len(account_ids):
             raise RuntimeError("Terminal V2 needs distinct pinned account identities")
-        # A completed market cursor is the final V1 commit. Runtime.finish
-        # then emits account blocks and lifecycle last into the memory journal.
-        await self._save_restart_checkpoint_responsive(self.current_time)
+        # A completed market cursor is the final V2 running commit. Runtime.finish
+        # emits account blocks and lifecycle last into the memory journal;
+        # fixed Backtest recovery is the typed ClickHouse prefix, not a disk checkpoint.
         await self._runtime.finish(status=status)
         self._runtime_finished = True
         committed_at = datetime.now(UTC)
         client = authority.client
         if not await asyncio.to_thread(authority.assert_current, self.run_id, account_ids):
             raise RuntimeError("Terminal V2 Keeper account claims are not current")
-        prefix = await asyncio.to_thread(load_committed_prefix, client, self.run_id)
+        prefix = await asyncio.to_thread(
+            load_committed_prefix, client, self.run_id,
+            journal_profile="backtest_v2")
         handoff = self._prepare_terminal_v2_handoff(
             prefix, committed_at=committed_at)
         event_at = self._journal.unfenced_records()[-1].event_time

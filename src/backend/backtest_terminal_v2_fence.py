@@ -1,7 +1,7 @@
-"""Staged, read-only V2 terminal seal over a verified running V1 prefix.
+"""Staged, read-only V2 terminal seal over a verified running V2 prefix.
 
-No writer or DDL path is enabled. V2 owns terminal event sequences after V1;
-existing V1 commits and their canonical hashes are never rewritten.
+No writer or DDL path is enabled. The terminal seal extends the same V2
+running chain; occupied V1 commits and hashes are never rewritten.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from uuid import UUID
 from src.backend.backtest_terminal_snapshot_v2 import recover_snapshot_group
 from src.trading_runtime.arte_journal_schema import BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES
 from src.trading_runtime.arte_journal_writer import (
-    CommittedPrefix, _canonical_typed_content, _literal, _rows,
+    V2CommittedPrefix, _canonical_typed_content, _literal, _rows,
 )
 from src.trading_runtime.journal_contract import canonical_json
 
@@ -112,7 +112,7 @@ def _family_hash(rows: tuple[Mapping[str, Any], ...]) -> str:
 
 
 def project_terminal_v2_commit(
-    prefix: CommittedPrefix, *, attempt_id: str, batch_id: str,
+    prefix: V2CommittedPrefix, *, attempt_id: str, batch_id: str,
     account_ids: tuple[str, ...],
     source_cursor: str, status: str, committed_at: datetime,
     events: tuple[Mapping[str, Any], ...],
@@ -120,8 +120,8 @@ def project_terminal_v2_commit(
     accounts: tuple[Mapping[str, Any], ...],
     positions: tuple[Mapping[str, Any], ...],
 ) -> dict[str, Any]:
-    """Seal one complete terminal suffix without modifying a V1 commit."""
-    if (not isinstance(prefix, CommittedPrefix) or prefix.status != "running"
+    """Seal one complete terminal suffix after a verified V2 running chain."""
+    if (not isinstance(prefix, V2CommittedPrefix) or prefix.status != "running"
             or not prefix.batch_ids or prefix.last_sequence < 1
             or status not in {"completed", "stopped", "failed"}
             or not events or not accounts or len(transitions) != 1
@@ -139,7 +139,7 @@ def project_terminal_v2_commit(
                    or str(row["attempt_id"]) != attempt
                    or row["event_month"] != run_month
                    for row in events)):
-        raise ValueError("Terminal V2 events do not extend the V1 sequence")
+        raise ValueError("Terminal V2 events do not extend the running sequence")
     last = events[-1]
     if ((last["category"], last["entity_type"], last["entity_id"])
             != ("lifecycle", "run", prefix.run_id)
@@ -189,8 +189,8 @@ def project_terminal_v2_commit(
         "run_id": prefix.run_id,
         "run_month": run_month,
         "attempt_id": attempt, "batch_id": batch,
-        "prior_v1_batch_id": prefix.last_batch_id,
-        "prior_v1_sequence": prefix.last_sequence,
+        "prior_v2_batch_id": prefix.last_batch_id,
+        "prior_v2_sequence": prefix.last_sequence,
         "first_sequence": prefix.last_sequence + 1,
         "last_sequence": int(last["sequence"]),
         "source_cursor": source_cursor, "status": status,
@@ -205,11 +205,11 @@ def project_terminal_v2_commit(
 
 
 def load_terminal_v2_commit(
-    client: Any, prefix: CommittedPrefix, *, account_ids: tuple[str, ...],
+    client: Any, prefix: V2CommittedPrefix, *, account_ids: tuple[str, ...],
 ) -> dict[str, Any]:
     """Cold readback: require one exact suffix seal and rehash every fact."""
-    if not isinstance(prefix, CommittedPrefix) or prefix.status != "running":
-        raise ValueError("Terminal V2 readback requires a verified running V1 prefix")
+    if not isinstance(prefix, V2CommittedPrefix) or prefix.status != "running":
+        raise ValueError("Terminal V2 readback requires a verified running V2 prefix")
     commits = _rows(client, "SELECT * FROM arte.trading_backtest_terminal_commit_v2 "
                     f"WHERE run_id={_literal(prefix.run_id)} FORMAT JSONEachRow")
     if len(commits) != 1:

@@ -12,12 +12,12 @@ from src.backend.backtest_terminal_v2_fence import (
     project_terminal_v2_commit, seal_v2_row,
 )
 from src.trading_runtime.arte_journal_projection import runtime_lifecycle_batch
-from src.trading_runtime.arte_journal_writer import CommittedPrefix, typed_row
+from src.trading_runtime.arte_journal_writer import V2CommittedPrefix, typed_row
 
 
 @dataclass(frozen=True, slots=True)
 class TerminalV2Handoff:
-    prefix: CommittedPrefix
+    prefix: V2CommittedPrefix
     account_ids: tuple[str, ...]
     attempt_id: str
     batch_id: str
@@ -39,13 +39,13 @@ class TerminalV2Handoff:
 
 
 def prepare_terminal_v2_handoff(
-    journal: BacktestMemoryJournal, prefix: CommittedPrefix, *,
+    journal: BacktestMemoryJournal, prefix: V2CommittedPrefix, *,
     account_ids: tuple[str, ...], attempt_id: str, run_month: date,
     committed_at: datetime,
 ) -> TerminalV2Handoff:
     """Require complete account blocks followed by one terminal lifecycle."""
     if (not isinstance(journal, BacktestMemoryJournal)
-            or not isinstance(prefix, CommittedPrefix)
+            or not isinstance(prefix, V2CommittedPrefix)
             or journal.run_id != prefix.run_id
             or prefix.status != "running"
             or run_month.day != 1

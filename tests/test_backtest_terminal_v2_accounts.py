@@ -48,7 +48,7 @@ def _fixture(monkeypatch):
     snapshot = {"state_hash": "a" * 64,
                 "state_revision": seal["last_sequence"],
                 "snapshot_at": AT.isoformat(), "state": {"cash": "100"}}
-    monkeypatch.setattr(recovery, "load_committed_prefix", lambda *_: prefix)
+    monkeypatch.setattr(recovery, "load_committed_prefix", lambda *_, **__: prefix)
     monkeypatch.setattr(recovery, "load_typed_run_context", lambda *_: context)
     monkeypatch.setattr(recovery, "load_portfolio_snapshot", lambda *_, **__: snapshot)
     return client, snapshot
