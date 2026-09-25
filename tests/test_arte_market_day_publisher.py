@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 import json
 import re
 
@@ -90,10 +91,19 @@ def test_typed_transport_batches_only_allowlisted_certificate_columns() -> None:
     rows = inventory()["market_day_stage_certificate_v1"]
     client.insert_typed_rows("market_day_stage_certificate_v1", rows)
     assert len(http.sql) == 2
+
+    scopes = inventory()["market_day_planned_scope_v1"]
+    original = scopes[0]["population_available_at"]
+    client.insert_typed_rows("market_day_planned_scope_v1", scopes)
+    wire = json.loads(http.sql[-1].split("FORMAT JSONEachRow\n", 1)[1])
+    assert wire["population_available_at"] == datetime.fromisoformat(original).strftime(
+        "%Y-%m-%d %H:%M:%S.%f")
+    assert wire["population_cutoff_at"].endswith(".000000")
+    assert scopes[0]["population_available_at"] == original
     assert all(sql.startswith("INSERT INTO `arte`.`market_day_stage_certificate_v1`")
-               for sql in http.sql)
+               for sql in http.sql[:2])
     assert sum(len(sql.split("FORMAT JSONEachRow\n", 1)[1].splitlines())
-               for sql in http.sql) == len(rows)
+               for sql in http.sql[:2]) == len(rows)
     with pytest.raises(ValueError, match="target"):
         client.insert_typed_rows("bars_v1", rows)
     with pytest.raises(ValueError, match="typed contract"):
@@ -101,7 +111,7 @@ def test_typed_transport_batches_only_allowlisted_certificate_columns() -> None:
                                  [dict(rows[0], payload_json="forbidden")])
     with pytest.raises(ValueError, match="SELECT-only"):
         client.execute("DELETE FROM arte.market_day_stage_certificate_v1")
-    assert len(http.sql) == 2
+    assert len(http.sql) == 3
 
 
 def test_publishes_fence_last_and_attests_only_exact_readback() -> None:

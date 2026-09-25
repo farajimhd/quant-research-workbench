@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from research.mlops.clickhouse import insert_json_each_row
@@ -54,9 +55,32 @@ class MarketDayCertificateClient:
             if not valid:
                 raise ValueError("Market-day insert row differs from typed contract")
         for start in range(0, len(rows), self.batch_size):
-            chunk = [dict(row) for row in rows[start:start + self.batch_size]]
+            chunk = [_insert_wire_row(name, row)
+                     for row in rows[start:start + self.batch_size]]
             insert_json_each_row(self.http_client, "arte", name,
                                  list(_COLUMNS[name]), chunk)
+
+
+_DATETIME_COLUMNS = {
+    table.name: tuple(column for column, kind in table.columns
+                      if kind.startswith("DateTime64("))
+    for table in TABLES
+}
+
+
+def _insert_wire_row(name: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    """Encode typed UTC timestamps for ClickHouse JSONEachRow input.
+
+    Certificate hashes retain the canonical offset-bearing ISO values. Only
+    the transport copy uses ClickHouse's unambiguous UTC DateTime64 format.
+    """
+    result = dict(row)
+    for column in _DATETIME_COLUMNS[name]:
+        value = datetime.fromisoformat(str(result[column]))
+        if value.tzinfo is None or value.utcoffset() != timezone.utc.utcoffset(value):
+            raise ValueError("Market-day certificate insert timestamp is not UTC")
+        result[column] = value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+    return result
 
 
 def _read(client: Any, name: str, build_id: str) -> list[dict[str, Any]]:
