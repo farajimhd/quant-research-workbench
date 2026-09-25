@@ -14,7 +14,7 @@ from typing import Any, Mapping
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.backend.live_assignment_state_snapshot import STATE_TABLES
-from src.trading_runtime.arte_journal_schema import TableContract, storage_preflight
+from src.trading_runtime.arte_journal_schema import TableContract
 from src.trading_runtime.arte_journal_writer import _literal
 from src.trading_runtime.journal_contract import canonical_json
 
@@ -80,11 +80,6 @@ def _identity_value(table: TableContract, identity: Mapping[str, Any]) -> dict[s
     if "assignment_id" not in relevant or not ({"revision", "state_revision"} & relevant.keys()):
         raise ValueError("State table lacks assignment revision identity")
     return relevant
-
-
-def state_storage_preflight(client: Any) -> None:
-    """Read-only shape, policy, and part-placement audit; never creates data."""
-    storage_preflight(client, tables=STATE_TABLES)
 
 
 class ClickHouseAssignmentStateStorage:

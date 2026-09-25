@@ -6,7 +6,7 @@ import pytest
 
 from src.backend.live_assignment_state_snapshot import STATE_COMMIT
 from src.backend.live_assignment_state_storage import (
-    ClickHouseAssignmentStateStorage, _row, state_storage_preflight,
+    ClickHouseAssignmentStateStorage, _row,
 )
 
 
@@ -74,15 +74,4 @@ def test_state_transport_rejects_unknown_table_types_and_mixed_identity():
         _row(STATE_COMMIT, {**row, "child_count": True})
     with pytest.raises(ValueError, match="columns differ"):
         _row(STATE_COMMIT, {**row, "checkpoint_json": "{}"})
-    assert client.calls == []
-
-
-def test_state_storage_preflight_is_read_only(monkeypatch):
-    observed = []
-    monkeypatch.setattr("src.backend.live_assignment_state_storage.storage_preflight",
-                        lambda client, *, tables: observed.append((client, tables)))
-    client = Client()
-    state_storage_preflight(client)
-    assert observed and observed[0][0] is client
-    assert STATE_COMMIT in observed[0][1]
     assert client.calls == []
