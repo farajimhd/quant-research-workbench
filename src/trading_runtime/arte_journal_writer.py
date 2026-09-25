@@ -17,7 +17,7 @@ import math
 import os
 import re
 from queue import Empty, Full, Queue
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from time import perf_counter_ns
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
@@ -2713,6 +2713,8 @@ class ArteJournalWriter:
         self._last_commit_id: str | None = None
         self._closed = False
         self._client_closed = False
+        self._client_close_done = Event()
+        self._client_close_error: BaseException | None = None
         self._metrics_lock = Lock()
         self._committed_units = 0
         self._failed_units = 0
@@ -3115,11 +3117,18 @@ class ArteJournalWriter:
         with self._submission_lock:
             close_client = not self._client_closed
             self._client_closed = True
-        try:
-            if close_client:
+        if close_client:
+            try:
                 close = getattr(self._client, "close", None)
                 if close is not None:
                     close()
-        finally:
-            if self._error is not None:
-                raise RuntimeError("Typed journal did not drain durably") from self._error
+            except BaseException as exc:
+                self._client_close_error = exc
+            finally:
+                self._client_close_done.set()
+        else:
+            self._client_close_done.wait()
+        if self._error is not None:
+            raise RuntimeError("Typed journal did not drain durably") from self._error
+        if self._client_close_error is not None:
+            raise RuntimeError("Typed journal client did not close") from self._client_close_error

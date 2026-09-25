@@ -1269,6 +1269,52 @@ def test_close_cannot_place_stop_sentinel_ahead_of_admitted_submission(monkeypat
         submitting.join(5)
         if closing.ident is not None:
             closing.join(5)
+
+
+@pytest.mark.parametrize("client_fails", [False, True])
+def test_concurrent_close_waits_for_client_and_replays_failure(monkeypatch, client_fails) -> None:
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity", lambda _client, _run_id: {"mode": "live"})
+    entered, release = Event(), Event()
+    class Client:
+        calls = 0
+        def close(self):
+            self.calls += 1
+            entered.set()
+            assert release.wait(5)
+            if client_fails:
+                raise OSError("transport close failed")
+    client = Client()
+    journal = ArteJournalWriter(client, run_id=RUN)
+    finished: list[str] = []
+    errors: list[BaseException] = []
+    def close(label):
+        try:
+            journal.close()
+            finished.append(label)
+        except BaseException as exc:
+            errors.append(exc)
+    first = Thread(target=close, args=("first",))
+    second = Thread(target=close, args=("second",))
+    try:
+        first.start()
+        assert entered.wait(5)
+        second.start()
+        assert not finished and not errors
+        assert second.is_alive()
+    finally:
+        release.set()
+        first.join(5)
+        second.join(5)
+    assert not first.is_alive() and not second.is_alive()
+    assert client.calls == 1
+    if client_fails:
+        assert len(errors) == 2
+        assert all(isinstance(error, RuntimeError) and
+                   "client did not close" in str(error) for error in errors)
+    else:
+        assert not errors and sorted(finished) == ["first", "second"]
         journal.close()
 
 
