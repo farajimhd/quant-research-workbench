@@ -57,6 +57,25 @@ def test_staged_live_membership_adds_only_three_typed_table_grants() -> None:
     assert not any("INSERT ON arte.bars_v1" in grant for grant in extended)
 
 
+def test_workstation_local_clickhouse_endpoint_is_allowed_without_weaker_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Admin:
+        def execute(self, sql):
+            assert sql.startswith("SELECT count() FROM system.users")
+            return "1\n"
+    seen = []
+    monkeypatch.setattr(provision.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(provision, "SECRET_ROOT", tmp_path)
+    monkeypatch.setattr(provision, "_admin_client",
+                        lambda url: (seen.append(url), Admin())[1])
+    provision.provision("http://127.0.0.1:8123", apply=False,
+                        staged_live_plan_membership=True)
+    assert seen == ["http://127.0.0.1:8123"]
+    with pytest.raises(RuntimeError, match="Unexpected ClickHouse endpoint"):
+        provision.provision("http://127.0.0.1:18123", apply=False)
+
+
 def test_fixed_v2_apply_rejects_missing_layout_before_credentials_or_grants(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

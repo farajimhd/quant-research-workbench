@@ -205,9 +205,15 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
     if not SECRET_ROOT.is_dir():
         raise RuntimeError("Required workstation secrets directory is unavailable")
     parsed = urlsplit(url)
-    if (parsed.scheme, parsed.hostname, parsed.port, parsed.path, parsed.query,
-            parsed.fragment, parsed.username, parsed.password) != (
-                "http", "desktop-saai85t", 18123, "", "", "", None, None):
+    endpoint = (parsed.scheme, parsed.hostname, parsed.port, parsed.path,
+                parsed.query, parsed.fragment, parsed.username, parsed.password)
+    if endpoint not in {
+        ("http", "desktop-saai85t", 18123, "", "", "", None, None),
+        # The WSL-managed service is reachable locally on the workstation;
+        # using it avoids Windows resolving its own published name to an
+        # unreachable IPv6 address before trying IPv4 for every grant.
+        ("http", "127.0.0.1", 8123, "", "", "", None, None),
+    }:
         raise RuntimeError("Unexpected ClickHouse endpoint; refusing credential creation")
     client = _admin_client(url)
     present = client.execute(
