@@ -6,10 +6,12 @@ offer synchronous acknowledged typed inserts and read-only SQL execution.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import Any, Mapping
 
 from src.trading_runtime.arte_market_day_certification import (
-    TABLES, _COLUMNS, family_hash, verify_market_day_certificate,
+    TABLES, _COLUMNS, family_hash, read_certificate_rows,
+    verify_market_day_certificate,
 )
 from src.trading_runtime.arte_market_day_keeper import (
     BuildAttestation, BuildClaim, MarketDayKeeperAuthority, require_attested_inventory,
@@ -18,13 +20,11 @@ from src.trading_runtime.arte_market_day_source_plan import (
     TABLES as SOURCE_TABLES, recover_source_plan,
     verify_source_plan_storage,
 )
+from src.trading_runtime.journal_contract import canonical_json
 
 
 def _read(client: Any, name: str, build_id: str) -> list[dict[str, Any]]:
-    columns = ",".join(_COLUMNS[name])
-    sql = (f"SELECT {columns} FROM arte.{name} WHERE build_id='{build_id}' "
-           "FORMAT JSONEachRow")
-    return [json.loads(line) for line in client.execute(sql).splitlines() if line.strip()]
+    return read_certificate_rows(client, name, build_id)
 
 
 def _exact(client: Any, prepared: Mapping[str, tuple[Mapping[str, Any], ...]],
@@ -36,6 +36,29 @@ def _exact(client: Any, prepared: Mapping[str, tuple[Mapping[str, Any], ...]],
                 or any(set(row) != set(_COLUMNS[name]) or row["build_id"] != build_id
                        for row in actual)):
             raise RuntimeError(f"Market-day {name} differs from exact stored inventory")
+
+
+def _missing_rows(actual: list[dict[str, Any]],
+                  expected: tuple[Mapping[str, Any], ...],
+                  name: str) -> tuple[Mapping[str, Any], ...]:
+    """Allow only an exact subset after an interrupted acknowledged insert.
+
+    MergeTree does not enforce uniqueness, so a duplicate or foreign row is a
+    hard conflict. A retry may add only rows that are proven absent.
+    """
+    expected_keys = [canonical_json(dict(row)) for row in expected]
+    actual_counts = Counter(canonical_json(row) for row in actual)
+    expected_counts = Counter(expected_keys)
+    if any(count > expected_counts.get(key, 0)
+           for key, count in actual_counts.items()):
+        raise RuntimeError(f"Market-day {name} differs from exact stored inventory")
+    missing_counts = expected_counts - actual_counts
+    missing: list[Mapping[str, Any]] = []
+    for row, key in zip(expected, expected_keys):
+        if missing_counts[key] > 0:
+            missing.append(row)
+            missing_counts[key] -= 1
+    return tuple(missing)
 
 
 def _placement(client: Any) -> None:
@@ -88,14 +111,17 @@ def publish_market_day_certificate(client: Any, source_client: Any,
         expected_hash=prepared["market_day_build_header_v1"][0]["source_plan_hash"])
     _placement(client)
     verify_source_plan_storage(client)
+    # Reject a conflicting later family or an orphan fence before writing any
+    # new child rows. Recheck each family below to catch concurrent changes.
+    for name in names:
+        _missing_rows(_read(client, name, build_id), prepared[name], name)
     for name in names[:-1]:
         if not keeper.current(claim):
             raise RuntimeError("Market-day build claim changed before publication")
         existing = _read(client, name, build_id)
-        if existing:
-            _exact(client, prepared, build_id, (name,))
-        elif prepared[name]:
-            client.insert_typed_rows(name, prepared[name])
+        missing = _missing_rows(existing, prepared[name], name)
+        if missing:
+            client.insert_typed_rows(name, missing)
             _exact(client, prepared, build_id, (name,))
         else:
             _exact(client, prepared, build_id, (name,))
@@ -105,10 +131,9 @@ def publish_market_day_certificate(client: Any, source_client: Any,
     _placement(client)
     fence_name = names[-1]
     existing = _read(client, fence_name, build_id)
-    if existing:
-        _exact(client, prepared, build_id, (fence_name,))
-    else:
-        client.insert_typed_rows(fence_name, prepared[fence_name])
+    missing = _missing_rows(existing, prepared[fence_name], fence_name)
+    if missing:
+        client.insert_typed_rows(fence_name, missing)
     _exact(client, prepared, build_id, names)
     _placement(client)
     verified = verify_market_day_certificate(client, build_id, sessions=sessions)

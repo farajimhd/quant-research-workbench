@@ -43,7 +43,7 @@ class FakeClickHouse:
             return "\n".join(json.dumps(dict(name=table.name,
                 storage_policy="live_market_ssd",
                 **(dict(engine="MergeTree", partition_key=table.partition,
-                        sorting_key=table.order) if detailed else {})))
+                        sorting_key=table.order.replace(",", ", ")) if detailed else {})))
                 for table in TABLES if table.name in selected)
         if "FROM system.columns" in sql:
             return "\n".join(json.dumps(dict(table=table.name, name=name, type=kind))
@@ -84,6 +84,73 @@ def test_publishes_fence_last_and_attests_only_exact_readback() -> None:
     # Exact already-persisted retry is idempotent; it cannot append duplicates.
     publish_market_day_certificate(client, object(), keeper, claim, prepared, sessions=(DAY,))
     assert client.inserts == expected_inserts
+
+
+def test_clickhouse_numeric_and_utc_wire_format_preserves_certificate_hashes() -> None:
+    class ClickHouseWire(FakeClickHouse):
+        def execute(self, sql):
+            result = super().execute(sql)
+            if "FROM arte.market_day_" not in sql:
+                return result
+            name = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]
+            kinds = dict(next(table for table in TABLES if table.name == name).columns)
+            rows = [json.loads(line) for line in result.splitlines() if line.strip()]
+            for row in rows:
+                for column, value in row.items():
+                    if kinds[column] == "UInt64" and value is not None:
+                        row[column] = str(value)
+                    elif kinds[column] == "DateTime64(6, 'UTC')":
+                        row[column] = value.replace("T", " ").replace("+00:00", "")
+            return "\n".join(json.dumps(row) for row in rows)
+
+    _, _, keeper, claim = setup()
+    client = ClickHouseWire()
+    prepared = inventory()
+    publish_market_day_certificate(client, object(), keeper, claim,
+                                   prepared, sessions=(DAY,))
+    assert keeper.load(BUILD) is not None
+    publish_market_day_certificate(client, object(), keeper, claim,
+                                   prepared, sessions=(DAY,))
+    assert len(client.inserts) == len([name for name, rows in prepared.items() if rows])
+
+
+def test_interrupted_partial_stage_insert_resumes_only_missing_rows() -> None:
+    class Interrupted(FakeClickHouse):
+        fail_once = True
+
+        def insert_typed_rows(self, name, rows):
+            if name == "market_day_stage_certificate_v1" and self.fail_once:
+                self.fail_once = False
+                self.inserts.append(name)
+                self.rows[name].append(deepcopy(rows[0]))
+                raise OSError("acknowledgement lost after partial insert")
+            super().insert_typed_rows(name, rows)
+
+    _, _, keeper, claim = setup()
+    client = Interrupted()
+    prepared = inventory()
+    with pytest.raises(OSError, match="acknowledgement lost"):
+        publish_market_day_certificate(client, object(), keeper, claim,
+                                       prepared, sessions=(DAY,))
+    assert keeper.load(BUILD) is None
+    assert len(client.rows["market_day_stage_certificate_v1"]) == 1
+    publish_market_day_certificate(client, object(), keeper, claim,
+                                   prepared, sessions=(DAY,))
+    assert client.rows["market_day_stage_certificate_v1"] == list(
+        prepared["market_day_stage_certificate_v1"])
+    assert keeper.load(BUILD) is not None
+
+
+def test_partial_retry_rejects_duplicate_or_foreign_rows() -> None:
+    client, _, keeper, claim = setup()
+    prepared = inventory()
+    name = "market_day_stage_certificate_v1"
+    client.rows[name] = [deepcopy(prepared[name][0]), deepcopy(prepared[name][0])]
+    with pytest.raises(RuntimeError, match="exact stored inventory"):
+        publish_market_day_certificate(client, object(), keeper, claim,
+                                       prepared, sessions=(DAY,))
+    assert not client.inserts
+    assert keeper.load(BUILD) is None
 
 
 def test_stale_owner_after_child_insert_never_reaches_fence_or_attestation() -> None:

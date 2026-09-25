@@ -107,9 +107,11 @@ def verify_source_plan_storage(client: Any) -> None:
         raise RuntimeError("Source-plan tables are missing or duplicate")
     for table in TABLES:
         row = by_name[table.name]
+        actual_order = tuple(field.strip() for field in str(row.get("sorting_key", "")).split(","))
+        expected_order = tuple(field.strip() for field in table.order.split(","))
         if (row.get("engine"), row.get("storage_policy"),
-            row.get("partition_key"), row.get("sorting_key")) != (
-                "MergeTree", "live_market_ssd", table.partition, table.order):
+            row.get("partition_key"), actual_order) != (
+                "MergeTree", "live_market_ssd", table.partition, expected_order):
             raise RuntimeError(f"Source-plan table layout differs: {table.name}")
     actual_columns = rows("SELECT table,name,type FROM system.columns "
                           "WHERE database='arte' "

@@ -57,6 +57,49 @@ _BASE_TABLES = (
 )
 TABLES = (*_BASE_TABLES[:-1], *SOURCE_TABLES, _BASE_TABLES[-1])
 _COLUMNS = {table.name: tuple(name for name, _ in table.columns) for table in TABLES}
+_TABLE_BY_NAME = {table.name: table for table in TABLES}
+
+
+def _typed_readback_row(name: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    """Canonicalize ClickHouse JSONEachRow wire values to certificate types."""
+    table = _TABLE_BY_NAME[name]
+    if set(row) != set(_COLUMNS[name]):
+        raise RuntimeError(f"Invalid {name} certificate row")
+    normalized: dict[str, Any] = {}
+    for column, kind in table.columns:
+        value = row[column]
+        if kind.startswith("Nullable("):
+            if value is None:
+                normalized[column] = None
+                continue
+            kind = kind[len("Nullable("):-1]
+        if kind.startswith("UInt"):
+            bits = int(kind[4:])
+            if (isinstance(value, bool) or not isinstance(value, (int, str))
+                    or not re.fullmatch(r"[0-9]+", str(value))):
+                raise RuntimeError(f"Invalid {name}.{column} unsigned integer")
+            number = int(value)
+            if number >= 1 << bits:
+                raise RuntimeError(f"Invalid {name}.{column} unsigned integer")
+            normalized[column] = number
+        elif kind == "DateTime64(6, 'UTC')":
+            if not isinstance(value, str):
+                raise RuntimeError(f"Invalid {name}.{column} UTC timestamp")
+            normalized[column] = _producer_utc_wire(value)
+        elif isinstance(value, str):
+            normalized[column] = value
+        else:
+            raise RuntimeError(f"Invalid {name}.{column} certificate value")
+    return normalized
+
+
+def read_certificate_rows(client: Any, name: str, build_id: str) -> list[dict[str, Any]]:
+    if name not in _TABLE_BY_NAME or not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", build_id):
+        raise ValueError("Invalid market-day certificate read target")
+    sql = (f"SELECT {','.join(_COLUMNS[name])} FROM arte.{name} "
+           f"WHERE build_id='{build_id}' FORMAT JSONEachRow")
+    return [_typed_readback_row(name, json.loads(line))
+            for line in client.execute(sql).splitlines() if line.strip()]
 
 
 def family_hash(rows: list[Mapping[str, Any]]) -> str:
@@ -82,9 +125,7 @@ def verify_market_day_certificate(client: Any, build_id: str, *,
         raise ValueError("Requested market-day sessions must be unique and nonempty")
     families: dict[str, list[dict[str, Any]]] = {}
     for table in TABLES:
-        sql = (f"SELECT {','.join(_COLUMNS[table.name])} FROM arte.{table.name} "
-               f"WHERE build_id='{build_id}' FORMAT JSONEachRow")
-        rows = [json.loads(line) for line in client.execute(sql).splitlines() if line.strip()]
+        rows = read_certificate_rows(client, table.name, build_id)
         if any(set(row) != set(_COLUMNS[table.name]) or row["build_id"] != build_id
                for row in rows):
             raise RuntimeError(f"Invalid {table.name} certificate row")
