@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import ast
+from pathlib import Path
 
 import pytest
 
@@ -91,3 +93,28 @@ def test_indirect_certificate_rejects_unsupported_and_source_drift(tmp_path):
                     encoding="utf-8")
     with pytest.raises(ValueError, match="lack typed projection"):
         cert.certify_indirect_v3_projection((path,))
+
+
+def test_fixed_controller_exposes_trade_proposal_to_injected_runtime():
+    source = cert._CONTROLLER.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    methods = [node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
+               and node.name == "submit_trade_proposal"]
+    assert len(methods) == 1
+    assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+               and node.func.attr == "submit_external_intent"
+               and isinstance(node.func.value, ast.Attribute)
+               and node.func.value.attr == "_runtime"
+               for node in ast.walk(methods[0]))
+    assert ("trade_proposal", "trade_proposal_confirmed") in cert.indirect_journal_inventory()[0]
+
+
+def test_fixed_simulated_broker_cannot_start_live_stream_callbacks():
+    broker_source = (Path(__file__).parents[1] / "src/trading_runtime/simulated_broker.py")
+    tree = ast.parse(broker_source.read_text(encoding="utf-8"))
+    broker = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                  and node.name == "SimulatedBrokerAdapter")
+    assert not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and node.name == "stream_broker_messages" for node in broker.body)
+    runtime_source = (cert._RUNTIME_ROOT / "runtime.py").read_text(encoding="utf-8")
+    assert 'if hasattr(self.broker, "stream_broker_messages"):' in runtime_source
