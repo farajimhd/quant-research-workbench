@@ -4,7 +4,9 @@ import os
 import pytest
 
 from scripts.clickhouse import provision_trading_journal as provision
-from src.trading_runtime.arte_journal_schema import MARKET_READ_TABLES, TABLES
+from src.trading_runtime.arte_journal_schema import (
+    MARKET_READ_TABLES, TABLES, fixed_backtest_v2_contracts,
+)
 
 
 def test_grant_plan_has_only_typed_journal_inserts() -> None:
@@ -21,6 +23,49 @@ def test_grant_plan_has_only_typed_journal_inserts() -> None:
     assert not any("arte.*" in line or " ON *.* " in line for line in grants)
     assert not any("arte.bt_" in line for line in grants)
     assert "GRANT SELECT, INSERT ON arte.trading_backtest_cursor_v1 TO trading_journal_writer" in grants
+
+
+def test_fixed_v2_grants_revoke_legacy_inserts_and_exclude_market_writes() -> None:
+    grants = provision._grants(fixed_backtest_v2=True)
+    legacy = {"trading_strategy_signal_v1", "trading_commit_v1"}
+    assert {line for line in grants if line.startswith("REVOKE ")} == {
+        f"REVOKE INSERT ON arte.{name} FROM trading_journal_writer"
+        for name in legacy
+    }
+    assert {line for line in grants if line.startswith("GRANT INSERT ")} == {
+        f"GRANT INSERT ON arte.{table.name} TO trading_journal_writer"
+        for table in fixed_backtest_v2_contracts() if table.name not in legacy
+    }
+    assert all("GRANT INSERT ON arte.bars_v1" not in line
+               and "GRANT INSERT ON arte.indicators_v1" not in line
+               and "GRANT INSERT ON arte.liquidity_100ms_v1" not in line
+               for line in grants)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        provision._grants(fixed_backtest_v2=True, staged_live_signal=True)
+
+
+def test_fixed_v2_apply_rejects_missing_layout_before_credentials_or_grants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Admin:
+        calls = []
+        def execute(self, sql):
+            self.calls.append(sql)
+            assert sql.startswith("SELECT count() FROM system.users")
+            return "1\n"
+    admin = Admin()
+    monkeypatch.setattr(provision.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(provision, "SECRET_ROOT", tmp_path)
+    monkeypatch.setattr(provision, "_admin_client", lambda _url: admin)
+    monkeypatch.setattr(provision, "storage_preflight",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                            ValueError("missing typed V2 table")))
+    monkeypatch.setattr(provision, "_credential",
+                        lambda *_args, **_kwargs: pytest.fail("credential touched"))
+    with pytest.raises(ValueError, match="missing typed V2 table"):
+        provision.provision("http://DESKTOP-SAAI85T:18123", apply=True,
+                            fixed_backtest_v2=True)
+    assert len(admin.calls) == 1
 
 
 def test_credential_is_reused_and_never_implicitly_rotated(

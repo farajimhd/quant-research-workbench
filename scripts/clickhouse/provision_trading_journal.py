@@ -25,7 +25,8 @@ sys.dont_write_bytecode = True
 from research.mlops.clickhouse import ClickHouseHttpClient
 from research.mlops.env import load_env_file
 from src.trading_runtime.arte_journal_schema import (
-    MARKET_READ_TABLES, TABLES, journal_permission_preflight, storage_preflight,
+    MARKET_READ_TABLES, TABLES, fixed_backtest_v2_contracts,
+    fixed_backtest_v2_preflight, journal_permission_preflight, storage_preflight,
 )
 from src.backend.live_signal_journal_preflight import (
     staged_grants, staged_live_signal_storage_preflight,
@@ -134,7 +135,34 @@ def _write_credential(path: Path) -> str:
     return password
 
 
-def _grants(*, staged_live_signal: bool = False) -> tuple[str, ...]:
+def _grants(*, staged_live_signal: bool = False,
+            fixed_backtest_v2: bool = False) -> tuple[str, ...]:
+    if fixed_backtest_v2:
+        if staged_live_signal:
+            raise ValueError("Fixed V2 and staged live-signal grants cannot be combined")
+        contracts = fixed_backtest_v2_contracts()
+        legacy = {"trading_strategy_signal_v1", "trading_commit_v1"}
+        statements = [
+            f"REVOKE INSERT ON arte.{name} FROM {PRINCIPAL}"
+            for name in sorted(legacy)
+        ]
+        statements.extend(
+            f"GRANT SELECT ON arte.{table.name} TO {PRINCIPAL}"
+            for table in contracts
+        )
+        statements.extend(
+            f"GRANT INSERT ON arte.{table.name} TO {PRINCIPAL}"
+            for table in contracts if table.name not in legacy
+        )
+        statements.extend(
+            f"GRANT SELECT ON arte.{name} TO {PRINCIPAL}"
+            for name in sorted(MARKET_READ_TABLES)
+        )
+        statements.extend(
+            f"GRANT SELECT ON system.{name} TO {PRINCIPAL}"
+            for name in SYSTEM_READ_TABLES
+        )
+        return tuple(statements)
     statements = [
         f"GRANT SELECT, INSERT ON arte.{table.name} TO {PRINCIPAL}"
         for table in TABLES
@@ -163,7 +191,8 @@ def _admin_client(url: str) -> ClickHouseHttpClient:
     return ClickHouseHttpClient(url, user, password, timeout_seconds=20)
 
 
-def provision(url: str, *, apply: bool, staged_live_signal: bool = False) -> None:
+def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
+              fixed_backtest_v2: bool = False) -> None:
     if platform.node().upper() != "DESKTOP-SAAI85T":
         raise RuntimeError("Provisioning must run on DESKTOP-SAAI85T")
     if not SECRET_ROOT.is_dir():
@@ -180,7 +209,8 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False) -> Non
     if present not in {"0", "1"}:
         raise RuntimeError("ClickHouse principal inventory is inconsistent")
     print(f"Journal principal: {'present' if present == '1' else 'absent'}")
-    grants = _grants(staged_live_signal=staged_live_signal)
+    grants = _grants(staged_live_signal=staged_live_signal,
+                     fixed_backtest_v2=fixed_backtest_v2)
     print(f"Required grants: {len(grants)} exact table grants")
     if not apply:
         print("Plan only; no credential or ClickHouse state changed")
@@ -188,6 +218,10 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False) -> Non
 
     if staged_live_signal:
         staged_live_signal_storage_preflight(client)
+    if fixed_backtest_v2:
+        # The journal principal never creates tables. An operator must install
+        # and review the complete V2 DDL before permissions are changed.
+        storage_preflight(client, tables=fixed_backtest_v2_contracts())
 
     password = _credential(SECRET_PATH, account_exists=present == "1")
     writer = ClickHouseHttpClient(url, PRINCIPAL, password, timeout_seconds=20)
@@ -203,10 +237,13 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False) -> Non
             f"CREATE USER {PRINCIPAL} IDENTIFIED WITH sha256_hash BY '{digest}' "
             "HOST IP '172.16.0.0/12', IP '127.0.0.1', IP '::1'"
         )
-    for statement in _grants(staged_live_signal=staged_live_signal):
+    for statement in grants:
         client.execute(statement)
-    storage_preflight(writer)
-    journal_permission_preflight(writer)
+    if fixed_backtest_v2:
+        fixed_backtest_v2_preflight(writer)
+    else:
+        storage_preflight(writer)
+        journal_permission_preflight(writer)
     print("Journal principal authenticated; SSD placement, exact grants, and market-write denial verified")
     print(f"Credential stored with a private ACL: {SECRET_PATH}")
 
@@ -218,10 +255,13 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="create credential and ClickHouse grants")
     parser.add_argument("--staged-live-signal", action="store_true",
                         help="also grant preprovisioned typed dispatch/completion tables")
+    parser.add_argument("--fixed-backtest-v2", action="store_true",
+                        help="reconcile exact preprovisioned V2 grants and remove legacy V1 inserts")
     args = parser.parse_args()
     try:
         provision(args.url, apply=args.apply,
-                  staged_live_signal=args.staged_live_signal)
+                  staged_live_signal=args.staged_live_signal,
+                  fixed_backtest_v2=args.fixed_backtest_v2)
     except Exception as exc:
         print(f"Journal provisioning failed: {exc}", file=sys.stderr)
         return 1

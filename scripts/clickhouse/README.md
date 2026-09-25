@@ -61,6 +61,18 @@ overwrite occurs. The final check logs in as the restricted user and verifies
 that it cannot insert into market tables or alter schema. Do not enable a
 runtime writer until the typed storage-placement and recovery checks pass.
 
+The default grant plan is the legacy V1 journal profile. For the fixed
+Backtest V2 profile, an operator must first review and install the exact
+typed V2 table DDL from `terminal_v2_operator_provisioning_sql` under
+`src/backend/backtest_terminal_v2_preflight.py`. The journal principal cannot
+create tables. Then run `provision_trading_journal.py --fixed-backtest-v2`
+without `--apply` to inspect the grant plan, followed by the same command
+with `--apply` only after the tables and SSD placement have been verified.
+This explicit mode removes INSERT on the occupied V1 signal/commit tables and
+grants INSERT only on the typed V2/shared journal tables. It fails before
+credential or grant changes if any required table contract is missing. Do
+not combine it with `--staged-live-signal`.
+
 ## Retired opaque Backtest tables
 
 After stopping any job that still references the retired `arte.bt_*` contract,
