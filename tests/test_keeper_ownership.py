@@ -273,8 +273,12 @@ def test_portfolio_claims_are_exclusive_and_fenced_across_clients() -> None:
     assert second.acquire_portfolio_admission_lease("account:DU1", owner_id="run-b") is None
     assert first.portfolio_admission_lease_is_current(
         "account:DU1", owner_id="run-a", epoch=1)
+    assert first.lease_remaining_seconds(
+        "account:DU1", owner_id="run-a", epoch=1) > 0
     assert first.release_portfolio_admission_lease(
         "account:DU1", owner_id="run-a", epoch=1)
+    assert first.lease_remaining_seconds(
+        "account:DU1", owner_id="run-a", epoch=1) == 0
     replacement = second.acquire_portfolio_admission_lease("account:DU1", owner_id="run-b")
     assert replacement is not None and replacement["epoch"] == 2
     assert not first.release_portfolio_admission_lease(

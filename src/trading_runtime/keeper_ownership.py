@@ -261,6 +261,12 @@ class KeeperOwnershipCoordinator:
         return (_decode(value) == (owner_id, int(epoch), "portfolio")
                 and session is not None and stat.ephemeralOwner == session[0])
 
+    def lease_remaining_seconds(self, resource_id: str, *, owner_id: str,
+                                epoch: int) -> float:
+        """Local-only upper bound on the coordinator's current TTL."""
+        deadline = self._monotonic_deadlines.get((resource_id, owner_id, epoch))
+        return max(0.0, deadline - monotonic()) if deadline is not None else 0.0
+
     def renew_portfolio_admission_lease(
         self, resource_id: str, *, owner_id: str, epoch: int,
         ttl_seconds: float = 30.0,
