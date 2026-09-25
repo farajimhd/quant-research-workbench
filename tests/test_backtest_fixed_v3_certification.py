@@ -72,14 +72,55 @@ def test_squeeze_query_certificate_binds_exact_query_stream_and_boundary(monkeyp
             expected_query_sha256=digest)
 
 
-def test_real_indirect_inventory_exposes_unsupported_and_dynamic_emitters():
+def test_real_indirect_inventory_resolves_forwarders_and_exposes_unsupported_families():
     families, dynamic = cert.indirect_journal_inventory()
     assert ("portfolio_management", "portfolio_reservation") in families
     assert ("order_management", "order_group_state") in families
     assert ("snapshot", "portfolio") in families
-    assert any(row.startswith("runtime.py:442:") for row in dynamic)
-    with pytest.raises(ValueError, match="identity is dynamic"):
+    assert dynamic == ()
+    assert ("execution", "commission") in families
+    assert ("strategy_decision", "intent_deferral") in families
+    assert ("strategy_decision", "intent_rejection") in families
+    with pytest.raises(ValueError, match="lack typed projection"):
         cert.certify_indirect_v3_projection()
+
+
+def test_forwarded_record_requires_literal_callers_and_exact_wrapper(tmp_path):
+    path = tmp_path / "portfolio.py"
+    source = '''
+def _record(self, entity_type):
+    self.journal.append(category="portfolio_management", entity_type=entity_type)
+def emit(self):
+    self._record("portfolio_decision")
+'''
+    path.write_text(source, encoding="utf-8")
+    families, dynamic = cert.indirect_journal_inventory((path,))
+    assert ("portfolio_management", "portfolio_decision") in families
+    assert dynamic == ()
+    path.write_text(source.replace('self._record("portfolio_decision")',
+                                   'self._record(kind)'), encoding="utf-8")
+    assert cert.indirect_journal_inventory((path,))[1]
+    path.write_text(source.replace('category="portfolio_management"',
+                                   'category="other"'), encoding="utf-8")
+    assert cert.indirect_journal_inventory((path,))[1]
+
+
+def test_local_append_many_rejects_aliases_and_unknown_mutations(tmp_path):
+    path = tmp_path / "runtime.py"
+    source = '''
+def emit(self):
+    entries = [{"category": "execution", "entity_type": "fill"}]
+    entries.append({"category": "execution", "entity_type": "commission"})
+    self.journal.append_many(entries)
+'''
+    path.write_text(source, encoding="utf-8")
+    families, dynamic = cert.indirect_journal_inventory((path,))
+    assert dynamic == ()
+    assert {("execution", "fill"), ("execution", "commission")} <= set(families)
+    path.write_text(source.replace("    self.journal.append_many(entries)",
+                                   "    alias = entries\n    alias.append(other)\n"
+                                   "    self.journal.append_many(entries)"), encoding="utf-8")
+    assert cert.indirect_journal_inventory((path,))[1]
 
 
 def test_indirect_certificate_rejects_unsupported_and_source_drift(tmp_path):

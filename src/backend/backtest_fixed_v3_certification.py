@@ -46,6 +46,98 @@ def _literal_pair(node: ast.AST) -> tuple[str, str] | None:
     return category.value, entity_type.value
 
 
+def _literal_variants(node: ast.AST | None) -> frozenset[str] | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return frozenset({node.value})
+    if isinstance(node, ast.IfExp):
+        left = _literal_variants(node.body)
+        right = _literal_variants(node.orelse)
+        return left | right if left is not None and right is not None else None
+    return None
+
+
+def _literal_pair_variants(node: ast.AST) -> frozenset[tuple[str, str]] | None:
+    if isinstance(node, ast.Call):
+        values = {keyword.arg: keyword.value for keyword in node.keywords}
+    elif isinstance(node, ast.Dict):
+        values = {key.value: value for key, value in zip(node.keys, node.values)
+                  if isinstance(key, ast.Constant) and isinstance(key.value, str)}
+    else:
+        return None
+    categories = _literal_variants(values.get("category"))
+    entities = _literal_variants(values.get("entity_type"))
+    if categories is None or entities is None:
+        return None
+    return frozenset((category, entity) for category in categories for entity in entities)
+
+
+def _record_forwarder_safe(node: ast.Call, source_name: str) -> bool:
+    values = {keyword.arg: keyword.value for keyword in node.keywords}
+    entity = values.get("entity_type")
+    if not isinstance(entity, ast.Name) or entity.id != "entity_type":
+        return False
+    category = values.get("category")
+    if source_name == "portfolio.py":
+        return isinstance(category, ast.Constant) and category.value == "portfolio_management"
+    return (source_name == "order_management.py"
+            and isinstance(category, ast.Name) and category.id == "category")
+
+
+def _entry_expression_pairs(node: ast.AST) -> frozenset[tuple[str, str]] | None:
+    if isinstance(node, (ast.List, ast.Tuple)):
+        groups = [_entry_expression_pairs(item) for item in node.elts]
+        return (frozenset(pair for group in groups for pair in group)
+                if all(group is not None for group in groups) else None)
+    if isinstance(node, (ast.GeneratorExp, ast.ListComp)):
+        return _entry_expression_pairs(node.elt)
+    return _literal_pair_variants(node)
+
+
+def _local_entries_pairs(function: ast.AST) -> frozenset[tuple[str, str]] | None:
+    """Resolve a local append_many(entries) only when all writes are explicit."""
+    groups: list[frozenset[tuple[str, str]]] = []
+    initialized = False
+    allowed_names: set[int] = set()
+    for node in ast.walk(function):
+        value: ast.AST | None = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) \
+                and node.target.id == "entries":
+            initialized = True
+            allowed_names.add(id(node.target))
+            value = node.value
+        elif isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "entries"
+                for target in node.targets):
+            initialized = True
+            allowed_names.update(id(target) for target in node.targets
+                                 if isinstance(target, ast.Name) and target.id == "entries")
+            value = node.value
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) \
+                and node.target.id == "entries":
+            return None
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and isinstance(node.func.value, ast.Name) \
+                and node.func.value.id == "entries":
+            if node.func.attr not in {"append", "extend"} or len(node.args) != 1:
+                return None
+            allowed_names.add(id(node.func.value))
+            value = node.args[0]
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "append_many" and len(node.args) == 1 \
+                and isinstance(node.args[0], ast.Name) and node.args[0].id == "entries":
+            allowed_names.add(id(node.args[0]))
+        if value is not None:
+            group = _entry_expression_pairs(value)
+            if group is None:
+                return None
+            groups.append(group)
+    if any(isinstance(node, ast.Name) and node.id == "entries"
+           and id(node) not in allowed_names for node in ast.walk(function)):
+        return None
+    return (frozenset(pair for group in groups for pair in group)
+            if initialized and groups else None)
+
+
 def direct_controller_families(source: str) -> tuple[tuple[str, str], ...]:
     """Inventory literal families at direct ``self._journal`` call sites.
 
@@ -152,6 +244,13 @@ def indirect_journal_inventory(
     dynamic: list[str] = []
     for path in sources:
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        functions = [node for node in ast.walk(tree)
+                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        wrappers = [node for node in ast.walk(tree)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == "_record"]
+        forwarded: list[str] = []
+        record_calls = 0
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
@@ -165,27 +264,44 @@ def indirect_journal_inventory(
                          and method == "_record")
             if is_journal and method in {"append", "append_many", "append_once",
                                          "append_once_many"}:
-                pair = _literal_pair(node)
-                if pair is None and node.args:
+                if (path.name in {"portfolio.py", "order_management.py"}
+                        and method == "append"
+                        and any(wrapper.lineno <= node.lineno <= wrapper.end_lineno
+                                for wrapper in wrappers)):
+                    forwarded.append(f"{path.name}:{node.lineno}:journal.{method}")
+                    if not _record_forwarder_safe(node, path.name):
+                        dynamic.append(forwarded[-1])
+                    continue
+                pairs = _literal_pair_variants(node)
+                if pairs is None and node.args:
                     arg = node.args[0]
                     if isinstance(arg, (ast.GeneratorExp, ast.ListComp)):
-                        pair = _literal_pair(arg.elt)
+                        pairs = _literal_pair_variants(arg.elt)
                     elif isinstance(arg, (ast.List, ast.Tuple)):
-                        pairs = [_literal_pair(item) for item in arg.elts]
-                        if pairs and all(item is not None for item in pairs):
-                            families.update(pairs)
+                        item_pairs = [_literal_pair_variants(item) for item in arg.elts]
+                        if item_pairs and all(item is not None for item in item_pairs):
+                            families.update(pair for group in item_pairs for pair in group)
                             continue
-                if pair is None:
+                    elif method == "append_many" and isinstance(arg, ast.Name) \
+                            and arg.id == "entries":
+                        scopes = [function for function in functions
+                                  if function.lineno <= node.lineno <= function.end_lineno]
+                        if scopes:
+                            function = min(scopes, key=lambda item: item.end_lineno - item.lineno)
+                            pairs = _local_entries_pairs(function)
+                if pairs is None:
                     dynamic.append(f"{path.name}:{node.lineno}:journal.{method}")
                 else:
-                    families.add(pair)
+                    families.update(pairs)
             elif is_record and path.name == "portfolio.py":
+                record_calls += 1
                 kind = node.args[0] if node.args else None
                 if isinstance(kind, ast.Constant) and isinstance(kind.value, str):
                     families.add(("portfolio_management", kind.value))
                 else:
                     dynamic.append(f"{path.name}:{node.lineno}:_record")
             elif is_record and path.name == "order_management.py":
+                record_calls += 1
                 pair = None
                 if len(node.args) >= 2 and all(isinstance(arg, ast.Constant)
                                                 and isinstance(arg.value, str)
@@ -195,6 +311,10 @@ def indirect_journal_inventory(
                     dynamic.append(f"{path.name}:{node.lineno}:_record")
                 else:
                     families.add(pair)
+        if forwarded and (len(wrappers) != 1 or len(forwarded) != 1 or record_calls == 0
+                          or any(row.startswith(f"{path.name}:") and row.endswith(":_record")
+                                 for row in dynamic)):
+            dynamic.extend(forwarded)
     return tuple(sorted(families)), tuple(sorted(dynamic))
 
 
