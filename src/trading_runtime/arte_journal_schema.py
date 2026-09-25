@@ -1802,10 +1802,13 @@ def storage_preflight(client: Any, *, tables: tuple[TableContract, ...] = TABLES
 def journal_permission_preflight(
     client: Any, *, journal_tables: frozenset[str] | None = None,
     read_only_tables: frozenset[str] = frozenset(),
+    reference_read_tables: frozenset[tuple[str, str]] = frozenset(),
 ) -> None:
     """Fail closed unless this principal can only read market and append journal."""
     journal = ({table.name for table in TABLES} if journal_tables is None
                else set(journal_tables))
+    if not reference_read_tables <= frozenset({("q_live", "market_stock_split_v1")}):
+        raise ValueError("Journal reference-read exception is outside the V7 split contract")
     market = MARKET_READ_TABLES
     # The staged live-signal profile is an explicit, all-or-nothing extension
     # of this principal. Validate its physical tables before accepting grants.
@@ -1827,6 +1830,12 @@ def journal_permission_preflight(
         f"AND name IN ({names}) FORMAT JSONEachRow")
     if {str(row["name"]) for row in actual} != required:
         raise ValueError("Required journal or market tables are missing from permission audit")
+    for database, table in sorted(reference_read_tables):
+        reference_rows = _rows(client,
+            "SELECT name FROM system.tables "
+            f"WHERE database='{database}' AND name='{table}' FORMAT JSONEachRow")
+        if reference_rows != [{"name": table}]:
+            raise ValueError(f"Required reference table {database}.{table} is unavailable")
 
     # An unrestricted catalog scan can block on unrelated tables with very
     # large part catalogs. Audit this principal's grant *surface* instead: a
@@ -1855,6 +1864,7 @@ def journal_permission_preflight(
                 effective.add((privilege, database, table))
                 continue
             if privilege == "SELECT" and ((database == "arte" and table in required)
+                                          or (database, table) in reference_read_tables
                                           or (database == "system" and table in {
                                               "storage_policies", "tables", "columns", "parts",
                                               "data_skipping_indices"})):
@@ -1869,6 +1879,9 @@ def journal_permission_preflight(
             raise ValueError(f"Journal principal cannot read arte.{name}")
         if (("INSERT", "arte", name) in effective) != (name in journal):
             raise ValueError(f"Journal principal has incorrect insert authority on arte.{name}")
+    for database, table in sorted(reference_read_tables):
+        if ("SELECT", database, table) not in effective:
+            raise ValueError(f"Journal principal cannot read {database}.{table}")
     for name in ("storage_policies", "tables", "columns", "parts",
                  "data_skipping_indices"):
         if ("SELECT", "system", name) not in effective:
@@ -1883,12 +1896,20 @@ def journal_permission_preflight(
     for privilege in ("CREATE TABLE", "INSERT", "ALTER", "DROP TABLE", "TRUNCATE"):
         if allowed(privilege, "arte.*"):
             raise ValueError(f"Journal principal has broad arte {privilege} authority")
+        if reference_read_tables and allowed(privilege, "q_live.*"):
+            raise ValueError(f"Journal principal has broad q_live {privilege} authority")
     # Independent probes catch an unexpected server-side effective privilege
     # that is not reflected in SHOW GRANTS FINAL, without making startup O(N).
-    for privilege, target in (
+    probes = [
         ("INSERT", "arte.bars_v1"),
         ("DROP TABLE", "arte.bars_v1"),
         ("ALTER DELETE", "arte.trading_event_v1"),
-    ):
+    ]
+    if reference_read_tables:
+        probes.extend((
+            ("INSERT", "q_live.market_stock_split_v1"),
+            ("ALTER DELETE", "q_live.market_stock_split_v1"),
+        ))
+    for privilege, target in probes:
         if allowed(privilege, target):
             raise ValueError(f"Journal principal has unauthorized {privilege} on {target}")

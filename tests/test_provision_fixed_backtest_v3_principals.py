@@ -95,6 +95,9 @@ def test_exact_three_role_plan_matches_v3_preflight_tables():
     assert running.insert_arte <= running.select_arte
     assert terminal.insert_arte <= terminal.select_arte
     assert running.insert_arte != terminal.insert_arte
+    assert read.select_reference == frozenset({
+        ("q_live", "market_stock_split_v1")})
+    assert running.select_reference == terminal.select_reference == frozenset()
     assert all("default" not in statement and " ON *.* " not in statement
                for plan in (read, running, terminal) for statement in plan.grants())
 

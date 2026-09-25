@@ -81,7 +81,8 @@ def read_v3_preflight(client: Any) -> None:
     storage_preflight(client, tables=contracts)
     journal_permission_preflight(
         client, journal_tables=frozenset(),
-        read_only_tables=frozenset(table.name for table in contracts))
+        read_only_tables=frozenset(table.name for table in contracts),
+        reference_read_tables=frozenset({("q_live", "market_stock_split_v1")}))
     _exact_grants(client, frozenset())
 
 

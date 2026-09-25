@@ -287,6 +287,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
         extra_grant = ""
         grant_line = ""
         staged = False
+        reference = False
         missing_select = ""
         calls: list[str]
 
@@ -296,6 +297,9 @@ def test_journal_principal_cannot_write_market_or_change_schema(
         def execute(self, sql: str) -> str:
             self.calls.append(sql)
             if "FROM system.tables" in sql:
+                if "database='q_live'" in sql:
+                    return (json.dumps({"name": "market_stock_split_v1"})
+                            if self.reference else "")
                 assert "name IN (" in sql
                 tables = market | journal | (staged_journal if self.staged else set())
                 return "\n".join(json.dumps({"name": name}) for name in sorted(tables))
@@ -312,6 +316,8 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                                          "data_skipping_indices"))]
                 if self.grant_line:
                     grants.append(self.grant_line)
+                if self.reference:
+                    grants.append("GRANT SELECT ON q_live.market_stock_split_v1 TO journal_writer")
                 if self.missing_select:
                     grants = [line for line in grants
                               if f"ON arte.{self.missing_select} " not in line]
@@ -332,6 +338,16 @@ def test_journal_principal_cannot_write_market_or_change_schema(
     journal_permission_preflight(client)
     assert "SHOW GRANTS FINAL" in client.calls
     assert sum(sql.startswith("CHECK GRANT ") for sql in client.calls) <= 8
+    reference = frozenset({("q_live", "market_stock_split_v1")})
+    with pytest.raises(ValueError, match="reference table"):
+        journal_permission_preflight(client, reference_read_tables=reference)
+    client.reference = True
+    journal_permission_preflight(client, reference_read_tables=reference)
+    client.grant_line = "GRANT SELECT ON q_live.* TO journal_writer"
+    with pytest.raises(ValueError, match="unauthorized"):
+        journal_permission_preflight(client, reference_read_tables=reference)
+    client.grant_line = ""
+    client.reference = False
     client.missing_select = "bars_v1"
     with pytest.raises(ValueError, match="cannot read"):
         journal_permission_preflight(client)

@@ -44,3 +44,15 @@ def test_v3_exact_grants_rejects_extra_terminal_insert():
     with pytest.raises(RuntimeError, match="extra INSERT"):
         subject._exact_grants(
             Client(), frozenset({"trading_backtest_terminal_commit_v3"}))
+
+
+def test_v3_reader_requires_only_exact_v7_split_reference(monkeypatch):
+    seen = []
+    monkeypatch.setattr(subject, "storage_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(subject, "journal_permission_preflight",
+                        lambda _client, **kwargs: seen.append(kwargs))
+    monkeypatch.setattr(subject, "_exact_grants", lambda *_args: None)
+    subject.read_v3_preflight(object())
+    assert seen[0]["journal_tables"] == frozenset()
+    assert seen[0]["reference_read_tables"] == frozenset({
+        ("q_live", "market_stock_split_v1")})

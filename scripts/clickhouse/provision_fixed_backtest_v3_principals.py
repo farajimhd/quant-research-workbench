@@ -51,6 +51,7 @@ class PrincipalPlan:
     select_arte: frozenset[str]
     insert_arte: frozenset[str]
     select_system: frozenset[str]
+    select_reference: frozenset[tuple[str, str]] = frozenset()
 
     def grants(self) -> tuple[str, ...]:
         return tuple(
@@ -58,6 +59,8 @@ class PrincipalPlan:
              for name in sorted(self.select_arte)] +
             [f"GRANT INSERT ON arte.{name} TO {self.principal}"
              for name in sorted(self.insert_arte)] +
+            [f"GRANT SELECT ON {database}.{table} TO {self.principal}"
+             for database, table in sorted(self.select_reference)] +
             [f"GRANT SELECT ON system.{name} TO {self.principal}"
              for name in sorted(self.select_system)]
         )
@@ -82,7 +85,8 @@ def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
     system = frozenset(SYSTEM_READ_TABLES)
     return (
         PrincipalPlan("read", PRINCIPALS["read"], terminal | MARKET_READ_TABLES,
-                      frozenset(), system),
+                      frozenset(), system,
+                      frozenset({("q_live", "market_stock_split_v1")})),
         PrincipalPlan("running", PRINCIPALS["running"], running | MARKET_READ_TABLES,
                       running_insert, system),
         PrincipalPlan("terminal", PRINCIPALS["terminal"], terminal | MARKET_READ_TABLES,
@@ -96,6 +100,7 @@ def render_plan(plans: tuple[PrincipalPlan, ...], *, stream: Any) -> None:
         print(f"{plan.role:8} {plan.principal:24} "
               f"arte SELECT {len(plan.select_arte):3}  "
               f"arte INSERT {len(plan.insert_arte):3}  "
+              f"reference SELECT {len(plan.select_reference):2}  "
               f"system SELECT {len(plan.select_system):2}", file=stream)
     print("No connection, credential, DDL, or grant change was made.", file=stream)
     print("Apply requires --apply --confirm-v3-principals on DESKTOP-SAAI85T.",
@@ -208,6 +213,7 @@ def _desired_grants(plan: PrincipalPlan) -> frozenset[tuple[str, str, str]]:
     return frozenset(
         {("SELECT", "arte", name) for name in plan.select_arte} |
         {("INSERT", "arte", name) for name in plan.insert_arte} |
+        {("SELECT", database, table) for database, table in plan.select_reference} |
         {("SELECT", "system", name) for name in plan.select_system}
     )
 
