@@ -38,6 +38,7 @@ from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
     PROTECTED_EXIT_SATISFIED, PROTECTION_CHANGE_TABLES,
     PROTECTED_EXIT_SNAPSHOT,
+    PORTFOLIO_ALLOCATION_FILL,
 )
 
 
@@ -95,7 +96,7 @@ def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
         *TRADE_PROPOSAL_TABLES, *BROKER_OMS_TABLES,
         *ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
         PROTECTED_EXIT_SATISFIED, *PROTECTION_CHANGE_TABLES,
-        PROTECTED_EXIT_SNAPSHOT))
+        PROTECTED_EXIT_SNAPSHOT, PORTFOLIO_ALLOCATION_FILL))
     terminal_insert = frozenset(_TABLES)
     if not running_insert <= running or not terminal_insert <= terminal:
         raise RuntimeError("V3 preflight references an unprovisioned table")

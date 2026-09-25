@@ -29,6 +29,7 @@ from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
     PROTECTED_EXIT_SATISFIED, PROTECTION_CHANGE_TABLES,
     PROTECTED_EXIT_SNAPSHOT,
+    PORTFOLIO_ALLOCATION_FILL,
     PORTFOLIO_CONTROL,
     RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
     SQUEEZE_COMMIT_V3, staged_portfolio_control_ddl,
@@ -37,6 +38,7 @@ from src.backend.backtest_squeeze_episode_schema import (
     staged_entry_reprice_capacity_ddl, staged_entry_reprice_rejected_ddl,
     staged_protected_exit_satisfied_ddl, staged_protection_change_ddl,
     staged_protected_exit_snapshot_ddl,
+    staged_portfolio_allocation_fill_ddl,
 )
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.live_plan_membership import TABLES as LIVE_PLAN_MEMBERSHIP_TABLES
@@ -70,6 +72,51 @@ _SATISFIED_COLUMNS = frozenset({
 _PROTECTION_COLUMNS = frozenset({"protection_change_count", "protection_change_hash"})
 _SNAPSHOT_COLUMNS = frozenset({
     "protected_exit_snapshot_count", "protected_exit_snapshot_hash"})
+_ALLOCATION_COLUMNS = frozenset({
+    "portfolio_allocation_fill_count", "portfolio_allocation_fill_hash"})
+
+
+def upgrade_v3_portfolio_allocation_fill(client: object, *, apply: bool) -> str:
+    """Install the scalar allocation fill only behind an empty V3 fence."""
+    actual = tuple((row["name"], row["type"]) for row in (
+        json.loads(line) for line in client.execute(
+            "SELECT name,type FROM system.columns WHERE database='arte' "
+            "AND table='trading_commit_v3' ORDER BY position FORMAT JSONEachRow"
+        ).splitlines() if line.strip()))
+    full = SQUEEZE_COMMIT_V3.columns
+    end = _exact_v3_commit_prefix(actual)
+    start = next(i for i, (name, _) in enumerate(full)
+                 if name == "portfolio_allocation_fill_count")
+    if end < start:
+        raise RuntimeError("V3 allocation upgrade requires all preceding seal columns")
+    present = end - start
+    storage_preflight(client, tables=(TableContract(
+        SQUEEZE_COMMIT_V3.name, actual, SQUEEZE_COMMIT_V3.partition,
+        SQUEEZE_COMMIT_V3.order),))
+    exists = client.execute(
+        "SELECT count() FROM system.tables WHERE database='arte' "
+        f"AND name='{PORTFOLIO_ALLOCATION_FILL.name}'").strip()
+    if exists not in {"0", "1"}:
+        raise RuntimeError("V3 portfolio allocation inventory is ambiguous")
+    if exists == "1":
+        storage_preflight(client, tables=(PORTFOLIO_ALLOCATION_FILL,))
+    if present == 2 and exists == "1":
+        return "verified"
+    if client.execute("SELECT count() FROM arte.trading_commit_v3").strip() != "0":
+        raise RuntimeError("V3 commit has rows; versioned migration required")
+    if exists == "1" and client.execute(
+            f"SELECT count() FROM arte.{PORTFOLIO_ALLOCATION_FILL.name}").strip() != "0":
+        raise RuntimeError("V3 portfolio allocation fact has rows; no ALTER attempted")
+    if not apply:
+        return "planned"
+    ddls = staged_portfolio_allocation_fill_ddl()
+    if exists == "0":
+        client.execute(ddls[0])
+        storage_preflight(client, tables=(PORTFOLIO_ALLOCATION_FILL,))
+    for ddl in ddls[1 + present:]:
+        client.execute(ddl)
+    storage_preflight(client, tables=(PORTFOLIO_ALLOCATION_FILL, SQUEEZE_COMMIT_V3))
+    return "upgraded"
 
 
 def upgrade_v3_protected_exit_snapshot(client: object, *, apply: bool) -> str:
@@ -85,7 +132,7 @@ def upgrade_v3_protected_exit_snapshot(client: object, *, apply: bool) -> str:
                  if name == "protected_exit_snapshot_count")
     if end < start:
         raise RuntimeError("V3 snapshot upgrade requires all preceding seal columns")
-    present = end - start
+    present = min(2, end - start)
     storage_preflight(client, tables=(TableContract(
         SQUEEZE_COMMIT_V3.name, actual, SQUEEZE_COMMIT_V3.partition,
         SQUEEZE_COMMIT_V3.order),))
@@ -449,7 +496,7 @@ def _without_proposals(columns):
     return tuple(column for column in columns if column[0] not in
                  (_PROPOSAL_COLUMNS | _BROKER_OMS_COLUMNS | _CAPACITY_COLUMNS
                   | _REJECTED_COLUMNS | _SATISFIED_COLUMNS | _PROTECTION_COLUMNS
-                  | _SNAPSHOT_COLUMNS))
+                  | _SNAPSHOT_COLUMNS | _ALLOCATION_COLUMNS))
 
 
 def _with_existing_proposals(columns, actual):
@@ -478,6 +525,10 @@ def _with_existing_proposals(columns, actual):
     snapshot_expected = [name for name, _ in columns if name in _SNAPSHOT_COLUMNS]
     if snapshot_present != snapshot_expected[:len(snapshot_present)]:
         raise RuntimeError("V3 commit has an invalid protected-exit-snapshot suffix")
+    allocation_present = [name for name, _ in actual if name in _ALLOCATION_COLUMNS]
+    allocation_expected = [name for name, _ in columns if name in _ALLOCATION_COLUMNS]
+    if allocation_present != allocation_expected[:len(allocation_present)]:
+        raise RuntimeError("V3 commit has an invalid portfolio-allocation suffix")
     present = {name for name, _ in actual} & _PROPOSAL_COLUMNS
     if present not in (set(), {"trade_proposal_child_count"}, _PROPOSAL_COLUMNS):
         raise RuntimeError("V3 commit has an invalid trade-proposal suffix")
@@ -485,12 +536,13 @@ def _with_existing_proposals(columns, actual):
                  if column[0] not in (_PROPOSAL_COLUMNS | _BROKER_OMS_COLUMNS
                                      | _CAPACITY_COLUMNS | _REJECTED_COLUMNS
                                      | _SATISFIED_COLUMNS | _PROTECTION_COLUMNS
-                                     | _SNAPSHOT_COLUMNS)
+                                     | _SNAPSHOT_COLUMNS | _ALLOCATION_COLUMNS)
                  or column[0] in present or column[0] in broker_present
                  or column[0] in capacity_present or column[0] in rejected_present
                  or column[0] in satisfied_present
                  or column[0] in protection_present
-                 or column[0] in snapshot_present)
+                 or column[0] in snapshot_present
+                 or column[0] in allocation_present)
 
 
 def upgrade_v3_portfolio_control(client: object, *, apply: bool) -> str:
@@ -794,6 +846,8 @@ def main() -> int:
                         help="verify or install empty-fence V3 protection-change facts")
     parser.add_argument("--upgrade-v3-protected-exit-snapshot", action="store_true",
                         help="verify or install empty-fence V3 exit-position snapshot")
+    parser.add_argument("--upgrade-v3-portfolio-allocation-fill", action="store_true",
+                        help="verify or install empty-fence V3 allocation fill")
     parser.add_argument("--install-live-plan-membership", action="store_true",
                         help="verify or install typed live plan membership tables")
     args = parser.parse_args()
@@ -821,11 +875,15 @@ def main() -> int:
                     args.upgrade_v3_protected_exit_satisfied,
                     args.upgrade_v3_protection_change,
                     args.upgrade_v3_protected_exit_snapshot,
+                    args.upgrade_v3_portfolio_allocation_fill,
                     args.install_live_plan_membership)) > 1:
                 parser.error("Select only one layout upgrade at a time")
             if args.install_live_plan_membership:
                 result = install_live_plan_membership(client, apply=args.apply)
                 print(f"Live plan membership layout: {result}; no rows inserted")
+            elif args.upgrade_v3_portfolio_allocation_fill:
+                result = upgrade_v3_portfolio_allocation_fill(client, apply=args.apply)
+                print(f"V3 portfolio-allocation layout: {result}; no rows inserted")
             elif args.upgrade_v3_protected_exit_snapshot:
                 result = upgrade_v3_protected_exit_snapshot(client, apply=args.apply)
                 print(f"V3 protected-exit snapshot layout: {result}; no rows inserted")

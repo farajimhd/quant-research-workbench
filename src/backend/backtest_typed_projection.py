@@ -267,6 +267,19 @@ def project_pending_backtest_v3_prefix(
             unit = V3SqueezeBatch(
                 base, (), protected_exit_snapshots=(projected.detail,))
         elif (record.category, record.entity_type) == (
+                "portfolio_management", "portfolio_allocation"):
+            from src.backend.backtest_portfolio_allocation_v3 import (
+                project_portfolio_allocation_v3,
+            )
+
+            projected = project_portfolio_allocation_v3(
+                record, attempt_id=attempt, batch_id=batch_id)
+            base = TypedJournalBatch(
+                record.run_id, run_month, attempt, batch_id, previous,
+                sequence, sequence, cursor, "running", (projected.event,))
+            unit = V3SqueezeBatch(
+                base, (), portfolio_allocation_fills=(projected.detail,))
+        elif (record.category, record.entity_type) == (
                 "protection", "protection_change"):
             from src.backend.backtest_protection_change_v3 import project_protection_change_v3
 

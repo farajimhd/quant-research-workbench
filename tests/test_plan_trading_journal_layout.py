@@ -54,7 +54,7 @@ def test_missing_plan_fails_if_existing_table_is_incompatible(monkeypatch):
 def test_v3_plan_includes_only_missing_normalized_squeeze_and_terminal_tables(monkeypatch):
     contracts = plan.profile_contracts("fixed-v3")
     v2 = fixed_backtest_v2_contracts()
-    assert len(contracts) == len(v2) + 26
+    assert len(contracts) == len(v2) + 27
     assert {table.name for table in contracts[len(v2):]} == {
         "trading_backtest_squeeze_episode_v1",
         "trading_portfolio_reservation_reason_v1",
@@ -66,7 +66,7 @@ def test_v3_plan_includes_only_missing_normalized_squeeze_and_terminal_tables(mo
         *(table.name for table in ENTRY_REPRICE_CAPACITY_TABLES),
         ENTRY_REPRICE_REJECTED.name, PROTECTED_EXIT_SATISFIED.name,
         *(table.name for table in PROTECTION_CHANGE_TABLES),
-        PROTECTED_EXIT_SNAPSHOT.name}
+        PROTECTED_EXIT_SNAPSHOT.name, "trading_portfolio_allocation_fill_v3"}
     present = {table.name for table in v2}
 
     class Client:
@@ -77,4 +77,4 @@ def test_v3_plan_includes_only_missing_normalized_squeeze_and_terminal_tables(mo
     monkeypatch.setattr(plan, "storage_preflight", lambda *_args, **_kwargs: None)
     missing, ddl = plan.plan_missing(Client(), profile="fixed-v3")
     assert set(missing) == {table.name for table in contracts[len(v2):]}
-    assert len(ddl) == 26 and all("live_market_ssd" in sql for sql in ddl)
+    assert len(ddl) == 27 and all("live_market_ssd" in sql for sql in ddl)

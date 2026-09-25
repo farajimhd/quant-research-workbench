@@ -17,6 +17,7 @@ from src.backend.backtest_squeeze_episode_projection import project_fixed_squeez
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
     PROTECTED_EXIT_SATISFIED, PROTECTION_CHANGE_TABLES, PROTECTED_EXIT_SNAPSHOT,
+    PORTFOLIO_ALLOCATION_FILL,
     PORTFOLIO_CONTROL, RESERVATION_REASON,
     SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
@@ -176,6 +177,7 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
     protection_changes = []
     protection_entry_orders = []
     protected_exit_snapshots = []
+    portfolio_allocation_fills = []
     pinned = set()
     for unit in units:
         for row in unit.episodes:
@@ -220,6 +222,7 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
             (unit.protection_changes, protection_changes),
             (unit.protection_entry_orders, protection_entry_orders),
             (unit.protected_exit_snapshots, protected_exit_snapshots),
+            (unit.portfolio_allocation_fills, portfolio_allocation_fills),
         ):
             for row in family:
                 values = {key: value for key, value in row.items()
@@ -257,7 +260,8 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
                           tuple(protected_exit_satisfied),
                           tuple(protection_changes),
                           tuple(protection_entry_orders),
-                          tuple(protected_exit_snapshots))
+                          tuple(protected_exit_snapshots),
+                          tuple(portfolio_allocation_fills))
 
 
 def seal_squeeze_family_v3(
@@ -280,6 +284,7 @@ def seal_squeeze_family_v3(
     protection_changes: Sequence[Mapping[str, Any]] = (),
     protection_entry_orders: Sequence[Mapping[str, Any]] = (),
     protected_exit_snapshots: Sequence[Mapping[str, Any]] = (),
+    portfolio_allocation_fills: Sequence[Mapping[str, Any]] = (),
     stored_utc: bool = False,
 ) -> dict[str, Any]:
     """Produce a replacement V3 seal after exact parent/child verification.
@@ -303,7 +308,8 @@ def seal_squeeze_family_v3(
         "entry_reprice_rejected_count", "entry_reprice_rejected_hash",
         "protected_exit_satisfied_count", "protected_exit_satisfied_hash",
         "protection_change_count", "protection_change_hash",
-        "protected_exit_snapshot_count", "protected_exit_snapshot_hash"}:
+        "protected_exit_snapshot_count", "protected_exit_snapshot_hash",
+        "portfolio_allocation_fill_count", "portfolio_allocation_fill_hash"}:
         raise ValueError("V2 commit columns differ from V3 base")
     batch = str(UUID(str(v2_commit["batch_id"])))
     run = str(v2_commit["run_id"])
@@ -392,6 +398,9 @@ def seal_squeeze_family_v3(
     from src.backend.backtest_protected_exit_snapshot_v3 import seal_protected_exit_snapshot_v3
     sealed.update(seal_protected_exit_snapshot_v3(
         protected_exit_snapshots, parent_events, run_id=run, batch_id=batch))
+    from src.backend.backtest_portfolio_allocation_v3 import seal_portfolio_allocation_v3
+    sealed.update(seal_portfolio_allocation_v3(
+        portfolio_allocation_fills, parent_events, run_id=run, batch_id=batch))
     return sealed
 
 
@@ -416,6 +425,7 @@ def verify_squeeze_family_v3(
     protection_changes: Sequence[Mapping[str, Any]] = (),
     protection_entry_orders: Sequence[Mapping[str, Any]] = (),
     protected_exit_snapshots: Sequence[Mapping[str, Any]] = (),
+    portfolio_allocation_fills: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[dict[str, Any], ...]:
     """Verify V3 family seal before exposing a bounded typed occurrence page."""
     if set(commit) != _COMMIT_COLUMNS:
@@ -436,7 +446,8 @@ def verify_squeeze_family_v3(
         "entry_reprice_rejected_count", "entry_reprice_rejected_hash",
         "protected_exit_satisfied_count", "protected_exit_satisfied_hash",
         "protection_change_count", "protection_change_hash",
-        "protected_exit_snapshot_count", "protected_exit_snapshot_hash"}}
+        "protected_exit_snapshot_count", "protected_exit_snapshot_hash",
+        "portfolio_allocation_fill_count", "portfolio_allocation_fill_hash"}}
     normalized = []
     for row in rows:
         if stored_utc:
@@ -465,6 +476,7 @@ def verify_squeeze_family_v3(
         protection_changes=protection_changes,
         protection_entry_orders=protection_entry_orders,
         protected_exit_snapshots=protected_exit_snapshots,
+        portfolio_allocation_fills=portfolio_allocation_fills,
         stored_utc=stored_utc)
     if (type(commit["backtest_squeeze_episode_count"]) is not int
             or expected != dict(commit)):
@@ -493,7 +505,7 @@ def load_verified_squeeze_v3_prefix(
                           *TRADE_PROPOSAL_TABLES, *BROKER_OMS_TABLES,
                           *ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
                           PROTECTED_EXIT_SATISFIED, *PROTECTION_CHANGE_TABLES,
-                          PROTECTED_EXIT_SNAPSHOT,
+                          PROTECTED_EXIT_SNAPSHOT, PORTFOLIO_ALLOCATION_FILL,
                           SQUEEZE_COMMIT_V3)
     storage_preflight(client, tables=contracts)
     for fence in ("trading_commit_v1", "trading_commit_v2"):
@@ -636,10 +648,16 @@ def load_verified_squeeze_v3_prefix(
             "FROM arte.trading_event_v1 "
             f"WHERE {ids} AND category='order_management' "
             "AND entity_type='protected_exit_snapshot_reconciled' FORMAT JSONEachRow")
+        allocation_events = _rows(client,
+            "SELECT record_id,run_id,event_month,batch_id,category,entity_type,entity_id,"
+            "account_id,event_time,sequence,correlation_id,causation_id "
+            "FROM arte.trading_event_v1 "
+            f"WHERE {ids} AND category='portfolio_management' "
+            "AND entity_type='portfolio_allocation' FORMAT JSONEachRow")
         if any(not first <= int(event["sequence"]) <= last
                for event in broker_policy_events + reprice_events + capacity_events
                + rejected_events + satisfied_events + protection_events
-               + snapshot_events):
+               + snapshot_events + allocation_events):
             raise RuntimeError("Broker/OMS parent lies beyond committed causal prefix")
         broker_oms_rows = []
         for contract in BROKER_OMS_TABLES:
@@ -675,6 +693,12 @@ def load_verified_squeeze_v3_prefix(
         snapshot_rows = _rows(client,
             f"SELECT {snapshot_columns} FROM arte.{PROTECTED_EXIT_SNAPSHOT.name} "
             f"WHERE {ids} FORMAT JSONEachRow")
+        allocation_columns = ",".join(
+            f"toString({name}) AS {name}" if kind.startswith("Decimal") else name
+            for name, kind in PORTFOLIO_ALLOCATION_FILL.columns)
+        allocation_rows = _rows(client,
+            f"SELECT {allocation_columns} FROM arte.{PORTFOLIO_ALLOCATION_FILL.name} "
+            f"WHERE {ids} FORMAT JSONEachRow")
         selected_hashes = {row["policy_hash"] for row in portfolio_controls
                            if row["control_event"] == "portfolio_policy_selected"}
         if selected_hashes:
@@ -702,7 +726,7 @@ def load_verified_squeeze_v3_prefix(
             commit, children, parents + reservation_events + reconciliation_events
             + control_events + proposal_events + broker_policy_events
             + reprice_events + capacity_events + rejected_events + satisfied_events
-            + protection_events + snapshot_events,
+            + protection_events + snapshot_events + allocation_events,
             stored_utc=True,
             reservation_reasons=reasons,
             parent_reservations=reservation_parents,
@@ -720,7 +744,8 @@ def load_verified_squeeze_v3_prefix(
             protected_exit_satisfied=satisfied_rows,
             protection_changes=protection_rows[0],
             protection_entry_orders=protection_rows[1],
-            protected_exit_snapshots=snapshot_rows)
+            protected_exit_snapshots=snapshot_rows,
+            portfolio_allocation_fills=allocation_rows)
         if any(row["market_plan_token"] != expected_market_plan_token
                or row["query_sha256"] != expected_query_sha256 for row in verified):
             raise RuntimeError("V3 squeeze row differs from pinned market authority")

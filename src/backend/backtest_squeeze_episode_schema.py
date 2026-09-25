@@ -17,6 +17,7 @@ from src.backend.backtest_entry_reprice_rejected_v3 import REJECTED as ENTRY_REP
 from src.backend.backtest_protected_exit_satisfied_v3 import SATISFIED as PROTECTED_EXIT_SATISFIED
 from src.backend.backtest_protection_change_v3 import TABLES as PROTECTION_CHANGE_TABLES
 from src.backend.backtest_protected_exit_snapshot_v3 import SNAPSHOT as PROTECTED_EXIT_SNAPSHOT
+from src.backend.backtest_portfolio_allocation_v3 import ALLOCATION as PORTFOLIO_ALLOCATION_FILL
 
 BROKER_OMS_TABLES = (SHORT_ORDER_SKIP, POLICY_EVENT, POLICY_MESSAGE,
                      ENTRY_REPRICE_DEFERRED)
@@ -91,6 +92,8 @@ _V3_EXTENSION = (
     ("protection_change_hash", "FixedString(64)"),
     ("protected_exit_snapshot_count", "UInt32"),
     ("protected_exit_snapshot_hash", "FixedString(64)"),
+    ("portfolio_allocation_fill_count", "UInt32"),
+    ("portfolio_allocation_fill_hash", "FixedString(64)"),
 )
 SQUEEZE_COMMIT_V3 = TableContract(
     "trading_commit_v3",
@@ -110,7 +113,22 @@ def staged_v3_ddl() -> tuple[str, ...]:
             PROTECTED_EXIT_SATISFIED.ddl(),
             *(table.ddl() for table in PROTECTION_CHANGE_TABLES),
             PROTECTED_EXIT_SNAPSHOT.ddl(),
+            PORTFOLIO_ALLOCATION_FILL.ddl(),
             SQUEEZE_COMMIT_V3.ddl())
+
+
+def staged_portfolio_allocation_fill_ddl() -> tuple[str, ...]:
+    """Review-only additive DDL; operator must prove the V3 fence is empty."""
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        PORTFOLIO_ALLOCATION_FILL.ddl(),
+        "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+        "portfolio_allocation_fill_count UInt32 DEFAULT 0 "
+        "AFTER protected_exit_snapshot_hash",
+        "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+        f"portfolio_allocation_fill_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER portfolio_allocation_fill_count",
+    )
 
 
 def staged_protected_exit_snapshot_ddl() -> tuple[str, ...]:

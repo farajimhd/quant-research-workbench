@@ -34,6 +34,7 @@ _V3_PROJECTED = frozenset({
     ("portfolio_management", "portfolio_control"),
     ("portfolio_management", "entry_reprice_capacity"),
     ("portfolio_management", "entry_reprice_rejected"),
+    ("portfolio_management", "portfolio_allocation"),
     ("broker_policy", "short_order_skipped"),
     ("broker_policy", "order_reply_suppression"),
     ("broker_policy", "order_warning_decision"),
