@@ -58,6 +58,15 @@ class Client:
     def query(self, sql: str) -> list[dict]:
         if "FROM arte.trading_admission_fence_v1" in sql:
             if "GROUP BY" in sql:
+                if "ORDER BY account_id,state_revision" in sql:
+                    keys = sorted({(row["account_id"], row["state_revision"])
+                                   for row in self.fences})
+                    after = re.search(r"AND \(account_id,state_revision\) > \('([^']+)',(\d+)\)", sql)
+                    if after:
+                        keys = [key for key in keys if key > (after.group(1), int(after.group(2)))]
+                    limit = int(re.search(r"LIMIT (\d+)", sql).group(1))
+                    return [{"account_id": account_id, "state_revision": revision}
+                            for account_id, revision in keys[:limit]]
                 if "latest_revision" in sql:
                     accounts = {}
                     for row in self.fences:
@@ -187,6 +196,32 @@ def test_startup_rejects_corrupt_snapshot_beneath_matching_commit() -> None:
         client.snapshot_corrupt = True
         with pytest.raises(RuntimeError, match="content differs from its fence"):
             admission.verify_no_incomplete_admissions(client, RUN)
+
+
+def test_startup_audits_older_committed_revision_not_only_latest() -> None:
+    client = Client()
+    with pytest.MonkeyPatch.context() as patch:
+        install_fakes(patch, client)
+        admission.publish_fenced_admission(client, batch(), captured())
+        # A later complete revision is present, but the older one has lost its
+        # backing event/snapshot commits. Startup must still reject the run.
+        for row in tuple(client.fences):
+            client.fences.append(dict(row, state_revision=2))
+        seen = []
+        def verify(_client, *, run_id, account_id, state_revision):
+            seen.append(state_revision)
+            if state_revision == 1:
+                raise RuntimeError("Admission fence references missing or conflicting commits")
+            return {"state_revision": state_revision}
+        patch.setattr(admission, "load_fenced_admission", verify)
+        with pytest.raises(RuntimeError, match="missing or conflicting commits"):
+            admission.verify_no_incomplete_admissions(client, RUN, page_size=1)
+        assert seen == [1]
+        seen.clear()
+        patch.setattr(admission, "load_fenced_admission", lambda _client, **identity:
+                      seen.append(identity["state_revision"]) or identity)
+        admission.verify_no_incomplete_admissions(client, RUN, page_size=1)
+        assert seen == [1, 2]
 
 
 def test_admission_fence_rejects_non_hash_snapshot_reference() -> None:

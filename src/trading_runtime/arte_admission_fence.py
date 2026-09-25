@@ -148,10 +148,16 @@ def publish_fenced_admission(client: Any, batch: TypedJournalBatch,
     return snapshot_hash
 
 
-def verify_no_incomplete_admissions(client: Any, run_id: str) -> None:
-    """Fail startup on incomplete fences or broken latest recovery heads."""
+def verify_no_incomplete_admissions(client: Any, run_id: str, *, page_size: int = 256) -> None:
+    """Fail startup on incomplete fences or any broken committed revision.
+
+    Every revision is scanned in bounded keyset pages; a valid latest head
+    cannot hide an earlier fence whose event or snapshot commit was lost.
+    """
     if not run_id:
         raise ValueError("Admission run identity is required")
+    if type(page_size) is not int or not 1 <= page_size <= 1000:
+        raise ValueError("Admission recovery page size is invalid")
     rows = _rows(client,
         "SELECT account_id,state_revision,countIf(phase='prepared') AS prepared_count,"
         "countIf(phase='committed') AS committed_count,count() AS total_count "
@@ -161,18 +167,27 @@ def verify_no_incomplete_admissions(client: Any, run_id: str) -> None:
         "LIMIT 1 FORMAT JSONEachRow")
     if rows:
         raise RuntimeError("Run has an incomplete or duplicate admission fence")
-    # The two fence phases alone do not prove their referenced commits still
-    # exist. Check each account's recovery head before admitting live work.
-    heads = _rows(client,
-        "SELECT account_id,max(state_revision) AS latest_revision "
-        "FROM arte.trading_admission_fence_v1 "
-        f"WHERE run_id={_literal(run_id)} GROUP BY account_id "
-        "LIMIT 4097 FORMAT JSONEachRow")
-    if len(heads) > 4096:
-        raise RuntimeError("Admission recovery has too many accounts for bounded startup audit")
-    for head in heads:
-        if load_fenced_admission(
-            client, run_id=run_id, account_id=str(head["account_id"]),
-            state_revision=int(head["latest_revision"]),
-        ) is None:
-            raise RuntimeError("Admission recovery head disappeared during startup audit")
+    cursor: tuple[str, int] | None = None
+    while True:
+        after = ("" if cursor is None else
+                 f"AND (account_id,state_revision) > "
+                 f"({_literal(cursor[0])},{cursor[1]}) ")
+        page = _rows(client,
+            "SELECT account_id,state_revision "
+            "FROM arte.trading_admission_fence_v1 "
+            f"WHERE run_id={_literal(run_id)} {after}"
+            "GROUP BY account_id,state_revision "
+            f"ORDER BY account_id,state_revision LIMIT {page_size} FORMAT JSONEachRow")
+        if len(page) > page_size:
+            raise RuntimeError("Admission recovery page exceeded its bound")
+        for row in page:
+            key = (str(row["account_id"]), int(row["state_revision"]))
+            if not key[0] or key[1] < 0 or (cursor is not None and key <= cursor):
+                raise RuntimeError("Admission recovery page did not advance causally")
+            if load_fenced_admission(
+                client, run_id=run_id, account_id=key[0], state_revision=key[1],
+            ) is None:
+                raise RuntimeError("Admission recovery fence disappeared during startup audit")
+            cursor = key
+        if len(page) < page_size:
+            return
