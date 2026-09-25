@@ -15,7 +15,7 @@ from uuid import UUID
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, _literal
 from src.trading_runtime.eligible_price_contract import (
-    matches_summary_digest, volumes_match,
+    matches_summary_digest, summary_digest, volumes_match,
 )
 
 
@@ -163,7 +163,13 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
                     or not matches_summary_digest(
                         row, content_hash=unit.content_hash,
                         published_volume=unit.total_execution_volume)):
-                raise RuntimeError("Eligible-price rows differ from published coverage")
+                raise RuntimeError(
+                    "Eligible-price rows differ from published coverage: "
+                    f"{key[0]} {key[1]} (count={row['row_count']}/"
+                    f"{unit.price_row_count}, buckets={row['eligible_bucket_count']}/"
+                    f"{unit.eligible_bucket_count}, volume="
+                    f"{row['total_execution_volume']}/{unit.total_execution_volume}, "
+                    f"digest={summary_digest(row) == unit.content_hash})")
             seen.add(key)
         if seen != {key for key, unit in covered.items() if unit.price_row_count > 0}:
             raise RuntimeError("Eligible-price rows are missing from published coverage")
