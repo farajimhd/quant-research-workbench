@@ -84,6 +84,7 @@ def test_real_indirect_inventory_resolves_forwarders_and_exposes_unsupported_fam
     with pytest.raises(ValueError, match="lack typed projection") as failure:
         cert.certify_indirect_v3_projection()
     assert "portfolio_decision" not in str(failure.value)
+    assert "portfolio_reconciliation" not in str(failure.value)
 
 
 def test_forwarded_record_requires_literal_callers_and_exact_wrapper(tmp_path):

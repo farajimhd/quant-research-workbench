@@ -28,6 +28,7 @@ _V3_PROJECTED = frozenset({
     ("market_discovery_signal", "signal_occurrence"),
     ("portfolio_management", "portfolio_decision"),
     ("portfolio_management", "portfolio_reservation"),
+    ("portfolio_management", "portfolio_reconciliation"),
 })
 
 
