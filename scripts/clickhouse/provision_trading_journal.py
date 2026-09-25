@@ -140,8 +140,8 @@ def _grants(*, staged_live_signal: bool = False,
             staged_live_plan_membership: bool = False,
             fixed_backtest_v2: bool = False) -> tuple[str, ...]:
     if fixed_backtest_v2:
-        if staged_live_signal or staged_live_plan_membership:
-            raise ValueError("Fixed V2 and staged live grants cannot be combined")
+        if staged_live_signal:
+            raise ValueError("Fixed V2 and staged live-signal grants cannot be combined")
         contracts = fixed_backtest_v2_contracts()
         legacy = {"trading_strategy_signal_v1", "trading_commit_v1"}
         statements = [
@@ -164,6 +164,10 @@ def _grants(*, staged_live_signal: bool = False,
             f"GRANT SELECT ON system.{name} TO {PRINCIPAL}"
             for name in SYSTEM_READ_TABLES
         )
+        if staged_live_plan_membership:
+            statements.extend(
+                f"GRANT SELECT, INSERT ON arte.{table.name} TO {PRINCIPAL}"
+                for table in LIVE_PLAN_MEMBERSHIP_TABLES)
         return tuple(statements)
     statements = [
         f"GRANT SELECT, INSERT ON arte.{table.name} TO {PRINCIPAL}"

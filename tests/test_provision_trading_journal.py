@@ -42,9 +42,12 @@ def test_fixed_v2_grants_revoke_legacy_inserts_and_exclude_market_writes() -> No
                for line in grants)
     with pytest.raises(ValueError, match="cannot be combined"):
         provision._grants(fixed_backtest_v2=True, staged_live_signal=True)
-    with pytest.raises(ValueError, match="cannot be combined"):
-        provision._grants(fixed_backtest_v2=True,
-                          staged_live_plan_membership=True)
+    combined = set(provision._grants(
+        fixed_backtest_v2=True, staged_live_plan_membership=True))
+    assert combined - set(grants) == {
+        f"GRANT SELECT, INSERT ON arte.{table.name} TO trading_journal_writer"
+        for table in provision.LIVE_PLAN_MEMBERSHIP_TABLES
+    }
 
 
 def test_staged_live_membership_adds_only_three_typed_table_grants() -> None:
