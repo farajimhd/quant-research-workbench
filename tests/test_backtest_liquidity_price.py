@@ -7,12 +7,6 @@ from pipelines.market_sip.events.liquidity_execution_price_producer import _dige
 from src.trading_runtime.eligible_price_contract import (
     legacy_summary_digest, volumes_match,
 )
-
-
-def test_volume_reduction_order_tolerance_preserves_material_mismatch():
-    assert volumes_match(31676474.654285185, 31676474.654286593)
-    assert not volumes_match(31676474.654285185, 31676474.66)
-    assert not volumes_match(float("nan"), 1.0)
 from src.backend.backtest_liquidity_price import (
     PriceLevelPlan, PriceLevelUnit, certify_price_level_plan,
 )
@@ -20,6 +14,12 @@ from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
     iter_market_day_rows, market_day_source_sqls,
 )
+
+
+def test_volume_reduction_order_tolerance_preserves_material_mismatch():
+    assert volumes_match(31676474.654285185, 31676474.654286593)
+    assert not volumes_match(31676474.654285185, 31676474.66)
+    assert not volumes_match(float("nan"), 1.0)
 
 
 SOURCE = "00000000-0000-0000-0000-000000000001"
@@ -37,12 +37,13 @@ def _plan():
 
 class Reader:
     def __init__(self, *, coverage=True, misplaced=False, tampered=False,
-                 legacy=False):
+                 legacy=False, integer_legacy=False):
         self.queries = []
         self.coverage = coverage
         self.misplaced = misplaced
         self.tampered = tampered
         self.legacy = legacy
+        self.integer_legacy = integer_legacy
 
     def execute(self, query):
         self.queries.append(query)
@@ -60,10 +61,12 @@ class Reader:
             return json.dumps(dict(session_date="2026-08-18", ticker="ABCD",
                 source_attempt_text=SOURCE, derivation_attempt_text=DERIVED,
                 price_row_count=2, eligible_bucket_count=1,
-                total_execution_volume=40.00000001 if self.legacy else 40.0,
+                total_execution_volume=(40 if self.integer_legacy else
+                                        40.00000001 if self.legacy else 40.0),
                 content_hash=(legacy_summary_digest(
-                    SUMMARY, published_volume=40.00000001)
-                    if self.legacy else _digest(SUMMARY))))
+                    SUMMARY, published_volume=(40 if self.integer_legacy else
+                                               40.00000001))
+                    if self.legacy or self.integer_legacy else _digest(SUMMARY))))
         if "FROM arte.liquidity_execution_price_100ms_v1" in query:
             return json.dumps(dict(session_date="2026-08-18", ticker="ABCD",
                 source_attempt_text=SOURCE, derivation_attempt_text=DERIVED,
@@ -99,6 +102,11 @@ def test_tampered_child_blocks_preflight():
 
 def test_legacy_coverage_float_sum_drift_is_not_a_false_blocker():
     assert certify_price_level_plan(_plan(), Reader(legacy=True)).units[0].price_row_count == 2
+
+
+def test_legacy_integer_volume_literal_is_preserved_for_digest():
+    unit = certify_price_level_plan(_plan(), Reader(integer_legacy=True)).units[0]
+    assert unit.published_volume_text == "40"
 
 
 def test_pinned_price_levels_join_and_decode_without_market_writes():

@@ -38,6 +38,7 @@ class PriceLevelUnit:
     eligible_bucket_count: int
     total_execution_volume: float
     content_hash: str
+    published_volume_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +68,7 @@ def _token(build_id: str, units: tuple[PriceLevelUnit, ...]) -> str:
     payload = [build_id, [[unit.session_date, unit.ticker,
         unit.source_attempt_id, unit.derivation_attempt_id, unit.price_row_count,
         unit.eligible_bucket_count, format(unit.total_execution_volume, ".17g"),
-        unit.content_hash] for unit in units]]
+        unit.content_hash, unit.published_volume_text] for unit in units]]
     return sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -129,7 +130,7 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
             covered[key] = PriceLevelUnit(
                 key[0], key[1], row["source_attempt_text"],
                 row["derivation_attempt_text"], count, buckets, volume,
-                row["content_hash"])
+                row["content_hash"], str(row["total_execution_volume"]))
         if set(covered) != {key for key, _ in batch}:
             raise RuntimeError("Eligible-price coverage omits a pinned ticker-day")
         attempts = ",".join(
@@ -162,7 +163,7 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
                                          unit.total_execution_volume)
                     or not matches_summary_digest(
                         row, content_hash=unit.content_hash,
-                        published_volume=unit.total_execution_volume)):
+                        published_volume=unit.published_volume_text)):
                 raise RuntimeError(
                     "Eligible-price rows differ from published coverage: "
                     f"{key[0]} {key[1]} (count={row['row_count']}/"
