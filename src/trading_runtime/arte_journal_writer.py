@@ -2326,7 +2326,12 @@ VerifiedPrefix = CommittedPrefix | V2CommittedPrefix
 
 
 def _valid_prefix(prefix: object) -> bool:
-    return isinstance(prefix, (CommittedPrefix, V2CommittedPrefix)) and bool(prefix.batch_ids)
+    # V3 is defined in the fixed Backtest package, which imports this writer.
+    # Resolve its type only at call time to avoid an import cycle.
+    from src.backend.backtest_squeeze_episode_v3 import V3CommittedPrefix
+
+    return isinstance(prefix, (CommittedPrefix, V2CommittedPrefix,
+                               V3CommittedPrefix)) and bool(prefix.batch_ids)
 
 
 def _committed_batch_filter(
@@ -2337,7 +2342,10 @@ def _committed_batch_filter(
         raise ValueError("Journal page requires a verified committed prefix")
     if batch_column not in {"batch_id", "c.batch_id"}:
         raise ValueError("Journal page has an invalid batch column")
-    fence = ("trading_commit_v2" if isinstance(prefix, V2CommittedPrefix)
+    from src.backend.backtest_squeeze_episode_v3 import V3CommittedPrefix
+
+    fence = ("trading_commit_v3" if isinstance(prefix, V3CommittedPrefix)
+             else "trading_commit_v2" if isinstance(prefix, V2CommittedPrefix)
              else "trading_commit_v1")
     return (
         f"AND {batch_column} IN (SELECT batch_id FROM arte.{fence} "

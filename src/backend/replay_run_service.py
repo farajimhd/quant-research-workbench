@@ -2985,11 +2985,24 @@ class ReplayRunController:
         if (self.definition.mode != RunMode.BACKTEST
                 or self._resume_state is not None):
             raise RuntimeError("Fixed typed prefix cannot adopt a disk checkpoint")
+        configuration = dict(
+            self.definition.configuration_revision.get("payload") or {})
+        strategy = dict(configuration.get("strategy") or {})
+        kwargs = {}
+        if strategy.get("strategy_number") == 1:
+            from src.backend.fixed_bar_signal import first_squeeze_sql
+
+            query = first_squeeze_sql(
+                plan, through_boundary_ms=self._fixed_through_boundary_ms())
+            kwargs = {
+                "journal_profile": "backtest_v3",
+                "expected_query_sha256": hashlib.sha256(query.encode()).hexdigest(),
+            }
         return load_fixed_running_prefix_anchor(
             client, run_id=self.run_id, plan=plan,
             configuration_hash=str(
                 self.definition.configuration_revision.get("content_hash") or ""),
-            account_ids=tuple(self.account_ids))
+            account_ids=tuple(self.account_ids), **kwargs)
 
     async def _close_fixed_journal(self) -> None:
         writer = self._journal_writer

@@ -14,6 +14,9 @@ from uuid import UUID
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, market_day_boundary,
 )
+from src.backend.backtest_squeeze_episode_v3 import (
+    V3CommittedPrefix, load_verified_squeeze_v3_prefix,
+)
 from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
 from src.trading_runtime.arte_journal_writer import (
     V2CommittedPrefix, load_committed_prefix, load_typed_run_context,
@@ -36,8 +39,10 @@ class FixedRunningPrefixAnchor:
 def load_fixed_running_prefix_anchor(
     client: Any, *, run_id: str, plan: CertifiedMarketDayPlan,
     configuration_hash: str, account_ids: tuple[str, ...],
+    journal_profile: str = "backtest_v2",
+    expected_query_sha256: str | None = None,
 ) -> FixedRunningPrefixAnchor:
-    """Cold-verify one V2 journal prefix and its exact pinned market cursor.
+    """Cold-verify a V2/V3 journal prefix and its exact pinned market cursor.
 
     A caller must separately recover every mutable runtime family before using
     this anchor. No disk, SQLite, or retired Backtest journal path is consulted.
@@ -47,18 +52,29 @@ def load_fixed_running_prefix_anchor(
             or not isinstance(plan, CertifiedMarketDayPlan)
             or plan.execution_interval.kind != "fixed" or not plan.token):
         raise ValueError("Fixed running anchor lacks pinned run and market identity")
+    if journal_profile == "backtest_v3" and expected_query_sha256 is None:
+        raise ValueError("V3 running anchor needs its pinned squeeze query")
+    if journal_profile not in {"backtest_v2", "backtest_v3"} or (
+            journal_profile == "backtest_v2" and expected_query_sha256 is not None):
+        raise ValueError("Fixed running anchor has an invalid journal profile")
     context = load_typed_run_context(client, run_id)
     if (context.get("mode") != "backtest"
             or context.get("configuration_hash") != configuration_hash
             or context.get("market_plan_token") != plan.token
             or tuple(context.get("account_ids") or ()) != account_ids):
         raise RuntimeError("Fixed running anchor differs from typed run context")
-    prefix = load_committed_prefix(client, run_id, journal_profile="backtest_v2")
-    if (not isinstance(prefix, V2CommittedPrefix)
+    if journal_profile == "backtest_v3":
+        prefix = load_verified_squeeze_v3_prefix(
+            client, run_id, expected_market_plan_token=plan.token,
+            expected_query_sha256=expected_query_sha256)
+    else:
+        prefix = load_committed_prefix(client, run_id,
+                                       journal_profile="backtest_v2")
+    if (not isinstance(prefix, (V2CommittedPrefix, V3CommittedPrefix))
             or prefix.run_id != run_id or prefix.status != "running"
             or prefix.last_sequence < 1 or not prefix.batch_ids
             or prefix.last_batch_id != prefix.batch_ids[-1]):
-        raise RuntimeError("Fixed running anchor lacks a verified V2 running prefix")
+        raise RuntimeError("Fixed running anchor lacks a verified running prefix")
     cursor = load_latest_backtest_cursor(client, prefix)
     if not isinstance(cursor, dict):
         raise RuntimeError("Fixed running anchor lacks a committed market cursor")
@@ -79,7 +95,7 @@ def load_fixed_running_prefix_anchor(
             or event_sequence != prefix.last_sequence
             or batch_id != prefix.last_batch_id
             or prefix.source_cursor != f"{day.isoformat()}:{boundary_ms}"):
-        raise RuntimeError("Fixed running cursor is not the exact terminal V2 prefix")
+        raise RuntimeError("Fixed running cursor is not the exact terminal prefix")
     completed_at = market_day_boundary(day, boundary_ms).astimezone(timezone.utc)
     frame_fields = tuple(cursor.get(key) for key in (
         "frame_as_of", "frame_ticker", "frame_timeframe", "frame_sequence"))

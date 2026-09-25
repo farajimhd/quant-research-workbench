@@ -963,7 +963,10 @@ def backtest_cursor_record_fields(
 
 def load_latest_backtest_cursor(client: Any, prefix: VerifiedPrefix) -> dict[str, Any] | None:
     """Read the latest cursor from a previously verified committed prefix."""
-    if not isinstance(prefix, (CommittedPrefix, V2CommittedPrefix)) or not prefix.batch_ids:
+    from src.backend.backtest_squeeze_episode_v3 import V3CommittedPrefix
+
+    if not isinstance(prefix, (CommittedPrefix, V2CommittedPrefix,
+                               V3CommittedPrefix)) or not prefix.batch_ids:
         raise ValueError("Backtest cursor recovery requires a verified prefix")
     rows = _rows(client,
         "SELECT c.*,e.sequence AS event_sequence,e.category AS event_category,"

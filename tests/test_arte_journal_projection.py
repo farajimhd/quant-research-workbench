@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pytest
 import src.trading_runtime.arte_journal_projection as projection_module
+from src.backend.backtest_squeeze_episode_v3 import V3CommittedPrefix
 
 from src.trading_runtime.arte_journal_projection import (
     backtest_cursor_batch, backtest_cursor_record_fields, broker_fill_batch,
@@ -94,6 +95,14 @@ def test_backtest_cursor_is_normalized_and_causal(monkeypatch) -> None:
         return joined(_client, sql)
     monkeypatch.setattr(projection_module, "_rows", joined_v2)
     assert load_latest_backtest_cursor(client, v2_prefix)["market_sequence"] == 700
+    v3_prefix = V3CommittedPrefix(
+        prefix.run_id, prefix.last_sequence, prefix.last_batch_id,
+        prefix.source_cursor, prefix.status, prefix.batch_ids, ())
+    def joined_v3(_client, sql):
+        assert "AND c.batch_id IN (SELECT batch_id FROM arte.trading_commit_v3 " in sql
+        return joined(_client, sql)
+    monkeypatch.setattr(projection_module, "_rows", joined_v3)
+    assert load_latest_backtest_cursor(client, v3_prefix)["market_sequence"] == 700
     monkeypatch.undo()
     client.tables["trading_backtest_cursor_v1"][0]["market_sequence"] = 701
     with pytest.raises(RuntimeError, match="differs from its hash"):
