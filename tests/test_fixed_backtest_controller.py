@@ -26,6 +26,20 @@ DAY = "2026-08-18"
 RUN = "00000000-0000-0000-0000-000000000001"
 
 
+def _stub_price_plan(monkeypatch):
+    from src.backend import backtest_liquidity_price
+    class Plan:
+        token = "price-token"
+        def projected(self, _market):
+            return self
+    child = Plan()
+    monkeypatch.setattr(backtest_liquidity_price, "certify_price_level_plan",
+                        lambda *_args: child)
+    monkeypatch.setattr(market_data, "readonly_clickhouse_client",
+                        lambda **_kwargs: SimpleNamespace(close=lambda: None))
+    return child
+
+
 def test_backtest_start_rejects_before_legacy_journal_or_disk_write(tmp_path, monkeypatch):
     from src.backend import backtest_journal_clickhouse, replay_run_service
     from src.backend.backtest_market_data import FIXED_EXECUTION_BLOCKER
@@ -908,6 +922,7 @@ def test_fixed_runner_rejects_changed_boundary_before_broker_or_cursor(monkeypat
         requested_start=start, session_end=start + timedelta(seconds=1),
         causal_v7_plan={})
     controller._fixed_certified_market_plan = AsyncMock(return_value=plan)
+    controller._fixed_price_plan = _stub_price_plan(monkeypatch)
     controller._fixed_through_boundary_ms = lambda: 1000
     controller._journal = BacktestMemoryJournal(run_id=RUN)
     controller._resume_state = None
@@ -949,14 +964,17 @@ def test_fixed_controller_applies_all_liquidity_before_any_strategy_frame(monkey
     ]
     monkeypatch.setattr(market_data, "certified_market_plan_from_arte",
                         lambda **_kwargs: plan)
-    def persisted_rows(_plan, *, through_boundary_ms):
+    def persisted_rows(_plan, *, through_boundary_ms, price_plan):
         assert through_boundary_ms == 2_000
+        assert price_plan is child
         return iter(rows)
     monkeypatch.setattr(market_data, "iter_market_day_rows", persisted_rows)
+    child = _stub_price_plan(monkeypatch)
     controller = object.__new__(ReplayRunController)
     controller.definition = SimpleNamespace(
         configuration_revision={"payload": {"assignments": []}},
-        market_data_plan={"token": "pinned-token", "sessions": [DAY]},
+        market_data_plan={"token": "pinned-token", "sessions": [DAY],
+                          "price_level_plan_token": "price-token"},
         causal_v7_plan={}, tickers=("AAPL", "MSFT"),
         requested_start=datetime.combine(date(2026, 8, 18), time(4), tzinfo=NY),
         session_end=datetime.combine(date(2026, 8, 18), time(4, 0, 2), tzinfo=NY),
@@ -1035,11 +1053,13 @@ def test_fixed_controller_runtime_fills_only_after_decision_boundary(monkeypatch
                         lambda **_kwargs: plan)
     monkeypatch.setattr(market_data, "iter_market_day_rows",
                         lambda _plan, **_kwargs: iter(rows))
+    _stub_price_plan(monkeypatch)
     controller = object.__new__(ReplayRunController)
     controller.run_id = RUN
     controller.definition = SimpleNamespace(
         configuration_revision={"payload": {"assignments": []}},
-        market_data_plan={"token": "pinned-token", "sessions": [DAY]},
+        market_data_plan={"token": "pinned-token", "sessions": [DAY],
+                          "price_level_plan_token": "price-token"},
         causal_v7_plan={}, tickers=("AAPL",), requested_start=start,
         session_end=start + timedelta(milliseconds=200))
     controller._journal = BacktestMemoryJournal(run_id=RUN)
@@ -1132,11 +1152,13 @@ def test_fixed_resume_does_not_redeliver_committed_source_signals(monkeypatch):
     monkeypatch.setattr(market_data, "iter_market_day_rows",
                         lambda _plan, **_kwargs: iter([
                             _row("AAPL", 100, 100), _row("AAPL", 200, 100)]))
+    _stub_price_plan(monkeypatch)
     start = datetime.combine(date(2026, 8, 18), time(4), tzinfo=NY)
     controller = object.__new__(ReplayRunController)
     controller.definition = SimpleNamespace(
         configuration_revision={"payload": {"assignments": []}},
-        market_data_plan={"token": "pinned-token", "sessions": [DAY]},
+        market_data_plan={"token": "pinned-token", "sessions": [DAY],
+                          "price_level_plan_token": "price-token"},
         causal_v7_plan={}, tickers=("AAPL",), requested_start=start,
         session_end=start + timedelta(seconds=1))
     controller._journal = BacktestMemoryJournal(run_id=RUN)

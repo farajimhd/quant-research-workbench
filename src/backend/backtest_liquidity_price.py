@@ -19,6 +19,10 @@ from src.trading_runtime.eligible_price_contract import matches_summary_digest
 
 _TABLE = "arte.liquidity_execution_price_100ms_v1"
 _COVERAGE = "arte.liquidity_execution_price_coverage_v1"
+PRICE_READ_TABLES = frozenset({
+    "liquidity_execution_price_100ms_v1",
+    "liquidity_execution_price_coverage_v1",
+})
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -91,8 +95,8 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
         raise ValueError("Market-day liquidity attempts are missing or duplicate")
     results: list[PriceLevelUnit] = []
     ordered = sorted(expected.items())
-    for offset in range(0, len(ordered), 512):
-        batch = ordered[offset:offset + 512]
+    for offset in range(0, len(ordered), 128):
+        batch = ordered[offset:offset + 128]
         scopes = ",".join(
             f"(toDate({_literal(day)}),{_literal(ticker)},toUUID({_literal(attempt)}))"
             for (day, ticker), attempt in batch)

@@ -15,6 +15,7 @@ from src.backend.backtest_squeeze_episode_schema import (
 )
 from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
+from src.backend.backtest_liquidity_price import PRICE_READ_TABLES
 from src.trading_runtime.arte_market_day_certification import TABLES as MARKET_DAY_CERTIFICATE_TABLES
 from src.trading_runtime.arte_journal_schema import (
     POLICY_ALLOWED_TABLES, TABLES, fixed_backtest_v2_contracts, journal_permission_preflight,
@@ -130,7 +131,8 @@ def read_v3_preflight(client: Any) -> None:
     storage_preflight(client, tables=contracts + MARKET_DAY_CERTIFICATE_TABLES)
     journal_permission_preflight(
         client, journal_tables=frozenset(),
-        read_only_tables=frozenset(table.name for table in contracts) | certificate_names,
+        read_only_tables=frozenset(table.name for table in contracts) |
+                         certificate_names | PRICE_READ_TABLES,
         reference_read_tables=frozenset({("q_live", "market_stock_split_v1")}))
     _exact_grants(client, frozenset())
 

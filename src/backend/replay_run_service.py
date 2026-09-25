@@ -3034,6 +3034,19 @@ class ReplayRunController:
         )
         if plan.token != str(expected.get("token") or ""):
             raise ValueError("Certified Backtest market-data plan changed after preflight")
+        expected_price_token = str(expected.get("price_level_plan_token") or "")
+        if not expected_price_token:
+            raise ValueError("Fixed Backtest lacks preflight-certified passive-fill prices")
+        from src.backend.backtest_liquidity_price import certify_price_level_plan
+        from src.backend.backtest_market_data import readonly_clickhouse_client
+        def recheck_prices():
+            with closing(readonly_clickhouse_client(
+                    market_stream=True, v3_read_principal=True)) as reader:
+                return certify_price_level_plan(plan, reader)
+        price_plan = await asyncio.to_thread(recheck_prices)
+        if price_plan.token != expected_price_token:
+            raise ValueError("Certified passive-fill prices changed after preflight")
+        self._fixed_price_plan = price_plan
         self._fixed_market_plan = plan
         return plan
 
@@ -3499,6 +3512,7 @@ class ReplayRunController:
         if projection_tickers:
             from src.backend.backtest_market_data import project_market_day_plan
             execution_plan = project_market_day_plan(plan, projection_tickers)
+        price_plan = self._fixed_price_plan.projected(execution_plan)
         boundary_validator = CompletedBoundaryValidator(execution_plan)
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
         if not isinstance(self._journal, BacktestMemoryJournal):
@@ -3527,7 +3541,9 @@ class ReplayRunController:
                 "scanner_ticker_count": len(plan.tickers),
                 "execution_ticker_count": len(execution_plan.tickers),
                 "database": "arte",
-                "tables": ["bars_v1", "indicators_v1", "liquidity_100ms_v1"],
+                "tables": ["bars_v1", "indicators_v1", "liquidity_100ms_v1",
+                           "liquidity_execution_price_100ms_v1",
+                           "liquidity_execution_price_coverage_v1"],
                 "access": "select_only",
                 "frame_spool": False,
             })
@@ -3543,7 +3559,9 @@ class ReplayRunController:
             raise
 
         through_boundary_ms = self._fixed_through_boundary_ms()
-        source = iter_market_day_rows(execution_plan, through_boundary_ms=through_boundary_ms)
+        source = iter_market_day_rows(
+            execution_plan, through_boundary_ms=through_boundary_ms,
+            price_plan=price_plan)
         groups = iter_market_time_groups(iter_market_boundary_groups(source))
         sequence = int(self._source_cursor.get("sequence") or 0)
         boundary_count = 0
@@ -10753,6 +10771,34 @@ def backtest_preflight(
         ),
         "evidence": market_data_plan.get("token", "") if market_data_plan else market_data_error,
     })
+    if execution_interval.kind == "fixed":
+        price_plan_error = ""
+        price_plan_token = ""
+        if market_data_plan:
+            try:
+                from src.backend.backtest_liquidity_price import certify_price_level_plan
+                from src.backend.backtest_market_data import readonly_clickhouse_client
+                with closing(readonly_clickhouse_client(
+                        market_stream=True, v3_read_principal=True)) as reader:
+                    price_plan = certify_price_level_plan(certified, reader)
+                price_plan_token = price_plan.token
+                market_data_plan["price_level_plan_token"] = price_plan_token
+                market_data_plan["price_level_unit_count"] = len(price_plan.units)
+            except Exception as exc:
+                price_plan_error = str(exc)
+        checks.append({
+            "id": "eligible_execution_prices",
+            "label": "Certified passive-fill price volume",
+            "status": "ready" if price_plan_token else "blocked",
+            "required": True,
+            "summary": (
+                f"Read-only eligible trade-price rows cover {len(price_plan.units)} ticker-days."
+                if price_plan_token else
+                "Eligible trade-price coverage is unavailable: " +
+                (price_plan_error or market_data_error or "market-day plan is unavailable")
+            ),
+            "evidence": price_plan_token or price_plan_error,
+        })
     if execution_interval.kind == "fixed" and needs_v7:
         checks.append({
             "id": "causal_v7_seed",
