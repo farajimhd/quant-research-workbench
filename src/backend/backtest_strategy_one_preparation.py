@@ -9,7 +9,9 @@ from __future__ import annotations
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import hashlib
 from heapq import merge
+import json
 from threading import Lock, local
 from typing import Any, Callable, Iterator, Mapping
 
@@ -17,7 +19,10 @@ import numpy as np
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, market_day_boundary
 from src.backend.backtest_strategy_one_loader import load_strategy_one_entry_batches
-from src.backend.fixed_bar_signal import CONTRACT, STREAM_ID, load_first_squeeze_occurrences
+from src.backend.fixed_bar_signal import (
+    CONTRACT, STREAM_ID, first_squeeze_sql, load_first_squeeze_occurrences,
+    validate_stream,
+)
 from src.trading_runtime.strategy_one_columnar import schedule_strategy_one_entries
 
 
@@ -83,6 +88,7 @@ def prepare_strategy_one_session(
     through_boundary_ms: int, stream: Mapping[str, Any],
     activation: Mapping[str, Any], scan_client: Any,
     client_factory: Callable[[], Any], max_workers: int = 4,
+    certified_scan: Mapping[str, Any] | None = None,
 ) -> tuple[PreparedStrategyOneTicker, ...]:
     """Scan all certified tickers, then load episode-bearing tickers in bounded lanes."""
     if (plan.execution_interval.kind != "fixed"
@@ -90,9 +96,21 @@ def prepare_strategy_one_session(
             or plan.sessions != (session_date,)
             or type(max_workers) is not int or not 1 <= max_workers <= 16):
         raise ValueError("Strategy 1 preparation needs one certified 100ms session")
-    scan = load_first_squeeze_occurrences(
-        plan, stream=stream, activation=activation,
-        through_boundary_ms=through_boundary_ms, client=scan_client)
+    validate_stream(stream, activation)
+    scan = (certified_scan if certified_scan is not None else
+            load_first_squeeze_occurrences(
+                plan, stream=stream, activation=activation,
+                through_boundary_ms=through_boundary_ms, client=scan_client))
+    if certified_scan is not None:
+        authority = dict(scan.get("authority") or {})
+        occurrences = scan.get("occurrences")
+        expected_query = hashlib.sha256(first_squeeze_sql(
+            plan, through_boundary_ms=through_boundary_ms).encode()).hexdigest()
+        if (not isinstance(occurrences, list)
+                or authority.get("query_sha256") != expected_query
+                or authority.get("content_hash") != hashlib.sha256(json.dumps(
+                    occurrences, sort_keys=True, separators=(",", ":")).encode()).hexdigest()):
+            raise ValueError("Strategy 1 supplied scan differs from pinned bar query")
     episodes = _episode_starts(plan, session_date, scan)
     if not episodes:
         return ()
@@ -169,6 +187,24 @@ def prepare_strategy_one_session(
         for client in clients:
             client.close()
     return tuple(results[ticker] for ticker in sorted(results))
+
+
+def strategy_one_v7_tickers(
+    prepared: tuple[PreparedStrategyOneTicker, ...],
+) -> tuple[str, ...]:
+    """Require V7 only where the causal necessary-condition mask has survivors.
+
+    An episode start by itself cannot create an order. The prepared mask is a
+    deterministic, source-pinned overapproximation of stateful entries, so a
+    ticker with no candidate boundary cannot need entry geometry this session.
+    Existing positions are not covered by this optimization; Strategy 1 must
+    start flat and run one session when using this projection.
+    """
+    if (not isinstance(prepared, tuple)
+            or any(not isinstance(item, PreparedStrategyOneTicker) for item in prepared)
+            or len({item.ticker for item in prepared}) != len(prepared)):
+        raise ValueError("Strategy 1 V7 projection needs unique prepared tickers")
+    return tuple(sorted(item.ticker for item in prepared if len(item.boundary_ms)))
 
 
 def iter_strategy_one_entries(

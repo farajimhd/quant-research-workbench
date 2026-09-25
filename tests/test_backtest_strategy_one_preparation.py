@@ -7,6 +7,7 @@ from src.backend.backtest_market_data import (
 )
 from src.backend.backtest_strategy_one_preparation import (
     iter_strategy_one_entries, prepare_strategy_one_session,
+    strategy_one_v7_tickers,
 )
 from src.trading_runtime.strategy_one_columnar import StrategyOneCandidateBatch
 
@@ -102,6 +103,60 @@ def test_bounded_preparation_prunes_untriggered_tickers_and_merges_stably(monkey
     ]
     assert calls == [("AAA", "BBB"), ("AAA", "BBB")]
     assert len(opened) <= 3 and all(reader.closed for reader in opened)
+    assert strategy_one_v7_tickers(prepared) == ("AAA", "BBB")
+
+
+def test_certified_scan_reuse_keeps_v7_scope_to_nonempty_candidates(monkeypatch):
+    from src.backend.fixed_bar_signal import load_first_squeeze_occurrences
+
+    plan = _plan()
+    stream, activation = _contract()
+    scan = load_first_squeeze_occurrences(
+        plan, stream=stream, activation=activation,
+        through_boundary_ms=30_100, client=Scanner())
+
+    class Reader:
+        def close(self):
+            pass
+
+    def load(_plan, *, tickers, **_kwargs):
+        return {ticker: StrategyOneCandidateBatch(
+            np.array([30_000]), np.array([ticker == "BBB"]),
+            np.zeros(1, dtype=np.uint8), np.full((1, 4), 30_000),
+            np.full(1, 30_000), np.full(1, 97_000)) for ticker in tickers}
+
+    monkeypatch.setattr(
+        "src.backend.backtest_strategy_one_preparation.load_first_squeeze_occurrences",
+        lambda *_args, **_kwargs: pytest.fail("certified scan was repeated"))
+    monkeypatch.setattr(
+        "src.backend.backtest_strategy_one_preparation.load_strategy_one_entry_batches",
+        load)
+    prepared = prepare_strategy_one_session(
+        plan, session_date=DAY, through_boundary_ms=30_100,
+        stream=stream, activation=activation, scan_client=None,
+        client_factory=Reader, certified_scan=scan)
+    assert strategy_one_v7_tickers(prepared) == ("BBB",)
+
+
+def test_certified_scan_rejects_a_different_boundary_or_content():
+    from src.backend.fixed_bar_signal import load_first_squeeze_occurrences
+
+    plan = _plan()
+    stream, activation = _contract()
+    scan = load_first_squeeze_occurrences(
+        plan, stream=stream, activation=activation,
+        through_boundary_ms=30_100, client=Scanner())
+    with pytest.raises(ValueError, match="pinned bar query"):
+        prepare_strategy_one_session(
+            plan, session_date=DAY, through_boundary_ms=30_200,
+            stream=stream, activation=activation, scan_client=None,
+            client_factory=lambda: None, certified_scan=scan)
+    scan["occurrences"][0]["ticker"] = "CCC"
+    with pytest.raises(ValueError, match="pinned bar query"):
+        prepare_strategy_one_session(
+            plan, session_date=DAY, through_boundary_ms=30_100,
+            stream=stream, activation=activation, scan_client=None,
+            client_factory=lambda: None, certified_scan=scan)
 
 
 def test_preparation_rejects_non_100ms_strategy_contract():

@@ -111,6 +111,12 @@ universe for completed-bar Early Squeeze starts, loads only episode-bearing
 tickers in bounded read-only lanes, and merges compact candidate cursors in
 stable boundary/ticker order. This remains preparation, not strategy activation,
 portfolio mutation, or a runnable Backtest controller.
+For a single flat-start session, V7 prior seed coverage is required only for
+tickers with at least one surviving columnar candidate boundary. This is a
+necessary-condition reduction, not permission to skip an eligible ticker or
+synthesize a missing seed. Preflight and execution recompute the same pinned
+scan and candidate projection and reject any mismatch. A multi-session or
+position-carrying Strategy must define a broader V7 dependency contract.
 `src/trading_runtime/strategy_one_position.py` now owns a pure, deterministic
 active-position protection reducer: entry requires the completed 30s stop and
 third overhead target; accepted 1s resistance breaks are deduplicated and

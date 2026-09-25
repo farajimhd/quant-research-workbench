@@ -3454,6 +3454,27 @@ class ReplayRunController:
             [event.occurrence for event in self._historical_external_signal_events],
             has_core_signal_plans=bool(getattr(self, "_historical_core_signal_plans", ())),
         )
+        if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+            from src.backend.backtest_strategy_one_preparation import (
+                prepare_strategy_one_session, strategy_one_v7_tickers,
+            )
+            streams = [dict(row) for row in
+                       dict(configuration.get("signal_activation") or {}).get("signal_streams") or []
+                       if bool(row.get("enabled", True))]
+            if len(plan.sessions) != 1 or len(streams) != 1:
+                raise ValueError("Strategy 1 execution needs one flat-start session and squeeze stream")
+            with closing(readonly_clickhouse_client(
+                    market_stream=True, v3_read_principal=True)) as scan_reader:
+                prepared = await asyncio.to_thread(
+                    prepare_strategy_one_session, plan,
+                    session_date=plan.sessions[0],
+                    through_boundary_ms=self._fixed_through_boundary_ms(),
+                    stream=streams[0],
+                    activation=dict(configuration.get("signal_activation") or {}),
+                    scan_client=scan_reader,
+                    client_factory=lambda: readonly_clickhouse_client(
+                        market_stream=True, v3_read_principal=True))
+            projection_tickers = strategy_one_v7_tickers(prepared)
         if projection_tickers == ():
             # The scanner certified no possible participant. An empty tuple
             # must not fall through the truthy projection branch and stream
@@ -10825,6 +10846,30 @@ def backtest_preflight(
                     project_market_day_plan, readonly_clickhouse_client,
                 )
                 from src.backend.structural_v7_seed import certified_seed_plan
+                if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+                    # STRATEGY CREATION RULE: Strategy 1's pinned columnar
+                    # necessary-condition mask is the sole safe V7 entry
+                    # dependency scope. A squeeze start alone cannot order.
+                    # Later strategy numbers must declare their own scope.
+                    from src.backend.backtest_strategy_one_preparation import (
+                        prepare_strategy_one_session, strategy_one_v7_tickers,
+                    )
+                    if len(certified.sessions) != 1:
+                        raise ValueError("Strategy 1 V7 candidate scope requires one flat-start session")
+                    with closing(readonly_clickhouse_client(
+                            market_stream=True, v3_read_principal=True)) as scan_reader:
+                        prepared = prepare_strategy_one_session(
+                            certified, session_date=certified.sessions[0],
+                            through_boundary_ms=through_boundary_ms,
+                            stream=activated_signal_streams[0],
+                            activation=dict(configuration.get("signal_activation") or {}),
+                            scan_client=scan_reader,
+                            client_factory=lambda: readonly_clickhouse_client(
+                                market_stream=True, v3_read_principal=True),
+                            certified_scan=bar_signals)
+                    projection_tickers = strategy_one_v7_tickers(prepared)
+                    if not projection_tickers:
+                        raise ValueError("Strategy 1 has no candidate; zero-candidate terminal authority is not typed")
                 projected = (project_market_day_plan(certified, projection_tickers)
                              if projection_tickers else certified)
                 with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
