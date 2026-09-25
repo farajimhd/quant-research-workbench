@@ -29,6 +29,7 @@ _V3_PROJECTED = frozenset({
     ("portfolio_management", "portfolio_decision"),
     ("portfolio_management", "portfolio_reservation"),
     ("portfolio_management", "portfolio_reconciliation"),
+    ("portfolio_management", "portfolio_control"),
 })
 
 

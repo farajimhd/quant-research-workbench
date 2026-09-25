@@ -139,6 +139,31 @@ def project_pending_backtest_v3_prefix(
                 portfolio_reconciliation_events=(reconciliation.parent,))
             unit = V3SqueezeBatch(
                 base, (), (), reconciliation.differences)
+        elif (record.category, record.entity_type) == (
+                "portfolio_management", "portfolio_control"):
+            from src.backend.backtest_portfolio_control_v3 import project_portfolio_control_v3
+
+            strategy_id = record.payload.get("strategy_id")
+            account_key = (record.entity_id[:-(len(strategy_id) + 1)]
+                           if record.payload.get("event") ==
+                           "strategy_allocation_control_changed"
+                           and isinstance(strategy_id, str)
+                           and record.entity_id.endswith(f":{strategy_id}")
+                           else record.entity_id)
+            control = project_portfolio_control_v3(
+                record, attempt_id=attempt, batch_id=batch_id,
+                account_key=account_key)
+            selections = ()
+            if record.payload.get("event") == "portfolio_policy_selected":
+                from src.backend.backtest_policy_selection_v3 import project_policy_selection_v3
+
+                selections = (project_policy_selection_v3(
+                    record, account_key=account_key),)
+            base = TypedJournalBatch(
+                record.run_id, run_month, attempt, batch_id, previous,
+                sequence, sequence, cursor, "running", (control.event,))
+            unit = V3SqueezeBatch(base, (), portfolio_controls=(control.detail,),
+                                  policy_selections=selections)
         else:
             reservation_reasons = ()
             if (record.category, record.entity_type) == (

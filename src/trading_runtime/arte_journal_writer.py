@@ -31,6 +31,7 @@ from src.backend.backtest_squeeze_episode_schema import (
     RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
 from src.backend.backtest_reconciliation_v3 import CHILD as RECONCILIATION_DIFFERENCE
+from src.backend.backtest_portfolio_control_v3 import CONTROL as PORTFOLIO_CONTROL
 from src.trading_runtime.journal_contract import canonical_json
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS.update({table.name: table for table in (
     SQUEEZE_EPISODE, RESERVATION_REASON, RECONCILIATION_DIFFERENCE,
+    PORTFOLIO_CONTROL,
     SQUEEZE_COMMIT_V3)})
 
 
@@ -249,6 +251,8 @@ class V3SqueezeBatch:
     episodes: tuple[Mapping[str, Any], ...]
     reservation_reasons: tuple[Mapping[str, Any], ...] = ()
     reconciliation_differences: tuple[Mapping[str, Any], ...] = ()
+    portfolio_controls: tuple[Mapping[str, Any], ...] = ()
+    policy_selections: tuple[Any, ...] = ()
 
     def __post_init__(self) -> None:
         if self.base.status != "running":
@@ -259,10 +263,18 @@ class V3SqueezeBatch:
             MappingProxyType(dict(row)) for row in self.reservation_reasons))
         object.__setattr__(self, "reconciliation_differences", tuple(
             MappingProxyType(dict(row)) for row in self.reconciliation_differences))
+        object.__setattr__(self, "portfolio_controls", tuple(
+            MappingProxyType(dict(row)) for row in self.portfolio_controls))
+        from src.backend.backtest_policy_selection_v3 import PolicySelection
+
+        if any(type(selection) is not PolicySelection for selection in self.policy_selections):
+            raise ValueError("V3 policy selections require typed catalog objects")
+        object.__setattr__(self, "policy_selections", tuple(self.policy_selections))
 
 
 def _sealed_families(
     batch: TypedJournalBatch, *, v3_episode_ids: tuple[str, ...] = (),
+    v3_control_ids: tuple[str, ...] = (),
     v3_reconciliation: bool = False,
 ) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
     """Validate and hash the immutable snapshot on the persistence lane."""
@@ -354,15 +366,22 @@ def _sealed_families(
                 raise ValueError("Journal event has multiple typed detail families")
             details_by_record[record_id] = name
     expected_details = _EVENT_DETAILS
-    if v3_episode_ids:
+    if v3_episode_ids or v3_control_ids:
         expected_details = {**_EVENT_DETAILS,
             ("market_discovery_signal", "signal_occurrence"):
-                SQUEEZE_EPISODE.name}
+                SQUEEZE_EPISODE.name,
+            ("portfolio_management", "portfolio_control"):
+                PORTFOLIO_CONTROL.name}
         for record_id in v3_episode_ids:
             identity = str(UUID(str(record_id)))
             if identity in details_by_record:
                 raise ValueError("Journal event has multiple typed detail families")
             details_by_record[identity] = SQUEEZE_EPISODE.name
+        for record_id in v3_control_ids:
+            identity = str(UUID(str(record_id)))
+            if identity in details_by_record:
+                raise ValueError("Journal event has multiple typed detail families")
+            details_by_record[identity] = PORTFOLIO_CONTROL.name
     for event in by_family["trading_event_v1"]:
         key = (str(event["category"]), str(event["entity_type"]))
         if key not in expected_details:
@@ -1382,7 +1401,9 @@ def publish_typed_squeeze_batch_v3(
         client, unit.base, journal_profile="backtest_v3",
         squeeze_episodes=unit.episodes,
         reservation_reasons=unit.reservation_reasons,
-        reconciliation_differences=unit.reconciliation_differences)
+        reconciliation_differences=unit.reconciliation_differences,
+        portfolio_controls=unit.portfolio_controls,
+        policy_selections=unit.policy_selections)
 
 
 def _publish_typed_batch(
@@ -1391,6 +1412,8 @@ def _publish_typed_batch(
     squeeze_episodes: tuple[Mapping[str, Any], ...] | None = None,
     reservation_reasons: tuple[Mapping[str, Any], ...] | None = None,
     reconciliation_differences: tuple[Mapping[str, Any], ...] | None = None,
+    portfolio_controls: tuple[Mapping[str, Any], ...] | None = None,
+    policy_selections: tuple[Any, ...] | None = None,
 ) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
     if batch.signal_evidence_nodes:
@@ -1399,11 +1422,13 @@ def _publish_typed_batch(
         raise ValueError("Unknown typed journal profile")
     if journal_profile != "backtest_v3" and (
             squeeze_episodes is not None or reservation_reasons is not None
-            or reconciliation_differences is not None):
+            or reconciliation_differences is not None
+            or portfolio_controls is not None or policy_selections is not None):
         raise ValueError("V3 child families require a V3-only commit")
     if journal_profile == "backtest_v3" and (
             squeeze_episodes is None or reservation_reasons is None
-            or reconciliation_differences is None):
+            or reconciliation_differences is None
+            or portfolio_controls is None or policy_selections is None):
         raise ValueError("V3 commit requires explicit closed child families")
     if journal_profile in {"backtest_v2", "backtest_v3"} and batch.status != "running":
         raise ValueError("Terminal Backtest requires separate anchored V2 publication")
@@ -1433,6 +1458,8 @@ def _publish_typed_batch(
     families = _sealed_families(
         batch, v3_episode_ids=tuple(str(row["record_id"])
             for row in squeeze_episodes or ()) if journal_profile == "backtest_v3" else (),
+        v3_control_ids=tuple(str(row["record_id"])
+            for row in portfolio_controls or ()) if journal_profile == "backtest_v3" else (),
         v3_reconciliation=journal_profile == "backtest_v3")
     if journal_profile == "backtest_v3":
         from src.backend.backtest_squeeze_episode_v3 import seal_squeeze_family_v3
@@ -1440,6 +1467,13 @@ def _publish_typed_batch(
         v3_rows = tuple(dict(row) for row in squeeze_episodes or ())
         reason_rows = tuple(dict(row) for row in reservation_reasons or ())
         difference_rows = tuple(dict(row) for row in reconciliation_differences or ())
+        control_rows = tuple(dict(row) for row in portfolio_controls or ())
+        selected_hashes = {row["policy_hash"] for row in control_rows
+                           if row["control_event"] == "portfolio_policy_selected"}
+        supplied = {selection.policy_hash: selection.policy
+                    for selection in policy_selections or ()}
+        if selected_hashes != set(supplied):
+            raise ValueError("V3 policy selection lacks exact catalog publication input")
         reservation_parents = dict(families)[
             "trading_portfolio_reservation_event_v1"]
         reconciliation_parents = dict(families)[
@@ -1450,18 +1484,21 @@ def _publish_typed_batch(
                 "portfolio_reservation_reason_count",
                 "portfolio_reservation_reason_hash",
                 "portfolio_reconciliation_difference_count",
-                "portfolio_reconciliation_difference_hash"}},
+                "portfolio_reconciliation_difference_hash",
+                "portfolio_control_count", "portfolio_control_hash"}},
              "run_id": batch.run_id, "batch_id": batch.batch_id},
             v3_rows, families[0][1], reservation_reasons=reason_rows,
             parent_reservations=reservation_parents,
             reconciliation_differences=difference_rows,
-            parent_reconciliations=reconciliation_parents)
+            parent_reconciliations=reconciliation_parents,
+            portfolio_controls=control_rows)
     else:
         v3_rows = ()
         reason_rows = ()
         reservation_parents = ()
         difference_rows = ()
         reconciliation_parents = ()
+        control_rows = ()
     _verify_commission_links(client, batch, families, journal_profile=journal_profile)
     _verify_exact_intent_uses(client, batch, families, journal_profile=journal_profile)
     _verify_order_context_links(client, batch, families, journal_profile=journal_profile)
@@ -1490,6 +1527,18 @@ def _publish_typed_batch(
             prior_batch_id=batch.prior_batch_id,
             first_sequence=batch.first_sequence,
             last_sequence=batch.last_sequence)
+    if journal_profile == "backtest_v3" and selected_hashes:
+        if dispatch is None:
+            raise RuntimeError("V3 selected policy requires durable catalog dispatch")
+        from src.trading_runtime.arte_portfolio_policy import (
+            load_attested_portfolio_policy, publish_portfolio_policy,
+        )
+        for policy_hash in sorted(selected_hashes):
+            policy = supplied[policy_hash]
+            if publish_portfolio_policy(client, policy) != policy_hash:
+                raise RuntimeError("V3 selected policy catalog hash differs")
+            if load_attested_portfolio_policy(client, dispatch, policy_hash) != policy:
+                raise RuntimeError("V3 selected policy lacks attested catalog fence")
     hashes: dict[str, str] = {}
     actual = _family_identities(client, batch.batch_id, journal_profile=journal_profile)
     inserted = False
@@ -1551,6 +1600,18 @@ def _publish_typed_batch(
                     dispatch_batch_id=batch.batch_id,
                     dispatch_sequence=batch.last_sequence)
             actual_differences = _rows(client, difference_query)
+        control_columns = ",".join(name for name, _ in PORTFOLIO_CONTROL.columns)
+        control_query = (
+            f"SELECT {control_columns} FROM arte.{PORTFOLIO_CONTROL.name} "
+            f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
+        actual_controls = _rows(client, control_query)
+        if not actual_controls and control_rows:
+            _insert(client, PORTFOLIO_CONTROL.name, control_rows,
+                    f"{batch.batch_id}:{PORTFOLIO_CONTROL.name}",
+                    journal_profile=journal_profile,
+                    dispatch_batch_id=batch.batch_id,
+                    dispatch_sequence=batch.last_sequence)
+            actual_controls = _rows(client, control_query)
         # The family verifier also rejects missing, duplicate and extra children.
         base_stub = {name: "" for name, _ in SQUEEZE_COMMIT_V3.columns
                      if name not in {"backtest_squeeze_episode_count",
@@ -1558,21 +1619,25 @@ def _publish_typed_batch(
                                      "portfolio_reservation_reason_count",
                                      "portfolio_reservation_reason_hash",
                                      "portfolio_reconciliation_difference_count",
-                                     "portfolio_reconciliation_difference_hash"}}
+                                     "portfolio_reconciliation_difference_hash",
+                                     "portfolio_control_count",
+                                     "portfolio_control_hash"}}
         base_stub.update(run_id=batch.run_id, batch_id=batch.batch_id)
         child_seal = seal_squeeze_family_v3(
             base_stub, v3_rows, families[0][1],
             reservation_reasons=reason_rows,
             parent_reservations=reservation_parents,
             reconciliation_differences=difference_rows,
-            parent_reconciliations=reconciliation_parents)
+            parent_reconciliations=reconciliation_parents,
+            portfolio_controls=control_rows)
         try:
             verified_children = verify_squeeze_family_v3(
                 child_seal, actual_children, families[0][1], stored_utc=True,
                 reservation_reasons=actual_reasons,
                 parent_reservations=reservation_parents,
                 reconciliation_differences=actual_differences,
-                parent_reconciliations=reconciliation_parents)
+                parent_reconciliations=reconciliation_parents,
+                portfolio_controls=actual_controls)
         except ValueError as exc:
             raise RuntimeError("V3 child families differ from durable readback") from exc
         if sorted((r["record_id"], r["content_hash"]) for r in verified_children) != sorted(
@@ -1599,7 +1664,8 @@ def _publish_typed_batch(
             reservation_reasons=reason_rows,
             parent_reservations=reservation_parents,
             reconciliation_differences=difference_rows,
-            parent_reconciliations=reconciliation_parents)
+            parent_reconciliations=reconciliation_parents,
+            portfolio_controls=control_rows)
     expected = {key: value for key, value in commit.items() if key not in ("run_month", "committed_at")}
     if existing and (len(existing) != 1 or existing[0] != expected):
         raise RuntimeError("Typed journal commit conflicts with an existing batch")
@@ -1645,6 +1711,12 @@ def _publish_typed_batch(
                 token=f"{batch.batch_id}:{RECONCILIATION_DIFFERENCE.name}",
                 required=required, batch_id=batch.batch_id,
                 batch_last_sequence=batch.last_sequence)
+        if journal_profile == "backtest_v3" and control_rows:
+            dispatch.seal_verified_operation(
+                run_id=batch.run_id, table=PORTFOLIO_CONTROL.name,
+                token=f"{batch.batch_id}:{PORTFOLIO_CONTROL.name}",
+                required=required, batch_id=batch.batch_id,
+                batch_last_sequence=batch.last_sequence)
         table = _profile_table("trading_commit_v1", journal_profile)
         dispatch.seal_verified_operation(
             run_id=batch.run_id, table=table,
@@ -1663,7 +1735,10 @@ def _publish_typed_batch(
             if journal_profile == "backtest_v3" and reason_rows else ()) + (
             ((RECONCILIATION_DIFFERENCE.name,
               f"{batch.batch_id}:{RECONCILIATION_DIFFERENCE.name}"),)
-            if journal_profile == "backtest_v3" and difference_rows else ()) + ((
+            if journal_profile == "backtest_v3" and difference_rows else ()) + (
+            ((PORTFOLIO_CONTROL.name,
+              f"{batch.batch_id}:{PORTFOLIO_CONTROL.name}"),)
+            if journal_profile == "backtest_v3" and control_rows else ()) + ((
             table, f"{batch.batch_id}:{table}:commit"),)
         dispatch.compact_verified_batch(
             run_id=batch.run_id, batch_id=batch.batch_id,
@@ -2696,7 +2771,9 @@ class ArteJournalWriter:
                         authority=self._v2_authority,
                         squeeze_episodes=unit.episodes,
                         reservation_reasons=unit.reservation_reasons,
-                        reconciliation_differences=unit.reconciliation_differences)
+                        reconciliation_differences=unit.reconciliation_differences,
+                        portfolio_controls=unit.portfolio_controls,
+                        policy_selections=unit.policy_selections)
                 elif isinstance(group[0][0], TypedJournalBatch):
                     batch = _coalesce_unpublished(tuple(row for row, _ in group))
                     if self._journal_profile == "v1":

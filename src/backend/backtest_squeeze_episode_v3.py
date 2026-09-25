@@ -15,7 +15,7 @@ from uuid import UUID
 
 from src.backend.backtest_squeeze_episode_projection import project_fixed_squeeze_episode
 from src.backend.backtest_squeeze_episode_schema import (
-    RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
+    PORTFOLIO_CONTROL, RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
 from src.backend.backtest_reservation_reason_v3 import seal_reservation_reason_family_v3
 from src.backend.backtest_reconciliation_v3 import (
@@ -156,6 +156,8 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
     episodes = []
     reservation_reasons = []
     reconciliation_differences = []
+    portfolio_controls = []
+    policy_selections = []
     pinned = set()
     for unit in units:
         for row in unit.episodes:
@@ -178,12 +180,20 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
             values["batch_id"] = base.batch_id
             values["content_hash"] = _digest(values)
             reconciliation_differences.append(values)
+        for row in unit.portfolio_controls:
+            values = {key: value for key, value in row.items()
+                      if key != "content_hash"}
+            values["batch_id"] = base.batch_id
+            values["content_hash"] = _digest(values)
+            portfolio_controls.append(values)
+        policy_selections.extend(unit.policy_selections)
     if len(pinned) > 1:
         raise ValueError("V3 coalescing cannot mix market plan/query authority")
     if len(episodes) > len(base.events):
         raise ValueError("V3 squeeze children exceed parent events")
     return V3SqueezeBatch(base, tuple(episodes), tuple(reservation_reasons),
-                          tuple(reconciliation_differences))
+                          tuple(reconciliation_differences),
+                          tuple(portfolio_controls), tuple(policy_selections))
 
 
 def seal_squeeze_family_v3(
@@ -193,6 +203,7 @@ def seal_squeeze_family_v3(
     parent_reservations: Sequence[Mapping[str, Any]] = (),
     reconciliation_differences: Sequence[Mapping[str, Any]] = (),
     parent_reconciliations: Sequence[Mapping[str, Any]] = (),
+    portfolio_controls: Sequence[Mapping[str, Any]] = (),
     stored_utc: bool = False,
 ) -> dict[str, Any]:
     """Produce a replacement V3 seal after exact parent/child verification.
@@ -204,7 +215,8 @@ def seal_squeeze_family_v3(
         "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
         "portfolio_reservation_reason_count", "portfolio_reservation_reason_hash",
         "portfolio_reconciliation_difference_count",
-        "portfolio_reconciliation_difference_hash"}:
+        "portfolio_reconciliation_difference_hash",
+        "portfolio_control_count", "portfolio_control_hash"}:
         raise ValueError("V2 commit columns differ from V3 base")
     batch = str(UUID(str(v2_commit["batch_id"])))
     run = str(v2_commit["run_id"])
@@ -258,6 +270,9 @@ def seal_squeeze_family_v3(
     sealed.update(seal_reconciliation_difference_family_v3(
         reconciliation_differences, parent_events, parent_reconciliations,
         run_id=run, batch_id=batch, stored_utc=stored_utc))
+    from src.backend.backtest_portfolio_control_v3 import seal_portfolio_control_v3
+    sealed.update(seal_portfolio_control_v3(
+        portfolio_controls, parent_events, run_id=run, batch_id=batch))
     return sealed
 
 
@@ -269,6 +284,7 @@ def verify_squeeze_family_v3(
     parent_reservations: Sequence[Mapping[str, Any]] = (),
     reconciliation_differences: Sequence[Mapping[str, Any]] = (),
     parent_reconciliations: Sequence[Mapping[str, Any]] = (),
+    portfolio_controls: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[dict[str, Any], ...]:
     """Verify V3 family seal before exposing a bounded typed occurrence page."""
     if set(commit) != _COMMIT_COLUMNS:
@@ -277,7 +293,8 @@ def verify_squeeze_family_v3(
         "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
         "portfolio_reservation_reason_count", "portfolio_reservation_reason_hash",
         "portfolio_reconciliation_difference_count",
-        "portfolio_reconciliation_difference_hash"}}
+        "portfolio_reconciliation_difference_hash",
+        "portfolio_control_count", "portfolio_control_hash"}}
     normalized = []
     for row in rows:
         if stored_utc:
@@ -293,6 +310,7 @@ def verify_squeeze_family_v3(
         parent_reservations=parent_reservations,
         reconciliation_differences=reconciliation_differences,
         parent_reconciliations=parent_reconciliations,
+        portfolio_controls=portfolio_controls,
         stored_utc=stored_utc)
     if (type(commit["backtest_squeeze_episode_count"]) is not int
             or expected != dict(commit)):
@@ -317,6 +335,7 @@ def load_verified_squeeze_v3_prefix(
         raise ValueError("V3 squeeze reader requires pinned market authority")
     contracts = versioned_journal_v2_contracts() + (
                           SQUEEZE_EPISODE, RESERVATION_REASON,
+                          RECONCILIATION_DIFFERENCE, PORTFOLIO_CONTROL,
                           SQUEEZE_COMMIT_V3)
     storage_preflight(client, tables=contracts)
     for fence in ("trading_commit_v1", "trading_commit_v2"):
@@ -387,6 +406,14 @@ def load_verified_squeeze_v3_prefix(
         if any(not first <= int(parent["sequence"]) <= last
                for parent in reconciliation_events):
             raise RuntimeError("Reconciliation parent lies beyond committed causal prefix")
+        control_events = _rows(client,
+            "SELECT record_id,run_id,event_month,batch_id,category,entity_type,entity_id,"
+            "account_id,event_time,sequence FROM arte.trading_event_v1 "
+            f"WHERE {ids} AND category='portfolio_management' "
+            "AND entity_type='portfolio_control' FORMAT JSONEachRow")
+        if any(not first <= int(parent["sequence"]) <= last
+               for parent in control_events):
+            raise RuntimeError("Portfolio control parent lies beyond committed causal prefix")
         reconciliation_parents = _rows(client,
             "SELECT record_id,run_id,event_month,batch_id,account_id,account_key,"
             "snapshot_id,difference_count,difference_hash,source_event_time "
@@ -397,6 +424,23 @@ def load_verified_squeeze_v3_prefix(
         reconciliation_differences = _rows(client,
             f"SELECT {difference_columns} FROM arte.{RECONCILIATION_DIFFERENCE.name} "
             f"WHERE {ids} FORMAT JSONEachRow")
+        control_columns = ",".join(name for name, _ in PORTFOLIO_CONTROL.columns)
+        portfolio_controls = _rows(client,
+            f"SELECT {control_columns} FROM arte.{PORTFOLIO_CONTROL.name} "
+            f"WHERE {ids} FORMAT JSONEachRow")
+        selected_hashes = {row["policy_hash"] for row in portfolio_controls
+                           if row["control_event"] == "portfolio_policy_selected"}
+        if selected_hashes:
+            dispatch = getattr(client, "typed_insert_dispatch", None)
+            if dispatch is None:
+                raise RuntimeError("V3 selected policy lacks cold catalog proof authority")
+            from src.trading_runtime.arte_portfolio_policy import load_attested_portfolio_policy
+            from src.trading_runtime.arte_portfolio_policy import _policy_rows
+
+            for policy_hash in selected_hashes:
+                policy = load_attested_portfolio_policy(client, dispatch, policy_hash)
+                if policy is None or _policy_rows(policy)[0] != policy_hash:
+                    raise RuntimeError("V3 selected policy catalog is absent or differs")
         reason_columns = ",".join(name for name, _ in RESERVATION_REASON.columns)
         reasons = _rows(client,
             f"SELECT {reason_columns} FROM arte.{RESERVATION_REASON.name} "
@@ -408,12 +452,14 @@ def load_verified_squeeze_v3_prefix(
             f"SELECT {projections} FROM arte.{SQUEEZE_EPISODE.name} "
             f"WHERE {ids} FORMAT JSONEachRow")
         verified = verify_squeeze_family_v3(
-            commit, children, parents + reservation_events + reconciliation_events,
+            commit, children, parents + reservation_events + reconciliation_events
+            + control_events,
             stored_utc=True,
             reservation_reasons=reasons,
             parent_reservations=reservation_parents,
             reconciliation_differences=reconciliation_differences,
-            parent_reconciliations=reconciliation_parents)
+            parent_reconciliations=reconciliation_parents,
+            portfolio_controls=portfolio_controls)
         if any(row["market_plan_token"] != expected_market_plan_token
                or row["query_sha256"] != expected_query_sha256 for row in verified):
             raise RuntimeError("V3 squeeze row differs from pinned market authority")

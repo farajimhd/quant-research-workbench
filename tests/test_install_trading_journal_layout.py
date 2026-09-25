@@ -126,6 +126,50 @@ def test_v3_reason_upgrade_plans_read_only_and_applies_only_empty_fence(monkeypa
     assert checks[-1] == ("trading_portfolio_reservation_reason_v1", "trading_commit_v3")
 
 
+class ControlUpgradeClient:
+    def __init__(self, *, rows=0, state="old", child=False):
+        self.rows, self.state, self.child = rows, state, child
+        self.statements = []
+
+    def execute(self, sql):
+        self.statements.append(sql)
+        if sql.startswith("SELECT name,type FROM system.columns"):
+            omitted = ({"portfolio_control_count", "portfolio_control_hash"}
+                       if self.state == "old" else {"portfolio_control_hash"}
+                       if self.state == "partial" else set())
+            return "\n".join(json.dumps({"name": name, "type": kind})
+                             for name, kind in install.SQUEEZE_COMMIT_V3.columns
+                             if name not in omitted)
+        if sql.startswith("SELECT count() FROM system.tables"):
+            return "1" if self.child else "0"
+        if sql == "SELECT count() FROM arte.trading_commit_v3":
+            return str(self.rows)
+        if sql == "SELECT count() FROM arte.trading_portfolio_control_v3":
+            return "0"
+        if sql.startswith("CREATE TABLE IF NOT EXISTS arte.trading_portfolio_control_v3"):
+            self.child = True
+            return ""
+        if sql.startswith("ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS"):
+            self.state = ("partial" if "ADD COLUMN IF NOT EXISTS "
+                          "portfolio_control_count UInt32" in sql else "full")
+            return ""
+        raise AssertionError(sql)
+
+
+def test_v3_control_upgrade_requires_empty_fence_and_is_restart_safe(monkeypatch):
+    monkeypatch.setattr(install, "storage_preflight", lambda *_args, **_kwargs: None)
+    client = ControlUpgradeClient()
+    assert install.upgrade_v3_portfolio_control(client, apply=False) == "planned"
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+    assert install.upgrade_v3_portfolio_control(client, apply=True) == "upgraded"
+    assert client.child and client.state == "full"
+    assert install.upgrade_v3_portfolio_control(client, apply=True) == "verified"
+    occupied = ControlUpgradeClient(rows=1)
+    with pytest.raises(RuntimeError, match="versioned migration"):
+        install.upgrade_v3_portfolio_control(occupied, apply=True)
+    assert all(sql.startswith("SELECT ") for sql in occupied.statements)
+
+
 def test_v3_reason_upgrade_refuses_nonempty_or_unknown_fence(monkeypatch):
     monkeypatch.setattr(install, "storage_preflight", lambda *_args, **_kwargs: None)
     occupied = V3UpgradeClient(rows=1)

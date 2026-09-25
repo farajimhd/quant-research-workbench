@@ -24,7 +24,7 @@ from src.trading_runtime.arte_journal_schema import (
     storage_preflight,
 )
 from src.backend.backtest_squeeze_episode_schema import (
-    RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
+    PORTFOLIO_CONTROL, RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
     SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
 from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
@@ -37,7 +37,7 @@ def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
     if profile == "fixed-v3":
         contracts = fixed_backtest_v2_contracts() + (
             SQUEEZE_EPISODE, RESERVATION_REASON,
-            RECONCILIATION_DIFFERENCE,
+            RECONCILIATION_DIFFERENCE, PORTFOLIO_CONTROL,
             SQUEEZE_COMMIT_V3, TERMINAL_COMMIT_V3)
         if len({table.name for table in contracts}) != len(contracts):
             raise RuntimeError("Fixed V3 journal table contract repeats a name")

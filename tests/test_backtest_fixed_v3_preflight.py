@@ -29,6 +29,10 @@ def test_v3_profiles_assign_running_and_terminal_writes_disjointly(monkeypatch):
     assert "trading_backtest_terminal_commit_v3" not in running
     assert "trading_portfolio_snapshot_v1" in terminal
     assert "trading_portfolio_snapshot_v1" not in running
+    catalog = {table.name for table in subject.policy_catalog_v3_contracts()}
+    assert len(catalog) == 7
+    assert catalog <= running
+    assert not catalog & terminal
 
 
 def test_v3_exact_grants_rejects_extra_terminal_insert():
@@ -56,5 +60,6 @@ def test_v3_reader_requires_only_exact_v7_split_reference(monkeypatch):
     assert seen[0]["journal_tables"] == frozenset()
     from src.trading_runtime.arte_market_day_certification import TABLES as CERTIFICATE_TABLES
     assert {table.name for table in CERTIFICATE_TABLES} <= seen[0]["read_only_tables"]
+    assert {table.name for table in subject.policy_catalog_v3_contracts()} <= seen[0]["read_only_tables"]
     assert seen[0]["reference_read_tables"] == frozenset({
         ("q_live", "market_stock_split_v1")})

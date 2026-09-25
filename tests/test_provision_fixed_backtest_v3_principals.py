@@ -98,6 +98,11 @@ def test_exact_three_role_plan_matches_v3_preflight_tables():
     assert running.insert_arte <= running.select_arte
     assert terminal.insert_arte <= terminal.select_arte
     assert running.insert_arte != terminal.insert_arte
+    from src.backend.backtest_fixed_v3_preflight import policy_catalog_v3_contracts
+    catalog = {table.name for table in policy_catalog_v3_contracts()}
+    assert catalog <= running.insert_arte
+    assert catalog <= read.select_arte & terminal.select_arte
+    assert not catalog & (read.insert_arte | terminal.insert_arte)
     assert read.select_reference == frozenset({
         ("q_live", "market_stock_split_v1")})
     assert running.select_reference == terminal.select_reference == frozenset()

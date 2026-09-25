@@ -26,7 +26,8 @@ from src.trading_runtime.arte_journal_schema import (
     STORAGE_POLICY, TableContract, fixed_backtest_v2_contracts, storage_preflight,
 )
 from src.backend.backtest_squeeze_episode_schema import (
-    RECONCILIATION_DIFFERENCE, RESERVATION_REASON, SQUEEZE_COMMIT_V3,
+    PORTFOLIO_CONTROL, RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
+    SQUEEZE_COMMIT_V3, staged_portfolio_control_ddl,
     staged_reconciliation_difference_ddl, staged_reservation_reason_ddl,
 )
 from scripts.clickhouse.provision_fixed_backtest_v3_principals import WORKSTATION_IPV4
@@ -38,6 +39,52 @@ _RECONCILIATION_COLUMNS = frozenset({
     "portfolio_reconciliation_difference_count",
     "portfolio_reconciliation_difference_hash",
 })
+_CONTROL_COLUMNS = frozenset({"portfolio_control_count", "portfolio_control_hash"})
+
+
+def upgrade_v3_portfolio_control(client: object, *, apply: bool) -> str:
+    """Stage scalar control child only on a proved-empty V3 fence."""
+    columns = [json.loads(line) for line in client.execute(
+        "SELECT name,type FROM system.columns WHERE database='arte' "
+        "AND table='trading_commit_v3' ORDER BY position FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    actual = tuple((row["name"], row["type"]) for row in columns)
+    full = SQUEEZE_COMMIT_V3.columns
+    old = tuple(column for column in full
+                if column[0] not in {"portfolio_control_count", "portfolio_control_hash"})
+    partial = tuple(column for column in full
+                    if column[0] != "portfolio_control_hash")
+    if actual not in {old, partial, full}:
+        raise RuntimeError("V3 commit has an unknown control schema")
+    storage_preflight(client, tables=(TableContract(
+        SQUEEZE_COMMIT_V3.name, actual, SQUEEZE_COMMIT_V3.partition,
+        SQUEEZE_COMMIT_V3.order),))
+    exists = client.execute(
+        "SELECT count() FROM system.tables WHERE database='arte' "
+        "AND name='trading_portfolio_control_v3'").strip()
+    if exists not in {"0", "1"}:
+        raise RuntimeError("Portfolio control table catalog is ambiguous")
+    if exists == "1":
+        storage_preflight(client, tables=(PORTFOLIO_CONTROL,))
+    if actual == full and exists == "1":
+        return "verified"
+    if client.execute("SELECT count() FROM arte.trading_commit_v3").strip() != "0":
+        raise RuntimeError("V3 commit has rows; a versioned migration is required")
+    if exists == "1" and client.execute(
+            "SELECT count() FROM arte.trading_portfolio_control_v3").strip() != "0":
+        raise RuntimeError("Portfolio control child has rows; no ALTER attempted")
+    if not apply:
+        return "planned"
+    table_ddl, count_ddl, hash_ddl = staged_portfolio_control_ddl()
+    if exists == "0":
+        client.execute(table_ddl)
+        storage_preflight(client, tables=(PORTFOLIO_CONTROL,))
+    if actual == old:
+        client.execute(count_ddl)
+    if actual in {old, partial}:
+        client.execute(hash_ddl)
+    storage_preflight(client, tables=(PORTFOLIO_CONTROL, SQUEEZE_COMMIT_V3))
+    return "upgraded"
 
 
 def upgrade_v3_reconciliation_difference(client: object, *, apply: bool) -> str:
@@ -47,7 +94,9 @@ def upgrade_v3_reconciliation_difference(client: object, *, apply: bool) -> str:
         "AND table='trading_commit_v3' ORDER BY position FORMAT JSONEachRow"
     ).splitlines() if line.strip()]
     actual = tuple((row["name"], row["type"]) for row in columns)
-    full = SQUEEZE_COMMIT_V3.columns
+    full = tuple(column for column in SQUEEZE_COMMIT_V3.columns
+                 if column[0] not in _CONTROL_COLUMNS or
+                 column[0] in {name for name, _ in actual})
     old = tuple(column for column in full
                 if column[0] not in _RECONCILIATION_COLUMNS)
     partial = tuple(column for column in full
@@ -105,7 +154,9 @@ def upgrade_v3_reservation_reason(client: object, *, apply: bool) -> str:
         "AND table='trading_commit_v3' ORDER BY position FORMAT JSONEachRow"
     ).splitlines() if line.strip()]
     actual = tuple((row["name"], row["type"]) for row in columns)
-    full = SQUEEZE_COMMIT_V3.columns
+    full = tuple(column for column in SQUEEZE_COMMIT_V3.columns
+                 if column[0] not in _CONTROL_COLUMNS or
+                 column[0] in {name for name, _ in actual})
     actual_core = tuple(column for column in actual
                         if column[0] not in _RECONCILIATION_COLUMNS)
     core_full = tuple(column for column in full
@@ -221,6 +272,8 @@ def main() -> int:
                         help="verify or install the empty-fence V3 reason upgrade")
     parser.add_argument("--upgrade-v3-reconciliation-difference", action="store_true",
                         help="verify or install the empty-fence V3 reconciliation child upgrade")
+    parser.add_argument("--upgrade-v3-portfolio-control", action="store_true",
+                        help="verify or install the empty-fence V3 scalar control upgrade")
     args = parser.parse_args()
     parsed = urlsplit(args.url)
     if (platform.node().upper() != "DESKTOP-SAAI85T"
@@ -236,9 +289,13 @@ def main() -> int:
             raise RuntimeError("Pinned workstation IPv4 is not in hostname resolution")
         client = _admin_client(f"http://{WORKSTATION_IPV4}:{parsed.port}")
         try:
-            if args.upgrade_v3_reservation_reason and args.upgrade_v3_reconciliation_difference:
+            if sum((args.upgrade_v3_reservation_reason,
+                    args.upgrade_v3_reconciliation_difference,
+                    args.upgrade_v3_portfolio_control)) > 1:
                 parser.error("Select only one V3 upgrade at a time")
-            if args.upgrade_v3_reconciliation_difference:
+            if args.upgrade_v3_portfolio_control:
+                upgrade_v3_portfolio_control(client, apply=args.apply)
+            elif args.upgrade_v3_reconciliation_difference:
                 upgrade_v3_reconciliation_difference(client, apply=args.apply)
             elif args.upgrade_v3_reservation_reason:
                 upgrade_v3_reservation_reason(client, apply=args.apply)

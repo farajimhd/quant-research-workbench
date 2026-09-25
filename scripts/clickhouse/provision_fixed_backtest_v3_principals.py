@@ -28,7 +28,7 @@ from scripts.clickhouse.provision_trading_journal import (
     SECRET_ROOT, SYSTEM_READ_TABLES, _admin_client, _restrict_secret_file,
 )
 from src.backend.backtest_fixed_v3_preflight import (
-    read_v3_preflight, running_v3_contracts, running_v3_preflight,
+    policy_catalog_v3_contracts, read_v3_preflight, running_v3_contracts, running_v3_preflight,
     terminal_v3_contracts, terminal_v3_preflight,
 )
 from src.trading_runtime.arte_journal_schema import MARKET_READ_TABLES, storage_preflight
@@ -70,7 +70,7 @@ class PrincipalPlan:
 def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
     """Derive exact table names from the same contracts as V3 preflight."""
     from src.backend.backtest_squeeze_episode_schema import (
-        RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
+        PORTFOLIO_CONTROL, RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
         SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
     )
     from src.backend.backtest_terminal_v3_dispatch import _TABLES
@@ -82,7 +82,9 @@ def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
                                for table, _, _, _ in _FAMILIES) | frozenset({
                                    SQUEEZE_EPISODE.name, RESERVATION_REASON.name,
                                    RECONCILIATION_DIFFERENCE.name,
-                                   SQUEEZE_COMMIT_V3.name})
+                                   PORTFOLIO_CONTROL.name,
+                                   SQUEEZE_COMMIT_V3.name}) | frozenset(
+                                       table.name for table in policy_catalog_v3_contracts())
     terminal_insert = frozenset(_TABLES)
     if not running_insert <= running or not terminal_insert <= terminal:
         raise RuntimeError("V3 preflight references an unprovisioned table")
