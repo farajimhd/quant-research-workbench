@@ -102,11 +102,11 @@ def release_unfilled_episode(state):
                 consumed_moves.remove(move['id'])
 
 
-def observe_market(o, state, settings=None):
+def observe_market(o, state, settings=None, *, typed_persistence=False):
     """Remember physical resistance IDs before role flips; recrosses count once."""
     if (settings or {}).get('group_resistances'):
         from .resistance_zones import observe
-        crossed = observe(o, state, levels(o))
+        crossed = observe(o, state, levels(o, typed_persistence=typed_persistence))
         if settings.get('pullback_min_rise_pct'):
             from .pullback_impulse import observe as observe_impulse
             observe_impulse(state.setdefault('pullback_impulse', {}), o.observed_at.timestamp(),
@@ -115,7 +115,7 @@ def observe_market(o, state, settings=None):
     session = o.observed_at.astimezone(H.NY).date().isoformat()
     if state.get('session') != session:
         state.clear(); state.update(session=session, known={}, broken=[])
-    rows = levels(o)
+    rows = levels(o, typed_persistence=typed_persistence)
     previous = state.get('price')
     crossed = []
     for key, row in state['known'].items():
@@ -184,7 +184,7 @@ def observe_support_bounces(market, previous, bar, level_rows):
     row['vwap_support_bounces'] = deepcopy(witnesses)
 
 
-def evaluate(host, a, o, p, old_state):
+def evaluate(host, a, o, p, old_state, *, typed_persistence=False):
     from .strategy_engine import AssignmentStatus as Status, _at_or_after_session_time
     state = deepcopy(old_state)
     settings = p['vwap_ladder']; tick = p['execution']['tick_size']
@@ -239,8 +239,9 @@ def evaluate(host, a, o, p, old_state):
                    if key not in prior_broken]
     group_clock = not settings.get('group_resistances') or ('bar_close' in o.evaluation_events and o.source_timeframe == '100ms')
     if now >= cutoff and is_trade and group_clock and now > market.get('at', 0):
-        crossed.extend(observe_market(o, market, settings))
-    rows = levels(o)
+        crossed.extend(observe_market(o, market, settings,
+                                      typed_persistence=typed_persistence))
+    rows = levels(o, typed_persistence=typed_persistence)
     count = len(market.get('broken', []))
     evidence = dict(contract=CONTRACT, macd_samples=samples, session_resistance_breaks=count,
                     episode=deepcopy(episode), initial_stop=state.get('initial_stop'),
@@ -383,7 +384,8 @@ def evaluate(host, a, o, p, old_state):
         from .resistance_zones import entry_anchor
         from .post_move_entries import pending_breakout, midpoint_target
         witnessed_breakout = pending_breakout(o, market, entry_clock, previous_entry_price,
-            tick, settings['breakout_offset_ticks'], episode, is_trade and late)
+            tick, settings['breakout_offset_ticks'], episode, is_trade and late,
+            typed_persistence=typed_persistence)
         one = samples['1s']
         if (one and one['line'] > one['signal']
                 and (settings.get('pullback_independent_episode') or not episode.get('used'))):
@@ -447,6 +449,9 @@ def evaluate(host, a, o, p, old_state):
         entry_clock['consumed_pullbacks'].append(anchor['pivot_at'])
         if pullback_move:
             entry_clock.setdefault('consumed_moves', []).append(pullback_move['id'])
+    if typed_persistence and breakout is not None:
+        from .arte_assignment_vwap_entry_breakout import validate_entry_breakout_setup
+        breakout = validate_entry_breakout_setup(breakout)
     state.update(vwap_ladder_entry=dict(entry_price=o.ask, requested_at=now, broken=[], late=late or entry_kind == 'post_move_pullback',
         cross_known=list(market.get('known', {})),
         target_moves=0, add_opportunities=0, swing=swing, retest_anchor=anchor, episode_id=episode.get('started_at'),
