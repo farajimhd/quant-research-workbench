@@ -58,7 +58,7 @@ def _rules() -> tuple[dict, dict]:
 
 def profile(build_id: str, day: date, tickers: tuple[str, ...], *,
             through_boundary_ms: int, max_workers: int) -> tuple[int, int, int, int,
-                                                                  float, float, float]:
+                                                                  int, float, float, float]:
     if platform.node().upper() != "DESKTOP-SAAI85T":
         raise RuntimeError("Strategy 1 profile requires the workstation read principal")
     credential = _secret_path("read")
@@ -89,7 +89,8 @@ def profile(build_id: str, day: date, tickers: tuple[str, ...], *,
             client_factory=client, max_workers=max_workers, certified_scan=scan)
         preparation_seconds = perf_counter() - started
     return (len(plan.tickers), len(scan["occurrences"]), len(prepared),
-            len(strategy_one_v7_tickers(prepared)), preflight_seconds,
+            len(strategy_one_v7_tickers(prepared)),
+            sum(len(item.boundary_ms) for item in prepared), preflight_seconds,
             scan_seconds, preparation_seconds)
 
 
@@ -114,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
             or not 1 <= args.max_workers <= 16):
         parser.error("Boundary must be a completed 100ms session clock; workers 1-16")
     try:
-        tickers_count, episodes, loaded, candidates, preflight, scan, preparation = profile(
+        tickers_count, episodes, loaded, candidates, boundaries, preflight, scan, preparation = profile(
             args.build_id, args.date, tickers,
             through_boundary_ms=args.through_boundary_ms,
             max_workers=args.max_workers)
@@ -123,7 +124,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"Strategy 1 read-only profile | {args.date} | {tickers_count} tickers | "
           f"through {args.through_boundary_ms} ms")
-    print(f"Episodes {episodes} | loaded tickers {loaded} | V7 candidate tickers {candidates}")
+    print(f"Episodes {episodes} | loaded tickers {loaded} | "
+          f"V7 candidate tickers {candidates} | candidate boundaries {boundaries}")
     print(f"Preflight {preflight:.3f}s | squeeze scan {scan:.3f}s | "
           f"columnar preparation {preparation:.3f}s")
     return 0
