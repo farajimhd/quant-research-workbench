@@ -74,6 +74,10 @@ def _identity_value(table: TableContract, identity: Mapping[str, Any]) -> dict[s
     relevant = {}
     for column in ("run_id", "assignment_id", "revision", "state_revision",
                    "snapshot_id", "session", "snapshot_session"):
+        # The clock's nullable ``session`` is strategy state, not the
+        # snapshot partition key. ``snapshot_session`` is its identity.
+        if column == "session" and "snapshot_session" in kinds:
+            continue
         if column in kinds:
             source = aliases.get(column, column)
             relevant[column] = _column_value(column, kinds[column], identity[source])

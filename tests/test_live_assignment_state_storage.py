@@ -9,6 +9,7 @@ from src.backend.live_assignment_state_storage import (
     ClickHouseAssignmentStateStorage, _row,
 )
 from tests.test_live_assignment_state_snapshot import _project
+from tests.test_arte_assignment_state_composite import KEY
 
 
 class Client:
@@ -83,3 +84,19 @@ def test_every_projected_state_family_matches_its_scalar_wire_contract():
     for table in STATE_TABLES:
         family = [commit] if table.name == STATE_COMMIT.name else rows[table.name]
         assert [_row(table, row) for row in family] == family
+
+
+def test_every_state_family_reads_from_its_exact_snapshot_identity():
+    rows, commit = _project()
+    by_table = {**rows, STATE_COMMIT.name: [commit]}
+
+    class FixtureClient:
+        def execute(self, sql):
+            for table in STATE_TABLES:
+                if f"FROM arte.{table.name} WHERE " in sql:
+                    return "\n".join(json.dumps(row) for row in by_table[table.name])
+            raise AssertionError(sql)
+
+    storage = ClickHouseAssignmentStateStorage(FixtureClient())
+    for table in STATE_TABLES:
+        assert storage.read(table.name, KEY) == by_table[table.name]
