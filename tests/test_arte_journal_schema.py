@@ -239,7 +239,8 @@ def test_preflight_requires_exact_layout_and_actual_ssd_parts() -> None:
             elif "FROM system.tables" in sql:
                 rows = [{"name": table.name, "engine": "MergeTree",
                          "storage_policy": "live_market_ssd",
-                         "partition_key": table.partition, "sorting_key": table.order}
+                         "partition_key": table.partition,
+                         "sorting_key": table.order.replace(",", ", ")}
                         for table in TABLES]
             elif "FROM system.columns" in sql:
                 rows = [{"table": table.name, "name": name, "type": kind}

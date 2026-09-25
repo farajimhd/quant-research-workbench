@@ -1761,9 +1761,13 @@ def storage_preflight(client: Any, *, tables: tuple[TableContract, ...] = TABLES
         raise ValueError("Typed journal tables are missing")
     for table in tables:
         row = by_name[table.name]
+        # ClickHouse renders a comma-space in system.tables.sorting_key even
+        # when the DDL's ORDER BY list was written without spaces.
+        actual_order = tuple(field.strip() for field in row["sorting_key"].split(","))
+        declared_order = tuple(field.strip() for field in table.order.split(","))
         if (row["engine"], row["storage_policy"], row["partition_key"],
-                row["sorting_key"]) != (
-                    "MergeTree", STORAGE_POLICY, table.partition, table.order):
+                actual_order) != (
+                    "MergeTree", STORAGE_POLICY, table.partition, declared_order):
             raise ValueError(f"Typed journal layout differs: {table.name}")
     actual_columns = _rows(client,
         "SELECT table,name,type FROM system.columns WHERE database='arte' "
