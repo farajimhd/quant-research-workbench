@@ -17,7 +17,9 @@ from src.backend.backtest_terminal_v2_preflight import (
     terminal_v2_keeper_proof_preflight, terminal_v2_operator_preflight,
 )
 from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
-from src.trading_runtime.arte_journal_schema import storage_preflight
+from src.trading_runtime.arte_journal_schema import (
+    fixed_backtest_v2_contracts, storage_preflight,
+)
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, load_typed_run_context,
 )
@@ -52,7 +54,7 @@ def prepare_fixed_journal_token(
             or not configuration_hash or not market_plan_token
             or not account_ids or len(set(account_ids)) != len(account_ids)):
         raise ValueError("Fixed journal lacks pinned projection/run authority")
-    storage_preflight(read_client)
+    storage_preflight(read_client, tables=fixed_backtest_v2_contracts())
     terminal_v2_operator_preflight(terminal_client)
     terminal_v2_keeper_proof_preflight(keeper)
     context = load_typed_run_context(read_client, run_id)
@@ -108,7 +110,8 @@ def assemble_fixed_journal(
     try:
         writer = writer_factory(
             writer_client, run_id=token.run_id, capacity=queue_capacity,
-            max_events_per_commit=batch_size, coalesce_batches=False)
+            max_events_per_commit=batch_size, coalesce_batches=False,
+            journal_profile="backtest_v2")
     except BaseException:
         journal.close()
         raise

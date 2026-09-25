@@ -13,7 +13,7 @@ ATTEMPT = "00000000-0000-0000-0000-000000000a02"
 def _verified(monkeypatch):
     checked = []
     monkeypatch.setattr(bootstrap, "storage_preflight",
-                        lambda *_: checked.append("schema"))
+                        lambda *_, **kwargs: checked.append(("schema", kwargs["tables"])))
     monkeypatch.setattr(bootstrap, "terminal_v2_operator_preflight",
                         lambda *_: checked.append("v2"))
     monkeypatch.setattr(bootstrap, "terminal_v2_keeper_proof_preflight",
@@ -33,10 +33,14 @@ def test_bootstrap_assembles_bounded_in_memory_lane_without_writes(monkeypatch):
         read_client, terminal_client, keeper, run_id=RUN, account_ids=("DU1",),
         configuration_hash="c" * 64, market_plan_token="market-token",
         projection_certifier=lambda: "a" * 64)
-    assert checked == ["schema", "v2", "keeper"]
+    assert [entry[0] if isinstance(entry, tuple) else entry for entry in checked] == [
+        "schema", "v2", "keeper"]
+    assert {table.name for table in checked[0][1]} == {
+        table.name for table in bootstrap.fixed_backtest_v2_contracts()}
     class Writer:
         run_id = RUN
         run_mode = "backtest"
+        journal_profile = "backtest_v2"
         coalesce_batches = False
         max_events_per_commit = 512
         def close(self):
@@ -56,7 +60,8 @@ def test_bootstrap_assembles_bounded_in_memory_lane_without_writes(monkeypatch):
     assert assembly.publisher.writer is assembly.writer
     assert assembly.terminal_authority.account_ids == ("DU1",)
     assert calls == [((writer_client,), {"run_id": RUN, "capacity": 8,
-                      "max_events_per_commit": 512, "coalesce_batches": False})]
+                      "max_events_per_commit": 512, "coalesce_batches": False,
+                      "journal_profile": "backtest_v2"})]
     assert assembly.terminal_authority.client._client is terminal_client
     assembly.journal.close()
 

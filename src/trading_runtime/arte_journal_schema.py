@@ -1314,6 +1314,15 @@ def versioned_journal_v2_preflight(client: Any) -> None:
     )
 
 
+def fixed_backtest_v2_contracts() -> tuple[TableContract, ...]:
+    """Exact occupied V1, active shared, and new fixed-V2 table shapes."""
+    legacy = {"trading_strategy_signal_v1", "trading_commit_v1"}
+    shared = tuple(table for table in TABLES if table.name not in legacy)
+    return (shared + VERSIONED_JOURNAL_V2_TABLES
+            + BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES
+            + (LEGACY_STRATEGY_SIGNAL_V1, LEGACY_COMMIT_V1))
+
+
 def fixed_backtest_v2_preflight(client: Any) -> None:
     """Read-only, exact admission for one V2 running and terminal writer.
 
@@ -1321,9 +1330,8 @@ def fixed_backtest_v2_preflight(client: Any) -> None:
     typed facts, V2 signal/commit fences, and terminal facts are append-only.
     """
     legacy = {"trading_strategy_signal_v1", "trading_commit_v1"}
-    shared = tuple(table for table in TABLES if table.name not in legacy)
-    writable = shared + VERSIONED_JOURNAL_V2_TABLES + BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES
-    contracts = writable + (LEGACY_STRATEGY_SIGNAL_V1, LEGACY_COMMIT_V1)
+    contracts = fixed_backtest_v2_contracts()
+    writable = tuple(table for table in contracts if table.name not in legacy)
     storage_preflight(client, tables=contracts)
     journal_permission_preflight(
         client,
