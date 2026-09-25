@@ -69,13 +69,44 @@ class BuildAttestation:
             self.owner_id, self.epoch)))).encode("utf-8")
 
 
-class MarketDayKeeperAuthority:
-    """Blocking control-plane adapter; transaction commit must be atomic."""
+class MarketDayKeeperReader:
+    """Read an existing market-day proof without creating Keeper paths."""
 
     def __init__(self, client: Any) -> None:
         self.client = client
-        self._verified_source: dict[BuildClaim, str] = {}
         self._connected()
+
+    def _connected(self) -> None:
+        if not self.client.connected or self.client.client_id is None:
+            raise KeeperUnavailable("Market-day Keeper session is unavailable")
+
+    def load(self, build_id: str) -> BuildAttestation | None:
+        """Historical proof remains readable after its owner has changed."""
+        self._connected()
+        try:
+            value, _ = self.client.get(_base(build_id) + "/attestation")
+        except Exception as exc:
+            if type(exc).__name__ == "NoNodeError":
+                return None
+            raise KeeperUnavailable("Cannot read market-day attestation") from exc
+        try:
+            parts = value.decode("utf-8").split("\n")
+            if len(parts) != 11 or parts[0] != "3":
+                raise ValueError("unknown attestation wire version")
+            proof = BuildAttestation(*parts[1:10], int(parts[10]))
+            if proof.build_id != build_id or proof.wire() != value:
+                raise ValueError("attestation differs from requested build")
+            return proof
+        except (UnicodeError, ValueError, TypeError) as exc:
+            raise KeeperUnavailable("Market-day attestation is corrupt") from exc
+
+
+class MarketDayKeeperAuthority(MarketDayKeeperReader):
+    """Producer-only blocking control-plane adapter with atomic CAS commit."""
+
+    def __init__(self, client: Any) -> None:
+        super().__init__(client)
+        self._verified_source: dict[BuildClaim, str] = {}
         client.ensure_path(_ROOT)
 
     def verify_source(self, claim: BuildClaim, source_client: Any,
@@ -90,10 +121,6 @@ class MarketDayKeeperAuthority:
         if not self.current(claim):
             raise KeeperUnavailable("Market-day claim changed during source verification")
         self._verified_source[claim] = expected_hash
-
-    def _connected(self) -> None:
-        if not self.client.connected or self.client.client_id is None:
-            raise KeeperUnavailable("Market-day Keeper session is unavailable")
 
     def acquire(self, build_id: str, owner_id: str) -> BuildClaim | None:
         _identity(build_id, owner_id)
@@ -175,27 +202,6 @@ class MarketDayKeeperAuthority:
         if self.load(claim.build_id) != proof:
             raise KeeperUnavailable("Market-day CAS proof is not durable")
         return proof
-
-    def load(self, build_id: str) -> BuildAttestation | None:
-        """Historical proof remains readable after its owner has changed."""
-        self._connected()
-        try:
-            value, _ = self.client.get(_base(build_id) + "/attestation")
-        except Exception as exc:
-            if type(exc).__name__ == "NoNodeError":
-                return None
-            raise KeeperUnavailable("Cannot read market-day attestation") from exc
-        try:
-            parts = value.decode("utf-8").split("\n")
-            if len(parts) != 11 or parts[0] != "3":
-                raise ValueError("unknown attestation wire version")
-            proof = BuildAttestation(*parts[1:10], int(parts[10]))
-            if proof.build_id != build_id or proof.wire() != value:
-                raise ValueError("attestation differs from requested build")
-            return proof
-        except (UnicodeError, ValueError, TypeError) as exc:
-            raise KeeperUnavailable("Market-day attestation is corrupt") from exc
-
 
 def require_attested_inventory(proof: BuildAttestation | None,
                                fence: dict[str, Any]) -> None:

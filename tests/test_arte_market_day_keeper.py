@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from src.trading_runtime.arte_market_day_keeper import (
-    MarketDayKeeperAuthority, require_attested_inventory,
+    MarketDayKeeperAuthority, MarketDayKeeperReader, require_attested_inventory,
 )
 from src.trading_runtime.keeper_ownership import KeeperUnavailable
 from src.trading_runtime.arte_market_day_source_plan import _digest
@@ -135,6 +135,24 @@ def test_cas_proof_survives_owner_change_and_matches_only_exact_fence() -> None:
     assert authority.load(BUILD) == proof
     with pytest.raises(KeeperUnavailable, match="Stale"):
         authority.attest(claim, **args())
+
+
+def test_cold_reader_loads_proof_without_keeper_mutation() -> None:
+    store = FakeKeeper()
+    authority = MarketDayKeeperAuthority(store)
+    claim = authority.acquire(BUILD, "worker")
+    assert claim is not None
+    verify_source(authority, claim)
+    proof = authority.attest(claim, **args())
+    def forbid(*_args, **_kwargs):
+        raise AssertionError("cold Keeper reader attempted a mutation")
+    store.ensure_path = forbid
+    store.create = forbid
+    store.transaction = forbid
+    reader = MarketDayKeeperReader(store)
+    assert reader.load(BUILD) == proof
+    assert not hasattr(reader, "acquire")
+    assert not hasattr(reader, "attest")
 
 
 def test_owner_change_during_cas_cannot_attest() -> None:
