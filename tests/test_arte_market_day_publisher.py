@@ -8,7 +8,9 @@ import pytest
 
 from src.trading_runtime.arte_market_day_certification import TABLES
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperAuthority
-from src.trading_runtime.arte_market_day_publisher import publish_market_day_certificate
+from src.trading_runtime.arte_market_day_publisher import (
+    MarketDayCertificateClient, publish_market_day_certificate,
+)
 from src.trading_runtime.arte_market_day_source_plan import (
     TABLES as SOURCE_TABLES, recover_source_plan,
 )
@@ -72,6 +74,34 @@ def setup():
     claim = keeper.acquire(BUILD, "worker-a")
     assert claim is not None
     return FakeClickHouse(), store, keeper, claim
+
+
+def test_typed_transport_batches_only_allowlisted_certificate_columns() -> None:
+    class RecordingHttp:
+        def __init__(self):
+            self.sql = []
+
+        def execute(self, sql):
+            self.sql.append(sql)
+            return ""
+
+    http = RecordingHttp()
+    client = MarketDayCertificateClient(http, batch_size=2)
+    rows = inventory()["market_day_stage_certificate_v1"]
+    client.insert_typed_rows("market_day_stage_certificate_v1", rows)
+    assert len(http.sql) == 2
+    assert all(sql.startswith("INSERT INTO `arte`.`market_day_stage_certificate_v1`")
+               for sql in http.sql)
+    assert sum(len(sql.split("FORMAT JSONEachRow\n", 1)[1].splitlines())
+               for sql in http.sql) == len(rows)
+    with pytest.raises(ValueError, match="target"):
+        client.insert_typed_rows("bars_v1", rows)
+    with pytest.raises(ValueError, match="typed contract"):
+        client.insert_typed_rows("market_day_stage_certificate_v1",
+                                 [dict(rows[0], payload_json="forbidden")])
+    with pytest.raises(ValueError, match="SELECT-only"):
+        client.execute("DELETE FROM arte.market_day_stage_certificate_v1")
+    assert len(http.sql) == 2
 
 
 def test_publishes_fence_last_and_attests_only_exact_readback() -> None:

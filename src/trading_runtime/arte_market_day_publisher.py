@@ -1,16 +1,18 @@
-"""Inactive market-day certificate publisher for injected, fake-tested clients.
+"""Staged market-day certificate publisher, not called by the active producer.
 
-The active market-day producer does not call this module. The data client must
-offer synchronous acknowledged typed inserts and read-only SQL execution.
+Only producer-owned certificate tables can be inserted. The row transport uses
+JSONEachRow to populate normalized typed columns; no JSON column is stored.
 """
 from __future__ import annotations
 
 import json
 from collections import Counter
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
+
+from research.mlops.clickhouse import insert_json_each_row
 
 from src.trading_runtime.arte_market_day_certification import (
-    TABLES, _COLUMNS, family_hash, read_certificate_rows,
+    TABLES, _COLUMNS, _typed_readback_row, family_hash, read_certificate_rows,
     verify_market_day_certificate,
 )
 from src.trading_runtime.arte_market_day_keeper import (
@@ -21,6 +23,40 @@ from src.trading_runtime.arte_market_day_source_plan import (
     verify_source_plan_storage,
 )
 from src.trading_runtime.journal_contract import canonical_json
+
+
+class MarketDayCertificateClient:
+    """Bounded INSERT transport with a closed, typed certificate-table target."""
+
+    def __init__(self, http_client: Any, *, batch_size: int = 4096) -> None:
+        if type(batch_size) is not int or not 0 < batch_size <= 10_000:
+            raise ValueError("Market-day certificate batch size is invalid")
+        self.http_client = http_client
+        self.batch_size = batch_size
+
+    def execute(self, sql: str) -> str:
+        if not sql.lstrip().upper().startswith("SELECT "):
+            raise ValueError("Market-day certificate read transport is SELECT-only")
+        return self.http_client.execute(sql)
+
+    def insert_typed_rows(self, name: str,
+                          rows: Sequence[Mapping[str, Any]]) -> None:
+        if name not in _COLUMNS or not isinstance(rows, (tuple, list)):
+            raise ValueError("Market-day insert target or row batch is invalid")
+        # Validate the complete caller batch before the first bounded request.
+        # After an uncertain HTTP acknowledgement the publisher re-reads exact
+        # rows and sends only missing ones; it never blindly repeats a batch.
+        for row in rows:
+            try:
+                valid = isinstance(row, Mapping) and _typed_readback_row(name, row) == dict(row)
+            except (RuntimeError, ValueError, TypeError) as exc:
+                raise ValueError("Market-day insert row differs from typed contract") from exc
+            if not valid:
+                raise ValueError("Market-day insert row differs from typed contract")
+        for start in range(0, len(rows), self.batch_size):
+            chunk = [dict(row) for row in rows[start:start + self.batch_size]]
+            insert_json_each_row(self.http_client, "arte", name,
+                                 list(_COLUMNS[name]), chunk)
 
 
 def _read(client: Any, name: str, build_id: str) -> list[dict[str, Any]]:
