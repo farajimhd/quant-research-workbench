@@ -105,7 +105,8 @@ def load_strategy_one_entry_batch(plan: CertifiedMarketDayPlan, *,
         raise ValueError("Strategy 1 needs a completed 100ms end boundary")
     scoped = _source_plan(plan, session_date, ticker)
     sources = market_day_source_sqls(scoped,
-                                    through_boundary_ms=through_boundary_ms)
+                                    through_boundary_ms=through_boundary_ms,
+                                    strategy_one_projection=True)
     if len(sources) != 2:
         raise RuntimeError("Strategy 1 needs liquidity and higher-bar sources")
     hundred = _table(client, sources[0], maximum_rows=576_000)

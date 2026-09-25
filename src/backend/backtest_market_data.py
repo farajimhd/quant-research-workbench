@@ -526,6 +526,7 @@ def _unit_map(plan: CertifiedMarketDayPlan, stage: str) -> dict[tuple[str, str],
 
 def market_day_source_sqls(
     plan: CertifiedMarketDayPlan, *, through_boundary_ms: int | None = None,
+    strategy_one_projection: bool = False,
 ) -> tuple[str, ...]:
     """Separate pinned, sorted sources that can be merged without UNION ALL."""
     if through_boundary_ms is not None and (
@@ -606,8 +607,17 @@ def market_day_source_sqls(
         "macd_line", "macd_signal", "macd_histogram", "rsi_14", "atr_14",
         "rsi_ready", "atr_ready", "previous_close",
     ))
+    projection = (
+        "m.session_date,m.ticker,m.resolution_ms,m.boundary_ms,"
+        "m.close_int,m.low_int,m.price_valid,m.extremes_valid,"
+        "m.bid_int,m.ask_int,m.quote_valid,m.quote_timestamp_us,"
+        "m.execution_vwap,i.resolution_ms AS indicator_resolution_ms,"
+        "i.macd_line,i.macd_signal,i.previous_close"
+        if strategy_one_projection else
+        f"m.*,i.resolution_ms AS indicator_resolution_ms,{indicators}"
+    )
     return tuple(assert_select_only(f"""
-      SELECT m.*,i.resolution_ms AS indicator_resolution_ms,{indicators} FROM ({base}) m
+      SELECT {projection} FROM ({base}) m
       LEFT JOIN ({pinned('indicators_v1', technical)}) i ON
         i.session_date=m.session_date AND i.ticker=m.ticker
         AND i.resolution_ms=m.resolution_ms AND i.bucket_index=m.bucket_index

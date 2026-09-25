@@ -61,6 +61,9 @@ def test_arrow_market_rows_feed_vectorized_candidate_gate():
         plan(), session_date=DAY, ticker=TICKER,
         through_boundary_ms=30_100, client=reader)
     assert len(reader.queries) == 2
+    assert all("SELECT m.*" not in query for query in reader.queries)
+    assert all("i.macd_line,i.macd_signal,i.previous_close" in query
+               for query in reader.queries)
     assert candidates.entry_mask.tolist() == [True, True]
     assert candidates.stop_low_int.tolist() == [97_000, 97_000]
     assert candidates.macd_boundary_ms.tolist() == [[30_000] * 4] * 2
