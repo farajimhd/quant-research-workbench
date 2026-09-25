@@ -83,7 +83,9 @@ profitability or live-release acceptance.
 
 Strategy 1 starts from Candidate 350's entry/lifecycle gates but uses only
 completed MACD at the declared 1s/5s/10s/30s boundaries, not its event-time
-forming-MACD previews. It replaces initial and rising swing protection with
+forming-MACD previews. Candidate 350's $1 current-price purchase floor remains
+a vectorized entry gate; a sub-$1 Early Squeeze stays watched without
+authorizing a purchase. It replaces initial and rising swing protection with
 one tick below the low of the immediately preceding completed price-bearing
 30s bar. A missing/empty latest 30s bucket supplies no stop; it is not
 silently carried forward. Each disjoint group of three accepted resistances

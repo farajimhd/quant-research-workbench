@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from src.trading_runtime.strategy_one_columnar import (
-    CompletedMacd, CompletedThirtySecondLow, REJECT_MACD, REJECT_QUOTE,
+    CompletedMacd, CompletedThirtySecondLow, REJECT_MACD, REJECT_PRICE, REJECT_QUOTE,
     REJECT_STOP_BAR, prepare_strategy_one_entries,
     schedule_strategy_one_entries,
 )
@@ -55,6 +55,18 @@ def test_future_tail_and_quote_clock_are_causal():
                           base.rejection_bits)
     data["quote_timestamp_us"] = data["evaluation_epoch_us"] + 1
     assert np.all(prepare_strategy_one_entries(**data).rejection_bits & REJECT_QUOTE)
+
+
+def test_sub_dollar_episode_remains_watchable_but_cannot_enter():
+    data = inputs()
+    data["close_int"][1] = 9_999
+    data["bid_int"][1] = 9_900
+    data["ask_int"][1] = 10_000
+    data["execution_vwap"][1] = .5
+    batch = prepare_strategy_one_entries(**data)
+    assert batch.rejection_bits[1] == REJECT_PRICE
+    assert not batch.entry_mask[1]
+    assert batch.entry_mask[2]
 
 
 def test_missing_macd_and_misaligned_source_fail_closed():

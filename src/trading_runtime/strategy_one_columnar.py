@@ -185,7 +185,10 @@ def prepare_strategy_one_entries(*, evaluation_boundary_ms,
         selected_low[low_ready] = low_values[low_index[low_ready]]
         selected_low_clock[low_ready] = low_clock[low_index[low_ready]]
     quote_age = epoch - quote_at
-    good_price = (price_ready == 1) & (price > 0)
+    # Candidate 350's purchase floor survives the closed-bar redesign:
+    # a sub-$1 squeeze may stay watched, but cannot authorize a purchase.
+    # Persisted prices are exact 1/10000-dollar integers at this gate.
+    good_price = (price_ready == 1) & (price >= 10_000)
     good_quote = ((quote_ready == 1) & (bid > 0) & (ask >= bid)
                   & (quote_age >= 0) & (quote_age <= quote_freshness_us))
     good_vwap = np.isfinite(vwap) & (vwap > 0) & (vwap * 10_000 < price)
