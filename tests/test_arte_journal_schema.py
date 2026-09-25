@@ -57,6 +57,16 @@ def test_journal_schema_rejects_unstructured_persistence(column: str, kind: str)
         TableContract("invalid_v1", ((column, kind),), "x", "x")
 
 
+def test_nullable_sort_key_requires_explicit_clickhouse_setting() -> None:
+    evidence = next(table for table in TABLES
+                    if table.name == "trading_strategy_signal_evidence_node_v1")
+    assert evidence.allow_nullable_key
+    assert "allow_nullable_key = 1" in evidence.ddl()
+    with pytest.raises(ValueError, match="nullable sorting key"):
+        TableContract("invalid_v1", (("parent_id", "Nullable(UUID)"),),
+                      "toYYYYMM(today())", "parent_id")
+
+
 def test_batch_readback_index_upgrade_only_targets_typed_journal_tables() -> None:
     indexed = {table.name for table in TABLES if "batch_id" in dict(table.columns)}
     statements = batch_lookup_index_upgrade_ddl()

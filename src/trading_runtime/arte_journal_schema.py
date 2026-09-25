@@ -59,6 +59,7 @@ class TableContract:
     columns: tuple[tuple[str, str], ...]
     partition: str
     order: str
+    allow_nullable_key: bool = False
 
     def __post_init__(self) -> None:
         # Journal evidence must have an explicit relational contract. Reject
@@ -73,16 +74,23 @@ class TableContract:
         for name, kind in self.columns:
             if forbidden_names.search(name) or forbidden_types.search(kind):
                 raise ValueError(f"Journal column requires a normalized typed contract: {self.name}.{name}")
+        nullable = {name for name, kind in self.columns if kind.startswith("Nullable(")}
+        order_fields = {field.strip() for field in self.order.split(",")}
+        if bool(nullable & order_fields) != self.allow_nullable_key:
+            raise ValueError(f"Journal nullable sorting key setting differs: {self.name}")
 
     def ddl(self) -> str:
         columns = ",\n    ".join(f"{name} {kind}" for name, kind in self.columns)
         if any(name == "batch_id" for name, _ in self.columns):
             columns += (f",\n    INDEX {BATCH_LOOKUP_INDEX} batch_id "
                         "TYPE bloom_filter(0.01) GRANULARITY 1")
+        settings = f"storage_policy = '{STORAGE_POLICY}'"
+        if self.allow_nullable_key:
+            settings += ", allow_nullable_key = 1"
         return (
             f"CREATE TABLE IF NOT EXISTS arte.{self.name} (\n    {columns}\n) "
             f"ENGINE = MergeTree PARTITION BY {self.partition} "
-            f"ORDER BY ({self.order}) SETTINGS storage_policy = '{STORAGE_POLICY}'"
+            f"ORDER BY ({self.order}) SETTINGS {settings}"
         )
 
 
@@ -482,6 +490,7 @@ TABLES = (
         ),
         "toYYYYMM(event_month)",
         "run_id, parent_record_id, parent_node_id, ordinal, record_id",
+        allow_nullable_key=True,
     ),
     TableContract(
         "trading_intent_decision_v1",
