@@ -6,6 +6,7 @@ whole-run V3 chain reader is required before these rows can serve the UI.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import re
@@ -25,6 +26,17 @@ from src.trading_runtime.journal_contract import JournalRecord, canonical_json
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _ROW_COLUMNS = {name for name, _ in SQUEEZE_EPISODE.columns}
 _COMMIT_COLUMNS = {name for name, _ in SQUEEZE_COMMIT_V3.columns}
+
+
+@dataclass(frozen=True, slots=True)
+class V3CommittedPrefix:
+    run_id: str
+    last_sequence: int
+    last_batch_id: str
+    source_cursor: str
+    status: str
+    batch_ids: tuple[str, ...]
+    occurrences: tuple[dict[str, Any], ...]
 
 
 def _canonical_row(row: Mapping[str, Any], *, stored_utc: bool = False) -> dict[str, Any]:
@@ -125,6 +137,33 @@ def project_squeeze_batch_v3(
         (child,))
 
 
+def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
+    """Rekey a bounded contiguous V3 microbatch, including every child hash."""
+    from src.trading_runtime.arte_journal_writer import (
+        V3SqueezeBatch, _coalesce_unpublished,
+    )
+
+    if not units or any(type(unit) is not V3SqueezeBatch for unit in units):
+        raise ValueError("V3 coalescing requires closed typed units")
+    base = _coalesce_unpublished(tuple(unit.base for unit in units))
+    episodes = []
+    pinned = set()
+    for unit in units:
+        for row in unit.episodes:
+            pinned.add((row["market_plan_token"], row["query_sha256"],
+                        row["source_authority"]))
+            values = {key: value for key, value in row.items()
+                      if key != "content_hash"}
+            values["batch_id"] = base.batch_id
+            values["content_hash"] = _digest(_canonical_row(values))
+            episodes.append(values)
+    if len(pinned) > 1:
+        raise ValueError("V3 coalescing cannot mix market plan/query authority")
+    if len(episodes) > len(base.events):
+        raise ValueError("V3 squeeze children exceed parent events")
+    return V3SqueezeBatch(base, tuple(episodes))
+
+
 def seal_squeeze_family_v3(
     v2_commit: Mapping[str, Any], rows: Sequence[Mapping[str, Any]],
     parent_events: Sequence[Mapping[str, Any]],
@@ -212,10 +251,10 @@ def verify_squeeze_family_v3(
     return tuple(normalized)
 
 
-def load_verified_squeeze_v3_run(
+def load_verified_squeeze_v3_prefix(
     client: Any, run_id: str, *, expected_market_plan_token: str,
     expected_query_sha256: str,
-) -> tuple[dict[str, Any], ...]:
+) -> V3CommittedPrefix | None:
     """Cold read an entire V3-only chain; never reinterpret a V2 fence.
 
     This inactive reader verifies every shared typed family before returning
@@ -239,11 +278,12 @@ def load_verified_squeeze_v3_run(
         f"SELECT {columns} FROM arte.trading_commit_v3 "
         f"WHERE run_id={_literal(run_id)} ORDER BY last_sequence,batch_id FORMAT JSONEachRow")
     if not commits:
-        return ()
+        return None
     prior_id = "00000000-0000-0000-0000-000000000000"
     prior_sequence = 0
     prior_status = "running"
     result: list[dict[str, Any]] = []
+    batch_ids: list[str] = []
     for commit in commits:
         if set(commit) != _COMMIT_COLUMNS:
             raise RuntimeError("V3 commit columns differ")
@@ -288,7 +328,23 @@ def load_verified_squeeze_v3_run(
                or row["query_sha256"] != expected_query_sha256 for row in verified):
             raise RuntimeError("V3 squeeze row differs from pinned market authority")
         result.extend(verified)
+        batch_ids.append(batch)
         prior_id, prior_sequence, prior_status = batch, last, str(commit["status"])
-    if prior_status == "running":
+    return V3CommittedPrefix(
+        run_id, prior_sequence, prior_id, str(commits[-1]["source_cursor"]),
+        prior_status, tuple(batch_ids), tuple(result))
+
+
+def load_verified_squeeze_v3_run(
+    client: Any, run_id: str, *, expected_market_plan_token: str,
+    expected_query_sha256: str,
+) -> tuple[dict[str, Any], ...]:
+    """Expose only a terminal V3 chain; running prefixes are restart-only."""
+    prefix = load_verified_squeeze_v3_prefix(
+        client, run_id, expected_market_plan_token=expected_market_plan_token,
+        expected_query_sha256=expected_query_sha256)
+    if prefix is None:
+        return ()
+    if prefix.status == "running":
         raise RuntimeError("V3 Signal Stream requires a terminal committed run")
-    return tuple(result)
+    return prefix.occurrences

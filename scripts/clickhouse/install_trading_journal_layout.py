@@ -19,14 +19,14 @@ sys.path.insert(0, str(REPO_ROOT))
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
 
-from scripts.clickhouse.plan_trading_journal_layout import plan_missing
+from scripts.clickhouse.plan_trading_journal_layout import plan_missing, profile_contracts
 from scripts.clickhouse.provision_trading_journal import _admin_client
 from src.trading_runtime.arte_journal_schema import (
     STORAGE_POLICY, fixed_backtest_v2_contracts, storage_preflight,
 )
 
 
-def install_missing(client: object, *, apply: bool,
+def install_missing(client: object, *, apply: bool, profile: str = "fixed-v2",
                     verify_batch_size: int = 8) -> tuple[int, int]:
     """Return (already installed, newly created); verify bounded DDL batches."""
     if type(verify_batch_size) is not int or not 1 <= verify_batch_size <= 16:
@@ -39,9 +39,10 @@ def install_missing(client: object, *, apply: bool,
         raise RuntimeError("Journal install requires SSD-only live_market_ssd")
     if client.execute("SELECT count() FROM system.databases WHERE name='arte'").strip() != "1":
         raise RuntimeError("Existing arte database is required")
-    contracts = fixed_backtest_v2_contracts()
+    contracts = profile_contracts(profile)
     by_name = {table.name: table for table in contracts}
-    missing, _ = plan_missing(client)
+    missing, _ = (plan_missing(client) if profile == "fixed-v2" else
+                  plan_missing(client, profile=profile))
     installed = len(contracts) - len(missing)
     print(f"Normalized journal: {installed} verified, {len(missing)} absent")
     if not apply:
@@ -70,6 +71,8 @@ def main() -> int:
     parser.add_argument("--url", default="http://DESKTOP-SAAI85T:18123")
     parser.add_argument("--apply", action="store_true",
                         help="create only absent journal tables after exact preflight")
+    parser.add_argument("--profile", choices=("fixed-v2", "fixed-v3"),
+                        default="fixed-v2", help="exact journal table layout")
     args = parser.parse_args()
     parsed = urlsplit(args.url)
     if (platform.node().upper() != "DESKTOP-SAAI85T"
@@ -80,7 +83,7 @@ def main() -> int:
     try:
         client = _admin_client(args.url)
         try:
-            install_missing(client, apply=args.apply)
+            install_missing(client, apply=args.apply, profile=args.profile)
         finally:
             client.close()
     except KeyboardInterrupt:

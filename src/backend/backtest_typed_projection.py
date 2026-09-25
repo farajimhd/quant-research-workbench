@@ -12,6 +12,7 @@ from uuid import UUID, NAMESPACE_URL, uuid5
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
+from src.trading_runtime.arte_journal_writer import V3SqueezeBatch
 
 
 NIL_BATCH_ID = str(UUID(int=0))
@@ -78,3 +79,68 @@ def project_pending_backtest_prefix(
         previous = batch_id
     return ProjectedBacktestPrefix(tuple(batches),
                                    prior_sequence + len(batches), previous, cursor)
+
+
+def project_pending_backtest_v3_prefix(
+    journal: BacktestMemoryJournal, *, attempt_id: str, run_month: date,
+    prior_sequence: int, prior_batch_id: str = NIL_BATCH_ID,
+    source_cursor: str = "start", expected_config: dict | None = None,
+    fixed_market_parent_plan: object | None = None,
+    fixed_market_execution_plan: object | None = None,
+    expected_market_start: datetime | None = None,
+    expected_market_plan_token: str, expected_query_sha256: str,
+    through_sequence: int | None = None,
+) -> tuple[V3SqueezeBatch, ...]:
+    """Project a contiguous V3 prefix; every batch names its closed child set."""
+    import re
+    from src.backend.backtest_squeeze_episode_v3 import project_squeeze_batch_v3
+
+    if (re.fullmatch(r"[0-9a-f]{64}", expected_market_plan_token) is None
+            or re.fullmatch(r"[0-9a-f]{64}", expected_query_sha256) is None
+            or run_month.day != 1 or prior_sequence < 0):
+        raise ValueError("V3 projection lacks pinned source authority")
+    attempt = str(UUID(attempt_id))
+    previous = str(UUID(prior_batch_id))
+    if (prior_sequence == 0) != (previous == NIL_BATCH_ID):
+        raise ValueError("V3 projection prior batch identity differs")
+    records = journal.unfenced_records(after_sequence=prior_sequence)
+    if through_sequence is not None:
+        if (through_sequence <= prior_sequence
+                or through_sequence > journal.latest_sequence(journal.run_id)):
+            raise ValueError("V3 projection limit is outside pending records")
+        records = [row for row in records if row.sequence <= through_sequence]
+    result: list[V3SqueezeBatch] = []
+    cursor = source_cursor
+    for sequence, record in enumerate(records, start=prior_sequence + 1):
+        if record.run_id != journal.run_id or record.sequence != sequence:
+            raise ValueError("V3 projection is not one contiguous run")
+        batch_id = str(uuid5(NAMESPACE_URL,
+            f"arte-backtest-v3:{record.run_id}:{attempt}:{record.sequence}:{record.record_id}"))
+        if (record.category, record.entity_type) == ("checkpoint", "market_boundary"):
+            cursor = record.entity_id
+        if (record.category, record.entity_type) == (
+                "market_discovery_signal", "signal_occurrence"):
+            unit = project_squeeze_batch_v3(
+                record, run_month=run_month, attempt_id=attempt,
+                batch_id=batch_id, prior_batch_id=previous,
+                source_cursor=cursor,
+                expected_market_plan_token=expected_market_plan_token,
+                expected_query_sha256=expected_query_sha256)
+        else:
+            base = project_journal_record(
+                record, run_month=run_month, attempt_id=attempt,
+                batch_id=batch_id, prior_batch_id=previous,
+                source_cursor=cursor, expected_config=expected_config,
+                expected_mode="backtest",
+                fixed_market_parent_plan=fixed_market_parent_plan,
+                fixed_market_execution_plan=fixed_market_execution_plan,
+                expected_market_start=expected_market_start)
+            unit = V3SqueezeBatch(base, ())
+        if (unit.base.run_id != journal.run_id
+                or unit.base.first_sequence != sequence
+                or unit.base.last_sequence != sequence
+                or len(unit.base.events) != 1):
+            raise ValueError("V3 projector changed event identity")
+        result.append(unit)
+        previous = batch_id
+    return tuple(result)

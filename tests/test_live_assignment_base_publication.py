@@ -32,7 +32,8 @@ class FakeBaseStorage:
 def _publish(storage, keeper, assignment, **extra):
     return publish_base_revision(
         storage, keeper, assignment, owner_id="publisher",
-        state_storage=object(), parameter_storage=object(),
+        state_storage=object(), state_admission=object(),
+        parameter_storage=object(),
         parameter_admission=object(), parameter_content_hash=HASH_A,
         state_content_hash=HASH_B, **{**CHILD_REFS, **extra})
 
@@ -121,3 +122,16 @@ def test_lost_keeper_cas_response_retains_claim_and_forbids_retry(monkeypatch):
     with pytest.raises(RuntimeError, match="claim is held"):
         _publish(storage, keeper, assignment)
     assert len(storage.rows) == 1
+
+
+def test_base_publication_compares_canonical_typed_clock_without_mutating_assignment(monkeypatch):
+    from src.trading_runtime.arte_assignment_observation_clock import normalize_observation_state
+    assignment = replace(_assignment(), state={
+        "last_observed_at": "2026-09-24T13:00:00+00:00"})
+    recovered = replace(assignment, state=normalize_observation_state(assignment.state))
+    for module in ("live_assignment_base_publication", "live_assignment_base_keeper"):
+        monkeypatch.setattr(f"src.backend.{module}.recover_attested_assignment",
+                            lambda **kwargs: recovered)
+    storage, keeper = FakeBaseStorage(), _keeper()
+    assert _publish(storage, keeper, assignment).sequence == 1
+    assert assignment.state["last_observed_at"] == "2026-09-24T13:00:00+00:00"

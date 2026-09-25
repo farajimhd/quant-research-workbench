@@ -28,6 +28,29 @@ from src.trading_runtime.arte_long_momentum_squeeze_progress_state import (
 from src.trading_runtime.arte_long_momentum_squeeze_v7_evidence import (
     project_v7_evidence_set, restore_v7_evidence_set,
 )
+from src.trading_runtime.arte_assignment_lifecycle_counters import (
+    COUNTERS, project_lifecycle_counters, restore_lifecycle_counters,
+)
+from src.trading_runtime.arte_assignment_entry_protection_scalars import (
+    FIELDS as ENTRY_PROTECTION_FIELDS, project_entry_protection_scalars,
+    restore_entry_protection_scalars,
+)
+from src.trading_runtime.arte_assignment_observation_clock import (
+    FIELDS as OBSERVATION_FIELDS, project_observation_clock,
+    restore_observation_clock,
+)
+from src.trading_runtime.arte_assignment_add_step_uses import (
+    project_add_step_uses, restore_add_step_uses,
+)
+from src.trading_runtime.arte_assignment_profit_targets import (
+    project_profit_targets, restore_profit_targets,
+)
+from src.trading_runtime.arte_assignment_position_entry_identity import (
+    project_position_entry_identity, restore_position_entry_identity,
+)
+from src.trading_runtime.arte_assignment_vwap_episode import (
+    project_vwap_episode, restore_vwap_episode,
+)
 
 
 _CAMPAIGN_KEYS = frozenset(_IDENTITY) | frozenset(_FLAGS) | {"campaign_policy"}
@@ -45,7 +68,12 @@ _SQUEEZE_BREAKOUT_KEYS = (frozenset({"momentum_requests", "midpoint_add_requests
                                     "session_targets", "frozen_gap"})
                           | frozenset(_CLOCK_FIELDS) | _BREAKOUT_LEVEL_KEYS
                           | frozenset(_MACD_KEYS))
-_TOP_LEVEL = _CAMPAIGN_KEYS | {"vwap_ladder_market", "squeeze_entry", "squeeze_breakout"}
+_TOP_LEVEL = (_CAMPAIGN_KEYS | set(COUNTERS) | set(ENTRY_PROTECTION_FIELDS) |
+              set(OBSERVATION_FIELDS) |
+              {"add_step_uses", "structural_profit_targets",
+               "position_entry_level_ids", "position_entry_tranches",
+               "vwap_ladder_market", "vwap_ladder_episode",
+               "squeeze_entry", "squeeze_breakout"})
 
 
 def _partition(state: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -67,10 +95,44 @@ def _partition(state: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]
 def project_modeled_assignment_state(
     state: Mapping[str, Any], *, run_id: str, assignment_id: str,
     revision: int, snapshot_id: str, session: str,
+    add_step_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Project only closed state slices; never silently omit unknown state."""
     campaign, squeeze = _partition(state)
     rows = {
+        "lifecycle_counters": project_lifecycle_counters(
+            {key: state[key] for key in COUNTERS if key in state},
+            assignment_id=assignment_id, revision=revision,
+            snapshot_id=snapshot_id, session=session),
+        "entry_protection_scalars": project_entry_protection_scalars(
+            {key: state[key] for key in ENTRY_PROTECTION_FIELDS if key in state},
+            assignment_id=assignment_id, revision=revision,
+            snapshot_id=snapshot_id, session=session),
+        "observation_clock": project_observation_clock(
+            {key: state[key] for key in OBSERVATION_FIELDS if key in state},
+            assignment_id=assignment_id, revision=revision,
+            snapshot_id=snapshot_id, session=session),
+        "add_step_uses": project_add_step_uses(
+            state.get("add_step_uses") if "add_step_uses" in state else None,
+            present="add_step_uses" in state, allowed_step_ids=add_step_ids,
+            assignment_id=assignment_id, revision=revision,
+            snapshot_id=snapshot_id, session=session),
+        "profit_targets": project_profit_targets(
+            state.get("structural_profit_targets")
+            if "structural_profit_targets" in state else None,
+            present="structural_profit_targets" in state,
+            assignment_id=assignment_id, revision=revision,
+            snapshot_id=snapshot_id, session=session),
+        "position_entry_identity": project_position_entry_identity(
+            {key: state[key] for key in ("position_entry_level_ids",
+                                          "position_entry_tranches") if key in state},
+            assignment_id=assignment_id, revision=revision,
+            snapshot_id=snapshot_id, session=session),
+        "vwap_episode": project_vwap_episode(
+            state.get("vwap_ladder_episode") if "vwap_ladder_episode" in state else None,
+            present="vwap_ladder_episode" in state,
+            assignment_id=assignment_id, revision=revision,
+            snapshot_id=snapshot_id, session=session),
         "campaign": project_campaign_control_state(
             campaign, assignment_id=assignment_id, revision=revision,
             snapshot_id=snapshot_id, session=session),
@@ -120,14 +182,29 @@ def project_modeled_assignment_state(
 def restore_modeled_assignment_state(
     rows: Mapping[str, Any], *, run_id: str, assignment_id: str,
     revision: int, snapshot_id: str, session: str,
+    add_step_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Cold restore with cross-family identity and exact reprojection checks."""
     if not isinstance(rows, Mapping) or set(rows) != {
-        "campaign", "grouped_resistance", "squeeze_purchase", "squeeze_clock",
+        "lifecycle_counters", "entry_protection_scalars", "observation_clock", "add_step_uses", "profit_targets", "position_entry_identity", "vwap_episode", "campaign", "grouped_resistance", "squeeze_purchase", "squeeze_clock",
         "squeeze_progress", "squeeze_v7_evidence",
     }:
         raise ValueError("assignment state families are incomplete or unmodeled")
     result = restore_campaign_control_state(rows["campaign"])
+    result.update(restore_lifecycle_counters(rows["lifecycle_counters"]))
+    result.update(restore_entry_protection_scalars(rows["entry_protection_scalars"]))
+    result.update(restore_observation_clock(rows["observation_clock"]))
+    add_present, add_uses = restore_add_step_uses(
+        rows["add_step_uses"], allowed_step_ids=add_step_ids)
+    if add_present:
+        result["add_step_uses"] = add_uses
+    targets_present, targets = restore_profit_targets(rows["profit_targets"])
+    if targets_present:
+        result["structural_profit_targets"] = targets
+    result.update(restore_position_entry_identity(rows["position_entry_identity"]))
+    vwap_present, vwap_episode = restore_vwap_episode(rows["vwap_episode"])
+    if vwap_present:
+        result["vwap_ladder_episode"] = vwap_episode
     result.update(restore_squeeze_purchase_state(rows["squeeze_purchase"]))
     clock = restore_squeeze_breakout_clock(rows["squeeze_clock"])
     progress = restore_squeeze_progress_state(rows["squeeze_progress"])
@@ -169,7 +246,8 @@ def restore_modeled_assignment_state(
             rows["grouped_resistance"])
     expected = project_modeled_assignment_state(
         result, run_id=run_id, assignment_id=assignment_id,
-        revision=revision, snapshot_id=snapshot_id, session=session)
+        revision=revision, snapshot_id=snapshot_id, session=session,
+        add_step_ids=add_step_ids)
     if expected != rows:
         raise ValueError("assignment state identity or readback differs")
     return result

@@ -43,3 +43,23 @@ def test_missing_plan_fails_if_existing_table_is_incompatible(monkeypatch):
         assert "incompatible" in str(exc)
     else:
         raise AssertionError("The plan must fail closed on existing incompatible tables")
+
+
+def test_v3_plan_includes_only_missing_normalized_squeeze_and_terminal_tables(monkeypatch):
+    contracts = plan.profile_contracts("fixed-v3")
+    v2 = fixed_backtest_v2_contracts()
+    assert len(contracts) == len(v2) + 3
+    assert {table.name for table in contracts[len(v2):]} == {
+        "trading_backtest_squeeze_episode_v1", "trading_commit_v3",
+        "trading_backtest_terminal_commit_v3"}
+    present = {table.name for table in v2}
+
+    class Client:
+        def execute(self, sql):
+            assert sql.startswith("SELECT name FROM system.tables")
+            return "\n".join(json.dumps({"name": name}) for name in sorted(present))
+
+    monkeypatch.setattr(plan, "storage_preflight", lambda *_args, **_kwargs: None)
+    missing, ddl = plan.plan_missing(Client(), profile="fixed-v3")
+    assert set(missing) == {table.name for table in contracts[len(v2):]}
+    assert len(ddl) == 3 and all("live_market_ssd" in sql for sql in ddl)

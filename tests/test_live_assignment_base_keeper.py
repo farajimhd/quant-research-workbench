@@ -42,6 +42,7 @@ def _row(sequence=1, prior=GENESIS):
 def _attest(keeper, row, owner, epoch, previous, rows):
     return keeper.attest(row, owner_id=owner, epoch=epoch, previous=previous,
                          base_rows=rows, state_storage=object(),
+                         state_admission=object(),
                          parameter_storage=object(), parameter_admission=object())
 
 
@@ -59,7 +60,8 @@ def test_keeper_head_cas_cold_chain_and_parameter_state_verification(monkeypatch
     assert first.sequence == 1 and first.content_hash == first_row["content_hash"]
     assert cold_read_attested_assignment(
         rows, keeper, assignment_id="as-1", state_storage=object(),
-        parameter_storage=object(), parameter_admission=object()) == _assignment()
+        state_admission=object(), parameter_storage=object(),
+        parameter_admission=object()) == _assignment()
     assert keeper.release("as-1", owner_id="owner-a", epoch=epoch)
     next_epoch = keeper.acquire("as-1", owner_id="owner-b")
     assert next_epoch == 2
@@ -103,13 +105,15 @@ def test_keeper_cold_reader_rejects_gap_duplicate_and_head_change(monkeypatch):
     with pytest.raises(ValueError, match="gap"):
         cold_read_attested_assignment(Rows([first, first]), keeper,
             assignment_id="as-1", state_storage=object(),
-            parameter_storage=object(), parameter_admission=object())
+            state_admission=object(), parameter_storage=object(),
+            parameter_admission=object())
     next_head = _attest(keeper, second, "owner", epoch, head, Rows([first, second]))
     assert next_head.sequence == 2
     with pytest.raises(ValueError, match="gap"):
         cold_read_attested_assignment(Rows([second]), keeper,
             assignment_id="as-1", state_storage=object(),
-            parameter_storage=object(), parameter_admission=object())
+            state_admission=object(), parameter_storage=object(),
+            parameter_admission=object())
 
 
 def test_keeper_requires_managed_discovered_session_and_safe_owner():
@@ -190,4 +194,5 @@ def test_cold_read_detects_concurrent_head_change(monkeypatch):
     with pytest.raises(RuntimeError, match="changed during cold read"):
         cold_read_attested_assignment(Rows([first]), keeper,
             assignment_id="as-1", state_storage=object(),
-            parameter_storage=object(), parameter_admission=object())
+            state_admission=object(), parameter_storage=object(),
+            parameter_admission=object())

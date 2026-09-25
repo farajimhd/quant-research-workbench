@@ -12,9 +12,11 @@ from typing import Any
 from uuid import UUID
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
-from src.backend.backtest_typed_projection import NIL_BATCH_ID, project_pending_backtest_prefix
+from src.backend.backtest_typed_projection import (
+    NIL_BATCH_ID, project_pending_backtest_prefix, project_pending_backtest_v3_prefix,
+)
 from src.trading_runtime.arte_journal_writer import (
-    ArteJournalWriter, TypedJournalBatch, _coalesce_unpublished,
+    ArteJournalWriter, TypedJournalBatch, V3SqueezeBatch, _coalesce_unpublished,
 )
 
 
@@ -36,11 +38,13 @@ class BacktestTypedJournalPublisher:
         fixed_market_parent_plan: object | None = None,
         fixed_market_execution_plan: object | None = None,
         expected_market_start: datetime | None = None,
+        expected_market_plan_token: str | None = None,
+        expected_query_sha256: str | None = None,
     ) -> None:
         attempt = str(UUID(attempt_id))
         prior = str(UUID(prior_batch_id))
         if (writer.run_id != journal.run_id or writer.run_mode != "backtest"
-                or writer.journal_profile != "backtest_v2"
+                or writer.journal_profile not in {"backtest_v2", "backtest_v3"}
                 or writer.coalesce_batches
                 or type(batch_size) is not int or not 1 <= batch_size <= writer.max_events_per_commit
                 or type(initial_sequence) is not int or initial_sequence < 0
@@ -49,6 +53,11 @@ class BacktestTypedJournalPublisher:
                 or journal.latest_sequence(journal.run_id) < initial_sequence
                 or run_month.day != 1 or not source_cursor):
             raise ValueError("Typed Backtest publisher lacks an exclusive bounded prefix")
+        if writer.journal_profile == "backtest_v3":
+            import re
+            if (re.fullmatch(r"[0-9a-f]{64}", expected_market_plan_token or "") is None
+                    or re.fullmatch(r"[0-9a-f]{64}", expected_query_sha256 or "") is None):
+                raise ValueError("V3 publisher needs pinned squeeze authority")
         self.journal = journal
         self.writer = writer
         self.attempt_id = attempt
@@ -58,6 +67,8 @@ class BacktestTypedJournalPublisher:
         self.fixed_market_parent_plan = fixed_market_parent_plan
         self.fixed_market_execution_plan = fixed_market_execution_plan
         self.expected_market_start = expected_market_start
+        self.expected_market_plan_token = expected_market_plan_token
+        self.expected_query_sha256 = expected_query_sha256
         self._sequence = initial_sequence
         self._batch_id = prior
         self._source_cursor = source_cursor
@@ -89,8 +100,24 @@ class BacktestTypedJournalPublisher:
         self._task = asyncio.create_task(self._drain())
         return self._task
 
-    def _prepare_batches(self, through_sequence: int | None = None) -> tuple[TypedJournalBatch, ...]:
+    def _prepare_batches(self, through_sequence: int | None = None) -> tuple[TypedJournalBatch | V3SqueezeBatch, ...]:
         """CPU-heavy bounded prefix projection runs outside the event loop."""
+        if self.writer.journal_profile == "backtest_v3":
+            from src.backend.backtest_squeeze_episode_v3 import coalesce_squeeze_units_v3
+            units = project_pending_backtest_v3_prefix(
+                self.journal, attempt_id=self.attempt_id,
+                run_month=self.run_month, prior_sequence=self._sequence,
+                prior_batch_id=self._batch_id, source_cursor=self._source_cursor,
+                expected_config=self.expected_config,
+                fixed_market_parent_plan=self.fixed_market_parent_plan,
+                fixed_market_execution_plan=self.fixed_market_execution_plan,
+                expected_market_start=self.expected_market_start,
+                expected_market_plan_token=self.expected_market_plan_token,
+                expected_query_sha256=self.expected_query_sha256,
+                through_sequence=through_sequence)
+            return tuple(coalesce_squeeze_units_v3(
+                units[offset:offset + self.batch_size])
+                for offset in range(0, len(units), self.batch_size))
         prefix = project_pending_backtest_prefix(
             self.journal, attempt_id=self.attempt_id,
             run_month=self.run_month, prior_sequence=self._sequence,
@@ -109,8 +136,11 @@ class BacktestTypedJournalPublisher:
             through_sequence = (self._checkpoint_waiters[0][0]
                                 if self._checkpoint_waiters else None)
             batches = await asyncio.to_thread(self._prepare_batches, through_sequence)
-            for batch in batches:
-                receipt = self.writer.submit(batch)  # Bounded, nonblocking admission.
+            for unit in batches:
+                batch = unit.base if isinstance(unit, V3SqueezeBatch) else unit
+                receipt = (self.writer.submit_squeeze_v3(unit)
+                           if isinstance(unit, V3SqueezeBatch)
+                           else self.writer.submit(batch))
                 committed = await asyncio.wrap_future(receipt)
                 if str(UUID(str(committed))) != batch.batch_id:
                     raise RuntimeError("Typed Backtest writer changed an exclusive batch ID")

@@ -52,6 +52,19 @@ def test_installer_fails_before_ddl_when_policy_is_not_ssd(monkeypatch):
         install.install_missing(client, apply=True)
 
 
+def test_v3_install_profile_is_read_only_by_default(monkeypatch):
+    client = Client()
+    contracts = install.profile_contracts("fixed-v3")
+    missing = tuple(table.name for table in contracts[-3:])
+    monkeypatch.setattr(install, "plan_missing",
+                        lambda _, *, profile: (missing, ()))
+    monkeypatch.setattr(install, "storage_preflight",
+                        lambda *_args, **_kwargs: None)
+    assert install.install_missing(client, apply=False, profile="fixed-v3") == (
+        len(contracts) - 3, 0)
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+
+
 def test_cli_defaults_to_read_only_plan_on_workstation(monkeypatch, capsys):
     client = Client()
     monkeypatch.setattr(install.platform, "node", lambda: "DESKTOP-SAAI85T")

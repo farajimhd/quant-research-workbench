@@ -21,6 +21,26 @@ from src.trading_runtime.arte_journal_schema import TableContract
 from src.trading_runtime.arte_assignment_state_composite import (
     project_modeled_assignment_state, restore_modeled_assignment_state,
 )
+from src.trading_runtime.arte_assignment_lifecycle_counters import TABLE as COUNTERS_TABLE
+from src.trading_runtime.arte_assignment_entry_protection_scalars import (
+    TABLE as ENTRY_PROTECTION_TABLE,
+)
+from src.trading_runtime.arte_assignment_observation_clock import (
+    TABLE as OBSERVATION_TABLE, normalize_observation_state,
+)
+from src.trading_runtime.arte_assignment_add_step_uses import (
+    MANIFEST_TABLE as ADD_STEP_MANIFEST_TABLE,
+    STEP_TABLE as ADD_STEP_TABLE, add_step_catalog,
+)
+from src.trading_runtime.arte_assignment_profit_targets import (
+    MANIFEST_TABLE as PROFIT_TARGET_MANIFEST_TABLE,
+    PRICE_TABLE as PROFIT_TARGET_PRICE_TABLE,
+)
+from src.trading_runtime.arte_assignment_position_entry_identity import (
+    MANIFEST_TABLE as POSITION_ENTRY_MANIFEST_TABLE,
+    LEVEL_TABLE as POSITION_ENTRY_LEVEL_TABLE,
+)
+from src.trading_runtime.arte_assignment_vwap_episode import TABLE as VWAP_EPISODE_TABLE
 from src.trading_runtime.arte_campaign_control_projection import TABLES as CAMPAIGN
 from src.trading_runtime.arte_grouped_resistance_projection import TABLES as GROUPED
 from src.trading_runtime.arte_long_momentum_squeeze_purchase_state import (
@@ -45,6 +65,16 @@ STATE_COMMIT = TableContract(
     "toYYYYMM(session)", "assignment_id, revision, snapshot_id",
 )
 _SPECS = (
+    (COUNTERS_TABLE, "lifecycle_counters", None),
+    (ENTRY_PROTECTION_TABLE, "entry_protection_scalars", None),
+    (OBSERVATION_TABLE, "observation_clock", None),
+    (ADD_STEP_MANIFEST_TABLE, "add_step_uses", "manifest"),
+    (ADD_STEP_TABLE, "add_step_uses", "steps"),
+    (PROFIT_TARGET_MANIFEST_TABLE, "profit_targets", "manifest"),
+    (PROFIT_TARGET_PRICE_TABLE, "profit_targets", "prices"),
+    (POSITION_ENTRY_MANIFEST_TABLE, "position_entry_identity", "manifest"),
+    (POSITION_ENTRY_LEVEL_TABLE, "position_entry_identity", "levels"),
+    (VWAP_EPISODE_TABLE, "vwap_episode", None),
     (CAMPAIGN[0], "campaign", "control"),
     (CAMPAIGN[1], "campaign", "policy"),
     *((table, "grouped_resistance", key) for table, key in zip(
@@ -68,6 +98,21 @@ if len({table.name for table in STATE_TABLES}) != len(STATE_TABLES):
 
 class StateStorage(Protocol):
     def read(self, table: str, identity: Mapping[str, Any]) -> list[dict[str, Any]]: ...
+
+
+class StatePublicationStorage(StateStorage, Protocol):
+    def insert(self, table: str, rows: list[dict[str, Any]]) -> None: ...
+
+
+class StateSnapshotAdmission(Protocol):
+    def begin_once(self, identity: Mapping[str, Any]) -> bool: ...
+    def assert_current(self, identity: Mapping[str, Any]) -> None: ...
+    def mark_committed(self, identity: Mapping[str, Any], content_hash: str) -> None: ...
+    def read_claim(self, identity: Mapping[str, Any]) -> Any: ...
+
+
+class UncertainStatePublication(RuntimeError):
+    """A persistent claim was consumed; no automatic child retry is safe."""
 
 
 def _hash(value: Any) -> str:
@@ -126,10 +171,12 @@ def _commit(identity: Mapping[str, Any], rows: Mapping[str, list[dict[str, Any]]
 
 def project_state_snapshot(state: Mapping[str, Any], *, run_id: str,
                            assignment_id: str, revision: int, snapshot_id: str,
-                           session: str) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+                           session: str, add_step_ids: tuple[str, ...] = (),
+                           ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     identity = dict(assignment_id=assignment_id, revision=revision,
                     snapshot_id=snapshot_id, session=session, run_id=run_id)
-    projected = project_modeled_assignment_state(state, **identity)
+    projected = project_modeled_assignment_state(state, **identity,
+                                                 add_step_ids=add_step_ids)
     rows = _flatten(projected)
     return rows, _commit(identity, rows,
                          grouped_present=projected["grouped_resistance"] is not None)
@@ -137,7 +184,8 @@ def project_state_snapshot(state: Mapping[str, Any], *, run_id: str,
 
 def recover_state_snapshot(storage: StateStorage, *, run_id: str,
                            assignment_id: str, revision: int, snapshot_id: str,
-                           session: str, expected_commit_hash: str) -> dict[str, Any]:
+                           session: str, expected_commit_hash: str,
+                           add_step_ids: tuple[str, ...] = ()) -> dict[str, Any]:
     identity = dict(assignment_id=assignment_id, revision=revision,
                     snapshot_id=snapshot_id, session=session, run_id=run_id)
     commits = storage.read(STATE_COMMIT.name, identity)
@@ -152,6 +200,21 @@ def recover_state_snapshot(storage: StateStorage, *, run_id: str,
         raise ValueError("assignment state child-family fence differs")
     campaign = {key: rows[table.name] for table, group, key in _SPECS
                 if group == "campaign"}
+    add_steps = {"steps": rows[ADD_STEP_TABLE.name]}
+    add_manifest = rows[ADD_STEP_MANIFEST_TABLE.name]
+    if len(add_manifest) != 1:
+        raise ValueError("assignment add-step manifest row count differs")
+    add_steps["manifest"] = add_manifest[0]
+    profit_targets = {"prices": rows[PROFIT_TARGET_PRICE_TABLE.name]}
+    target_manifest = rows[PROFIT_TARGET_MANIFEST_TABLE.name]
+    if len(target_manifest) != 1:
+        raise ValueError("assignment profit-target manifest row count differs")
+    profit_targets["manifest"] = target_manifest[0]
+    position_entry = {"levels": rows[POSITION_ENTRY_LEVEL_TABLE.name]}
+    entry_manifest = rows[POSITION_ENTRY_MANIFEST_TABLE.name]
+    if len(entry_manifest) != 1:
+        raise ValueError("assignment position-entry manifest row count differs")
+    position_entry["manifest"] = entry_manifest[0]
     grouped = ({key: rows[table.name] for table, group, key in _SPECS
                 if group == "grouped_resistance"} if commit["grouped_present"] else None)
     purchase = {key: rows[table.name] for table, group, key in _SPECS
@@ -174,20 +237,101 @@ def recover_state_snapshot(storage: StateStorage, *, run_id: str,
                           "rows": [row for row in rows[V7_TABLES[family].name]
                                    if row["source_path"] == path]}
     projected = dict(campaign=campaign, grouped_resistance=grouped,
+                     lifecycle_counters=(rows[COUNTERS_TABLE.name][0]
+                                         if len(rows[COUNTERS_TABLE.name]) == 1
+                                         else rows[COUNTERS_TABLE.name]),
+                     entry_protection_scalars=(rows[ENTRY_PROTECTION_TABLE.name][0]
+                                               if len(rows[ENTRY_PROTECTION_TABLE.name]) == 1
+                                               else rows[ENTRY_PROTECTION_TABLE.name]),
+                     observation_clock=(rows[OBSERVATION_TABLE.name][0]
+                                        if len(rows[OBSERVATION_TABLE.name]) == 1
+                                        else rows[OBSERVATION_TABLE.name]),
+                     add_step_uses=add_steps,
+                     profit_targets=profit_targets,
+                     position_entry_identity=position_entry,
+                     vwap_episode=(rows[VWAP_EPISODE_TABLE.name][0]
+                                   if len(rows[VWAP_EPISODE_TABLE.name]) == 1
+                                   else rows[VWAP_EPISODE_TABLE.name]),
                      squeeze_purchase={**purchase, "ledger": purchase["ledger"][0]
                                        if len(purchase["ledger"]) == 1 else purchase["ledger"]},
                      squeeze_clock=clock[0], squeeze_progress=progress,
                      squeeze_v7_evidence=evidence)
-    state = restore_modeled_assignment_state(projected, **identity)
-    expected_rows, expected_commit = project_state_snapshot(state, **identity)
+    state = restore_modeled_assignment_state(projected, **identity,
+                                             add_step_ids=add_step_ids)
+    expected_rows, expected_commit = project_state_snapshot(
+        state, **identity, add_step_ids=add_step_ids)
     if expected_rows != rows or expected_commit != commit:
         raise ValueError("assignment state exact reprojection differs")
     return state
 
 
+def load_attested_state_snapshot(storage: StateStorage,
+                                 admission: StateSnapshotAdmission, *,
+                                 run_id: str, assignment_id: str, revision: int,
+                                 snapshot_id: str, session: str,
+                                 expected_commit_hash: str,
+                                 add_step_ids: tuple[str, ...] = ()) -> dict[str, Any]:
+    """Keeper committed proof plus exact CH child/commit readback is authority."""
+    identity = dict(run_id=run_id, assignment_id=assignment_id,
+                    revision=revision, snapshot_id=snapshot_id, session=session)
+    claim = admission.read_claim(identity)
+    if (claim is None or claim.state != "committed"
+            or claim.content_hash != expected_commit_hash):
+        raise ValueError("assignment state lacks matching committed Keeper claim")
+    result = recover_state_snapshot(storage, **identity,
+                                    expected_commit_hash=expected_commit_hash,
+                                    add_step_ids=add_step_ids)
+    if admission.read_claim(identity) != claim:
+        raise RuntimeError("assignment state Keeper claim changed during cold read")
+    return result
+
+
+def publish_state_snapshot(storage: StatePublicationStorage,
+                           admission: StateSnapshotAdmission,
+                           state: Mapping[str, Any], *, run_id: str,
+                           assignment_id: str, revision: int,
+                           snapshot_id: str, session: str,
+                           add_step_ids: tuple[str, ...] = ()) -> dict[str, Any]:
+    """Single-use, control-plane-only child rows then late commit then claim CAS."""
+    identity = dict(run_id=run_id, assignment_id=assignment_id,
+                    revision=revision, snapshot_id=snapshot_id, session=session)
+    rows, commit = project_state_snapshot(state, **identity,
+                                          add_step_ids=add_step_ids)
+    if not admission.begin_once(identity):
+        raise UncertainStatePublication("state snapshot claim already exists")
+    try:
+        for table in STATE_TABLES:
+            if storage.read(table.name, identity):
+                raise ValueError("state snapshot has orphan or duplicate rows")
+        for table, _, _ in _SPECS:
+            family = rows[table.name]
+            if not family:
+                continue
+            admission.assert_current(identity)
+            storage.insert(table.name, family)
+            if _order(storage.read(table.name, identity), table) != family:
+                raise ValueError(f"state snapshot {table.name} readback differs")
+        admission.assert_current(identity)
+        storage.insert(STATE_COMMIT.name, [commit])
+        if storage.read(STATE_COMMIT.name, identity) != [commit]:
+            raise ValueError("state snapshot late commit readback differs")
+        if recover_state_snapshot(storage, **identity,
+                                  expected_commit_hash=commit["content_hash"],
+                                  add_step_ids=add_step_ids) != normalize_observation_state(state):
+            raise ValueError("state snapshot cold readback differs")
+        admission.mark_committed(identity, commit["content_hash"])
+        if admission.read_claim(identity).content_hash != commit["content_hash"]:
+            raise RuntimeError("state snapshot Keeper mark readback differs")
+        return commit
+    except BaseException as exc:
+        raise UncertainStatePublication(
+            "state snapshot publication is partial or ambiguous; do not retry") from exc
+
+
 def recover_attested_assignment(
     *, base_rows: list[Mapping[str, Any]], state_storage: StateStorage,
     parameter_storage: ParameterStorage, parameter_admission: SnapshotAdmission,
+    state_admission: StateSnapshotAdmission,
     assignment_id: str, revision_sequence: int, expected_base_hash: str,
     previous_revision_hash: str,
 ) -> StrategyAssignment:
@@ -215,6 +359,8 @@ def recover_attested_assignment(
     )
     if parameters is None:
         raise ValueError("assignment parameter snapshot missing")
+    allowed_add_steps = add_step_catalog(
+        parameters, strategy_revision=row["strategy_revision"])
     parameter_commits = parameter_storage.read(PARAMETER_COMMIT_TABLE.name, dict(
         assignment_id=assignment_id, strategy_id=row["strategy_id"],
         strategy_revision=row["strategy_revision"],
@@ -223,12 +369,14 @@ def recover_attested_assignment(
     if (len(parameter_commits) != 1 or
             parameter_commits[0].get("content_hash") != row["parameter_content_hash"]):
         raise ValueError("assignment base parameter hash differs from attested commit")
-    state = recover_state_snapshot(
-        state_storage, run_id=row["state_run_id"], assignment_id=assignment_id,
+    state = load_attested_state_snapshot(
+        state_storage, state_admission, run_id=row["state_run_id"],
+        assignment_id=assignment_id,
         revision=row["state_snapshot_revision"],
         snapshot_id=row["state_snapshot_id"],
         session=row["state_session"],
         expected_commit_hash=row["state_content_hash"],
+        add_step_ids=allowed_add_steps,
     )
     return StrategyAssignment(
         assignment_id=assignment_id, strategy_id=row["strategy_id"],

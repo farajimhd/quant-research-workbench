@@ -126,7 +126,8 @@ class KeeperAssignmentHead:
 
     def attest(self, row: Mapping[str, Any], *, owner_id: str, epoch: int,
                previous: AssignmentHead | None, base_rows: BaseRowReader,
-               state_storage: Any, parameter_storage: Any,
+               state_storage: Any, state_admission: Any,
+               parameter_storage: Any,
                parameter_admission: Any) -> AssignmentHead:
         """CAS only after exact CH row and both attested child snapshots read back."""
         assignment_id, sequence = row["assignment_id"], row["revision_sequence"]
@@ -164,6 +165,7 @@ class KeeperAssignmentHead:
             raise ValueError("assignment base prior differs from Keeper head")
         recover_attested_assignment(
             base_rows=[by_sequence[sequence]], state_storage=state_storage,
+            state_admission=state_admission,
             parameter_storage=parameter_storage,
             parameter_admission=parameter_admission, assignment_id=assignment_id,
             revision_sequence=sequence, expected_base_hash=row["content_hash"],
@@ -210,7 +212,7 @@ class KeeperAssignmentHead:
 def cold_read_attested_assignment(
     rows: BaseRowReader, keeper: KeeperAssignmentHead, *,
     assignment_id: str, state_storage: Any, parameter_storage: Any,
-    parameter_admission: Any,
+    parameter_admission: Any, state_admission: Any,
 ) -> StrategyAssignment:
     """Verify the entire base chain and stable head before returning latest state."""
     first = keeper.read_head(assignment_id)
@@ -236,6 +238,7 @@ def cold_read_attested_assignment(
         raise ValueError("assignment base chain differs from Keeper head")
     recovered = recover_attested_assignment(
         base_rows=[by_sequence[first.sequence]], state_storage=state_storage,
+        state_admission=state_admission,
         parameter_storage=parameter_storage, parameter_admission=parameter_admission,
         assignment_id=assignment_id, revision_sequence=first.sequence,
         expected_base_hash=first.content_hash,

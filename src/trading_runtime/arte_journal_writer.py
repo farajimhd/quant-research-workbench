@@ -1336,16 +1336,9 @@ class _V2WriterAuthority:
 
 def _v3_preflight(client: Any) -> None:
     """Exact opt-in layout and grants; never included in active Live startup."""
-    contracts = versioned_journal_v2_contracts() + (
-                          SQUEEZE_EPISODE, SQUEEZE_COMMIT_V3)
-    storage_preflight(client, tables=contracts)
-    journal_permission_preflight(
-        client,
-        journal_tables=frozenset(t.name for t in contracts if t.name not in {
-            "trading_strategy_signal_v1", "trading_commit_v1", "trading_commit_v2"}),
-        read_only_tables=frozenset({"trading_strategy_signal_v1", "trading_commit_v1",
-                                   "trading_commit_v2"}),
-    )
+    from src.backend.backtest_fixed_v3_preflight import running_v3_preflight
+
+    running_v3_preflight(client)
 
 
 def _optional_v3_commit_exists(client: Any) -> bool:

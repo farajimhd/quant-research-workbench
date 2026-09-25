@@ -6,6 +6,7 @@ No live route imports this module and no connection is created here.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Mapping, Protocol
 
 from src.backend.live_assignment_base_keeper import (
@@ -14,6 +15,7 @@ from src.backend.live_assignment_base_keeper import (
 )
 from src.backend.live_assignment_base_revision import project_base_revision
 from src.backend.live_assignment_state_snapshot import recover_attested_assignment
+from src.trading_runtime.arte_assignment_observation_clock import normalize_observation_state
 from src.trading_runtime.strategy_engine import StrategyAssignment
 
 
@@ -28,7 +30,8 @@ class UncertainBasePublication(RuntimeError):
 def publish_base_revision(
     storage: BaseStorage, keeper: KeeperAssignmentHead,
     assignment: StrategyAssignment, *, owner_id: str,
-    state_storage: Any, parameter_storage: Any, parameter_admission: Any,
+    state_storage: Any, state_admission: Any,
+    parameter_storage: Any, parameter_admission: Any,
     parameter_snapshot_id: str, parameter_session: str,
     parameter_content_hash: str, state_snapshot_id: str,
     state_snapshot_revision: int, state_session: str, state_run_id: str,
@@ -51,7 +54,8 @@ def publish_base_revision(
             prior = keeper.read_head(assignment_id)
             cold_read_attested_assignment(
                 storage, keeper, assignment_id=assignment_id,
-                state_storage=state_storage, parameter_storage=parameter_storage,
+                state_storage=state_storage, state_admission=state_admission,
+                parameter_storage=parameter_storage,
                 parameter_admission=parameter_admission)
         sequence = 1 if prior is None else prior.sequence + 1
         previous_hash = "0" * 64 if prior is None else prior.content_hash
@@ -70,13 +74,14 @@ def publish_base_revision(
         # fence before any base row is inserted. Reused snapshots are allowed.
         recovered = recover_attested_assignment(
             base_rows=[row], state_storage=state_storage,
+            state_admission=state_admission,
             parameter_storage=parameter_storage,
             parameter_admission=parameter_admission,
             assignment_id=assignment_id, revision_sequence=sequence,
             expected_base_hash=row["content_hash"],
             previous_revision_hash=previous_hash,
         )
-        if recovered != assignment:
+        if recovered != replace(assignment, state=normalize_observation_state(assignment.state)):
             raise ValueError("assignment differs from its attested typed children")
         if not keeper.is_current(assignment_id, owner_id=owner_id, epoch=epoch):
             raise RuntimeError("assignment base Keeper owner fence lost")
@@ -91,6 +96,7 @@ def publish_base_revision(
             return keeper.attest(
                 row, owner_id=owner_id, epoch=epoch, previous=prior,
                 base_rows=storage, state_storage=state_storage,
+                state_admission=state_admission,
                 parameter_storage=parameter_storage,
                 parameter_admission=parameter_admission,
             )

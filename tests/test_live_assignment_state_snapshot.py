@@ -4,13 +4,15 @@ import pytest
 
 from src.backend.live_assignment_state_snapshot import (
     STATE_COMMIT, STATE_TABLES, project_state_snapshot, recover_state_snapshot,
-    recover_attested_assignment,
+    recover_attested_assignment, load_attested_state_snapshot,
 )
+from src.backend.live_assignment_state_admission import StateClaim
 from src.backend.live_assignment_base_revision import project_base_revision
 from src.trading_runtime.arte_long_momentum_parameter_journal import PARAMETER_TABLES
 from tests.test_live_assignment_base_revision import (
     _assignment, HASH_A, GENESIS, CHILD_REFS,
 )
+from src.trading_runtime.strategy_engine import resolve_long_momentum_parameters
 from src.backend.live_assignment_base_preflight import (
     staged_state_operator_ddl, staged_state_grants, staged_state_storage_preflight,
     ASSIGNMENT_CHILD_TABLES, staged_assignment_child_operator_ddl,
@@ -28,6 +30,14 @@ class FakeStorage:
     def read(self, table, identity):
         assert identity == self.identity
         return deepcopy(self.rows[table])
+
+
+class FakeCommittedStateAdmission:
+    def __init__(self, digest):
+        self.claim = StateClaim("owner", 1, "committed", digest)
+
+    def read_claim(self, identity):
+        return self.claim
 
 
 def _project():
@@ -162,7 +172,7 @@ def test_base_state_parameter_attested_join_requires_matching_parameter_commit(m
                                  state_content_hash=state_commit["content_hash"],
                                  previous_revision_hash=GENESIS)
     monkeypatch.setattr("src.backend.live_assignment_state_snapshot.load_attested_parameters",
-                        lambda *args, **kwargs: {"closed": True})
+                        lambda *args, **kwargs: resolve_long_momentum_parameters(revision=47))
 
     class ParameterStorage:
         def __init__(self, digest):
@@ -174,6 +184,7 @@ def test_base_state_parameter_attested_join_requires_matching_parameter_commit(m
 
     kwargs = dict(base_rows=[base], state_storage=FakeStorage(rows, state_commit,
                                                               state_identity),
+                  state_admission=FakeCommittedStateAdmission(state_commit["content_hash"]),
                   parameter_admission=object(),
                   assignment_id=KEY["assignment_id"], revision_sequence=1,
                   expected_base_hash=base["content_hash"],
@@ -193,11 +204,16 @@ def test_base_state_parameter_attested_join_requires_matching_parameter_commit(m
     kwargs["expected_base_hash"] = base["content_hash"]
     with pytest.raises(ValueError, match="parameter hash"):
         recover_attested_assignment(parameter_storage=ParameterStorage("b" * 64), **kwargs)
+    kwargs["state_admission"].claim = StateClaim("owner", 1, "started", None)
+    with pytest.raises(ValueError, match="committed Keeper claim"):
+        recover_attested_assignment(parameter_storage=ParameterStorage(HASH_A), **kwargs)
+    kwargs["state_admission"].claim = StateClaim(
+        "owner", 1, "committed", state_commit["content_hash"])
     recovered = recover_attested_assignment(
         parameter_storage=ParameterStorage(HASH_A), **kwargs)
     assert recovered.assignment_id == KEY["assignment_id"]
     assert recovered.state == _state()
-    assert recovered.parameters == {"closed": True}
+    assert recovered.parameters == resolve_long_momentum_parameters(revision=47)
 
 
 def test_two_state_revisions_reuse_one_immutable_parameter_snapshot(monkeypatch):
@@ -207,7 +223,7 @@ def test_two_state_revisions_reuse_one_immutable_parameter_snapshot(monkeypatch)
     seen = []
     def attested_parameters(_storage, _admission, **identity):
         seen.append(identity["snapshot_id"])
-        return {"closed": True}
+        return resolve_long_momentum_parameters(revision=47)
     monkeypatch.setattr("src.backend.live_assignment_state_snapshot.load_attested_parameters",
                         attested_parameters)
 
@@ -232,6 +248,7 @@ def test_two_state_revisions_reuse_one_immutable_parameter_snapshot(monkeypatch)
             previous_revision_hash=prior)
         recovered = recover_attested_assignment(
             base_rows=[base], state_storage=FakeStorage(rows, state_commit, identity),
+            state_admission=FakeCommittedStateAdmission(state_commit["content_hash"]),
             parameter_storage=Parameters(), parameter_admission=object(),
             assignment_id=KEY["assignment_id"], revision_sequence=revision,
             expected_base_hash=base["content_hash"],

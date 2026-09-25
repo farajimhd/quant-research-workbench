@@ -18,9 +18,9 @@ class _GuardedClient:
         self._owner = owner
         self._client = client
 
-    def execute(self, sql: str) -> Any:
+    def execute(self, sql: str, **kwargs: Any) -> Any:
         self._owner.assert_current(self._owner.run_id, self._owner.account_ids)
-        result = self._client.execute(sql)
+        result = self._client.execute(sql, **kwargs)
         self._owner.assert_current(self._owner.run_id, self._owner.account_ids)
         return result
 
