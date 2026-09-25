@@ -21,6 +21,7 @@ from uuid import UUID, uuid4
 _ROOT = "/trading/ownership/v1"
 _MAX_RETRIES = 8
 _SYNC_RECEIPTS = f"{_ROOT}/portfolio_sync_receipt"
+_BACKTEST_TERMINAL_RECEIPTS = f"{_ROOT}/backtest_terminal_v2"
 
 
 def _sync_resource_id(run_id: str, account_id: str) -> str:
@@ -115,8 +116,79 @@ class KeeperOwnershipCoordinator:
         self._lock = Lock()
         self._monotonic_deadlines: dict[tuple[str, str, int], float] = {}
         self._require_connected()
-        for path in (f"{_ROOT}/portfolio", f"{_ROOT}/campaign", _SYNC_RECEIPTS):
+        for path in (f"{_ROOT}/portfolio", f"{_ROOT}/campaign", _SYNC_RECEIPTS,
+                     _BACKTEST_TERMINAL_RECEIPTS):
             self._client.ensure_path(path)
+
+    def attest_backtest_terminal_v2(
+        self, leases: tuple[tuple[str, dict[str, Any]], ...], *, run_id: str,
+        batch_id: str, seal_hash: str, accounts_hash: str,
+    ) -> bytes:
+        """CAS one persistent terminal proof against every held account epoch."""
+        UUID(batch_id)
+        if (not leases or len({account for account, _ in leases}) != len(leases)
+                or any(re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                       for digest in (seal_hash, accounts_hash))):
+            raise ValueError("Backtest terminal proof identity is invalid")
+        ordered = sorted(leases)
+        lines = ["2", _identity(run_id, "run"), batch_id, seal_hash,
+                 accounts_hash, str(len(ordered))]
+        for account_id, lease in ordered:
+            if (lease.get("resource_id") != _sync_resource_id(run_id, account_id)
+                    or type(lease.get("epoch")) is not int):
+                raise ValueError("Backtest terminal claim differs from pinned account")
+            lines.extend((_identity(account_id, "account"),
+                          _identity(lease["owner_id"], "owner"), str(lease["epoch"])))
+        payload = "\n".join(lines).encode("utf-8")
+        path = _path("backtest_terminal_v2", run_id, batch_id)
+        with self._lock:
+            self._require_connected()
+            txn = self._client.transaction()
+            for account_id, lease in ordered:
+                if not self.portfolio_snapshot_claim_is_current(lease):
+                    raise KeeperUnavailable("Backtest terminal claim expired before CAS")
+                base = _path("portfolio", lease["resource_id"])
+                holder, holder_stat = self._client.get(f"{base}/holder")
+                counter, counter_stat = self._client.get(f"{base}/epoch")
+                if (_decode(holder) != (lease["owner_id"], lease["epoch"], "portfolio")
+                        or int(counter) != lease["epoch"]
+                        or holder_stat.ephemeralOwner != self._client.client_id[0]):
+                    raise KeeperUnavailable("Backtest terminal owner epoch changed")
+                txn.check(f"{base}/holder", version=holder_stat.version)
+                txn.check(f"{base}/epoch", version=counter_stat.version)
+            txn.create(path, payload, ephemeral=False)
+            if not _committed(txn.commit()):
+                if self.load_backtest_terminal_v2_attestation(run_id, batch_id) != payload:
+                    raise KeeperUnavailable("Backtest terminal CAS lost or conflicts")
+            self._require_connected()
+        if self.load_backtest_terminal_v2_attestation(run_id, batch_id) != payload:
+            raise KeeperUnavailable("Backtest terminal proof did not become durable")
+        return payload
+
+    def load_backtest_terminal_v2_attestation(self, run_id: str, batch_id: str) -> bytes | None:
+        self._require_connected()
+        try:
+            value, _ = self._client.get(_path("backtest_terminal_v2", run_id, batch_id))
+        except Exception as exc:
+            if type(exc).__name__ == "NoNodeError":
+                return None
+            raise KeeperUnavailable("Could not read Backtest terminal proof") from exc
+        self._require_connected()
+        try:
+            lines = value.decode("utf-8").split("\n")
+            count = int(lines[5])
+            if (len(lines) != 6 + 3 * count or lines[0] != "2"
+                    or lines[1:3] != [run_id, batch_id] or count < 1
+                    or any(re.fullmatch(r"[0-9a-f]{64}", item) is None
+                           for item in lines[3:5])
+                    or lines[6::3] != sorted(set(lines[6::3]))):
+                raise ValueError("proof content differs")
+            for epoch in lines[8::3]:
+                if int(epoch) < 1:
+                    raise ValueError("proof epoch invalid")
+        except (UnicodeError, ValueError, IndexError) as exc:
+            raise KeeperUnavailable("Backtest terminal proof is corrupt") from exc
+        return value
 
     def _require_connected(self) -> None:
         client_state = getattr(self._client, "client_state", None)

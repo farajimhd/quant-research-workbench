@@ -2267,7 +2267,7 @@ class ReplayRunController:
             if status != 'running':
                 raise RuntimeError(
                     'Terminal fixed Backtest requires lifecycle-last typed account captures')
-            snapshot = self.stream_snapshot()
+            snapshot = {} if nonblocking_fixed else self.stream_snapshot()
             self._checkpoint_phase = 'checkpoint_capture'
             self._checkpoint_started_at = datetime.now(UTC)
             self._checkpoint_work_snapshot = snapshot
@@ -2406,11 +2406,11 @@ class ReplayRunController:
         the active finish path never calls this method.
         """
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
-        from src.backend.backtest_terminal_v2_accounts import (
-            load_terminal_v2_portfolio_accounts,
-        )
         from src.backend.backtest_terminal_v2_publication import (
             publish_terminal_v2_suffix,
+        )
+        from src.backend.backtest_terminal_v2_keeper import (
+            FixedTerminalKeeperAuthority, load_attested_terminal_v2_accounts,
         )
         from src.trading_runtime.arte_journal_writer import load_committed_prefix
 
@@ -2421,7 +2421,7 @@ class ReplayRunController:
                 or self._journal_publisher is None
                 or self.current_time is None
                 or not self._source_cursor
-                or authority is None
+                or not isinstance(authority, FixedTerminalKeeperAuthority)
                 or not callable(getattr(authority, "assert_current", None))
                 or getattr(authority, "client", None) is None):
             raise RuntimeError("Terminal V2 needs a fixed run and injected Keeper-fenced authority")
@@ -2453,10 +2453,15 @@ class ReplayRunController:
             seal = publish_terminal_v2_suffix(
                 client, prefix, **handoff.publication_fields(),
                 portfolio_captures=captures)
-            recovered = load_terminal_v2_portfolio_accounts(
-                client, run_id=self.run_id)
+            from src.backend.backtest_terminal_v2_accounts import (
+                load_terminal_v2_portfolio_accounts,
+            )
+            recovered = load_terminal_v2_portfolio_accounts(client, run_id=self.run_id)
+            authority.attest(seal, recovered)
+            attested = load_attested_terminal_v2_accounts(
+                client, authority.keeper, run_id=self.run_id)
             if (not authority.assert_current(self.run_id, account_ids)
-                    or set(recovered) != set(account_ids)
+                    or attested != recovered
                     or seal != handoff.commit):
                 raise RuntimeError("Terminal V2 cold recovery or Keeper fence changed")
             return {"seal": seal, "accounts": recovered}

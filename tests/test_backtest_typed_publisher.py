@@ -310,7 +310,7 @@ def test_fixed_controller_queues_checkpoint_without_waiting_for_writer():
     controller._frame_cursor = {}
     controller._checkpoint_projection_cache = None
     controller._checkpoint_io_task = None
-    controller.stream_snapshot = lambda: {}
+    controller.stream_snapshot = lambda: pytest.fail("nonblocking checkpoint serialized UI snapshot")
     controller._flush_passive_market_events = lambda: None
     controller._record_stage_time = lambda *_: None
     controller._restart_checkpoint_interval_events = lambda: None

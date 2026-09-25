@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import concurrent.futures
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -8,9 +9,52 @@ from unittest.mock import AsyncMock, Mock, patch
 from src.backend.live_strategy_runtime_service import (
     LiveStrategyRuntimeSupervisor, RetryableSignalWorkError,
 )
+from src.backend.live_signal_work_completion import (
+    prepare_completion_proof, project_completion,
+)
+from tests.test_live_signal_work_completion import Storage, _proof_inputs
 
 
 class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_typed_work_waits_for_completion_and_cold_replays_exact_row(self) -> None:
+        delivery, intents, acks = _proof_inputs()
+        proof = prepare_completion_proof(intents, acks, ordinal=0)
+
+        class FakePublisher:
+            def __init__(self):
+                self.receipt = concurrent.futures.Future()
+
+            def submit(self, packet, *, processed_at):
+                self.packet = packet
+                self.processed_at = processed_at
+                return self.receipt
+
+        publisher = FakePublisher()
+        supervisor = LiveStrategyRuntimeSupervisor(typed_signal_completion=publisher)
+        supervisor._process = AsyncMock(return_value=None)
+        receipt = supervisor.submit_signal_work(
+            delivery, intent_content_hash=proof.intent_content_hash,
+            completion_proof=proof)
+        await supervisor._process_signal_work(supervisor._queue.get_nowait(), None, {})
+        self.assertFalse(receipt.done())
+        self.assertEqual(supervisor._signal_work[delivery["delivery_id"]].status,
+                         "completion_pending")
+        self.assertEqual(supervisor.snapshot()["processed"], 0)
+        restored_intents, restored_acks = proof.materialize()
+        projected = project_completion(
+            restored_intents, restored_acks, ordinal=0,
+            processed_at=publisher.processed_at)
+        publisher.receipt.set_result(projected)
+        self.assertEqual(receipt.result(), projected.row["content_hash"])
+        self.assertEqual(supervisor.snapshot()["processed"], 1)
+        storage = Storage()
+        storage.insert_completion_row(projected.row)
+        restarted = LiveStrategyRuntimeSupervisor(typed_signal_completion=publisher)
+        cold = restarted.restore_completed_signal_work(
+            delivery, storage=storage, completion_proof=proof)
+        self.assertEqual(cold.result(), projected.row["content_hash"])
+        self.assertEqual(restarted._queue.qsize(), 0)
+
     async def test_signal_work_is_processed_by_existing_queue_consumer(self) -> None:
         import asyncio
 

@@ -194,7 +194,10 @@ def test_fixed_engine_opens_clickhouse_journal_before_any_sqlite(monkeypatch):
 def test_inactive_fixed_terminal_handoff_orders_cursor_finish_capture_worker_audit(monkeypatch):
     from src.backend import backtest_terminal_v2_publication as publication
     from src.backend import backtest_terminal_v2_accounts as recovery
+    from src.backend import backtest_terminal_v2_keeper as keeper_module
     from src.backend import replay_run_service
+    from src.backend.backtest_terminal_v2_keeper import FixedTerminalKeeperAuthority
+    from tests.test_backtest_terminal_v2_keeper import FakeKeeper
     from tests.test_backtest_terminal_v2_fence import RUN as V2_RUN, _suffix
     from src.trading_runtime import arte_journal_writer
 
@@ -224,23 +227,31 @@ def test_inactive_fixed_terminal_handoff_orders_cursor_finish_capture_worker_aud
         events.append("cursor")
         assert at == controller.current_time
     controller._save_restart_checkpoint_responsive = checkpoint
-    seal = {"last_sequence": 3}
+    seal = {"last_sequence": 3, "run_id": V2_RUN,
+            "batch_id": "00000000-0000-0000-0000-000000000b04"}
     handoff = SimpleNamespace(commit=seal, publication_fields=lambda: {"account_ids": ("DU1",)})
     controller._prepare_terminal_v2_handoff = lambda got, **_: handoff if got == prefix else None
     monkeypatch.setattr(arte_journal_writer, "load_committed_prefix", lambda *_: prefix)
     monkeypatch.setattr(publication, "publish_terminal_v2_suffix",
                         lambda *_, **__: events.append("publish") or seal)
     monkeypatch.setattr(recovery, "load_terminal_v2_portfolio_accounts",
-                        lambda *_, **__: events.append("cold_audit") or {"DU1": {}})
-    class Authority:
-        client = object()
-        def assert_current(self, *_):
-            events.append("keeper")
-            return True
-    result = asyncio.run(controller._finish_fixed_typed("completed", authority=Authority()))
-    assert result == {"seal": seal, "accounts": {"DU1": {}}}
+                        lambda *_, **__: events.append("cold_audit") or {"DU1": {"state_hash": "a" * 64}})
+    monkeypatch.setattr(keeper_module, "load_attested_terminal_v2_accounts",
+                        lambda *_, **__: events.append("attested_audit") or {"DU1": {"state_hash": "a" * 64}})
+    async def run():
+        keeper = FakeKeeper()
+        keeper.attest_backtest_terminal_v2 = lambda *_, **__: events.append("attest") or b"proof"
+        authority = FixedTerminalKeeperAuthority(
+            keeper=keeper, client=object(), run_id=V2_RUN,
+            account_ids=("DU1",))
+        async with authority:
+            return await controller._finish_fixed_typed(
+                "completed", authority=authority)
+    result = asyncio.run(run())
+    assert result == {"seal": seal, "accounts": {"DU1": {"state_hash": "a" * 64}}}
     assert events.index("cursor") < events.index("runtime_finish") < events.index("capture")
     assert events.index("capture") < events.index("publish") < events.index("cold_audit")
+    assert events.index("cold_audit") < events.index("attest") < events.index("attested_audit")
     assert controller._runtime_finished
 
 

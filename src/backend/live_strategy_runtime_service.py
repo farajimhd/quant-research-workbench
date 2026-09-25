@@ -13,6 +13,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.backend.live_assignment_admission import AssignmentAdmissionLane
+from src.backend.live_signal_work_completion import (
+    CompletionProof, CompletionPublicationQueue, CompletionStorage,
+    read_exact_completion,
+)
 from src.backend.qmd_gateway_client import qmd_current_structure_snapshot
 from src.backend.trading_runtime_service import trading_journal
 from src.trading_runtime.domain import InstrumentContract, TradingMode
@@ -59,13 +63,16 @@ class _SignalWork:
     intent_content_hash: str
     status: str
     receipt: concurrent.futures.Future[str]
+    completion_proof: CompletionProof | None = None
 
 
 class LiveStrategyRuntimeSupervisor:
     """Consume accepted Signal Stream deliveries through the shared runtime."""
 
-    def __init__(self, *, typed_assignment_admission: AssignmentAdmissionLane | None = None) -> None:
+    def __init__(self, *, typed_assignment_admission: AssignmentAdmissionLane | None = None,
+                 typed_signal_completion: CompletionPublicationQueue | None = None) -> None:
         self._typed_assignment_admission = typed_assignment_admission
+        self._typed_signal_completion = typed_signal_completion
         self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=10_000)
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
@@ -90,6 +97,7 @@ class LiveStrategyRuntimeSupervisor:
 
     def _typed_delivery_requested(self) -> bool:
         return (self._typed_assignment_admission is not None or
+                self._typed_signal_completion is not None or
                 os.environ.get("TRADING_SIGNAL_DELIVERY_AUTHORITY", "sqlite").strip().lower()
                 != "sqlite")
 
@@ -173,7 +181,7 @@ class LiveStrategyRuntimeSupervisor:
 
     def submit_signal_work(
         self, delivery: dict[str, Any], *, intent_content_hash: str,
-        cold_replay: bool = False,
+        cold_replay: bool = False, completion_proof: CompletionProof | None = None,
     ) -> concurrent.futures.Future[str]:
         """Inactive per-delivery receipt path on the existing bounded queue.
 
@@ -188,6 +196,14 @@ class LiveStrategyRuntimeSupervisor:
                 or len(intent_content_hash) != 64
                 or any(char not in "0123456789abcdef" for char in intent_content_hash)):
             raise ValueError("signal work requires delivery and activation identity")
+        if self._typed_signal_completion is not None:
+            if not isinstance(completion_proof, CompletionProof):
+                raise ValueError("typed signal work requires committed dispatch ACK inputs")
+            if (completion_proof.delivery_id != delivery_id
+                    or completion_proof.intent_content_hash != intent_content_hash):
+                raise ValueError("typed signal work differs from dispatch intent")
+        elif completion_proof is not None:
+            raise ValueError("typed dispatch proof requires completion publisher")
         with self._lock:
             prior = self._signal_work.get(delivery_id)
             if prior is not None:
@@ -208,9 +224,42 @@ class LiveStrategyRuntimeSupervisor:
             except queue.Full as exc:
                 raise RuntimeError("Strategy activation queue capacity is exhausted") from exc
             self._signal_work[delivery_id] = _SignalWork(
-                activation_key, intent_content_hash, "queued", receipt)
+                activation_key, intent_content_hash, "queued", receipt,
+                completion_proof)
             self._status["queued"] = self._queue.qsize()
             return receipt
+
+    def restore_completed_signal_work(
+        self, delivery: dict[str, Any], *, storage: CompletionStorage,
+        completion_proof: CompletionProof,
+    ) -> concurrent.futures.Future[str]:
+        """Control-plane cold read; no execution or local-queue submission."""
+        if self._typed_signal_completion is None:
+            raise RuntimeError("typed completion authority is unavailable")
+        dispatch_intents, dispatch_acks = completion_proof.materialize()
+        completion = read_exact_completion(
+            storage, dispatch_intents, dispatch_acks,
+            ordinal=completion_proof.ordinal)
+        if completion is None:
+            raise RuntimeError("signal work completion is absent; execution outcome uncertain")
+        row = completion.row
+        intent = dispatch_intents["intents"][completion_proof.ordinal]
+        if (any(delivery.get(key) != intent[key]
+                for key in ("delivery_id", "run_plan_id", "ticker", "event_id"))
+                or _activation_key(delivery).strip("|") == ""):
+            raise ValueError("cold signal work delivery differs from completion")
+        receipt: concurrent.futures.Future[str] = _SignalWorkReceipt()
+        receipt.set_result(row["content_hash"])
+        with self._lock:
+            prior = self._signal_work.get(row["delivery_id"])
+            if prior is not None:
+                if prior.intent_content_hash != row["intent_content_hash"]:
+                    raise ValueError("cold signal work conflicts with in-memory work")
+                return prior.receipt
+            self._signal_work[row["delivery_id"]] = _SignalWork(
+                _activation_key(delivery), row["intent_content_hash"],
+                "completed", receipt)
+        return receipt
 
     def submit_market_rows(self, rows: list[dict[str, Any]], *, as_of: Any) -> int:
         if self._typed_delivery_requested():
@@ -332,11 +381,59 @@ class LiveStrategyRuntimeSupervisor:
             if not receipt.done():
                 receipt.set_exception(exc)
             raise
-        with self._lock:
-            self._signal_work[work_id].status = "completed"
         receipt = envelope["result"]
-        if not receipt.done():
-            receipt.set_result(work_id)
+        work = self._signal_work[work_id]
+        if self._typed_signal_completion is not None:
+            if work.completion_proof is None:
+                raise RuntimeError("typed signal work lacks dispatch ACK proof")
+            try:
+                completion_receipt = self._typed_signal_completion.submit(
+                    work.completion_proof,
+                    processed_at=datetime.now(tz=ZoneInfo("UTC")).isoformat())
+            except Exception as exc:
+                with self._lock:
+                    work.status = "uncertain"
+                if not receipt.done():
+                    receipt.set_exception(exc)
+                raise
+            with self._lock:
+                work.status = "completion_pending"
+                self._status["state"] = "completion_pending"
+
+            def completed(source: concurrent.futures.Future[Any]) -> None:
+                try:
+                    projected = source.result()
+                    if (projected.row["delivery_id"] != work_id
+                            or projected.row["intent_content_hash"] != work.intent_content_hash):
+                        raise ValueError("signal work completion proof differs")
+                except BaseException as exc:
+                    with self._lock:
+                        work.status = "uncertain"
+                        self._status.update({
+                            "state": "degraded",
+                            "failed": int(self._status.get("failed") or 0) + 1,
+                            "last_error": str(exc),
+                        })
+                    if not receipt.done():
+                        receipt.set_exception(exc)
+                else:
+                    with self._lock:
+                        work.status = "completed"
+                        self._status.update({
+                            "state": "ready",
+                            "processed": int(self._status.get("processed") or 0) + 1,
+                            "last_error": "",
+                            "last_processed_at": datetime.now(tz=ZoneInfo("UTC")).isoformat(),
+                        })
+                    if not receipt.done():
+                        receipt.set_result(projected.row["content_hash"])
+
+            completion_receipt.add_done_callback(completed)
+        else:
+            with self._lock:
+                work.status = "completed"
+            if not receipt.done():
+                receipt.set_result(work_id)
         return result
 
     async def _run(self) -> None:
@@ -377,13 +474,14 @@ class LiveStrategyRuntimeSupervisor:
                             "last_failure_at": datetime.now(tz=ZoneInfo("UTC")).isoformat(),
                         })
                 else:
-                    with self._lock:
-                        self._status.update({
-                            "state": "ready",
-                            "processed": int(self._status.get("processed") or 0) + 1,
-                            "last_error": "",
-                            "last_processed_at": datetime.now(tz=ZoneInfo("UTC")).isoformat(),
-                        })
+                    if not (work_id is not None and self._typed_signal_completion is not None):
+                        with self._lock:
+                            self._status.update({
+                                "state": "ready",
+                                "processed": int(self._status.get("processed") or 0) + 1,
+                                "last_error": "",
+                                "last_processed_at": datetime.now(tz=ZoneInfo("UTC")).isoformat(),
+                            })
                 finally:
                     with self._lock:
                         self._status["queued"] = self._queue.qsize()
