@@ -3290,7 +3290,7 @@ class ReplayRunController:
             iter_market_boundary_groups,
             iter_market_time_groups,
             iter_market_day_rows, readonly_clickhouse_client,
-            market_day_boundary,
+            market_day_boundary, CompletedBoundaryValidator,
         )
         from src.backend.fixed_v7_stream import FixedV7Cache
         from src.backend.fixed_bar_signal import candidate_projection_tickers
@@ -3320,6 +3320,7 @@ class ReplayRunController:
         if projection_tickers:
             from src.backend.backtest_market_data import project_market_day_plan
             execution_plan = project_market_day_plan(plan, projection_tickers)
+        boundary_validator = CompletedBoundaryValidator(execution_plan)
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
         if not isinstance(self._journal, BacktestMemoryJournal):
             raise RuntimeError("Fixed Backtest requires its ClickHouse-only journal adapter")
@@ -3413,6 +3414,7 @@ class ReplayRunController:
                         saved_boundary = int(self._source_cursor.get("boundary_ms") or 0)
                         if (day, boundary_ms) <= (saved_day, saved_boundary):
                             continue
+                    boundary_validator.validate(day, boundary_ms, ticker_groups)
                     if self._runtime is None:
                         raise RuntimeError("Fixed Backtest runtime is not initialized")
                     for _ticker_value, by_resolution in ticker_groups:

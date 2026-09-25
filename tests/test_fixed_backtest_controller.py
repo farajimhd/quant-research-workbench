@@ -10,7 +10,9 @@ from zoneinfo import ZoneInfo
 import pytest
 import src.backend.backtest_market_data as market_data
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
-from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
+from src.backend.backtest_market_data import (
+    CertifiedMarketDayPlan, CompletedBoundaryValidator, ExecutionInterval,
+)
 from src.backend.replay_run_service import ReplayRunController, ReplayRunService, RunMode, _fixed_market_evidence_gaps, _persisted_market_day_frame
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.runtime import RunConfig, TradingRuntime
@@ -519,10 +521,64 @@ def test_fixed_signal_loader_uses_pinned_bars_without_event_fallback(monkeypatch
 def _row(ticker, boundary_ms, resolution_ms):
     return dict(session_date=DAY, ticker=ticker, boundary_ms=boundary_ms,
                 resolution_ms=resolution_ms, indicator_resolution_ms=resolution_ms,
-                bucket_index=boundary_ms // resolution_ms - 1,
+                bucket_index=(14_400_000 + boundary_ms) // resolution_ms - 1,
                 price_valid=1, quote_valid=1, close_int=100_000,
                 execution_vwap=(10.0 if ticker == "AAPL" else 20.0)
                 + boundary_ms / 1_000 if resolution_ms == 100 else 0)
+
+
+@pytest.mark.parametrize("changed", [
+    {"ticker": "UNPINNED"},
+    {"bucket_index": 0},
+    {"session_date": "2026-08-19"},
+    {"boundary_ms": 200},
+    {"indicator_resolution_ms": 0},
+])
+def test_completed_market_boundary_rejects_changed_persisted_identity(changed):
+    plan = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "build", "definition", (DAY,),
+        ("AAPL",), (), (100,), "pinned-token")
+    row = {**_row("AAPL", 100, 100), **changed}
+    with pytest.raises(ValueError, match="Persisted market"):
+        CompletedBoundaryValidator(plan).validate(DAY, 100, [("AAPL", {100: row})])
+
+
+def test_fixed_runner_rejects_changed_boundary_before_broker_or_cursor(monkeypatch):
+    from src.backend import replay_run_service
+
+    plan = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "build", "definition", (DAY,),
+        ("AAPL",), (), (100,), "pinned-token")
+    bad = {**_row("AAPL", 100, 100), "bucket_index": 0}
+    monkeypatch.setattr(market_data, "iter_market_day_rows",
+                        lambda *_args, **_kwargs: iter([bad]))
+    monkeypatch.setattr(replay_run_service, "_fixed_market_evidence_gaps", lambda _: ())
+    controller = object.__new__(ReplayRunController)
+    start = datetime(2026, 8, 18, 4, tzinfo=NY)
+    controller.definition = SimpleNamespace(
+        configuration_revision={"payload": {"assignments": []}},
+        requested_start=start, session_end=start + timedelta(seconds=1),
+        causal_v7_plan={})
+    controller._fixed_certified_market_plan = AsyncMock(return_value=plan)
+    controller._fixed_through_boundary_ms = lambda: 1000
+    controller._journal = BacktestMemoryJournal(run_id=RUN)
+    controller._resume_state = None
+    controller._source_cursor = {}
+    controller._fixed_vwap_day = None
+    controller._fixed_vwap_by_ticker = {}
+    controller._historical_external_signal_events = []
+    controller._quotes = {}
+    controller._stop_requested = False
+    controller._record_data_authority = lambda *_args: None
+    controller._prepare_session_relative_volume = AsyncMock()
+    controller._publish = AsyncMock()
+    controller._wait_until_active = AsyncMock()
+    controller._runtime = SimpleNamespace(process_liquidity_bar=AsyncMock(
+        side_effect=AssertionError("broker saw invalid row")))
+    with pytest.raises(ValueError, match="Persisted market row"):
+        asyncio.run(controller._run_fixed_market_days())
+    controller._runtime.process_liquidity_bar.assert_not_awaited()
+    assert controller._source_cursor == {}
 
 
 def test_fixed_frame_rejects_missing_persisted_indicator_join():

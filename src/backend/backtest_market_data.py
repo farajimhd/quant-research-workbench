@@ -695,6 +695,48 @@ def iter_market_time_groups(
         yield (*key, at_boundary)
 
 
+class CompletedBoundaryValidator:
+    """Pinned, reusable read-only check before broker and typed cursor effects.
+
+    Sparse ticker boundaries are valid. This checks returned row identity and
+    clock, not full-day coverage; preflight must verify pinned product hashes.
+    """
+
+    def __init__(self, plan: CertifiedMarketDayPlan) -> None:
+        self.sessions = frozenset(plan.sessions)
+        self.tickers = frozenset(plan.tickers)
+        self.resolutions = frozenset(plan.required_resolutions_ms)
+
+    def validate(
+        self, session_date: str, boundary_ms: int,
+        ticker_groups: Sequence[tuple[str, Mapping[int, Mapping[str, Any]]]],
+    ) -> None:
+        if (session_date not in self.sessions or type(boundary_ms) is not int
+                or not 0 < boundary_ms <= 57_600_000 or boundary_ms % 100
+                or not ticker_groups):
+            raise ValueError("Persisted market boundary is outside pinned causal scope")
+        seen: set[str] = set()
+        for ticker, by_resolution in ticker_groups:
+            if ticker in seen or ticker not in self.tickers or not by_resolution:
+                raise ValueError("Persisted market ticker differs from pinned execution plan")
+            seen.add(ticker)
+            for resolution, row in by_resolution.items():
+                if (type(resolution) is not int or resolution not in self.resolutions
+                        or type(row.get("resolution_ms")) is not int
+                        or row["resolution_ms"] != resolution
+                        or str(row.get("ticker")) != ticker
+                        or str(row.get("session_date")) != session_date
+                        or type(row.get("boundary_ms")) is not int
+                        or row["boundary_ms"] != boundary_ms
+                        or type(row.get("bucket_index")) is not int
+                        or (row["bucket_index"] + 1) * resolution
+                        != SESSION_OPEN_OFFSET_MS + boundary_ms):
+                    raise ValueError("Persisted market row differs from completed boundary")
+                if (int(row.get("price_valid") or 0)
+                        and int(row.get("indicator_resolution_ms") or 0) != resolution):
+                    raise ValueError("Persisted market price bar lacks its pinned indicator")
+
+
 def vectorized_candidate_mask(rows: Sequence[Mapping[str, Any]]) -> list[bool]:
     """Cheap columnar necessary-condition mask before stateful strategy work."""
     if not rows:
