@@ -42,6 +42,7 @@ class FakeCursorClient:
         self.rows = {
             "signal_stream_state_delta_typed_v1": rows["state_delta"],
             "signal_stream_occurrence_ref_typed_v1": rows["occurrence_ref"],
+            "signal_stream_admission_delta_typed_v1": rows["admission_delta"],
             "signal_stream_cursor_commit_typed_v1": [rows["commit"]],
         }
 
@@ -57,13 +58,14 @@ def test_typed_delta_fence_and_fake_cold_recovery() -> None:
                                    "last_emitted_at": "2026-09-24T13:59:00+00:00"}}}
     occurrence = _occurrence()
     rows = project_cursor_batch(before, after, [occurrence], **KEY)
-    restored, replayed, head = recover_cursor_batch(
+    restored, admissions, replayed, head = recover_cursor_batch(
         before, read_cursor_batch(FakeCursorClient(rows), session_key=SESSION,
                                   batch_sequence=1),
         occurrence_authority=FakeAuthority([occurrence]),
         session_key=SESSION, expected_sequence=1, previous_commit_hash=PREVIOUS,
         configuration_revision="configuration-9", source_revision="source-4")
     assert restored["stream-1"]["ABC"]["matching"] is True
+    assert admissions == {}
     assert replayed == [occurrence]
     assert head == rows["commit"]["content_hash"]
     assert len(rows["state_delta"]) == len(rows["occurrence_ref"]) == 1
@@ -107,6 +109,41 @@ def test_fake_client_duplicate_commit_fence_rejected() -> None:
     client.rows["signal_stream_cursor_commit_typed_v1"].append(deepcopy(rows["commit"]))
     with pytest.raises(ValueError, match="duplicate"):
         read_cursor_batch(client, session_key=SESSION, batch_sequence=1)
+
+
+def test_named_admission_delta_roundtrip_then_causal_removal() -> None:
+    occurrence = {**_occurrence(), "evidence": {"price": 10.5}}
+    authority = FakeAuthority([occurrence])
+    admission = {"watchlist-1": {"ABC": {
+        "price": 10.5, "ticker": "ABC", "membership_reason": "signal stream one",
+        "causation_signal_event_id": occurrence["event_id"],
+        "causation_signal_stream_id": occurrence["signal_stream_id"],
+        "event_time": occurrence["event_time"],
+        "expires_at": "2026-09-24T20:00:00+00:00",
+    }}}
+    first = project_cursor_batch({}, {}, [occurrence], after_admissions=admission,
+                                 occurrence_authority=authority, **KEY)
+    with pytest.raises(ValueError, match="causal cutoff"):
+        project_cursor_batch({}, {}, [], after_admissions=admission,
+                             occurrence_authority=authority,
+                             **{**KEY, "cutoff_at": "2026-09-24T13:58:00+00:00"})
+    states, restored, events, head = recover_cursor_batch(
+        {}, first, occurrence_authority=authority,
+        session_key=SESSION, expected_sequence=1, previous_commit_hash=PREVIOUS,
+        configuration_revision="configuration-9", source_revision="source-4")
+    assert states == {}
+    assert restored["watchlist-1"]["ABC"]["price"] == 10.5
+    assert events == [occurrence]
+    second = project_cursor_batch({}, {}, [], before_admissions=restored,
+                                  after_admissions={}, occurrence_authority=authority,
+                                  **{**KEY, "batch_sequence": 2,
+                                     "previous_commit_hash": head})
+    assert second["admission_delta"][0]["operation"] == "delete"
+    _, empty, _, _ = recover_cursor_batch(
+        {}, second, before_admissions=restored, occurrence_authority=authority,
+        session_key=SESSION, expected_sequence=2, previous_commit_hash=head,
+        configuration_revision="configuration-9", source_revision="source-4")
+    assert empty == {}
 
 
 def test_unmodeled_state_route_admissions_and_noncausal_occurrences_fail() -> None:
