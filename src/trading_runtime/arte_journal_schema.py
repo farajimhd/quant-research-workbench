@@ -1331,6 +1331,22 @@ def fixed_backtest_v2_contracts() -> tuple[TableContract, ...]:
             + (LEGACY_STRATEGY_SIGNAL_V1, LEGACY_COMMIT_V1))
 
 
+def missing_fixed_backtest_v2_tables(client: Any) -> tuple[str, ...]:
+    """Read-only exact catalog gap for fixed-V2 admission and operator planning."""
+    contracts = fixed_backtest_v2_contracts()
+    expected = tuple(table.name for table in contracts)
+    if len(expected) != len(set(expected)):
+        raise RuntimeError("Fixed Backtest V2 contract repeats a table")
+    names = ",".join(f"'{name}'" for name in expected)
+    rows = _rows(client, "SELECT name FROM system.tables "
+                 f"WHERE database='arte' AND name IN ({names}) FORMAT JSONEachRow")
+    installed = [row.get("name") for row in rows]
+    if (any(set(row) != {"name"} or name not in expected for row, name in
+            zip(rows, installed, strict=True)) or len(installed) != len(set(installed))):
+        raise RuntimeError("Fixed Backtest V2 table catalog is ambiguous")
+    return tuple(name for name in expected if name not in installed)
+
+
 def fixed_backtest_v2_preflight(client: Any) -> None:
     """Read-only, exact admission for one V2 running and terminal writer.
 

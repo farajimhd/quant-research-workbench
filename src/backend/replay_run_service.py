@@ -10510,6 +10510,20 @@ def backtest_preflight(
         })
     if execution_interval.kind == "fixed":
         from src.backend.backtest_market_data import FIXED_EXECUTION_BLOCKER
+        from src.backend.backtest_fixed_journal_bootstrap import fixed_journal_operator_check
+        from src.trading_runtime.arte_journal_writer import journal_client_from_env
+        try:
+            with closing(journal_client_from_env()) as journal_client:
+                journal_check = fixed_journal_operator_check(journal_client)
+        except Exception as exc:
+            journal_check = {
+                "id": "fixed_journal_authority",
+                "label": "Normalized ClickHouse trading journal",
+                "status": "blocked", "required": True,
+                "summary": f"Typed journal operator preflight failed: {exc}",
+                "evidence": str(exc),
+            }
+        checks.append(journal_check)
         checks.append({
             "id": "fixed_execution_contract",
             "label": "Causal fixed-interval execution",

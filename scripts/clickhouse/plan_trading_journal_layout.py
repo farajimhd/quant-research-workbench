@@ -19,7 +19,8 @@ sys.dont_write_bytecode = True
 from dotenv import load_dotenv
 
 from src.trading_runtime.arte_journal_schema import (
-    fixed_backtest_v2_contracts, storage_preflight,
+    fixed_backtest_v2_contracts, missing_fixed_backtest_v2_tables,
+    storage_preflight,
 )
 from src.trading_runtime.arte_journal_writer import journal_client_from_env
 
@@ -27,20 +28,13 @@ from src.trading_runtime.arte_journal_writer import journal_client_from_env
 def plan_missing(client: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Verify every installed contract, then return only missing table DDL."""
     contracts = fixed_backtest_v2_contracts()
-    expected_names = [table.name for table in contracts]
-    if len(expected_names) != len(set(expected_names)):
-        raise RuntimeError("Fixed Backtest V2 contract repeats a table")
-    raw = client.execute(
-        "SELECT name FROM system.tables WHERE database='arte' "
-        "AND startsWith(name,'trading_') FORMAT TabSeparated"
-    )
-    installed = {name for name in raw.splitlines() if name}
-    present = tuple(table for table in contracts if table.name in installed)
+    missing_names = missing_fixed_backtest_v2_tables(client)
+    present = tuple(table for table in contracts if table.name not in missing_names)
     # Existing but incompatible tables must be repaired explicitly; creating
     # the missing tables cannot make an incompatible layout safe.
     if present:
         storage_preflight(client, tables=present)
-    missing = tuple(table for table in contracts if table.name not in installed)
+    missing = tuple(table for table in contracts if table.name in missing_names)
     return tuple(table.name for table in missing), tuple(table.ddl() for table in missing)
 
 

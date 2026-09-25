@@ -1,3 +1,5 @@
+import json
+
 from scripts.clickhouse import plan_trading_journal_layout as plan
 from src.trading_runtime.arte_journal_schema import fixed_backtest_v2_contracts
 
@@ -12,7 +14,7 @@ def test_missing_plan_checks_installed_contracts_and_emits_only_missing_ddl(
     class Client:
         def execute(self, sql):
             assert sql.startswith("SELECT name FROM system.tables")
-            return "\n".join(sorted(installed))
+            return "\n".join(json.dumps({"name": name}) for name in sorted(installed))
 
     monkeypatch.setattr(plan, "storage_preflight",
                         lambda _client, *, tables: checked.extend(tables))
@@ -28,7 +30,7 @@ def test_missing_plan_fails_if_existing_table_is_incompatible(monkeypatch):
     class Client:
         def execute(self, sql):
             assert sql.startswith("SELECT name FROM system.tables")
-            return fixed_backtest_v2_contracts()[0].name
+            return json.dumps({"name": fixed_backtest_v2_contracts()[0].name})
 
     def incompatible(_client, *, tables):
         assert len(tables) == 1

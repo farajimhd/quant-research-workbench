@@ -1,5 +1,6 @@
 """Inactive fixed journal assembly performs no disk or database writes."""
 from datetime import date, datetime, timezone
+import json
 
 import pytest
 
@@ -8,6 +9,29 @@ from src.backend import backtest_fixed_journal_bootstrap as bootstrap
 
 RUN = "00000000-0000-0000-0000-000000000a01"
 ATTEMPT = "00000000-0000-0000-0000-000000000a02"
+
+
+def test_operator_check_names_missing_tables_without_any_write(monkeypatch):
+    names = tuple(table.name for table in bootstrap.fixed_backtest_v2_contracts())
+    calls = []
+    class Catalog:
+        def __init__(self, installed):
+            self.installed = installed
+        def execute(self, sql):
+            calls.append(sql)
+            assert sql.startswith("SELECT name FROM system.tables")
+            return "\n".join(json.dumps({"name": name}) for name in self.installed)
+    missing = bootstrap.fixed_journal_operator_check(Catalog(names[:-2]))
+    assert missing["status"] == "blocked"
+    assert missing["evidence"]["missing_tables"] == list(names[-2:])
+    checked = []
+    monkeypatch.setattr(bootstrap, "terminal_v2_operator_preflight",
+                        lambda *_: checked.append("verified"))
+    ready = bootstrap.fixed_journal_operator_check(Catalog(names))
+    assert ready["status"] == "ready" and checked == ["verified"]
+    assert all(sql.startswith("SELECT ") for sql in calls)
+    with pytest.raises(RuntimeError, match="ambiguous"):
+        bootstrap.fixed_journal_operator_check(Catalog((*names, names[0])))
 
 
 def _verified(monkeypatch):

@@ -18,7 +18,8 @@ from src.backend.backtest_terminal_v2_preflight import (
 )
 from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
 from src.trading_runtime.arte_journal_schema import (
-    fixed_backtest_v2_contracts, storage_preflight,
+    fixed_backtest_v2_contracts, missing_fixed_backtest_v2_tables,
+    storage_preflight,
 )
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, load_typed_run_context,
@@ -41,6 +42,27 @@ class FixedJournalAssembly:
     writer: ArteJournalWriter
     publisher: BacktestTypedJournalPublisher
     terminal_authority: FixedTerminalKeeperAuthority
+
+
+def fixed_journal_operator_check(client: Any) -> dict[str, Any]:
+    """Read-only, actionable fixed-V2 journal readiness for UI preflight."""
+    missing = missing_fixed_backtest_v2_tables(client)
+    if missing:
+        return {
+            "id": "fixed_journal_authority",
+            "label": "Normalized ClickHouse trading journal",
+            "status": "blocked", "required": True,
+            "summary": f"{len(missing)} required normalized arte journal tables are absent",
+            "evidence": {"missing_tables": list(missing)},
+        }
+    terminal_v2_operator_preflight(client)
+    return {
+        "id": "fixed_journal_authority",
+        "label": "Normalized ClickHouse trading journal",
+        "status": "ready", "required": True,
+        "summary": "Exact typed layout, SSD placement, and narrow grants verified",
+        "evidence": {"missing_tables": []},
+    }
 
 
 def prepare_fixed_journal_token(
