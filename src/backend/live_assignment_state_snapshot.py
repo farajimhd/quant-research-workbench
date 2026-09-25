@@ -41,6 +41,15 @@ from src.trading_runtime.arte_assignment_position_entry_identity import (
     LEVEL_TABLE as POSITION_ENTRY_LEVEL_TABLE,
 )
 from src.trading_runtime.arte_assignment_vwap_episode import TABLE as VWAP_EPISODE_TABLE
+from src.trading_runtime.arte_assignment_post_move_clock import (
+    PARENT_TABLE as POST_MOVE_PARENT_TABLE,
+    PULLBACK_TABLE as POST_MOVE_PULLBACK_TABLE,
+    MOVE_TABLE as POST_MOVE_MOVE_TABLE,
+)
+from src.trading_runtime.arte_assignment_pending_breakout import (
+    PARENT_TABLE as PENDING_BREAKOUT_PARENT_TABLE,
+    MEMBER_TABLE as PENDING_BREAKOUT_MEMBER_TABLE,
+)
 from src.trading_runtime.arte_campaign_control_projection import TABLES as CAMPAIGN
 from src.trading_runtime.arte_grouped_resistance_projection import TABLES as GROUPED
 from src.trading_runtime.arte_long_momentum_squeeze_purchase_state import (
@@ -75,6 +84,11 @@ _SPECS = (
     (POSITION_ENTRY_MANIFEST_TABLE, "position_entry_identity", "manifest"),
     (POSITION_ENTRY_LEVEL_TABLE, "position_entry_identity", "levels"),
     (VWAP_EPISODE_TABLE, "vwap_episode", None),
+    (POST_MOVE_PARENT_TABLE, "post_move_clock", "parent"),
+    (POST_MOVE_PULLBACK_TABLE, "post_move_clock", "pullbacks"),
+    (POST_MOVE_MOVE_TABLE, "post_move_clock", "moves"),
+    (PENDING_BREAKOUT_PARENT_TABLE, "post_move_clock", "pending_parent"),
+    (PENDING_BREAKOUT_MEMBER_TABLE, "post_move_clock", "pending_members"),
     (CAMPAIGN[0], "campaign", "control"),
     (CAMPAIGN[1], "campaign", "policy"),
     *((table, "grouped_resistance", key) for table, key in zip(
@@ -142,6 +156,10 @@ def _flatten(projected: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
         value = projected[group]
         if group == "grouped_resistance":
             value = {} if value is None else value
+        elif group == "post_move_clock" and key.startswith("pending_"):
+            pending = value["pending"]
+            value = ([] if pending is None else pending[
+                "parent" if key == "pending_parent" else "members"])
         elif group == "squeeze_v7_evidence":
             values = []
             for path in sorted(value):
@@ -151,7 +169,8 @@ def _flatten(projected: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
                 elif evidence["set"]["evidence_family"] == key:
                     values.extend(evidence["rows"])
             value = values
-        if group != "squeeze_v7_evidence":
+        if group != "squeeze_v7_evidence" and not (
+                group == "post_move_clock" and key.startswith("pending_")):
             value = value.get(key, []) if key is not None else value
         rows = value if isinstance(value, list) else ([value] if value else [])
         result[table.name] = _order(list(rows), table)
@@ -215,6 +234,20 @@ def recover_state_snapshot(storage: StateStorage, *, run_id: str,
     if len(entry_manifest) != 1:
         raise ValueError("assignment position-entry manifest row count differs")
     position_entry["manifest"] = entry_manifest[0]
+    post_move_parent = rows[POST_MOVE_PARENT_TABLE.name]
+    if len(post_move_parent) != 1:
+        raise ValueError("assignment post-move clock parent row count differs")
+    pending_parent = rows[PENDING_BREAKOUT_PARENT_TABLE.name]
+    if len(pending_parent) > 1:
+        raise ValueError("assignment pending breakout parent row count differs")
+    post_move_clock = {
+        "parent": post_move_parent[0],
+        "pullbacks": rows[POST_MOVE_PULLBACK_TABLE.name],
+        "moves": rows[POST_MOVE_MOVE_TABLE.name],
+        "pending": ({"parent": pending_parent[0],
+                     "members": rows[PENDING_BREAKOUT_MEMBER_TABLE.name]}
+                    if pending_parent else None),
+    }
     grouped = ({key: rows[table.name] for table, group, key in _SPECS
                 if group == "grouped_resistance"} if commit["grouped_present"] else None)
     purchase = {key: rows[table.name] for table, group, key in _SPECS
@@ -252,6 +285,7 @@ def recover_state_snapshot(storage: StateStorage, *, run_id: str,
                      vwap_episode=(rows[VWAP_EPISODE_TABLE.name][0]
                                    if len(rows[VWAP_EPISODE_TABLE.name]) == 1
                                    else rows[VWAP_EPISODE_TABLE.name]),
+                     post_move_clock=post_move_clock,
                      squeeze_purchase={**purchase, "ledger": purchase["ledger"][0]
                                        if len(purchase["ledger"]) == 1 else purchase["ledger"]},
                      squeeze_clock=clock[0], squeeze_progress=progress,
