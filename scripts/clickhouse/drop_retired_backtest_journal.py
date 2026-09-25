@@ -22,7 +22,7 @@ sys.dont_write_bytecode = True
 from scripts.clickhouse.provision_trading_journal import _admin_client
 
 
-URL = "http://192.168.0.21:18123"
+URL = "http://DESKTOP-SAAI85T:18123"
 RETIRED = (
     "bt_commit_v1", "bt_event_v1", "bt_blob_v1", "bt_run_v1",
 )
@@ -63,7 +63,7 @@ def main() -> int:
     if (platform.node().upper() != "DESKTOP-SAAI85T"
             or (parsed.scheme, parsed.hostname, parsed.port, parsed.path,
                 parsed.query, parsed.fragment, parsed.username, parsed.password)
-            != ("http", "192.168.0.21", 18123, "", "", "", None, None)):
+            != ("http", "desktop-saai85t", 18123, "", "", "", None, None)):
         parser.error("Use the managed workstation and its exact ClickHouse endpoint")
     client = _admin_client(args.url)
     try:
