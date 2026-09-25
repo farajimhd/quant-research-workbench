@@ -101,6 +101,14 @@ ticker/session through bounded Arrow batches into this mask, including exact
 indicator-row checks. Its candidates must still pass Candidate 350's
 surviving stateful entry/lifecycle rules. No path yet dispatches this draft
 from the application.
+`src/trading_runtime/strategy_one_position.py` now owns a pure, deterministic
+active-position protection reducer: entry requires the completed 30s stop and
+third overhead target; accepted 1s resistance breaks are deduplicated and
+ordered causally; three-break and 30s-low stop proposals ratchet upward with
+resistance precedence; target re-ranking only follows a completed
+price-bearing evaluation bar. It returns amendments for the coordinator and
+does not submit orders or write a journal. Stateful activation, surviving
+Candidate 350 entry gates, OMS wiring, and run dispatch remain unfinished.
 The active fixed Backtest preflight also blocks on unfinished ClickHouse-only
 runtime/journal recovery. These contracts must be delivered and verified
 before Strategy 1 can become selectable. Do not bypass them by launching the
