@@ -9,7 +9,7 @@ import pytest
 from src.trading_runtime.arte_journal_ingress import (
     JournalIngressFull, TypedJournalIngress,
 )
-from src.trading_runtime.arte_journal_writer import TypedJournalBatch
+from src.trading_runtime.arte_journal_writer import JournalQueueFull, TypedJournalBatch
 from src.trading_runtime.journal_contract import JournalRecord
 
 
@@ -184,3 +184,29 @@ def test_cancelled_consumer_receipt_does_not_cancel_durable_publication():
     ingress.close()
     assert receipt.cancelled()
     assert len(writer.batches) == 1
+
+
+def test_external_writer_contention_retries_without_a_local_receipt():
+    available = Event()
+    attempted = Event()
+
+    class ExternallyFullWriter(Writer):
+        def submit(self, projected):
+            attempted.set()
+            if not available.is_set():
+                raise JournalQueueFull("other producer owns the writer queue")
+            receipt = super().submit(projected)
+            receipt.set_result(projected.batch_id)
+            return receipt
+
+    writer = ExternallyFullWriter()
+    ingress = TypedJournalIngress(
+        writer, run_id="run-1", attempt_id=str(uuid4()),
+        first_sequence=1, prior_batch_id=ZERO,
+        projector=lambda source, **identity: batch(source, identity))
+    receipt = ingress.submit(record(1), source_cursor="bar:1")
+    assert attempted.wait(2)
+    assert not receipt.done()
+    available.set()
+    ingress.close()
+    assert receipt.result() == writer.batches[0].batch_id

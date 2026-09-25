@@ -12,6 +12,7 @@ from copy import deepcopy
 from datetime import timezone
 from queue import Empty, Full, Queue
 from threading import Lock, Thread
+from time import sleep
 from typing import Any, Callable, Mapping
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -138,7 +139,12 @@ class TypedJournalIngress:
                         except JournalQueueFull:
                             # Only this worker waits. The producer remains
                             # nonblocking and its queue is bounded.
-                            self._settle_oldest(pending)
+                            if pending:
+                                self._settle_oldest(pending)
+                            else:
+                                # Another producer can own every writer slot.
+                                # No local receipt exists to await yet.
+                                sleep(0.01)
                     pending.append((writer_receipt, receipt))
                     self._prior_batch_id = batch_id
                 except BaseException as exc:
