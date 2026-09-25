@@ -286,8 +286,13 @@ def publish_market_values(root, plan):
     spill = root/'tensor-sort-spill'
     spill.mkdir(exist_ok=True)
     database = duckdb.connect(database=':memory:')
-    database.execute("SET memory_limit='8GB'")
-    database.execute("SET threads=4")
+    sort_policy = plan.get('tensor_sort',{})
+    memory_gb = int(sort_policy.get('memory_gb',8))
+    sort_threads = int(sort_policy.get('threads',4))
+    if not 1 <= memory_gb <= 256 or not 1 <= sort_threads <= 64:
+        raise ValueError('Invalid bounded tensor sort budget')
+    database.execute(f"SET memory_limit='{memory_gb}GB'")
+    database.execute(f'SET threads={sort_threads}')
     def quoted(path):
         return "'" + str(path.as_posix()).replace("'", "''") + "'"
     database.execute(f'SET temp_directory={quoted(spill)}')
@@ -322,7 +327,8 @@ def publish_market_values(root, plan):
         time_count=57601, side_count=2, resolution_count=1,
         axis_order=['macd_resolution_seconds','time_us','listing_index','side'],
         physical_order=['time_us','listing_index','side'],row_group_target_rows=group_rows,
-        sort_engine='duckdb_external',sort_memory_limit='8GB',duckdb_version=duckdb.__version__,
+        sort_engine='duckdb_external',sort_memory_limit=f'{memory_gb}GB',
+        sort_threads=sort_threads,duckdb_version=duckdb.__version__,
         missing_opening='can_open_false',listing_index_source='plan.selected order')
 
 
@@ -340,6 +346,8 @@ def run_build(args, console):
         raise ValueError('Liquidity thresholds must be finite and nonnegative')
     if (args.min_volume_60s or args.min_trades_60s) and original.get('valuation_basis') != 'price_action':
         raise ValueError('Liquidity filter requires arte price-action activity')
+    if not 1 <= args.sort_memory_gb <= 256 or not 1 <= args.sort_threads <= 64:
+        raise ValueError('Tensor sort budget must be within supported bounds')
     runtime = required_runtime()
     os.environ['POLARS_TEMP_DIR'] = str(runtime)
     plan = dict(version=VERSION, phase1_root=str(source), phase1_plan_hash=original["plan_hash"],
@@ -356,7 +364,8 @@ def run_build(args, console):
                 semantics="Local greedy values; no future reallocations; exact size coefficients",
                 market_tensor='market_hold_values.parquet full grid plus market_open_values.parquet sparse entries',
                 polars_version=pl.__version__,
-                tensor_sort=dict(engine='duckdb_external',version=duckdb.__version__,memory_limit='8GB'),
+                tensor_sort=dict(engine='duckdb_external',version=duckdb.__version__,
+                    memory_gb=args.sort_memory_gb,threads=args.sort_threads),
                 code_hashes={p: sha256((REPO / p).read_text(encoding="utf-8").replace("\r\n", "\n").encode()).hexdigest()
                              for p in ("research/rl_trading/v1/build_phase2.py", "research/rl_trading/v1/phase2_values.py", "research/rl_trading/v1/market_values.py", "research/rl_trading/v1/common.py", "src/market_engine/hindsight_batch.py")})
     plan["plan_hash"] = digest(plan)
@@ -528,6 +537,10 @@ def main(argv=None):
         help='Minimum completed one-minute share volume for new entries; default 20000')
     build.add_argument('--min-trades-60s',type=int,default=11,
         help='Minimum completed one-minute trade count for new entries; default 11 (>10)')
+    build.add_argument('--sort-memory-gb',type=int,default=8,
+        help='DuckDB external sort memory cap in GiB; default 8')
+    build.add_argument('--sort-threads',type=int,default=4,
+        help='DuckDB external sort threads; default 4')
     evaluate = commands.add_parser("evaluate", help="Score explicit joint actions from a state/request JSON")
     evaluate.add_argument("--dataset", required=True, type=Path)
     evaluate.add_argument("--request", required=True, type=Path)

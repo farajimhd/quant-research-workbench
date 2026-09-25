@@ -175,6 +175,8 @@ def main(argv=None):
     parser.add_argument('--tickers',nargs='+',help='Explicit canary subset; never treated as full market')
     parser.add_argument('--workers',type=int,default=None)
     parser.add_argument('--query-threads',type=int,choices=range(1,5),default=2)
+    parser.add_argument('--sort-memory-gb',type=int,default=8)
+    parser.add_argument('--sort-threads',type=int,default=4)
     parser.add_argument('--lookback-seconds',type=int,choices=range(31),default=2)
     discount_options = parser.add_mutually_exclusive_group()
     discount_options.add_argument('--half-life-bars',type=float,help='Discount half-life in MACD bars; default 30')
@@ -184,6 +186,8 @@ def main(argv=None):
     discount = discount_policy(1.,half_life_bars=args.half_life_bars,gamma=args.gamma)
     if not math.isfinite(args.cost_per_share) or args.cost_per_share < 0:
         parser.error('cost must be finite and nonnegative')
+    if not 1 <= args.sort_memory_gb <= 256 or not 1 <= args.sort_threads <= 64:
+        parser.error('Tensor sort budget must be within supported bounds')
     if args.date and (args.start or args.end):
         parser.error('Use --date OR --start and --end')
     if not args.date and not (args.start and args.end):
@@ -250,7 +254,8 @@ def main(argv=None):
                     folder = p1.parent
                     handoff = folder/'phase2-location.json'
                     command = ['research/rl_trading/v1/build_phase2.py','build','--phase1',str(p1),'--workers',str(args.workers),
-                        '--cost-per-share',str(args.cost_per_share),'--result-file',str(handoff)]
+                        '--cost-per-share',str(args.cost_per_share),'--result-file',str(handoff),
+                        '--sort-memory-gb',str(args.sort_memory_gb),'--sort-threads',str(args.sort_threads)]
                     command += ['--gamma',str(args.gamma)] if args.gamma is not None else ['--half-life-bars',str(discount['half_life_bars'])]
                     last = [0.]
                     def progress(message):

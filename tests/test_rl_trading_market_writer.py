@@ -8,7 +8,8 @@ from src.market_engine.level_book_store import write
 def test_bounded_market_sort_matches_full_ordered_values(tmp_path):
     listings = [dict(ticker='A',listing_id='a'),dict(ticker='B',listing_id='b')]
     plan = dict(plan_hash='test',selected=listings,
-        discount_policy=dict(macd_resolution_seconds=1.))
+        discount_policy=dict(macd_resolution_seconds=1.),
+        tensor_sort=dict(memory_gb=1,threads=2))
     sources = []
     for index,listing in enumerate(listings):
         times = list(range(57601))
@@ -38,6 +39,7 @@ def test_bounded_market_sort_matches_full_ordered_values(tmp_path):
         'open_value_per_dollar')
     keys = ('time_us','listing_index','side')
     assert tensor['sort_engine'] == 'duckdb_external'
+    assert tensor['sort_memory_limit'] == '1GB' and tensor['sort_threads'] == 2
     assert pl.read_parquet(tmp_path/'market_hold_values.parquet').equals(
         expected.drop(*opening))
     assert pl.read_parquet(tmp_path/'market_open_values.parquet').equals(
