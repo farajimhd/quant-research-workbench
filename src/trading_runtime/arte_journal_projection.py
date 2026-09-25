@@ -24,7 +24,7 @@ from src.trading_runtime.domain import CommissionEvent
 from src.trading_runtime.ibkr_client import _execution as parse_ibkr_execution
 from src.trading_runtime.ibkr_schema import Execution, OrderRequest
 from src.trading_runtime.journal_contract import JournalRecord, canonical_json
-from src.trading_runtime.signals import StrategySignal
+from src.trading_runtime.signals import CapitalRequest, StrategyIntent, StrategySignal
 
 
 _SOURCE_FIELDS = frozenset({
@@ -297,8 +297,62 @@ def project_journal_record(
         )
     if kind == ("market_discovery_signal", "signal_occurrence"):
         raise ValueError("Squeeze episode needs operator-provisioned Backtest-only journal family")
+    if kind == ("strategy", "strategy_intent"):
+        from src.trading_runtime.arte_intent_projection import strategy_intent_batch
+        from src.trading_runtime.execution_policies import (
+            execution_policy_from_payload, protection_profile_from_payload,
+        )
+
+        payload = dict(record.payload)
+        fields_expected = {field.name for field in fields(StrategyIntent)}
+        lineage = {"correlation_id", "causation_id"}
+        if (set(payload) - lineage != fields_expected | {
+                "strategy_id", "strategy_revision"}
+                or not isinstance(expected_config, dict)
+                or not isinstance(payload.get("strategy_id"), str)
+                or not payload["strategy_id"]
+                or type(payload.get("strategy_revision")) is not int
+                or payload["strategy_revision"] < 0
+                or payload["strategy_id"] != expected_config.get("strategy_id")
+                or payload["strategy_revision"] != expected_config.get("strategy_revision")
+                or not record.account_id or record.event_time.tzinfo is None
+                or record.recorded_at.tzinfo is None
+                or not isinstance(payload.get("metadata"), dict)
+                or any(not isinstance(payload[key], str) for key in lineage
+                       if key in payload)):
+            raise ValueError("Strategy intent source or pinned strategy identity is invalid")
+        if payload["metadata"]:
+            raise ValueError("Strategy intent metadata lacks a normalized typed contract")
+        values = {name: payload[name] for name in fields_expected}
+        if isinstance(values["event_time"], str):
+            values["event_time"] = datetime.fromisoformat(values["event_time"])
+        if isinstance(values["capital_request"], dict):
+            values["capital_request"] = CapitalRequest(**values["capital_request"])
+        if isinstance(values["execution_policy"], dict):
+            values["execution_policy"] = execution_policy_from_payload(
+                values["execution_policy"])
+        if isinstance(values["protection_profile"], dict):
+            values["protection_profile"] = protection_profile_from_payload(
+                values["protection_profile"])
+        intent = StrategyIntent(**values)
+        if (intent.intent_id != record.entity_id
+                or intent.event_time.tzinfo is None
+                or intent.event_time.astimezone(timezone.utc)
+                != record.event_time.astimezone(timezone.utc)
+                or canonical_json(intent.payload())
+                != canonical_json({name: payload[name] for name in fields_expected})):
+            raise ValueError("Strategy intent source differs from its typed object")
+        return strategy_intent_batch(
+            intent, run_id=record.run_id, run_month=run_month,
+            account_id=record.account_id, attempt_id=attempt_id,
+            batch_id=batch_id, prior_batch_id=prior_batch_id,
+            sequence=record.sequence, source_cursor=source_cursor,
+            run_status="running", recorded_at=record.recorded_at,
+            record_id=record.record_id,
+            correlation_id=str(payload.get("correlation_id") or ""),
+            causation_id=str(payload.get("causation_id") or ""),
+        )
     if kind == ("strategy_decision", "signal"):
-        from dataclasses import fields
         payload = dict(record.payload)
         signal_fields = {field.name for field in fields(StrategySignal)}
         required = signal_fields | {"strategy_id", "strategy_revision"}

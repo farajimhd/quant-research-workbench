@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import fields, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
+import json
 from math import nan
 from uuid import uuid4
 
@@ -17,12 +18,15 @@ from src.trading_runtime.arte_journal_writer import (
     load_committed_prefix, publish_typed_batch, _sealed_families,
 )
 from src.trading_runtime.arte_journal_projection import order_command_batch
+from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.execution_policies import (
     ExecutionEnvelope, ExecutionPolicy, ExecutionPolicyName,
     ProtectionProfile, ProtectionSlice, StopRule, StopRuleType,
     StopOrderType, StructuralAnchor, TrailingRule, TrailingRuleType,
 )
 from src.trading_runtime.signals import CapitalRequest, StrategyIntent
+from src.trading_runtime.journal_contract import JournalRecord
+from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.ibkr_schema import OrderRequest
 from tests.test_arte_journal_writer import MemoryClient
 
@@ -35,6 +39,71 @@ def intent(**overrides):
     )
     values.update(overrides)
     return StrategyIntent(**values)
+
+
+def test_shared_runtime_intent_record_projects_to_existing_typed_families():
+    source = intent(capital_request=CapitalRequest("fixed_quantity", 5))
+    at = source.event_time
+    record = JournalRecord(
+        str(uuid4()), "live:DU1", 1, at, at,
+        "strategy", "strategy_intent", source.intent_id, "DU1",
+        {**source.payload(), "strategy_id": "long-momentum",
+         "strategy_revision": 55, "correlation_id": "corr-1",
+         "causation_id": "cause-1"},
+    )
+    identity = dict(
+        run_month=date(2026, 8, 1), attempt_id=str(uuid4()),
+        batch_id=str(uuid4()), prior_batch_id="00000000-0000-0000-0000-000000000000",
+        source_cursor="bar:1",
+        expected_config={"strategy_id": "long-momentum", "strategy_revision": 55},
+    )
+    projected = project_journal_record(record, **identity)
+    assert projected.events[0]["record_id"] == record.record_id
+    assert projected.events[0]["correlation_id"] == "corr-1"
+    assert projected.intents[0]["intent_id"] == source.intent_id
+    assert projected.intents[0]["capital_mode"] == "fixed_quantity"
+    assert not projected.intent_slices
+    client = MemoryClient()
+    publish_typed_batch(client, projected)
+    prefix = load_committed_prefix(client, record.run_id)
+    assert prefix is not None
+    recovered = load_committed_strategy_intent_page(client, prefix)
+    assert recovered[0].intent == source
+    with pytest.raises(ValueError, match="normalized typed contract"):
+        project_journal_record(replace(record, payload={
+            **record.payload, "metadata": {"unmodeled": "evidence"}}), **identity)
+    with pytest.raises(ValueError, match="pinned strategy identity"):
+        project_journal_record(record, **{**identity, "expected_config": {
+            "strategy_id": "other", "strategy_revision": 55}})
+
+
+def test_shared_intent_roundtrips_policies_after_legacy_json_hydration():
+    source = intent(
+        execution_policy=ExecutionPolicy(
+            "entry", 2, ExecutionPolicyName.ADAPTIVE_URGENT,
+            ExecutionEnvelope(maximum_buy_price=12.75, deadline_ms=500),
+        ),
+        protection_profile=ProtectionProfile("stop", 3, (
+            ProtectionSlice("main", 1.0, StopRule(price=11.5)),
+        )),
+    )
+    payload = json.loads(canonical_json({
+        **source.payload(), "strategy_id": "long-momentum",
+        "strategy_revision": 55,
+    }))
+    record = JournalRecord(
+        str(uuid4()), "live:DU1", 1, source.event_time, source.event_time,
+        "strategy", "strategy_intent", source.intent_id, "DU1", payload,
+    )
+    projected = project_journal_record(
+        record, run_month=date(2026, 8, 1), attempt_id=str(uuid4()),
+        batch_id=str(uuid4()), prior_batch_id="00000000-0000-0000-0000-000000000000",
+        source_cursor="bar:1",
+        expected_config={"strategy_id": "long-momentum", "strategy_revision": 55},
+    )
+    assert projected.intents[0]["execution_policy_id"] == "entry"
+    assert projected.intents[0]["protection_slice_count"] == 1
+    assert projected.intent_slices[0]["stop_price"] == "11.500000000000000000"
 
 
 def test_intent_projection_flattens_all_declared_policy_and_protection_fields():

@@ -297,13 +297,16 @@ def strategy_intent_batch(
     intent: StrategyIntent, *, run_id: str, run_month: date, account_id: str,
     attempt_id: str, batch_id: str, prior_batch_id: str, sequence: int,
     source_cursor: str, run_status: str, recorded_at: datetime,
+    record_id: str | None = None, correlation_id: str = "",
+    causation_id: str = "",
 ) -> TypedJournalBatch:
     """Build a fenced journal event with one typed intent and child slices."""
     if not run_id or not account_id or recorded_at.tzinfo is None:
         raise ValueError("Strategy intent journal identity and receipt clock are required")
     projected = project_strategy_intent(intent)
     event_month = intent.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
-    record_id = str(uuid5(NAMESPACE_URL, f"{run_id}:{batch_id}:{intent.intent_id}:intent"))
+    record_id = str(UUID(record_id)) if record_id is not None else str(uuid5(
+        NAMESPACE_URL, f"{run_id}:{batch_id}:{intent.intent_id}:intent"))
     event = {
         "run_id": run_id, "event_month": event_month,
         "attempt_id": attempt_id, "batch_id": batch_id,
@@ -312,7 +315,7 @@ def strategy_intent_batch(
         "recorded_at": _instant(recorded_at),
         "category": "strategy", "entity_type": "strategy_intent",
         "entity_id": intent.intent_id, "account_id": account_id,
-        "correlation_id": "", "causation_id": "",
+        "correlation_id": correlation_id, "causation_id": causation_id,
     }
     identity = {
         "run_id": run_id, "event_month": event_month,
