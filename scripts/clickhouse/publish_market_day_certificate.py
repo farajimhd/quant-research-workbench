@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+from ipaddress import IPv4Address
 import json
 import os
 from pathlib import Path
 import platform
 import re
+import socket
 import sys
 from uuid import uuid4
 
@@ -68,6 +70,16 @@ def _certificate_admin_client(url: str):
     return client
 
 
+def _workstation_clickhouse_url() -> str:
+    # Windows may resolve this machine's name to a link-local IPv6 address
+    # even though the managed WSL ClickHouse port is exposed only over IPv4.
+    # Resolve at launch rather than pinning a potentially changing LAN address.
+    address = IPv4Address(socket.gethostbyname("DESKTOP-SAAI85T"))
+    if not address.is_private:
+        raise RuntimeError("Workstation ClickHouse resolved outside the private network")
+    return f"http://{address}:18123"
+
+
 def publish_saved_build(runtime: Path, build_id: str, *, apply: bool,
                         client_factory=_certificate_admin_client,
                         keeper_session_factory=open_workstation_keeper_session) -> dict:
@@ -79,7 +91,7 @@ def publish_saved_build(runtime: Path, build_id: str, *, apply: bool,
                 "family_rows": counts, "status": "plan_only"}
     if platform.node().upper() != "DESKTOP-SAAI85T":
         raise RuntimeError("Market-day certificate publication is workstation-only")
-    with closing(client_factory("http://DESKTOP-SAAI85T:18123")) as http:
+    with closing(client_factory(_workstation_clickhouse_url())) as http:
         client = MarketDayCertificateClient(http)
         with closing(keeper_session_factory()) as session:
             reader = MarketDayKeeperReader(session.client)

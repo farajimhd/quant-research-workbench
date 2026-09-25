@@ -78,6 +78,7 @@ def test_certificate_publisher_plan_is_read_only_and_apply_is_explicit(tmp_path,
 
     import scripts.clickhouse.publish_market_day_certificate as module
     monkeypatch.setattr(module.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(module.socket, "gethostbyname", lambda _host: "192.168.1.218")
     class Resource:
         closed = False
         def close(self):
@@ -105,12 +106,20 @@ def test_certificate_publisher_plan_is_read_only_and_apply_is_explicit(tmp_path,
     monkeypatch.setattr(module, "audit_attested_market_day_certificate",
                         lambda *_args, **_kwargs: None)
     result = publish_saved_build(tmp_path, build_id, apply=True,
-                                 client_factory=lambda _url: http,
+                                 client_factory=lambda url: http if url ==
+                                 "http://192.168.1.218:18123" else forbidden(url),
                                  keeper_session_factory=lambda: session)
     assert result["status"] == "attested"
     assert called and isinstance(called[0][0], CanonicalSourceReader)
     assert called[0][0].http is http
     assert http.closed and session.closed
+
+
+def test_certificate_endpoint_rejects_nonprivate_dns(monkeypatch):
+    import scripts.clickhouse.publish_market_day_certificate as module
+    monkeypatch.setattr(module.socket, "gethostbyname", lambda _host: "8.8.8.8")
+    with pytest.raises(RuntimeError, match="private network"):
+        module._workstation_clickhouse_url()
 
 
 def test_source_verifier_adapter_is_select_only_and_returns_typed_rows():
