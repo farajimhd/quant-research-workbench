@@ -35,6 +35,7 @@ import {
   type QmdUnifiedStructureLevel,
 } from "./contracts";
 import {
+  ARTE_BACKTEST_CHART_INDICATORS,
   CHART_INDICATORS,
   HISTORICAL_TIMEFRAMES,
   INDICATOR_SERIES,
@@ -71,6 +72,7 @@ const BAR_GPT_ORIGIN_FORMATTER = new Intl.DateTimeFormat("en-US", {
 
 export function ChartPreview({
   appearanceDefaults,
+  backtestMode = false,
   baseHeight,
   canvasId,
   changeAsOf,
@@ -90,10 +92,12 @@ export function ChartPreview({
   strategyDecisions = EMPTY_STRATEGY_DECISIONS,
   strategyPresentation = DEFAULT_STRATEGY_CHART_PRESENTATION,
   showTradeAnnotations = true,
+  staleIndicatorCount = 0,
   runId,
   trading,
 }: {
   appearanceDefaults?: ChartAppearanceDefaults;
+  backtestMode?: boolean;
   baseHeight?: number;
   canvasId: string;
   changeAsOf: string;
@@ -113,6 +117,7 @@ export function ChartPreview({
   strategyDecisions?: StrategyDecisionEvent[];
   strategyPresentation?: StrategyChartPresentation;
   showTradeAnnotations?: boolean;
+  staleIndicatorCount?: number;
   runId?: string;
   trading?: CanonicalTradingPreview;
 }) {
@@ -357,7 +362,9 @@ export function ChartPreview({
     price: averagePrice,
     quantity,
   } satisfies LiveEntryLine : null;
-  const emptyMessage = `No closed ${linkContext.symbol} ${timeframe} bars are available from QMD History at this Canvas clock.`;
+  const emptyMessage = backtestMode
+    ? `No certified arte ${linkContext.symbol} ${timeframe} bars are available at this Backtest clock.`
+    : `No closed ${linkContext.symbol} ${timeframe} bars are available from QMD History at this Canvas clock.`;
   const barGptReady = Boolean(barGptView && barGptScope?.ticker_count && barGptScope.ready_count === barGptScope.ticker_count);
   const barGptWarm = barGptScope?.readiness?.find((row) => row.ticker === linkContext.symbol)?.warm;
   const barGptDetail = barGptError || barGptWarm?.error || "";
@@ -416,7 +423,7 @@ export function ChartPreview({
       {barGptTriggerMode === "manual" && barGptView ? <label className="canvas-bar-gpt-origin"><span>Origin (ET)</span><select aria-label="BarGPT inference origin" onChange={(event) => { setBarGptOriginOverrideUs(Number(event.target.value)); setBarGptForecasts([]); setBarGptError(""); }} value={barGptOriginUs ?? ""}>{barGptOriginOptions.map((row, index) => <option key={row.originUs} value={row.originUs}>{index === 0 ? `Latest · ${row.label}` : row.label}</option>)}</select></label> : null}
       {barGptTriggerMode === "manual" ? <button disabled={!barGptView || !barGptOriginUs || !barGptReady || barGptInferring} onClick={() => void runManualInference()} type="button">{barGptInferring ? "Running…" : "Infer now"}</button> : null}
     </div> : null}
-    <ChartPanel levelBookMode={liveChart.pointInTime ? 'history' : 'live'} appearanceDefaults={appearanceDefaults} baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} dataStatus={splitEvents.error ? "Split events unavailable" : strategyActivityError || (liveChart.indicatorProvenance?.unavailable_columns?.length ? `Stale indicators: ${liveChart.indicatorProvenance.unavailable_columns.join(", ")}` : undefined) || (visibleIndicators.includes("indicator.session_relative_volume") && liveChart.indicatorProvenance?.session_relative_volume?.status === "unavailable" ? "Session RVOL unavailable" : undefined) || (timeframe === "1d" && liveChart.splitAdjusted ? "Split-adjusted" : undefined)} deferInitialFitUntilLoaded={fullSessionReview} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="default" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onShowSplitEventsChange={(showSplitEvents) => onChartSettingsChange({ ...chartSettings, showSplitEvents })} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} hindsightSessionDate={liveChart.pointInTime && supportsPositionPresentation(timeframe) ? sessionDate : undefined} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} showSplitEvents={chartSettings.showSplitEvents} strategyPresentationEnabled={strategyPresentationAvailable} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarActions={toolbarActions} indicatorAsOf={changeAsOf} indicatorSplitAdjusted={liveChart.splitAdjusted === true} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
+    <ChartPanel levelBookMode={liveChart.pointInTime ? 'history' : 'live'} appearanceDefaults={appearanceDefaults} baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} dataStatus={splitEvents.error ? "Split events unavailable" : strategyActivityError || (liveChart.indicatorProvenance?.unavailable_columns?.length ? `Stale indicators: ${liveChart.indicatorProvenance.unavailable_columns.join(", ")}` : undefined) || (backtestMode && staleIndicatorCount ? `${staleIndicatorCount} saved overlay${staleIndicatorCount === 1 ? "" : "s"} unavailable in Backtest` : undefined) || (visibleIndicators.includes("indicator.session_relative_volume") && liveChart.indicatorProvenance?.session_relative_volume?.status === "unavailable" ? "Session RVOL unavailable" : undefined) || (timeframe === "1d" && liveChart.splitAdjusted ? "Split-adjusted" : undefined)} deferInitialFitUntilLoaded={fullSessionReview} displayItemOptions={backtestMode ? ARTE_BACKTEST_CHART_INDICATORS : CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="default" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onShowSplitEventsChange={(showSplitEvents) => onChartSettingsChange({ ...chartSettings, showSplitEvents })} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} hindsightSessionDate={liveChart.pointInTime && supportsPositionPresentation(timeframe) ? sessionDate : undefined} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} showSplitEvents={chartSettings.showSplitEvents} strategyPresentationEnabled={strategyPresentationAvailable} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarActions={toolbarActions} indicatorAsOf={changeAsOf} indicatorSplitAdjusted={liveChart.splitAdjusted === true} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
   </div>;
 }
 

@@ -84,9 +84,13 @@ import {
 } from "../features/canvas/contracts";
 import {
   ALL_CONTAINER_IDS,
+  ARTE_BACKTEST_TIMEFRAMES,
   HISTORICAL_TIMEFRAMES,
   MANAGER_DEFAULT_CONTAINER_IDS,
   READ_ONLY_BLOCKED_CONTAINERS,
+  arteBacktestChartSettings,
+  arteBacktestStaleIndicatorCount,
+  mergeArteBacktestChartSettings,
 } from "../features/canvas/configuration";
 import { marketSessionDate, useCanvasHistoricalChart } from "../features/canvas/chartData";
 import { nestedValue } from "../features/canvas/presentationFormat";
@@ -1322,7 +1326,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
   const overlayOpen = linkOpen || settingsOpen;
   return <div className="canvas-container-preview">
     {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={instanceId}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
-    {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange)}</div> : null}
+    {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange, runtimeMode)}</div> : null}
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "labeler"
         ? <Suspense fallback={<LoadingState fill label="Loading Labeler" />}><LabelerContainer instanceId={instanceId} /></Suspense>
       : definition.id === "chart"
@@ -1417,21 +1421,32 @@ type ChartContainerPreviewProps = {
 
 const ChartContainerPreview = memo(function ChartContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, runId, runtimeMode, settings, strategy, symbolEditable, trading, updateSettings }: ChartContainerPreviewProps) {
   const historicalMode = runtimeMode === "backtest_debug" ? "debug" : runtimeMode === "backtest" ? "backtest" : "replay";
+  const backtestMode = historicalMode === "backtest";
   const fullSession = runtimeMode === "backtest" || runtimeMode === "backtest_debug";
-  const liveChart = useCanvasHistoricalChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate, settings.chart.visibleIndicators, liveMode, true, historicalMode, fullSession, runId);
+  const chartSettings = backtestMode ? arteBacktestChartSettings(settings.chart) : settings.chart;
+  const liveChart = useCanvasHistoricalChart(linkContext.symbol, chartSettings.timeframe, cutoffMs, previewContext.sessionDate, chartSettings.visibleIndicators, liveMode, true, historicalMode, fullSession, runId);
   const presentations = useTickerPresentations([linkContext.symbol]);
   const strategyDecisions = useMemo(() => strategyDecisionEvents(strategy), [strategy]);
   const strategyPresentation = useMemo(() => resolvedStrategyPresentation(strategy), [strategy]);
-  return <ChartPreview canvasId={canvasId} changeAsOf={new Date(cutoffMs).toISOString()} chartSettings={settings.chart} fillHeight fullSessionReview={fullSession} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onChartSettingsChange={(next) => updateSettings((current) => ({ ...current, chart: next }))} onLinkContextChange={onLinkContextChange} runId={runId} strategyDecisions={strategyDecisions} strategyPresentation={strategyPresentation} symbolEditable={symbolEditable} trading={trading} />;
+  return <ChartPreview backtestMode={backtestMode} canvasId={canvasId} changeAsOf={new Date(cutoffMs).toISOString()} chartSettings={chartSettings} fillHeight fullSessionReview={fullSession} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onChartSettingsChange={(next) => updateSettings((current) => ({ ...current, chart: backtestMode ? mergeArteBacktestChartSettings(current.chart, next) : next }))} onLinkContextChange={onLinkContextChange} runId={runId} staleIndicatorCount={backtestMode ? arteBacktestStaleIndicatorCount(settings.chart) : 0} strategyDecisions={strategyDecisions} strategyPresentation={strategyPresentation} symbolEditable={symbolEditable} timeframes={backtestMode ? ARTE_BACKTEST_TIMEFRAMES : HISTORICAL_TIMEFRAMES} trading={trading} />;
 }, chartContainerPreviewPropsEqual);
+
+function BacktestUnavailableContextChart({ label }: { label: string }) {
+  return <div className="canvas-backtest-context-unavailable" role="status">
+    <strong>{label} chart unavailable</strong>
+    <span>No certified arte {label.toLowerCase()} bars exist for Backtest. Use the main intraday chart.</span>
+  </div>;
+}
 
 function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, readOnly, runId, runtimeMode, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
   const [mainChartMaximized, setMainChartMaximized] = useState(true);
   const historicalMode = runtimeMode === "backtest_debug" ? "debug" : runtimeMode === "backtest" ? "backtest" : "replay";
+  const backtestMode = historicalMode === "backtest";
   const fullSession = runtimeMode === "backtest" || runtimeMode === "backtest_debug";
-  const main = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.main.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.main.visibleIndicators, liveMode, true, historicalMode, fullSession, runId);
-  const month = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.month.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.month.visibleIndicators, liveMode, true, historicalMode, false, runId);
-  const daily = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.daily.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.daily.visibleIndicators, liveMode, true, historicalMode, false, runId);
+  const mainSettings = backtestMode ? arteBacktestChartSettings(settings.charts_quotes.main) : settings.charts_quotes.main;
+  const main = useCanvasHistoricalChart(linkContext.symbol, mainSettings.timeframe, cutoffMs, previewContext.sessionDate, mainSettings.visibleIndicators, liveMode, true, historicalMode, fullSession, runId);
+  const month = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.month.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.month.visibleIndicators, liveMode, !backtestMode, historicalMode, false, runId);
+  const daily = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.daily.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.daily.visibleIndicators, liveMode, !backtestMode, historicalMode, false, runId);
   const presentations = useTickerPresentations([linkContext.symbol]);
   const logoUrl = presentations[linkContext.symbol]?.logo_url;
   const changeAsOf = new Date(cutoffMs).toISOString();
@@ -1446,17 +1461,17 @@ function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkCont
     observed_at: proposalBar.last_event_ts || proposalBar.bar_end || proposalBar.bar_start,
     reference_price: proposalBar.close,
     source_sequence: proposalBar.last_event_ts || proposalBar.bar_start,
-    source: liveMode ? "qmd_live_chart_bar" : "qmd_history_chart_bar",
+    source: liveMode ? "qmd_live_chart_bar" : backtestMode ? "arte.persisted_chart_bar" : "qmd_history_chart_bar",
     tick_size: 0.01,
   } : null;
-  const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, runId, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
+  const chartProps = { backtestMode, changeAsOf, linkContext, logoUrl, onLinkContextChange, runId, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
   return <ChartsQuotesMarketLayout
     mainChartMaximized={mainChartMaximized}
-    dailyChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} timeframes={["1d"]} />}
+    dailyChart={backtestMode ? <BacktestUnavailableContextChart label="Daily" /> : <ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} timeframes={["1d"]} />}
     end={liveMode ? undefined : changeAsOf}
     layout={settings.charts_quotes.layout}
-    mainChart={<ChartPreview {...chartProps} toolbarActions={<button aria-label={mainChartMaximized ? "Restore chart panels" : "Maximize main chart"} aria-pressed={mainChartMaximized} className="toolbar-button" onClick={() => setMainChartMaximized((maximized) => !maximized)} title={mainChartMaximized ? "Restore right column and bottom row" : "Maximize main chart: hide right column and bottom row"} type="button">{mainChartMaximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>} baseHeight={460} canvasId={canvasId} chartSettings={settings.charts_quotes.main} fillHeight fullSessionReview={fullSession} instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", next)} timeframes={HISTORICAL_TIMEFRAMES} />}
-    monthChart={<ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.month} fillHeight instanceId={`${instanceId}.month`} liveChart={month} onChartSettingsChange={(next) => updateSlot("month", { ...next, timeframe: "1mo" })} timeframes={["1mo"]} />}
+    mainChart={<ChartPreview {...chartProps} toolbarActions={<button aria-label={mainChartMaximized ? "Restore chart panels" : "Maximize main chart"} aria-pressed={mainChartMaximized} className="toolbar-button" onClick={() => setMainChartMaximized((maximized) => !maximized)} title={mainChartMaximized ? "Restore right column and bottom row" : "Maximize main chart: hide right column and bottom row"} type="button">{mainChartMaximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>} baseHeight={460} canvasId={canvasId} chartSettings={mainSettings} fillHeight fullSessionReview={fullSession} instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", backtestMode ? mergeArteBacktestChartSettings(settings.charts_quotes.main, next) : next)} staleIndicatorCount={backtestMode ? arteBacktestStaleIndicatorCount(settings.charts_quotes.main) : 0} timeframes={backtestMode ? ARTE_BACKTEST_TIMEFRAMES : HISTORICAL_TIMEFRAMES} />}
+    monthChart={backtestMode ? <BacktestUnavailableContextChart label="Monthly" /> : <ChartPreview {...chartProps} appearanceDefaults={CHARTS_QUOTES_CONTEXT_APPEARANCE_DEFAULTS} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.month} fillHeight instanceId={`${instanceId}.month`} liveChart={month} onChartSettingsChange={(next) => updateSlot("month", { ...next, timeframe: "1mo" })} timeframes={["1mo"]} />}
     onLayoutChange={(layout) => updateSettings((current) => ({ ...current, charts_quotes: { ...current.charts_quotes, layout } }))}
     onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined}
     start={liveMode ? undefined : dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()}
@@ -1573,17 +1588,17 @@ function stringArraysEqual(previous: readonly string[], next: readonly string[])
 
 
 
-function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, linkContext: CanvasLinkContext, updateSettings: SettingsUpdater, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void) {
+function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, linkContext: CanvasLinkContext, updateSettings: SettingsUpdater, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void, runtimeMode: CanvasRuntimeMode) {
   if (id === "labeler") return <div className="canvas-settings-note">Choose the session inside Labeler. Each ticker opens at 1h. Submit each long or short interval to persist it immediately; complete the session separately.</div>;
   if (id === "microstructure") return <><TextField label="Symbol" onChange={(value) => { const symbol = value.toUpperCase(); updateSettings((state) => ({ ...state, chart: { ...state.chart, symbol } })); onLinkContextChange({ symbol }); }} value={linkContext.symbol} /><div className="canvas-settings-note">The symbol follows the selected link color. Quotes and trades share one QMD event stream; each table retains its latest 1,024 decoded rows at the shared historical clock.</div></>;
   if (id === "facts") return <><TextField label="Symbol" onChange={(value) => { const symbol = value.toUpperCase(); updateSettings((state) => ({ ...state, chart: { ...state.chart, symbol } })); onLinkContextChange({ symbol }); }} value={linkContext.symbol} /><div className="canvas-settings-note">Facts follow the selected link color and shared point-in-time clock. Reported values remain distinct from explicitly labeled estimates, ranges, and upper bounds.</div></>;
   const settingsId = id as keyof ContainerSettings;
   const current = settings[settingsId] as Record<string, unknown>;
   function patch(value: Record<string, unknown>) { updateSettings((state) => ({ ...state, [id]: { ...(state[settingsId] as Record<string, unknown>), ...value } })); }
-  if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => patch({ showSplitEvents: value === "1d", timeframe: value as CanvasChartTimeframe })} optionLabel={formatChartTimeframe} options={HISTORICAL_TIMEFRAMES} value={settings.chart.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /><CheckField checked={Boolean(current.showSplitEvents)} label="Show stock split events" onChange={(value) => patch({ showSplitEvents: value })} /></>;
+  if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => patch({ showSplitEvents: value === "1d", timeframe: value as CanvasChartTimeframe })} optionLabel={formatChartTimeframe} options={runtimeMode === "backtest" ? ARTE_BACKTEST_TIMEFRAMES : HISTORICAL_TIMEFRAMES} value={runtimeMode === "backtest" ? arteBacktestChartSettings(settings.chart).timeframe : settings.chart.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} />{runtimeMode !== "backtest" ? <CheckField checked={Boolean(current.showSplitEvents)} label="Show stock split events" onChange={(value) => patch({ showSplitEvents: value })} /> : null}</>;
   if (id === "portfolio") return <><CheckField checked={Boolean(current.showExposure)} label="Show exposure" onChange={(value) => patch({ showExposure: value })} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
   if (id === "strategy") return <CheckField checked={Boolean(current.showSignals)} label="Show recent signals" onChange={(value) => patch({ showSignals: value })} />;
-  if (id === "charts_quotes") return <div className="canvas-settings-note">The main chart starts at 10 seconds with VWAP, MACD, and QMD Unified Structural Levels. Its timeframe, indicators, pane layout, and appearance persist from controls inside the chart. The lower charts remain fixed to monthly and daily horizons. Drag the dividers between rows and columns to persist the workspace proportions.</div>;
+  if (id === "charts_quotes") return <div className="canvas-settings-note">{runtimeMode === "backtest" ? "Backtest charts use certified ARTE bars and available persisted indicators. Monthly and daily context panels are unavailable. The main chart's supported timeframe and overlays persist from its controls." : "The main chart starts at 10 seconds with VWAP, MACD, and QMD Unified Structural Levels. Its timeframe, indicators, pane layout, and appearance persist from controls inside the chart. The lower charts remain fixed to monthly and daily horizons."} Drag the dividers between rows and columns to persist the workspace proportions.</div>;
   if (id === "scanner") return <><NumberField label="Maximum rows" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Columns, sorting, and filters are managed inside Scanner and persist with this container instance.</div></>;
   if (id === "signal_stream") return <><NumberField label="Maximum events" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Configured Market Discovery occurrences are append-only and preserve their trigger-time values. Strategy Activity remains a separate durable runtime surface.</div></>;
   if (id === "watchlist") return <><NumberField label="Maximum rows" max={500} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">QMD Market Discovery owns Watchlist membership and its causal history. Canvas only chooses which published Watchlist to present.</div></>;

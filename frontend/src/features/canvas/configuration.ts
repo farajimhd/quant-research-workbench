@@ -4,7 +4,7 @@ import type { ChartsQuotesLayoutSettings } from "../../app/components/MarketMicr
 import type { MarketScannerSettings, SignalStreamSettings, StrategyActivitySettings, WatchUniverseSettings } from "../../app/components/MarketScreenerContainers";
 import { TRADING_WORKSPACE_CONTAINERS, type WorkspaceContainerId } from "../../app/tradingWorkspace";
 import type { XbrlAnalysisSettings } from "../../app/components/XbrlAnalysisContainer";
-import type { ContainerSettings } from "./contracts";
+import type { CanvasChartSettings, ContainerSettings } from "./contracts";
 import { MAIN_CHART_DEFAULT_INDICATORS } from "./chartDefaults";
 export const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 export const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
@@ -51,6 +51,7 @@ export const DEFAULT_SETTINGS: ContainerSettings = {
 };
 
 export const HISTORICAL_TIMEFRAMES: CanvasChartTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h", "1d", "1w", "1mo", "1y"];
+export const ARTE_BACKTEST_TIMEFRAMES: CanvasChartTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 export const ENRICHED_QMD_TIMEFRAMES = new Set<CanvasChartTimeframe>(["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"]);
 export const MACRO_TIMEFRAMES = new Set<CanvasChartTimeframe>(["1d", "1w", "1mo", "1y"]);
 export const INDICATOR_GUIDES: Record<string, ChartCatalogKnowledge> = {
@@ -259,6 +260,33 @@ export const CHART_INDICATORS: ChartDisplayItem[] = [
     ],
   },
 ];
+
+// Strategy 1 Backtest charts show only indicators actually persisted by the
+// certified ARTE technical build. Keep all other definitions available for
+// replay/live and future producer upgrades; never compute them in Backtest.
+const ARTE_BACKTEST_INDICATOR_IDS = new Set([
+  "indicator.ema_9", "indicator.ema_20", "indicator.ema_50",
+  "indicator.macd", "indicator.rsi", "indicator.atr",
+]);
+export const ARTE_BACKTEST_CHART_INDICATORS = CHART_INDICATORS.filter((item) => ARTE_BACKTEST_INDICATOR_IDS.has(item.id));
+
+export function arteBacktestChartSettings(settings: CanvasChartSettings): CanvasChartSettings {
+  return {
+    ...settings,
+    timeframe: ARTE_BACKTEST_TIMEFRAMES.includes(settings.timeframe) ? settings.timeframe : "1s",
+    visibleIndicators: settings.visibleIndicators.filter((id) => ARTE_BACKTEST_INDICATOR_IDS.has(id)),
+  };
+}
+
+export function mergeArteBacktestChartSettings(saved: CanvasChartSettings, next: CanvasChartSettings): CanvasChartSettings {
+  // A Backtest-only view must not erase a user's replay/live overlays.
+  const hidden = saved.visibleIndicators.filter((id) => !ARTE_BACKTEST_INDICATOR_IDS.has(id));
+  return { ...next, visibleIndicators: [...hidden, ...next.visibleIndicators] };
+}
+
+export function arteBacktestStaleIndicatorCount(settings: CanvasChartSettings): number {
+  return settings.visibleIndicators.filter((id) => !ARTE_BACKTEST_INDICATOR_IDS.has(id)).length;
+}
 
 export const INDICATOR_SERIES = [
   { axisTitle: "RVOL (x)", autoscaleScope: "loaded-series", column: "session_relative_volume", color: "var(--info)", displayItemId: "indicator.session_relative_volume", label: "Session RVOL (20 days)", pane: "session_relative_volume", priceScaleId: "right" },

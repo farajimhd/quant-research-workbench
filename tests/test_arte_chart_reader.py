@@ -186,6 +186,21 @@ class ArteChartReaderTests(unittest.TestCase):
                 )
         gateway.assert_not_called()
 
+    def test_backtest_unsupported_daily_resolution_never_triggers_qmd_build(self):
+        from src.backend.trading_runtime_service import historical_bar_history_before
+
+        with (patch("src.backend.arte_chart_reader.chart_page", return_value=None),
+              patch("src.backend.trading_runtime_service.qmd_product_request") as gateway):
+            with self.assertRaisesRegex(ValueError, "Certified ARTE chart products"):
+                historical_bar_history_before(
+                    before=DAY, session_date=DAY, ticker="SUGP", timeframe="1d",
+                    as_of="2026-08-18T20:00:00-04:00", row_limit=60,
+                    indicator_columns=["bar_start"],
+                    include_market_signals=False, include_structure=False,
+                    mode="backtest", stage="bars",
+                )
+        gateway.assert_not_called()
+
     def test_backtest_structure_request_never_triggers_qmd_build(self):
         from src.backend.trading_runtime_service import historical_bar_history_before
 

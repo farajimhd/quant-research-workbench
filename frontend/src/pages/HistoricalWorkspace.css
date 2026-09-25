@@ -1,5 +1,30 @@
 /* Replay and Backtest setup */
 
+.canvas-backtest-context-unavailable {
+  align-items: center;
+  background: var(--surface-alt);
+  color: var(--muted-foreground);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  height: 100%;
+  justify-content: center;
+  min-height: 0;
+  padding: calc(12px * var(--ui-scale));
+  text-align: center;
+}
+
+.canvas-backtest-context-unavailable strong {
+  color: var(--foreground);
+  font-size: 0.9rem;
+}
+
+.canvas-backtest-context-unavailable span {
+  font-size: 0.78rem;
+  line-height: 1.4;
+  max-width: 30ch;
+}
+
 /* The Canvas shell clips overflow; setup owns scrolling within that shell. */
 .mode-launch-page:has(.backtest-run-history) {
   height: 100%;
