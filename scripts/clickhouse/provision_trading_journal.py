@@ -125,7 +125,7 @@ def _credential(path: Path, *, account_exists: bool) -> str:
 def _write_credential(path: Path) -> str:
     password = secrets.token_urlsafe(48)
     path.write_text(
-        "TRADING_JOURNAL_CLICKHOUSE_URL=http://192.168.0.21:18123\n"
+        "TRADING_JOURNAL_CLICKHOUSE_URL=http://DESKTOP-SAAI85T:18123\n"
         f"TRADING_JOURNAL_CLICKHOUSE_USER={PRINCIPAL}\n"
         f"TRADING_JOURNAL_CLICKHOUSE_PASSWORD={password}\n",
         encoding="utf-8",

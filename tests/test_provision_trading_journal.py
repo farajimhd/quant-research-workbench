@@ -35,6 +35,7 @@ def test_credential_is_reused_and_never_implicitly_rotated(
     assert provision._credential(path, account_exists=True) == first
     assert protected == [path, path, path]
     assert path.read_text(encoding="utf-8").count(first) == 1
+    assert "TRADING_JOURNAL_CLICKHOUSE_URL=http://DESKTOP-SAAI85T:18123\n" in path.read_text(encoding="utf-8")
 
     path.write_text("TRADING_JOURNAL_CLICKHOUSE_USER=someone_else\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="different principal"):
