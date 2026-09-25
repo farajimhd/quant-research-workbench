@@ -295,6 +295,11 @@ def evaluate(host, a, o, p, old_state, *, typed_persistence=False):
         for key, row in crossed:
             if row['upper'] > active['entry_price'] and key not in active['broken']:
                 active['broken'].append(key)
+        if typed_persistence:
+            from .arte_assignment_vwap_entry_ids import validate_typed_entry_id_lists
+            validate_typed_entry_id_lists({name: active[name]
+                                           for name in ('broken', 'cross_known')
+                                           if name in active})
         position_breaks = len(active['broken'])
         # Two physical levels behind, including prior session breaks for a late entry.
         eligible_stop = position_breaks >= (2 if active['late'] else 3)
@@ -470,6 +475,10 @@ def evaluate(host, a, o, p, old_state, *, typed_persistence=False):
         prior_episode_used=prior_episode_used), initial_stop=stop, active_stop=stop,
         structural_profit_targets=[target], entry_at=o.observed_at.isoformat(), entry_reference_price=o.ask,
         entries=state.get('entries', 0)+1, entry_acquisition_exit_latched=False)
+    if typed_persistence:
+        from .arte_assignment_vwap_entry_ids import validate_typed_entry_id_lists
+        validate_typed_entry_id_lists({name: state['vwap_ladder_entry'][name]
+                                       for name in ('broken', 'cross_known')})
     return emit('enter_long', entry_kind if post_move else 'vwap_midpoint_all_macd', Status.ENTRY_PENDING,
         invalidation_price=stop, profit_target_price=target,
         capital_request=CapitalRequest(mode='mandate_fraction', value=settings['cash_fraction']/3),
