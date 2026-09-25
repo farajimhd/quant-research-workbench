@@ -129,3 +129,14 @@ def test_orphan_child_at_next_sequence_fails_closed_before_insert():
     assert not any(event.startswith("insert_") for event in rows.events)
     assert keeper.is_current(configuration_revision_id="config-1",
                              session_key="2026-09-24", owner_id="publisher", epoch=1)
+
+
+def test_prior_attested_chain_is_verified_before_next_revision():
+    rows, keeper = Rows(), _keeper()
+    _publish(rows, keeper)
+    rows.members[1][0]["base_hash"] = "d" * 64
+    with pytest.raises(UncertainMembershipPublication, match="prior attested chain"):
+        _publish(rows, keeper)
+    assert len(rows.parents) == 1
+    assert keeper.is_current(configuration_revision_id="config-1",
+                             session_key="2026-09-24", owner_id="publisher", epoch=2)

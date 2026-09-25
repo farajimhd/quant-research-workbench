@@ -12,7 +12,7 @@ from typing import Any, Mapping, Protocol, Sequence
 from src.backend.live_assignment_activation_join import PinnedAssignmentMember
 from src.backend.live_plan_membership import (
     ManagedPlanMembershipHeadReader, PlanWatchMember, ZERO_HASH,
-    project_plan_membership,
+    project_plan_membership, recover_attested_plan_membership,
 )
 from src.backend.live_assignment_base_keeper import KeeperAssignmentHead
 from src.trading_runtime.keeper_session import ManagedKeeperSession
@@ -185,6 +185,30 @@ def publish_plan_membership(
             uncertain = True
             raise UncertainMembershipPublication(
                 "plan membership has missing, duplicate, or orphan revisions")
+        if prior is not None:
+            class _PinnedHead:
+                def read_head(self, *, configuration_revision_id: str,
+                              session_key: str) -> tuple[int, str, int]:
+                    current = keeper.read_head_or_none(
+                        configuration_revision_id=configuration_revision_id,
+                        session_key=session_key)
+                    if current is None:
+                        raise RuntimeError("plan membership Keeper head disappeared")
+                    return current
+
+            try:
+                recover_attested_plan_membership(
+                    rows, _PinnedHead(),
+                    configuration_revision_id=configuration_revision_id,
+                    configuration_content_hash=approved_revision.content_hash,
+                    session_key=session_key,
+                    source_cursor_commit_hash=existing[-1]["source_cursor_commit_hash"],
+                    max_revisions=100_000,
+                )
+            except BaseException as exc:
+                uncertain = True
+                raise UncertainMembershipPublication(
+                    "plan membership prior attested chain is invalid") from exc
         sequence = prior_sequence + 1
         if sequence > 100_000:
             raise ValueError("plan membership revision bound exceeded")
