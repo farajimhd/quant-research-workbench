@@ -75,6 +75,28 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.broker.on_liquidity_bar(other, at=at), [])
         self.assertEqual(len(await self.broker.on_liquidity_bar(bar(at), at=at)), 1)
 
+    async def test_completed_orders_and_flat_positions_leave_hot_ticker_index(self):
+        await self.order("MKT", quantity=5, oid="entry")
+        first = START + timedelta(milliseconds=100)
+        self.assertEqual(len(await self.broker.on_liquidity_bar(bar(first), at=first)), 1)
+        await self.order("MKT", side="SELL", quantity=5, oid="exit")
+        second = first + timedelta(milliseconds=100)
+        self.assertEqual(len(await self.broker.on_liquidity_bar(bar(second), at=second)), 1)
+        self.assertNotIn("AAPL", self.broker._position_conids_by_ticker)
+        third = second + timedelta(milliseconds=100)
+        self.assertEqual(await self.broker.on_liquidity_bar(bar(third), at=third), [])
+        self.assertNotIn("AAPL", self.broker._orders_by_ticker)
+        self.assertEqual(len(self.broker._orders), 2)
+
+        restored = SimulatedBrokerAdapter(
+            ["TEST"], self.broker.config, mode=RunMode.BACKTEST,
+            initial_time=START)
+        await restored.initialize()
+        restored.restore_checkpoint_state(self.broker.checkpoint_state())
+        self.assertNotIn("AAPL", restored._orders_by_ticker)
+        self.assertNotIn("AAPL", restored._position_conids_by_ticker)
+        self.assertEqual(len(restored._orders), 2)
+
     async def test_restored_ticker_index_keeps_fill_priority(self):
         await self.order("MKT", quantity=5, oid="first")
         await self.order("MKT", quantity=5, oid="second")

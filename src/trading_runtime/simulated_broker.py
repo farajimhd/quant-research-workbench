@@ -373,12 +373,14 @@ class SimulatedBrokerAdapter:
         self._orders = orders
         self._orders_by_ticker = {}
         for state in orders.values():
-            self._orders_by_ticker.setdefault(state.request.ticker.upper(), []).append(state)
+            if state.status in OPEN_ORDER_STATUSES:
+                self._orders_by_ticker.setdefault(state.request.ticker.upper(), []).append(state)
         self._position_conids_by_ticker = {}
         for account_positions in positions.values():
             for position in account_positions.values():
-                self._position_conids_by_ticker.setdefault(
-                    position.ticker.upper(), set()).add(position.conid)
+                if position.quantity:
+                    self._position_conids_by_ticker.setdefault(
+                        position.ticker.upper(), set()).add(position.conid)
         self._order_ids_by_coid = order_ids_by_coid
         self._executions = executions
         self._quotes = {
@@ -901,7 +903,19 @@ class SimulatedBrokerAdapter:
         # An empty broker book has no conid-level quote, mark, performance, or
         # fill consumers. Keep the completed ticker snapshot above for order
         # admission and checkpoint recovery, then avoid per-ticker book scans.
+        # The authoritative order map retains completed/cancelled orders for
+        # audit. Its derived matching index must not rescan them on every
+        # subsequent 100 ms bucket for the rest of the session.
         ticker_orders = self._orders_by_ticker.get(ticker, ())
+        if ticker_orders:
+            active = [state for state in ticker_orders
+                      if state.status in OPEN_ORDER_STATUSES]
+            if len(active) != len(ticker_orders):
+                if active:
+                    self._orders_by_ticker[ticker] = active
+                else:
+                    del self._orders_by_ticker[ticker]
+                ticker_orders = active
         position_conids = self._position_conids_by_ticker.get(ticker, ())
         if not ticker_orders and not position_conids:
             return []
@@ -1413,6 +1427,15 @@ class SimulatedBrokerAdapter:
             elif new_qty == 0:
                 position.avg_cost = 0.0
         position.quantity = new_qty
+        if new_qty == 0 and not any(
+                account_positions.get(request.conid) is not None
+                and account_positions[request.conid].quantity
+                for account_positions in self._positions.values()):
+            conids = self._position_conids_by_ticker.get(request.ticker.upper())
+            if conids is not None:
+                conids.discard(request.conid)
+                if not conids:
+                    del self._position_conids_by_ticker[request.ticker.upper()]
         self._cash[account_id] -= signed * price + commission
 
     def _pretrade_validate(
