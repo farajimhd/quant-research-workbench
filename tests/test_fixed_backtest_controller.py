@@ -389,6 +389,133 @@ def test_fixed_controller_prepares_distinct_typed_clients_without_opening_gate(
     controller._journal.close()
 
 
+def test_fixed_controller_prepares_inactive_v3_with_distinct_clients(monkeypatch, tmp_path):
+    from src.backend import backtest_fixed_journal_bootstrap as bootstrap
+    from tests.test_backtest_fixed_market_authority import _plans
+
+    parent, execution = _plans()
+    config = {"mode": "backtest", "assignments": []}
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.run_dir = tmp_path / "must-not-exist"
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, market_data_plan={"token": parent.token},
+        configuration_revision={"content_hash": "c" * 64, "payload": config},
+        session_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc))
+    controller._account_map = {"account": "DU1"}
+    controller._resume_state = None
+    controller._journal = None
+    read, running, terminal, keeper = object(), object(), object(), object()
+    context = dict(mode="backtest", account_ids=("DU1",), run_month="2026-08-01",
+                   configuration_hash="c" * 64, market_plan_token=parent.token)
+    calls = []
+    monkeypatch.setattr(bootstrap, "read_v3_preflight",
+                        lambda client: calls.append(("read", client)))
+    monkeypatch.setattr(bootstrap, "running_v3_preflight",
+                        lambda client: calls.append(("running", client)))
+    monkeypatch.setattr(bootstrap, "terminal_v3_preflight",
+                        lambda client: calls.append(("terminal", client)))
+    monkeypatch.setattr(bootstrap, "terminal_v3_keeper_namespace_preflight",
+                        lambda value: calls.append(("keeper", value)))
+    monkeypatch.setattr(bootstrap, "verify_fixed_run_context",
+                        lambda *_a, **_k: context)
+    monkeypatch.setattr(bootstrap, "load_typed_run_context",
+                        lambda *_a, **_k: context)
+    class Writer:
+        run_id = RUN
+        run_mode = "backtest"
+        journal_profile = "backtest_v3"
+        coalesce_batches = False
+        max_events_per_commit = 512
+        def close(self):
+            calls.append(("close", self))
+    monkeypatch.setattr(bootstrap, "FixedTerminalKeeperAuthority",
+                        lambda **kwargs: SimpleNamespace(
+                            run_id=kwargs["run_id"], account_ids=kwargs["account_ids"]))
+    asyncio.run(controller._prepare_fixed_v3_journal_assembly(
+        read_client=read, writer_client=running, terminal_client=terminal,
+        keeper=keeper, attempt_id="00000000-0000-0000-0000-000000000a02",
+        writer_factory=lambda client, **_k: calls.append(("writer", client)) or Writer(),
+        projection_certifier=lambda: "a" * 64,
+        query_hash_certifier=lambda: "d" * 64,
+        expected_query_sha256="d" * 64,
+        parent_market_plan=parent, execution_market_plan=execution,
+        expected_config=config))
+    assert controller._journal_writer.journal_profile == "backtest_v3"
+    assert controller._journal_publisher.writer is controller._journal_writer
+    assert ("read", read) in calls and ("running", running) in calls
+    assert ("terminal", terminal) in calls and ("writer", running) in calls
+    assert not controller.run_dir.exists()
+    controller._journal.close()
+
+
+def test_fixed_controller_v3_rejects_shared_clients_before_preflight(monkeypatch):
+    from src.backend import backtest_fixed_journal_bootstrap as bootstrap
+    from tests.test_backtest_fixed_market_authority import _plans
+
+    parent, execution = _plans()
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, market_data_plan={"token": parent.token},
+        configuration_revision={"content_hash": "c" * 64, "payload": {}},
+        session_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc))
+    controller._resume_state = None
+    controller._journal = None
+    monkeypatch.setattr(bootstrap, "prepare_fixed_v3_journal_token",
+                        lambda *_a, **_k: pytest.fail("preflight reached"))
+    shared = object()
+    with pytest.raises(RuntimeError, match="distinct clients"):
+        asyncio.run(controller._prepare_fixed_v3_journal_assembly(
+            read_client=shared, writer_client=shared, terminal_client=object(),
+            keeper=object(), attempt_id="00000000-0000-0000-0000-000000000a02",
+            writer_factory=lambda *_a, **_k: pytest.fail("writer reached"),
+            projection_certifier=lambda: "a" * 64,
+            query_hash_certifier=lambda: "d" * 64,
+            expected_query_sha256="d" * 64,
+            parent_market_plan=parent, execution_market_plan=execution,
+            expected_config={}))
+
+
+def test_fixed_controller_v3_closes_assembly_on_preflight_drift(monkeypatch):
+    from src.backend import backtest_fixed_journal_bootstrap as bootstrap
+    from tests.test_backtest_fixed_market_authority import _plans
+
+    parent, execution = _plans()
+    config = {"assignments": []}
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, market_data_plan={"token": parent.token},
+        configuration_revision={"content_hash": "c" * 64, "payload": config},
+        session_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc))
+    controller._account_map = {"account": "DU1"}
+    controller._resume_state = None
+    controller._journal = None
+    closed = []
+    assembly = SimpleNamespace(
+        writer=SimpleNamespace(close=lambda: closed.append("writer")),
+        journal=SimpleNamespace(close=lambda: closed.append("journal")))
+    monkeypatch.setattr(bootstrap, "prepare_fixed_v3_journal_token",
+                        lambda *_a, **_k: object())
+    def assemble(*_a, **_k):
+        controller.definition.configuration_revision["content_hash"] = "e" * 64
+        return assembly
+    monkeypatch.setattr(bootstrap, "assemble_fixed_v3_journal", assemble)
+    with pytest.raises(RuntimeError, match="changed during preflight"):
+        asyncio.run(controller._prepare_fixed_v3_journal_assembly(
+            read_client=object(), writer_client=object(), terminal_client=object(),
+            keeper=object(), attempt_id="00000000-0000-0000-0000-000000000a02",
+            writer_factory=lambda *_a, **_k: None,
+            projection_certifier=lambda: "a" * 64,
+            query_hash_certifier=lambda: "d" * 64,
+            expected_query_sha256="d" * 64,
+            parent_market_plan=parent, execution_market_plan=execution,
+            expected_config=config))
+    assert closed == ["writer", "journal"]
+    assert controller._journal is None
+
+
 def test_fixed_controller_rejects_changed_market_plan_before_typed_client_or_writer(
     monkeypatch,
 ):
