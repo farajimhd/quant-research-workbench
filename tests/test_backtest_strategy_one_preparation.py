@@ -70,15 +70,17 @@ def test_bounded_preparation_prunes_untriggered_tickers_and_merges_stably(monkey
             self.closed = False
         def close(self):
             self.closed = True
-    def load(_plan, *, ticker, client, **_kwargs):
+    calls = []
+    def load(_plan, *, tickers, client, **_kwargs):
         assert isinstance(client, Reader)
-        return StrategyOneCandidateBatch(
+        calls.append(tickers)
+        return {ticker: StrategyOneCandidateBatch(
             np.array([30_000, 30_100]),
             np.array([True, ticker == "BBB"]),
             np.zeros(2, dtype=np.uint8), np.full((2, 4), 30_000),
-            np.full(2, 30_000), np.full(2, 97_000))
+            np.full(2, 30_000), np.full(2, 97_000)) for ticker in tickers}
     monkeypatch.setattr(
-        "src.backend.backtest_strategy_one_preparation.load_strategy_one_entry_batch",
+        "src.backend.backtest_strategy_one_preparation.load_strategy_one_entry_batches",
         load)
     stream, activation = _contract()
     results = []
@@ -98,6 +100,7 @@ def test_bounded_preparation_prunes_untriggered_tickers_and_merges_stably(monkey
         (30_000, "BBB", 0, 30_000),
         (30_100, "BBB", 1, 30_000),
     ]
+    assert calls == [("AAA", "BBB"), ("AAA", "BBB")]
     assert len(opened) <= 3 and all(reader.closed for reader in opened)
 
 
@@ -126,17 +129,17 @@ def test_worker_client_closes_after_candidate_failure(monkeypatch):
         def close(self):
             self.closed = True
 
-    def fail_on_second(_plan, *, ticker, client, **_kwargs):
+    def fail_on_second(_plan, *, tickers, client, **_kwargs):
         assert client is opened[0] and not client.closed
-        if ticker == "BBB":
+        if "BBB" in tickers:
             raise ValueError("candidate source failed")
-        return StrategyOneCandidateBatch(
+        return {ticker: StrategyOneCandidateBatch(
             np.array([30_000]), np.array([True]),
             np.zeros(1, dtype=np.uint8), np.full((1, 4), 30_000),
-            np.full(1, 30_000), np.full(1, 97_000))
+            np.full(1, 30_000), np.full(1, 97_000)) for ticker in tickers}
 
     monkeypatch.setattr(
-        "src.backend.backtest_strategy_one_preparation.load_strategy_one_entry_batch",
+        "src.backend.backtest_strategy_one_preparation.load_strategy_one_entry_batches",
         fail_on_second)
     stream, activation = _contract()
     with pytest.raises(ValueError, match="candidate source failed"):

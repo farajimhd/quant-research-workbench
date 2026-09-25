@@ -16,7 +16,7 @@ from typing import Any, Callable, Iterator, Mapping
 import numpy as np
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, market_day_boundary
-from src.backend.backtest_strategy_one_loader import load_strategy_one_entry_batch
+from src.backend.backtest_strategy_one_loader import load_strategy_one_entry_batches
 from src.backend.fixed_bar_signal import CONTRACT, STREAM_ID, load_first_squeeze_occurrences
 from src.trading_runtime.strategy_one_columnar import schedule_strategy_one_entries
 
@@ -112,34 +112,56 @@ def prepare_strategy_one_session(
             worker_state.client = client
         return client
 
-    def load(ticker: str) -> PreparedStrategyOneTicker:
-        batch = load_strategy_one_entry_batch(
-            plan, session_date=session_date, ticker=ticker,
+    def load(tickers: tuple[str, ...]) -> tuple[PreparedStrategyOneTicker, ...]:
+        batches = load_strategy_one_entry_batches(
+            plan, session_date=session_date, tickers=tickers,
             through_boundary_ms=through_boundary_ms, client=worker_client())
-        schedule = schedule_strategy_one_entries(batch, episodes[ticker])
-        rows = schedule.row_index
-        return PreparedStrategyOneTicker(
-            ticker, len(batch.evaluation_boundary_ms), rows,
-            schedule.evaluation_boundary_ms, schedule.episode_start_boundary_ms,
-            batch.macd_boundary_ms[rows], batch.stop_bar_boundary_ms[rows],
-            batch.stop_low_int[rows])
+        prepared = []
+        for ticker in tickers:
+            batch = batches[ticker]
+            schedule = schedule_strategy_one_entries(batch, episodes[ticker])
+            rows = schedule.row_index
+            prepared.append(PreparedStrategyOneTicker(
+                ticker, len(batch.evaluation_boundary_ms), rows,
+                schedule.evaluation_boundary_ms, schedule.episode_start_boundary_ms,
+                batch.macd_boundary_ms[rows], batch.stop_bar_boundary_ms[rows],
+                batch.stop_low_int[rows]))
+        return tuple(prepared)
 
     results: dict[str, PreparedStrategyOneTicker] = {}
-    tickers = iter(sorted(episodes))
+    liquidity_rows = {unit.ticker: unit.output_rows for unit in plan.units
+                      if unit.session_date == session_date
+                      and unit.stage == "broker_100ms"}
+    shards: list[tuple[str, ...]] = []
+    current: list[str] = []
+    current_rows = 0
+    for ticker in sorted(episodes):
+        count = liquidity_rows.get(ticker, 0)
+        if not 0 < count <= 1_000_000:
+            raise ValueError(f"Strategy 1 lacks bounded liquidity rows for {ticker}")
+        if current and (len(current) == 8 or current_rows + count > 1_000_000):
+            shards.append(tuple(current))
+            current, current_rows = [], 0
+        current.append(ticker)
+        current_rows += count
+    if current:
+        shards.append(tuple(current))
+    ticker_shards = iter(shards)
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             pending = {}
-            for ticker in tickers:
-                pending[pool.submit(load, ticker)] = ticker
+            for shard in ticker_shards:
+                pending[pool.submit(load, shard)] = shard
                 if len(pending) == max_workers:
                     break
             while pending:
                 done, _ = wait(pending, return_when=FIRST_COMPLETED)
                 for future in done:
-                    ticker = pending.pop(future)
-                    results[ticker] = future.result()
+                    pending.pop(future)
+                    for item in future.result():
+                        results[item.ticker] = item
                     try:
-                        successor = next(tickers)
+                        successor = next(ticker_shards)
                     except StopIteration:
                         continue
                     pending[pool.submit(load, successor)] = successor

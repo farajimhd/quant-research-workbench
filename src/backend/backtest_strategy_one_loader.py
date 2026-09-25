@@ -18,6 +18,7 @@ import pyarrow.compute as pc
 
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, market_day_boundary, market_day_source_sqls,
+    project_market_day_plan,
 )
 from src.trading_runtime.strategy_one_columnar import (
     CompletedMacd, CompletedThirtySecondLow, MACD_RESOLUTIONS_MS,
@@ -91,26 +92,8 @@ def _assert_scope(table: pa.Table, *, session_date: str, ticker: str,
         raise ValueError("Strategy 1 Arrow source differs from pinned scope")
 
 
-def load_strategy_one_entry_batch(plan: CertifiedMarketDayPlan, *,
-                                  session_date: str, ticker: str,
-                                  through_boundary_ms: int,
-                                  client: Any) -> StrategyOneCandidateBatch:
-    """Decode one certified session/ticker into a vectorized causal mask.
-
-    The ClickHouse principal must be SELECT-only. No QMD frame, market-event
-    replay, SQLite, or strategy-side indicator calculation is used here.
-    """
-    if (type(through_boundary_ms) is not int or through_boundary_ms <= 0
-            or through_boundary_ms % 100):
-        raise ValueError("Strategy 1 needs a completed 100ms end boundary")
-    scoped = _source_plan(plan, session_date, ticker)
-    sources = market_day_source_sqls(scoped,
-                                    through_boundary_ms=through_boundary_ms,
-                                    strategy_one_projection=True)
-    if len(sources) != 2:
-        raise RuntimeError("Strategy 1 needs liquidity and higher-bar sources")
-    hundred = _table(client, sources[0], maximum_rows=576_000)
-    higher = _table(client, sources[1], maximum_rows=80_000)
+def _decode_entry_batch(hundred: pa.Table, higher: pa.Table, *,
+                        session_date: str, ticker: str) -> StrategyOneCandidateBatch:
     _assert_scope(hundred, session_date=session_date, ticker=ticker,
                   resolutions=frozenset({100}))
     _assert_scope(higher, session_date=session_date, ticker=ticker,
@@ -159,3 +142,63 @@ def load_strategy_one_entry_batch(plan: CertifiedMarketDayPlan, *,
             _numpy(stops, "low_int", fill=0, dtype=np.int64),
             _numpy(stops, "price_valid", fill=0, dtype=np.uint8),
             _numpy(stops, "extremes_valid", fill=0, dtype=np.uint8)))
+
+
+def load_strategy_one_entry_batch(plan: CertifiedMarketDayPlan, *,
+                                  session_date: str, ticker: str,
+                                  through_boundary_ms: int,
+                                  client: Any) -> StrategyOneCandidateBatch:
+    """Decode one certified session/ticker into a vectorized causal mask.
+
+    The ClickHouse principal must be SELECT-only. No QMD frame, market-event
+    replay, SQLite, or strategy-side indicator calculation is used here.
+    """
+    if (type(through_boundary_ms) is not int or through_boundary_ms <= 0
+            or through_boundary_ms % 100):
+        raise ValueError("Strategy 1 needs a completed 100ms end boundary")
+    scoped = _source_plan(plan, session_date, ticker)
+    sources = market_day_source_sqls(scoped,
+                                    through_boundary_ms=through_boundary_ms,
+                                    strategy_one_projection=True)
+    if len(sources) != 2:
+        raise RuntimeError("Strategy 1 needs liquidity and higher-bar sources")
+    hundred = _table(client, sources[0], maximum_rows=576_000)
+    higher = _table(client, sources[1], maximum_rows=80_000)
+    return _decode_entry_batch(hundred, higher,
+                               session_date=session_date, ticker=ticker)
+
+
+def load_strategy_one_entry_batches(plan: CertifiedMarketDayPlan, *,
+                                    session_date: str, tickers: tuple[str, ...],
+                                    through_boundary_ms: int,
+                                    client: Any) -> dict[str, StrategyOneCandidateBatch]:
+    """Read up to eight pinned ticker scopes in two Arrow queries, then split natively."""
+    if (type(through_boundary_ms) is not int or through_boundary_ms <= 0
+            or through_boundary_ms % 100 or not 1 <= len(tickers) <= 8
+            or tuple(sorted(set(tickers))) != tickers):
+        raise ValueError("Strategy 1 Arrow shard needs sorted tickers and a completed boundary")
+    scoped = project_market_day_plan(plan, tickers)
+    if scoped.sessions != (session_date,):
+        raise ValueError("Strategy 1 Arrow shard differs from pinned session")
+    source_rows = {(unit.ticker, unit.stage): unit.output_rows for unit in scoped.units}
+    if len(source_rows) != 3 * len(tickers):
+        raise ValueError("Strategy 1 Arrow shard has duplicate or missing pinned units")
+    liquidity_limit = sum(source_rows[(ticker, "broker_100ms")] for ticker in tickers)
+    bars_limit = sum(source_rows[(ticker, "bars")] for ticker in tickers)
+    if not 0 < liquidity_limit <= 1_000_000:
+        raise ValueError("Strategy 1 Arrow shard exceeds the liquidity row budget")
+    sources = market_day_source_sqls(scoped,
+                                    through_boundary_ms=through_boundary_ms,
+                                    strategy_one_projection=True)
+    if len(sources) != 2:
+        raise RuntimeError("Strategy 1 needs liquidity and higher-bar sources")
+    hundred = _table(client, sources[0], maximum_rows=liquidity_limit)
+    higher = _table(client, sources[1], maximum_rows=bars_limit)
+    if (set(pc.unique(hundred["ticker"]).to_pylist()) != set(tickers)
+            or set(pc.unique(higher["ticker"]).to_pylist()) != set(tickers)):
+        raise ValueError("Strategy 1 Arrow shard omitted a pinned ticker")
+    return {ticker: _decode_entry_batch(
+        hundred.filter(pc.equal(hundred["ticker"], ticker)),
+        higher.filter(pc.equal(higher["ticker"], ticker)),
+        session_date=session_date, ticker=ticker)
+        for ticker in tickers}

@@ -7,7 +7,9 @@ import pytest
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit, market_day_boundary,
 )
-from src.backend.backtest_strategy_one_loader import _table, load_strategy_one_entry_batch
+from src.backend.backtest_strategy_one_loader import (
+    _table, load_strategy_one_entry_batch, load_strategy_one_entry_batches,
+)
 
 
 DAY = "2026-08-18"
@@ -67,6 +69,49 @@ def test_arrow_market_rows_feed_vectorized_candidate_gate():
     assert candidates.entry_mask.tolist() == [True, True]
     assert candidates.stop_low_int.tolist() == [97_000, 97_000]
     assert candidates.macd_boundary_ms.tolist() == [[30_000] * 4] * 2
+
+
+def test_two_tickers_share_two_arrow_queries_without_crossing_scope():
+    hundred, higher = source_tables()
+    second_hundred = hundred.set_column(
+        hundred.schema.get_field_index("ticker"), "ticker", pa.array(["NEXT"] * 2))
+    second_higher = higher.set_column(
+        higher.schema.get_field_index("ticker"), "ticker", pa.array(["NEXT"] * 4))
+    tables = (pa.concat_tables([second_hundred, hundred]),
+              pa.concat_tables([second_higher, higher]))
+    units = tuple(MarketDayUnit(
+        "build", DAY, ticker, stage, ATTEMPT, "source",
+        2 if stage == "broker_100ms" else 6, "hash")
+        for ticker in ("NEXT", "TEST")
+        for stage in ("bars", "technical", "broker_100ms"))
+    scoped = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "build", "definition", (DAY,),
+        ("NEXT", "TEST"), units, (100, 1_000, 5_000, 10_000, 30_000),
+        "parent-token")
+
+    class Reader:
+        def __init__(self, *, omit_second_higher=False):
+            self.queries = []
+            self.omit_second_higher = omit_second_higher
+
+        def iter_arrow_record_batches(self, sql):
+            self.queries.append(sql)
+            table = tables[0] if "SELECT l.session_date" in sql else tables[1]
+            if self.omit_second_higher and table is tables[1]:
+                table = higher
+            yield from table.to_batches()
+
+    reader = Reader()
+    result = load_strategy_one_entry_batches(
+        scoped, session_date=DAY, tickers=("NEXT", "TEST"),
+        through_boundary_ms=30_100, client=reader)
+    assert len(reader.queries) == 2
+    assert set(result) == {"NEXT", "TEST"}
+    assert all(batch.entry_mask.tolist() == [True, True] for batch in result.values())
+    with pytest.raises(ValueError, match="omitted a pinned ticker"):
+        load_strategy_one_entry_batches(
+            scoped, session_date=DAY, tickers=("NEXT", "TEST"),
+            through_boundary_ms=30_100, client=Reader(omit_second_higher=True))
 
 
 def test_arrow_loader_rejects_unpinned_resolution_and_scope():
