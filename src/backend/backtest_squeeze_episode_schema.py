@@ -12,6 +12,7 @@ from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABL
 from src.backend.backtest_broker_shortability_v3 import SHORT_ORDER_SKIP
 from src.backend.backtest_broker_policy_v3 import POLICY_EVENT, MESSAGE as POLICY_MESSAGE
 from src.backend.backtest_entry_reprice_deferred_v3 import DEFERRED as ENTRY_REPRICE_DEFERRED
+from src.backend.backtest_entry_reprice_capacity_v3 import TABLES as ENTRY_REPRICE_CAPACITY_TABLES
 
 BROKER_OMS_TABLES = (SHORT_ORDER_SKIP, POLICY_EVENT, POLICY_MESSAGE,
                      ENTRY_REPRICE_DEFERRED)
@@ -74,6 +75,10 @@ _V3_EXTENSION = (
     ("broker_reply_policy_message_hash", "FixedString(64)"),
     ("entry_reprice_deferred_count", "UInt32"),
     ("entry_reprice_deferred_hash", "FixedString(64)"),
+    ("entry_reprice_capacity_count", "UInt32"),
+    ("entry_reprice_capacity_hash", "FixedString(64)"),
+    ("entry_reprice_capacity_reason_count", "UInt32"),
+    ("entry_reprice_capacity_reason_hash", "FixedString(64)"),
 )
 SQUEEZE_COMMIT_V3 = TableContract(
     "trading_commit_v3",
@@ -88,7 +93,26 @@ def staged_v3_ddl() -> tuple[str, ...]:
             RECONCILIATION_DIFFERENCE.ddl(), PORTFOLIO_CONTROL.ddl(),
             *(table.ddl() for table in TRADE_PROPOSAL_TABLES),
             *(table.ddl() for table in BROKER_OMS_TABLES),
+            *(table.ddl() for table in ENTRY_REPRICE_CAPACITY_TABLES),
             SQUEEZE_COMMIT_V3.ddl())
+
+
+def staged_entry_reprice_capacity_ddl() -> tuple[str, ...]:
+    """Review-only additive DDL; caller must prove an empty V3 fence."""
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    fields = (
+        ("entry_reprice_capacity_count", "UInt32", "0", "entry_reprice_deferred_hash"),
+        ("entry_reprice_capacity_hash", "FixedString(64)", f"'{empty_hash}'",
+         "entry_reprice_capacity_count"),
+        ("entry_reprice_capacity_reason_count", "UInt32", "0",
+         "entry_reprice_capacity_hash"),
+        ("entry_reprice_capacity_reason_hash", "FixedString(64)",
+         f"'{empty_hash}'", "entry_reprice_capacity_reason_count"),
+    )
+    return tuple(table.ddl() for table in ENTRY_REPRICE_CAPACITY_TABLES) + tuple(
+        "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+        f"{name} {kind} DEFAULT {default} AFTER {prior}"
+        for name, kind, default, prior in fields)
 
 
 def staged_broker_oms_ddl() -> tuple[str, ...]:

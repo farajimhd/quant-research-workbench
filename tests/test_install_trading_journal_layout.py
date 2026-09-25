@@ -132,7 +132,7 @@ def test_v3_broker_oms_upgrade_requires_empty_fence_and_is_resumable(monkeypatch
     class BrokerClient:
         def __init__(self, count="0"):
             self.count = count
-            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-(3 + 8)]) + list(
+            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-(3 + 12)]) + list(
                 install.SQUEEZE_COMMIT_V3.columns[-3:])
             self.tables = set()
             self.writes = []
@@ -170,6 +170,52 @@ def test_v3_broker_oms_upgrade_requires_empty_fence_and_is_resumable(monkeypatch
     assert len(client.tables) == len(BROKER_OMS_TABLES)
     assert len(client.writes) == len(BROKER_OMS_TABLES) + 8
     assert install.upgrade_v3_broker_oms(client, apply=True) == "verified"
+
+
+def test_v3_capacity_upgrade_requires_empty_fence_and_is_resumable(monkeypatch):
+    from src.backend.backtest_squeeze_episode_schema import ENTRY_REPRICE_CAPACITY_TABLES
+
+    class CapacityClient:
+        def __init__(self, count="0"):
+            self.count = count
+            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-7]) + list(
+                install.SQUEEZE_COMMIT_V3.columns[-3:])
+            self.tables = set()
+            self.writes = []
+
+        def execute(self, sql):
+            if sql.startswith("SELECT name,type FROM system.columns"):
+                return "\n".join(json.dumps({"name": n, "type": t})
+                                 for n, t in self.columns)
+            if sql.startswith("SELECT name FROM system.tables"):
+                return "\n".join(json.dumps({"name": name})
+                                 for name in sorted(self.tables))
+            if sql == "SELECT count() FROM arte.trading_commit_v3":
+                return self.count
+            if sql.startswith("CREATE TABLE IF NOT EXISTS arte."):
+                self.writes.append(sql)
+                self.tables.add(sql.split("arte.", 1)[1].split(" ", 1)[0])
+                return ""
+            if sql.startswith("ALTER TABLE arte.trading_commit_v3"):
+                self.writes.append(sql)
+                name = sql.split("ADD COLUMN IF NOT EXISTS ", 1)[1].split(" ", 1)[0]
+                self.columns.insert(-3, next(column for column in
+                    install.SQUEEZE_COMMIT_V3.columns if column[0] == name))
+                return ""
+            raise AssertionError(sql)
+
+    monkeypatch.setattr(install, "storage_preflight", lambda *_a, **_k: None)
+    occupied = CapacityClient(count="1")
+    with pytest.raises(RuntimeError, match="has rows"):
+        install.upgrade_v3_entry_reprice_capacity(occupied, apply=True)
+    assert occupied.writes == []
+    client = CapacityClient()
+    assert install.upgrade_v3_entry_reprice_capacity(client, apply=False) == "planned"
+    assert client.writes == []
+    assert install.upgrade_v3_entry_reprice_capacity(client, apply=True) == "upgraded"
+    assert len(client.tables) == len(ENTRY_REPRICE_CAPACITY_TABLES)
+    assert len(client.writes) == len(ENTRY_REPRICE_CAPACITY_TABLES) + 4
+    assert install.upgrade_v3_entry_reprice_capacity(client, apply=True) == "verified"
 
 
 class ControlUpgradeClient:

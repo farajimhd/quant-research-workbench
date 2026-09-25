@@ -42,7 +42,9 @@ def _fixture():
                             "broker_short_order_skip_count", "broker_short_order_skip_hash",
                             "broker_reply_policy_event_count", "broker_reply_policy_event_hash",
                             "broker_reply_policy_message_count", "broker_reply_policy_message_hash",
-                            "entry_reprice_deferred_count", "entry_reprice_deferred_hash"}}
+                            "entry_reprice_deferred_count", "entry_reprice_deferred_hash",
+                            "entry_reprice_capacity_count", "entry_reprice_capacity_hash",
+                            "entry_reprice_capacity_reason_count", "entry_reprice_capacity_reason_hash"}}
     base.update(run_id=record.run_id, batch_id=BATCH)
     return record, row, parent, base
 
@@ -50,7 +52,7 @@ def _fixture():
 def test_v3_contract_is_staged_and_v2_unchanged():
     v2 = next(t for t in VERSIONED_JOURNAL_V2_TABLES if t.name == "trading_commit_v2")
     assert "backtest_squeeze_episode_count" not in dict(v2.columns)
-    assert list(dict(SQUEEZE_COMMIT_V3.columns))[-21:-3] == [
+    assert list(dict(SQUEEZE_COMMIT_V3.columns))[-25:-3] == [
         "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
         "portfolio_reservation_reason_count", "portfolio_reservation_reason_hash",
         "portfolio_reconciliation_difference_count",
@@ -60,7 +62,9 @@ def test_v3_contract_is_staged_and_v2_unchanged():
         "broker_short_order_skip_count", "broker_short_order_skip_hash",
         "broker_reply_policy_event_count", "broker_reply_policy_event_hash",
         "broker_reply_policy_message_count", "broker_reply_policy_message_hash",
-        "entry_reprice_deferred_count", "entry_reprice_deferred_hash"]
+        "entry_reprice_deferred_count", "entry_reprice_deferred_hash",
+        "entry_reprice_capacity_count", "entry_reprice_capacity_hash",
+        "entry_reprice_capacity_reason_count", "entry_reprice_capacity_reason_hash"]
     assert all("live_market_ssd" in ddl for ddl in staged_v3_ddl())
 
 
@@ -124,6 +128,8 @@ class _FakeColdClient:
         elif "FROM arte.trading_event_v1" in sql:
             rows = (getattr(self, "control_events", [])
                     if "entity_type='portfolio_control'" in sql
+                    else getattr(self, "capacity_events", [])
+                    if "entity_type='entry_reprice_capacity'" in sql
                     else getattr(self, "broker_policy_events", [])
                     if "category='broker_policy'" in sql
                     else getattr(self, "reprice_events", [])
@@ -152,6 +158,9 @@ class _FakeColdClient:
                 sql.split("FROM arte.", 1)[1].split(" ", 1)[0], [])
         elif "FROM arte.trading_broker_short_order_skip_v3" in sql or "FROM arte.trading_broker_reply_policy_" in sql or "FROM arte.trading_entry_reprice_deferred_v3" in sql:
             rows = getattr(self, "broker_oms_rows", {}).get(
+                sql.split("FROM arte.", 1)[1].split(" ", 1)[0], [])
+        elif "FROM arte.trading_entry_reprice_capacity" in sql:
+            rows = getattr(self, "capacity_rows", {}).get(
                 sql.split("FROM arte.", 1)[1].split(" ", 1)[0], [])
         else:
             raise AssertionError(sql)
@@ -240,7 +249,9 @@ def test_cold_v3_reader_verifies_whole_chain_and_rejects_gap(monkeypatch):
             "broker_short_order_skip_count", "broker_short_order_skip_hash",
             "broker_reply_policy_event_count", "broker_reply_policy_event_hash",
             "broker_reply_policy_message_count", "broker_reply_policy_message_hash",
-            "entry_reprice_deferred_count", "entry_reprice_deferred_hash"}}
+            "entry_reprice_deferred_count", "entry_reprice_deferred_hash",
+            "entry_reprice_capacity_count", "entry_reprice_capacity_hash",
+            "entry_reprice_capacity_reason_count", "entry_reprice_capacity_reason_hash"}}
     second_base.update(batch_id=second_batch, prior_batch_id=BATCH,
                        first_sequence=2, last_sequence=2, status="completed")
     second = seal_squeeze_family_v3(second_base, [], [])
@@ -302,7 +313,9 @@ def test_cold_v3_reader_verifies_reconciliation_children(monkeypatch):
             "broker_short_order_skip_count", "broker_short_order_skip_hash",
             "broker_reply_policy_event_count", "broker_reply_policy_event_hash",
             "broker_reply_policy_message_count", "broker_reply_policy_message_hash",
-            "entry_reprice_deferred_count", "entry_reprice_deferred_hash"}}
+            "entry_reprice_deferred_count", "entry_reprice_deferred_hash",
+            "entry_reprice_capacity_count", "entry_reprice_capacity_hash",
+            "entry_reprice_capacity_reason_count", "entry_reprice_capacity_reason_hash"}}
     base.update(event_count=2, last_sequence=2)
     commit = seal_squeeze_family_v3(
         base, (squeeze_child,), (source_squeeze_parent, projected.event),

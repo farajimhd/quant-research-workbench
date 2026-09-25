@@ -210,6 +210,20 @@ def project_pending_backtest_v3_prefix(
                 sequence, sequence, cursor, "running", (projected.event,))
             unit = V3SqueezeBatch(
                 base, (), entry_reprice_deferred=(projected.detail,))
+        elif (record.category, record.entity_type) == (
+                "portfolio_management", "entry_reprice_capacity"):
+            from src.backend.backtest_entry_reprice_capacity_v3 import (
+                project_entry_reprice_capacity_v3,
+            )
+
+            projected = project_entry_reprice_capacity_v3(
+                record, attempt_id=attempt, batch_id=batch_id)
+            base = TypedJournalBatch(
+                record.run_id, run_month, attempt, batch_id, previous,
+                sequence, sequence, cursor, "running", (projected.event,))
+            unit = V3SqueezeBatch(
+                base, (), entry_reprice_capacities=(projected.detail,),
+                entry_reprice_capacity_reasons=projected.reasons)
         else:
             reservation_reasons = ()
             if (record.category, record.entity_type) == (
