@@ -211,7 +211,7 @@ def run(args):
             torch.cuda.synchronize()
             elapsed = perf_counter()-wall_start
             train_result = {key:value/max(1,sums['samples']) for key,value in sums.items() if key != 'samples'}
-            train_result.update(gpu_compute_fraction=min(1.,gpu_ms/1000/max(elapsed-loading_seconds,1e-9)),
+            train_result.update(gpu_compute_fraction=min(1.,gpu_ms/1000/max(elapsed,1e-9)),
                 loading_seconds=loading_seconds,samples_per_second=sums['samples']/max(elapsed,1e-9))
             if sums['samples'] == 0:
                 raise ValueError('No training examples were processed')
