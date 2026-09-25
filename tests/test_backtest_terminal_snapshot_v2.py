@@ -22,13 +22,15 @@ from src.trading_runtime.runtime import RunMode, TradingRuntime
 
 def test_v2_contract_is_staged_normalized_and_preserves_existing_v1() -> None:
     tables = BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES
-    assert len(tables) == 2
+    assert len(tables) == 3
     assert not {table.name for table in tables} & {table.name for table in TABLES}
-    account, position = (dict(table.columns) for table in tables)
+    account, position, commit = (dict(table.columns) for table in tables)
     assert account["expected_position_count"] == "UInt32"
     assert account["position_set_sha256"] == "FixedString(64)"
     assert account["snapshot_id"] == "UUID"
     assert position["parent_snapshot_id"] == "UUID"
+    assert commit["prior_v1_batch_id"] == "UUID"
+    assert commit["account_hash"] == "FixedString(64)"
     for name in ("net_liquidation", "total_cash_value", "buying_power",
                  "gross_position_value", "available_funds", "excess_liquidity"):
         assert account[name] == "Float64"

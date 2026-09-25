@@ -6,7 +6,7 @@ No ClickHouse connection, DDL, or INSERT occurs in this module.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 from math import isfinite
 from typing import Any
@@ -108,7 +108,8 @@ def _clock(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("typed occurrence clock must be canonical ISO text")
     parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None or parsed.isoformat() != value:
+    if (parsed.tzinfo is None or parsed.utcoffset() != timedelta(0)
+            or parsed.isoformat() != value):
         raise ValueError("typed occurrence clock must be canonical aware ISO text")
     return value
 

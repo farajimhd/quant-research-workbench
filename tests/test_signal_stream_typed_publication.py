@@ -46,6 +46,20 @@ class FakeStorage:
     def read_exact_prior_occurrence(self, event_id):
         return None
 
+    def list_cursor_commits(self, *, session_key):
+        return deepcopy([row for row in self.rows["signal_stream_cursor_commit_typed_v1"]
+                         if row["session_key"] == session_key])
+
+
+def _publisher(storage, *, capacity=64):
+    publisher = TypedSignalPublicationQueue(storage, capacity=capacity)
+    sample = _batch()
+    publisher.bootstrap_session(session_key=sample.session_key,
+                                configuration_revision=sample.configuration_revision,
+                                source_revision=sample.source_revision,
+                                catalogs=sample.catalogs)
+    return publisher
+
 
 def _batch():
     stream, columns, row = _source()
@@ -68,7 +82,7 @@ def _batch():
 
 def test_bounded_fake_publication_fences_last_after_exact_readback() -> None:
     storage = FakeStorage()
-    publisher = TypedSignalPublicationQueue(storage, capacity=1)
+    publisher = _publisher(storage, capacity=1)
     try:
         head = publisher.submit(_batch()).result(timeout=3)
         assert len(head) == 64
@@ -83,7 +97,10 @@ def test_bounded_fake_publication_fences_last_after_exact_readback() -> None:
 def test_submit_is_local_only_and_queue_is_bounded() -> None:
     storage = FakeStorage()
     storage.block = Event()
-    publisher = TypedSignalPublicationQueue(storage, capacity=1)
+    publisher = _publisher(storage, capacity=1)
+    publisher.bootstrap_session(session_key="2026-09-25",
+                                configuration_revision="configuration-1",
+                                source_revision="source-1", catalogs=_batch().catalogs)
     try:
         receipt = publisher.submit(_batch())
         assert storage.entered.wait(1)
@@ -102,7 +119,7 @@ def test_submit_is_local_only_and_queue_is_bounded() -> None:
 def test_ambiguous_child_insert_fails_closed_without_retry_or_commit() -> None:
     storage = FakeStorage()
     storage.fail_after_table = "signal_stream_python_column_evidence_v1"
-    publisher = TypedSignalPublicationQueue(storage)
+    publisher = _publisher(storage)
     try:
         with pytest.raises(RuntimeError, match="ambiguous insert"):
             publisher.submit(_batch()).result(timeout=3)
@@ -116,7 +133,7 @@ def test_ambiguous_child_insert_fails_closed_without_retry_or_commit() -> None:
 def test_cancelled_receipt_does_not_cancel_durable_worker() -> None:
     storage = FakeStorage()
     storage.block = Event()
-    publisher = TypedSignalPublicationQueue(storage)
+    publisher = _publisher(storage)
     try:
         receipt = publisher.submit(_batch())
         assert storage.entered.wait(1)
@@ -132,7 +149,7 @@ def test_cancelled_receipt_does_not_cancel_durable_worker() -> None:
 def test_full_batch_copy_runs_on_worker_not_submitter() -> None:
     import copy
     storage = FakeStorage()
-    publisher = TypedSignalPublicationQueue(storage)
+    publisher = _publisher(storage)
     copied_on = []
 
     def tracked_copy(value):
@@ -149,7 +166,7 @@ def test_full_batch_copy_runs_on_worker_not_submitter() -> None:
 
 def test_zero_event_state_delta_commits_and_cold_recovers() -> None:
     storage = FakeStorage()
-    publisher = TypedSignalPublicationQueue(storage)
+    publisher = _publisher(storage)
     try:
         batch = replace(_batch(), occurrences=(), catalogs={})
         head = publisher.submit(batch).result(timeout=3)

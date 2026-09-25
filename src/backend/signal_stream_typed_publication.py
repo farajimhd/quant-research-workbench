@@ -21,6 +21,7 @@ from src.backend.signal_stream_typed_occurrence import (
     COLUMN, FIELD, PARENT, RULE, project_typed_occurrence,
     restore_typed_occurrence,
 )
+from src.backend.signal_stream_typed_readback import canonical_row, recover_committed_head
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ class TypedSignalStorage(Protocol):
     def read_cursor_rows(self, table_name: str, *, session_key: str,
                          batch_sequence: int) -> list[Mapping[str, Any]]: ...
     def read_exact_prior_occurrence(self, event_id: str) -> Mapping[str, Any] | None: ...
+    def list_cursor_commits(self, *, session_key: str) -> list[Mapping[str, Any]]: ...
 
 
 class _Authority:
@@ -97,7 +99,10 @@ def _publish_one(storage: TypedSignalStorage, batch: PublicationBatch) -> str:
         readback = {}
         for table, family in _OCCURRENCE_FAMILIES:
             returned = storage.read_occurrence_rows(table.name, event_id=event_id)
-            readback[family] = returned[0] if family == "parent" and len(returned) == 1 else returned
+            normalized = [canonical_row(table, row) for row in returned]
+            if family != "parent":
+                normalized.sort(key=lambda row: row["ordinal"])
+            readback[family] = normalized[0] if family == "parent" and len(normalized) == 1 else normalized
         if readback != rows:
             raise ValueError("typed occurrence cold readback is incomplete or duplicated")
         restored[event_id] = restore_typed_occurrence(
@@ -117,16 +122,23 @@ def _publish_one(storage: TypedSignalStorage, batch: PublicationBatch) -> str:
         if cursor[family]:
             storage.insert_rows(table.name, cursor[family])
     storage.insert_rows(COMMIT.name, [cursor["commit"]])
-    readback_cursor = {
-        family: storage.read_cursor_rows(table.name, session_key=batch.session_key,
-                                         batch_sequence=batch.batch_sequence)
-        for table, family in _CURSOR_FAMILIES
-    }
+    readback_cursor = {}
+    for table, family in _CURSOR_FAMILIES:
+        raw = storage.read_cursor_rows(table.name, session_key=batch.session_key,
+                                       batch_sequence=batch.batch_sequence)
+        normalized = [canonical_row(table, row) for row in raw]
+        if family == "state_delta":
+            normalized.sort(key=lambda row: (row["signal_stream_id"], row["ticker"]))
+        elif family == "occurrence_ref":
+            normalized.sort(key=lambda row: row["ordinal"])
+        else:
+            normalized.sort(key=lambda row: (row["watchlist_id"], row["ticker"]))
+        readback_cursor[family] = normalized
     commits = storage.read_cursor_rows(COMMIT.name, session_key=batch.session_key,
                                        batch_sequence=batch.batch_sequence)
     if len(commits) != 1:
         raise ValueError("typed cursor commit fence missing or duplicated")
-    readback_cursor["commit"] = commits[0]
+    readback_cursor["commit"] = canonical_row(COMMIT, commits[0])
     if readback_cursor != cursor:
         raise ValueError("typed cursor cold readback is incomplete or duplicated")
     states, admissions, occurrences, head = recover_cursor_batch(
@@ -159,11 +171,36 @@ class TypedSignalPublicationQueue:
         self._queue: queue.Queue[tuple[PublicationBatch, Future[str]]] = queue.Queue()
         self._pending: dict[tuple[str, int], Future[str]] = {}
         self._last_completed: dict[str, tuple[int, str]] = {}
+        self._bootstrapped: dict[str, tuple[str, str]] = {}
+        self._bootstrapping: set[str] = set()
         self._lock = threading.Lock()
         self._fatal: BaseException | None = None
         self._closing = False
         self._thread = threading.Thread(target=self._work, name="typed-signal-publication", daemon=True)
         self._started = False
+
+    def bootstrap_session(self, *, session_key: str, configuration_revision: str,
+                          source_revision: str, catalogs: Mapping[str, SourceCatalog]) -> None:
+        """Control-plane cold verification; never call on the realtime submit path."""
+        with self._lock:
+            if self._started or self._closing or self._pending or self._fatal is not None:
+                raise RuntimeError("typed Signal Stream bootstrap is unavailable")
+            if session_key in self._bootstrapped or session_key in self._bootstrapping:
+                raise ValueError("typed Signal Stream session is already bootstrapped")
+            self._bootstrapping.add(session_key)
+        try:
+            head = recover_committed_head(
+                self._storage, session_key=session_key,
+                configuration_revision=configuration_revision,
+                source_revision=source_revision, catalogs=catalogs)
+            with self._lock:
+                if self._started or self._closing or self._pending or self._fatal is not None:
+                    raise RuntimeError("typed Signal Stream bootstrap raced publication")
+                self._last_completed[session_key] = (head.sequence, head.content_hash)
+                self._bootstrapped[session_key] = (configuration_revision, source_revision)
+        finally:
+            with self._lock:
+                self._bootstrapping.discard(session_key)
 
     def submit(self, batch: PublicationBatch) -> Future[str]:
         if not isinstance(batch, PublicationBatch):
@@ -176,7 +213,10 @@ class TypedSignalPublicationQueue:
                 raise ValueError("typed Signal Stream batch is already pending")
             if any(session == batch.session_key for session, _ in self._pending):
                 raise ValueError("typed Signal Stream session already has a pending batch")
-            prior = self._last_completed.get(batch.session_key, (0, "0" * 64))
+            if self._bootstrapped.get(batch.session_key) != (batch.configuration_revision,
+                                                              batch.source_revision):
+                raise ValueError("typed Signal Stream session lacks matching cold bootstrap")
+            prior = self._last_completed[batch.session_key]
             if (batch.batch_sequence != prior[0] + 1
                     or batch.previous_commit_hash != prior[1]):
                 raise ValueError("typed Signal Stream batch sequence or prior fence differs")
