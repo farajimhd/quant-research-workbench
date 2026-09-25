@@ -15,7 +15,7 @@ def acquisition_valid(o, p):
             and o.price > o.execution_vwap * (1+p.get('v5_breakout', {}).get('vwap_offset_bps', 10)/10000))
 
 
-def observe(o, p, state):
+def observe(o, p, state, *, typed_persistence=False):
     now = o.observed_at.timestamp()
     d = state.setdefault('v5_breakout_state', dict(contract=CONTRACT))
     if now < d.get('observed_at', 0):
@@ -53,7 +53,7 @@ def observe(o, p, state):
                     d['forming_id'] = identity
             d.update(approach=list(probe.approach), stalls=probe.stalls)
         d.update(closed_at=now, closed_price=o.price)
-    d['levels'] = v5.rows(o, p)
+    d['levels'] = v5.rows(o, p, typed_persistence=typed_persistence)
     if o.position_quantity <= 0:
         d.pop('pending_target', None)
         d.pop('fill_stop_initialized', None)

@@ -55,7 +55,7 @@ def acquisition_valid(o, p, state=None):
             and o.price > o.execution_vwap * (1 + settings['vwap_offset_bps'] / 10_000))
 
 
-def observe(o, p, state):
+def observe(o, p, state, *, typed_persistence=False):
     o = completed_macd(o, p, state)
     now = o.observed_at.timestamp()
     d = dict(state.get('v5_breakout_state') or {'contract': p['v5_breakout_contract']})
@@ -93,7 +93,7 @@ def observe(o, p, state):
             d['observed_episode_high'] = max(d.get('observed_episode_high', 0.), o.price)
             d['high_observation'] = witness
     prior = d.get('levels', [])
-    current_levels = v5.rows(o, p)
+    current_levels = v5.rows(o, p, typed_persistence=typed_persistence)
     d.update(observed_at=now, macd_open=opened, macd_gap_bps=gap, macd_line_bps=line_bps,
              prior_max=d.get('period_max', 0.0), decision_levels=prior, crossed=[])
     closed = o.source_timeframe == '1s' and 'bar_close' in o.evaluation_events

@@ -8,14 +8,14 @@ from math import ceil, floor
 from . import v5_breakout as v5
 
 
-def observe(observation, parameters, state):
+def observe(observation, parameters, state, *, typed_persistence=False):
     now = observation.observed_at.timestamp()
     data = dict(state.get('v5_breakout_state') or {})
     if data.get('contract') != v5.HOD_CONTRACT:
         data = dict(contract=v5.HOD_CONTRACT)
     if now < data.get('observed_at', 0):
         return
-    levels = v5.rows(observation, parameters)
+    levels = v5.rows(observation, parameters, typed_persistence=typed_persistence)
     # Use the previous event's authority. In particular, this trade cannot
     # create a new HOD and simultaneously make a level eligible for a break.
     prior = data.get('levels', [])

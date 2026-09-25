@@ -84,12 +84,16 @@ def configure(parameters):
     parameters['momentum_management']['macd_backstop']['enabled'] = False
 
 
-def rows(observation, parameters):
-    return sorted((r for r in swing_gap.levels(observation, {'minimum_p_norm': 0,
+def rows(observation, parameters, *, typed_persistence=False):
+    selected = sorted((r for r in swing_gap.levels(observation, {'minimum_p_norm': 0,
                    'include_retained_resistances': parameters.get('v5_hod_vwap_fallback', False)}, side=-1)
                    if r['book_version'] in ('causal-swing-closing-book-5','causal-swing-closing-book-6') and r['side'] == -1
                    and r['selection_score'] >= parameters['v5_breakout']['minimum_selection_score']),
                   key=lambda r: (r['upper'], r['lower'], str(r['unified_level_id'])))
+    if typed_persistence:
+        from .typed_v5_structural_row import validate_typed_v5_structural_row
+        return [validate_typed_v5_structural_row(row) for row in selected]
+    return selected
 
 
 def below(level, parameters):
@@ -109,16 +113,16 @@ def target(levels, broken, average, parameters):
     return dict(price=price, level=row, average_body=average, reference=reference)
 
 
-def observe(observation, parameters, state):
+def observe(observation, parameters, state, *, typed_persistence=False):
     if episode(parameters):
         from .v5_macd_episode import observe as operation
-        return operation(observation, parameters, state)
+        return operation(observation, parameters, state, typed_persistence=typed_persistence)
     if parameters.get('v5_breakout_contract') == MACD_GAP_CONTRACT:
         from .v5_macd_gap import observe as operation
-        return operation(observation, parameters, state)
+        return operation(observation, parameters, state, typed_persistence=typed_persistence)
     if parameters.get('v5_breakout_contract') == HOD_CONTRACT:
         from .v5_hod_ladder import observe as observe_ladder
-        return observe_ladder(observation, parameters, state)
+        return observe_ladder(observation, parameters, state, typed_persistence=typed_persistence)
     now, price = observation.observed_at.timestamp(), observation.price
     policy = parameters['v5_breakout']
     keep_crossing = continuous(parameters)
@@ -127,7 +131,7 @@ def observe(observation, parameters, state):
     previous = data.get('sample')
     if previous and now < previous[0]:
         return
-    levels = rows(observation, parameters)
+    levels = rows(observation, parameters, typed_persistence=typed_persistence)
     crossed = []
     if 'market_data_update' in observation.evaluation_events and isfinite(price) and price > 0:
         history = [r for r in data.get('history', []) if now-2 <= r[0] < now]
