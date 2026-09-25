@@ -4,9 +4,12 @@ import json
 import pytest
 
 from pipelines.market_sip.events.liquidity_execution_price_producer import _digest
-from src.backend.backtest_liquidity_price import certify_price_level_plan
+from src.backend.backtest_liquidity_price import (
+    PriceLevelPlan, PriceLevelUnit, certify_price_level_plan,
+)
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
+    iter_market_day_rows, market_day_source_sqls,
 )
 
 
@@ -75,3 +78,34 @@ def test_missing_or_misplaced_child_blocks_preflight():
 def test_tampered_child_blocks_preflight():
     with pytest.raises(RuntimeError, match="differ from published coverage"):
         certify_price_level_plan(_plan(), Reader(tampered=True))
+
+
+def test_pinned_price_levels_join_and_decode_without_market_writes():
+    base = _plan()
+    units = base.units + tuple(MarketDayUnit(
+        "build", "2026-08-18", "ABCD", stage, SOURCE, "source", 10, "hash")
+        for stage in ("bars", "technical"))
+    market = CertifiedMarketDayPlan(base.execution_interval, base.build_id,
+        base.definition_hash, base.sessions, base.tickers, units,
+        base.required_resolutions_ms, base.token)
+    child = PriceLevelPlan("build", (PriceLevelUnit(
+        "2026-08-18", "ABCD", SOURCE, DERIVED, 2, 1, 40.0,
+        _digest(SUMMARY)),), "child-token")
+    query, = market_day_source_sqls(market, price_plan=child,
+                                    through_boundary_ms=100)
+    assert "arte.liquidity_execution_price_100ms_v1" in query
+    assert "arraySort(x->x.1,groupArray((price_int,execution_volume)))" in query
+    assert "derivation_attempt_id" in query
+    assert "bucket_index<144001" in query
+    assert "market_sip_compact" not in query
+    class Source:
+        def iter_json_each_row(self, sql):
+            assert sql == query
+            yield dict(session_date="2026-08-18", ticker="ABCD",
+                       resolution_ms=100, boundary_ms=100,
+                       execution_price_levels=[[98000, 5], [99500, 35]])
+    row, = iter_market_day_rows(market, client=Source(),
+                                price_plan=child, through_boundary_ms=100)
+    assert row["execution_price_levels"] == (
+        {"price_int": 98000, "volume": 5.0},
+        {"price_int": 99500, "volume": 35.0})

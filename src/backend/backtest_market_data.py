@@ -579,6 +579,7 @@ def _unit_map(plan: CertifiedMarketDayPlan, stage: str) -> dict[tuple[str, str],
 def market_day_source_sqls(
     plan: CertifiedMarketDayPlan, *, through_boundary_ms: int | None = None,
     strategy_one_projection: bool = False,
+    price_plan: Any | None = None,
 ) -> tuple[str, ...]:
     """Separate pinned, sorted sources that can be merged without UNION ALL."""
     if through_boundary_ms is not None and (
@@ -596,6 +597,15 @@ def market_day_source_sqls(
             raise ValueError(f"Certified market-day plan lost {day} {ticker}")
     if not bars:
         raise ValueError("Certified market-day plan has no bar scopes")
+    price_units = ()
+    if price_plan is not None:
+        from src.backend.backtest_liquidity_price import PriceLevelPlan
+        if not isinstance(price_plan, PriceLevelPlan):
+            raise TypeError("Broker price levels require a certified child plan")
+        price_units = price_plan.projected(plan).units
+        if any(unit.source_attempt_id != liquidity[
+                (unit.session_date, unit.ticker)].attempt_id for unit in price_units):
+            raise ValueError("Broker price levels differ from pinned liquidity attempts")
 
     def pinned(stage: str, units: Mapping[tuple[str, str], MarketDayUnit]) -> str:
         attempts = ",".join(
@@ -637,12 +647,35 @@ def market_day_source_sqls(
     )
     columns_100 = ",".join(f"b.{name} AS {name}" for name in bar_columns)
     liquidity_100 = ",".join(f"l.{name} AS {name}" for name in liquidity_columns)
+    price_join = ""
+    price_column = ""
+    if price_units:
+        price_attempts = ",".join(
+            f"(toDate({_literal(unit.session_date)}),{_literal(unit.ticker)},"
+            f"toUUID({_literal(unit.source_attempt_id)}),"
+            f"toUUID({_literal(unit.derivation_attempt_id)}))"
+            for unit in price_units)
+        price_upper = (f" AND bucket_index<{(through_boundary_ms + SESSION_OPEN_OFFSET_MS) // 100}"
+                       if through_boundary_ms is not None else "")
+        price_join = f"""LEFT JOIN (
+          SELECT session_date,ticker,bucket_index,
+            arraySort(x->x.1,groupArray((price_int,execution_volume)))
+              AS execution_price_levels
+          FROM arte.liquidity_execution_price_100ms_v1
+          WHERE source_build_id={_literal(plan.build_id)}
+          AND (session_date,ticker,source_attempt_id,derivation_attempt_id)
+            IN ({price_attempts}){price_upper}
+          GROUP BY session_date,ticker,bucket_index
+        ) p ON p.session_date=l.session_date AND p.ticker=l.ticker
+          AND p.bucket_index=l.bucket_index"""
+        price_column = ",p.execution_price_levels AS execution_price_levels"
     base_100 = f"""SELECT l.session_date,l.ticker,l.bucket_index,toUInt32(100) AS resolution_ms,
-        (toUInt64(l.bucket_index)+1)*100-{SESSION_OPEN_OFFSET_MS} AS boundary_ms,{columns_100},{liquidity_100}
+        (toUInt64(l.bucket_index)+1)*100-{SESSION_OPEN_OFFSET_MS} AS boundary_ms,{columns_100},{liquidity_100}{price_column}
       FROM ({pinned('liquidity_100ms_v1', liquidity)}) l
       LEFT JOIN (SELECT * FROM ({pinned('bars_v1', bars)}) WHERE resolution_ms=100) b ON
         b.session_date=l.session_date AND b.ticker=l.ticker
-        AND b.bucket_index=l.bucket_index AND b.resolution_ms=100"""
+        AND b.bucket_index=l.bucket_index AND b.resolution_ms=100
+      {price_join}"""
     higher = tuple(value for value in plan.required_resolutions_ms if value > 100)
     bases = [base_100]
     if higher:
@@ -682,6 +715,7 @@ def market_day_source_sqls(
 
 def iter_market_day_rows(
     plan: CertifiedMarketDayPlan, client=None, *, through_boundary_ms: int | None = None,
+    price_plan: Any | None = None,
 ) -> Iterator[dict[str, Any]]:
     active = client or readonly_clickhouse_client(market_stream=True, v3_read_principal=True)
     close = client is None
@@ -689,11 +723,20 @@ def iter_market_day_rows(
     try:
         from heapq import merge
         sources = [active.iter_json_each_row(sql) for sql in
-                   market_day_source_sqls(plan, through_boundary_ms=through_boundary_ms)]
+                   market_day_source_sqls(plan, through_boundary_ms=through_boundary_ms,
+                                          price_plan=price_plan)]
+        def normalized(source):
+            for row in source:
+                levels = row.get("execution_price_levels")
+                if levels is not None:
+                    row["execution_price_levels"] = tuple(
+                        {"price_int": int(price), "volume": float(volume)}
+                        for price, volume in levels)
+                yield row
         if len(sources) == 1:
-            yield from sources[0]
+            yield from normalized(sources[0])
         else:
-            yield from merge(*sources, key=lambda row: (
+            yield from merge(*(normalized(source) for source in sources), key=lambda row: (
                 str(row["session_date"]), int(row["boundary_ms"]),
                 str(row["ticker"]), int(row["resolution_ms"])))
     finally:

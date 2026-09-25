@@ -81,13 +81,21 @@ def publish_unit(client: Any, *, build_id: str, day: date, ticker: str,
         mismatch = _rows(client, sql.bucket_parity_sql(
             build_id, day, ticker, source_attempt_id, attempt))
         result = _summary(client, scope, attempt)
-        if (mismatch or int(certificate["price_row_count"]) != int(result["row_count"])
-                or int(certificate["eligible_bucket_count"])
-                != int(result["eligible_bucket_count"])
-                or abs(float(certificate["total_execution_volume"])
-                       - float(result["total_execution_volume"])) > 1e-6
-                or certificate["content_hash"] != _digest(result)):
-            raise RuntimeError("Published eligible-price child differs from its coverage")
+        differences = []
+        if mismatch:
+            differences.append("bucket_parity")
+        if int(certificate["price_row_count"]) != int(result["row_count"]):
+            differences.append("row_count")
+        if int(certificate["eligible_bucket_count"]) != int(result["eligible_bucket_count"]):
+            differences.append("eligible_bucket_count")
+        if abs(float(certificate["total_execution_volume"])
+               - float(result["total_execution_volume"])) > 1e-6:
+            differences.append("total_execution_volume")
+        if certificate["content_hash"] != _digest(result):
+            differences.append("content_hash")
+        if differences:
+            raise RuntimeError("Published eligible-price child differs from its coverage: "
+                               + ", ".join(differences))
         return "skipped"
     attempt = str(uuid4())
     client.execute(sql.insert_sql(
