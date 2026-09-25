@@ -239,7 +239,9 @@ def test_cold_plan_entrypoint_never_replays_canonical_source(
     result = cold_certified_market_day_plan(client, keeper, BUILD,
         sessions=(DAY,), tickers=(), configuration={})
     assert result.tickers == ("TEST",)
-    assert client.product_reads > 0
+    # Each selected product is hash-checked once; the constructor must not
+    # rescan the entire certificate and then repeat the selected scope.
+    assert client.product_reads == 3
 
 
 def test_catalogue_discovery_requires_one_compatible_attested_build(monkeypatch) -> None:

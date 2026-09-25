@@ -110,6 +110,26 @@ def verify_attested_market_products(client: Any, audit: MarketDayColdAudit, *,
             or any(type(value) is not int or value < 100 or value % 100
                    for value in required_resolutions_ms)):
         raise ValueError("Market-product audit requires fixed interval and exact resolutions")
+    rows = _checked_market_stage_rows(client, audit)
+    units = tuple(MarketDayUnit(r["build_id"], r["session_date"], r["ticker"],
+                                r["stage"], r["attempt_id"], r["source_hash"],
+                                int(r["output_rows"]), r["output_hash"]) for r in rows)
+    plan = CertifiedMarketDayPlan(interval, audit.certificate.build_id,
+        audit.certificate.definition_hash,
+        tuple(sorted({day for day, _ in audit.certificate.scopes})),
+        tuple(sorted({ticker for _, ticker in audit.certificate.scopes})),
+        units, required_resolutions_ms, token="unadmitted-certificate-audit")
+    verify_market_day_plan(plan, client)
+    return replace(audit, market_products_verified=True)
+
+
+def _checked_market_stage_rows(client: Any, audit: MarketDayColdAudit
+                               ) -> list[dict[str, Any]]:
+    """Validate immutable stage facts and physical product placement only.
+
+    The selected Backtest plan separately hashes every requested product row.
+    Do not hash the entire historical build here on every Backtest launch.
+    """
     names = ("bars_v1", "indicators_v1", "liquidity_100ms_v1")
     quoted = ",".join(f"'{name}'" for name in names)
     tables = [json.loads(line) for line in client.execute(
@@ -129,16 +149,7 @@ def verify_attested_market_products(client: Any, audit: MarketDayColdAudit, *,
                        int(r["output_rows"]), r["output_hash"]) for r in rows)
     if tuple(observed) != audit.certificate.stages:
         raise RuntimeError("Market-day stage facts changed after Keeper audit")
-    units = tuple(MarketDayUnit(r["build_id"], r["session_date"], r["ticker"],
-                                r["stage"], r["attempt_id"], r["source_hash"],
-                                int(r["output_rows"]), r["output_hash"]) for r in rows)
-    plan = CertifiedMarketDayPlan(interval, audit.certificate.build_id,
-        audit.certificate.definition_hash,
-        tuple(sorted({day for day, _ in audit.certificate.scopes})),
-        tuple(sorted({ticker for _, ticker in audit.certificate.scopes})),
-        units, required_resolutions_ms, token="unadmitted-certificate-audit")
-    verify_market_day_plan(plan, client)
-    return replace(audit, market_products_verified=True)
+    return rows
 
 
 def certified_market_day_plan_from_cold_audit(client: Any,
@@ -165,8 +176,7 @@ def certified_market_day_plan_from_cold_audit(client: Any,
     if interval.kind != "fixed":
         raise ValueError("Event execution does not use the fixed market-day catalogue")
     resolutions = compile_required_resolutions(configuration, interval)
-    verify_attested_market_products(client, audit, execution_interval=interval,
-                                    required_resolutions_ms=resolutions)
+    stage_rows = _checked_market_stage_rows(client, audit)
     days = tuple(str(day) for day in sessions)
     if not days or len(set(days)) != len(days):
         raise ValueError("Cold market-day plan needs distinct requested sessions")
@@ -180,13 +190,6 @@ def certified_market_day_plan_from_cold_audit(client: Any,
     if not selected or not selected.issubset(population) or any(
             not any(scope_day == day for scope_day, _ in selected) for day in days):
         raise ValueError("Cold market-day scopes are empty or outside attested population")
-    stage_rows = _read(client, "market_day_stage_certificate_v1",
-                       audit.certificate.build_id)
-    observed = tuple(sorted((r["session_date"], r["ticker"], r["stage"],
-                             r["attempt_id"], int(r["output_rows"]),
-                             r["output_hash"]) for r in stage_rows))
-    if observed != audit.certificate.stages:
-        raise RuntimeError("Market-day stage facts changed after Keeper audit")
     units = tuple(MarketDayUnit(r["build_id"], r["session_date"], r["ticker"],
                                 r["stage"], r["attempt_id"], r["source_hash"],
                                 int(r["output_rows"]), r["output_hash"])

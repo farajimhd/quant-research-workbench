@@ -10451,7 +10451,6 @@ def backtest_preflight(
         certified_market_plan_from_arte,
         configuration_tickers,
         effective_execution_interval,
-        verify_market_day_plan,
     )
     execution_interval = effective_execution_interval(configuration)
     projection_tickers = _structural_recovery_projection_tickers(configuration, tickers)
@@ -10525,14 +10524,15 @@ def backtest_preflight(
                 tickers=configuration_tickers(configuration, tickers),
                 configuration=configuration,
             )
-            from src.backend.backtest_market_data import readonly_clickhouse_client
-            with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
-                verify_market_day_plan(certified, reader)
-                market_data_plan = certified.payload()
-                if needs_v7 and not activated_signal_streams:
-                    if experimental_structure_book not in {"", "level-book-v7"}:
-                        raise ValueError("Fixed-interval Backtest requires causal Level Book V7")
-                    from src.backend.structural_v7_seed import certified_seed_plan
+            # The certificate constructor already hashes the selected market
+            # rows. A second connection is needed only for V7 seed preflight.
+            market_data_plan = certified.payload()
+            if needs_v7 and not activated_signal_streams:
+                if experimental_structure_book not in {"", "level-book-v7"}:
+                    raise ValueError("Fixed-interval Backtest requires causal Level Book V7")
+                from src.backend.backtest_market_data import readonly_clickhouse_client
+                from src.backend.structural_v7_seed import certified_seed_plan
+                with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
                     causal_v7_plan = certified_seed_plan(certified, reader).payload()
         except Exception as exc:
             if market_data_plan:
