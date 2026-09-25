@@ -33,6 +33,12 @@ _SOURCE_FIELDS = frozenset({
     "order_id", "orderId", "account", "acctId", "conid", "con_id",
     "commission", "currency", "exchange",
 })
+_EXECUTION_ALIASES = (
+    ("execution_id", "executionId"), ("order_ref", "orderRef"),
+    ("order_id", "orderId"), ("account", "acctId"),
+    ("conid", "con_id"), ("size", "quantity"),
+    ("trade_time_r", "timestamp"),
+)
 _SCALE = Decimal("0.0000000001")
 _MEASURE_SCALE = Decimal("0.000000000000000001")
 _RISK_METRICS = (
@@ -1305,6 +1311,18 @@ def broker_fill_details(
     unknown = set(execution.raw) - _SOURCE_FIELDS
     if unknown:
         raise ValueError(f"Broker execution has unmodeled source fields: {sorted(unknown)}")
+    for primary, alias in _EXECUTION_ALIASES:
+        if primary in execution.raw and alias in execution.raw:
+            left, right = execution.raw[primary], execution.raw[alias]
+            if primary in {"conid", "size", "trade_time_r"}:
+                try:
+                    same = Decimal(str(left)) == Decimal(str(right))
+                except InvalidOperation:
+                    same = False
+            else:
+                same = type(left) is type(right) and left == right
+            if not same:
+                raise ValueError(f"Broker execution aliases conflict: {primary}/{alias}")
     if execution.raw:
         parsed = parse_ibkr_execution(execution.raw)
         for field in fields(Execution):

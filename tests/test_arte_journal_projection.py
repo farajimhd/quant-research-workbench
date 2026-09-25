@@ -229,6 +229,11 @@ def test_broker_execution_rejects_unmodeled_or_conflicting_source() -> None:
         )
     with pytest.raises(ValueError, match="losslessly"):
         project(source(price=1.123456789012))
+    with pytest.raises(ValueError, match="aliases conflict: execution_id/executionId"):
+        project(source(executionId="different-fill"))
+    with pytest.raises(ValueError, match="aliases conflict: size/quantity"):
+        project(source(quantity=2))
+    assert project(source(quantity=1)).execution["quantity"] == "1.0000000000"
 
 
 def test_fill_and_commission_form_a_typed_committable_batch() -> None:
@@ -411,6 +416,13 @@ def test_runtime_splits_known_fee_and_shared_projection_preserves_it() -> None:
     assert projected.commissions[0]["commission"] == "1.2500000000"
     assert projected.commissions[0]["execution_id"] == execution.execution_id
     assert not projected.executions
+    simulated_fill = JournalRecord(
+        "00000000-0000-0000-0000-000000000085", runtime.run_id, 1,
+        AT, AT, "execution", "fill", fill["entity_id"], fill["account_id"],
+        {**fill["payload"], "canonical_metadata": {"action": "enter_long"}},
+    )
+    with pytest.raises(ValueError, match="unmodeled source fields"):
+        project_journal_record(simulated_fill, **identity)
     assert dict(_sealed_families(projected))["trading_commission_v1"]
     with pytest.raises(ValueError, match="invalid"):
         project_journal_record(replace(
