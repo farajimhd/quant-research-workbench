@@ -7,13 +7,15 @@ because only a verified coverage-last row authorizes a read.
 from __future__ import annotations
 
 from datetime import date
-from hashlib import sha256
 import json
 from typing import Any
 from uuid import UUID, uuid4
 
 from pipelines.market_sip.events import liquidity_execution_price_sql as sql
 from pipelines.market_sip.events.market_day_sql import literal
+from src.trading_runtime.eligible_price_contract import (
+    matches_summary_digest, summary_digest,
+)
 
 
 def _rows(client: Any, query: str) -> list[dict[str, Any]]:
@@ -51,10 +53,7 @@ def _summary(client: Any, scope: str, attempt: str) -> dict[str, Any]:
 
 
 def _digest(row: dict[str, Any]) -> str:
-    values = [str(row[key]) for key in (
-        "row_count", "unique_keys", "eligible_bucket_count",
-        "total_execution_volume", "row_hash")]
-    return sha256("\n".join(values).encode()).hexdigest()
+    return summary_digest(row)
 
 
 def _certified(client: Any, scope: str) -> list[dict[str, Any]]:
@@ -91,7 +90,9 @@ def publish_unit(client: Any, *, build_id: str, day: date, ticker: str,
         if abs(float(certificate["total_execution_volume"])
                - float(result["total_execution_volume"])) > 1e-6:
             differences.append("total_execution_volume")
-        if certificate["content_hash"] != _digest(result):
+        if not matches_summary_digest(
+                result, content_hash=certificate["content_hash"],
+                published_volume=certificate["total_execution_volume"]):
             differences.append("content_hash")
         if differences:
             raise RuntimeError("Published eligible-price child differs from its coverage: "

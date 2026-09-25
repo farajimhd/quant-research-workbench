@@ -14,6 +14,7 @@ from typing import Any
 from uuid import UUID
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, _literal
+from src.trading_runtime.eligible_price_contract import matches_summary_digest
 
 
 _TABLE = "arte.liquidity_execution_price_100ms_v1"
@@ -62,12 +63,6 @@ def _token(build_id: str, units: tuple[PriceLevelUnit, ...]) -> str:
         unit.eligible_bucket_count, format(unit.total_execution_volume, ".17g"),
         unit.content_hash] for unit in units]]
     return sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
-
-
-def _summary_hash(row: dict[str, Any]) -> str:
-    return sha256("\n".join(str(row[key]) for key in (
-        "row_count", "unique_keys", "eligible_bucket_count",
-        "total_execution_volume", "row_hash")).encode()).hexdigest()
 
 
 def certify_price_level_plan(market: CertifiedMarketDayPlan,
@@ -155,7 +150,9 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
                     or int(row["eligible_bucket_count"]) != unit.eligible_bucket_count
                     or abs(float(row["total_execution_volume"])
                            - unit.total_execution_volume) > 1e-6
-                    or _summary_hash(row) != unit.content_hash):
+                    or not matches_summary_digest(
+                        row, content_hash=unit.content_hash,
+                        published_volume=unit.total_execution_volume)):
                 raise RuntimeError("Eligible-price rows differ from published coverage")
             seen.add(key)
         if seen != {key for key, unit in covered.items() if unit.price_row_count > 0}:

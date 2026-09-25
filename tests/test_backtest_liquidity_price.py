@@ -4,6 +4,7 @@ import json
 import pytest
 
 from pipelines.market_sip.events.liquidity_execution_price_producer import _digest
+from src.trading_runtime.eligible_price_contract import legacy_summary_digest
 from src.backend.backtest_liquidity_price import (
     PriceLevelPlan, PriceLevelUnit, certify_price_level_plan,
 )
@@ -27,11 +28,13 @@ def _plan():
 
 
 class Reader:
-    def __init__(self, *, coverage=True, misplaced=False, tampered=False):
+    def __init__(self, *, coverage=True, misplaced=False, tampered=False,
+                 legacy=False):
         self.queries = []
         self.coverage = coverage
         self.misplaced = misplaced
         self.tampered = tampered
+        self.legacy = legacy
 
     def execute(self, query):
         self.queries.append(query)
@@ -49,7 +52,10 @@ class Reader:
             return json.dumps(dict(session_date="2026-08-18", ticker="ABCD",
                 source_attempt_id=SOURCE, derivation_attempt_id=DERIVED,
                 price_row_count=2, eligible_bucket_count=1,
-                total_execution_volume=40.0, content_hash=_digest(SUMMARY)))
+                total_execution_volume=40.00000001 if self.legacy else 40.0,
+                content_hash=(legacy_summary_digest(
+                    SUMMARY, published_volume=40.00000001)
+                    if self.legacy else _digest(SUMMARY))))
         if "FROM arte.liquidity_execution_price_100ms_v1" in query:
             return json.dumps(dict(session_date="2026-08-18", ticker="ABCD",
                 source_attempt_id=SOURCE, derivation_attempt_id=DERIVED,
@@ -78,6 +84,10 @@ def test_missing_or_misplaced_child_blocks_preflight():
 def test_tampered_child_blocks_preflight():
     with pytest.raises(RuntimeError, match="differ from published coverage"):
         certify_price_level_plan(_plan(), Reader(tampered=True))
+
+
+def test_legacy_coverage_float_sum_drift_is_not_a_false_blocker():
+    assert certify_price_level_plan(_plan(), Reader(legacy=True)).units[0].price_row_count == 2
 
 
 def test_pinned_price_levels_join_and_decode_without_market_writes():

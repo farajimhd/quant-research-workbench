@@ -6,6 +6,9 @@ import re
 import pytest
 
 from pipelines.market_sip.events import liquidity_execution_price_producer as producer
+from src.trading_runtime.eligible_price_contract import (
+    legacy_summary_digest, matches_summary_digest, summary_digest,
+)
 
 
 DAY = date(2026, 8, 18)
@@ -14,11 +17,12 @@ DERIVED = "00000000-0000-0000-0000-000000000002"
 
 
 class Client:
-    def __init__(self, *, mismatch=False, already=False):
+    def __init__(self, *, mismatch=False, already=False, legacy=False):
         self.queries = []
         self.mismatch = mismatch
         self.attempt = DERIVED if already else ""
         self.digest = ""
+        self.legacy = legacy
 
     def execute(self, query):
         self.queries.append(query)
@@ -28,10 +32,14 @@ class Client:
             summary = dict(row_count=2, unique_keys=2,
                            eligible_bucket_count=1,
                            total_execution_volume=40.0, row_hash="123")
+            published_volume = 40.00000001 if self.legacy else 40.0
             return json.dumps(dict(attempt_id=self.attempt,
                                    price_row_count=2, eligible_bucket_count=1,
-                                   total_execution_volume=40.0,
-                                   content_hash=self.digest or producer._digest(summary)))
+                                   total_execution_volume=published_volume,
+                                   content_hash=self.digest or (
+                                       legacy_summary_digest(summary,
+                                           published_volume=published_volume)
+                                       if self.legacy else producer._digest(summary))))
         if "FULL OUTER JOIN prices" in query:
             return json.dumps(dict(bucket_index=1)) if self.mismatch else ""
         if "sum(cityHash64(tuple(*)))" in query:
@@ -80,3 +88,21 @@ def test_existing_coverage_fails_closed_on_corrupt_child():
     with pytest.raises(RuntimeError, match="differs from its coverage"):
         producer.publish_unit(client, build_id="build", day=DAY,
             ticker="ABCD", source_attempt_id=SOURCE, rules=[])
+
+
+def test_legacy_float_sum_drift_is_verified_without_rewriting_coverage():
+    client = Client(already=True, legacy=True)
+    assert producer.publish_unit(client, build_id="build", day=DAY,
+        ticker="ABCD", source_attempt_id=SOURCE, rules=[]) == "skipped"
+    assert all(not query.startswith("INSERT") for query in client.queries)
+
+
+def test_v2_digest_is_invariant_to_float_sum_order_but_binds_persisted_rows():
+    summary = dict(row_count=2, unique_keys=2,
+                   eligible_bucket_count=1, total_execution_volume=40.0,
+                   row_hash="123")
+    stable = summary_digest(summary)
+    assert stable == summary_digest({**summary,
+                                    "total_execution_volume": 40.00000001})
+    assert not matches_summary_digest({**summary, "row_hash": "124"},
+                                      content_hash=stable, published_volume=40.0)
