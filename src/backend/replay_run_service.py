@@ -7842,8 +7842,21 @@ class ReplayRunController:
                 else str(row.get("source_type") or "") == "news_events"
             )
         ]
+        from src.backend.backtest_market_data import ExecutionInterval
+        fixed_backtest = (
+            self.definition.mode == RunMode.BACKTEST
+            and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"
+        )
+        if fixed_backtest:
+            selected = set(dict(configuration.get("run_plan") or {}).get(
+                "signal_stream_ids") or ())
+            streams = [stream for stream in streams
+                       if stream.get("signal_stream_id") in selected]
         if not streams:
             return []
+        if fixed_backtest:
+            raise RuntimeError(
+                "Fixed Backtest has no certified arte news Signal Stream source")
         if self.definition.mode == RunMode.BACKTEST_DEBUG:
             fixture = self.definition.debug_fixture
             if fixture is None:
@@ -8005,6 +8018,16 @@ class ReplayRunController:
             if bool(row.get("enabled", True))
             and str(row.get("occurrence_source") or "").strip()
         ]
+        from src.backend.backtest_market_data import ExecutionInterval
+        fixed_backtest = (
+            self.definition.mode == RunMode.BACKTEST
+            and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"
+        )
+        if fixed_backtest:
+            selected = set(dict(self.definition.configuration_revision["payload"].get(
+                "run_plan") or {}).get("signal_stream_ids") or ())
+            native_streams = [stream for stream in native_streams
+                              if stream.get("signal_stream_id") in selected]
         unsupported = sorted({
             str(row.get("occurrence_source") or "").strip()
             for row in native_streams
@@ -8021,11 +8044,13 @@ class ReplayRunController:
             return []
 
         permits = asyncio.Semaphore(replay_history_fetch_concurrency())
-        from src.backend.backtest_market_data import ExecutionInterval
-        fixed_backtest = (
-            self.definition.mode == RunMode.BACKTEST
-            and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"
-        )
+        if fixed_backtest and any(
+            stream.get("signal_stream_id") != "price-squeeze-early"
+            or stream.get("occurrence_source") != "qmd_squeeze_episode"
+            for stream in streams
+        ):
+            raise RuntimeError(
+                "Fixed Backtest Signal Streams require a certified arte reader")
         fixed_bar_plan = (
             await self._fixed_certified_market_plan()
             if fixed_backtest and any(
@@ -8177,6 +8202,11 @@ class ReplayRunController:
     async def _load_market_signal_events(self) -> list[ReplaySignalEvent]:
         if not self._historical_core_signal_plans:
             return []
+        from src.backend.backtest_market_data import ExecutionInterval
+        if (self.definition.mode == RunMode.BACKTEST
+                and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"):
+            raise RuntimeError(
+                "Fixed Backtest cannot materialize QMD historical Signal Streams")
         if self._journal is None:
             raise RuntimeError("Historical signal journal is unavailable")
         from src.backend.historical_watchlist_feature_service import (
@@ -10416,6 +10446,17 @@ def _fixed_market_evidence_gaps(configuration: Mapping[str, Any]) -> tuple[str, 
     profiles = [configuration.get("strategy_profile") or {},
                 *(configuration.get("assignments") or ())]
     gaps: set[str] = set()
+    selected_streams = set(dict(configuration.get("run_plan") or {}).get(
+        "signal_stream_ids") or ())
+    for stream in dict(configuration.get("signal_activation") or {}).get(
+            "signal_streams") or ():
+        if not stream.get("enabled", True):
+            continue
+        stream_id = str(stream.get("signal_stream_id") or "")
+        if stream_id in selected_streams and (
+                stream_id != "price-squeeze-early"
+                or stream.get("occurrence_source") != "qmd_squeeze_episode"):
+            gaps.add(f"signal_stream:{stream_id}")
     for profile in profiles:
         parameters = dict(profile.get("parameters") or {})
         hod = dict(parameters.get("historical_hod") or {})

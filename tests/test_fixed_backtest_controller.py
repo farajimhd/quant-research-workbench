@@ -171,6 +171,43 @@ def test_fixed_market_rejects_event_only_strategy_evidence():
     assert _fixed_market_evidence_gaps({"assignments": []}) == ()
 
 
+def test_fixed_market_rejects_unpersisted_signal_sources():
+    configuration = {
+        "assignments": [],
+        "run_plan": {"signal_stream_ids": ["price-squeeze-early", "news-alpha"]},
+        "signal_activation": {"signal_streams": [
+            {"enabled": True, "signal_stream_id": "price-squeeze-early",
+             "occurrence_source": "qmd_squeeze_episode"},
+            {"enabled": True, "signal_stream_id": "news-alpha",
+             "source_type": "news_events"},
+        ]},
+    }
+    assert _fixed_market_evidence_gaps(configuration) == ("signal_stream:news-alpha",)
+
+
+def test_fixed_runtime_never_materializes_qmd_or_news_signals(monkeypatch):
+    from src.backend import historical_watchlist_feature_service
+
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, execution_interval="100ms", debug_fixture=None,
+        configuration_revision={"payload": {
+            "run_plan": {"signal_stream_ids": ["news-alpha"]},
+            "signal_activation": {"signal_streams": [{
+                "signal_stream_id": "news-alpha", "source_type": "news_events",
+                "enabled": True}]}}},
+    )
+    controller._journal = object()
+    controller._historical_core_signal_plans = ({"signal_stream_id": "legacy"},)
+    monkeypatch.setattr(historical_watchlist_feature_service,
+                        "materialize_historical_watchlist_plans",
+                        lambda *_args, **_kwargs: pytest.fail("QMD materialization"))
+    with pytest.raises(RuntimeError, match="cannot materialize QMD"):
+        asyncio.run(controller._load_market_signal_events())
+    with pytest.raises(RuntimeError, match="certified arte news"):
+        asyncio.run(controller._load_external_signal_events())
+
+
 def test_fixed_engine_opens_clickhouse_journal_before_any_sqlite(monkeypatch):
     from src.backend import replay_run_service
 
@@ -731,7 +768,8 @@ def test_fixed_signal_loader_never_prepares_missing_occurrences(monkeypatch):
     controller = object.__new__(ReplayRunController)
     controller.definition = SimpleNamespace(
         mode=RunMode.BACKTEST, execution_interval="100ms",
-        configuration_revision={"payload": {"signal_activation": {
+        configuration_revision={"payload": {"run_plan": {
+            "signal_stream_ids": ["early"]}, "signal_activation": {
             "signal_streams": [{"signal_stream_id": "early",
                                 "occurrence_source": "qmd_squeeze_episode",
                                 "enabled": True}]}}},
@@ -740,13 +778,13 @@ def test_fixed_signal_loader_never_prepares_missing_occurrences(monkeypatch):
     )
     controller._journal = object()
     def unavailable(*_args, **_kwargs):
-        raise occurrences.HistoricalSignalCoverageUnavailable("missing coverage")
+        raise AssertionError("fixed Backtest opened a disk-backed occurrence")
     monkeypatch.setattr(occurrences, "historical_source_native_signal_occurrences", unavailable)
-    with pytest.raises(occurrences.HistoricalSignalCoverageUnavailable):
+    with pytest.raises(RuntimeError, match="certified arte reader"):
         asyncio.run(controller._load_source_native_signal_events())
     controller.definition.configuration_revision["payload"]["signal_activation"]["signal_streams"][0][
         "historical_occurrence_artifact"] = "unprepared"
-    with pytest.raises(occurrences.HistoricalSignalCoverageUnavailable):
+    with pytest.raises(RuntimeError, match="certified arte reader"):
         asyncio.run(controller._load_source_native_signal_events())
 
 
@@ -778,7 +816,8 @@ def test_fixed_signal_loader_uses_pinned_bars_without_event_fallback(monkeypatch
     controller.run_id = RUN
     controller.definition = SimpleNamespace(
         mode=RunMode.BACKTEST, execution_interval="100ms", tickers=(),
-        configuration_revision={"payload": {"signal_activation": {
+        configuration_revision={"payload": {"run_plan": {
+            "signal_stream_ids": ["price-squeeze-early"]}, "signal_activation": {
             "signal_streams": [{"signal_stream_id": "price-squeeze-early",
                                 "occurrence_source": "qmd_squeeze_episode",
                                 "enabled": True}]}}},
