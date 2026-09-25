@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Mapping, Protocol
 
+from src.backend.live_assignment_roster_publication import RosterOwnerFence
+
 from src.backend.live_assignment_base_keeper import (
     AssignmentHead, BaseRowReader, KeeperAssignmentHead,
     cold_read_attested_assignment,
@@ -36,9 +38,16 @@ def publish_base_revision(
     parameter_content_hash: str, state_snapshot_id: str,
     state_snapshot_revision: int, state_session: str, state_run_id: str,
     state_content_hash: str,
+    roster_fence: RosterOwnerFence | None = None,
+    roster_epoch: int | None = None,
 ) -> AssignmentHead:
     """Synchronous control-plane only; never call from a market callback."""
     assignment_id = assignment.assignment_id
+    if (roster_fence is None) != (roster_epoch is None):
+        raise ValueError("roster owner fence and epoch must be supplied together")
+    if roster_fence is not None and not roster_fence.is_current(
+            owner_id=owner_id, epoch=roster_epoch):
+        raise RuntimeError("roster owner fence is not current")
     epoch = keeper.acquire(assignment_id, owner_id=owner_id)
     if epoch is None:
         raise RuntimeError("assignment base Keeper claim is held")
@@ -85,6 +94,9 @@ def publish_base_revision(
             raise ValueError("assignment differs from its attested typed children")
         if not keeper.is_current(assignment_id, owner_id=owner_id, epoch=epoch):
             raise RuntimeError("assignment base Keeper owner fence lost")
+        if roster_fence is not None and not roster_fence.is_current(
+                owner_id=owner_id, epoch=roster_epoch):
+            raise RuntimeError("roster owner fence lost before base insert")
         try:
             storage.insert_base(row)
         except BaseException as exc:
@@ -93,13 +105,17 @@ def publish_base_revision(
                 "base INSERT result is ambiguous; do not retry automatically") from exc
         # CAS verifies exact CH readback plus both child snapshots again.
         try:
-            return keeper.attest(
+            confirmed = keeper.attest(
                 row, owner_id=owner_id, epoch=epoch, previous=prior,
                 base_rows=storage, state_storage=state_storage,
                 state_admission=state_admission,
                 parameter_storage=parameter_storage,
                 parameter_admission=parameter_admission,
             )
+            if roster_fence is not None and not roster_fence.is_current(
+                    owner_id=owner_id, epoch=roster_epoch):
+                raise RuntimeError("roster owner fence lost after base attestation")
+            return confirmed
         except BaseException as exc:
             # The Keeper transaction may have committed before its response
             # was lost. Never release this owner or retry a MergeTree insert.

@@ -135,3 +135,18 @@ def test_base_publication_compares_canonical_typed_clock_without_mutating_assign
     storage, keeper = FakeBaseStorage(), _keeper()
     assert _publish(storage, keeper, assignment).sequence == 1
     assert assignment.state["last_observed_at"] == "2026-09-24T13:00:00+00:00"
+
+
+def test_base_publication_optional_roster_fence_fails_before_insert(monkeypatch):
+    assignment = _assignment()
+    monkeypatch.setattr(
+        "src.backend.live_assignment_base_publication.recover_attested_assignment",
+        lambda **kwargs: assignment)
+    storage, keeper = FakeBaseStorage(), _keeper()
+    class LostRoster:
+        def is_current(self, *, owner_id, epoch):
+            return False
+    with pytest.raises(RuntimeError, match="roster owner fence"):
+        _publish(storage, keeper, assignment,
+                 roster_fence=LostRoster(), roster_epoch=3)
+    assert storage.events == []
