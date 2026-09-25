@@ -191,13 +191,18 @@ def test_operational_assignment_and_campaign_contract_matches_live_journal(tmp_p
         live.close()
 
 
-def test_controller_checkpoint_becomes_resumable_only_after_clickhouse_fence():
+def test_controller_checkpoint_requires_fence_and_rejects_terminal_status():
     journal = BacktestMemoryJournal(run_id=RUN_ID, max_pending_records=1)
     controller = object.__new__(ReplayRunController)
     controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
     controller.run_id = RUN_ID
     controller.status = "running"
     controller._journal = journal
+    controller._pending_passive_market_events = []
+    controller._source_cursor = {"session_date": "2026-08-18",
+                                 "boundary_ms": 14_400_000, "sequence": 1}
+    controller._frame_cursor = {}
+    controller.processed_events = 1
     controller._checkpoint_projection_cache = None
     controller._checkpoint_io_task = None
     controller.stream_snapshot = lambda: {"status": "running"}
@@ -247,12 +252,11 @@ def test_controller_checkpoint_becomes_resumable_only_after_clickhouse_fence():
 
     succeeded = Publisher()
     controller._journal_publisher = succeeded
-    asyncio.run(controller._save_restart_checkpoint_responsive(
-        at, checkpoint_status="completed"))
-    assert succeeded.calls[0]["source_cursor"] == journal.load_checkpoint(RUN_ID)["cursor"]
-    assert succeeded.calls[0]["status"] == "completed"
-    assert controller._checkpoint_projection_cache["resume_supported"] is True
-    assert controller._checkpoint_io_task is None
+    with pytest.raises(RuntimeError, match="lifecycle-last typed account captures"):
+        asyncio.run(controller._save_restart_checkpoint_responsive(
+            at, checkpoint_status="completed"))
+    assert succeeded.calls == []
+    assert journal.load_checkpoint(RUN_ID) is None
 
 
 def test_controller_adds_boundary_after_other_pending_records():
@@ -264,6 +268,11 @@ def test_controller_adds_boundary_after_other_pending_records():
     controller.run_id = RUN_ID
     controller.status = "running"
     controller._journal = journal
+    controller._pending_passive_market_events = []
+    controller._source_cursor = {"session_date": "2026-08-18",
+                                 "boundary_ms": 14_400_000, "sequence": 1}
+    controller._frame_cursor = {}
+    controller.processed_events = 1
     controller._checkpoint_projection_cache = None
     controller._checkpoint_io_task = None
     controller.stream_snapshot = lambda: {"status": "running"}
@@ -290,6 +299,8 @@ def test_controller_adds_boundary_after_other_pending_records():
     with pytest.raises(OSError, match="commit unavailable"):
         asyncio.run(controller._save_restart_checkpoint_responsive(AT))
     assert journal.pending_record_count == 2
+    controller._source_cursor = {"session_date": "2026-08-18",
+                                 "boundary_ms": 14_400_000, "sequence": 2}
     controller._restart_checkpoint_state = lambda **_kwargs: {
         "schema_version": 1,
         "controller": {
