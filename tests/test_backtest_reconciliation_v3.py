@@ -25,6 +25,7 @@ def _record(differences=None):
                          "primary", "DU1", {
                              "event": "portfolio_reconciliation_completed",
                              "snapshot_id": "snapshot-1",
+                             "snapshot_observed_at": AT,
                              "difference_count": len(differences),
                              "differences": differences,
                              "correlation_id": "run:run-1",
@@ -35,8 +36,7 @@ def _record(differences=None):
 def test_exact_reconciliation_projects_ordered_typed_children_and_seal():
     record = _record()
     result = project_reconciliation_v3(record, attempt_id=ATTEMPT,
-                                       batch_id=BATCH, account_key="primary",
-                                       snapshot_observed_at=AT)
+                                       batch_id=BATCH, account_key="primary")
     assert result.event["correlation_id"] == record.payload["correlation_id"]
     assert result.event["causation_id"] == record.payload["causation_id"]
     assert result.parent["difference_count"] == 2
@@ -47,7 +47,7 @@ def test_exact_reconciliation_projects_ordered_typed_children_and_seal():
     assert len(result.parent["difference_hash"]) == 64
     assert len(result.parent["content_hash"]) == 64
     empty = project_reconciliation_v3(_record([]), attempt_id=ATTEMPT, batch_id=BATCH,
-                                      account_key="primary", snapshot_observed_at=AT)
+                                      account_key="primary")
     assert empty.parent["difference_count"] == 0 and empty.differences == ()
 
 
@@ -65,7 +65,7 @@ def test_reconciliation_rejects_loss_duplicate_order_and_future(change):
     change(rows)
     with pytest.raises(ValueError):
         project_reconciliation_v3(_record(rows), attempt_id=ATTEMPT, batch_id=BATCH,
-                                  account_key="primary", snapshot_observed_at=AT)
+                                  account_key="primary")
 
 
 def test_reconciliation_rejects_wrong_payload_and_account():
@@ -73,23 +73,22 @@ def test_reconciliation_rejects_wrong_payload_and_account():
     record.payload["unmodeled"] = {"opaque": True}
     with pytest.raises(ValueError):
         project_reconciliation_v3(record, attempt_id=ATTEMPT,
-                                  batch_id=BATCH, account_key="primary",
-                                  snapshot_observed_at=AT)
+                                  batch_id=BATCH, account_key="primary")
     with pytest.raises(ValueError):
         project_reconciliation_v3(_record(), attempt_id=ATTEMPT,
-                                  batch_id=BATCH, account_key="other",
-                                  snapshot_observed_at=AT)
+                                  batch_id=BATCH, account_key="other")
 
 
-def test_empty_snapshot_needs_external_observed_time_anchor():
+def test_empty_snapshot_requires_embedded_observed_time_anchor():
     record = _record([])
-    with pytest.raises(TypeError):
+    record.payload.pop("snapshot_observed_at")
+    with pytest.raises(ValueError, match="exact completed snapshot"):
         project_reconciliation_v3(record, attempt_id=ATTEMPT,
                                   batch_id=BATCH, account_key="primary")
+    record.payload["snapshot_observed_at"] = AT + timedelta(seconds=1)
     with pytest.raises(ValueError, match="future"):
         project_reconciliation_v3(record, attempt_id=ATTEMPT,
-                                  batch_id=BATCH, account_key="primary",
-                                  snapshot_observed_at=AT + timedelta(seconds=1))
+                                  batch_id=BATCH, account_key="primary")
 
 
 def test_actual_backtest_memory_journal_lineage_projects_without_loss():
@@ -104,7 +103,7 @@ def test_actual_backtest_memory_journal_lineage_projects_without_loss():
     }])[0]
     result = project_reconciliation_v3(
         actual, attempt_id=ATTEMPT, batch_id=BATCH,
-        account_key="primary", snapshot_observed_at=AT)
+        account_key="primary")
     assert result.event["correlation_id"] == actual.payload["correlation_id"]
     assert result.event["causation_id"] == actual.payload["causation_id"]
     assert result.parent["difference_count"] == 2
@@ -116,8 +115,8 @@ def test_reconciliation_requires_exact_lineage_pair():
     record.payload.pop("causation_id")
     with pytest.raises(ValueError, match="exact completed snapshot"):
         project_reconciliation_v3(record, attempt_id=ATTEMPT, batch_id=BATCH,
-                                  account_key="primary", snapshot_observed_at=AT)
+                                  account_key="primary")
     record.payload["causation_id"] = ""
     with pytest.raises(ValueError, match="exact completed snapshot"):
         project_reconciliation_v3(record, attempt_id=ATTEMPT, batch_id=BATCH,
-                                  account_key="primary", snapshot_observed_at=AT)
+                                  account_key="primary")

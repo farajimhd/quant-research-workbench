@@ -54,8 +54,7 @@ def _utc(value: Any) -> str:
 
 def project_reconciliation_v3(record: JournalRecord, *, attempt_id: str,
                               batch_id: str,
-                              account_key: str,
-                              snapshot_observed_at: datetime) -> ReconciliationV3Projection:
+                              account_key: str) -> ReconciliationV3Projection:
     """Reject any loss, duplicate, mixed account, or noncausal child evidence."""
     UUID(attempt_id)
     UUID(batch_id)
@@ -66,7 +65,8 @@ def project_reconciliation_v3(record: JournalRecord, *, attempt_id: str,
         raise ValueError("Reconciliation event identity is invalid")
     payload = record.payload
     if (not isinstance(payload, Mapping)
-            or set(payload) != {"event", "snapshot_id", "difference_count", "differences",
+            or set(payload) != {"event", "snapshot_id", "snapshot_observed_at",
+                                "difference_count", "differences",
                                 "correlation_id", "causation_id"}
             or any(not isinstance(payload[key], str) or not payload[key]
                    for key in ("correlation_id", "causation_id"))
@@ -80,7 +80,7 @@ def project_reconciliation_v3(record: JournalRecord, *, attempt_id: str,
         raise ValueError("Reconciliation payload is not an exact completed snapshot")
     event_at = _utc(record.event_time)
     _utc(record.recorded_at)
-    source_at = _utc(snapshot_observed_at)
+    source_at = _utc(payload["snapshot_observed_at"])
     if source_at > event_at:
         raise ValueError("Reconciliation snapshot is from the future")
     month = event_at[:7] + "-01"

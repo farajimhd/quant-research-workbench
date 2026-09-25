@@ -584,6 +584,7 @@ class PortfolioManagementEngine:
                                      account_id, {
                                          "event": "portfolio_reconciliation_completed",
                                          "snapshot_id": candidate.snapshot_id,
+                                         "snapshot_observed_at": candidate.observed_at,
                                          "difference_count": len(rows),
                                          "differences": rows,
                                      })
@@ -2117,6 +2118,7 @@ class PortfolioManagementEngine:
         for lot in self.allocations.values():
             if lot.account_id == state.profile.account_id and lot.source != "external":
                 attributed[lot.ticker] = attributed.get(lot.ticker, 0.0) + lot.quantity
+        observed_at = state.observed_at or datetime.now(timezone.utc)
         for ticker in sorted(set(state.positions) | set(attributed)):
             broker_quantity = float(state.positions[ticker].position) if ticker in state.positions else 0.0
             attributed_quantity = attributed.get(ticker, 0.0)
@@ -2129,7 +2131,7 @@ class PortfolioManagementEngine:
                 broker_quantity=broker_quantity,
                 attributed_quantity=attributed_quantity,
                 unattributed_quantity=delta,
-                observed_at=state.observed_at or datetime.now(timezone.utc),
+                observed_at=observed_at,
             )
         current = {
             key: value
@@ -2145,6 +2147,7 @@ class PortfolioManagementEngine:
                 {
                     "event": "portfolio_reconciliation_completed",
                     "snapshot_id": state.snapshot_id,
+                    "snapshot_observed_at": observed_at,
                     "difference_count": len(rows),
                     "differences": rows,
                 },

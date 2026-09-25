@@ -41,7 +41,9 @@ def identity(*_args):
 def records():
     return (("portfolio_reconciliation", "primary", "DU1", {
         "event": "portfolio_reconciliation_completed",
-        "snapshot_id": "broker-snapshot", "difference_count": 0,
+        "snapshot_id": "broker-snapshot",
+        "snapshot_observed_at": captured().observed_at,
+        "difference_count": 0,
         "differences": [],
     }),)
 
@@ -312,6 +314,11 @@ def test_sync_projection_rejects_dropped_or_tampered_reconciliation() -> None:
         **records()[0][3], "difference_count": 1}),)
     with pytest.raises(ValueError, match="differs"):
         project_portfolio_reconciliation_records(changed, captured=image, **identity())
+    wrong_time = (("portfolio_reconciliation", "primary", "DU1", {
+        **records()[0][3],
+        "snapshot_observed_at": image.observed_at.replace(year=2025)}),)
+    with pytest.raises(ValueError, match="differs"):
+        project_portfolio_reconciliation_records(wrong_time, captured=image, **identity())
     with pytest.raises(ValueError, match="exactly one"):
         project_portfolio_reconciliation_records(records() * 2, captured=image, **identity())
 
@@ -322,7 +329,9 @@ def test_sync_projection_binds_nonempty_difference_set() -> None:
     image = replace(captured(), reconciliation=(difference,))
     fact = (("portfolio_reconciliation", "primary", "DU1", {
         "event": "portfolio_reconciliation_completed",
-        "snapshot_id": "broker-snapshot", "difference_count": 1,
+        "snapshot_id": "broker-snapshot",
+        "snapshot_observed_at": image.observed_at,
+        "difference_count": 1,
         "differences": [asdict(difference)],
     }),)
     batch = project_portfolio_reconciliation_records(fact, captured=image, **identity())

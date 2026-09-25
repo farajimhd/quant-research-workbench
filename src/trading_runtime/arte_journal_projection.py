@@ -810,9 +810,11 @@ def project_portfolio_reconciliation_records(
                   key=lambda row: (row["account_key"], row["ticker"]))
     if (kind != "portfolio_reconciliation" or entity_id != captured.account_key
             or account_id != captured.account_id or not isinstance(payload, Mapping)
-            or set(payload) != {"event", "snapshot_id", "difference_count", "differences"}
+            or set(payload) != {"event", "snapshot_id", "snapshot_observed_at",
+                                "difference_count", "differences"}
             or payload["event"] != "portfolio_reconciliation_completed"
             or payload["snapshot_id"] != captured.broker_snapshot_id
+            or payload["snapshot_observed_at"] != captured.observed_at
             or type(payload["difference_count"]) is not int
             or payload["difference_count"] != len(rows)
             or payload["differences"] != rows
