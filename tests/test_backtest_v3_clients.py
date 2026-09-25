@@ -75,3 +75,32 @@ def test_market_reader_opt_in_uses_only_v3_read_principal(monkeypatch):
     assert backtest_market_data.readonly_clickhouse_client(
         market_stream=True, v3_read_principal=True) is sentinel
     assert calls == [("read", True)]
+
+
+def test_managed_workstation_uses_ipv4_transport_without_changing_credentials(
+        monkeypatch):
+    from src.backend import backtest_v3_clients
+    monkeypatch.setattr(backtest_v3_clients.platform, "node",
+                        lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(backtest_v3_clients.socket, "gethostbyname",
+                        lambda host: "192.168.1.218")
+    env = _env()
+    env["BACKTEST_V3_READ_CLICKHOUSE_URL"] = "http://DESKTOP-SAAI85T:18123"
+    calls = []
+    v3_client("read", environment=env,
+              client_factory=lambda *args, **kwargs: calls.append(args))
+    assert calls[0][:2] == ("http://192.168.1.218:18123", "backtest_v3_reader")
+    assert env["BACKTEST_V3_READ_CLICKHOUSE_URL"] == "http://DESKTOP-SAAI85T:18123"
+
+
+def test_nonprivate_workstation_resolution_fails_closed(monkeypatch):
+    from src.backend import backtest_v3_clients
+    monkeypatch.setattr(backtest_v3_clients.platform, "node",
+                        lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(backtest_v3_clients.socket, "gethostbyname",
+                        lambda host: "8.8.8.8")
+    env = _env()
+    env["BACKTEST_V3_READ_CLICKHOUSE_URL"] = "http://DESKTOP-SAAI85T:18123"
+    with pytest.raises(RuntimeError, match="outside the private network"):
+        v3_client("read", environment=env,
+                  client_factory=lambda *args, **kwargs: object())

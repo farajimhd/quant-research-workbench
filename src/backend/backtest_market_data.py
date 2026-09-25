@@ -440,8 +440,11 @@ def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None) -> None:
                 by_day.setdefault(unit.session_date, []).append(unit)
             for day, day_units in by_day.items():
                 ordered = sorted(day_units, key=lambda unit: unit.ticker)
-                for offset in range(0, len(ordered), 256):
-                    batch = ordered[offset:offset + 256]
+                # One grouped ClickHouse scan amortizes HTTP and planner
+                # overhead across ticker-day units. 1024 still bounds the IN
+                # predicate, response, and aggregate memory for a busy day.
+                for offset in range(0, len(ordered), 1024):
+                    batch = ordered[offset:offset + 1024]
                     tickers = ",".join(_literal(unit.ticker) for unit in batch)
                     key_evidence = (
                         ",countIf(price_valid) AS eligible_keys,"

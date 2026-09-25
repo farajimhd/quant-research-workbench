@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import os
+from ipaddress import IPv4Address
 from pathlib import Path
+import platform
+import socket
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
@@ -54,6 +57,7 @@ def v3_client(
         from research.mlops.clickhouse import ClickHouseHttpClient
         client_factory = ClickHouseHttpClient
     url, user, password = _credential(role, os.environ if environment is None else environment)
+    url = _workstation_ipv4_transport(url)
     params = {"readonly": 1, "max_threads": 4, "max_execution_time": 60} if role == "read" else {}
     if market_stream:
         if role != "read":
@@ -62,6 +66,23 @@ def v3_client(
                       max_ast_elements=500_000, max_execution_time=21_600)
     return client_factory(url, user, password, timeout_seconds=60,
                           persistent=True, default_query_params=params)
+
+
+def _workstation_ipv4_transport(url: str) -> str:
+    """Avoid the workstation's unreachable self-resolved IPv6 endpoint.
+
+    The credential identity remains unchanged. This applies only on the
+    managed workstation and only to its named ClickHouse listener; other
+    endpoints are never rewritten.
+    """
+    parsed = urlsplit(url)
+    if (platform.node().upper() != "DESKTOP-SAAI85T"
+            or parsed.hostname != "desktop-saai85t" or parsed.port != 18123):
+        return url
+    address = IPv4Address(socket.gethostbyname("DESKTOP-SAAI85T"))
+    if not address.is_private:
+        raise RuntimeError("Workstation ClickHouse resolved outside the private network")
+    return f"{parsed.scheme}://{address}:{parsed.port}"
 
 
 def v3_clients(*, environment: Mapping[str, str] | None = None,
