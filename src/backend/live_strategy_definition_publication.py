@@ -5,6 +5,11 @@ there is no MergeTree uniqueness guarantee and this module never retries it.
 """
 from __future__ import annotations
 
+from concurrent.futures import Future, InvalidStateError
+from dataclasses import dataclass
+import queue
+import threading
+from types import MappingProxyType
 from typing import Any, Mapping, Protocol
 
 from src.backend.live_strategy_definition_authority import (
@@ -203,3 +208,144 @@ def publish_installed_definition(
             change_content_hash=change["content_hash"])
     finally:
         keeper.release(strategy_id, revision, owner_id=owner_id, epoch=epoch)
+
+
+def _freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    if value is None or type(value) in (str, int, float, bool):
+        return value
+    raise ValueError("definition packet contains unmodeled value")
+
+
+def _thaw(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw(item) for item in value]
+    return value
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class DefinitionPublicationPacket:
+    saved: Mapping[str, Any]
+    changed_at: str | None
+    strategy_id: str
+    strategy_revision: int
+
+    @classmethod
+    def _prepared(cls, saved: Mapping[str, Any], changed_at: str | None,
+                  strategy_id: str, strategy_revision: int) -> "DefinitionPublicationPacket":
+        packet = object.__new__(cls)
+        for key, value in (("saved", _freeze(saved)), ("changed_at", changed_at),
+                           ("strategy_id", strategy_id),
+                           ("strategy_revision", strategy_revision)):
+            object.__setattr__(packet, key, value)
+        return packet
+
+
+def prepare_definition_publication(
+    saved: Mapping[str, Any], *, changed_at: str | None = None,
+) -> DefinitionPublicationPacket:
+    """Control-plane preparation; immutable packet makes queue submit O(1)."""
+    definition = project_installed_definition(saved)
+    if changed_at is not None:
+        # Validate causal clock before enqueue; first publication still requires
+        # its immutable creation time and is checked again by the worker.
+        from src.backend.live_strategy_definition_authority import _time
+        changed_at = _time(changed_at)
+    return DefinitionPublicationPacket._prepared(
+        saved, changed_at, definition["strategy_id"], definition["strategy_revision"])
+
+
+class _Receipt(Future[DefinitionHead]):
+    def cancel(self) -> bool:
+        return False
+
+
+class DefinitionPublicationQueue:
+    """Lazy bounded control-plane worker; any uncertain failure halts the lane."""
+
+    def __init__(self, storage: DefinitionStorage, keeper: KeeperDefinitionHeadFence,
+                 *, owner_id: str, capacity: int = 128) -> None:
+        if type(capacity) is not int or capacity < 1:
+            raise ValueError("definition publication capacity is invalid")
+        self._storage = storage
+        self._keeper = keeper
+        self._owner_id = KeeperDefinitionHeadFence._owner(owner_id)
+        self._capacity = capacity
+        self._queue: queue.Queue[tuple[DefinitionPublicationPacket, Future[DefinitionHead]]] = queue.Queue()
+        self._pending: set[tuple[str, int]] = set()
+        self._lock = threading.Lock()
+        self._fatal: BaseException | None = None
+        self._closing = False
+        self._thread = threading.Thread(target=self._work, name="typed-definition-publication",
+                                        daemon=False)
+        self._started = False
+
+    def submit(self, packet: DefinitionPublicationPacket) -> Future[DefinitionHead]:
+        """O(1) ownership handoff; no Keeper or ClickHouse I/O here."""
+        if not isinstance(packet, DefinitionPublicationPacket):
+            raise TypeError("prepared immutable definition packet is required")
+        key = (packet.strategy_id, packet.strategy_revision)
+        with self._lock:
+            if self._closing or self._fatal is not None:
+                raise RuntimeError("definition publication lane is unavailable")
+            if key in self._pending:
+                raise ValueError("definition publication is already pending")
+            if len(self._pending) >= self._capacity:
+                raise RuntimeError("definition publication capacity is exhausted")
+            receipt: Future[DefinitionHead] = _Receipt()
+            self._pending.add(key)
+            self._queue.put_nowait((packet, receipt))
+            if not self._started:
+                self._thread.start()
+                self._started = True
+            return receipt
+
+    def close(self, *, timeout: float = 10.0) -> None:
+        with self._lock:
+            self._closing = True
+        if self._started:
+            self._thread.join(timeout=timeout)
+        if self._started and self._thread.is_alive():
+            raise RuntimeError("definition publication worker did not drain")
+
+    def _work(self) -> None:
+        while True:
+            try:
+                packet, receipt = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                with self._lock:
+                    if self._closing:
+                        return
+                continue
+            try:
+                with self._lock:
+                    fatal = self._fatal
+                if fatal is not None:
+                    raise RuntimeError("definition publication halted") from fatal
+                head = publish_installed_definition(
+                    self._storage, self._keeper, _thaw(packet.saved),
+                    owner_id=self._owner_id, changed_at=packet.changed_at)
+            except BaseException as exc:
+                with self._lock:
+                    if self._fatal is None:
+                        self._fatal = exc
+                    self._closing = True
+                    self._pending.remove((packet.strategy_id, packet.strategy_revision))
+                try:
+                    receipt.set_exception(exc)
+                except InvalidStateError:
+                    pass
+            else:
+                with self._lock:
+                    self._pending.remove((packet.strategy_id, packet.strategy_revision))
+                try:
+                    receipt.set_result(head)
+                except InvalidStateError:
+                    pass
+            finally:
+                self._queue.task_done()
