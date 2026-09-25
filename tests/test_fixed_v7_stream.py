@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import asyncio
 import json
 from types import SimpleNamespace
@@ -60,7 +60,36 @@ def test_private_typed_seed_transfers_observation_ownership_without_default_muta
     assert consumed.engine.rows[0]["observations"] is private["levels"][0]["observations"]
 
 
-def test_lazy_v7_cache_replays_only_completed_pinned_seconds():
+def test_strategy_one_reuses_validated_geometry_without_rich_context(monkeypatch):
+    from tests.test_structural_v7_seed import Client
+    from src.trading_runtime import strategy_one_v7
+
+    prior = load_seed(Client(), ticker="TEST", session=date(2026, 8, 18))
+    stream = FixedV7Stream(prior, ticker="TEST", session=date(2026, 8, 18))
+    at = datetime(2026, 8, 18, 4, 0, tzinfo=NY)
+    calls = []
+    original = strategy_one_v7.admitted_v7_levels
+    def counted(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(strategy_one_v7, "admitted_v7_levels", counted)
+    first = stream.strategy_one_levels(as_of=at,
+                                       seed_policy=prior["input_policy"])
+    second = stream.strategy_one_levels(as_of=at,
+                                        seed_policy=prior["input_policy"])
+    assert len(first) > 0
+    assert second is first
+    assert len(calls) == 1
+    later = at + timedelta(seconds=2)
+    assert stream.strategy_one_levels(as_of=later,
+                                      seed_policy=prior["input_policy"]) == ()
+    stream.engine.as_of = later.timestamp()
+    assert stream.strategy_one_levels(as_of=later,
+                                      seed_policy=prior["input_policy"]) is first
+    assert len(calls) == 1
+
+
+def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
     coverage = dict(ticker="TEST", session_date="2026-08-17",
                     available_at="2026-08-18 00:00:00.000000000", state="empty",
                     level_count=0, observation_count=0, input_policy="",
@@ -106,8 +135,13 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds():
                          session=date(2026, 8, 18), client=client)
     assert not cache.has_stream("TEST")
     before = datetime(2026, 8, 18, 4, 5, 0, 100000, tzinfo=NY)
+    from src.backend import experimental_structure_book
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Strategy 1 must skip rich level context")
+    with monkeypatch.context() as patcher:
+        patcher.setattr(experimental_structure_book, "context", forbidden)
+        assert cache.strategy_one_levels("TEST", as_of=before) == ()
     assert cache.context("TEST", as_of=before, price=10.0)["qmd_structure_unified_levels"] == []
-    assert cache.strategy_one_levels("TEST", as_of=before, price=10.0) == ()
     assert cache.has_stream("TEST")
     assert cache._streams["TEST"].engine.bars_processed == 0
     completed = datetime(2026, 8, 18, 4, 5, 1, tzinfo=NY)

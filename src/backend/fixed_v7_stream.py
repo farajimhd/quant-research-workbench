@@ -34,6 +34,9 @@ class FixedV7Stream:
             split_factor=factor, split_evidence=splits, consume_prior=consume_seed)
         self._last_projection_revision = -1
         self._levels: list[dict[str, Any]] = []
+        self._strategy_one_revision = -1
+        self._strategy_one_policy = ""
+        self._strategy_one_rows: tuple[Mapping[str, Any], ...] = ()
         self._latest_completed_second = start.timestamp()
 
     def update_second(self, row: Mapping[str, Any], *, at: datetime) -> None:
@@ -54,8 +57,7 @@ class FixedV7Stream:
         self.engine.update(bar, observed_at=stamp)
         self._latest_completed_second = stamp
 
-    def context(self, *, as_of: datetime, price: float = 0.0) -> dict[str, Any]:
-        """Return the latest causal structure, never advancing from future bars."""
+    def _project_levels(self, as_of: datetime) -> None:
         if as_of.tzinfo is None or not self.engine.start <= as_of.timestamp() <= self.engine.end:
             raise ValueError("V7 projection time is outside the session")
         if as_of.timestamp() < self._latest_completed_second:
@@ -64,6 +66,10 @@ class FixedV7Stream:
         if revision != self._last_projection_revision:
             self._levels = projection(self.engine, as_of.timestamp(), {}, False)["unified_levels"]
             self._last_projection_revision = revision
+
+    def context(self, *, as_of: datetime, price: float = 0.0) -> dict[str, Any]:
+        """Return the latest causal structure, never advancing from future bars."""
+        self._project_levels(as_of)
         from src.backend.experimental_structure_book import context as level_context
         return {
             **level_context({"unified_levels": self._levels}, price),
@@ -74,6 +80,35 @@ class FixedV7Stream:
             "v7_input_policy": self.engine.input_policy,
             "v7_seed_input_policy": self.engine.seed_input_policy,
         }
+
+    def strategy_one_levels(self, *, as_of: datetime,
+                            seed_policy: str) -> tuple[Mapping[str, Any], ...]:
+        """Reuse validated geometry across unchanged V7 projection revisions."""
+        from datetime import timezone
+        from src.trading_runtime.strategy_one_v7 import admitted_v7_levels
+
+        self._project_levels(as_of)
+        revision = self._last_projection_revision
+        if (revision != self._strategy_one_revision
+                or seed_policy != self._strategy_one_policy):
+            # Validate geometry at its latest input clock, not the caller's
+            # possibly stale 100 ms boundary. Freshness is checked separately
+            # so a new bar can revive unchanged geometry without refitting it.
+            at = datetime.fromtimestamp(self.engine.as_of, timezone.utc)
+            self._strategy_one_rows = admitted_v7_levels({
+                "qmd_level_book_version": VERSION,
+                "v7_input_policy": self.engine.input_policy,
+                "v7_seed_input_policy": self.engine.seed_input_policy,
+                "v7_max_input_timestamp": self.engine.as_of,
+                "qmd_structure_unified_levels": self._levels,
+            }, as_of=at, seed_policy=seed_policy)
+            self._strategy_one_revision = revision
+            self._strategy_one_policy = seed_policy
+        now = as_of.timestamp()
+        if not 0 < self.engine.as_of <= now:
+            raise ValueError("Strategy 1 V7 input clock is invalid or future")
+        return (self._strategy_one_rows if now - self.engine.as_of <= 1.000001
+                else ())
 
 
 class FixedV7Cache:
@@ -124,7 +159,7 @@ class FixedV7Cache:
         for row in rows:
             self.advance_second(str(row.get("ticker") or ""), row, at=at)
 
-    def context(self, ticker: str, *, as_of: datetime, price: float) -> dict[str, Any]:
+    def _stream(self, ticker: str, *, as_of: datetime) -> FixedV7Stream:
         boundary_ms = self._boundary_ms(as_of)
         stream = self._streams.get(ticker)
         if stream is None:
@@ -148,18 +183,18 @@ class FixedV7Cache:
                     )
                     stream.update_second(row, at=bar_at)
             self._streams[ticker] = stream
-        return stream.context(as_of=as_of, price=price)
+        return stream
 
-    def strategy_one_levels(self, ticker: str, *, as_of: datetime,
-                            price: float) -> tuple[Mapping[str, Any], ...]:
+    def context(self, ticker: str, *, as_of: datetime, price: float) -> dict[str, Any]:
+        return self._stream(ticker, as_of=as_of).context(as_of=as_of, price=price)
+
+    def strategy_one_levels(self, ticker: str, *, as_of: datetime) -> tuple[Mapping[str, Any], ...]:
         """Admit only geometry matching this ticker's certified seed policy."""
         from src.market_engine.derived_trade_policy import POLICY
-        from src.trading_runtime.strategy_one_v7 import admitted_v7_levels
 
         pinned = self._coverage.get(ticker)
         if pinned is None:
             raise ValueError("Strategy 1 V7 ticker lacks pinned prior coverage")
         policy = str(pinned["input_policy"]) if int(pinned["level_count"]) else POLICY
-        return admitted_v7_levels(
-            self.context(ticker, as_of=as_of, price=price), as_of=as_of,
-            seed_policy=policy)
+        return self._stream(ticker, as_of=as_of).strategy_one_levels(
+            as_of=as_of, seed_policy=policy)
