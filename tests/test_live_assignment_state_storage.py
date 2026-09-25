@@ -4,10 +4,11 @@ from uuid import uuid4
 
 import pytest
 
-from src.backend.live_assignment_state_snapshot import STATE_COMMIT
+from src.backend.live_assignment_state_snapshot import STATE_COMMIT, STATE_TABLES
 from src.backend.live_assignment_state_storage import (
     ClickHouseAssignmentStateStorage, _row,
 )
+from tests.test_live_assignment_state_snapshot import _project
 
 
 class Client:
@@ -75,3 +76,10 @@ def test_state_transport_rejects_unknown_table_types_and_mixed_identity():
     with pytest.raises(ValueError, match="columns differ"):
         _row(STATE_COMMIT, {**row, "checkpoint_json": "{}"})
     assert client.calls == []
+
+
+def test_every_projected_state_family_matches_its_scalar_wire_contract():
+    rows, commit = _project()
+    for table in STATE_TABLES:
+        family = [commit] if table.name == STATE_COMMIT.name else rows[table.name]
+        assert [_row(table, row) for row in family] == family
