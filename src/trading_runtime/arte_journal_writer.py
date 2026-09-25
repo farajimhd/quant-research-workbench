@@ -833,18 +833,31 @@ def _profile_table(name: str, journal_profile: str) -> str:
 def _insert(
     client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: str,
     *, journal_profile: str = "v1",
-) -> None:
+) -> str | None:
     if name not in _CONTRACTS:
         raise ValueError("Journal writer cannot insert outside typed journal tables")
     if not rows:
-        return
+        return None
     columns = tuple(column for column, _ in _CONTRACTS[name].columns)
     body = "\n".join(canonical_json(_wire_row(name, row)) for row in rows)
-    client.execute(
+    sql = (
         f"INSERT INTO arte.{_profile_table(name, journal_profile)} ({','.join(columns)}) "
         f"SETTINGS async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
         f"insert_deduplication_token={_literal(token)} FORMAT JSONEachRow\n{body}"
     )
+    dispatch = getattr(client, "typed_insert_dispatch", None)
+    if getattr(client, "typed_insert_strict", False) and dispatch is None:
+        raise RuntimeError("Strict typed journal INSERT lacks durable dispatch authority")
+    if dispatch is not None:
+        run_ids = {row.get("run_id") for row in rows}
+        if len(run_ids) != 1 or not isinstance(next(iter(run_ids)), str) or not next(iter(run_ids)):
+            raise RuntimeError("Durable typed INSERT lacks one run identity")
+        dispatch.execute_typed_insert(
+            client, run_id=next(iter(run_ids)),
+            table=_profile_table(name, journal_profile), token=token, sql=sql)
+    else:
+        client.execute(sql)
+    return sql
 
 
 def publish_typed_run(client: Any, run: Mapping[str, Any]) -> str:
@@ -1272,8 +1285,9 @@ def _publish_typed_batch(
         if actual[name] and actual[name] != expected_ids:
             raise RuntimeError(f"{name} has a conflicting or duplicated batch")
         if rows and not actual[name]:
-            _insert(client, name, rows, f"{batch.batch_id}:{_profile_table(name, journal_profile)}",
-                    journal_profile=journal_profile)
+            table = _profile_table(name, journal_profile)
+            token = f"{batch.batch_id}:{table}"
+            _insert(client, name, rows, token, journal_profile=journal_profile)
             inserted = True
     if inserted:
         actual = _family_identities(client, batch.batch_id, journal_profile=journal_profile)
@@ -1299,8 +1313,9 @@ def _publish_typed_batch(
     if existing and (len(existing) != 1 or existing[0] != expected):
         raise RuntimeError("Typed journal commit conflicts with an existing batch")
     if not existing:
-        _insert(client, "trading_commit_v1", (commit,),
-                f"{batch.batch_id}:{_profile_table('trading_commit_v1', journal_profile)}:commit",
+        table = _profile_table("trading_commit_v1", journal_profile)
+        token = f"{batch.batch_id}:{table}:commit"
+        _insert(client, "trading_commit_v1", (commit,), token,
                 journal_profile=journal_profile)
         verified = _rows(client,
             f"SELECT {','.join(_COMMIT_COLUMNS)} "
@@ -1308,6 +1323,20 @@ def _publish_typed_batch(
             f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
         if verified != [expected]:
             raise RuntimeError("Typed journal commit was not durably published")
+    dispatch = getattr(client, "typed_insert_dispatch", None)
+    if dispatch is not None:
+        required = bool(getattr(client, "typed_insert_strict", False))
+        for name, rows in families:
+            if not rows:
+                continue
+            table = _profile_table(name, journal_profile)
+            token = f"{batch.batch_id}:{table}"
+            dispatch.seal_verified_operation(run_id=batch.run_id, table=table,
+                                             token=token, required=required)
+        table = _profile_table("trading_commit_v1", journal_profile)
+        dispatch.seal_verified_operation(
+            run_id=batch.run_id, table=table,
+            token=f"{batch.batch_id}:{table}:commit", required=required)
     return batch.batch_id
 
 
