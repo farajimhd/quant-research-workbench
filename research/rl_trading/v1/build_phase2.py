@@ -22,6 +22,7 @@ from time import monotonic, sleep
 
 import polars as pl
 import pyarrow.parquet as pq
+import duckdb
 from rich.console import Console
 from rich.table import Table
 
@@ -279,14 +280,25 @@ def publish_market_values(root, plan):
     keys = ('time_us','listing_index','side')
     source = pl.scan_parquet(temporary)
     holding_fields = [c for c in source.collect_schema().names() if c not in opening_fields]
-    products = ((holding_path,source.select(holding_fields),expected_rows),
-        (opening_path,source.filter(pl.col('can_open')).select(*keys,*opening_fields),opening_rows))
+    products = ((holding_path,holding_fields,None,expected_rows),
+        (opening_path,[*keys,*opening_fields],'can_open',opening_rows))
     artifacts = {}
+    spill = root/'tensor-sort-spill'
+    spill.mkdir(exist_ok=True)
+    database = duckdb.connect(database=':memory:')
+    database.execute("SET memory_limit='8GB'")
+    database.execute("SET threads=4")
+    def quoted(path):
+        return "'" + str(path.as_posix()).replace("'", "''") + "'"
+    database.execute(f'SET temp_directory={quoted(spill)}')
     try:
-        for path, frame, expected in products:
+        for path, fields, predicate, expected in products:
             ordered = path.with_suffix('.parquet.ordered.tmp')
-            frame.sort(*keys).sink_parquet(ordered,compression='zstd',
-                row_group_size=group_rows,maintain_order=True)
+            projection = ','.join('"'+field+'"' for field in fields)
+            condition = f' WHERE {predicate}' if predicate else ''
+            database.execute(f'COPY (SELECT {projection} FROM read_parquet({quoted(temporary)})'
+                f'{condition} ORDER BY time_us,listing_index,side) TO {quoted(ordered)} '
+                f'(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE {group_rows})')
             if STOP or (root/'STOP').exists():
                 raise InterruptedError('Market tensor publication interrupted')
             actual = pq.ParquetFile(ordered).metadata.num_rows
@@ -300,8 +312,9 @@ def publish_market_values(root, plan):
                 ordered.replace(path)
             artifacts[path.name] = dict(file=path.name,rows=actual,file_hash=file_hash(path))
     finally:
+        database.close()
         temporary.unlink(missing_ok=True)
-        for path,_,_ in products:
+        for path,_,_,_ in products:
             path.with_suffix('.parquet.ordered.tmp').unlink(missing_ok=True)
     return dict(rows=rows, holding=artifacts[holding_path.name],
         opening=artifacts[opening_path.name],listing_count=len(plan['selected']),
@@ -309,6 +322,7 @@ def publish_market_values(root, plan):
         time_count=57601, side_count=2, resolution_count=1,
         axis_order=['macd_resolution_seconds','time_us','listing_index','side'],
         physical_order=['time_us','listing_index','side'],row_group_target_rows=group_rows,
+        sort_engine='duckdb_external',sort_memory_limit='8GB',duckdb_version=duckdb.__version__,
         missing_opening='can_open_false',listing_index_source='plan.selected order')
 
 
@@ -342,6 +356,7 @@ def run_build(args, console):
                 semantics="Local greedy values; no future reallocations; exact size coefficients",
                 market_tensor='market_hold_values.parquet full grid plus market_open_values.parquet sparse entries',
                 polars_version=pl.__version__,
+                tensor_sort=dict(engine='duckdb_external',version=duckdb.__version__,memory_limit='8GB'),
                 code_hashes={p: sha256((REPO / p).read_text(encoding="utf-8").replace("\r\n", "\n").encode()).hexdigest()
                              for p in ("research/rl_trading/v1/build_phase2.py", "research/rl_trading/v1/phase2_values.py", "research/rl_trading/v1/market_values.py", "research/rl_trading/v1/common.py", "src/market_engine/hindsight_batch.py")})
     plan["plan_hash"] = digest(plan)

@@ -8,6 +8,7 @@ websockets
 pandas
 pandas-market-calendars
 pyarrow
+duckdb==1.5.5
 pypdf
 PyMuPDF
 python-dotenv
