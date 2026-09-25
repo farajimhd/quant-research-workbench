@@ -163,10 +163,12 @@ class TypedSignalPublicationQueue:
     Production callers must stage immutable inputs before this handoff.
     """
 
-    def __init__(self, storage: TypedSignalStorage, *, capacity: int = 64) -> None:
+    def __init__(self, storage: TypedSignalStorage, *, capacity: int = 64,
+                 attestor: Any | None = None) -> None:
         if capacity < 1:
             raise ValueError("typed Signal Stream publication capacity must be positive")
         self._storage = storage
+        self._attestor = attestor
         self._capacity = capacity
         self._queue: queue.Queue[tuple[PublicationBatch, Future[str]]] = queue.Queue()
         self._pending: dict[tuple[str, int], Future[str]] = {}
@@ -193,6 +195,10 @@ class TypedSignalPublicationQueue:
                 self._storage, session_key=session_key,
                 configuration_revision=configuration_revision,
                 source_revision=source_revision, catalogs=catalogs)
+            if self._attestor is not None:
+                self._attestor.bootstrap(
+                    head, configuration_revision=configuration_revision,
+                    source_revision=source_revision)
             with self._lock:
                 if self._started or self._closing or self._pending or self._fatal is not None:
                     raise RuntimeError("typed Signal Stream bootstrap raced publication")
@@ -253,6 +259,8 @@ class TypedSignalPublicationQueue:
                 if failure is not None:
                     raise RuntimeError("typed Signal Stream publication halted") from failure
                 head = _publish_one(self._storage, deepcopy(batch))
+                if self._attestor is not None:
+                    head = self._attestor.attest(batch, head, self._storage)
             except BaseException as exc:
                 with self._lock:
                     self._fatal = exc
