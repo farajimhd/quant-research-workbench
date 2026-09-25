@@ -1,6 +1,7 @@
 """Typed Strategy 1 recovery rows have no opaque checkpoint escape hatch."""
 from dataclasses import replace
 from datetime import date
+import json
 
 import pytest
 
@@ -9,7 +10,7 @@ from src.trading_runtime.strategy_one_position import (
 )
 from src.trading_runtime.strategy_one_protection_snapshot import (
     TABLES, ProtectionSnapshotRows, project_protection_snapshot,
-    restore_protection_snapshot,
+    restore_protection_snapshot, load_protection_snapshot,
 )
 
 
@@ -87,3 +88,33 @@ def test_cold_restored_state_produces_identical_next_amendment():
                       "upper": 10.16, "side": "resistance", "role": "resistance"}),),
                   overhead_levels=(), price_bearing_bar=False)
     assert advance_protection(before, **inputs) == advance_protection(after, **inputs)
+
+
+def test_read_only_loader_requires_exact_seal_and_typed_children():
+    rows = _rows()
+
+    class Reader:
+        def __init__(self, seal):
+            self.seal = seal
+            self.queries = []
+
+        def execute(self, query):
+            self.queries.append(query)
+            if "protection_snapshot_v1" in query:
+                selected = () if self.seal is None else (self.seal,)
+            elif "protection_state_v1" in query:
+                selected = rows.states
+            else:
+                selected = rows.resistances
+            return "\n".join(json.dumps(item) for item in selected)
+
+    reader = Reader(rows.snapshot)
+    assert load_protection_snapshot(reader, run_id="run-1",
+                                    checkpoint_sequence=42)[IDENTITY].stop == 9.78
+    assert len(reader.queries) == 3
+    assert all(query.startswith("SELECT ") and "INSERT" not in query
+               for query in reader.queries)
+    assert "toString(stop) AS stop" in reader.queries[1]
+    with pytest.raises(RuntimeError, match="exactly one sealed"):
+        load_protection_snapshot(Reader(None), run_id="run-1",
+                                 checkpoint_sequence=42)

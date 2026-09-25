@@ -14,7 +14,7 @@ from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
 from typing import Mapping
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.trading_runtime.arte_journal_schema import TableContract
 from src.trading_runtime.strategy_one_position import (
@@ -260,3 +260,50 @@ def restore_protection_snapshot(rows: ProtectionSnapshotRows,
             row["state_id"] for row in rows.states}:
         raise ValueError("Strategy 1 protection has an orphan resistance")
     return restored
+
+
+def load_protection_snapshot(client: object, *, run_id: str,
+                             checkpoint_sequence: int,
+                             ) -> dict[tuple[str, str, str], ProtectionState]:
+    """SELECT a sealed snapshot from the read-only principal and cold-verify it.
+
+    Publication may leave unsealed child rows after an interrupted INSERT;
+    they never become recovery authority without exactly one snapshot seal.
+    """
+    from src.backend.backtest_market_data import assert_select_only
+
+    if (not isinstance(run_id, str) or not run_id
+            or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
+            or not callable(getattr(client, "execute", None))):
+        raise ValueError("Strategy 1 recovery needs a read-only run cursor")
+    literal = "'" + run_id.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+    def read(table: str, predicate: str) -> tuple[dict, ...]:
+        columns = ",".join(
+            f"toString({name}) AS {name}" if "Decimal(" in kind else name
+            for name, kind in next(
+                contract for contract in TABLES if contract.name == table).columns)
+        query = assert_select_only(
+            f"SELECT {columns} FROM arte.{table} WHERE {predicate} "
+            "FORMAT JSONEachRow")
+        return tuple(json.loads(line) for line in client.execute(query).splitlines()
+                     if line.strip())
+
+    seal_rows = read(TABLES[0].name,
+                     f"run_id={literal} AND checkpoint_sequence={checkpoint_sequence}")
+    if len(seal_rows) != 1:
+        raise RuntimeError("Strategy 1 recovery lacks exactly one sealed snapshot")
+    seal = seal_rows[0]
+    if (seal.get("run_id") != run_id
+            or seal.get("checkpoint_sequence") != checkpoint_sequence):
+        raise RuntimeError("Strategy 1 recovery seal differs from requested cursor")
+    snapshot_id = str(seal["snapshot_id"])
+    try:
+        canonical_id = str(UUID(snapshot_id))
+    except ValueError as exc:
+        raise RuntimeError("Strategy 1 recovery snapshot ID is malformed") from exc
+    predicate = f"snapshot_id=toUUID('{canonical_id}')"
+    states = read(TABLES[1].name, predicate)
+    resistances = read(TABLES[2].name, predicate)
+    return restore_protection_snapshot(ProtectionSnapshotRows(
+        seal, states, resistances))
