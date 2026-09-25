@@ -1,0 +1,88 @@
+"""Install only absent, normalized ARTE journal tables; never insert rows.
+
+The default is a read-only plan. An interrupted --apply is restart-safe: each
+installed table is checked against its exact contract before work continues.
+The journal writer principal has no CREATE privilege; this is operator-owned.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import platform
+import sys
+from urllib.parse import urlsplit
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+sys.dont_write_bytecode = True
+
+from scripts.clickhouse.plan_trading_journal_layout import plan_missing
+from scripts.clickhouse.provision_trading_journal import _admin_client
+from src.trading_runtime.arte_journal_schema import (
+    STORAGE_POLICY, fixed_backtest_v2_contracts, storage_preflight,
+)
+
+
+def install_missing(client: object, *, apply: bool) -> tuple[int, int]:
+    """Return (already installed, newly created); verify each durable step."""
+    policies = [json.loads(line) for line in client.execute(
+        "SELECT disks FROM system.storage_policies "
+        f"WHERE policy_name='{STORAGE_POLICY}' FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    if len(policies) != 1 or policies[0].get("disks") != [STORAGE_POLICY]:
+        raise RuntimeError("Journal install requires SSD-only live_market_ssd")
+    if client.execute("SELECT count() FROM system.databases WHERE name='arte'").strip() != "1":
+        raise RuntimeError("Existing arte database is required")
+    contracts = fixed_backtest_v2_contracts()
+    by_name = {table.name: table for table in contracts}
+    missing, _ = plan_missing(client)
+    installed = len(contracts) - len(missing)
+    print(f"Normalized journal: {installed} verified, {len(missing)} absent")
+    if not apply:
+        print("Plan only; no ClickHouse state changed")
+        return installed, 0
+    created = 0
+    for name in missing:
+        # IF NOT EXISTS protects restart after a lost response. The exact
+        # schema check catches an incompatible table; it is never overwritten.
+        client.execute(by_name[name].ddl())
+        storage_preflight(client, tables=(by_name[name],))
+        created += 1
+        print(f"Created and verified {created}/{len(missing)}: arte.{name}")
+    storage_preflight(client, tables=contracts)
+    print(f"Complete: {len(contracts)} verified; {created} newly created; 0 rows inserted")
+    return installed, created
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--url", default="http://DESKTOP-SAAI85T:18123")
+    parser.add_argument("--apply", action="store_true",
+                        help="create only absent journal tables after exact preflight")
+    args = parser.parse_args()
+    parsed = urlsplit(args.url)
+    if (platform.node().upper() != "DESKTOP-SAAI85T"
+            or (parsed.scheme, parsed.hostname, parsed.port, parsed.path,
+                parsed.query, parsed.fragment, parsed.username, parsed.password)
+            != ("http", "desktop-saai85t", 18123, "", "", "", None, None)):
+        parser.error("Run on DESKTOP-SAAI85T against its managed ClickHouse endpoint")
+    try:
+        client = _admin_client(args.url)
+        try:
+            install_missing(client, apply=args.apply)
+        finally:
+            client.close()
+    except KeyboardInterrupt:
+        print("Interrupted; verified tables remain. Rerun to resume.", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Journal layout blocked: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
