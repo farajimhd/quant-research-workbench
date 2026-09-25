@@ -401,7 +401,8 @@ def evaluate(host, a, o, p, old_state, *, typed_persistence=False):
                                         typed_persistence=typed_persistence))
                 return True
             anchor = entry_anchor(o, market, not impulse_required, settings['late_entry_breaks'],
-                                  fresh=not impulse_required, eligible=eligible)
+                                  fresh=not impulse_required, eligible=eligible,
+                                  typed_persistence=typed_persistence)
             if anchor and impulse_required:
                 from .pullback_impulse import qualify
                 pullback_move = qualify(market, anchor, entry_clock.get('consumed_moves', []),
@@ -431,7 +432,8 @@ def evaluate(host, a, o, p, old_state, *, typed_persistence=False):
         o, rows, cutoff, typed_persistence=typed_persistence)
     if not post_move and (late and settings.get('require_late_retest') or not swing and settings.get('allow_retest_stop_fallback')):
         from .resistance_zones import entry_anchor
-        anchor = entry_anchor(o, market, late, settings['late_entry_breaks'])
+        anchor = entry_anchor(o, market, late, settings['late_entry_breaks'],
+                              typed_persistence=typed_persistence)
         if anchor is None:
             return emit('wait', 'late_pullback_retest_required' if late else 'level_retest_stop_required')
     if anchor:

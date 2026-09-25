@@ -92,7 +92,8 @@ def observe_retests(market, previous, bar, rows, ladder):
     row['vwap_retests'] = deepcopy(witnesses)
 
 
-def entry_anchor(o, ladder, late, threshold, *, fresh=False, eligible=None):
+def entry_anchor(o, ladder, late, threshold, *, fresh=False, eligible=None,
+                 typed_persistence=False):
     from datetime import datetime, time
     from .historical_hod import NY
     row = (o.structural_detector_state or {}).get('row', {})
@@ -113,4 +114,8 @@ def entry_anchor(o, ladder, late, threshold, *, fresh=False, eligible=None):
             candidate = dict(witness, swing=deepcopy(swing))
             if eligible is None or eligible(candidate):
                 candidates.append(candidate)
-    return deepcopy(max(candidates, key=lambda w: (w['anchor']['lower'], w['pivot_at']))) if candidates else None
+    selected = deepcopy(max(candidates, key=lambda w: (w['anchor']['lower'], w['pivot_at']))) if candidates else None
+    if selected is not None and typed_persistence:
+        from .arte_assignment_vwap_retest_anchor import validate_typed_retest_anchor
+        return validate_typed_retest_anchor(selected)
+    return selected

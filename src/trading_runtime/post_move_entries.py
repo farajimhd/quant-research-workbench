@@ -13,25 +13,25 @@ def validate_typed_breakout_anchor(row):
     from .typed_assignment_input import validate_grouped_resistance_level
     if not isinstance(row, dict):
         raise ValueError("typed breakout anchor must be a dictionary")
-    group = set(row) & _ANCHOR_GROUP_FIELDS
+    extras = set(row) & _ANCHOR_GROUP_FIELDS
+    group = extras - {"broken_at"}
     base = validate_grouped_resistance_level(
         {key: value for key, value in row.items() if key not in _ANCHOR_GROUP_FIELDS})
-    if not group:
-        return dict(row)
     required = _ANCHOR_GROUP_FIELDS - {"broken_at"}
-    if group - _ANCHOR_GROUP_FIELDS or required - group:
+    if group and required - group:
         raise ValueError("typed grouped breakout anchor is incomplete")
-    members = row["members"]
-    if (type(members) is not list or not members
-            or any(type(member) is not str or not member for member in members)
-            or len(set(members)) != len(members)
-            or any(type(row[key]) is not bool for key in ("encountered", "seen_below"))):
-        raise ValueError("typed grouped breakout anchor members or flags differ")
+    if group:
+        members = row["members"]
+        if (type(members) is not list or not members
+                or any(type(member) is not str or not member for member in members)
+                or len(set(members)) != len(members)
+                or any(type(row[key]) is not bool for key in ("encountered", "seen_below"))):
+            raise ValueError("typed grouped breakout anchor members or flags differ")
     from math import isfinite
     for key in ("grouping_threshold", "broken_at"):
         if key in row and (type(row[key]) not in (int, float) or not isfinite(row[key])):
             raise ValueError(f"typed grouped breakout anchor {key} is invalid")
-    return {**base, **{key: row[key] for key in group}}
+    return {**base, **{key: row[key] for key in extras}}
 
 
 def average_gap(market):
