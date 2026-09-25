@@ -529,9 +529,11 @@ def market_day_source_sqls(
         )
         boundary_filter = (
             "" if through_boundary_ms is None else
-            f" AND (toUInt64(bucket_index)+1)*"
-            f"{'100' if stage == 'liquidity_100ms_v1' else 'resolution_ms'}"
-            f"<={through_boundary_ms + SESSION_OPEN_OFFSET_MS}"
+            (f" AND bucket_index<"
+             f"{(through_boundary_ms + SESSION_OPEN_OFFSET_MS) // 100}"
+             if stage == 'liquidity_100ms_v1' else
+             f" AND (toUInt64(bucket_index)+1)*resolution_ms"
+             f"<={through_boundary_ms + SESSION_OPEN_OFFSET_MS}")
         )
         return (
             f"SELECT * FROM arte.{stage} WHERE build_id={_literal(plan.build_id)} "

@@ -187,11 +187,27 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertTrue(all("ORDER BY m.session_date,m.boundary_ms,m.ticker,m.resolution_ms" in
                             source for source in sources))
         premarket_sql = "\n".join(market_day_source_sqls(plan, through_boundary_ms=19_800_000))
-        self.assertIn("(toUInt64(bucket_index)+1)*100<=34200000", premarket_sql)
+        self.assertIn("bucket_index<342000", premarket_sql)
         self.assertIn("(toUInt64(bucket_index)+1)*resolution_ms<=34200000", premarket_sql)
         self.assertIn("*100-14400000 AS boundary_ms", premarket_sql)
         with self.assertRaisesRegex(ValueError, "positive 100ms"):
             market_day_source_sqls(plan, through_boundary_ms=19_800_001)
+
+    def test_liquidity_bucket_upper_bound_is_exact_completed_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self._ledger(Path(directory)).certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+        for boundary_ms in (100, 200, 300_000, 57_600_000):
+            source = market_day_source_sqls(
+                plan, through_boundary_ms=boundary_ms)[0]
+            upper = (boundary_ms + 14_400_000) // 100
+            self.assertIn(f"bucket_index<{upper}", source)
+            for bucket_index in (upper - 2, upper - 1, upper):
+                self.assertEqual(bucket_index < upper,
+                                 (bucket_index + 1) * 100 <=
+                                 boundary_ms + 14_400_000)
 
     def test_boundary_groups_keep_sparse_quote_buckets_and_completed_seconds(self) -> None:
         rows = [
