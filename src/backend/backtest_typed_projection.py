@@ -254,6 +254,19 @@ def project_pending_backtest_v3_prefix(
             unit = V3SqueezeBatch(
                 base, (), protected_exit_satisfied=(projected.detail,))
         elif (record.category, record.entity_type) == (
+                "order_management", "protected_exit_snapshot_reconciled"):
+            from src.backend.backtest_protected_exit_snapshot_v3 import (
+                project_protected_exit_snapshot_v3,
+            )
+
+            projected = project_protected_exit_snapshot_v3(
+                record, attempt_id=attempt, batch_id=batch_id)
+            base = TypedJournalBatch(
+                record.run_id, run_month, attempt, batch_id, previous,
+                sequence, sequence, cursor, "running", (projected.event,))
+            unit = V3SqueezeBatch(
+                base, (), protected_exit_snapshots=(projected.detail,))
+        elif (record.category, record.entity_type) == (
                 "protection", "protection_change"):
             from src.backend.backtest_protection_change_v3 import project_protection_change_v3
 

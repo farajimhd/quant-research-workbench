@@ -469,9 +469,58 @@ def test_v3_protection_upgrade_is_empty_fenced_and_resumable(monkeypatch):
     client.execute(install.staged_protection_change_ddl()[2])
     assert install.upgrade_v3_protection_change(client, apply=False) == "planned"
     assert install.upgrade_v3_protection_change(client, apply=True) == "upgraded"
-    assert client.columns == list(full)
+    assert client.columns == list(full[:start + 2] + full[-3:])
     assert client.tables == {table.name for table in install.PROTECTION_CHANGE_TABLES}
     assert install.upgrade_v3_protection_change(client, apply=True) == "verified"
+
+
+def test_v3_protected_exit_snapshot_upgrade_is_empty_fenced_and_resumable(monkeypatch):
+    full = install.SQUEEZE_COMMIT_V3.columns
+    start = next(i for i, (name, _) in enumerate(full)
+                 if name == "protected_exit_snapshot_count")
+
+    class Client:
+        def __init__(self, *, commit_count="0"):
+            self.columns = list(full[:start] + full[-3:])
+            self.child = False
+            self.commit_count = commit_count
+            self.statements = []
+
+        def execute(self, sql):
+            if sql.startswith("SELECT name,type FROM system.columns"):
+                return "\n".join(json.dumps({"name": name, "type": kind})
+                                 for name, kind in self.columns)
+            if sql.startswith("SELECT count() FROM system.tables"):
+                return "1" if self.child else "0"
+            if sql == "SELECT count() FROM arte.trading_commit_v3":
+                return self.commit_count
+            if sql == "SELECT count() FROM arte.trading_protected_exit_snapshot_v3":
+                return "0"
+            if sql.startswith("CREATE TABLE IF NOT EXISTS arte."):
+                self.statements.append(sql)
+                self.child = True
+                return ""
+            if sql.startswith("ALTER TABLE arte.trading_commit_v3"):
+                self.statements.append(sql)
+                name = sql.split("ADD COLUMN IF NOT EXISTS ", 1)[1].split(" ", 1)[0]
+                self.columns.insert(-3, next(row for row in full if row[0] == name))
+                return ""
+            raise AssertionError(sql)
+
+    monkeypatch.setattr(install, "storage_preflight", lambda *_a, **_k: None)
+    occupied = Client(commit_count="1")
+    with pytest.raises(RuntimeError, match="has rows"):
+        install.upgrade_v3_protected_exit_snapshot(occupied, apply=True)
+    assert occupied.statements == []
+    client = Client()
+    assert install.upgrade_v3_protected_exit_snapshot(client, apply=False) == "planned"
+    assert client.statements == []
+    client.execute(install.staged_protected_exit_snapshot_ddl()[0])
+    client.execute(install.staged_protected_exit_snapshot_ddl()[1])
+    assert install.upgrade_v3_protected_exit_snapshot(client, apply=False) == "planned"
+    assert install.upgrade_v3_protected_exit_snapshot(client, apply=True) == "upgraded"
+    assert client.columns == list(full)
+    assert install.upgrade_v3_protected_exit_snapshot(client, apply=True) == "verified"
 
 
 class ControlUpgradeClient:
