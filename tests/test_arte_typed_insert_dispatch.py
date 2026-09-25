@@ -288,6 +288,36 @@ def test_sealed_context_refuses_late_context_insert() -> None:
     assert client.calls == []
 
 
+def test_terminal_lost_response_and_stale_prefix_remain_cold_blocked() -> None:
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    reserve_direct(authority)
+    client = Client(authority)
+    authority.execute_typed_insert(client, run_id="run-1", table="trading_event_v1",
+        token="batch-1", sql=SQL, batch_id=BATCH_ID, batch_last_sequence=1)
+    authority.seal_verified_operation(run_id="run-1", table="trading_event_v1",
+        token="batch-1", batch_id=BATCH_ID, batch_last_sequence=1)
+    compact_direct(authority)
+    terminal_sql = SQL.replace("trading_event_v1", "trading_backtest_snapshot_anchor_v1")
+    with pytest.raises(KeeperUnavailable, match="differs from compacted run prefix"):
+        authority.execute_typed_insert(client, run_id="run-1",
+            table="trading_backtest_snapshot_anchor_v1", token="terminal:DU1",
+            sql=terminal_sql, batch_id=BATCH_ID, batch_last_sequence=2,
+            terminal_account_id="DU1")
+    client.lose_response = True
+    with pytest.raises(TimeoutError, match="response lost"):
+        authority.execute_typed_insert(client, run_id="run-1",
+            table="trading_backtest_snapshot_anchor_v1", token="terminal:DU1",
+            sql=terminal_sql, batch_id=BATCH_ID, batch_last_sequence=1,
+            terminal_account_id="DU1")
+    with pytest.raises(KeeperUnavailable, match="pending or ambiguous"):
+        authority.acquire_cold_barrier("run-1")
+    with pytest.raises(KeeperUnavailable, match="acknowledged"):
+        authority.seal_verified_operation(run_id="run-1",
+            table="trading_backtest_snapshot_anchor_v1", token="terminal:DU1",
+            batch_id=BATCH_ID, batch_last_sequence=1, terminal=True)
+
+
 def test_strict_writer_refuses_unwrapped_insert(monkeypatch) -> None:
     monkeypatch.setattr(writer, "_wire_row", lambda _name, row: row)
     client = Client()

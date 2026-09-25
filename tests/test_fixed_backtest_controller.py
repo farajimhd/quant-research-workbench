@@ -1,7 +1,7 @@
 """Controller-level fixed-boundary ordering without an event replay source."""
 import asyncio
 from dataclasses import replace
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import json
@@ -324,6 +324,130 @@ def test_fixed_journal_attaches_only_pinned_memory_v2_assembly_without_disk_or_s
     assert controller._journal_publisher is publisher
     assert controller._fixed_terminal_authority is authority
     assert not controller.run_dir.exists()
+
+
+def test_fixed_controller_prepares_distinct_typed_clients_without_opening_gate(
+    monkeypatch, tmp_path,
+):
+    from src.backend import backtest_fixed_journal_bootstrap as bootstrap
+    from tests.test_backtest_fixed_market_authority import _plans
+
+    parent, execution = _plans()
+    config = {"mode": "backtest", "assignments": []}
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.run_dir = tmp_path / "must-not-exist"
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, market_data_plan={"token": parent.token},
+        configuration_revision={"content_hash": "c" * 64, "payload": config},
+        session_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc))
+    controller._account_map = {"account": "DU1"}
+    controller._resume_state = None
+    controller._journal = None
+    controller._journal_writer = None
+    controller._journal_publisher = None
+    read, write, terminal, keeper = object(), object(), object(), object()
+    calls = []
+    monkeypatch.setattr(bootstrap, "storage_preflight",
+                        lambda client, *, tables: calls.append(("read_preflight", client)))
+    monkeypatch.setattr(bootstrap, "terminal_v2_operator_preflight",
+                        lambda client: calls.append(("terminal_preflight", client)))
+    monkeypatch.setattr(bootstrap, "terminal_v2_keeper_proof_preflight",
+                        lambda value: calls.append(("keeper_preflight", value)))
+    context = dict(mode="backtest", account_ids=("DU1",), run_month="2026-08-01",
+                   configuration_hash="c" * 64, market_plan_token=parent.token)
+    monkeypatch.setattr(bootstrap, "load_typed_run_context",
+                        lambda client, run_id: calls.append(("context", client)) or context)
+    class Writer:
+        run_id = RUN
+        run_mode = "backtest"
+        journal_profile = "backtest_v2"
+        coalesce_batches = False
+        max_events_per_commit = 512
+        def close(self):
+            calls.append(("close", self))
+    def factory(client, **kwargs):
+        assert client is write
+        calls.append(("writer", client))
+        return Writer()
+    asyncio.run(controller._prepare_fixed_journal_assembly(
+        read_client=read, writer_client=write, terminal_client=terminal,
+        keeper=keeper, attempt_id="00000000-0000-0000-0000-000000000a02",
+        writer_factory=factory, projection_certifier=lambda: "a" * 64,
+        parent_market_plan=parent, execution_market_plan=execution,
+        expected_config=config))
+    assert controller._journal.run_id == RUN
+    assert controller._journal_publisher.writer is controller._journal_writer
+    assert [item[0] for item in calls] == [
+        "read_preflight", "terminal_preflight", "keeper_preflight",
+        "context", "context", "context", "context", "context", "writer"]
+    assert not controller.run_dir.exists()
+    controller._journal.close()
+
+
+def test_fixed_controller_rejects_changed_market_plan_before_typed_client_or_writer(
+    monkeypatch,
+):
+    from src.backend import backtest_fixed_journal_bootstrap as bootstrap
+    from tests.test_backtest_fixed_market_authority import _plans
+
+    parent, execution = _plans()
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, market_data_plan={"token": "f" * 64},
+        configuration_revision={"content_hash": "c" * 64, "payload": {}},
+        session_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc))
+    controller._resume_state = None
+    controller._journal = None
+    monkeypatch.setattr(bootstrap, "prepare_fixed_journal_token",
+                        lambda *_a, **_k: pytest.fail("typed client used after plan drift"))
+    with pytest.raises(RuntimeError, match="plans or configuration changed"):
+        asyncio.run(controller._prepare_fixed_journal_assembly(
+            read_client=object(), writer_client=object(), terminal_client=object(),
+            keeper=object(), attempt_id="00000000-0000-0000-0000-000000000a02",
+            writer_factory=lambda *_a, **_k: pytest.fail("writer started"),
+            projection_certifier=lambda: "a" * 64,
+            parent_market_plan=parent, execution_market_plan=execution,
+            expected_config={}))
+
+
+def test_fixed_controller_closes_assembly_if_configuration_drifts_during_preflight(
+    monkeypatch,
+):
+    from src.backend import backtest_fixed_journal_bootstrap as bootstrap
+    from tests.test_backtest_fixed_market_authority import _plans
+
+    parent, execution = _plans()
+    config = {"assignments": []}
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, market_data_plan={"token": parent.token},
+        configuration_revision={"content_hash": "c" * 64, "payload": config},
+        session_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc))
+    controller._account_map = {"account": "DU1"}
+    controller._resume_state = None
+    controller._journal = None
+    closed = []
+    fake = SimpleNamespace(
+        writer=SimpleNamespace(close=lambda: closed.append("writer")),
+        journal=SimpleNamespace(close=lambda: closed.append("journal")))
+    monkeypatch.setattr(bootstrap, "prepare_fixed_journal_token", lambda *_a, **_k: object())
+    def assemble(*_a, **_k):
+        controller.definition.configuration_revision["payload"] = {"assignments": ["changed"]}
+        return fake
+    monkeypatch.setattr(bootstrap, "assemble_fixed_journal", assemble)
+    with pytest.raises(RuntimeError, match="changed during preflight"):
+        asyncio.run(controller._prepare_fixed_journal_assembly(
+            read_client=object(), writer_client=object(), terminal_client=object(),
+            keeper=object(), attempt_id="00000000-0000-0000-0000-000000000a02",
+            writer_factory=lambda *_a, **_k: None,
+            projection_certifier=lambda: "a" * 64,
+            parent_market_plan=parent, execution_market_plan=execution,
+            expected_config=config))
+    assert closed == ["writer", "journal"]
+    assert controller._journal is None
 
 
 def test_fixed_journal_rejects_changed_assembly_before_attaching(monkeypatch, tmp_path):

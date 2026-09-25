@@ -32,6 +32,10 @@ def _context_receipt_path(run_id: str) -> str:
     return _path("typed_dispatch_context_receipt", run_id)
 
 
+def _terminal_receipt_path(run_id: str, account_id: str) -> str:
+    return _path("typed_dispatch_terminal_receipt", run_id, account_id)
+
+
 def typed_insert_query_id(run_id: str, table: str, token: str) -> str:
     for value, label in ((run_id, "run"), (table, "table"), (token, "token")):
         _identity(value, label)
@@ -110,6 +114,7 @@ class TypedInsertDispatch:
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_gate")
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_operation")
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_context_receipt")
+        self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_terminal_receipt")
         try:
             self.keeper.create(_gate_path(run_id), _Gate(
                 "open", 0, 1, 0, 0, _ZERO_BATCH, _ZERO_HASH,
@@ -161,7 +166,8 @@ class TypedInsertDispatch:
     def execute_typed_insert(self, client: Any, *, run_id: str, table: str,
                              token: str, sql: str,
                              batch_id: str | None = None,
-                             batch_last_sequence: int | None = None) -> None:
+                             batch_last_sequence: int | None = None,
+                             terminal_account_id: str | None = None) -> None:
         if (re.fullmatch(r"[a-z][a-z0-9_]*", table) is None
                 or not sql.startswith(f"INSERT INTO arte.{table} (")
                 or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1" not in sql
@@ -171,6 +177,10 @@ class TypedInsertDispatch:
                 or not isinstance(batch_id, str)
                 or (batch_last_sequence == 0) != (batch_id == _ZERO_BATCH)):
             raise KeeperUnavailable("Strict typed dispatch lacks batch sequence authority")
+        if terminal_account_id is not None:
+            _identity(terminal_account_id, "account")
+            if table != "trading_backtest_snapshot_anchor_v1" or batch_last_sequence < 1:
+                raise KeeperUnavailable("Terminal dispatch table or sequence is invalid")
         query_id = typed_insert_query_id(run_id, table, token)
         path = _operation_path(run_id, query_id)
         pending = _operation_wire(run_id, table, query_id, token, sql, batch_id,
@@ -181,13 +191,26 @@ class TypedInsertDispatch:
             gate, version = self._read_gate(run_id)
             if gate.mode != "open":
                 raise KeeperUnavailable("Typed dispatch run is cold-fenced")
-            if batch_last_sequence and gate.active_batch_id != batch_id:
+            if terminal_account_id is not None:
+                self._read_context_receipt(run_id)
+                if (gate.active_batch_id != _ZERO_BATCH
+                        or gate.compacted_through != batch_last_sequence
+                        or gate.compacted_batch_id != batch_id):
+                    raise KeeperUnavailable("Terminal anchor differs from compacted run prefix")
+                try:
+                    self.keeper.get(_terminal_receipt_path(run_id, terminal_account_id))
+                except Exception as exc:
+                    if type(exc).__name__ != "NoNodeError":
+                        raise KeeperUnavailable("Terminal receipt cannot be inspected") from exc
+                else:
+                    raise KeeperUnavailable("Terminal account receipt already sealed")
+            elif batch_last_sequence and gate.active_batch_id != batch_id:
                 raise KeeperUnavailable("Competing typed batch owns the run prefix")
-            if batch_last_sequence and batch_last_sequence <= gate.compacted_through:
+            if terminal_account_id is None and batch_last_sequence and batch_last_sequence <= gate.compacted_through:
                 return  # Exact CH batch readback and watermark check still follow.
-            if not batch_last_sequence and gate.active_batch_id != _ZERO_BATCH:
+            if terminal_account_id is None and not batch_last_sequence and gate.active_batch_id != _ZERO_BATCH:
                 raise KeeperUnavailable("Run context cannot dispatch during a batch")
-            if not batch_last_sequence:
+            if terminal_account_id is None and not batch_last_sequence:
                 try:
                     self.keeper.get(_context_receipt_path(run_id))
                 except Exception as exc:
@@ -245,7 +268,8 @@ class TypedInsertDispatch:
                                 sql: str | None = None,
                                 required: bool = True,
                                 batch_id: str | None = None,
-                                batch_last_sequence: int | None = None) -> None:
+                                batch_last_sequence: int | None = None,
+                                terminal: bool = False) -> None:
         """Caller must invoke only after exact parent late-fence readback.
 
         Unwired parent publishers leave acknowledged operations in-flight,
@@ -258,7 +282,7 @@ class TypedInsertDispatch:
             gate, version = self._read_gate(run_id)
             if gate.mode != "open":
                 raise KeeperUnavailable("Typed dispatch cannot seal outside open parent")
-            if (type(batch_last_sequence) is int and batch_last_sequence > 0
+            if (not terminal and type(batch_last_sequence) is int and batch_last_sequence > 0
                     and batch_last_sequence <= gate.compacted_through):
                 return
             try:
@@ -374,6 +398,76 @@ class TypedInsertDispatch:
                 or value != ("1\n" + digest).encode()):
             raise KeeperUnavailable("Run-context Keeper receipt is invalid")
         return digest
+
+    def compact_verified_terminal_anchor(self, *, run_id: str, account_id: str,
+                                         batch_id: str, last_sequence: int,
+                                         anchor_hash: str, snapshot_hash: str,
+                                         token: str) -> None:
+        """Retire one exact terminal anchor INSERT into a fixed account receipt."""
+        _identity(account_id, "account")
+        if (type(last_sequence) is not int or last_sequence < 1
+                or re.fullmatch(r"[0-9a-f]{64}", anchor_hash) is None
+                or re.fullmatch(r"[0-9a-f]{64}", snapshot_hash) is None):
+            raise ValueError("Terminal receipt identity is invalid")
+        try:
+            if str(UUID(batch_id)) != batch_id:
+                raise ValueError("noncanonical UUID")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Terminal receipt batch ID is invalid") from exc
+        self._read_context_receipt(run_id)
+        receipt_path = _terminal_receipt_path(run_id, account_id)
+        receipt = (f"1\n{batch_id}\n{last_sequence}\n{anchor_hash}\n{snapshot_hash}").encode()
+        table = "trading_backtest_snapshot_anchor_v1"
+        query_id = typed_insert_query_id(run_id, table, token)
+        path = _operation_path(run_id, query_id)
+        for _ in range(8):
+            gate, version = self._read_gate(run_id)
+            if (gate.mode != "open" or gate.inflight or gate.active_batch_id != _ZERO_BATCH
+                    or gate.compacted_batch_id != batch_id
+                    or gate.compacted_through != last_sequence):
+                raise KeeperUnavailable("Terminal receipt lacks quiescent compacted prefix")
+            try:
+                existing, _ = self.keeper.get(receipt_path)
+            except Exception as exc:
+                if type(exc).__name__ != "NoNodeError":
+                    raise KeeperUnavailable("Terminal receipt cannot be inspected") from exc
+            else:
+                if existing != receipt:
+                    raise KeeperUnavailable("Terminal account receipt conflicts")
+                return
+            try:
+                value, stat = self.keeper.get(path)
+            except Exception as exc:
+                raise KeeperUnavailable("Terminal anchor lacks durable dispatch identity") from exc
+            parts = value.decode().split("\n")
+            if (len(parts) != 9 or parts[:5] != ["3", run_id, table, query_id,
+                    sha256(token.encode()).hexdigest()]
+                    or parts[6:] != [batch_id, str(last_sequence), "sealed"]
+                    or gate.registered < 1):
+                raise KeeperUnavailable("Terminal anchor operation is not sealed")
+            txn = self.keeper.transaction()
+            txn.check(_gate_path(run_id), version=version)
+            txn.delete(path, version=stat.version)
+            txn.create(receipt_path, receipt, ephemeral=False)
+            txn.set_data(_gate_path(run_id), _Gate(
+                "open", 0, gate.epoch, gate.registered - 1,
+                gate.compacted_through, gate.compacted_batch_id,
+                gate.compacted_commit_hash, _ZERO_BATCH).wire(), version=version)
+            if _committed(txn.commit()):
+                return
+        raise KeeperUnavailable("Terminal receipt CAS contended")
+
+    def assert_terminal_anchor_receipt(self, *, run_id: str, account_id: str,
+                                       batch_id: str, last_sequence: int,
+                                       anchor_hash: str, snapshot_hash: str) -> None:
+        _identity(account_id, "account")
+        expected = (f"1\n{batch_id}\n{last_sequence}\n{anchor_hash}\n{snapshot_hash}").encode()
+        try:
+            value, _ = self.keeper.get(_terminal_receipt_path(run_id, account_id))
+        except Exception as exc:
+            raise KeeperUnavailable("Terminal account receipt is missing") from exc
+        if value != expected:
+            raise KeeperUnavailable("Terminal account receipt conflicts with ClickHouse")
 
     def compact_verified_batch(self, *, run_id: str, batch_id: str,
                                prior_batch_id: str, first_sequence: int,
@@ -501,6 +595,30 @@ class ColdDispatchBarrier:
         self._assert_gate(self.run_id)
         self.context_verified = True
         return context
+
+    def verify_terminal_anchor_receipt(self, client: Any, prefix: Any, *,
+                                       account_id: str) -> dict[str, Any]:
+        """Return terminal state only after CH anchor and Keeper receipt agree."""
+        from src.trading_runtime.arte_backtest_snapshot_anchor import (
+            _stored, load_terminal_backtest_snapshot,
+        )
+        from src.trading_runtime.journal_contract import canonical_json
+
+        self.assert_fenced(self.run_id)
+        if prefix.run_id != self.run_id:
+            raise KeeperUnavailable("Terminal anchor prefix differs from cold run")
+        snapshot = load_terminal_backtest_snapshot(
+            client, prefix, account_id=account_id)
+        anchors = _stored(client, self.run_id, account_id)
+        if len(anchors) != 1:
+            raise KeeperUnavailable("Terminal anchor is absent or duplicated")
+        anchor_hash = sha256(canonical_json(anchors[0]).encode()).hexdigest()
+        self.authority.assert_terminal_anchor_receipt(
+            run_id=self.run_id, account_id=account_id,
+            batch_id=prefix.last_batch_id, last_sequence=prefix.last_sequence,
+            anchor_hash=anchor_hash, snapshot_hash=snapshot["state_hash"])
+        self.assert_fenced(self.run_id)
+        return snapshot
 
     def verify_committed_prefix(self, client: Any, *,
                                 journal_profile: str) -> Any:

@@ -837,6 +837,7 @@ def _insert(
     client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: str,
     *, journal_profile: str = "v1", dispatch_sequence: int | None = None,
     dispatch_batch_id: str | None = None, dispatch_run_context: bool = False,
+    dispatch_terminal_account_id: str | None = None,
 ) -> str | None:
     if name not in _CONTRACTS:
         raise ValueError("Journal writer cannot insert outside typed journal tables")
@@ -853,6 +854,10 @@ def _insert(
     if getattr(client, "typed_insert_strict", False) and dispatch is None:
         raise RuntimeError("Strict typed journal INSERT lacks durable dispatch authority")
     if dispatch is not None:
+        if dispatch_terminal_account_id is not None and (
+                name != "trading_backtest_snapshot_anchor_v1"
+                or any(row.get("account_id") != dispatch_terminal_account_id for row in rows)):
+            raise ValueError("Terminal dispatch account differs from typed anchor rows")
         run_ids = {row.get("run_id") for row in rows}
         if len(run_ids) != 1 or not isinstance(next(iter(run_ids)), str) or not next(iter(run_ids)):
             raise RuntimeError("Durable typed INSERT lacks one run identity")
@@ -860,7 +865,8 @@ def _insert(
             client, run_id=next(iter(run_ids)),
             table=_profile_table(name, journal_profile), token=token, sql=sql,
             batch_id=(_ZERO_DISPATCH_BATCH if dispatch_run_context else dispatch_batch_id),
-            batch_last_sequence=(0 if dispatch_run_context else dispatch_sequence))
+            batch_last_sequence=(0 if dispatch_run_context else dispatch_sequence),
+            terminal_account_id=dispatch_terminal_account_id)
     else:
         client.execute(sql)
     return sql

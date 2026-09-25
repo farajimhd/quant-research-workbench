@@ -2832,6 +2832,63 @@ class ReplayRunController:
         self._journal_publisher = assembly.publisher
         self._fixed_terminal_authority = assembly.terminal_authority
 
+    async def _prepare_fixed_journal_assembly(
+        self, *, read_client, writer_client, terminal_client, keeper,
+        attempt_id: str, writer_factory, projection_certifier,
+        parent_market_plan, execution_market_plan, expected_config,
+        batch_size: int = 512, queue_capacity: int = 8,
+    ) -> None:
+        """Inactive controller handoff; active launch still calls the blocker.
+
+        All clients and the projector certifier are injected. This checks the
+        same pinned plans that the fixed market runner consumes before the
+        bounded journal worker is constructed; no run state or disk is written.
+        """
+        from src.backend.backtest_fixed_journal_bootstrap import (
+            assemble_fixed_journal, prepare_fixed_journal_token,
+        )
+        from src.backend.backtest_fixed_market_authority import _validate_plans
+
+        if (self.definition.mode != RunMode.BACKTEST
+                or self._journal is not None
+                or self._resume_state is not None
+                or not callable(projection_certifier)
+                or not callable(writer_factory)):
+            raise RuntimeError("Fixed typed journal assembly requires a new pinned run")
+        _validate_plans(parent_market_plan, execution_market_plan)
+        if (parent_market_plan.token != str(
+                self.definition.market_data_plan.get("token") or "")
+                or expected_config != self.definition.configuration_revision["payload"]):
+            raise RuntimeError("Fixed typed journal plans or configuration changed")
+        token = await asyncio.to_thread(
+            prepare_fixed_journal_token,
+            read_client, terminal_client, keeper, run_id=self.run_id,
+            account_ids=self.account_ids,
+            configuration_hash=str(
+                self.definition.configuration_revision.get("content_hash") or ""),
+            market_plan_token=parent_market_plan.token,
+            projection_certifier=projection_certifier)
+        assembly = await asyncio.to_thread(
+            assemble_fixed_journal,
+            read_client, writer_client, terminal_client, keeper, token,
+            attempt_id=attempt_id, expected_config=expected_config,
+            fixed_market_parent_plan=parent_market_plan,
+            fixed_market_execution_plan=execution_market_plan,
+            expected_market_start=self.definition.session_start,
+            writer_factory=writer_factory, batch_size=batch_size,
+            queue_capacity=queue_capacity)
+        try:
+            if (self._resume_state is not None
+                    or expected_config != self.definition.configuration_revision["payload"]
+                    or parent_market_plan.token != str(
+                        self.definition.market_data_plan.get("token") or "")):
+                raise RuntimeError("Fixed typed journal authority changed during preflight")
+            self._attach_fixed_journal_assembly(assembly)
+        except BaseException:
+            await asyncio.to_thread(assembly.writer.close)
+            assembly.journal.close()
+            raise
+
     async def _open_fixed_journal(self) -> None:
         """Fail closed at the typed journal boundary until recovery is complete."""
         from src.backend.backtest_terminal_v2_preflight import terminal_v2_operator_preflight

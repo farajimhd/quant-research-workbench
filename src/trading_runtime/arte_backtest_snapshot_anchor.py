@@ -132,9 +132,25 @@ def _publish_verified_snapshot(
     if not existing:
         _insert(client, _TABLE, (row,),
                 f"backtest-snapshot:{prefix.run_id}:{captured.account_id}:"
-                f"{prefix.last_batch_id}")
+                f"{prefix.last_batch_id}",
+                dispatch_batch_id=prefix.last_batch_id,
+                dispatch_sequence=prefix.last_sequence,
+                dispatch_terminal_account_id=captured.account_id)
     loaded = load_terminal_backtest_snapshot(
         client, prefix, account_id=captured.account_id)
     if loaded["state_hash"] != snapshot_hash:
         raise RuntimeError("Backtest snapshot anchor did not become durable")
+    dispatch = getattr(client, "typed_insert_dispatch", None)
+    if dispatch is not None:
+        token = (f"backtest-snapshot:{prefix.run_id}:{captured.account_id}:"
+                 f"{prefix.last_batch_id}")
+        dispatch.seal_verified_operation(
+            run_id=prefix.run_id, table=_TABLE, token=token, required=False,
+            batch_id=prefix.last_batch_id,
+            batch_last_sequence=prefix.last_sequence, terminal=True)
+        dispatch.compact_verified_terminal_anchor(
+            run_id=prefix.run_id, account_id=captured.account_id,
+            batch_id=prefix.last_batch_id, last_sequence=prefix.last_sequence,
+            anchor_hash=row["content_hash"], snapshot_hash=snapshot_hash,
+            token=token)
     return snapshot_hash
