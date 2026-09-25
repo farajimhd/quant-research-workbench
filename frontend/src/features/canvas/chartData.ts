@@ -145,7 +145,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     historyAbortRef.current = controller;
     historyRequestRef.current = true;
     setState((current) => ({ ...current, historyError: "", loadingEarlier: true }));
-    const page = api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, run_id: runId, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: baseIndicatorColumns, stage: "bars" })}`, { signal: controller.signal, timeoutMs: historyTimeoutMs });
+    const page = api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, run_id: runId, allow_persisted_bars: true, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: baseIndicatorColumns, stage: "bars" })}`, { signal: controller.signal, timeoutMs: historyTimeoutMs });
     const standardIndicatorPage = standardIndicatorsRequested
       ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, run_id: runId, include_market_signals: false, include_structure: false, indicator_columns: eventIndicatorColumns, stage: "full" })}`, { signal: controller.signal, timeoutMs: 120_000 })
       : null;
@@ -268,7 +268,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
 
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
-      const requestParams = { allow_persisted_bars: liveTail, as_of: new Date(cutoffMs).toISOString(), full_session: fullSession, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, mode: liveTail ? "live" : historicalMode, row_limit: fullSession ? chartFullSessionPageSize(timeframe) : chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe };
+      const requestParams = { allow_persisted_bars: true, as_of: new Date(cutoffMs).toISOString(), full_session: fullSession, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, mode: liveTail ? "live" : historicalMode, row_limit: fullSession ? chartFullSessionPageSize(timeframe) : chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe };
       const progressive = ENRICHED_QMD_TIMEFRAMES.has(timeframe);
       // Candles are the chart's base authority. Optional indicators may enrich
       // them after the first paint, but must never gate or replace that paint.

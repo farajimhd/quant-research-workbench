@@ -94,6 +94,26 @@ class ArteChartReaderTests(unittest.TestCase):
                     allow_persisted_bars=True, mode="backtest",
                 )
 
+    def test_bars_stage_marks_unavailable_indicator_without_selecting_it(self):
+        client = _Client([{
+            "bucket_index": 300, "open_int": 10000, "high_int": 11000,
+            "low_int": 9000, "close_int": 10500, "volume": 12,
+            "trade_count": 2, "notional": 12.5,
+        }])
+        with (patch("src.backend.arte_chart_reader.certified_chart_plan", return_value=_plan()),
+              patch("src.backend.arte_chart_reader._reader", return_value=client)):
+            payload = chart_page(
+                session=DAY, ticker="SUGP", timeframe="1s",
+                page_start=datetime(2026, 8, 18, 4, 5, tzinfo=NY),
+                page_end=datetime(2026, 8, 18, 4, 6, tzinfo=NY),
+                row_limit=10, stage="bars", indicator_columns=["bar_start", "vwap"],
+                include_market_signals=False, include_structure=False,
+                allow_persisted_bars=True, mode="backtest",
+            )
+        self.assertEqual(len(payload["bars"]), 1)
+        self.assertEqual(payload["indicator_provenance"]["unavailable_columns"], ["vwap"])
+        self.assertNotIn("i.vwap", client.sql)
+
     def test_historical_canvas_uses_persisted_page_without_qmd_rebuild(self):
         from src.backend.trading_runtime_service import historical_bar_history_before
 

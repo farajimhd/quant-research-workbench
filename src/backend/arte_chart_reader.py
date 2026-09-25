@@ -71,7 +71,7 @@ def eligible(*, timeframe: str, stage: str, indicator_columns: list[str] | None,
             and timeframe in _RESOLUTIONS and not include_market_signals
             and not include_structure and stage in {"bars", "full"}
             and (stage == "bars" or indicator_columns is not None)
-            and set(indicator_columns or ()).issubset(_INDICATORS))
+            and (stage == "bars" or set(indicator_columns or ()).issubset(_INDICATORS)))
 
 
 def certified_chart_plan(session: date, ticker: str, timeframe: str) -> CertifiedMarketDayPlan | None:
@@ -133,8 +133,15 @@ def chart_page(*, session: date, ticker: str, timeframe: str,
     end_ms = min(57_600_000, int((page_end.astimezone(_NY) - origin).total_seconds() * 1_000))
     if end_ms <= start_ms:
         return {"bars": [], "indicators": [], "has_more": False,
-                "next_before": "", "source": "arte.market-day-core-v5", "token": plan.token}
-    projected = sorted(set(indicator_columns or ()).difference({"bar_start"}))
+                "next_before": "", "source": "arte.market-day-core-v5", "token": plan.token,
+                "indicator_provenance": {"authority": "arte.indicators_v1",
+                                         "build_id": plan.build_id, "token": plan.token,
+                                         "unavailable_columns": []}}
+    # Bars-first requests may name optional QMD-only indicators. Never place
+    # those names in ARTE SQL or infer them from bars; report unavailability.
+    requested = set(indicator_columns or ()).difference({"bar_start"})
+    unavailable = sorted(requested.difference(_INDICATORS))
+    projected = sorted(requested.intersection(_INDICATORS))
     projection = "i.attempt_id AS indicator_attempt_id," + ",".join(
         f"i.{column} AS {column}" for column in projected)
     join = (f"LEFT JOIN arte.indicators_v1 i ON i.build_id=b.build_id "
@@ -183,5 +190,6 @@ def chart_page(*, session: date, ticker: str, timeframe: str,
         "next_before": bars[0]["bar_start"] if has_more and bars else "",
         "source": "arte.market-day-core-v5", "token": plan.token,
         "indicator_provenance": {"authority": "arte.indicators_v1",
-                                 "build_id": plan.build_id, "token": plan.token},
+                                 "build_id": plan.build_id, "token": plan.token,
+                                 "unavailable_columns": unavailable},
     }
