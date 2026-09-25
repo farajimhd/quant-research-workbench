@@ -55,6 +55,7 @@ class KeeperDefinitionHeadReader:
     @staticmethod
     def path(strategy_id: str, strategy_revision: int) -> str:
         if (type(strategy_id) is not str or not strategy_id
+                or any(char in strategy_id for char in ("\r", "\n", "\x00"))
                 or type(strategy_revision) is not int or strategy_revision < 1):
             raise ValueError("definition head identity is invalid")
         identity = sha256(f"{strategy_id}\x00{strategy_revision}".encode()).hexdigest()
