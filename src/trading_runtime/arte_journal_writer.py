@@ -832,7 +832,8 @@ def _profile_table(name: str, journal_profile: str) -> str:
 
 def _insert(
     client: Any, name: str, rows: tuple[Mapping[str, Any], ...], token: str,
-    *, journal_profile: str = "v1",
+    *, journal_profile: str = "v1", dispatch_sequence: int | None = None,
+    dispatch_batch_id: str | None = None,
 ) -> str | None:
     if name not in _CONTRACTS:
         raise ValueError("Journal writer cannot insert outside typed journal tables")
@@ -854,7 +855,9 @@ def _insert(
             raise RuntimeError("Durable typed INSERT lacks one run identity")
         dispatch.execute_typed_insert(
             client, run_id=next(iter(run_ids)),
-            table=_profile_table(name, journal_profile), token=token, sql=sql)
+            table=_profile_table(name, journal_profile), token=token, sql=sql,
+            batch_id=dispatch_batch_id,
+            batch_last_sequence=dispatch_sequence)
     else:
         client.execute(sql)
     return sql
@@ -1276,6 +1279,13 @@ def _publish_typed_batch(
                           if prior else (_ZERO_UUID, 0))
         if expected_prior != (batch.prior_batch_id, batch.first_sequence - 1):
             raise RuntimeError("Typed journal batch does not extend the committed prefix")
+    dispatch = getattr(client, "typed_insert_dispatch", None)
+    if dispatch is not None:
+        dispatch.assert_next_batch(
+            run_id=batch.run_id, batch_id=batch.batch_id,
+            prior_batch_id=batch.prior_batch_id,
+            first_sequence=batch.first_sequence,
+            last_sequence=batch.last_sequence)
     hashes: dict[str, str] = {}
     actual = _family_identities(client, batch.batch_id, journal_profile=journal_profile)
     inserted = False
@@ -1287,7 +1297,9 @@ def _publish_typed_batch(
         if rows and not actual[name]:
             table = _profile_table(name, journal_profile)
             token = f"{batch.batch_id}:{table}"
-            _insert(client, name, rows, token, journal_profile=journal_profile)
+            _insert(client, name, rows, token, journal_profile=journal_profile,
+                    dispatch_batch_id=batch.batch_id,
+                    dispatch_sequence=batch.last_sequence)
             inserted = True
     if inserted:
         actual = _family_identities(client, batch.batch_id, journal_profile=journal_profile)
@@ -1316,14 +1328,15 @@ def _publish_typed_batch(
         table = _profile_table("trading_commit_v1", journal_profile)
         token = f"{batch.batch_id}:{table}:commit"
         _insert(client, "trading_commit_v1", (commit,), token,
-                journal_profile=journal_profile)
+                journal_profile=journal_profile,
+                dispatch_batch_id=batch.batch_id,
+                dispatch_sequence=batch.last_sequence)
         verified = _rows(client,
             f"SELECT {','.join(_COMMIT_COLUMNS)} "
             f"FROM arte.{_profile_table('trading_commit_v1', journal_profile)} "
             f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
         if verified != [expected]:
             raise RuntimeError("Typed journal commit was not durably published")
-    dispatch = getattr(client, "typed_insert_dispatch", None)
     if dispatch is not None:
         required = bool(getattr(client, "typed_insert_strict", False))
         for name, rows in families:
@@ -1332,11 +1345,27 @@ def _publish_typed_batch(
             table = _profile_table(name, journal_profile)
             token = f"{batch.batch_id}:{table}"
             dispatch.seal_verified_operation(run_id=batch.run_id, table=table,
-                                             token=token, required=required)
+                                             token=token, required=required,
+                                             batch_id=batch.batch_id,
+                                             batch_last_sequence=batch.last_sequence)
         table = _profile_table("trading_commit_v1", journal_profile)
         dispatch.seal_verified_operation(
             run_id=batch.run_id, table=table,
-            token=f"{batch.batch_id}:{table}:commit", required=required)
+            token=f"{batch.batch_id}:{table}:commit", required=required,
+            batch_id=batch.batch_id,
+            batch_last_sequence=batch.last_sequence)
+        commit_readback = existing if existing else verified
+        commit_hash = sha256(canonical_json(commit_readback[0]).encode()).hexdigest()
+        operations = tuple((
+            _profile_table(name, journal_profile),
+            f"{batch.batch_id}:{_profile_table(name, journal_profile)}"
+        ) for name, rows in families if rows) + ((
+            table, f"{batch.batch_id}:{table}:commit"),)
+        dispatch.compact_verified_batch(
+            run_id=batch.run_id, batch_id=batch.batch_id,
+            prior_batch_id=batch.prior_batch_id,
+            first_sequence=batch.first_sequence, last_sequence=batch.last_sequence,
+            commit_hash=commit_hash, operations=operations)
     return batch.batch_id
 
 

@@ -9,10 +9,15 @@ from dataclasses import dataclass
 from hashlib import sha256
 import re
 from typing import Any
+from uuid import UUID
 
 from src.trading_runtime.keeper_ownership import (
     KeeperUnavailable, _ROOT, _committed, _identity, _path,
 )
+
+
+_ZERO_BATCH = "00000000-0000-0000-0000-000000000000"
+_ZERO_HASH = "0" * 64
 
 
 def _gate_path(run_id: str) -> str:
@@ -35,31 +40,48 @@ class _Gate:
     inflight: int
     epoch: int
     registered: int
+    compacted_through: int
+    compacted_batch_id: str
+    compacted_commit_hash: str
+    active_batch_id: str
 
     def wire(self) -> bytes:
-        return f"2\n{self.mode}\n{self.inflight}\n{self.epoch}\n{self.registered}".encode()
+        return (f"4\n{self.mode}\n{self.inflight}\n{self.epoch}\n{self.registered}\n"
+                f"{self.compacted_through}\n{self.compacted_batch_id}\n"
+                f"{self.compacted_commit_hash}\n{self.active_batch_id}").encode()
 
 
 def _decode_gate(value: bytes) -> _Gate:
     try:
-        version, mode, raw_count, raw_epoch, raw_registered = value.decode().split("\n")
-        gate = _Gate(mode, int(raw_count), int(raw_epoch), int(raw_registered))
+        (version, mode, raw_count, raw_epoch, raw_registered, raw_sequence,
+         batch_id, commit_hash, active_id) = value.decode().split("\n")
+        gate = _Gate(mode, int(raw_count), int(raw_epoch), int(raw_registered),
+                     int(raw_sequence), str(UUID(batch_id)), commit_hash,
+                     str(UUID(active_id)))
     except (UnicodeError, ValueError) as exc:
         raise KeeperUnavailable("Typed dispatch gate is corrupt") from exc
-    if (version != "2" or mode not in {"open", "closed"} or gate.inflight < 0
+    if (version != "4" or mode not in {"open", "closed"} or gate.inflight < 0
             or gate.epoch < 1 or gate.registered < gate.inflight
+            or gate.compacted_through < 0
+            or re.fullmatch(r"[0-9a-f]{64}", gate.compacted_commit_hash) is None
+            or (gate.compacted_through == 0) != (
+                gate.compacted_batch_id == _ZERO_BATCH and
+                gate.compacted_commit_hash == _ZERO_HASH)
             or gate.wire() != value):
         raise KeeperUnavailable("Typed dispatch gate is invalid")
     return gate
 
 
 def _operation_wire(run_id: str, table: str, query_id: str,
-                    token: str, sql: str, status: str) -> bytes:
+                    token: str, sql: str, batch_id: str,
+                    sequence: int, status: str) -> bytes:
     if status not in {"pending", "acknowledged", "sealed"}:
         raise ValueError("Typed dispatch operation status is invalid")
-    return ("1\n" + "\n".join((run_id, table, query_id,
+    if type(sequence) is not int or sequence < 1:
+        raise ValueError("Typed dispatch requires a positive batch sequence")
+    return ("3\n" + "\n".join((run_id, table, query_id,
             sha256(token.encode()).hexdigest(), sha256(sql.encode()).hexdigest(),
-            status))).encode()
+            batch_id, str(sequence), status))).encode()
 
 
 class TypedInsertDispatch:
@@ -84,25 +106,76 @@ class TypedInsertDispatch:
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_gate")
         self.keeper.ensure_path(f"{_ROOT}/typed_dispatch_operation")
         try:
-            self.keeper.create(_gate_path(run_id), _Gate("open", 0, 1, 0).wire())
+            self.keeper.create(_gate_path(run_id), _Gate(
+                "open", 0, 1, 0, 0, _ZERO_BATCH, _ZERO_HASH,
+                _ZERO_BATCH).wire())
         except Exception as exc:
             raise KeeperUnavailable("Typed dispatch gate already exists or cannot initialize") from exc
 
+    def assert_next_batch(self, *, run_id: str, batch_id: str,
+                          prior_batch_id: str, first_sequence: int,
+                          last_sequence: int) -> None:
+        try:
+            if (str(UUID(batch_id)) != batch_id
+                    or str(UUID(prior_batch_id)) != prior_batch_id
+                    or type(first_sequence) is not int or first_sequence < 1
+                    or type(last_sequence) is not int
+                    or last_sequence < first_sequence):
+                raise ValueError("batch identity is not canonical")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Typed batch reservation identity is invalid") from exc
+        for _ in range(8):
+            gate, version = self._read_gate(run_id)
+            if gate.mode != "open":
+                raise KeeperUnavailable("Typed dispatch run is cold-fenced")
+            if last_sequence <= gate.compacted_through:
+                if (last_sequence == gate.compacted_through
+                        and batch_id == gate.compacted_batch_id):
+                    return
+                raise KeeperUnavailable("Typed batch retry precedes compacted watermark")
+            if (first_sequence != gate.compacted_through + 1
+                    or prior_batch_id != gate.compacted_batch_id):
+                raise KeeperUnavailable("Typed batch does not extend compacted prefix")
+            if gate.active_batch_id == batch_id:
+                return
+            if gate.active_batch_id != _ZERO_BATCH:
+                raise KeeperUnavailable("Competing typed batch owns the run prefix")
+            txn = self.keeper.transaction()
+            txn.check(_gate_path(run_id), version=version)
+            txn.set_data(_gate_path(run_id), _Gate(
+                gate.mode, gate.inflight, gate.epoch, gate.registered,
+                gate.compacted_through, gate.compacted_batch_id,
+                gate.compacted_commit_hash, batch_id).wire(), version=version)
+            if _committed(txn.commit()):
+                return
+        raise KeeperUnavailable("Typed batch reservation CAS contended")
+
     def execute_typed_insert(self, client: Any, *, run_id: str, table: str,
-                             token: str, sql: str) -> None:
+                             token: str, sql: str,
+                             batch_id: str | None = None,
+                             batch_last_sequence: int | None = None) -> None:
         if (re.fullmatch(r"[a-z][a-z0-9_]*", table) is None
                 or not sql.startswith(f"INSERT INTO arte.{table} (")
                 or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1" not in sql
                 or "insert_deduplication_token=" not in sql):
             raise ValueError("Typed dispatch requires the acknowledged arte INSERT contract")
+        if (type(batch_last_sequence) is not int or batch_last_sequence < 1
+                or not isinstance(batch_id, str)):
+            raise KeeperUnavailable("Strict typed dispatch lacks batch sequence authority")
         query_id = typed_insert_query_id(run_id, table, token)
         path = _operation_path(run_id, query_id)
-        pending = _operation_wire(run_id, table, query_id, token, sql, "pending")
-        completed = _operation_wire(run_id, table, query_id, token, sql, "acknowledged")
+        pending = _operation_wire(run_id, table, query_id, token, sql, batch_id,
+                                  batch_last_sequence, "pending")
+        completed = _operation_wire(run_id, table, query_id, token, sql, batch_id,
+                                    batch_last_sequence, "acknowledged")
         for _ in range(8):
             gate, version = self._read_gate(run_id)
             if gate.mode != "open":
                 raise KeeperUnavailable("Typed dispatch run is cold-fenced")
+            if gate.active_batch_id != batch_id:
+                raise KeeperUnavailable("Competing typed batch owns the run prefix")
+            if batch_last_sequence <= gate.compacted_through:
+                return  # Exact CH batch readback and watermark check still follow.
             if gate.registered >= self.max_operations:
                 raise KeeperUnavailable("Typed dispatch operation cap reached; stop the run")
             try:
@@ -118,7 +191,9 @@ class TypedInsertDispatch:
             txn.check(_gate_path(run_id), version=version)
             txn.set_data(_gate_path(run_id),
                          _Gate("open", gate.inflight + 1, gate.epoch,
-                               gate.registered + 1).wire(),
+                               gate.registered + 1, gate.compacted_through,
+                               gate.compacted_batch_id, gate.compacted_commit_hash,
+                               gate.active_batch_id).wire(),
                          version=version)
             txn.create(path, pending, ephemeral=False)
             if _committed(txn.commit()):
@@ -138,7 +213,9 @@ class TypedInsertDispatch:
             txn.check(_gate_path(run_id), version=version)
             txn.set_data(_gate_path(run_id),
                          _Gate("open", gate.inflight, gate.epoch,
-                               gate.registered).wire(),
+                               gate.registered, gate.compacted_through,
+                               gate.compacted_batch_id, gate.compacted_commit_hash,
+                               gate.active_batch_id).wire(),
                          version=version)
             txn.set_data(path, completed, version=stat.version)
             if _committed(txn.commit()):
@@ -147,7 +224,9 @@ class TypedInsertDispatch:
 
     def seal_verified_operation(self, *, run_id: str, table: str, token: str,
                                 sql: str | None = None,
-                                required: bool = True) -> None:
+                                required: bool = True,
+                                batch_id: str | None = None,
+                                batch_last_sequence: int | None = None) -> None:
         """Caller must invoke only after exact parent late-fence readback.
 
         Unwired parent publishers leave acknowledged operations in-flight,
@@ -160,6 +239,9 @@ class TypedInsertDispatch:
             gate, version = self._read_gate(run_id)
             if gate.mode != "open":
                 raise KeeperUnavailable("Typed dispatch cannot seal outside open parent")
+            if (type(batch_last_sequence) is int
+                    and batch_last_sequence <= gate.compacted_through):
+                return
             try:
                 stored, stat = self.keeper.get(path)
             except Exception as exc:
@@ -167,61 +249,189 @@ class TypedInsertDispatch:
                     return
                 raise KeeperUnavailable("Typed dispatch parent lacks operation identity") from exc
             parts = stored.decode("utf-8").split("\n")
-            if (len(parts) != 7 or parts[:5] != ["1", run_id, table, query_id,
+            if (len(parts) != 9 or parts[:5] != ["3", run_id, table, query_id,
                     sha256(token.encode()).hexdigest()]
                     or re.fullmatch(r"[0-9a-f]{64}", parts[5]) is None
+                    or parts[6] != batch_id
+                    or type(batch_last_sequence) is not int
+                    or parts[7] != str(batch_last_sequence)
                     or (sql is not None and parts[5] != sha256(sql.encode()).hexdigest())):
                 raise KeeperUnavailable("Typed dispatch operation differs from parent identity")
-            if parts[6] == "sealed":
+            if parts[8] == "sealed":
                 return
-            if parts[6] != "acknowledged" or gate.inflight < 1:
+            if parts[8] != "acknowledged" or gate.inflight < 1:
                 raise KeeperUnavailable("Typed dispatch operation lacks acknowledged parent")
-            sealed = ("\n".join((*parts[:6], "sealed"))).encode()
+            sealed = ("\n".join((*parts[:8], "sealed"))).encode()
             txn = self.keeper.transaction()
             txn.check(_gate_path(run_id), version=version)
             txn.set_data(_gate_path(run_id),
                          _Gate("open", gate.inflight - 1, gate.epoch,
-                               gate.registered).wire(), version=version)
+                               gate.registered, gate.compacted_through,
+                               gate.compacted_batch_id, gate.compacted_commit_hash,
+                               gate.active_batch_id).wire(),
+                         version=version)
             txn.set_data(path, sealed, version=stat.version)
             if _committed(txn.commit()):
                 return
         raise KeeperUnavailable("Typed dispatch parent seal CAS contended")
 
+    def compact_verified_batch(self, *, run_id: str, batch_id: str,
+                               prior_batch_id: str, first_sequence: int,
+                               last_sequence: int, commit_hash: str,
+                               operations: tuple[tuple[str, str], ...]) -> None:
+        """Atomically retire sealed operation IDs after exact CH commit readback.
+
+        The caller must supply the just-read typed commit's identity/hash.
+        The Keeper watermark enforces a contiguous batch chain; later retries
+        at/below it never re-dispatch and must still pass CH exact readback.
+        """
+        if (not operations or len(set(operations)) != len(operations)
+                or type(first_sequence) is not int or type(last_sequence) is not int
+                or first_sequence < 1 or last_sequence < first_sequence
+                or re.fullmatch(r"[0-9a-f]{64}", commit_hash) is None):
+            raise ValueError("Typed batch compaction identity is invalid")
+        try:
+            if str(UUID(batch_id)) != batch_id or str(UUID(prior_batch_id)) != prior_batch_id:
+                raise ValueError("noncanonical batch UUID")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Typed batch compaction batch UUID is invalid") from exc
+        for _ in range(8):
+            gate, version = self._read_gate(run_id)
+            if gate.mode != "open" or gate.inflight:
+                raise KeeperUnavailable("Typed batch compaction has unresolved INSERTs")
+            if last_sequence <= gate.compacted_through:
+                if (last_sequence == gate.compacted_through
+                        and batch_id == gate.compacted_batch_id
+                        and commit_hash == gate.compacted_commit_hash):
+                    return
+                raise KeeperUnavailable("Typed batch retry precedes compacted watermark")
+            if (first_sequence != gate.compacted_through + 1
+                    or prior_batch_id != gate.compacted_batch_id):
+                raise KeeperUnavailable("Typed batch does not extend compacted prefix")
+            if gate.active_batch_id != batch_id:
+                raise KeeperUnavailable("Competing typed batch owns the run prefix")
+            paths = []
+            for table, token in operations:
+                path = _operation_path(run_id, typed_insert_query_id(run_id, table, token))
+                try:
+                    value, stat = self.keeper.get(path)
+                except Exception as exc:
+                    raise KeeperUnavailable("Typed batch lacks sealed dispatch operation") from exc
+                parts = value.decode("utf-8").split("\n")
+                if (len(parts) != 9 or parts[:5] != ["3", run_id, table,
+                        typed_insert_query_id(run_id, table, token),
+                        sha256(token.encode()).hexdigest()]
+                        or parts[6:] != [batch_id, str(last_sequence), "sealed"]):
+                    raise KeeperUnavailable("Typed batch operation differs from sealed prefix")
+                paths.append((path, stat.version))
+            if gate.registered < len(paths):
+                raise KeeperUnavailable("Typed dispatch operation count is corrupt")
+            txn = self.keeper.transaction()
+            txn.check(_gate_path(run_id), version=version)
+            for path, op_version in paths:
+                txn.delete(path, version=op_version)
+            txn.set_data(_gate_path(run_id), _Gate(
+                "open", 0, gate.epoch, gate.registered - len(paths),
+                last_sequence, batch_id, commit_hash, _ZERO_BATCH).wire(),
+                version=version)
+            if _committed(txn.commit()):
+                return
+        raise KeeperUnavailable("Typed batch compaction CAS contended")
+
     def acquire_cold_barrier(self, run_id: str) -> "ColdDispatchBarrier":
         gate, version = self._read_gate(run_id)
-        if gate.mode != "open" or gate.inflight:
+        if gate.mode != "open" or gate.inflight or gate.active_batch_id != _ZERO_BATCH:
             raise KeeperUnavailable("Typed dispatch has pending or ambiguous INSERTs")
-        closed = _Gate("closed", 0, gate.epoch + 1, gate.registered)
+        closed = _Gate("closed", 0, gate.epoch + 1, gate.registered,
+                       gate.compacted_through, gate.compacted_batch_id,
+                       gate.compacted_commit_hash, gate.active_batch_id)
         txn = self.keeper.transaction()
         txn.check(_gate_path(run_id), version=version)
         txn.set_data(_gate_path(run_id), closed.wire(), version=version)
         if not _committed(txn.commit()):
             raise KeeperUnavailable("Typed dispatch cold barrier lost CAS race")
         barrier = ColdDispatchBarrier(self, run_id, closed.epoch)
-        barrier.assert_fenced(run_id)
+        barrier._assert_gate(run_id)
         return barrier
 
 
-@dataclass(frozen=True)
+@dataclass
 class ColdDispatchBarrier:
     authority: TypedInsertDispatch
     run_id: str
     epoch: int
+    prefix_verified: bool = False
 
-    def assert_fenced(self, run_id: str) -> None:
+    def _assert_gate(self, run_id: str) -> None:
         if run_id != self.run_id:
             raise KeeperUnavailable("Typed dispatch barrier run differs")
         gate, _ = self.authority._read_gate(run_id)
-        if gate != _Gate("closed", 0, self.epoch, gate.registered):
+        if gate != _Gate("closed", 0, self.epoch, gate.registered,
+                         gate.compacted_through, gate.compacted_batch_id,
+                         gate.compacted_commit_hash, gate.active_batch_id):
             raise KeeperUnavailable("Typed dispatch cold barrier was lost")
+
+    def assert_fenced(self, run_id: str) -> None:
+        if not self.prefix_verified:
+            raise KeeperUnavailable("Typed dispatch prefix is not cold-verified")
+        self._assert_gate(run_id)
+
+    def verify_committed_prefix(self, client: Any, *,
+                                journal_profile: str) -> Any:
+        """Scan the selected CH prefix once and bind its terminal commit to Keeper."""
+        from src.trading_runtime.arte_journal_writer import (
+            _COMMIT_COLUMNS, _literal, _rows, load_committed_prefix,
+        )
+        from src.trading_runtime.journal_contract import canonical_json
+
+        if journal_profile not in {"v1", "backtest_v2"}:
+            raise ValueError("Cold dispatch needs an explicit typed journal profile")
+        self.prefix_verified = False
+        commit_table = ("trading_commit_v2" if journal_profile == "backtest_v2"
+                        else "trading_commit_v1")
+        other_table = ("trading_commit_v1" if journal_profile == "backtest_v2"
+                       else "trading_commit_v2")
+        self._assert_gate(self.run_id)
+        mixed = _rows(client,
+            f"SELECT batch_id FROM arte.{other_table} "
+            f"WHERE run_id={_literal(self.run_id)} LIMIT 1 FORMAT JSONEachRow")
+        if mixed:
+            raise KeeperUnavailable("Cold dispatch cannot mix V1 and V2 commit fences")
+        prefix = load_committed_prefix(client, self.run_id,
+                                       journal_profile=journal_profile)
+        gate, _ = self.authority._read_gate(self.run_id)
+        if gate.compacted_through == 0:
+            if prefix is not None:
+                raise KeeperUnavailable("ClickHouse prefix lacks dispatch compaction")
+        else:
+            if (prefix is None or prefix.last_sequence != gate.compacted_through
+                    or prefix.last_batch_id != gate.compacted_batch_id):
+                raise KeeperUnavailable("ClickHouse prefix differs from dispatch watermark")
+            rows = _rows(client,
+                f"SELECT {','.join(_COMMIT_COLUMNS)} FROM arte.{commit_table} "
+                f"WHERE run_id={_literal(self.run_id)} "
+                f"AND batch_id=toUUID({_literal(gate.compacted_batch_id)}) "
+                "FORMAT JSONEachRow")
+            if (len(rows) != 1 or
+                    sha256(canonical_json(rows[0]).encode()).hexdigest()
+                    != gate.compacted_commit_hash):
+                raise KeeperUnavailable("ClickHouse commit differs from dispatch hash")
+        self._assert_gate(self.run_id)
+        self.prefix_verified = True
+        return prefix
 
     def release(self) -> None:
         gate, version = self.authority._read_gate(self.run_id)
-        if gate != _Gate("closed", 0, self.epoch, gate.registered):
+        if gate != _Gate("closed", 0, self.epoch, gate.registered,
+                         gate.compacted_through, gate.compacted_batch_id,
+                         gate.compacted_commit_hash, gate.active_batch_id):
             raise KeeperUnavailable("Typed dispatch cold barrier was lost")
         txn = self.authority.keeper.transaction()
         txn.check(_gate_path(self.run_id), version=version)
         txn.set_data(_gate_path(self.run_id),
-                     _Gate("open", 0, self.epoch, gate.registered).wire(), version=version)
+                     _Gate("open", 0, self.epoch, gate.registered,
+                           gate.compacted_through, gate.compacted_batch_id,
+                           gate.compacted_commit_hash, gate.active_batch_id).wire(),
+                     version=version)
         if not _committed(txn.commit()):
             raise KeeperUnavailable("Typed dispatch cold barrier release lost CAS race")
