@@ -187,7 +187,9 @@ def test_v3_cold_reader_verifies_reservation_reason_fence(monkeypatch):
                    if name not in {
                        "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
                        "portfolio_reservation_reason_count",
-                       "portfolio_reservation_reason_hash"}}
+                       "portfolio_reservation_reason_hash",
+                       "portfolio_reconciliation_difference_count",
+                       "portfolio_reconciliation_difference_hash"}}
     commit_base.update(run_id=RUN, batch_id=BATCH, prior_batch_id=ZERO,
                        first_sequence=1, last_sequence=1, event_count=1,
                        status="completed", source_cursor="bar:1")
@@ -237,7 +239,9 @@ def test_v3_coalescing_rekeys_ordered_reservation_reasons():
                    if name not in {
                        "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
                        "portfolio_reservation_reason_count",
-                       "portfolio_reservation_reason_hash"}}
+                       "portfolio_reservation_reason_hash",
+                       "portfolio_reconciliation_difference_count",
+                       "portfolio_reconciliation_difference_hash"}}
     commit_base.update(run_id=RUN, batch_id=merged.base.batch_id)
     seal = seal_squeeze_family_v3(
         commit_base, (), parent_events,

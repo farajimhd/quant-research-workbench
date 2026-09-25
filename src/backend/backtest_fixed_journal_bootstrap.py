@@ -14,7 +14,8 @@ from uuid import UUID
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_squeeze_episode_schema import (
-    RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
+    RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
+    SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
 from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
 from src.backend.backtest_fixed_run_context import verify_fixed_run_context
@@ -71,6 +72,7 @@ def fixed_journal_operator_check(client: Any) -> dict[str, Any]:
     """Read-only inventory; V2-only readiness cannot authorize fixed launch."""
     missing = list(missing_fixed_backtest_v2_tables(client))
     required_v3 = (SQUEEZE_EPISODE, RESERVATION_REASON,
+                   RECONCILIATION_DIFFERENCE,
                    SQUEEZE_COMMIT_V3, TERMINAL_COMMIT_V3)
     names = ",".join(f"'{table.name}'" for table in required_v3)
     rows = [json.loads(line) for line in client.execute(

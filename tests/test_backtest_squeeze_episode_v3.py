@@ -1,5 +1,7 @@
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
+from datetime import timedelta
+from uuid import uuid4
 import json
 import re
 
@@ -11,6 +13,9 @@ from src.backend.backtest_squeeze_episode_v3 import (
     seal_squeeze_family_v3, verify_squeeze_family_v3,
 )
 from src.trading_runtime.arte_journal_schema import VERSIONED_JOURNAL_V2_TABLES
+from src.trading_runtime.journal_contract import JournalRecord
+from src.trading_runtime.portfolio import PortfolioReconciliationDifference
+from src.backend.backtest_reconciliation_v3 import project_reconciliation_v3
 from tests.test_backtest_squeeze_episode_projection import BATCH, PLAN, QUERY, _record
 
 
@@ -29,7 +34,9 @@ def _fixture():
     base = {name: "" for name, _ in SQUEEZE_COMMIT_V3.columns
             if name not in {"backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
                             "portfolio_reservation_reason_count",
-                            "portfolio_reservation_reason_hash"}}
+                            "portfolio_reservation_reason_hash",
+                            "portfolio_reconciliation_difference_count",
+                            "portfolio_reconciliation_difference_hash"}}
     base.update(run_id=record.run_id, batch_id=BATCH)
     return record, row, parent, base
 
@@ -37,9 +44,11 @@ def _fixture():
 def test_v3_contract_is_staged_and_v2_unchanged():
     v2 = next(t for t in VERSIONED_JOURNAL_V2_TABLES if t.name == "trading_commit_v2")
     assert "backtest_squeeze_episode_count" not in dict(v2.columns)
-    assert list(dict(SQUEEZE_COMMIT_V3.columns))[-7:-3] == [
+    assert list(dict(SQUEEZE_COMMIT_V3.columns))[-9:-3] == [
         "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
-        "portfolio_reservation_reason_count", "portfolio_reservation_reason_hash"]
+        "portfolio_reservation_reason_count", "portfolio_reservation_reason_hash",
+        "portfolio_reconciliation_difference_count",
+        "portfolio_reconciliation_difference_hash"]
     assert all("live_market_ssd" in ddl for ddl in staged_v3_ddl())
 
 
@@ -79,13 +88,18 @@ def test_dynamic_signal_occurrence_remains_rejected():
 
 class _FakeColdClient:
     def __init__(self, commit, children, parents, *, old_fence=False,
-                 reservation_events=(), reservation_parents=(), reasons=()):
+                 reservation_events=(), reservation_parents=(), reasons=(),
+                 reconciliation_events=(), reconciliation_parents=(),
+                 reconciliation_differences=()):
         self.commit = commit
         self.children = children
         self.parents = parents
         self.reservation_events = reservation_events
         self.reservation_parents = reservation_parents
         self.reasons = reasons
+        self.reconciliation_events = reconciliation_events
+        self.reconciliation_parents = reconciliation_parents
+        self.reconciliation_differences = reconciliation_differences
         self.old_fence = old_fence
         self.queries = []
 
@@ -96,7 +110,10 @@ class _FakeColdClient:
         elif "FROM arte.trading_commit_v3" in sql:
             rows = self.commit if isinstance(self.commit, list) else [self.commit]
         elif "FROM arte.trading_event_v1" in sql:
-            rows = (self.reservation_events if "category='portfolio_management'" in sql
+            rows = (self.reconciliation_events
+                    if "entity_type='portfolio_reconciliation'" in sql
+                    else self.reservation_events
+                    if "entity_type='portfolio_reservation'" in sql
                     else self.parents)
         elif "FROM arte.trading_backtest_squeeze_episode_v1" in sql:
             rows = self.children
@@ -104,6 +121,10 @@ class _FakeColdClient:
             rows = self.reservation_parents
         elif "FROM arte.trading_portfolio_reservation_reason_v1" in sql:
             rows = self.reasons
+        elif "FROM arte.trading_portfolio_reconciliation_event_v1" in sql:
+            rows = self.reconciliation_parents
+        elif "FROM arte.trading_portfolio_reconciliation_difference_v3" in sql:
+            rows = self.reconciliation_differences
         else:
             raise AssertionError(sql)
         match = re.search(r"batch_id=toUUID\('([^']+)'\)", sql)
@@ -183,7 +204,9 @@ def test_cold_v3_reader_verifies_whole_chain_and_rejects_gap(monkeypatch):
                    if key not in {"backtest_squeeze_episode_count",
                                   "backtest_squeeze_episode_hash",
                                   "portfolio_reservation_reason_count",
-                                  "portfolio_reservation_reason_hash"}}
+                                  "portfolio_reservation_reason_hash",
+                                  "portfolio_reconciliation_difference_count",
+                                  "portfolio_reconciliation_difference_hash"}}
     second_base.update(batch_id=second_batch, prior_batch_id=BATCH,
                        first_sequence=2, last_sequence=2, status="completed")
     second = seal_squeeze_family_v3(second_base, [], [])
@@ -209,4 +232,53 @@ def test_cold_v3_reader_rejects_unpinned_source(monkeypatch):
     with pytest.raises(RuntimeError, match="pinned"):
         load_verified_squeeze_v3_run(
             client, commit["run_id"], expected_market_plan_token="d" * 64,
+            expected_query_sha256=QUERY)
+
+
+def test_cold_v3_reader_verifies_reconciliation_children(monkeypatch):
+    import src.backend.backtest_squeeze_episode_v3 as module
+
+    monkeypatch.setattr(module, "storage_preflight", lambda client, *, tables: None)
+    monkeypatch.setattr(module, "_verify_recovery_chunk",
+                        lambda client, commits, *, journal_profile: None)
+    commit, stored_squeeze_child, squeeze_parent = _cold_fixture()
+    _, squeeze_child, source_squeeze_parent, _ = _fixture()
+    observed_at = _record().event_time - timedelta(seconds=1)
+    difference = PortfolioReconciliationDifference(
+        "primary", "AAA", 5.0, 2.0, 3.0, observed_at)
+    fact = JournalRecord(
+        str(uuid4()), commit["run_id"], 2, _record().event_time,
+        _record().event_time, "portfolio_management",
+        "portfolio_reconciliation", "primary", "DU1", {
+            "event": "portfolio_reconciliation_completed",
+            "snapshot_id": "snapshot-1",
+            "snapshot_observed_at": observed_at,
+            "difference_count": 1, "differences": [asdict(difference)],
+            "correlation_id": "run:1", "causation_id": "event:1",
+        })
+    projected = project_reconciliation_v3(
+        fact, attempt_id=str(uuid4()), batch_id=BATCH, account_key="primary")
+    base = {key: value for key, value in commit.items() if key not in {
+        "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
+        "portfolio_reservation_reason_count", "portfolio_reservation_reason_hash",
+        "portfolio_reconciliation_difference_count",
+        "portfolio_reconciliation_difference_hash"}}
+    base.update(event_count=2, last_sequence=2)
+    commit = seal_squeeze_family_v3(
+        base, (squeeze_child,), (source_squeeze_parent, projected.event),
+        reconciliation_differences=projected.differences,
+        parent_reconciliations=(projected.parent,))
+    client = _FakeColdClient(
+        commit, [stored_squeeze_child], [squeeze_parent],
+        reconciliation_events=(projected.event,),
+        reconciliation_parents=(projected.parent,),
+        reconciliation_differences=projected.differences)
+    assert len(load_verified_squeeze_v3_run(
+        client, commit["run_id"], expected_market_plan_token=PLAN,
+        expected_query_sha256=QUERY)) == 1
+    client.reconciliation_differences = (
+        {**projected.differences[0], "broker_quantity": 9.0},)
+    with pytest.raises((ValueError, RuntimeError)):
+        load_verified_squeeze_v3_run(
+            client, commit["run_id"], expected_market_plan_token=PLAN,
             expected_query_sha256=QUERY)

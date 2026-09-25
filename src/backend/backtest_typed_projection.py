@@ -126,6 +126,19 @@ def project_pending_backtest_v3_prefix(
                 source_cursor=cursor,
                 expected_market_plan_token=expected_market_plan_token,
                 expected_query_sha256=expected_query_sha256)
+        elif (record.category, record.entity_type) == (
+                "portfolio_management", "portfolio_reconciliation"):
+            from src.backend.backtest_reconciliation_v3 import project_reconciliation_v3
+
+            reconciliation = project_reconciliation_v3(
+                record, attempt_id=attempt, batch_id=batch_id,
+                account_key=record.entity_id)
+            base = TypedJournalBatch(
+                record.run_id, run_month, attempt, batch_id, previous,
+                sequence, sequence, cursor, "running", (reconciliation.event,),
+                portfolio_reconciliation_events=(reconciliation.parent,))
+            unit = V3SqueezeBatch(
+                base, (), (), reconciliation.differences)
         else:
             reservation_reasons = ()
             if (record.category, record.entity_type) == (

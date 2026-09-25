@@ -28,6 +28,7 @@ def test_operator_check_names_missing_tables_without_any_write(monkeypatch):
     assert missing["status"] == "blocked"
     v3 = [table.name for table in (
         bootstrap.SQUEEZE_EPISODE, bootstrap.RESERVATION_REASON,
+        bootstrap.RECONCILIATION_DIFFERENCE,
         bootstrap.SQUEEZE_COMMIT_V3,
         bootstrap.TERMINAL_COMMIT_V3)]
     assert missing["evidence"]["missing_tables"] == list(names[-2:]) + v3

@@ -30,6 +30,7 @@ from src.trading_runtime.arte_journal_schema import (
 from src.backend.backtest_squeeze_episode_schema import (
     RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
+from src.backend.backtest_reconciliation_v3 import CHILD as RECONCILIATION_DIFFERENCE
 from src.trading_runtime.journal_contract import canonical_json
 
 if TYPE_CHECKING:
@@ -40,7 +41,8 @@ if TYPE_CHECKING:
 
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS.update({table.name: table for table in (
-    SQUEEZE_EPISODE, RESERVATION_REASON, SQUEEZE_COMMIT_V3)})
+    SQUEEZE_EPISODE, RESERVATION_REASON, RECONCILIATION_DIFFERENCE,
+    SQUEEZE_COMMIT_V3)})
 
 
 def _without_text_prefix(value: str) -> str:
@@ -246,6 +248,7 @@ class V3SqueezeBatch:
     base: TypedJournalBatch
     episodes: tuple[Mapping[str, Any], ...]
     reservation_reasons: tuple[Mapping[str, Any], ...] = ()
+    reconciliation_differences: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.base.status != "running":
@@ -254,10 +257,13 @@ class V3SqueezeBatch:
             MappingProxyType(dict(row)) for row in self.episodes))
         object.__setattr__(self, "reservation_reasons", tuple(
             MappingProxyType(dict(row)) for row in self.reservation_reasons))
+        object.__setattr__(self, "reconciliation_differences", tuple(
+            MappingProxyType(dict(row)) for row in self.reconciliation_differences))
 
 
 def _sealed_families(
     batch: TypedJournalBatch, *, v3_episode_ids: tuple[str, ...] = (),
+    v3_reconciliation: bool = False,
 ) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
     """Validate and hash the immutable snapshot on the persistence lane."""
     if len(batch.events) != batch.last_sequence - batch.first_sequence + 1:
@@ -389,14 +395,16 @@ def _sealed_families(
             raise ValueError("Prepared V7 lease differs from its journal event")
     for reconciliation in by_family["trading_portfolio_reconciliation_event_v1"]:
         parent = events_by_id[str(UUID(str(reconciliation["record_id"]))) ]
+        event_time = _datetime_wire(parent["event_time"], 9)
+        source_time = _datetime_wire(reconciliation["source_event_time"], 9)
         if (parent["category"] != "portfolio_management"
                 or parent["entity_type"] != "portfolio_reconciliation"
                 or parent["entity_id"] != reconciliation["account_key"]
                 or parent["account_id"] != reconciliation["account_id"]
                 or not reconciliation["snapshot_id"]
                 or not re.fullmatch(r"[0-9a-f]{64}", str(reconciliation["difference_hash"]))
-                or _datetime_wire(parent["event_time"], 9)
-                != _datetime_wire(reconciliation["source_event_time"], 9)):
+                or (source_time > event_time if v3_reconciliation
+                    else source_time != event_time)):
             raise ValueError("Portfolio reconciliation differs from its journal event")
     progress_parents: set[str] = set()
     for progress in by_family["trading_backtest_progress_v1"]:
@@ -1373,7 +1381,8 @@ def publish_typed_squeeze_batch_v3(
     return _publish_typed_batch(
         client, unit.base, journal_profile="backtest_v3",
         squeeze_episodes=unit.episodes,
-        reservation_reasons=unit.reservation_reasons)
+        reservation_reasons=unit.reservation_reasons,
+        reconciliation_differences=unit.reconciliation_differences)
 
 
 def _publish_typed_batch(
@@ -1381,6 +1390,7 @@ def _publish_typed_batch(
     authority: _V2WriterAuthority | None = None,
     squeeze_episodes: tuple[Mapping[str, Any], ...] | None = None,
     reservation_reasons: tuple[Mapping[str, Any], ...] | None = None,
+    reconciliation_differences: tuple[Mapping[str, Any], ...] | None = None,
 ) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
     if batch.signal_evidence_nodes:
@@ -1388,10 +1398,12 @@ def _publish_typed_batch(
     if journal_profile not in {"v1", "backtest_v2", "backtest_v3"}:
         raise ValueError("Unknown typed journal profile")
     if journal_profile != "backtest_v3" and (
-            squeeze_episodes is not None or reservation_reasons is not None):
+            squeeze_episodes is not None or reservation_reasons is not None
+            or reconciliation_differences is not None):
         raise ValueError("V3 child families require a V3-only commit")
     if journal_profile == "backtest_v3" and (
-            squeeze_episodes is None or reservation_reasons is None):
+            squeeze_episodes is None or reservation_reasons is None
+            or reconciliation_differences is None):
         raise ValueError("V3 commit requires explicit closed child families")
     if journal_profile in {"backtest_v2", "backtest_v3"} and batch.status != "running":
         raise ValueError("Terminal Backtest requires separate anchored V2 publication")
@@ -1420,26 +1432,36 @@ def _publish_typed_batch(
         raise ValueError("V2 writer authority cannot be used with V1")
     families = _sealed_families(
         batch, v3_episode_ids=tuple(str(row["record_id"])
-            for row in squeeze_episodes or ()) if journal_profile == "backtest_v3" else ())
+            for row in squeeze_episodes or ()) if journal_profile == "backtest_v3" else (),
+        v3_reconciliation=journal_profile == "backtest_v3")
     if journal_profile == "backtest_v3":
         from src.backend.backtest_squeeze_episode_v3 import seal_squeeze_family_v3
         # Validate the closed child and its exact parent before any INSERT.
         v3_rows = tuple(dict(row) for row in squeeze_episodes or ())
         reason_rows = tuple(dict(row) for row in reservation_reasons or ())
+        difference_rows = tuple(dict(row) for row in reconciliation_differences or ())
         reservation_parents = dict(families)[
             "trading_portfolio_reservation_event_v1"]
+        reconciliation_parents = dict(families)[
+            "trading_portfolio_reconciliation_event_v1"]
         seal_squeeze_family_v3(
             {**{name: "" for name, _ in SQUEEZE_COMMIT_V3.columns if name not in {
                 "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
                 "portfolio_reservation_reason_count",
-                "portfolio_reservation_reason_hash"}},
+                "portfolio_reservation_reason_hash",
+                "portfolio_reconciliation_difference_count",
+                "portfolio_reconciliation_difference_hash"}},
              "run_id": batch.run_id, "batch_id": batch.batch_id},
             v3_rows, families[0][1], reservation_reasons=reason_rows,
-            parent_reservations=reservation_parents)
+            parent_reservations=reservation_parents,
+            reconciliation_differences=difference_rows,
+            parent_reconciliations=reconciliation_parents)
     else:
         v3_rows = ()
         reason_rows = ()
         reservation_parents = ()
+        difference_rows = ()
+        reconciliation_parents = ()
     _verify_commission_links(client, batch, families, journal_profile=journal_profile)
     _verify_exact_intent_uses(client, batch, families, journal_profile=journal_profile)
     _verify_order_context_links(client, batch, families, journal_profile=journal_profile)
@@ -1516,22 +1538,41 @@ def _publish_typed_batch(
                     dispatch_batch_id=batch.batch_id,
                     dispatch_sequence=batch.last_sequence)
             actual_reasons = _rows(client, reason_query)
+        difference_columns = ",".join(
+            name for name, _ in RECONCILIATION_DIFFERENCE.columns)
+        difference_query = (
+            f"SELECT {difference_columns} FROM arte.{RECONCILIATION_DIFFERENCE.name} "
+            f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
+        actual_differences = _rows(client, difference_query)
+        if not actual_differences and difference_rows:
+            _insert(client, RECONCILIATION_DIFFERENCE.name, difference_rows,
+                    f"{batch.batch_id}:{RECONCILIATION_DIFFERENCE.name}",
+                    journal_profile=journal_profile,
+                    dispatch_batch_id=batch.batch_id,
+                    dispatch_sequence=batch.last_sequence)
+            actual_differences = _rows(client, difference_query)
         # The family verifier also rejects missing, duplicate and extra children.
         base_stub = {name: "" for name, _ in SQUEEZE_COMMIT_V3.columns
                      if name not in {"backtest_squeeze_episode_count",
                                      "backtest_squeeze_episode_hash",
                                      "portfolio_reservation_reason_count",
-                                     "portfolio_reservation_reason_hash"}}
+                                     "portfolio_reservation_reason_hash",
+                                     "portfolio_reconciliation_difference_count",
+                                     "portfolio_reconciliation_difference_hash"}}
         base_stub.update(run_id=batch.run_id, batch_id=batch.batch_id)
         child_seal = seal_squeeze_family_v3(
             base_stub, v3_rows, families[0][1],
             reservation_reasons=reason_rows,
-            parent_reservations=reservation_parents)
+            parent_reservations=reservation_parents,
+            reconciliation_differences=difference_rows,
+            parent_reconciliations=reconciliation_parents)
         try:
             verified_children = verify_squeeze_family_v3(
                 child_seal, actual_children, families[0][1], stored_utc=True,
                 reservation_reasons=actual_reasons,
-                parent_reservations=reservation_parents)
+                parent_reservations=reservation_parents,
+                reconciliation_differences=actual_differences,
+                parent_reconciliations=reconciliation_parents)
         except ValueError as exc:
             raise RuntimeError("V3 child families differ from durable readback") from exc
         if sorted((r["record_id"], r["content_hash"]) for r in verified_children) != sorted(
@@ -1556,7 +1597,9 @@ def _publish_typed_batch(
         commit = seal_squeeze_family_v3(
             commit, v3_rows, families[0][1],
             reservation_reasons=reason_rows,
-            parent_reservations=reservation_parents)
+            parent_reservations=reservation_parents,
+            reconciliation_differences=difference_rows,
+            parent_reconciliations=reconciliation_parents)
     expected = {key: value for key, value in commit.items() if key not in ("run_month", "committed_at")}
     if existing and (len(existing) != 1 or existing[0] != expected):
         raise RuntimeError("Typed journal commit conflicts with an existing batch")
@@ -1596,6 +1639,12 @@ def _publish_typed_batch(
                 token=f"{batch.batch_id}:{RESERVATION_REASON.name}",
                 required=required, batch_id=batch.batch_id,
                 batch_last_sequence=batch.last_sequence)
+        if journal_profile == "backtest_v3" and difference_rows:
+            dispatch.seal_verified_operation(
+                run_id=batch.run_id, table=RECONCILIATION_DIFFERENCE.name,
+                token=f"{batch.batch_id}:{RECONCILIATION_DIFFERENCE.name}",
+                required=required, batch_id=batch.batch_id,
+                batch_last_sequence=batch.last_sequence)
         table = _profile_table("trading_commit_v1", journal_profile)
         dispatch.seal_verified_operation(
             run_id=batch.run_id, table=table,
@@ -1611,7 +1660,10 @@ def _publish_typed_batch(
             ((SQUEEZE_EPISODE.name, f"{batch.batch_id}:{SQUEEZE_EPISODE.name}"),)
             if journal_profile == "backtest_v3" and v3_rows else ()) + (
             ((RESERVATION_REASON.name, f"{batch.batch_id}:{RESERVATION_REASON.name}"),)
-            if journal_profile == "backtest_v3" and reason_rows else ()) + ((
+            if journal_profile == "backtest_v3" and reason_rows else ()) + (
+            ((RECONCILIATION_DIFFERENCE.name,
+              f"{batch.batch_id}:{RECONCILIATION_DIFFERENCE.name}"),)
+            if journal_profile == "backtest_v3" and difference_rows else ()) + ((
             table, f"{batch.batch_id}:{table}:commit"),)
         dispatch.compact_verified_batch(
             run_id=batch.run_id, batch_id=batch.batch_id,
@@ -2643,7 +2695,8 @@ class ArteJournalWriter:
                         self._client, unit.base, journal_profile="backtest_v3",
                         authority=self._v2_authority,
                         squeeze_episodes=unit.episodes,
-                        reservation_reasons=unit.reservation_reasons)
+                        reservation_reasons=unit.reservation_reasons,
+                        reconciliation_differences=unit.reconciliation_differences)
                 elif isinstance(group[0][0], TypedJournalBatch):
                     batch = _coalesce_unpublished(tuple(row for row, _ in group))
                     if self._journal_profile == "v1":

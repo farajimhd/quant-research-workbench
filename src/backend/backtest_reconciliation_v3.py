@@ -1,11 +1,12 @@
-"""Pure, inactive normalized projection of Portfolio reconciliation evidence."""
+"""Closed V3 projection and child seal for Portfolio reconciliation evidence."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import math
-from typing import Any, Mapping
+import re
+from typing import Any, Mapping, Sequence
 from uuid import UUID, NAMESPACE_URL, uuid5
 
 from src.trading_runtime.arte_journal_schema import TableContract
@@ -13,26 +14,15 @@ from src.trading_runtime.journal_contract import JournalRecord, canonical_json
 from src.trading_runtime.portfolio import PortfolioReconciliationDifference
 
 
-PARENT = TableContract(
-    "trading_portfolio_reconciliation_event_v3",
-    (("record_id", "UUID"), ("run_id", "String"), ("event_month", "Date"),
-     ("batch_id", "UUID"), ("account_id", "String"), ("account_key", "String"),
-     ("snapshot_id", "String"), ("difference_count", "UInt32"),
-     ("difference_hash", "FixedString(64)"),
-     ("source_event_time", "DateTime64(6, 'UTC')"),
-     ("content_hash", "FixedString(64)")),
-    "toYYYYMM(event_month)", "run_id,account_id,source_event_time,record_id")
 CHILD = TableContract(
     "trading_portfolio_reconciliation_difference_v3",
     (("record_id", "UUID"), ("run_id", "String"), ("event_month", "Date"),
      ("batch_id", "UUID"), ("parent_record_id", "UUID"),
-     ("account_id", "String"), ("ordinal", "UInt16"),
-     ("account_key", "String"), ("ticker", "String"),
+     ("ordinal", "UInt16"), ("ticker", "String"),
      ("broker_quantity", "Float64"), ("attributed_quantity", "Float64"),
      ("unattributed_quantity", "Float64"),
-     ("observed_at", "DateTime64(6, 'UTC')"),
      ("content_hash", "FixedString(64)")),
-    "toYYYYMM(event_month)", "run_id,account_id,parent_record_id,ordinal,record_id")
+    "toYYYYMM(event_month)", "run_id,parent_record_id,ordinal,record_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,14 +109,19 @@ def project_reconciliation_v3(record: JournalRecord, *, attempt_id: str,
               "batch_id": batch_id, "account_id": record.account_id}
     children = []
     for ordinal, row in enumerate(rows):
-        child = {**common,
+        child = {"run_id": record.run_id, "event_month": month,
+                 "batch_id": batch_id,
                  "record_id": str(uuid5(NAMESPACE_URL, f"{record.record_id}:difference:{ordinal}")),
-                 "parent_record_id": record.record_id, "ordinal": ordinal, **row}
+                 "parent_record_id": record.record_id, "ordinal": ordinal,
+                 "ticker": row["ticker"],
+                 "broker_quantity": row["broker_quantity"],
+                 "attributed_quantity": row["attributed_quantity"],
+                 "unattributed_quantity": row["unattributed_quantity"]}
         children.append({**child, "content_hash": _digest(child)})
     parent = {**common, "record_id": record.record_id,
               "account_key": account_key, "snapshot_id": payload["snapshot_id"],
               "difference_count": len(children),
-              "difference_hash": _digest(children),
+              "difference_hash": _digest(payload["differences"]),
               "source_event_time": source_at}
     event = {**common, "attempt_id": attempt_id, "record_id": record.record_id,
              "sequence": record.sequence, "event_time": event_at,
@@ -135,5 +130,119 @@ def project_reconciliation_v3(record: JournalRecord, *, attempt_id: str,
              "entity_id": record.entity_id,
              "correlation_id": payload["correlation_id"],
              "causation_id": payload["causation_id"]}
-    return ReconciliationV3Projection(
-        event, {**parent, "content_hash": _digest(parent)}, tuple(children))
+    # The existing V1 reconciliation detail is the sole normalized parent.
+    # Its content hash is assigned by the common typed-family writer.
+    return ReconciliationV3Projection(event, parent, tuple(children))
+
+
+def _stored_time(value: Any, *, stored_utc: bool) -> datetime:
+    if isinstance(value, datetime):
+        at = value
+    elif isinstance(value, str):
+        source = value.replace("Z", "+00:00")
+        nanos = re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\.\d{6}(\d{3})",
+            source)
+        if stored_utc and nanos is not None and nanos.group(1) != "000":
+            raise ValueError("Reconciliation timestamp exceeds source precision")
+        at = datetime.fromisoformat(source)
+    else:
+        raise ValueError("Reconciliation timestamp is not scalar")
+    if at.tzinfo is None and stored_utc:
+        at = at.replace(tzinfo=timezone.utc)
+    if at.tzinfo is None:
+        raise ValueError("Reconciliation timestamp lacks UTC authority")
+    return at.astimezone(timezone.utc)
+
+
+def seal_reconciliation_difference_family_v3(
+    differences: Sequence[Mapping[str, Any]],
+    parent_events: Sequence[Mapping[str, Any]],
+    parent_reconciliations: Sequence[Mapping[str, Any]],
+    *, run_id: str, batch_id: str, stored_utc: bool = False,
+) -> dict[str, Any]:
+    """Seal every ordered child against the already-sealed V1 parent family."""
+    batch = str(UUID(batch_id))
+    events = {str(UUID(str(row["record_id"]))): row for row in parent_events}
+    parents = {str(UUID(str(row["record_id"]))): row
+               for row in parent_reconciliations}
+    if len(events) != len(parent_events) or len(parents) != len(parent_reconciliations):
+        raise ValueError("Reconciliation parent identity repeats")
+    expected_parent_ids = {record_id for record_id, row in events.items()
+                           if (row["category"], row["entity_type"]) ==
+                           ("portfolio_management", "portfolio_reconciliation")}
+    if set(parents) != expected_parent_ids:
+        raise ValueError("Reconciliation parent detail is incomplete")
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    identities: list[tuple[str, str]] = []
+    child_fields = {name for name, _ in CHILD.columns}
+    for raw in differences:
+        if set(raw) != child_fields:
+            raise ValueError("Reconciliation difference row differs from schema")
+        row = dict(raw)
+        identity = str(UUID(str(row["record_id"])))
+        parent_id = str(UUID(str(row["parent_record_id"])))
+        ordinal = row["ordinal"]
+        if (type(ordinal) is not int or not 0 <= ordinal < 2**16
+                or identity != str(uuid5(NAMESPACE_URL,
+                    f"{parent_id}:difference:{ordinal}"))
+                or row["run_id"] != run_id
+                or str(UUID(str(row["batch_id"]))) != batch
+                or parent_id not in parents):
+            raise ValueError("Reconciliation child identity differs")
+        quantities = {}
+        for field in ("broker_quantity", "attributed_quantity",
+                      "unattributed_quantity"):
+            value = row[field]
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError("Reconciliation child quantity is not finite")
+            quantities[field] = float(value)
+        if not math.isclose(quantities["broker_quantity"] -
+                            quantities["attributed_quantity"],
+                            quantities["unattributed_quantity"],
+                            rel_tol=0, abs_tol=1e-9):
+            raise ValueError("Reconciliation child arithmetic differs")
+        normalized = {**row, **quantities, "record_id": identity,
+                      "parent_record_id": parent_id, "batch_id": batch}
+        content = {key: value for key, value in normalized.items()
+                   if key != "content_hash"}
+        if row["content_hash"] != _digest(content):
+            raise ValueError("Reconciliation child content hash differs")
+        grouped.setdefault(parent_id, []).append(normalized)
+        identities.append((identity, row["content_hash"]))
+    if len(identities) != len(set(identities)):
+        raise ValueError("Reconciliation child repeats")
+    for parent_id, parent in parents.items():
+        event = events[parent_id]
+        if (parent["run_id"] != run_id or event["run_id"] != run_id
+                or str(UUID(str(parent["batch_id"]))) != batch
+                or str(UUID(str(event["batch_id"]))) != batch
+                or parent["account_id"] != event["account_id"]
+                or parent["account_key"] != event["entity_id"]
+                or parent["event_month"] != event["event_month"]):
+            raise ValueError("Reconciliation parent differs from event")
+        source_at = _stored_time(parent["source_event_time"],
+                                 stored_utc=stored_utc)
+        event_at = _stored_time(event["event_time"], stored_utc=stored_utc)
+        if source_at > event_at:
+            raise ValueError("Reconciliation snapshot is from the future")
+        children = sorted(grouped.get(parent_id, []), key=lambda row: row["ordinal"])
+        if (type(parent["difference_count"]) is not int
+                or parent["difference_count"] != len(children)
+                or [row["ordinal"] for row in children] != list(range(len(children)))
+                or any(row["event_month"] != parent["event_month"]
+                       for row in children)):
+            raise ValueError("Reconciliation child set is incomplete")
+        source_rows = [{"account_key": parent["account_key"],
+                        "observed_at": source_at,
+                        **{key: child[key] for key in (
+                            "ticker", "broker_quantity", "attributed_quantity",
+                            "unattributed_quantity")}}
+                       for child in children]
+        if (source_rows != sorted(source_rows, key=lambda row: row["ticker"])
+                or parent["difference_hash"] != _digest(source_rows)):
+            raise ValueError("Reconciliation difference hash differs from parent")
+    return {
+        "portfolio_reconciliation_difference_count": len(differences),
+        "portfolio_reconciliation_difference_hash": _digest(sorted(identities)),
+    }

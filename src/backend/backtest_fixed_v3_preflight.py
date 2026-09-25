@@ -5,7 +5,8 @@ import re
 from typing import Any
 
 from src.backend.backtest_squeeze_episode_schema import (
-    RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
+    RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
+    SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
 from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
 from src.trading_runtime.arte_market_day_certification import TABLES as MARKET_DAY_CERTIFICATE_TABLES
@@ -17,12 +18,14 @@ from src.trading_runtime.arte_journal_schema import (
 
 def running_v3_contracts() -> tuple[Any, ...]:
     return versioned_journal_v2_contracts() + (
-        SQUEEZE_EPISODE, RESERVATION_REASON, SQUEEZE_COMMIT_V3)
+        SQUEEZE_EPISODE, RESERVATION_REASON,
+        RECONCILIATION_DIFFERENCE, SQUEEZE_COMMIT_V3)
 
 
 def terminal_v3_contracts() -> tuple[Any, ...]:
     return fixed_backtest_v2_contracts() + (
-        SQUEEZE_EPISODE, RESERVATION_REASON, SQUEEZE_COMMIT_V3,
+        SQUEEZE_EPISODE, RESERVATION_REASON,
+        RECONCILIATION_DIFFERENCE, SQUEEZE_COMMIT_V3,
         TERMINAL_COMMIT_V3)
 
 
@@ -54,6 +57,7 @@ def running_v3_preflight(client: Any) -> None:
     writable = frozenset(_profile_table(table, "backtest_v3")
                          for table, _, _, _ in _FAMILIES) | frozenset({
                              SQUEEZE_EPISODE.name, RESERVATION_REASON.name,
+                             RECONCILIATION_DIFFERENCE.name,
                              SQUEEZE_COMMIT_V3.name})
     available = {table.name for table in contracts}
     if not writable <= available:

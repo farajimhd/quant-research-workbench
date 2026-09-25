@@ -26,13 +26,76 @@ from src.trading_runtime.arte_journal_schema import (
     STORAGE_POLICY, TableContract, fixed_backtest_v2_contracts, storage_preflight,
 )
 from src.backend.backtest_squeeze_episode_schema import (
-    RESERVATION_REASON, SQUEEZE_COMMIT_V3, staged_reservation_reason_ddl,
+    RECONCILIATION_DIFFERENCE, RESERVATION_REASON, SQUEEZE_COMMIT_V3,
+    staged_reconciliation_difference_ddl, staged_reservation_reason_ddl,
 )
 from scripts.clickhouse.provision_fixed_backtest_v3_principals import WORKSTATION_IPV4
 
 
 _REASON_COLUMNS = frozenset({"portfolio_reservation_reason_count",
                              "portfolio_reservation_reason_hash"})
+_RECONCILIATION_COLUMNS = frozenset({
+    "portfolio_reconciliation_difference_count",
+    "portfolio_reconciliation_difference_hash",
+})
+
+
+def upgrade_v3_reconciliation_difference(client: object, *, apply: bool) -> str:
+    """Operator-only, restart-safe child/fence upgrade; never insert rows."""
+    columns = [json.loads(line) for line in client.execute(
+        "SELECT name,type FROM system.columns WHERE database='arte' "
+        "AND table='trading_commit_v3' ORDER BY position FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    actual = tuple((row["name"], row["type"]) for row in columns)
+    full = SQUEEZE_COMMIT_V3.columns
+    old = tuple(column for column in full
+                if column[0] not in _RECONCILIATION_COLUMNS)
+    partial = tuple(column for column in full
+                    if column[0] != "portfolio_reconciliation_difference_hash")
+    if actual not in {old, partial, full}:
+        raise RuntimeError("V3 commit has an unknown schema; no ALTER attempted")
+    shape = TableContract(SQUEEZE_COMMIT_V3.name, actual,
+                          SQUEEZE_COMMIT_V3.partition, SQUEEZE_COMMIT_V3.order)
+    storage_preflight(client, tables=(shape,))
+    count = client.execute(
+        "SELECT count() FROM system.tables WHERE database='arte' "
+        "AND name='trading_portfolio_reconciliation_difference_v3'"
+    ).strip()
+    if count not in {"0", "1"}:
+        raise RuntimeError("Reconciliation difference table catalog is ambiguous")
+    child_present = count == "1"
+    if child_present:
+        storage_preflight(client, tables=(RECONCILIATION_DIFFERENCE,))
+    if actual == full and child_present:
+        print("V3 reconciliation differences: schema and SSD placement verified; no change")
+        return "verified"
+    if client.execute("SELECT count() FROM arte.trading_commit_v3").strip() != "0":
+        raise RuntimeError("V3 commit has rows; versioned migration required")
+    if child_present and client.execute(
+            "SELECT count() FROM arte.trading_portfolio_reconciliation_difference_v3"
+    ).strip() != "0":
+        raise RuntimeError("Reconciliation difference child has rows; no ALTER attempted")
+    pending = ["child table"] if not child_present else []
+    if actual == old:
+        pending.append("V3 difference count and hash")
+    elif actual == partial:
+        pending.append("V3 difference hash")
+    print("V3 reconciliation differences: empty fence verified; pending "
+          + ", ".join(pending))
+    if not apply:
+        print("Plan only; no ClickHouse state changed")
+        return "planned"
+    child_ddl, count_ddl, hash_ddl = staged_reconciliation_difference_ddl()
+    if not child_present:
+        client.execute(child_ddl)
+        storage_preflight(client, tables=(RECONCILIATION_DIFFERENCE,))
+    if actual == old:
+        client.execute(count_ddl)
+    if actual in {old, partial}:
+        client.execute(hash_ddl)
+    storage_preflight(client, tables=(RECONCILIATION_DIFFERENCE, SQUEEZE_COMMIT_V3))
+    print("V3 reconciliation differences: table and commit fence verified; 0 rows inserted")
+    return "upgraded"
 
 
 def upgrade_v3_reservation_reason(client: object, *, apply: bool) -> str:
@@ -43,10 +106,21 @@ def upgrade_v3_reservation_reason(client: object, *, apply: bool) -> str:
     ).splitlines() if line.strip()]
     actual = tuple((row["name"], row["type"]) for row in columns)
     full = SQUEEZE_COMMIT_V3.columns
-    old = tuple(column for column in full if column[0] not in _REASON_COLUMNS)
-    partial = tuple(column for column in full
+    actual_core = tuple(column for column in actual
+                        if column[0] not in _RECONCILIATION_COLUMNS)
+    core_full = tuple(column for column in full
+                      if column[0] not in _RECONCILIATION_COLUMNS)
+    old = tuple(column for column in core_full if column[0] not in _REASON_COLUMNS)
+    partial = tuple(column for column in core_full
                     if column[0] != "portfolio_reservation_reason_hash")
-    if actual not in {old, partial, full}:
+    difference_names = {name for name, _ in actual} & _RECONCILIATION_COLUMNS
+    allowed_difference_names = (frozenset(),
+        frozenset({"portfolio_reconciliation_difference_count"}),
+        _RECONCILIATION_COLUMNS)
+    if (actual_core not in {old, partial, core_full}
+            or frozenset(difference_names) not in allowed_difference_names
+            or actual != tuple(column for column in full
+                               if column[0] in {name for name, _ in actual})):
         raise RuntimeError("V3 commit has an unknown schema; no ALTER attempted")
     shape = TableContract(SQUEEZE_COMMIT_V3.name, actual,
                           SQUEEZE_COMMIT_V3.partition, SQUEEZE_COMMIT_V3.order)
@@ -60,7 +134,7 @@ def upgrade_v3_reservation_reason(client: object, *, apply: bool) -> str:
     child_present = child_count == "1"
     if child_present:
         storage_preflight(client, tables=(RESERVATION_REASON,))
-    if actual == full and child_present:
+    if actual_core == core_full and child_present:
         print("V3 reservation reasons: schema and SSD placement verified; no change")
         return "verified"
     fence_rows = client.execute("SELECT count() FROM arte.trading_commit_v3").strip()
@@ -71,9 +145,9 @@ def upgrade_v3_reservation_reason(client: object, *, apply: bool) -> str:
     ).strip() != "0":
         raise RuntimeError("Reservation reason child has rows; no ALTER attempted")
     pending = ["child table"] if not child_present else []
-    if actual == old:
+    if actual_core == old:
         pending.append("V3 reason count and hash")
-    elif actual == partial:
+    elif actual_core == partial:
         pending.append("V3 reason hash")
     print("V3 reservation reasons: empty fence verified; pending " + ", ".join(pending))
     if not apply:
@@ -83,11 +157,15 @@ def upgrade_v3_reservation_reason(client: object, *, apply: bool) -> str:
     if not child_present:
         client.execute(child_ddl)
         storage_preflight(client, tables=(RESERVATION_REASON,))
-    if actual == old:
+    if actual_core == old:
         client.execute(count_ddl)
-    if actual in {old, partial}:
+    if actual_core in {old, partial}:
         client.execute(hash_ddl)
-    storage_preflight(client, tables=(RESERVATION_REASON, SQUEEZE_COMMIT_V3))
+    final_names = {name for name, _ in actual} | _REASON_COLUMNS
+    final_shape = TableContract(SQUEEZE_COMMIT_V3.name,
+                                tuple(column for column in full if column[0] in final_names),
+                                SQUEEZE_COMMIT_V3.partition, SQUEEZE_COMMIT_V3.order)
+    storage_preflight(client, tables=(RESERVATION_REASON, final_shape))
     print("V3 reservation reasons: table and commit fence verified; 0 rows inserted")
     return "upgraded"
 
@@ -141,6 +219,8 @@ def main() -> int:
                         default="fixed-v2", help="exact journal table layout")
     parser.add_argument("--upgrade-v3-reservation-reason", action="store_true",
                         help="verify or install the empty-fence V3 reason upgrade")
+    parser.add_argument("--upgrade-v3-reconciliation-difference", action="store_true",
+                        help="verify or install the empty-fence V3 reconciliation child upgrade")
     args = parser.parse_args()
     parsed = urlsplit(args.url)
     if (platform.node().upper() != "DESKTOP-SAAI85T"
@@ -156,7 +236,11 @@ def main() -> int:
             raise RuntimeError("Pinned workstation IPv4 is not in hostname resolution")
         client = _admin_client(f"http://{WORKSTATION_IPV4}:{parsed.port}")
         try:
-            if args.upgrade_v3_reservation_reason:
+            if args.upgrade_v3_reservation_reason and args.upgrade_v3_reconciliation_difference:
+                parser.error("Select only one V3 upgrade at a time")
+            if args.upgrade_v3_reconciliation_difference:
+                upgrade_v3_reconciliation_difference(client, apply=args.apply)
+            elif args.upgrade_v3_reservation_reason:
                 upgrade_v3_reservation_reason(client, apply=args.apply)
             else:
                 install_missing(client, apply=args.apply, profile=args.profile)

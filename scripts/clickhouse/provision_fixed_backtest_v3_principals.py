@@ -70,7 +70,8 @@ class PrincipalPlan:
 def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
     """Derive exact table names from the same contracts as V3 preflight."""
     from src.backend.backtest_squeeze_episode_schema import (
-        RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
+        RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
+        SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
     )
     from src.backend.backtest_terminal_v3_dispatch import _TABLES
     from src.trading_runtime.arte_journal_writer import _FAMILIES, _profile_table
@@ -80,6 +81,7 @@ def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
     running_insert = frozenset(_profile_table(table, "backtest_v3")
                                for table, _, _, _ in _FAMILIES) | frozenset({
                                    SQUEEZE_EPISODE.name, RESERVATION_REASON.name,
+                                   RECONCILIATION_DIFFERENCE.name,
                                    SQUEEZE_COMMIT_V3.name})
     terminal_insert = frozenset(_TABLES)
     if not running_insert <= running or not terminal_insert <= terminal:
