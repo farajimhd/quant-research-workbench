@@ -385,4 +385,9 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         assert carried.ts == expected_source_time
         assert runtime.execution_market_data.snapshot("AAPL").observed_at == expected_source_time
         assert runtime.order_manager.on_market_snapshot.call_count == 2
+        next_boundary = later + timedelta(milliseconds=100)
+        same_source = bar(next_boundary, quote_age_us=850_000)
+        await runtime.process_liquidity_bar(same_source, at=next_boundary)
+        assert runtime.order_manager.on_market_snapshot.call_count == 2
+        assert runtime.execution_market_data.snapshot("AAPL").observed_at == expected_source_time
         journal.close()

@@ -389,9 +389,13 @@ class TradingRuntime:
                     observed_at=utc_from_epoch_microseconds(quote_us),
                     source="arte.liquidity_100ms_v1",
                 )
-                self.execution_market_data.update(snapshot)
-                if self.order_manager is not None:
-                    self.order_manager.on_market_snapshot(snapshot)
+                # A carried NBBO is not a new quote observation. Replaying it
+                # at every trade-bearing bucket would spuriously wake OMS
+                # protection tasks and inflate the quote's effective age.
+                if self.execution_market_data.snapshot(ticker) != snapshot:
+                    self.execution_market_data.update(snapshot)
+                    if self.order_manager is not None:
+                        self.order_manager.on_market_snapshot(snapshot)
         if (self.order_manager is not None
                 and bool(getattr(self.order_manager, "has_managed_groups", True))):
             await self.order_manager.enforce_entry_body_triggers(at)
