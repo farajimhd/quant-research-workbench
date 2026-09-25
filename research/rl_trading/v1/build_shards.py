@@ -244,6 +244,10 @@ def run(args,console):
                 workers=args.workers,query_threads=args.query_threads,source=source,
                 day=day,client=client):
             ticker = listing['ticker']
+            coverage = reference['coverage']
+            if any(coverage[key] != value for key,value in
+                    population['certificates'][ticker].items()):
+                raise ValueError('Pinned Phase 3 V7 certificate changed: '+ticker)
             if (root/'STOP').exists():
                 console.print(f'Stopped after {len(progress["done"])} listings; rerun to resume')
                 return 2
