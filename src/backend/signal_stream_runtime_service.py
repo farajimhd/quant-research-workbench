@@ -4,9 +4,11 @@ import hashlib
 import json
 import threading
 import time as monotonic_time
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
-from typing import Any, Protocol
+from types import MappingProxyType
+from typing import Any, Mapping, Protocol
 from zoneinfo import ZoneInfo
 
 from src.backend.discovery_projection import (
@@ -54,6 +56,53 @@ class OccurrenceDecision:
     last_emitted_at: str | None
 
 
+def _freeze_transition(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_transition(item) for key, item in value.items()})
+    if isinstance(value, (tuple, list)):
+        return tuple(_freeze_transition(item) for item in value)
+    if value is None or type(value) in (str, int, float, bool):
+        return value
+    raise ValueError("staged Signal Stream transition has unmodeled value")
+
+
+@dataclass(frozen=True)
+class StagedSignalTransition:
+    base_generation: int
+    session_key: str
+    before_states: Mapping[str, Any]
+    after_states: Mapping[str, Any]
+    before_admissions: Mapping[str, Any]
+    after_admissions: Mapping[str, Any]
+    occurrences: tuple[Mapping[str, Any], ...]
+    diagnostics: Mapping[str, Any]
+
+
+class _StagingPort:
+    """Memory-only evaluation port; never claims durable append authority."""
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+        self.ids: set[str] = set()
+
+    def load_checkpoint(self, run_id: str) -> None:
+        raise RuntimeError("staged evaluation must start from an explicitly hydrated state")
+
+    def append_once(self, **kwargs: Any) -> tuple[None, bool]:
+        event_id = str(kwargs["entity_id"])
+        if event_id in self.ids:
+            raise ValueError("duplicate event identity inside staged Signal Stream batch")
+        self.ids.add(event_id)
+        self.events.append(deepcopy(kwargs["payload"]))
+        return None, True
+
+    def save_checkpoint(self, *args: Any) -> None:
+        return None
+
+    def signal_stream_records(self, **kwargs: Any) -> Any:
+        raise RuntimeError("staged evaluation cannot read an uncommitted session")
+
+
 def decide_rule_occurrence(
     stream: dict[str, Any], row: dict[str, Any],
     columns: dict[str, dict[str, Any]], *, as_of: datetime,
@@ -93,6 +142,45 @@ class SignalStreamRuntime:
         self._hydrated = False
         self._snapshot_cache: dict[tuple[str, str, int, str], tuple[float, dict[str, Any]]] = {}
         self._live_occurrences: tuple[str, list[dict[str, Any]]] | None = None
+        self._generation = 0
+
+    def stage_resolve(
+        self, configuration: dict[str, Any], candidates: list[dict[str, Any]],
+        *, as_of: datetime, watchlist_runtime: dict[str, Any] | None = None,
+        data_fields_projected: bool = False,
+    ) -> StagedSignalTransition:
+        """Evaluate from a cold-hydrated state without mutating or writing it.
+
+        This is not an ACK or dispatch API. The caller must validate every
+        occurrence against a pinned typed catalog before publication.
+        """
+        with self._lock:
+            if not self._hydrated:
+                raise RuntimeError("staged Signal Stream requires cold-hydrated state")
+            generation = self._generation
+            before_states = deepcopy(self._states)
+            before_admissions = deepcopy(self._admissions)
+            clone = SignalStreamRuntime()
+            clone._states = deepcopy(before_states)
+            clone._admissions = deepcopy(before_admissions)
+            clone._diagnostics = deepcopy(self._diagnostics)
+            clone._session_key = self._session_key
+            clone._hydrated = True
+        port = _StagingPort()
+        clone.resolve(
+            configuration, candidates, as_of=as_of, journal=None,
+            persistence=port, watchlist_runtime=watchlist_runtime,
+            include_occurrences=False, data_fields_projected=data_fields_projected,
+        )
+        return StagedSignalTransition(
+            base_generation=generation, session_key=clone._session_key,
+            before_states=_freeze_transition(before_states),
+            after_states=_freeze_transition(clone._states),
+            before_admissions=_freeze_transition(before_admissions),
+            after_admissions=_freeze_transition(clone._admissions),
+            occurrences=_freeze_transition(port.events),
+            diagnostics=_freeze_transition(clone._diagnostics),
+        )
 
     def seed_computation_targets(
         self,
@@ -220,12 +308,14 @@ class SignalStreamRuntime:
         candidates: list[dict[str, Any]],
         *,
         as_of: datetime,
-        journal: TradingJournal,
+        journal: TradingJournal | None,
         watchlist_runtime: dict[str, Any] | None = None,
         include_occurrences: bool = True,
         data_fields_projected: bool = False,
         persistence: SignalStreamPersistence | None = None,
     ) -> dict[str, Any]:
+        if persistence is None and journal is None:
+            raise ValueError("Signal Stream persistence is required")
         port: SignalStreamPersistence = persistence if persistence is not None else journal
         if as_of.tzinfo is None:
             raise ValueError("Signal Stream as_of must be timezone-aware")
@@ -428,6 +518,7 @@ class SignalStreamRuntime:
                         [dict(row) for row in occurrences],
                     )
                     self._snapshot_cache.clear()
+            self._generation += 1
             return {
                 "schema_version": SIGNAL_STREAM_SCHEMA_VERSION,
                 "as_of": as_of.isoformat(),

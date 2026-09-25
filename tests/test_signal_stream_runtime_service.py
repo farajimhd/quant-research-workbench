@@ -117,6 +117,31 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         finally:
             second.close()
 
+    def test_staged_resolve_is_immutable_and_matches_legacy_state(self) -> None:
+        runtime = SignalStreamRuntime()
+        runtime._hydrated = True  # Explicit cold-seed prerequisite; no SQLite hydration.
+        runtime._session_key = "2026-08-17"
+        at = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+        row = {"ticker": "AAA", "change_pct": 4.5, "market_cap": 500_000_000}
+        staged = runtime.stage_resolve(self.configuration, [row], as_of=at)
+        self.assertEqual(runtime._states, {})
+        self.assertEqual(runtime._admissions, {})
+        self.assertEqual(len(staged.occurrences), 1)
+        with self.assertRaises(TypeError):
+            staged.after_states["positive-move-signals"]["AAA"]["matching"] = False
+        legacy = SignalStreamRuntime().resolve(
+            self.configuration, [row], as_of=at, journal=self.journal)
+        checkpoint = self.journal.load_checkpoint("market-discovery:signal-stream-state")
+        self.assertEqual(dict(staged.after_states["positive-move-signals"]["AAA"]),
+                         checkpoint["state"]["states"]["positive-move-signals"]["AAA"])
+        self.assertEqual(staged.occurrences[0]["event_id"], legacy["new_occurrences"][0]["event_id"])
+        self.assertEqual(runtime._generation, 0)
+
+    def test_staged_resolve_requires_explicit_hydration(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "cold-hydrated"):
+            SignalStreamRuntime().stage_resolve(
+                self.configuration, [], as_of=datetime(2026, 8, 17, 15, 0, tzinfo=UTC))
+
     def test_projection_materializes_registered_alias_columns(self) -> None:
         row = project_discovery_columns(
             [
