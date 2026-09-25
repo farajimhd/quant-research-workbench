@@ -14,7 +14,6 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(REPO))
 
 import argparse
-from dataclasses import asdict
 from datetime import date
 from hashlib import sha256
 import json
@@ -26,21 +25,20 @@ from rich.console import Console
 from research.mlops.env import load_env_files
 from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.rl_trading.v1 import arte_source
-from research.rl_trading.v1.arte_sql import ArteReader, POLICY, query, literal
+from research.rl_trading.v1.arte_sql import ArteReader
 from research.rl_trading.v1.common import bounds, digest, file_hash
 from research.rl_trading.v1.features import FEATURE_NAMES, SECONDS, encode, read_arte_seconds
+from research.rl_trading.v1.reference_features import read_reference, storage_check, VERSION as REFERENCE_VERSION
 from research.rl_trading.v1.phase3_search import VERSION as PHASE3_VERSION
 from research.rl_trading.v1.shard_labels import pack
-from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit
-from src.backend.causal_v7_reader import CausalV7Cursor, certified_plan
-from src.market_engine.causal_v7_contract import COVERAGE_TABLE, LEVEL_TABLE, STATE_TABLE
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
 
-VERSION = 'rl-trading-causal-shards-v2'
-PRODUCTS = tuple(x.split('.')[1] for x in (STATE_TABLE,LEVEL_TABLE,COVERAGE_TABLE))
+VERSION = 'rl-trading-structural-shards-v3'
 SOURCES = ('build_shards.py','features.py','shard_labels.py','universe.py',
-    'phase3_search.py','arte_source.py','arte_sql.py')
+    'phase3_search.py','arte_source.py','arte_sql.py','reference_features.py')
+ENGINE_SOURCES = ('src/backend/fixed_v7_stream.py','src/backend/structural_v7_seed.py',
+    'src/market_engine/streaming_level_book.py','src/market_engine/v7_qmd.py')
 
 
 def _hash_bytes(array) -> str:
@@ -84,26 +82,6 @@ def _source(phase3: Path):
     return teacher,complete,phase2,p2,phase1,p1
 
 
-def _v7_plan(client, day: date, p1: dict):
-    names = ','.join(literal(name) for name in PRODUCTS)
-    tables = query(client,f"SELECT name,storage_policy FROM system.tables WHERE database='arte' AND name IN ({names})")
-    if {row['name'] for row in tables} != set(PRODUCTS) or any(row['storage_policy'] != POLICY for row in tables):
-        raise ValueError('Pinned causal V7 arte tables are absent or misplaced')
-    parts = query(client,f"SELECT table,disk_name FROM system.parts WHERE database='arte' AND active AND table IN ({names}) GROUP BY table,disk_name")
-    if any(row['disk_name'] != POLICY for row in parts):
-        raise ValueError('Causal V7 active parts are not on live_market_ssd')
-    units = tuple(MarketDayUnit(p1['source_build_id'],str(day),ticker,'bars',
-        p1['source_units'][ticker]['bars']['attempt_id'],
-        p1['source_units'][ticker]['bars']['source_hash'],
-        p1['source_units'][ticker]['bars']['output_rows'],
-        p1['source_units'][ticker]['bars']['output_hash'])
-        for ticker in sorted(p1['source_units']))
-    market = CertifiedMarketDayPlan(ExecutionInterval.parse('1s'),
-        p1['source_build_id'],p1['source_definition_hash'],(str(day),),
-        tuple(item.ticker for item in units),units,(1000,),digest([asdict(x) for x in units]))
-    return certified_plan(market,None,client)
-
-
 def _open_bank(path: Path, shape, dtype):
     if path.exists():
         value = np.load(path,mmap_mode='r+')
@@ -141,10 +119,7 @@ def run(args,console):
     client = ArteReader(args.query_threads)
     try:
         arte_source.storage_check(client)
-        v7 = _v7_plan(client,day,p1)
-        v7_units = {item.ticker:item for item in v7.units}
-        if set(v7_units) != set(tickers):
-            raise ValueError('Causal V7 coverage differs from teacher population')
+        storage_check(client)
         runtime = runtime_root().resolve()
         if not runtime.is_dir():
             raise ValueError('Required runtime root is unavailable')
@@ -152,7 +127,7 @@ def run(args,console):
             phase3_plan_hash=teacher['plan_hash'],phase3_complete_hash=file_hash(phase3/'complete.json'),
             phase2_root=str(phase2),phase2_plan_hash=p2['plan_hash'],
             phase1_plan_hash=p1['plan_hash'],market_build_id=p1['source_build_id'],
-            v7_token=v7.token,v7_catalog_hash=v7.catalog_hash,
+            reference_contract=REFERENCE_VERSION,
             tickers=tickers,top_n=int(teacher['config']['top_n']),
             history_seconds=args.history_seconds,feature_names=FEATURE_NAMES,
             feature_dtype='float32',volume_dtype='float64',
@@ -161,7 +136,8 @@ def run(args,console):
             max_lots=teacher['config']['max_lots'],max_orders=teacher['config']['max_orders_per_second'],
             allocation_step=teacher['config']['allocation_step'],initial_cash=teacher['config']['initial_cash'],
             liquidity_filter=p2['liquidity_filter'],
-            code_hashes={name:file_hash(REPO/'research/rl_trading/v1'/name) for name in SOURCES})
+            code_hashes={**{name:file_hash(REPO/'research/rl_trading/v1'/name) for name in SOURCES},
+                         **{name:file_hash(REPO/name) for name in ENGINE_SOURCES}})
         plan['plan_hash'] = digest(plan)
         root = runtime/'rl-trading-shards'/str(day)/plan['plan_hash'][:20]
         root.mkdir(parents=True,exist_ok=True)
@@ -197,9 +173,9 @@ def run(args,console):
                     raise ValueError('Restart ticker slice changed: '+ticker)
                 continue
             arte_source.verify_listing(client,source,day,ticker)
-            cursor = CausalV7Cursor(v7_units[ticker],client)
+            seed,splits,fundamental,reference = read_reference(client,day,listing)
             bars,indicators = read_arte_seconds(client,source,day,ticker)
-            features,volume60 = encode(day,bars,indicators,cursor)
+            features,volume60 = encode(day,bars,indicators,seed,splits,fundamental)
             folder = phase2/'listings'/digest(listing)[:20]
             ready = read(folder/'ready.json')
             _verified(folder/'coefficients.parquet',ready['files']['coefficients.parquet'])
@@ -208,7 +184,9 @@ def run(args,console):
                 'capital_per_share'])
             long = columns.filter(pl.col('side') == 'long').sort('time_us')
             expected = long['volume_60s'].to_numpy()
-            if len(expected) != SECONDS or not np.allclose(volume60,expected,rtol=1e-9,atol=1e-4):
+            teacher_seconds = (teacher['end_us']-left)//1_000_000+1
+            if (len(expected) != SECONDS or teacher_seconds > SECONDS or
+                    not np.allclose(volume60[:teacher_seconds],expected[:teacher_seconds],rtol=1e-9,atol=1e-4)):
                 raise ValueError('Arte completed-minute volume differs from Phase 2: '+ticker)
             times = left+np.arange(SECONDS,dtype=np.int64)*1_000_000
             if not np.array_equal(long['time_us'].to_numpy(),times):
@@ -226,7 +204,7 @@ def run(args,console):
             bank.flush();volumes.flush();execution.flush();closeable.flush()
             progress['done'][ticker] = dict(features=_hash_bytes(bank[index]),
                 volume=_hash_bytes(volumes[index]),execution=_hash_bytes(execution[index]),
-                closeable=_hash_bytes(closeable[index]),v7_attempt=v7_units[ticker].attempt_id)
+                closeable=_hash_bytes(closeable[index]),reference=reference)
             write(progress_path,progress,immutable=False)
             if (index+1)%10 == 0 or index+1 == len(tickers):
                 console.print(f'Features {index+1:,}/{len(tickers):,} listings | queued {len(tickers)-index-1:,} | failed 0')
@@ -247,7 +225,7 @@ def run(args,console):
         write(complete_path,dict(plan_hash=plan['plan_hash'],rows=len(trajectory),
             listings=len(tickers),files=hashes,teacher_optimality=teacher['optimality'],
             teacher_profit=float(teacher_complete['terminal_profit']),
-            v7_token=v7.token))
+            reference_contract=REFERENCE_VERSION))
         console.print(f'Complete | {len(trajectory):,} seconds | {len(tickers):,} tickers | {root}',soft_wrap=True)
         return 0
     finally:

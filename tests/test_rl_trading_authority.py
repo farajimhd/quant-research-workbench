@@ -11,6 +11,9 @@ from research.rl_trading.v1.common import digest
     'SELECT count() FROM arte.bars_v1',
     'SELECT macd_line FROM arte.indicators_v1',
     'SELECT ticker FROM q_live.feature_tradable_universe_snapshot_v2',
+    'SELECT * FROM q_live.market_stock_split_v1',
+    'SELECT * FROM q_live.market_security_float_v1',
+    'SELECT * FROM arte.structural_levels_v7',
     "SELECT disk_name FROM system.parts WHERE database='arte'",
 ])
 def test_research_reader_admits_only_certified_reads(statement):
@@ -21,7 +24,6 @@ def test_research_reader_admits_only_certified_reads(statement):
     'INSERT INTO arte.bars_v1 VALUES (1)',
     'CREATE TABLE arte.bad (x Int32)',
     'SELECT * FROM market_sip_compact.events_2026',
-    'SELECT * FROM q_live.market_stock_split_v1',
     'SELECT * FROM arte.bars_v1; DROP TABLE arte.bars_v1',
     'SELECT * FROM arte.bars_v1 INTO OUTFILE \'x\'',
     'SELECT * FROM arte.bars_v1 SETTINGS readonly=0',

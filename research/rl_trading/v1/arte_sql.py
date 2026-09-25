@@ -5,8 +5,8 @@ from pipelines.market_sip.events.trade_reporting_flags import DELAYED
 from research.mlops.clickhouse import (ClickHouseHttpClient, default_clickhouse_url,
     default_clickhouse_user, default_clickhouse_password)
 
-TABLES = frozenset({'bars_v1', 'indicators_v1', 'causal_v7_state_1s_v1',
-                    'causal_v7_levels_v1', 'causal_v7_coverage_v1'})
+TABLES = frozenset({'bars_v1', 'indicators_v1', 'structural_levels_v7',
+                    'structural_level_observations_v7', 'structural_level_coverage_v7'})
 POLICY = 'live_market_ssd'
 
 
@@ -32,7 +32,9 @@ def _approved(statement):
         raise ValueError('Multiple statements and SQL comments are forbidden')
     referenced = set(re.findall(r'\b(?:FROM|JOIN)\s+([a-zA-Z_][\w.]*)', normalized, re.IGNORECASE))
     allowed = {f'arte.{table}' for table in TABLES} | {
-        'q_live.feature_tradable_universe_snapshot_v2', 'system.tables', 'system.parts'}
+        'q_live.feature_tradable_universe_snapshot_v2',
+        'q_live.market_security_float_v1', 'q_live.market_stock_split_v1',
+        'system.tables', 'system.parts'}
     if not referenced or not referenced <= allowed:
         raise ValueError('RL trading SQL may read only arte products, certified population, and storage metadata')
     if referenced & {'system.tables', 'system.parts'} and not re.search(r"\bdatabase\s*=\s*'arte'(?:\s|$)", normalized, re.IGNORECASE):
