@@ -15,8 +15,8 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
 from src.trading_runtime.arte_journal_projection import _exact_decimal
 from src.trading_runtime.arte_journal_writer import (
-    CommittedPrefix, TypedJournalBatch, _CONTRACTS, _canonical_typed_content,
-    _committed_batch_filter, _literal, _rows, _sealed_families, typed_row,
+    VerifiedPrefix, TypedJournalBatch, _CONTRACTS, _canonical_typed_content,
+    _committed_batch_filter, _literal, _rows, _sealed_families, _valid_prefix, typed_row,
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.journal_contract import canonical_json
@@ -217,12 +217,12 @@ def _verified_rows(name: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def load_committed_oms_group_state_page(
-    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 200, max_children: int = 4096,
     require_intent_revision: bool = True,
 ) -> tuple[RecoveredOmsGroupState, ...]:
     """Cold-read a bounded, fence-certified OMS group page without disk state."""
-    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+    if not _valid_prefix(prefix):
         raise ValueError("OMS recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 500 or max_children < 1:
         raise ValueError("OMS recovery page bounds are invalid")

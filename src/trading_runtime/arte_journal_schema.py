@@ -1295,21 +1295,26 @@ def versioned_journal_v2_ddl() -> tuple[str, ...]:
     return tuple(table.ddl() for table in VERSIONED_JOURNAL_V2_TABLES)
 
 
+def versioned_journal_v2_contracts() -> tuple[TableContract, ...]:
+    """Exact occupied V1, active shared, and replacement V2 table shapes."""
+    replaced = {"trading_strategy_signal_v1", "trading_commit_v1"}
+    active = tuple(table for table in TABLES if table.name not in replaced)
+    return active + (LEGACY_STRATEGY_SIGNAL_V1, LEGACY_COMMIT_V1) + VERSIONED_JOURNAL_V2_TABLES
+
+
 def versioned_journal_v2_preflight(client: Any) -> None:
-    """Opt-in, read-only audit of the occupied V1 and replacement V2 layout.
+    """Opt-in audit of the occupied V1 and replacement V2 writer layout.
 
     Legacy V1 facts remain readable but must not be writable under this
     principal; all other journal families retain their active contracts.
     """
     replaced = {"trading_strategy_signal_v1", "trading_commit_v1"}
-    active = tuple(table for table in TABLES if table.name not in replaced)
-    contracts = active + (LEGACY_STRATEGY_SIGNAL_V1, LEGACY_COMMIT_V1)
-    contracts += VERSIONED_JOURNAL_V2_TABLES
+    contracts = versioned_journal_v2_contracts()
     storage_preflight(client, tables=contracts)
     journal_permission_preflight(
         client,
-        journal_tables=frozenset(table.name for table in active
-                                 + VERSIONED_JOURNAL_V2_TABLES),
+        journal_tables=frozenset(table.name for table in contracts
+                                 if table.name not in replaced),
         read_only_tables=frozenset(replaced),
     )
 

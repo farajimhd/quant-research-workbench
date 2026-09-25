@@ -509,9 +509,11 @@ class MemoryClient:
                 if marker in sql:
                     values = set(re.findall(r"'([^']+)'", sql.split(marker, 1)[1].split(")", 1)[0]))
                     matching = [row for row in matching if row[field] in values]
-            if "AND batch_id IN (SELECT batch_id FROM arte.trading_commit_v1 " in sql:
+            fence = next((name for name in ("trading_commit_v1", "trading_commit_v2")
+                          if f"AND batch_id IN (SELECT batch_id FROM arte.{name} " in sql), None)
+            if fence is not None:
                 bound = int(re.search(r"AND last_sequence<=(\d+)", sql).group(1))
-                committed = {row["batch_id"] for row in self.tables.get("trading_commit_v1", [])
+                committed = {row["batch_id"] for row in self.tables.get(fence, [])
                              if row["run_id"] == run_id and int(row["last_sequence"]) <= bound}
                 matching = [row for row in matching if row["batch_id"] in committed]
             if "AND batch_id=toUUID('" in sql:

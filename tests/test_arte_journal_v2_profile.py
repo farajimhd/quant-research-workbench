@@ -12,7 +12,10 @@ from src.trading_runtime.arte_journal_schema import (
     versioned_journal_v2_preflight,
 )
 from src.trading_runtime.arte_journal_projection import strategy_signal_batch
+from src.trading_runtime.arte_journal_projection import broker_fill_batch
+from src.trading_runtime.ibkr_client import _execution
 from src.trading_runtime.signals import StrategySignal
+from tests.test_arte_journal_projection import source
 from tests.test_arte_journal_writer import MemoryClient
 
 
@@ -120,8 +123,11 @@ def _batch(*, batch_id="00000000-0000-0000-0000-000000000005",
 
 def test_explicit_v2_profile_seals_signal_and_commit_then_cold_reads(monkeypatch):
     calls = []
+    cold_contracts = []
     monkeypatch.setattr(writer, "versioned_journal_v2_preflight",
                         lambda client: calls.append(client))
+    monkeypatch.setattr(writer, "storage_preflight",
+                        lambda client, *, tables: cold_contracts.append(tables))
     monkeypatch.setattr(writer, "_verify_run_identity",
                         lambda client, run_id: {"mode": "backtest"})
     client = V2MemoryClient()
@@ -140,11 +146,22 @@ def test_explicit_v2_profile_seals_signal_and_commit_then_cold_reads(monkeypatch
     assert isinstance(prefix, writer.V2CommittedPrefix)
     assert not isinstance(prefix, writer.CommittedPrefix)
     assert prefix.last_sequence == 1
-    with pytest.raises(ValueError, match="verified committed prefix"):
-        writer.load_committed_execution_page(client, prefix)
-    assert len(calls) == 3
+    orphan = "00000000-0000-0000-0000-000000000099"
+    client.tables["trading_event_v1"].append({
+        "run_id": batch.run_id, "batch_id": orphan,
+        "record_id": "00000000-0000-0000-0000-000000000098",
+        "sequence": 1, "event_month": "2026-08-01", "account_id": "DU1",
+        "event_time": "2026-08-18 08:05:00.000000000",
+        "entity_id": "orphan", "category": "execution", "entity_type": "fill",
+    })
     client.tables["trading_commit_v1"] = [{"run_id": batch.run_id,
-                                           "batch_id": batch.batch_id}]
+                                           "batch_id": orphan, "last_sequence": 1}]
+    assert writer.load_committed_execution_page(client, prefix) == ()
+    assert any("FROM arte.trading_commit_v2 " in sql for sql in client.selects)
+    assert len(calls) == 2
+    assert len(cold_contracts) == 1
+    assert {table.name for table in cold_contracts[0]} == {
+        table.name for table in writer.versioned_journal_v2_contracts()}
     with pytest.raises(RuntimeError, match="cannot mix"):
         writer.load_committed_prefix(client, batch.run_id,
                                      journal_profile="backtest_v2")
@@ -182,6 +199,33 @@ def test_v2_profile_rejects_non_backtest_or_legacy_run_before_write(monkeypatch)
     with pytest.raises(RuntimeError, match="cannot mix"):
         writer.publish_typed_batch(client, batch, journal_profile="backtest_v2")
     assert not client.inserts
+
+
+def test_v2_cold_execution_page_uses_only_the_v2_commit_fence(monkeypatch):
+    monkeypatch.setattr(writer, "versioned_journal_v2_preflight", lambda client: None)
+    monkeypatch.setattr(writer, "storage_preflight", lambda client, *, tables: None)
+    monkeypatch.setattr(writer, "_verify_run_identity",
+                        lambda client, run_id: {"mode": "backtest"})
+    client = V2MemoryClient()
+    signal = _batch()
+    fill = broker_fill_batch(
+        _execution(source()), run_id=signal.run_id, run_month=date(2026, 8, 1),
+        attempt_id=signal.attempt_id,
+        batch_id="00000000-0000-0000-0000-000000000007",
+        prior_batch_id=signal.batch_id, first_sequence=2,
+        source_cursor="fill-2", status="running",
+        received_at=datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc),
+    )
+    writer.publish_typed_batch(client, signal, journal_profile="backtest_v2")
+    writer.publish_typed_batch(client, fill, journal_profile="backtest_v2")
+    prefix = writer.load_committed_prefix(client, signal.run_id,
+                                          journal_profile="backtest_v2")
+    assert isinstance(prefix, writer.V2CommittedPrefix)
+    page = writer.load_committed_execution_page(client, prefix)
+    assert len(page) == 1
+    assert page[0]["execution_id"] == "e1"
+    assert any("FROM arte.trading_commit_v2 " in sql for sql in client.selects)
+    assert "trading_commit_v1" not in client.inserts
 
 
 def test_v2_writer_opt_in_uses_bounded_worker_and_never_v1_fence(monkeypatch):

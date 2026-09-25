@@ -15,8 +15,8 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.trading_runtime.arte_journal_writer import (
-    CommittedPrefix, TypedJournalBatch, _CONTRACTS, _canonical_typed_content,
-    _committed_batch_filter, _literal, _rows,
+    VerifiedPrefix, TypedJournalBatch, _CONTRACTS, _canonical_typed_content,
+    _committed_batch_filter, _literal, _rows, _valid_prefix,
 )
 from src.trading_runtime.execution_policies import (
     execution_policy_from_payload, protection_profile_from_payload,
@@ -363,11 +363,11 @@ def _verify_stored_row(name: str, row: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_committed_strategy_intent_page(
-    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 200, max_slices: int = 4096,
 ) -> tuple[RecoveredIntent, ...]:
     """Read one bounded, fully typed intent page from a verified prefix."""
-    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+    if not _valid_prefix(prefix):
         raise ValueError("Intent recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 500 or max_slices < 1:
         raise ValueError("Intent recovery page bounds are invalid")

@@ -25,7 +25,7 @@ from uuid import UUID
 
 from src.trading_runtime.arte_journal_schema import (
     TABLES, journal_permission_preflight, storage_preflight,
-    versioned_journal_v2_preflight,
+    versioned_journal_v2_contracts, versioned_journal_v2_preflight,
 )
 from src.trading_runtime.journal_contract import canonical_json
 
@@ -1320,7 +1320,9 @@ def load_committed_prefix(
     if journal_profile not in {"v1", "backtest_v2"}:
         raise ValueError("Unknown typed journal profile")
     if journal_profile == "backtest_v2":
-        versioned_journal_v2_preflight(client)
+        # Cold readers can be SELECT-only. Writer grants were checked at
+        # construction; this path validates physical contracts without INSERT.
+        storage_preflight(client, tables=versioned_journal_v2_contracts())
         if _rows(client,
             "SELECT batch_id FROM arte.trading_commit_v1 "
             f"WHERE run_id={_literal(run_id)} LIMIT 1 FORMAT JSONEachRow"):
@@ -1401,17 +1403,28 @@ def _verify_recovery_chunk(
                 raise RuntimeError(f"Typed journal {name} differs from committed fence")
 
 
-def _committed_batch_filter(prefix: CommittedPrefix) -> str:
+VerifiedPrefix = CommittedPrefix | V2CommittedPrefix
+
+
+def _valid_prefix(prefix: object) -> bool:
+    return isinstance(prefix, (CommittedPrefix, V2CommittedPrefix)) and bool(prefix.batch_ids)
+
+
+def _committed_batch_filter(prefix: VerifiedPrefix) -> str:
     """Exclude interrupted fact inserts before page LIMIT or duplicate checks."""
+    if not _valid_prefix(prefix):
+        raise ValueError("Journal page requires a verified committed prefix")
+    fence = ("trading_commit_v2" if isinstance(prefix, V2CommittedPrefix)
+             else "trading_commit_v1")
     return (
-        "AND batch_id IN (SELECT batch_id FROM arte.trading_commit_v1 "
+        f"AND batch_id IN (SELECT batch_id FROM arte.{fence} "
         f"WHERE run_id={_literal(prefix.run_id)} "
         f"AND last_sequence<={int(prefix.last_sequence)}) "
     )
 
 
 def load_committed_order_command_page(
-    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
 ) -> tuple[dict[str, Any], ...]:
     """Read one bounded page of commands from an already verified prefix.
@@ -1419,7 +1432,7 @@ def load_committed_order_command_page(
     A durable command is an intent, not evidence of external delivery. A cold
     dispatcher must reconcile the client ID with the broker before any resend.
     """
-    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+    if not _valid_prefix(prefix):
         raise ValueError("Order recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 1000:
         raise ValueError("Order recovery page bounds are invalid")
@@ -1469,11 +1482,11 @@ def load_committed_order_command_page(
 
 
 def load_committed_order_context_page(
-    client: Any, prefix: CommittedPrefix,
+    client: Any, prefix: VerifiedPrefix,
     commands: tuple[dict[str, Any], ...],
 ) -> dict[str, dict[str, Any]]:
     """Join at most one typed strategy context to each committed command."""
-    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+    if not _valid_prefix(prefix):
         raise ValueError("Order recovery requires a verified committed prefix")
     if not commands or len(commands) > 1000:
         raise ValueError("Command context page must contain 1-1000 commands")
@@ -1616,11 +1629,11 @@ def load_committed_order_context_page(
 
 
 def load_committed_order_transition_page(
-    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
 ) -> tuple[dict[str, Any], ...]:
     """Read a bounded page of fence-verified order-state transitions."""
-    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+    if not _valid_prefix(prefix):
         raise ValueError("Order recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 1000:
         raise ValueError("Order recovery page bounds are invalid")
@@ -1669,7 +1682,7 @@ def load_committed_order_transition_page(
 
 
 def load_committed_execution_page(
-    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
 ) -> tuple[dict[str, Any], ...]:
     """Read committed fill evidence without admitting interrupted inserts."""
@@ -1680,11 +1693,11 @@ def load_committed_execution_page(
 
 
 def load_committed_run_transition_page(
-    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
 ) -> tuple[dict[str, Any], ...]:
     """Read normalized run status from a fully verified committed prefix."""
-    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+    if not _valid_prefix(prefix):
         raise ValueError("Run transition recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 1000:
         raise ValueError("Run transition page bounds are invalid")
@@ -1732,11 +1745,11 @@ def load_committed_run_transition_page(
 
 
 def load_committed_operational_fault_page(
-    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
 ) -> tuple[dict[str, Any], ...]:
     """Cold-read broker/risk faults after verifying the complete commit chain."""
-    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+    if not _valid_prefix(prefix):
         raise ValueError("Operational fault recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 1000:
         raise ValueError("Operational fault page bounds are invalid")
@@ -1793,11 +1806,11 @@ def load_committed_operational_fault_page(
 
 
 def load_committed_account_risk_page(
-    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 250,
 ) -> tuple[dict[str, Any], ...]:
     """Cold-read typed account risk metrics with bounded ordered reasons."""
-    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+    if not _valid_prefix(prefix):
         raise ValueError("Account risk recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 500:
         raise ValueError("Account risk page bounds are invalid")
@@ -1872,7 +1885,7 @@ def load_committed_account_risk_page(
 
 
 def load_committed_commission_page(
-    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
 ) -> tuple[dict[str, Any], ...]:
     """Read committed fee revisions, including those after the original fill."""
@@ -1883,10 +1896,10 @@ def load_committed_commission_page(
 
 
 def _load_committed_execution_detail_page(
-    client: Any, prefix: CommittedPrefix, entity_type: str, table: str,
+    client: Any, prefix: VerifiedPrefix, entity_type: str, table: str,
     *, after_sequence: int, limit: int,
 ) -> tuple[dict[str, Any], ...]:
-    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+    if not _valid_prefix(prefix):
         raise ValueError("Execution recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 1000:
         raise ValueError("Execution recovery page bounds are invalid")
