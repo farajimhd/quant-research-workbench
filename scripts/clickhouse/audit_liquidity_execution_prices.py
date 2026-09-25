@@ -23,6 +23,7 @@ from scripts.clickhouse.provision_fixed_backtest_v3_principals import _secret_pa
 from src.backend.backtest_liquidity_price import certify_price_level_plan
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
+    iter_market_day_rows,
 )
 from src.backend.backtest_v3_clients import v3_client
 from src.trading_runtime.arte_market_day_cold_preflight import (
@@ -32,7 +33,8 @@ from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
 from src.trading_runtime.keeper_session import open_workstation_keeper_session
 
 
-def audit(build_id: str, day: date, tickers: tuple[str, ...]) -> tuple[int, str]:
+def audit(build_id: str, day: date, tickers: tuple[str, ...], *,
+          smoke_market_read: bool = False) -> tuple[int, str]:
     if platform.node().upper() != "DESKTOP-SAAI85T":
         raise RuntimeError("Eligible-price audit uses workstation V3 credentials")
     credential = _secret_path("read")
@@ -62,6 +64,17 @@ def audit(build_id: str, day: date, tickers: tuple[str, ...]) -> tuple[int, str]
             tuple(sorted({ticker for _, ticker in selected})), units,
             (100,), "attested-child-audit")
         result = certify_price_level_plan(market, client)
+        if smoke_market_read:
+            if len(selected) != 1:
+                raise ValueError("Market-read smoke test requires exactly one ticker")
+            rows = iter_market_day_rows(
+                market, client, through_boundary_ms=60_000, price_plan=result)
+            try:
+                first = next(rows, None)
+                if first is None or "execution_price_levels" not in first:
+                    raise RuntimeError("Pinned market read lacks broker price levels")
+            finally:
+                rows.close()
         return len(result.units), result.token
 
 
@@ -71,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--date", type=date.fromisoformat, required=True)
     parser.add_argument("--tickers", default="",
                         help="Comma-separated certified canary symbols; default all")
+    parser.add_argument("--smoke-market-read", action="store_true",
+                        help="Read one ticker's first completed minute through the broker join")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", args.build_id):
         parser.error("Invalid market-day build ID")
@@ -80,7 +95,8 @@ def main(argv: list[str] | None = None) -> int:
            for ticker in tickers):
         parser.error("Invalid canary ticker")
     try:
-        count, token = audit(args.build_id, args.date, tickers)
+        count, token = audit(args.build_id, args.date, tickers,
+                             smoke_market_read=args.smoke_market_read)
     except Exception as exc:
         print(f"Eligible-price audit blocked: {exc}", file=sys.stderr)
         return 1
