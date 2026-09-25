@@ -4,9 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.backend.backtest_journal_memory import BacktestMemoryJournal
+from src.backend.backtest_journal_memory import BacktestJournalPublisher, BacktestMemoryJournal
 from src.backend.replay_run_service import ReplayRunController, RunMode
-from src.trading_runtime.journal_evidence import REFERENCE
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.arte_journal_projection import backtest_cursor_batch
 from src.trading_runtime.arte_journal_writer import _sealed_families
@@ -54,11 +53,10 @@ def test_idempotent_batch_preserves_order_and_first_occurrence():
     assert [record.sequence for record in journal.records(RUN_ID, after_sequence=1)] == [2]
 
 
-def test_buffer_fails_closed_and_evidence_uses_live_reference_contract():
+def test_buffer_fails_closed_without_json_evidence():
     journal = BacktestMemoryJournal(run_id=RUN_ID, max_pending_records=1)
-    assert set(journal.reference_json({"foo": 1})) == {REFERENCE}
     encoded = journal.reference_evidence({"levels": [{"price": 12.0}]})
-    assert set(encoded["levels"]) == {REFERENCE}
+    assert encoded == {"levels": [{"price": 12.0}]}
     journal.append_many([_entry("one")])
     with pytest.raises(RuntimeError, match="buffer is full"):
         journal.append_many([_entry("two")])
@@ -71,6 +69,20 @@ def test_buffer_fails_closed_and_evidence_uses_live_reference_contract():
     assert journal.append_many([_entry("two")])[0].sequence == 2
     with pytest.raises(ValueError, match="outside the unfenced prefix"):
         journal.unfenced_records(after_sequence=0)
+
+
+def test_typed_backtest_cannot_create_json_evidence_references():
+    journal = BacktestMemoryJournal(run_id=RUN_ID)
+    source = {"levels": [{"price": 12.0}]}
+    accepted = journal.reference_evidence(source)
+    source["levels"][0]["price"] = 20.0
+    assert accepted == {"levels": [{"price": 12.0}]}
+    with pytest.raises(RuntimeError, match="cannot externalize JSON"):
+        journal.reference_json(source)
+    with pytest.raises(RuntimeError, match="publisher is not allowed"):
+        BacktestJournalPublisher(journal, object(),
+                                 attempt_id="00000000-0000-0000-0000-000000000021",
+                                 run_date=date(2026, 8, 18))
 
 
 def test_acknowledged_batches_release_memory_without_reusing_sequences():

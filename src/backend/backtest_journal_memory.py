@@ -6,19 +6,14 @@ fenced ClickHouse adapter; this buffer is not itself a durability authority.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
-from hashlib import sha256
+from datetime import datetime, timedelta, timezone
 from copy import deepcopy
 from threading import RLock
 from typing import Any, Iterable
-from uuid import UUID, uuid4
+from uuid import uuid4
 
-from src.backend.backtest_journal_clickhouse import (
-    BacktestJournalWriter, JournalBatch, prepare_batch, prepare_fence,
-)
 from src.request_context import causal_identity, current_request_identity
 from src.trading_runtime.journal_contract import JournalRecord, canonical_json
-from src.trading_runtime.journal_evidence import REFERENCE, encode_evidence
 
 
 class BacktestMemoryJournal:
@@ -44,7 +39,6 @@ class BacktestMemoryJournal:
         self._assignments: dict[str, dict[str, Any]] = {}
         self._leases: dict[str, dict[str, Any]] = {}
         self._campaign_ownership: dict[tuple[str, str], dict[str, Any]] = {}
-        self._evidence: dict[str, str] = {}
         self._lock = RLock()
         self._closed = False
 
@@ -133,16 +127,6 @@ class BacktestMemoryJournal:
                 del self._records[:discard]
                 self._base_sequence = sequence
             self._fenced_sequence = sequence
-
-    def pending_evidence(self) -> dict[str, str]:
-        with self._lock:
-            return dict(self._evidence)
-
-    def mark_evidence_published(self, published: dict[str, str]) -> None:
-        with self._lock:
-            for digest, raw in published.items():
-                if self._evidence.get(digest) == raw:
-                    del self._evidence[digest]
 
     def append_once(self, *, run_id: str, category: str, entity_type: str,
                     entity_id: str, payload: dict[str, Any], account_id: str = "",
@@ -446,18 +430,11 @@ class BacktestMemoryJournal:
         return [deepcopy(row) for row in sorted(rows, key=lambda row: row["updated_at"], reverse=True)]
 
     def reference_json(self, value: Any) -> dict[str, str]:
-        raw = canonical_json(value)
-        digest = sha256(raw.encode("utf-8")).hexdigest()
-        with self._lock:
-            self._evidence[digest] = raw
-        return {REFERENCE: digest}
+        raise RuntimeError("Typed Backtest cannot externalize JSON evidence")
 
     def reference_evidence(self, value: Any) -> Any:
-        pending: dict[str, str] = {}
-        encoded = encode_evidence(value, canonical_json, pending)
-        with self._lock:
-            self._evidence.update(pending)
-        return encoded
+        canonical_json(value)
+        return deepcopy(value)
 
     def flush(self) -> None:
         """A synchronous flush cannot claim ClickHouse durability."""
@@ -469,73 +446,7 @@ class BacktestMemoryJournal:
 
 
 class BacktestJournalPublisher:
-    """Single-run bridge from command state to acknowledged ClickHouse fences.
+    """Retired V1 publisher; review readers remain for old runs only."""
 
-    Staging is asynchronous and may be repeated. Only a confirmed fence frees
-    journal pending capacity or advances the recoverable source cursor.
-    """
-
-    def __init__(self, journal: BacktestMemoryJournal, writer: BacktestJournalWriter,
-                 *, attempt_id: str, run_date: date, batch_size: int = 4096,
-                 prior_fence_id: str | None = None,
-                 committed_batch_ids: tuple[str, ...] = ()) -> None:
-        if batch_size < 1 or batch_size > journal.max_pending_records:
-            raise ValueError("Journal batch size must fit the pending bound")
-        initial = journal.latest_sequence(journal.run_id)
-        if initial:
-            if (prior_fence_id is None or UUID(prior_fence_id).int == 0
-                    or not committed_batch_ids):
-                raise ValueError("Resumed Backtest journal lacks its verified fence prefix")
-        elif prior_fence_id is not None or committed_batch_ids:
-            raise ValueError("New Backtest journal cannot inherit a committed prefix")
-        if len(committed_batch_ids) != len(set(committed_batch_ids)):
-            raise ValueError("Backtest journal prefix repeated a batch")
-        self.journal = journal
-        self.writer = writer
-        self.attempt_id = attempt_id
-        self.run_date = run_date
-        self.batch_size = batch_size
-        self._staged_sequence = initial
-        self._fenced_sequence = initial
-        self._fence_id = str(UUID(prior_fence_id)) if prior_fence_id else "00000000-0000-0000-0000-000000000000"
-        self._committed_batches: list[str] = [str(UUID(value)) for value in committed_batch_ids]
-        self._staged: list[JournalBatch] = []
-
-    @property
-    def fenced_sequence(self) -> int:
-        return self._fenced_sequence
-
-    @property
-    def committed_batch_ids(self) -> tuple[str, ...]:
-        return tuple(self._committed_batches)
-
-    async def stage_pending(self) -> int:
-        pending = self.journal.unfenced_records(after_sequence=self._staged_sequence)
-        for offset in range(0, len(pending), self.batch_size):
-            batch = prepare_batch(records=pending[offset:offset + self.batch_size],
-                                  attempt_id=self.attempt_id, run_date=self.run_date)
-            await self.writer.stage(batch)
-            self._staged.append(batch)
-            self._staged_sequence = batch.last_sequence
-        return self._staged_sequence
-
-    async def fence_checkpoint(self, *, state: dict[str, Any], source_cursor: str,
-                               status: str = "running") -> str:
-        await self.stage_pending()
-        if not self._staged:
-            raise ValueError("A Backtest checkpoint requires at least one new journal event")
-        evidence = self.journal.pending_evidence()
-        fence = prepare_fence(
-            batches=self._staged, checkpoint=state, source_cursor=source_cursor,
-            status=status, prior_last_sequence=self._fenced_sequence,
-            prior_fence_id=self._fence_id,
-            additional_evidence=evidence,
-        )
-        fence_id = await self.writer.fence(fence)
-        self.journal.mark_fenced(self._staged_sequence)
-        self.journal.mark_evidence_published(evidence)
-        self._fenced_sequence = self._staged_sequence
-        self._fence_id = fence_id
-        self._committed_batches.extend(batch.batch_id for batch in self._staged)
-        self._staged = []
-        return fence_id
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("Retired bt_* Backtest publisher is not allowed")
