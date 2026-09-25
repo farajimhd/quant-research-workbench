@@ -6,7 +6,9 @@ import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from src.backend.arte_chart_reader import chart_page, eligible
+from src.backend.arte_chart_reader import (
+    chart_page, certified_chart_plan, eligible,
+)
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
 )
@@ -42,6 +44,39 @@ def _plan():
 
 
 class ArteChartReaderTests(unittest.TestCase):
+    def test_chart_plan_uses_only_fenced_typed_arte_rows(self):
+        from src.backend import arte_chart_reader
+        arte_chart_reader._plan_cache.clear()
+        client = _Client([
+            {"build_id": "build", "definition_hash": "a" * 64,
+             "stage": stage, "attempt_id": attempt, "source_hash": "source",
+             "output_rows": 2, "output_hash": "hash"}
+            for stage, attempt in (("bars", BAR_ATTEMPT),
+                                   ("technical", TECH_ATTEMPT),
+                                   ("broker_100ms", BAR_ATTEMPT))
+        ])
+        with patch("src.backend.arte_chart_reader._reader", return_value=client):
+            plan = certified_chart_plan(DAY, "SUGP", "1s")
+        self.assertEqual(len(plan.units), 3)
+        self.assertEqual(plan.build_id, "build")
+        self.assertIn("arte.market_day_build_fence_v1", client.sql)
+        self.assertIn("arte.market_day_stage_certificate_v1", client.sql)
+        self.assertNotIn("sqlite", client.sql.lower())
+        arte_chart_reader._plan_cache.clear()
+
+    def test_chart_plan_rejects_partial_or_ambiguous_fenced_builds(self):
+        from src.backend import arte_chart_reader
+        base = {"build_id": "build", "definition_hash": "a" * 64,
+                "stage": "bars", "attempt_id": BAR_ATTEMPT,
+                "source_hash": "source", "output_rows": 2, "output_hash": "hash"}
+        for rows, reason in (([base], "incomplete"),
+                             ([base, {**base, "build_id": "other"}], "ambiguous")):
+            arte_chart_reader._plan_cache.clear()
+            with patch("src.backend.arte_chart_reader._reader",
+                       return_value=_Client(rows)):
+                with self.assertRaisesRegex(RuntimeError, reason):
+                    certified_chart_plan(DAY, "SUGP", "1s")
+
     def test_only_compatible_columns_and_auxiliary_modes_use_arte(self):
         args = dict(timeframe="1s", stage="full", indicator_columns=["bar_start", "ema_9"],
                     include_market_signals=False, include_structure=False,
@@ -53,7 +88,7 @@ class ArteChartReaderTests(unittest.TestCase):
 
     def test_chart_page_uses_0400_bucket_clock_and_pinned_attempts(self):
         client = _Client([{
-            "bucket_index": 300, "open_int": 10000, "high_int": 11000,
+            "bucket_index": 14700, "open_int": 10000, "high_int": 11000,
             "low_int": 9000, "close_int": 10500, "volume": 12,
             "trade_count": 2, "notional": 12.5, "ema_9": 1.04,
             "indicator_attempt_id": TECH_ATTEMPT,
@@ -72,12 +107,13 @@ class ArteChartReaderTests(unittest.TestCase):
         self.assertEqual(payload["indicators"][0]["ema_9"], 1.04)
         self.assertIn(BAR_ATTEMPT, client.sql)
         self.assertIn(TECH_ATTEMPT, client.sql)
-        self.assertIn("bucket_index*1000>=300000", client.sql)
+        self.assertIn("bucket_index*1000>=14700000", client.sql)
+        self.assertIn("(b.bucket_index+1)*1000<=14760000", client.sql)
         self.assertTrue(client.sql.startswith("SELECT "))
 
     def test_missing_pinned_indicator_is_not_shown_as_zero(self):
         client = _Client([{
-            "bucket_index": 300, "open_int": 10000, "high_int": 11000,
+            "bucket_index": 14700, "open_int": 10000, "high_int": 11000,
             "low_int": 9000, "close_int": 10500, "volume": 12,
             "trade_count": 2, "notional": 12.5, "ema_9": 0,
             "indicator_attempt_id": "00000000-0000-0000-0000-000000000000",
@@ -96,7 +132,7 @@ class ArteChartReaderTests(unittest.TestCase):
 
     def test_bars_stage_marks_unavailable_indicator_without_selecting_it(self):
         client = _Client([{
-            "bucket_index": 300, "open_int": 10000, "high_int": 11000,
+            "bucket_index": 14700, "open_int": 10000, "high_int": 11000,
             "low_int": 9000, "close_int": 10500, "volume": 12,
             "trade_count": 2, "notional": 12.5,
         }])

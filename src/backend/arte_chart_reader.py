@@ -11,13 +11,16 @@ from datetime import date, datetime, timedelta
 from functools import lru_cache
 import json
 import os
+import re
 from threading import Lock
 from time import monotonic
 from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from src.backend.backtest_market_data import (
-    CertifiedMarketDayPlan, MarketDayLedger, assert_select_only,
+    CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
+    SESSION_OPEN_OFFSET_MS, _stable_hash, assert_select_only,
     market_day_boundary,
 )
 
@@ -75,24 +78,67 @@ def eligible(*, timeframe: str, stage: str, indicator_columns: list[str] | None,
 
 
 def certified_chart_plan(session: date, ticker: str, timeframe: str) -> CertifiedMarketDayPlan | None:
-    """A short-lived catalogue lookup; absence is retried while backfill progresses."""
+    """Resolve one late-fenced typed ARTE build without SQLite or disk authority."""
     key = (session, ticker, timeframe)
     now = monotonic()
     with _plan_lock:
         cached = _plan_cache.get(key)
         if cached and cached[0] > now:
             return cached[1]
-    try:
-        plan = MarketDayLedger().certified_plan(
-            sessions=(session,), tickers=(ticker,),
-            configuration={"strategy": {"execution_interval": timeframe}},
-        )
-    except (OSError, ValueError):
-        plan = None
+    if timeframe not in _RESOLUTIONS or not re.fullmatch(r"[A-Z0-9.\-]{1,24}", ticker):
+        raise ValueError("ARTE chart scope is invalid")
+    rows = [json.loads(line) for line in _reader().execute(assert_select_only(
+        "SELECT s.build_id,f.definition_hash,s.stage,s.attempt_id,"
+        "s.source_hash,s.output_rows,s.output_hash "
+        "FROM arte.market_day_stage_certificate_v1 s "
+        "INNER JOIN arte.market_day_build_fence_v1 f ON f.build_id=s.build_id "
+        f"WHERE s.session_date=toDate({_literal(session.isoformat())}) "
+        f"AND s.ticker={_literal(ticker)} "
+        "ORDER BY s.build_id,s.stage FORMAT JSONEachRow"
+    )).splitlines() if line.strip()]
+    builds = {str(row.get("build_id") or "") for row in rows}
+    if len(builds) > 1:
+        raise RuntimeError("ARTE chart has ambiguous fenced market-day builds")
+    plan = None
+    if builds:
+        expected = {"bars", "technical", "broker_100ms"}
+        if (len(rows) != 3 or {row.get("stage") for row in rows} != expected
+                or any(set(row) != {"build_id", "definition_hash", "stage",
+                                    "attempt_id", "source_hash", "output_rows",
+                                    "output_hash"} for row in rows)):
+            raise RuntimeError("ARTE chart has an incomplete or duplicate fenced scope")
+        build_id = next(iter(builds))
+        definition_hashes = {str(row["definition_hash"]) for row in rows}
+        if len(definition_hashes) != 1 or not re.fullmatch(
+                r"[0-9a-f]{64}", next(iter(definition_hashes))):
+            raise RuntimeError("ARTE chart definition seal is invalid")
+        units = []
+        for row in rows:
+            try:
+                UUID(str(row["attempt_id"]))
+                count = int(row["output_rows"])
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError("ARTE chart attempt is invalid") from exc
+            if (count < 0 or not row["source_hash"]
+                    or (count == 0 and row["output_hash"] != "0")
+                    or (count > 0 and not row["output_hash"])):
+                raise RuntimeError("ARTE chart stage seal is invalid")
+            units.append(MarketDayUnit(build_id, session.isoformat(), ticker,
+                str(row["stage"]), str(row["attempt_id"]),
+                str(row["source_hash"]), count, str(row["output_hash"])))
+        units.sort(key=lambda row: row.stage)
+        definition_hash = next(iter(definition_hashes))
+        token = _stable_hash([build_id, definition_hash, session.isoformat(),
+                              ticker, timeframe, [[unit.stage, unit.attempt_id,
+                                  unit.source_hash, unit.output_rows, unit.output_hash]
+                                  for unit in units]])
+        plan = CertifiedMarketDayPlan(ExecutionInterval.fixed(_RESOLUTIONS[timeframe]),
+            build_id, definition_hash, (session.isoformat(),), (ticker,),
+            tuple(units), (_RESOLUTIONS[timeframe],), token)
     with _plan_lock:
         if len(_plan_cache) >= 512:
             _plan_cache.clear()
-        _plan_cache[key] = (monotonic() + (15.0 if plan else 2.0), plan)
+        _plan_cache[key] = (monotonic() + 2.0, plan)
     return plan
 
 
@@ -158,8 +204,8 @@ def chart_page(*, session: date, ticker: str, timeframe: str,
         + f"AND b.ticker={_literal(ticker)} "
         + f"AND b.attempt_id=toUUID({_literal(bars_unit.attempt_id)}) "
         + f"AND b.resolution_ms={resolution} AND b.price_valid=1 AND b.extremes_valid=1 "
-        + f"AND b.bucket_index*{resolution}>={start_ms} "
-        + f"AND (b.bucket_index+1)*{resolution}<={end_ms} "
+        + f"AND b.bucket_index*{resolution}>={start_ms + SESSION_OPEN_OFFSET_MS} "
+        + f"AND (b.bucket_index+1)*{resolution}<={end_ms + SESSION_OPEN_OFFSET_MS} "
         + f"ORDER BY b.bucket_index DESC LIMIT {row_limit + 1} FORMAT JSONEachRow"
     )
     rows = [json.loads(line) for line in _reader().execute(query).splitlines() if line.strip()]
@@ -168,7 +214,8 @@ def chart_page(*, session: date, ticker: str, timeframe: str,
     bars: list[dict[str, Any]] = []
     indicators: list[dict[str, Any]] = []
     for row in selected:
-        start = market_day_boundary(session, int(row["bucket_index"]) * resolution)
+        start = market_day_boundary(
+            session, int(row["bucket_index"]) * resolution - SESSION_OPEN_OFFSET_MS)
         stamp = start.isoformat()
         bars.append({
             "bar_start": stamp, "bar_end": (start + timedelta(milliseconds=resolution)).isoformat(),
