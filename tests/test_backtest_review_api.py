@@ -8,7 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from src.backend.app import (
     app, backtest_run_service, trading_backtest_run_review,
-    trading_backtest_typed_financial_page,
+    trading_backtest_typed_financial_page, trading_backtest_typed_running_page,
 )
 
 
@@ -57,6 +57,40 @@ class BacktestReviewAPITests(IsolatedAsyncioTestCase):
                     'invalid', after_fill_sequence=0, after_commission_sequence=0, limit=20)
         self.assertEqual(caught.exception.status_code, 400)
         factory.assert_not_called()
+
+    async def test_typed_running_page_is_readonly_and_never_opens_saved_review(self):
+        run_id = str(uuid4())
+        client = Mock()
+        page = {"running_prefix_only": True, "terminal_status_unknown": True,
+                "events": [], "next_sequence": 4}
+        with (patch('src.trading_runtime.arte_journal_reader.readonly_typed_journal_client',
+                    return_value=client),
+              patch('src.backend.typed_backtest_review_core.load_typed_backtest_running_page',
+                    return_value=page) as read,
+              patch.object(backtest_run_service, 'review_saved', new=AsyncMock()) as saved):
+            result = await trading_backtest_typed_running_page(
+                run_id, after_sequence=3, limit=20)
+        self.assertEqual(result, page)
+        read.assert_called_once_with(client, run_id, after_sequence=3, limit=20)
+        client.close.assert_called_once()
+        saved.assert_not_called()
+
+    async def test_typed_running_http_route_serializes_readonly_page(self):
+        run_id = str(uuid4())
+        client = Mock()
+        page = {"running_prefix_only": True, "terminal_status_unknown": True,
+                "events": [], "next_sequence": 0}
+        with (patch('src.trading_runtime.arte_journal_reader.readonly_typed_journal_client',
+                    return_value=client),
+              patch('src.backend.typed_backtest_review_core.load_typed_backtest_running_page',
+                    return_value=page)):
+            async with AsyncClient(transport=ASGITransport(app=app),
+                                   base_url='http://test') as http:
+                response = await http.get(
+                    f'/api/trading/backtest/runs/{run_id}/typed-running-page')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), page)
+        client.close.assert_called_once()
 
     def test_typed_financial_route_is_separate_from_saved_review(self):
         paths = {route.path: route.methods for route in app.routes if hasattr(route, 'methods')}

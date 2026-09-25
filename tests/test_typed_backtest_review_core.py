@@ -13,6 +13,8 @@ from tests.test_backtest_terminal_v2_fence import (
     RUN as V2_RUN, _suffix,
 )
 from src.backend.backtest_terminal_v2_fence import project_terminal_v2_commit
+from src.trading_runtime import arte_journal_writer as writer
+from tests.test_arte_journal_v2_profile import V2MemoryClient, _batch as v2_batch
 
 
 def scoped(client):
@@ -203,3 +205,25 @@ def test_v2_terminal_review_pages_only_attested_suffix(monkeypatch):
                         lambda *_, **__: (_ for _ in ()).throw(RuntimeError("no proof")))
     with pytest.raises(RuntimeError, match="no proof"):
         review.load_typed_backtest_review_core_v2(object(), keeper, V2_RUN)
+
+
+def test_running_page_uses_v2_prefix_without_terminal_claim(monkeypatch):
+    client = V2MemoryClient()
+    selected = v2_batch()
+    publish_typed_run(client, {**run_row(), "run_id": selected.run_id,
+                               "mode": "backtest"})
+    publish_typed_run_context(
+        client, run_id=selected.run_id, config=run_context(),
+        account_ids=("DU1",))
+    monkeypatch.setattr(writer, "versioned_journal_v2_preflight", lambda *_: None)
+    monkeypatch.setattr(writer, "storage_preflight", lambda *_, **__: None)
+    writer.publish_typed_batch(client, selected, journal_profile="backtest_v2")
+    page = review.load_typed_backtest_running_page(client, selected.run_id)
+    assert page["running_prefix_only"] and page["terminal_status_unknown"]
+    assert page["verified_prefix_sequence"] == page["next_sequence"] == 1
+    assert page["events"][0]["detail_family"] == "trading_strategy_signal_v2"
+    assert review.load_typed_backtest_running_page(
+        client, selected.run_id, after_sequence=1)["events"] == ()
+    with pytest.raises(ValueError, match="exceeds"):
+        review.load_typed_backtest_running_page(
+            client, selected.run_id, after_sequence=2)

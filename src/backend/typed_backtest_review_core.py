@@ -240,6 +240,45 @@ def load_typed_backtest_review_core_v2(
     }
 
 
+def load_typed_backtest_running_page(
+    client: Any, run_id: str, *, after_sequence: int = 0,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Expose only a verified V2 running prefix, never a terminal review claim."""
+    if (not isinstance(run_id, str) or not run_id
+            or type(after_sequence) is not int or after_sequence < 0
+            or type(limit) is not int or not 1 <= limit <= 1000):
+        raise ValueError("Typed Backtest running page has invalid bounds")
+    context = load_typed_run_context(client, run_id)
+    if context.get("mode") != "backtest":
+        raise ValueError("Typed running page accepts Backtest runs only")
+    prefix = load_committed_prefix(client, run_id, journal_profile="backtest_v2")
+    if not isinstance(prefix, V2CommittedPrefix) or prefix.status != "running":
+        raise ValueError("Typed running page requires a verified V2 running prefix")
+    if after_sequence > prefix.last_sequence:
+        raise ValueError("Typed running cursor exceeds its verified prefix")
+    rows = load_typed_event_page(
+        client, prefix, after_sequence=after_sequence, limit=limit)
+    next_sequence = int(rows[-1].event["sequence"]) if rows else after_sequence
+    if (load_typed_run_context(client, run_id) != context
+            or load_committed_prefix(
+                client, run_id, journal_profile="backtest_v2") != prefix):
+        raise RuntimeError("Typed running authority changed during page read")
+    return {
+        "schema_version": "typed-backtest-running-page-v2",
+        "running_prefix_only": True,
+        "terminal_status_unknown": True,
+        "run": context,
+        "verified_prefix_sequence": prefix.last_sequence,
+        "events": tuple({
+            "event": row.event, "detail_family": row.detail_family,
+            "detail": row.detail,
+        } for row in rows),
+        "next_sequence": next_sequence,
+        "caught_up_to_prefix": next_sequence == prefix.last_sequence,
+    }
+
+
 def load_typed_backtest_review_core(
     client: Any, run_id: str, *, after_sequence: int = 0, limit: int = 500,
     cache: AuditedSessionCache | None = None,
