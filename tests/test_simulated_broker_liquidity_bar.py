@@ -390,4 +390,13 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         await runtime.process_liquidity_bar(same_source, at=next_boundary)
         assert runtime.order_manager.on_market_snapshot.call_count == 2
         assert runtime.execution_market_data.snapshot("AAPL").observed_at == expected_source_time
+        invalid_at = next_boundary + timedelta(milliseconds=100)
+        invalid = bar(invalid_at)
+        invalid["quote_timestamp_us"] = invalid["last_event_us"] + 1
+        with self.assertRaisesRegex(ValueError, "invalid quote provenance"):
+            await runtime.process_liquidity_bar(invalid, at=invalid_at)
+        assert runtime.order_manager.on_market_snapshot.call_count == 2
+        assert runtime.order_manager.enforce_entry_body_triggers.await_count == 0
+        assert runtime.processed_events == 3
+        assert self.broker._bar_boundaries["AAPL"] == next_boundary
         journal.close()

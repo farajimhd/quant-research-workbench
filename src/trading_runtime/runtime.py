@@ -374,8 +374,10 @@ class TradingRuntime:
         if self.last_event_time is not None and at < self.last_event_time:
             raise ValueError("Liquidity bars must be processed in non-decreasing time")
         matcher = getattr(self.broker, "on_liquidity_bar", None)
-        if matcher is None:
-            raise RuntimeError("Backtest broker lacks native liquidity-bar execution")
+        validator = getattr(self.broker, "validate_liquidity_bar", None)
+        if matcher is None or validator is None:
+            raise RuntimeError("Backtest broker lacks validated liquidity-bar execution")
+        validator(row, at=at)
         ticker = str(row.get("ticker") or "").upper()
         bid = float(row.get("bid_int") or 0) / 10_000
         ask = float(row.get("ask_int") or 0) / 10_000

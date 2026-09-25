@@ -806,15 +806,8 @@ class SimulatedBrokerAdapter:
             raise RuntimeError("Completed liquidity quotes require bar-mode execution")
         return self._quotes_by_ticker.get(ticker.upper())
 
-    async def on_liquidity_bar(
-        self, row: Mapping[str, Any], *, at: datetime,
-    ) -> list[Execution]:
-        """Match against a completed 100 ms liquidity bucket, never an invented tape order.
-
-        A decision/order from this bucket first becomes eligible in the next
-        bucket. Stops triggered by an intrabucket range also wait for the next
-        bucket, because the aggregate cannot establish trigger/quote ordering.
-        """
+    def validate_liquidity_bar(self, row: Mapping[str, Any], *, at: datetime) -> None:
+        """Reject malformed source rows before OMS or broker state changes."""
         if at.tzinfo is None or int(row.get("resolution_ms") or 0) != 100:
             raise ValueError("Broker requires a completed, timezone-aware 100ms liquidity bar")
         ticker = str(row.get("ticker") or "").strip().upper()
@@ -845,6 +838,33 @@ class SimulatedBrokerAdapter:
         ask_size = float(row.get("ask_size") or 0)
         if valid_quote and (bid <= 0 or ask < bid or min(bid_size, ask_size) < 0):
             raise ValueError("Broker liquidity bar contains an invalid quote")
+        extremes_valid = bool(int(row.get("extremes_valid") or 0))
+        low = float(row.get("low_int") or 0) / 10_000 if extremes_valid else 0.0
+        high = float(row.get("high_int") or 0) / 10_000 if extremes_valid else 0.0
+        execution_volume = float(row.get("execution_volume") or 0)
+        if execution_volume < 0 or (extremes_valid and (low <= 0 or high < low)):
+            raise ValueError("Broker liquidity bar contains invalid trade aggregates")
+
+    async def on_liquidity_bar(
+        self, row: Mapping[str, Any], *, at: datetime,
+    ) -> list[Execution]:
+        """Match against a completed 100 ms liquidity bucket, never an invented tape order.
+
+        A decision/order from this bucket first becomes eligible in the next
+        bucket. Stops triggered by an intrabucket range also wait for the next
+        bucket, because the aggregate cannot establish trigger/quote ordering.
+        """
+        self.validate_liquidity_bar(row, at=at)
+        ticker = str(row["ticker"]).strip().upper()
+        bucket_start = at - timedelta(milliseconds=100)
+        boundary_us = int(at.timestamp() * 1_000_000)
+        quote_us = int(row.get("quote_timestamp_us") or 0)
+        valid_quote = bool(int(row.get("quote_valid") or 0)) and (
+            boundary_us - quote_us <= 1_000_000)
+        bid = float(row.get("bid_int") or 0) / 10_000
+        ask = float(row.get("ask_int") or 0) / 10_000
+        bid_size = float(row.get("bid_size") or 0)
+        ask_size = float(row.get("ask_size") or 0)
         quote = None
         if valid_quote:
             observed_at = utc_from_epoch_microseconds(quote_us)
@@ -862,8 +882,6 @@ class SimulatedBrokerAdapter:
         low = float(row.get("low_int") or 0) / 10_000 if extremes_valid else 0.0
         high = float(row.get("high_int") or 0) / 10_000 if extremes_valid else 0.0
         execution_volume = float(row.get("execution_volume") or 0)
-        if execution_volume < 0 or (extremes_valid and (low <= 0 or high < low)):
-            raise ValueError("Broker liquidity bar contains invalid trade aggregates")
         self._bar_mode = True
         self._bar_boundaries[ticker] = at
         mark = close or (quote.midpoint if quote is not None else 0.0)
