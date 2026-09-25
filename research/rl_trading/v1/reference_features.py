@@ -32,6 +32,16 @@ def storage_check(client) -> None:
         raise ValueError('Structural V7 parts are outside live_market_ssd')
 
 
+def missing_seeds(client, day: date, tickers: list[str]) -> list[str]:
+    """Fail before shard allocation if any pinned listing lacks a prior V7 seed."""
+    cutoff = f"toDateTime64({literal(opening(day))},9,'UTC')"
+    rows = query(client, 'SELECT DISTINCT ticker FROM arte.structural_level_coverage_v7 FINAL '
+        f'WHERE available_at<={cutoff} AND session_date<toDate({literal(day)}) '
+        "AND state IN ('complete','empty')")
+    available = {str(row['ticker']) for row in rows}
+    return sorted(set(tickers)-available)
+
+
 def _identity(listing: dict) -> str:
     keys = ('symbol_id', 'listing_id', 'security_id')
     if any(not listing.get(key) for key in keys):

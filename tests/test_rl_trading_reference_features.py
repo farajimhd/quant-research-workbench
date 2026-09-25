@@ -35,3 +35,14 @@ def test_reference_masks_missing_fundamentals_and_distinguishes_reverse_split():
     assert values['reverse_split_present'] == 1
     with pytest.raises(ValueError,match='split ratio'):
         rf.fundamentals(day,[],[dict(execution_date='2026-08-10',split_from=0,split_to=1)])
+
+
+def test_seed_preflight_reports_every_uncertified_listing(monkeypatch):
+    statements = []
+    def rows(_client,statement):
+        statements.append(statement)
+        return [{'ticker':'AAPL'},{'ticker':'NVDA'}]
+    monkeypatch.setattr(rf,'query',rows)
+    assert rf.missing_seeds(object(),date(2026,8,21),['NVDA','MISSING','AAPL']) == ['MISSING']
+    assert 'arte.structural_level_coverage_v7 FINAL' in statements[0]
+    assert "session_date<toDate('2026-08-21')" in statements[0]

@@ -14,6 +14,7 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(REPO))
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import date
 from hashlib import sha256
 import json
@@ -28,7 +29,8 @@ from research.rl_trading.v1 import arte_source
 from research.rl_trading.v1.arte_sql import ArteReader
 from research.rl_trading.v1.common import bounds, digest, file_hash
 from research.rl_trading.v1.features import FEATURE_NAMES, SECONDS, encode, read_arte_seconds
-from research.rl_trading.v1.reference_features import read_reference, storage_check, VERSION as REFERENCE_VERSION
+from research.rl_trading.v1.reference_features import (missing_seeds, read_reference,
+    storage_check, VERSION as REFERENCE_VERSION)
 from research.rl_trading.v1.phase3_search import VERSION as PHASE3_VERSION
 from research.rl_trading.v1.shard_labels import pack
 from src.market_engine.level_book_store import read, write
@@ -39,6 +41,54 @@ SOURCES = ('build_shards.py','features.py','shard_labels.py','universe.py',
     'phase3_search.py','arte_source.py','arte_sql.py','reference_features.py')
 ENGINE_SOURCES = ('src/backend/fixed_v7_stream.py','src/backend/structural_v7_seed.py',
     'src/market_engine/streaming_level_book.py','src/market_engine/v7_qmd.py')
+_WORKER_CLIENT = None
+_WORKER_SOURCE = None
+_WORKER_DAY = None
+
+
+def _extract(client, source, day, listing):
+    ticker = listing['ticker']
+    arte_source.verify_listing(client,source,day,ticker)
+    seed,splits,fundamental,reference = read_reference(client,day,listing)
+    bars,indicators = read_arte_seconds(client,source,day,ticker)
+    features,volume60 = encode(day,bars,indicators,seed,splits,fundamental)
+    return features,volume60,reference
+
+
+def _worker_init(query_threads, source, day):
+    global _WORKER_CLIENT, _WORKER_SOURCE, _WORKER_DAY
+    _WORKER_CLIENT = ArteReader(query_threads)
+    _WORKER_SOURCE = source
+    _WORKER_DAY = day
+
+
+def _worker_extract(listing):
+    return _extract(_WORKER_CLIENT,_WORKER_SOURCE,_WORKER_DAY,listing)
+
+
+def _extractions(items, *, workers, query_threads, source, day, client):
+    """Yield completed independent listings with bounded in-flight work."""
+    if workers == 1:
+        for index,listing in items:
+            yield index,listing,_extract(client,source,day,listing)
+        return
+    iterator = iter(items)
+    with ProcessPoolExecutor(max_workers=workers,initializer=_worker_init,
+            initargs=(query_threads,source,day)) as pool:
+        pending = {}
+        def submit():
+            item = next(iterator,None)
+            if item is not None:
+                index,listing = item
+                pending[pool.submit(_worker_extract,listing)] = (index,listing)
+        for _ in range(workers*2):
+            submit()
+        while pending:
+            done,_ = wait(pending,return_when=FIRST_COMPLETED)
+            for future in done:
+                index,listing = pending.pop(future)
+                yield index,listing,future.result()
+                submit()
 
 
 def _hash_bytes(array) -> str:
@@ -123,6 +173,10 @@ def run(args,console):
         runtime = runtime_root().resolve()
         if not runtime.is_dir():
             raise ValueError('Required runtime root is unavailable')
+        missing = missing_seeds(client,day,tickers)
+        if missing:
+            raise ValueError(f'{len(missing)} pinned listings lack prior arte structural V7 coverage: '
+                + ', '.join(missing[:12]))
         plan = dict(version=VERSION,date=str(day),phase3_root=str(phase3),
             phase3_plan_hash=teacher['plan_hash'],phase3_complete_hash=file_hash(phase3/'complete.json'),
             phase2_root=str(phase2),phase2_plan_hash=p2['plan_hash'],
@@ -159,6 +213,7 @@ def run(args,console):
         if progress['plan_hash'] != plan['plan_hash']:
             raise ValueError('Shard restart provenance changed')
         source = dict(build_id=p1['source_build_id'],units={str(day):p1['source_units']})
+        pending = []
         for index,listing in enumerate(p2['selected']):
             ticker = listing['ticker']
             if (root/'STOP').exists():
@@ -172,10 +227,15 @@ def run(args,console):
                         saved['closeable'] != _hash_bytes(closeable[index])):
                     raise ValueError('Restart ticker slice changed: '+ticker)
                 continue
-            arte_source.verify_listing(client,source,day,ticker)
-            seed,splits,fundamental,reference = read_reference(client,day,listing)
-            bars,indicators = read_arte_seconds(client,source,day,ticker)
-            features,volume60 = encode(day,bars,indicators,seed,splits,fundamental)
+            pending.append((index,listing))
+        completed_batch = []
+        for index,listing,(features,volume60,reference) in _extractions(pending,
+                workers=args.workers,query_threads=args.query_threads,source=source,
+                day=day,client=client):
+            ticker = listing['ticker']
+            if (root/'STOP').exists():
+                console.print(f'Stopped after {len(progress["done"])} listings; rerun to resume')
+                return 2
             folder = phase2/'listings'/digest(listing)[:20]
             ready = read(folder/'ready.json')
             _verified(folder/'coefficients.parquet',ready['files']['coefficients.parquet'])
@@ -201,13 +261,17 @@ def run(args,console):
             volumes[index] = volume60
             execution[index] = prices
             closeable[index] = available
-            bank.flush();volumes.flush();execution.flush();closeable.flush()
-            progress['done'][ticker] = dict(features=_hash_bytes(bank[index]),
-                volume=_hash_bytes(volumes[index]),execution=_hash_bytes(execution[index]),
-                closeable=_hash_bytes(closeable[index]),reference=reference)
-            write(progress_path,progress,immutable=False)
-            if (index+1)%10 == 0 or index+1 == len(tickers):
-                console.print(f'Features {index+1:,}/{len(tickers):,} listings | queued {len(tickers)-index-1:,} | failed 0')
+            completed_batch.append((index,ticker,reference))
+            if len(completed_batch) == 10 or len(progress['done'])+len(completed_batch) == len(tickers):
+                bank.flush();volumes.flush();execution.flush();closeable.flush()
+                for done_index,done_ticker,done_reference in completed_batch:
+                    progress['done'][done_ticker] = dict(features=_hash_bytes(bank[done_index]),
+                        volume=_hash_bytes(volumes[done_index]),execution=_hash_bytes(execution[done_index]),
+                        closeable=_hash_bytes(closeable[done_index]),reference=done_reference)
+                completed_batch.clear()
+                write(progress_path,progress,immutable=False)
+                console.print(f'Features {len(progress["done"]):,}/{len(tickers):,} listings | '
+                    f'queued {len(tickers)-len(progress["done"]):,} | failed 0')
         trajectory = pl.read_parquet(phase3/'trajectory.parquet').to_dicts()
         packed = pack(trajectory,bank,volumes,tickers,left_us=left,
             top_n=plan['top_n'],max_lots=plan['max_lots'],max_orders=plan['max_orders'],
@@ -237,10 +301,12 @@ def main(argv=None):
     parser.add_argument('--phase3',type=Path,required=True)
     parser.add_argument('--history-seconds',type=int,default=120)
     parser.add_argument('--query-threads',type=int,choices=(1,2,3,4),default=2)
+    parser.add_argument('--workers',type=int,default=8,
+        help='Bounded independent arte/V7 ticker encoders')
     parser.add_argument('--allow-segment',action='store_true',help='Only for bounded validation; segment remains marked')
     args = parser.parse_args(argv)
-    if args.history_seconds < 1 or args.history_seconds > SECONDS:
-        parser.error('history-seconds must be within the session')
+    if args.history_seconds < 1 or args.history_seconds > SECONDS or not 1 <= args.workers <= 32:
+        parser.error('history-seconds or workers outside supported bounds')
     return run(args,Console())
 
 
