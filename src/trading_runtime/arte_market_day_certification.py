@@ -104,8 +104,12 @@ def read_certificate_rows(client: Any, name: str, build_id: str) -> list[dict[st
 
 def family_hash(rows: list[Mapping[str, Any]]) -> str:
     """Order-independent digest of exact named rows (duplicates remain visible)."""
-    return sha256(canonical_json(sorted((dict(row) for row in rows),
-                                     key=canonical_json)).encode("utf-8")).hexdigest()
+    # The published digest is canonical_json(the rows sorted by their own
+    # canonical_json). Serialize each row only once; this preserves the exact
+    # existing wire hash, including duplicate rows, without a second full
+    # JSON traversal of the large build certificate.
+    items = sorted(canonical_json(dict(row)) for row in rows)
+    return sha256(("[" + ",".join(items) + "]").encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)

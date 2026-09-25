@@ -12,6 +12,7 @@ from src.trading_runtime.arte_market_day_certification import (
 from src.trading_runtime.arte_market_day_source_plan import (
     project_source_plan, source_inventory_hash,
 )
+from src.trading_runtime.journal_contract import canonical_json
 from test_arte_market_day_source_plan import plan as source_plan_fixture
 
 
@@ -30,6 +31,19 @@ class FakeReader:
         self.calls.append(sql)
         name = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]
         return "\n".join(json.dumps(row) for row in self.tables[name])
+
+
+def test_family_hash_preserves_published_canonical_digest() -> None:
+    rows = [
+        {"z": "Ω", "a": 4, "nested": {"b": [1, None], "a": True}},
+        {"a": 1, "z": "quote: \"x\""},
+        {"a": 1, "z": "quote: \"x\""},
+    ]
+    legacy = sha256(canonical_json(sorted((dict(row) for row in rows),
+                                          key=canonical_json)).encode("utf-8")).hexdigest()
+    assert family_hash(rows) == legacy
+    assert family_hash(list(reversed(rows))) == legacy
+    assert family_hash([]) == sha256(b"[]").hexdigest()
 
 
 def inventory():

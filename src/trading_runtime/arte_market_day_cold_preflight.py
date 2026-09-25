@@ -196,9 +196,12 @@ def certified_market_day_plan_from_cold_audit(client: Any,
                   for r in sorted(stage_rows,
                                   key=lambda r: (r["session_date"], r["ticker"], r["stage"]))
                   if (r["session_date"], r["ticker"]) in selected)
+    stages_by_scope: dict[tuple[str, str], set[str]] = {}
+    for unit in units:
+        stages_by_scope.setdefault((unit.session_date, unit.ticker), set()).add(unit.stage)
     if len(units) != 3 * len(selected) or any(
-            {unit.stage for unit in units if (unit.session_date, unit.ticker) == scope}
-            != {"bars", "technical", "broker_100ms"} for scope in selected):
+            stages_by_scope.get(scope) != {"bars", "technical", "broker_100ms"}
+            for scope in selected):
         raise RuntimeError("Cold market-day plan has incomplete typed stage scope")
     ordered_tickers = tuple(sorted({ticker for _, ticker in selected}))
     payload = {"build_id": audit.certificate.build_id,
