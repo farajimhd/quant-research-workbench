@@ -503,7 +503,7 @@ def _sealed_families(
                 or parent["entity_id"] != decision["decision_id"]
                 or parent["account_id"] != decision["account_id"]
                 or _datetime_wire(parent["event_time"], 6)
-                != _datetime_wire(decision["decided_at"], 6)
+                < _datetime_wire(decision["decided_at"], 6)
                 or len(reasons) != int(decision["reason_count"])
                 or sorted(int(row["ordinal"]) for row in reasons)
                 != list(range(len(reasons)))):

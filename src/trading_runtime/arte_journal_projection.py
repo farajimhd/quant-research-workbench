@@ -345,6 +345,76 @@ def project_journal_record(
             record.sequence, record.sequence, source_cursor, "running", (event,),
             portfolio_reservation_events=(detail,),
         )
+    if kind == ("portfolio_management", "portfolio_decision"):
+        from src.trading_runtime.portfolio import PortfolioDecision, PortfolioDecisionStatus
+
+        payload = dict(record.payload)
+        fields_expected = {field.name for field in fields(PortfolioDecision)}
+        expected = fields_expected | {"event", "ticker", "action",
+                                      "correlation_id", "causation_id"}
+        metric_names = ("net_liquidation", "available_funds", "buying_power",
+                        "gross_exposure", "net_exposure", "reserved_notional",
+                        "open_risk", "daily_loss", "drawdown", "position_count")
+        at = payload.get("decided_at")
+        if (set(payload) != expected or payload["event"] != "portfolio_decision"
+                or payload["decision_id"] != record.entity_id
+                or not record.account_id or payload["account_id"] != record.account_id
+                or not isinstance(at, datetime) or at.tzinfo is None
+                or record.event_time.tzinfo is None or record.recorded_at.tzinfo is None
+                or at.astimezone(timezone.utc) > record.event_time.astimezone(timezone.utc)
+                or payload["status"] not in {status.value for status in PortfolioDecisionStatus}
+                or not isinstance(payload["reasons"], (tuple, list))
+                or len(payload["reasons"]) > 65535
+                or any(not isinstance(reason, str) or not reason
+                       for reason in payload["reasons"])
+                or any(not isinstance(payload[name], Mapping)
+                       or set(payload[name]) != set(metric_names)
+                       for name in ("metrics_before", "metrics_after"))
+                or any(not isinstance(payload[name], str)
+                       for name in ("ticker", "action", "correlation_id", "causation_id"))):
+            raise ValueError("Portfolio decision journal fact is incomplete")
+        month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+        detail = {
+            "record_id": record.record_id, "run_id": record.run_id,
+            "event_month": month, "batch_id": batch_id,
+            "account_id": record.account_id,
+            **{key: payload[key] for key in (
+                "decision_id", "request_id", "account_key", "ticker", "action",
+                "policy_id", "policy_revision", "snapshot_id", "status",
+                "reservation_id")},
+            **{key: _exact_decimal(payload[key], _MEASURE_SCALE) for key in (
+                "requested_quantity", "approved_quantity", "approved_notional",
+                "planned_loss")},
+            "reason_count": len(payload["reasons"]),
+            "decided_at": at.astimezone(timezone.utc).isoformat(),
+            **{f"{phase}_{metric}": _exact_decimal(payload[f"metrics_{phase}"][metric],
+                                                    _MEASURE_SCALE)
+               for phase in ("before", "after") for metric in metric_names},
+        }
+        reasons = tuple({
+            "record_id": str(uuid5(NAMESPACE_URL,
+                                  f"{record.record_id}:portfolio-decision-reason:{ordinal}")),
+            "run_id": record.run_id, "event_month": month,
+            "batch_id": batch_id, "parent_record_id": record.record_id,
+            "account_id": record.account_id, "ordinal": ordinal,
+            "reason": reason,
+        } for ordinal, reason in enumerate(payload["reasons"]))
+        event = {
+            "run_id": record.run_id, "event_month": month,
+            "attempt_id": attempt_id, "batch_id": batch_id,
+            "record_id": record.record_id, "sequence": record.sequence,
+            "event_time": record.event_time.astimezone(timezone.utc).isoformat(),
+            "recorded_at": record.recorded_at.astimezone(timezone.utc).isoformat(),
+            "category": record.category, "entity_type": record.entity_type,
+            "entity_id": record.entity_id, "account_id": record.account_id,
+            "correlation_id": payload["correlation_id"],
+            "causation_id": payload["causation_id"],
+        }
+        return TypedJournalBatch(
+            record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+            record.sequence, record.sequence, source_cursor, "running", (event,),
+            portfolio_decisions=(detail,), portfolio_decision_reasons=reasons,
+        )
     if kind == ("strategy", "strategy_intent"):
         from src.trading_runtime.arte_intent_projection import strategy_intent_batch
         from src.trading_runtime.execution_policies import (
