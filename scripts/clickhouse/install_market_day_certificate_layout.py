@@ -6,10 +6,12 @@ command never publishes certificate rows or changes Backtest permissions.
 from __future__ import annotations
 
 import argparse
+from ipaddress import IPv4Address
 import json
 import os
 from pathlib import Path
 import platform
+import socket
 import sys
 from urllib.parse import urlsplit
 
@@ -21,6 +23,14 @@ sys.dont_write_bytecode = True
 from scripts.clickhouse.provision_trading_journal import _admin_client
 from src.trading_runtime.arte_journal_schema import STORAGE_POLICY, storage_preflight
 from src.trading_runtime.arte_market_day_certification import TABLES
+
+
+def workstation_clickhouse_url() -> str:
+    """Use the managed IPv4 listener, not a potentially link-local IPv6 name."""
+    address = IPv4Address(socket.gethostbyname("DESKTOP-SAAI85T"))
+    if not address.is_private:
+        raise RuntimeError("Workstation ClickHouse resolved outside the private network")
+    return f"http://{address}:18123"
 
 
 def _rows(client, sql: str) -> list[dict]:
@@ -63,20 +73,23 @@ def install_layout(client, *, apply: bool) -> tuple[int, int]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="http://DESKTOP-SAAI85T:18123")
+    parser.add_argument("--url")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm-market-certificate-tables", action="store_true")
     args = parser.parse_args(argv)
-    parsed = urlsplit(args.url)
-    if (platform.node().upper() != "DESKTOP-SAAI85T"
-            or (parsed.scheme, parsed.hostname, parsed.port, parsed.path,
-                parsed.query, parsed.fragment, parsed.username, parsed.password)
-            != ("http", "desktop-saai85t", 18123, "", "", "", None, None)):
-        parser.error("Run on DESKTOP-SAAI85T against its managed ClickHouse endpoint")
     if args.apply and not args.confirm_market_certificate_tables:
         parser.error("--apply requires --confirm-market-certificate-tables")
     try:
-        client = _admin_client(args.url)
+        expected_url = workstation_clickhouse_url()
+        url = args.url or expected_url
+        parsed = urlsplit(url)
+        if (platform.node().upper() != "DESKTOP-SAAI85T"
+                or (parsed.scheme, parsed.hostname, parsed.port, parsed.path,
+                    parsed.query, parsed.fragment, parsed.username, parsed.password)
+                != ("http", urlsplit(expected_url).hostname, 18123,
+                    "", "", "", None, None)):
+            parser.error("Run on DESKTOP-SAAI85T against its managed IPv4 ClickHouse endpoint")
+        client = _admin_client(url)
         try:
             install_layout(client, apply=args.apply)
         finally:

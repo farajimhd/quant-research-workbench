@@ -55,3 +55,18 @@ def test_incompatible_existing_layout_fails_before_any_create(monkeypatch):
     with pytest.raises(ValueError, match="differs"):
         layout.install_layout(client, apply=True)
     assert not client.creates
+
+
+def test_cli_uses_managed_ipv4_endpoint_and_rejects_other_host(monkeypatch):
+    client = FakeClient(table.name for table in TABLES)
+    seen = []
+    monkeypatch.setattr(layout.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(layout.socket, "gethostbyname", lambda _: "192.168.1.218")
+    monkeypatch.setattr(layout, "_admin_client", lambda url: seen.append(url) or client)
+    monkeypatch.setattr(layout, "storage_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(client, "close", lambda: None, raising=False)
+    assert layout.main([]) == 0
+    assert seen == ["http://192.168.1.218:18123"]
+    with pytest.raises(SystemExit, match="2"):
+        layout.main(["--url", "http://other-host:18123"])
+    assert seen == ["http://192.168.1.218:18123"]
