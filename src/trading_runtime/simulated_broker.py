@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from src.market_engine.events import MarketEvent, QuoteEvent, TradeEvent
+from src.trading_runtime.execution_policies import utc_from_epoch_microseconds
 from src.trading_runtime.domain import BrokerAccount as CanonicalBrokerAccount
 from src.trading_runtime.domain import BrokerProvider
 from src.trading_runtime.domain import Execution as CanonicalExecution
@@ -846,12 +847,13 @@ class SimulatedBrokerAdapter:
             raise ValueError("Broker liquidity bar contains an invalid quote")
         quote = None
         if valid_quote:
+            observed_at = utc_from_epoch_microseconds(quote_us)
             quote = QuoteEvent(
                 ask_exchange=0, ask_price=ask, ask_size=ask_size,
                 bid_exchange=0, bid_price=bid, bid_size=bid_size,
                 conditions=(), indicators=(), ingest_ts=at.astimezone(timezone.utc),
                 raw={"liquidity_bar_snapshot": True, "quote_timestamp_us": quote_us},
-                source="arte.liquidity_100ms_v1", ticker=ticker, ts=at,
+                source="arte.liquidity_100ms_v1", ticker=ticker, ts=observed_at,
             )
         self._trades_by_ticker.pop(ticker, None)
         price_valid = bool(int(row.get("price_valid") or 0))

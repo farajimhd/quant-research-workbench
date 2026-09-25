@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Mapping
 
 
 DEFAULT_VERY_URGENT_PRICE_DISCRETION_TICKS = 4
+
+
+def utc_from_epoch_microseconds(value: int) -> datetime:
+    """Preserve the exact source quote clock; never round via float seconds."""
+    if type(value) is not int or value <= 0:
+        raise ValueError("Source quote timestamp must be positive microseconds")
+    return (datetime.fromtimestamp(value // 1_000_000, tz=timezone.utc)
+            + timedelta(microseconds=value % 1_000_000))
 
 
 class ExecutionPolicyName(StrEnum):

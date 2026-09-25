@@ -277,7 +277,7 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         completed = self.broker.completed_liquidity_quote("AAPL")
         self.assertIsNotNone(completed)
         self.assertEqual(completed.source, "arte.liquidity_100ms_v1")
-        self.assertEqual(completed.ts, first)
+        self.assertEqual(completed.ts, first - timedelta(microseconds=10_001))
         second = first + timedelta(milliseconds=100)
         no_quote = bar(second)
         no_quote.update(quote_valid=0, quote_timestamp_us=0)
@@ -314,7 +314,7 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
                 at = START + timedelta(milliseconds=100)
                 quote = await runtime.process_liquidity_bar(bar(at), at=at)
                 self.assertIsNotNone(quote)
-                self.assertEqual(quote.ts, at)
+                self.assertEqual(quote.ts, at - timedelta(microseconds=10_001))
                 self.assertEqual(runtime.processed_events, 1)
                 self.assertEqual(sum(record.category == "execution" and
                     record.entity_type == "fill" for record in
@@ -373,6 +373,16 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         completed = await runtime.process_liquidity_bar(bar(at), at=at)
         assert completed is not None and completed.ticker == "AAPL"
         runtime.order_manager.on_market_snapshot.assert_called_once()
-        assert runtime.execution_market_data.snapshot("AAPL") is not None
+        first = runtime.execution_market_data.snapshot("AAPL")
+        assert first is not None
+        assert first.observed_at == at - timedelta(microseconds=10_001)
         assert runtime.processed_events == 1
+        later = START + timedelta(seconds=2)
+        carried = await runtime.process_liquidity_bar(
+            bar(later, quote_age_us=750_000), at=later)
+        assert carried is not None
+        expected_source_time = later - timedelta(microseconds=750_001)
+        assert carried.ts == expected_source_time
+        assert runtime.execution_market_data.snapshot("AAPL").observed_at == expected_source_time
+        assert runtime.order_manager.on_market_snapshot.call_count == 2
         journal.close()

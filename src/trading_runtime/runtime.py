@@ -16,6 +16,7 @@ from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.execution_policies import (
     ExecutionMarketDataProvider,
     ExecutionMarketSnapshot,
+    utc_from_epoch_microseconds,
 )
 from src.trading_runtime.order_management import OrderManagementEngine, OrderManagementState, EntryExecutionRejected
 from src.trading_runtime.portfolio import ENTRY_ACTIONS, PortfolioManagementEngine
@@ -385,7 +386,8 @@ class TradingRuntime:
             ):
                 snapshot = ExecutionMarketSnapshot(
                     ticker=ticker, bid=bid, ask=ask, tick_size=0.01,
-                    observed_at=at, source="arte.liquidity_100ms_v1",
+                    observed_at=utc_from_epoch_microseconds(quote_us),
+                    source="arte.liquidity_100ms_v1",
                 )
                 self.execution_market_data.update(snapshot)
                 if self.order_manager is not None:
