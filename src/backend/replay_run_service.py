@@ -2661,6 +2661,35 @@ class ReplayRunController:
             "run": publication_run,
         }
 
+    def fixed_typed_activity_page(
+        self, *, client=None, after_sequence: int = 0, limit: int = 500,
+    ) -> dict[str, Any]:
+        """Read a verified V2 event page; legacy JSON activity stays blocked."""
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        from src.backend.backtest_typed_activity import load_fixed_typed_activity_page
+        from src.trading_runtime.arte_journal_reader import readonly_typed_journal_client
+        from src.trading_runtime.arte_journal_writer import (
+            V2CommittedPrefix, load_committed_prefix,
+        )
+
+        publisher = self._journal_publisher
+        if (self.definition.mode != RunMode.BACKTEST
+                or not isinstance(self._journal, BacktestMemoryJournal)
+                or publisher is None):
+            raise RuntimeError("Fixed typed activity requires a fenced memory journal")
+        if client is None:
+            with closing(readonly_typed_journal_client()) as read_client:
+                return self.fixed_typed_activity_page(
+                    client=read_client, after_sequence=after_sequence, limit=limit)
+        prefix = load_committed_prefix(client, self.run_id, journal_profile="backtest_v2")
+        if (not isinstance(prefix, V2CommittedPrefix)
+                or prefix.status != "running"
+                or prefix.last_sequence != publisher.fenced_sequence
+                or prefix.last_batch_id != publisher._batch_id):
+            raise RuntimeError("Fixed typed activity differs from its publisher fence")
+        return load_fixed_typed_activity_page(
+            client, prefix, after_sequence=after_sequence, limit=limit)
+
     def signal_stream_snapshot(
         self,
         *,
@@ -2673,22 +2702,8 @@ class ReplayRunController:
         from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
         if isinstance(self._journal, BacktestMemoryJournal):
-            from src.backend.backtest_market_data import readonly_clickhouse_client
-            from src.backend.backtest_journal_reader import BacktestJournalReader
-            publisher = self._journal_publisher
-            with closing(readonly_clickhouse_client()) as client:
-                reader = BacktestJournalReader(
-                    client, self.run_id,
-                    **({"fenced_sequence": publisher.fenced_sequence,
-                        "batch_ids": publisher.committed_batch_ids}
-                       if publisher is not None else {}),
-                )
-                return SIGNAL_STREAM_RUNTIME.snapshot(
-                    reader, signal_stream_id=signal_stream_id,
-                    run_id=self.run_id, as_of=as_of or self.current_time,
-                    limit=limit,
-                    configuration=self.definition.configuration_revision["payload"],
-                )
+            raise RuntimeError(
+                "Fixed typed Signal Stream review requires normalized V2 projection")
 
         return SIGNAL_STREAM_RUNTIME.snapshot(
             self._journal,
@@ -2715,41 +2730,22 @@ class ReplayRunController:
     ) -> dict[str, Any]:
         if self._journal is None:
             raise ValueError("Replay Strategy Activity is not ready")
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        if isinstance(self._journal, BacktestMemoryJournal):
+            raise RuntimeError(
+                "Fixed typed strategy activity requires normalized V2 UI projection")
         from src.backend.trading_runtime_service import strategy_activity_payload
 
         if self.definition.mode == RunMode.BACKTEST or through_sequence is not None:
             cutoff = min(as_of, self.current_time) if as_of and self.current_time else self.current_time or as_of
             limit = max(1, min(int(limit), 50_000))
-            from src.backend.backtest_journal_memory import BacktestMemoryJournal
-            if isinstance(self._journal, BacktestMemoryJournal):
-                from src.backend.backtest_market_data import readonly_clickhouse_client
-                from src.backend.backtest_journal_reader import BacktestJournalReader
-                publisher = self._journal_publisher
-                with closing(readonly_clickhouse_client()) as client:
-                    reader = BacktestJournalReader(
-                        client, self.run_id,
-                        **({"fenced_sequence": publisher.fenced_sequence,
-                            "batch_ids": publisher.committed_batch_ids}
-                           if publisher is not None else {}),
-                    )
-                    fence = reader.sequence
-                    if through_sequence is not None:
-                        fence = min(fence, through_sequence)
-                    records = reader.strategy_activity_records(
-                        run_id=self.run_id, as_of=cutoff, through_sequence=fence,
-                        record_id=record_id, strategy_id=strategy_id, ticker=ticker,
-                        event_type=event_type, limit=limit + 1, offset=offset,
-                        compact=not include_decision_evidence,
-                        consequential_only=consequential_only,
-                    )
-            else:
-                fence = self._journal.latest_sequence(self.run_id)
-                if through_sequence is not None:
-                    fence = min(fence, through_sequence)
-                records = self._journal.strategy_activity_records(run_id=self.run_id, as_of=cutoff,
-                    through_sequence=fence, record_id=record_id, strategy_id=strategy_id, ticker=ticker,
-                    event_type=event_type, limit=limit + 1, offset=offset,
-                    compact=not include_decision_evidence, consequential_only=consequential_only)
+            fence = self._journal.latest_sequence(self.run_id)
+            if through_sequence is not None:
+                fence = min(fence, through_sequence)
+            records = self._journal.strategy_activity_records(run_id=self.run_id, as_of=cutoff,
+                through_sequence=fence, record_id=record_id, strategy_id=strategy_id, ticker=ticker,
+                event_type=event_type, limit=limit + 1, offset=offset,
+                compact=not include_decision_evidence, consequential_only=consequential_only)
             return {**strategy_activity_payload(as_of=cutoff, run_id=self.run_id, record_id=record_id,
                 strategy_id=strategy_id, ticker=ticker, event_type=event_type, limit=limit, offset=offset,
                 include_decision_evidence=include_decision_evidence, consequential_only=consequential_only,

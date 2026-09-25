@@ -401,7 +401,7 @@ def test_fixed_journal_shutdown_drains_off_event_loop():
     assert controller._journal_publisher is None
 
 
-def test_fixed_activity_reads_only_committed_clickhouse_prefix(monkeypatch):
+def test_fixed_legacy_activity_route_blocks_without_bt_or_sqlite_fallback(monkeypatch):
     from src.backend import backtest_journal_reader, backtest_market_data
 
     controller = object.__new__(ReplayRunController)
@@ -420,21 +420,16 @@ def test_fixed_activity_reads_only_committed_clickhouse_prefix(monkeypatch):
         def close(self):
             pass
 
-    observed = []
     class Reader:
         def __init__(self, _client, _run_id, **kwargs):
-            observed.append(kwargs)
-            self.sequence = kwargs["fenced_sequence"]
-        def strategy_activity_records(self, **kwargs):
-            observed.append(kwargs)
-            return []
+            pytest.fail("retired bt_* reader opened")
 
     monkeypatch.setattr(backtest_market_data, "readonly_clickhouse_client", Client)
     monkeypatch.setattr(backtest_journal_reader, "BacktestJournalReader", Reader)
-    payload = controller.strategy_activity_snapshot(limit=2)
-    assert observed[0] == {"fenced_sequence": 7, "batch_ids": (RUN,)}
-    assert observed[1]["through_sequence"] == 7
-    assert payload["presentation_sequence"] == 7
+    with pytest.raises(RuntimeError, match="normalized V2 UI projection"):
+        controller.strategy_activity_snapshot(limit=2)
+    with pytest.raises(RuntimeError, match="normalized V2 projection"):
+        controller.signal_stream_snapshot(limit=2)
 
 
 def test_fixed_signal_loader_never_prepares_missing_occurrences(monkeypatch):
