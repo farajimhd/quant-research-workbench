@@ -161,3 +161,57 @@ def test_exact_typed_fence_readback_rejects_duplicate_and_tamper(monkeypatch):
     rows[1] = dict(rows[1], content_hash="0" * 64)
     with pytest.raises(RuntimeError, match="differs from hash"):
         proof_module._fence_hashes(object(), RUN, ACCOUNT, 1)
+
+
+def test_strict_startup_requires_external_durable_writer_barrier(monkeypatch):
+    reads = []
+    monkeypatch.setattr(proof_module, "_rows", lambda *_args: reads.append(True) or [])
+    with pytest.raises(RuntimeError, match="writer-drain barrier"):
+        proof_module.audit_attested_admission_revisions(
+            object(), object(), RUN, quiescence=None)
+    assert not reads
+
+
+def test_strict_startup_pages_and_verifies_every_historical_revision(monkeypatch):
+    keys = [("DU1", 1), ("DU1", 2), ("DU2", 1)]
+    queries = []
+    def rows(_client, sql):
+        queries.append(sql)
+        import re
+        after = re.search(r"AND \(account_id,state_revision\) > \('([^']+)',(\d+)\)", sql)
+        selected = [key for key in keys if after is None or
+                    key > (after.group(1), int(after.group(2)))]
+        return [{"account_id": account, "state_revision": revision}
+                for account, revision in selected[:1]]
+    monkeypatch.setattr(proof_module, "_rows", rows)
+    checked = []
+    monkeypatch.setattr(proof_module, "load_attested_admission", lambda *_args, **identity:
+                        checked.append((identity["account_id"], identity["state_revision"])))
+    class Barrier:
+        calls = 0
+        def assert_fenced(self, run_id):
+            assert run_id == RUN
+            self.calls += 1
+    barrier = Barrier()
+    assert proof_module.audit_attested_admission_revisions(
+        object(), object(), RUN, quiescence=barrier, page_size=1) == 3
+    assert checked == keys
+    assert len(queries) == 4 and barrier.calls > len(queries)
+
+
+def test_strict_startup_lost_barrier_blocks_result_mid_scan(monkeypatch):
+    monkeypatch.setattr(proof_module, "_rows", lambda *_args:
+                        [{"account_id": ACCOUNT, "state_revision": 1}])
+    checked = []
+    monkeypatch.setattr(proof_module, "load_attested_admission", lambda *_args, **_kwargs:
+                        checked.append(True))
+    class Barrier:
+        calls = 0
+        def assert_fenced(self, _run_id):
+            self.calls += 1
+            if self.calls == 3:
+                raise RuntimeError("writer barrier lost")
+    with pytest.raises(RuntimeError, match="writer barrier lost"):
+        proof_module.audit_attested_admission_revisions(
+            object(), object(), RUN, quiescence=Barrier(), page_size=1)
+    assert not checked

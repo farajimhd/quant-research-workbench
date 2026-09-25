@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import re
-from typing import Any
+from typing import Any, Protocol
 
 from src.trading_runtime.arte_admission_fence import load_fenced_admission
 from src.trading_runtime.arte_journal_writer import _canonical_typed_content, _literal, _rows
@@ -172,3 +172,62 @@ class KeeperAdmissionEpochAuthority:
         if _fence_hashes(client, run_id, account_id, state_revision) != hashes:
             raise RuntimeError("Admission fence changed after epoch proof CAS")
         return proof
+
+
+class AdmissionWriterQuiescence(Protocol):
+    """External durable barrier, not a Keeper lease-expiry observation.
+
+    A conforming implementation must prove that all previous owners' CH
+    inserts have drained or are transactionally fenced, and that no new owner
+    can enqueue one until the audit exits. No production implementation exists.
+    """
+
+    def assert_fenced(self, run_id: str) -> None: ...
+
+
+def audit_attested_admission_revisions(
+        client: Any, authority: Any, run_id: str, *,
+        quiescence: AdmissionWriterQuiescence | None,
+        page_size: int = 256) -> int:
+    """Inactive strict startup scan of every CH revision and historical proof.
+
+    This function cannot establish a stable read by itself. A missing or lost
+    external writer-drain barrier is an error, never a successful audit.
+    """
+    _identity(run_id, "run")
+    if type(page_size) is not int or not 1 <= page_size <= 1000:
+        raise ValueError("Admission proof audit page size is invalid")
+    if quiescence is None or not callable(getattr(quiescence, "assert_fenced", None)):
+        raise RuntimeError("Admission proof audit requires a writer-drain barrier")
+    quiescence.assert_fenced(run_id)
+    cursor: tuple[str, int] | None = None
+    checked = 0
+    while True:
+        quiescence.assert_fenced(run_id)
+        after = ("" if cursor is None else
+                 "AND (account_id,state_revision) > "
+                 f"({_literal(cursor[0])},{cursor[1]}) ")
+        page = _rows(client,
+            "SELECT account_id,state_revision "
+            "FROM arte.trading_admission_fence_v1 "
+            f"WHERE run_id={_literal(run_id)} {after}"
+            "GROUP BY account_id,state_revision "
+            f"ORDER BY account_id,state_revision LIMIT {page_size} FORMAT JSONEachRow")
+        if len(page) > page_size:
+            raise RuntimeError("Admission proof audit page exceeded bound")
+        for row in page:
+            key = (row.get("account_id"), row.get("state_revision"))
+            if (not isinstance(key[0], str) or not key[0]
+                    or type(key[1]) is not int or key[1] < 1
+                    or (cursor is not None and key <= cursor)):
+                raise RuntimeError("Admission proof audit keys are invalid or nonmonotonic")
+            quiescence.assert_fenced(run_id)
+            load_attested_admission(client, authority, run_id=run_id,
+                                    account_id=key[0], state_revision=key[1])
+            cursor = key
+            checked += 1
+        quiescence.assert_fenced(run_id)
+        if len(page) < page_size:
+            break
+    quiescence.assert_fenced(run_id)
+    return checked
