@@ -34,6 +34,7 @@ from src.backend.backtest_squeeze_episode_schema import (
     staged_entry_reprice_capacity_ddl,
 )
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
+from src.backend.live_plan_membership import TABLES as LIVE_PLAN_MEMBERSHIP_TABLES
 from scripts.clickhouse.provision_fixed_backtest_v3_principals import WORKSTATION_IPV4
 
 
@@ -55,6 +56,30 @@ _CAPACITY_COLUMNS = frozenset({
     "entry_reprice_capacity_count", "entry_reprice_capacity_hash",
     "entry_reprice_capacity_reason_count", "entry_reprice_capacity_reason_hash",
 })
+
+
+def install_live_plan_membership(client: object, *, apply: bool) -> str:
+    """Install the three typed control-plane tables; never insert rows."""
+    names = ",".join(f"'{table.name}'" for table in LIVE_PLAN_MEMBERSHIP_TABLES)
+    result = [json.loads(line) for line in client.execute(
+        "SELECT name FROM system.tables WHERE database='arte' "
+        f"AND name IN ({names}) FORMAT JSONEachRow").splitlines() if line.strip()]
+    installed = {row["name"] for row in result}
+    if (len(installed) != len(result) or
+            any(set(row) != {"name"} for row in result)):
+        raise RuntimeError("Live membership table inventory is ambiguous")
+    for table in LIVE_PLAN_MEMBERSHIP_TABLES:
+        if table.name in installed:
+            storage_preflight(client, tables=(table,))
+    if len(installed) == len(LIVE_PLAN_MEMBERSHIP_TABLES):
+        return "verified"
+    if not apply:
+        return "planned"
+    for table in LIVE_PLAN_MEMBERSHIP_TABLES:
+        if table.name not in installed:
+            client.execute(table.ddl())
+            storage_preflight(client, tables=(table,))
+    return "upgraded"
 
 
 def upgrade_v3_entry_reprice_capacity(client: object, *, apply: bool) -> str:
@@ -479,6 +504,8 @@ def main() -> int:
                         help="verify or install empty-fence V3 broker/OMS children")
     parser.add_argument("--upgrade-v3-entry-reprice-capacity", action="store_true",
                         help="verify or install empty-fence V3 capacity children")
+    parser.add_argument("--install-live-plan-membership", action="store_true",
+                        help="verify or install typed live plan membership tables")
     args = parser.parse_args()
     parsed = urlsplit(args.url)
     if (platform.node().upper() != "DESKTOP-SAAI85T"
@@ -499,9 +526,13 @@ def main() -> int:
                     args.upgrade_v3_portfolio_control,
                     args.upgrade_v3_trade_proposal,
                     args.upgrade_v3_broker_oms,
-                    args.upgrade_v3_entry_reprice_capacity)) > 1:
-                parser.error("Select only one V3 upgrade at a time")
-            if args.upgrade_v3_entry_reprice_capacity:
+                    args.upgrade_v3_entry_reprice_capacity,
+                    args.install_live_plan_membership)) > 1:
+                parser.error("Select only one layout upgrade at a time")
+            if args.install_live_plan_membership:
+                result = install_live_plan_membership(client, apply=args.apply)
+                print(f"Live plan membership layout: {result}; no rows inserted")
+            elif args.upgrade_v3_entry_reprice_capacity:
                 result = upgrade_v3_entry_reprice_capacity(client, apply=args.apply)
                 print(f"V3 entry-reprice-capacity layout: {result}; no rows inserted")
             elif args.upgrade_v3_broker_oms:

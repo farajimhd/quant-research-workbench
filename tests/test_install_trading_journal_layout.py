@@ -79,6 +79,38 @@ def test_cli_defaults_to_read_only_plan_on_workstation(monkeypatch, capsys):
     assert all(sql.startswith("SELECT ") for sql in client.statements)
 
 
+def test_live_membership_layout_is_typed_read_only_and_restart_safe(monkeypatch):
+    class MembershipClient:
+        def __init__(self):
+            self.installed = set()
+            self.statements = []
+        def execute(self, sql):
+            self.statements.append(sql)
+            if sql.startswith("SELECT name FROM system.tables"):
+                return "\n".join(json.dumps({"name": name})
+                                 for name in sorted(self.installed))
+            if sql.startswith("CREATE TABLE IF NOT EXISTS arte."):
+                self.installed.add(sql.split("arte.", 1)[1].split(" ", 1)[0])
+                return ""
+            raise AssertionError(sql)
+    verified = []
+    monkeypatch.setattr(install, "storage_preflight",
+                        lambda _, *, tables: verified.append(tables[0].name))
+    client = MembershipClient()
+    assert install.install_live_plan_membership(client, apply=False) == "planned"
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+    assert install.install_live_plan_membership(client, apply=True) == "upgraded"
+    names = {table.name for table in install.LIVE_PLAN_MEMBERSHIP_TABLES}
+    assert client.installed == names
+    assert set(verified) == names
+    writes = [sql for sql in client.statements if sql.startswith("CREATE TABLE")]
+    assert len(writes) == 3
+    assert all("storage_policy = 'live_market_ssd'" in sql for sql in writes)
+    assert all(" JSON " not in sql and " payload" not in sql for sql in writes)
+    assert install.install_live_plan_membership(client, apply=False) == "verified"
+    assert len([sql for sql in client.statements if sql.startswith("CREATE TABLE")]) == 3
+
+
 class V3UpgradeClient:
     def __init__(self, *, state="old", child=False, rows=0):
         self.state = state
