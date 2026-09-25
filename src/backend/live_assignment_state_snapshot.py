@@ -50,6 +50,30 @@ from src.trading_runtime.arte_assignment_pending_breakout import (
     PARENT_TABLE as PENDING_BREAKOUT_PARENT_TABLE,
     MEMBER_TABLE as PENDING_BREAKOUT_MEMBER_TABLE,
 )
+from src.trading_runtime.arte_assignment_vwap_entry_scalars import TABLE as VWAP_ENTRY_SCALARS
+from src.trading_runtime.arte_assignment_vwap_entry_ids import (
+    MANIFEST_TABLE as VWAP_ENTRY_ID_MANIFEST,
+    BROKEN_TABLE as VWAP_ENTRY_BROKEN,
+    CROSS_KNOWN_TABLE as VWAP_ENTRY_CROSS_KNOWN,
+)
+from src.trading_runtime.arte_assignment_vwap_swing import (
+    SWING_TABLE as VWAP_ENTRY_SWING,
+    BOUNCE_TABLE as VWAP_ENTRY_SWING_BOUNCE,
+)
+from src.trading_runtime.arte_assignment_vwap_retest_anchor import (
+    RETEST_TABLE as VWAP_ENTRY_RETEST,
+    MEMBER_TABLE as VWAP_ENTRY_RETEST_MEMBER,
+    SWING_TABLE as VWAP_ENTRY_RETEST_SWING,
+    BOUNCE_TABLE as VWAP_ENTRY_RETEST_BOUNCE,
+)
+from src.trading_runtime.arte_assignment_vwap_entry_breakout import (
+    SETUP_TABLE as VWAP_ENTRY_BREAKOUT_SETUP,
+    BREAKOUT_PARENT_TABLE as VWAP_ENTRY_BREAKOUT_PARENT,
+    BREAKOUT_MEMBER_TABLE as VWAP_ENTRY_BREAKOUT_MEMBER,
+)
+from src.trading_runtime.arte_assignment_vwap_pullback_move import (
+    TABLE as VWAP_ENTRY_PULLBACK,
+)
 from src.trading_runtime.arte_campaign_control_projection import TABLES as CAMPAIGN
 from src.trading_runtime.arte_grouped_resistance_projection import TABLES as GROUPED
 from src.trading_runtime.arte_long_momentum_squeeze_purchase_state import (
@@ -73,6 +97,22 @@ STATE_COMMIT = TableContract(
      ("child_hash", "FixedString(64)"), ("content_hash", "FixedString(64)")),
     "toYYYYMM(session)", "assignment_id, revision, snapshot_id",
 )
+_VWAP_ENTRY_TABLE_KEYS = (
+    (VWAP_ENTRY_SCALARS, "scalars"),
+    (VWAP_ENTRY_ID_MANIFEST, "ids_manifest"),
+    (VWAP_ENTRY_BROKEN, "broken"),
+    (VWAP_ENTRY_CROSS_KNOWN, "cross_known"),
+    (VWAP_ENTRY_SWING, "swing"),
+    (VWAP_ENTRY_SWING_BOUNCE, "swing_bounce"),
+    (VWAP_ENTRY_RETEST, "retest"),
+    (VWAP_ENTRY_RETEST_MEMBER, "retest_members"),
+    (VWAP_ENTRY_RETEST_SWING, "retest_swing"),
+    (VWAP_ENTRY_RETEST_BOUNCE, "retest_bounce"),
+    (VWAP_ENTRY_BREAKOUT_SETUP, "breakout_setup"),
+    (VWAP_ENTRY_BREAKOUT_PARENT, "breakout_parent"),
+    (VWAP_ENTRY_BREAKOUT_MEMBER, "breakout_members"),
+    (VWAP_ENTRY_PULLBACK, "pullback"),
+)
 _SPECS = (
     (COUNTERS_TABLE, "lifecycle_counters", None),
     (ENTRY_PROTECTION_TABLE, "entry_protection_scalars", None),
@@ -89,6 +129,7 @@ _SPECS = (
     (POST_MOVE_MOVE_TABLE, "post_move_clock", "moves"),
     (PENDING_BREAKOUT_PARENT_TABLE, "post_move_clock", "pending_parent"),
     (PENDING_BREAKOUT_MEMBER_TABLE, "post_move_clock", "pending_members"),
+    *((table, "vwap_entry", key) for table, key in _VWAP_ENTRY_TABLE_KEYS),
     (CAMPAIGN[0], "campaign", "control"),
     (CAMPAIGN[1], "campaign", "policy"),
     *((table, "grouped_resistance", key) for table, key in zip(
@@ -155,6 +196,8 @@ def _flatten(projected: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
     for table, group, key in _SPECS:
         value = projected[group]
         if group == "grouped_resistance":
+            value = {} if value is None else value
+        elif group == "vwap_entry":
             value = {} if value is None else value
         elif group == "post_move_clock" and key.startswith("pending_"):
             pending = value["pending"]
@@ -248,6 +291,16 @@ def recover_state_snapshot(storage: StateStorage, *, run_id: str,
                      "members": rows[PENDING_BREAKOUT_MEMBER_TABLE.name]}
                     if pending_parent else None),
     }
+    vwap_entry = None
+    if rows[VWAP_ENTRY_SCALARS.name]:
+        list_keys = {"broken", "cross_known", "retest_members",
+                     "breakout_parent", "breakout_members"}
+        vwap_entry = {}
+        for table, key in _VWAP_ENTRY_TABLE_KEYS:
+            values = rows[table.name]
+            vwap_entry[key] = (values if key in list_keys else
+                               values[0] if len(values) == 1 else
+                               None if not values else values)
     grouped = ({key: rows[table.name] for table, group, key in _SPECS
                 if group == "grouped_resistance"} if commit["grouped_present"] else None)
     purchase = {key: rows[table.name] for table, group, key in _SPECS
@@ -286,6 +339,7 @@ def recover_state_snapshot(storage: StateStorage, *, run_id: str,
                                    if len(rows[VWAP_EPISODE_TABLE.name]) == 1
                                    else rows[VWAP_EPISODE_TABLE.name]),
                      post_move_clock=post_move_clock,
+                     vwap_entry=vwap_entry,
                      squeeze_purchase={**purchase, "ledger": purchase["ledger"][0]
                                        if len(purchase["ledger"]) == 1 else purchase["ledger"]},
                      squeeze_clock=clock[0], squeeze_progress=progress,

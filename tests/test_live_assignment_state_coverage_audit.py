@@ -91,6 +91,5 @@ def test_every_literal_live_state_write_is_explicitly_audited():
     assert {"entry_reference_price", "initial_stop", "active_stop"} <= _TOP_LEVEL
     assert {"last_observed_at", "last_price", "add_step_uses"} <= _TOP_LEVEL
     assert "structural_profit_targets" in _TOP_LEVEL
-    assert {"vwap_ladder_entry", "squeeze_breakout"} - _TOP_LEVEL == {
-            "vwap_ladder_entry"}
+    assert {"vwap_ladder_entry", "squeeze_breakout"} <= _TOP_LEVEL
     assert len(literal - _TOP_LEVEL) > 50
