@@ -14,6 +14,7 @@ from typing import Mapping
 import numpy as np
 
 from .strategy_one_contract import closed_macd_candidate_mask
+from .momentum_session_policy import DEFAULTS as PURCHASE_DEFAULTS
 
 
 MACD_RESOLUTIONS_MS = (1_000, 5_000, 10_000, 30_000)
@@ -23,6 +24,7 @@ REJECT_VWAP = 4
 REJECT_PRIOR_CLOSE = 8
 REJECT_MACD = 16
 REJECT_STOP_BAR = 32
+REJECT_LIQUIDITY = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +128,8 @@ def prepare_strategy_one_entries(*, evaluation_boundary_ms,
                                  price_valid, bid_int, ask_int,
                                  quote_valid, quote_timestamp_us,
                                  execution_vwap, previous_close,
+                                 cumulative_volume, cumulative_notional,
+                                 volume_trade_count,
                                  macd: Mapping[int, CompletedMacd],
                                  thirty_second_low: CompletedThirtySecondLow,
                                  quote_freshness_us: int = 1_000_000,
@@ -152,6 +156,15 @@ def prepare_strategy_one_entries(*, evaluation_boundary_ms,
     quote_at = _aligned(quote_timestamp_us, n, name="quote clock", dtype=np.int64)
     vwap = _aligned(execution_vwap, n, name="execution VWAP", dtype=np.float64)
     prior = _aligned(previous_close, n, name="prior close", dtype=np.float64)
+    shares = _aligned(cumulative_volume, n, name="session shares", dtype=np.float64)
+    dollars = _aligned(cumulative_notional, n, name="session dollars", dtype=np.float64)
+    trades = _aligned(volume_trade_count, n, name="eligible trade count", dtype=np.int64)
+    if (np.any(~np.isfinite(shares)) or np.any(~np.isfinite(dollars))
+            or np.any(shares < 0) or np.any(dollars < 0)
+            or np.any(np.diff(shares) < -1e-7)
+            or np.any(np.diff(dollars) < -1e-7)
+            or np.any(trades < 0)):
+        raise ValueError("Strategy 1 liquidity accumulators are invalid")
     if set(macd) != set(MACD_RESOLUTIONS_MS):
         raise ValueError("Strategy 1 requires the exact four completed MACD resolutions")
     source_clock = np.full((n, 4), -1, dtype=np.int64)
@@ -193,10 +206,28 @@ def prepare_strategy_one_entries(*, evaluation_boundary_ms,
                   & (quote_age >= 0) & (quote_age <= quote_freshness_us))
     good_vwap = np.isfinite(vwap) & (vwap > 0) & (vwap * 10_000 < price)
     good_prior = np.isfinite(prior) & (prior > 0) & (prior < 20)
+    cumulative_trades = np.r_[0, np.cumsum(trades, dtype=np.int64)]
+    # Sparse liquidity buckets contribute zero eligible trades. The expired
+    # left boundary is excluded; only completed buckets through t are counted.
+    rate_10s = (cumulative_trades[1:] - cumulative_trades[
+        np.searchsorted(evaluation, evaluation - 10_000, side="right")]) / 10.
+    rate_60s = (cumulative_trades[1:] - cumulative_trades[
+        np.searchsorted(evaluation, evaluation - 60_000, side="right")]) / 60.
+    spread_bps = np.full(n, np.inf)
+    valid_spread = (bid > 0) & (ask >= bid)
+    spread_bps[valid_spread] = ((ask[valid_spread].astype(np.float64)
+        - bid[valid_spread]) * 20_000
+        / (ask[valid_spread] + bid[valid_spread]))
+    good_liquidity = ((shares >= PURCHASE_DEFAULTS["minimum_session_shares"])
+        & (dollars >= PURCHASE_DEFAULTS["minimum_session_dollars"])
+        & (rate_10s >= PURCHASE_DEFAULTS["minimum_trade_rate_10s"])
+        & (rate_60s >= PURCHASE_DEFAULTS["minimum_trade_rate_60s"])
+        & (spread_bps <= PURCHASE_DEFAULTS["maximum_spread_bps"]))
     rejection = np.zeros(n, dtype=np.uint8)
     for bit, good in ((REJECT_PRICE, good_price), (REJECT_QUOTE, good_quote),
                       (REJECT_VWAP, good_vwap), (REJECT_PRIOR_CLOSE, good_prior),
-                      (REJECT_MACD, bullish), (REJECT_STOP_BAR, low_ready)):
+                      (REJECT_MACD, bullish), (REJECT_STOP_BAR, low_ready),
+                      (REJECT_LIQUIDITY, good_liquidity)):
         rejection[~good] |= bit
     return StrategyOneCandidateBatch(evaluation, rejection == 0, rejection,
                                      source_clock, selected_low_clock, selected_low)

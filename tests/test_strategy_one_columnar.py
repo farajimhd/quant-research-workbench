@@ -3,7 +3,8 @@ import numpy as np
 import pytest
 
 from src.trading_runtime.strategy_one_columnar import (
-    CompletedMacd, CompletedThirtySecondLow, REJECT_MACD, REJECT_PRICE, REJECT_QUOTE,
+    CompletedMacd, CompletedThirtySecondLow, REJECT_LIQUIDITY, REJECT_MACD,
+    REJECT_PRICE, REJECT_QUOTE,
     REJECT_STOP_BAR, prepare_strategy_one_entries,
     schedule_strategy_one_entries,
 )
@@ -21,6 +22,9 @@ def inputs():
                 bid_int=np.full(6, 99_900), ask_int=np.full(6, 100_100),
                 quote_valid=np.ones(6), quote_timestamp_us=epochs - 100_000,
                 execution_vwap=np.full(6, 9.5), previous_close=np.full(6, 9.),
+                cumulative_volume=np.full(6, 30_000.),
+                cumulative_notional=np.full(6, 300_000.),
+                volume_trade_count=np.full(6, 30),
                 macd=macd,
                 thirty_second_low=CompletedThirtySecondLow(
                     np.array([30_000]), np.array([97_000]),
@@ -84,7 +88,8 @@ def test_squeeze_episode_schedule_is_causal_inclusive_and_compact():
         [30_000, 30_100, 330_000, 330_100, 630_000])
     data["evaluation_epoch_us"] = 1_800_000_000_000_000 + data["evaluation_boundary_ms"] * 1000
     for name in ("close_int", "price_valid", "bid_int", "ask_int", "quote_valid",
-                 "quote_timestamp_us", "execution_vwap", "previous_close"):
+                 "quote_timestamp_us", "execution_vwap", "previous_close",
+                 "cumulative_volume", "cumulative_notional", "volume_trade_count"):
         data[name] = np.resize(data[name], 5)
     data["quote_timestamp_us"] = data["evaluation_epoch_us"] - 100_000
     data["macd"] = {resolution: CompletedMacd(
@@ -103,3 +108,21 @@ def test_squeeze_episode_schedule_is_causal_inclusive_and_compact():
     assert schedule_strategy_one_entries(batch, []).row_index.size == 0
     with pytest.raises(ValueError, match="overlap"):
         schedule_strategy_one_entries(batch, [30_000, 30_100])
+
+
+def test_completed_liquidity_purchase_gate_is_causal_and_rejects_sparse_rate():
+    data = inputs()
+    baseline = prepare_strategy_one_entries(**data)
+    assert baseline.entry_mask[1:3].tolist() == [True, True]
+    data["cumulative_volume"][:] = 24_999
+    assert np.all(prepare_strategy_one_entries(**data).rejection_bits & REJECT_LIQUIDITY)
+    data = inputs()
+    data["volume_trade_count"][:] = 0
+    assert np.all(prepare_strategy_one_entries(**data).rejection_bits & REJECT_LIQUIDITY)
+    data = inputs()
+    data["ask_int"][:] = 105_000
+    assert np.all(prepare_strategy_one_entries(**data).rejection_bits & REJECT_LIQUIDITY)
+    data = inputs()
+    data["cumulative_notional"][-1] = 0
+    with pytest.raises(ValueError, match="accumulators"):
+        prepare_strategy_one_entries(**data)

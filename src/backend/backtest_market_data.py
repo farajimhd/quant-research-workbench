@@ -663,7 +663,9 @@ def market_day_source_sqls(
         "m.session_date,m.ticker,m.resolution_ms,m.boundary_ms,"
         "m.close_int,m.low_int,m.price_valid,m.extremes_valid,"
         "m.bid_int,m.ask_int,m.quote_valid,m.quote_timestamp_us,"
-        "m.execution_vwap,i.resolution_ms AS indicator_resolution_ms,"
+        "m.execution_vwap,m.cumulative_volume,m.cumulative_notional,"
+        "m.trade_count AS volume_trade_count,"
+        "i.resolution_ms AS indicator_resolution_ms,"
         "i.macd_line,i.macd_signal,i.previous_close"
         if strategy_one_projection else
         f"m.*,i.resolution_ms AS indicator_resolution_ms,{indicators}"

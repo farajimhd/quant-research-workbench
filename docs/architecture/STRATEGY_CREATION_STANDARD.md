@@ -95,8 +95,11 @@ The target reuses the historical 3/2/1 overhead-resistance ordinal rule,
 never moving downward. These selections are drafted in
 `src/trading_runtime/strategy_one_contract.py` and are not registered.
 `src/trading_runtime/strategy_one_columnar.py` implements a pure necessary-
-condition entry mask using completed MACD, liquidity quote/VWAP, prior close,
-and the last completed 30s low. It neither owns activation nor suppresses
+condition entry mask using completed MACD, liquidity quote/VWAP, cumulative
+eligible share/dollar volume, completed 10s/60s eligible-trade rates, executable
+spread, prior close, and the last completed 30s low. Its liquidity windows
+exclude trades at the exact expired boundary and read only pinned `arte`
+liquidity rows. It neither owns activation nor suppresses
 management of an existing position. The read-only
 `src/backend/backtest_strategy_one_loader.py` now projects one certified
 ticker/session through bounded Arrow batches into this mask, including exact

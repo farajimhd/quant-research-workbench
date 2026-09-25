@@ -37,7 +37,10 @@ def source_tables():
         "bid_int": [99_900, 100_000],
         "ask_int": [100_100, 100_200], "quote_valid": [1, 1],
         "quote_timestamp_us": [origin + 29_900_000, origin + 30_000_000],
-        "execution_vwap": [9.5, 9.5], "previous_close": [9., 9.]})
+        "execution_vwap": [9.5, 9.5], "previous_close": [9., 9.],
+        "cumulative_volume": [30_000., 30_100.],
+        "cumulative_notional": [300_000., 301_000.],
+        "volume_trade_count": [30, 30]})
     higher = pa.table({
         "session_date": pa.array([date.fromisoformat(DAY)] * 4, type=pa.date32()),
         "ticker": [TICKER] * 4,
