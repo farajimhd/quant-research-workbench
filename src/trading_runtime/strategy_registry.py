@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
+import json
+import re
 from threading import RLock
 from typing import Any, Callable
 
@@ -12,6 +15,55 @@ InputCatalogFactory = Callable[[], list[dict[str, Any]]]
 TimeframeResolver = Callable[[dict[str, Any]], set[str]]
 ObservationProjector = Callable[[Any, str], dict[str, Any]]
 AssignmentEvaluator = Callable[[Any, Any], Any]
+
+
+@dataclass(frozen=True, slots=True)
+class NumberedStrategyRelease:
+    """One complete, sealed trading behavior; executor revision is internal.
+
+    A new entry, exit, sizing, timing, or rule-set behavior needs a new number.
+    Dependencies may have separate technical versions, but each release pins
+    them exactly. The digest is an integrity seal, not an external signature.
+    """
+
+    number: int
+    executor_strategy_id: str
+    executor_revision: int
+    evaluation_interval: str
+    input_contracts: tuple[str, ...]
+    rule_set_contracts: tuple[str, ...]
+    behavior_specification: str
+    approved_digest: str
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "number": self.number,
+            "executor_strategy_id": self.executor_strategy_id,
+            "executor_revision": self.executor_revision,
+            "evaluation_interval": self.evaluation_interval,
+            "input_contracts": list(self.input_contracts),
+            "rule_set_contracts": list(self.rule_set_contracts),
+            "behavior_specification": self.behavior_specification,
+        }
+
+    def digest(self) -> str:
+        raw = json.dumps(self.canonical_payload(), sort_keys=True,
+                         separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        return sha256(raw).hexdigest()
+
+    def verify(self) -> None:
+        fixed = re.fullmatch(r"([1-9]\d*)ms", self.evaluation_interval)
+        interval_valid = (self.evaluation_interval == "events"
+                          or fixed is not None and int(fixed.group(1)) % 100 == 0)
+        if (type(self.number) is not int or self.number < 1
+                or not self.executor_strategy_id or self.executor_revision < 1
+                or not interval_valid
+                or not self.input_contracts or len(set(self.input_contracts)) != len(self.input_contracts)
+                or not self.rule_set_contracts
+                or len(set(self.rule_set_contracts)) != len(self.rule_set_contracts)
+                or not self.behavior_specification.strip()
+                or self.approved_digest != self.digest()):
+            raise ValueError("Numbered Strategy release lacks an exact approved seal")
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,8 +106,29 @@ class StrategyExecutorRegistration:
 
 _LOCK = RLock()
 _REGISTRY: dict[tuple[str, int], StrategyExecutorRegistration] = {}
+_NUMBERED_RELEASES: dict[int, NumberedStrategyRelease] = {}
 _BUILTIN_REGISTRY: dict[tuple[str, int], StrategyExecutorRegistration] = {}
 _BUILTINS_REGISTERED = False
+
+
+def register_numbered_strategy(release: NumberedStrategyRelease) -> None:
+    """Publish once; there is deliberately no replace or mutable edit API."""
+    release.verify()
+    strategy_executor(release.executor_strategy_id, release.executor_revision)
+    with _LOCK:
+        prior = _NUMBERED_RELEASES.get(release.number)
+        if prior is not None and prior != release:
+            raise ValueError(f"Strategy {release.number} is immutable; assign a new number")
+        _NUMBERED_RELEASES[release.number] = release
+
+
+def numbered_strategy(number: int) -> NumberedStrategyRelease:
+    with _LOCK:
+        release = _NUMBERED_RELEASES.get(number)
+    if release is None:
+        raise ValueError(f"Strategy {number} is not published")
+    release.verify()
+    return release
 
 
 def register_strategy_executor(
