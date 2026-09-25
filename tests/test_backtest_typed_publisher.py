@@ -23,6 +23,7 @@ AT = market_day_boundary(DAY, 300_000).astimezone(timezone.utc)
 class FakeWriter:
     run_id = RUN
     run_mode = "backtest"
+    journal_profile = "backtest_v2"
     coalesce_batches = False
     max_events_per_commit = 512
 
@@ -62,6 +63,13 @@ def _publisher(journal, writer, *, batch_size=512):
     return BacktestTypedJournalPublisher(
         journal, writer, attempt_id=ATTEMPT, run_month=DAY.replace(day=1),
         batch_size=batch_size, expected_config={"mode": "backtest"})
+
+
+def test_fixed_publisher_rejects_legacy_v1_writer():
+    writer = FakeWriter()
+    writer.journal_profile = "v1"
+    with pytest.raises(ValueError, match="exclusive bounded prefix"):
+        _publisher(_journal(), writer)
 
 
 async def _wait_for_submission(writer):

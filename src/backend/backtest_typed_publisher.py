@@ -40,6 +40,7 @@ class BacktestTypedJournalPublisher:
         attempt = str(UUID(attempt_id))
         prior = str(UUID(prior_batch_id))
         if (writer.run_id != journal.run_id or writer.run_mode != "backtest"
+                or writer.journal_profile != "backtest_v2"
                 or writer.coalesce_batches
                 or type(batch_size) is not int or not 1 <= batch_size <= writer.max_events_per_commit
                 or type(initial_sequence) is not int or initial_sequence < 0
