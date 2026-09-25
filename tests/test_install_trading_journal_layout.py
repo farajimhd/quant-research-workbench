@@ -68,6 +68,8 @@ def test_v3_install_profile_is_read_only_by_default(monkeypatch):
 def test_cli_defaults_to_read_only_plan_on_workstation(monkeypatch, capsys):
     client = Client()
     monkeypatch.setattr(install.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(install.socket, "getaddrinfo", lambda *_args, **_kwargs: [
+        (None, None, None, None, (install.WORKSTATION_IPV4, 18123))])
     monkeypatch.setattr(install, "_admin_client", lambda _: client)
     monkeypatch.setattr(install, "plan_missing", lambda _: ((), ()))
     monkeypatch.setattr(install, "storage_preflight", lambda *_args, **_kwargs: None)

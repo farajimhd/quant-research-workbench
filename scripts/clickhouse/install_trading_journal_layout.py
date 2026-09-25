@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import socket
 import sys
 from urllib.parse import urlsplit
 
@@ -27,6 +28,7 @@ from src.trading_runtime.arte_journal_schema import (
 from src.backend.backtest_squeeze_episode_schema import (
     RESERVATION_REASON, SQUEEZE_COMMIT_V3, staged_reservation_reason_ddl,
 )
+from scripts.clickhouse.provision_fixed_backtest_v3_principals import WORKSTATION_IPV4
 
 
 _REASON_COLUMNS = frozenset({"portfolio_reservation_reason_count",
@@ -147,7 +149,12 @@ def main() -> int:
             != ("http", "desktop-saai85t", 18123, "", "", "", None, None)):
         parser.error("Run on DESKTOP-SAAI85T against its managed ClickHouse endpoint")
     try:
-        client = _admin_client(args.url)
+        addresses = {result[4][0] for result in socket.getaddrinfo(
+            parsed.hostname, parsed.port, family=socket.AF_INET,
+            type=socket.SOCK_STREAM)}
+        if WORKSTATION_IPV4 not in addresses:
+            raise RuntimeError("Pinned workstation IPv4 is not in hostname resolution")
+        client = _admin_client(f"http://{WORKSTATION_IPV4}:{parsed.port}")
         try:
             if args.upgrade_v3_reservation_reason:
                 upgrade_v3_reservation_reason(client, apply=args.apply)
