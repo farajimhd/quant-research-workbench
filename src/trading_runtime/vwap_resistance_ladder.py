@@ -132,7 +132,7 @@ def observe_market(o, state, settings=None, *, typed_persistence=False):
     return crossed
 
 
-def support_swing(o, rows, cutoff):
+def support_swing(o, rows, cutoff, *, typed_persistence=False):
     row = (o.structural_detector_state or {}).get('row', {})
     supports = [r for r in rows.values() if r.get('side') in (1, 'support')]
     def recovered(swing):
@@ -149,6 +149,9 @@ def support_swing(o, rows, cutoff):
         price_only=True, pivot_not_before=cutoff, eligible=supported)
     if candidate and recovered(candidate):
         candidate['support_bounce'] = deepcopy(recovered(candidate))
+    if candidate and typed_persistence:
+        from .arte_assignment_vwap_swing import validate_typed_entry_swing
+        candidate = validate_typed_entry_swing(candidate)
     return candidate
 
 
@@ -424,7 +427,8 @@ def evaluate(host, a, o, p, old_state, *, typed_persistence=False):
     if (not vwap or not hod or not isfinite(vwap) or not isfinite(hod)
             or hod <= vwap or o.price <= vwap or (not above_vwap_only and o.price < vwap+.5*(hod-vwap))):
         return emit('wait', 'above_vwap_required' if above_vwap_only else 'below_vwap_hod_midpoint')
-    swing = None if breakout else support_swing(o, rows, cutoff)
+    swing = None if breakout else support_swing(
+        o, rows, cutoff, typed_persistence=typed_persistence)
     if not post_move and (late and settings.get('require_late_retest') or not swing and settings.get('allow_retest_stop_fallback')):
         from .resistance_zones import entry_anchor
         anchor = entry_anchor(o, market, late, settings['late_entry_breaks'])
@@ -432,6 +436,9 @@ def evaluate(host, a, o, p, old_state, *, typed_persistence=False):
             return emit('wait', 'late_pullback_retest_required' if late else 'level_retest_stop_required')
     if anchor:
         swing = anchor['swing']
+        if typed_persistence:
+            from .arte_assignment_vwap_swing import validate_typed_entry_swing
+            swing = validate_typed_entry_swing(swing)
     overhead = sorted((r for k, r in market.get('known', {}).items()
         if (entry_kind == 'post_move_pullback' or k not in market.get('broken', []))
         and r['upper'] > o.ask), key=lambda r: r['lower'])
