@@ -31,6 +31,7 @@ from src.trading_runtime.arte_journal_schema import (
 from src.backend.live_signal_journal_preflight import (
     staged_grants, staged_live_signal_storage_preflight,
 )
+from src.backend.live_plan_membership import TABLES as LIVE_PLAN_MEMBERSHIP_TABLES
 
 
 PRINCIPAL = "trading_journal_writer"
@@ -136,10 +137,11 @@ def _write_credential(path: Path) -> str:
 
 
 def _grants(*, staged_live_signal: bool = False,
+            staged_live_plan_membership: bool = False,
             fixed_backtest_v2: bool = False) -> tuple[str, ...]:
     if fixed_backtest_v2:
-        if staged_live_signal:
-            raise ValueError("Fixed V2 and staged live-signal grants cannot be combined")
+        if staged_live_signal or staged_live_plan_membership:
+            raise ValueError("Fixed V2 and staged live grants cannot be combined")
         contracts = fixed_backtest_v2_contracts()
         legacy = {"trading_strategy_signal_v1", "trading_commit_v1"}
         statements = [
@@ -177,6 +179,10 @@ def _grants(*, staged_live_signal: bool = False,
     )
     if staged_live_signal:
         statements.extend(staged_grants(PRINCIPAL))
+    if staged_live_plan_membership:
+        statements.extend(
+            f"GRANT SELECT, INSERT ON arte.{table.name} TO {PRINCIPAL}"
+            for table in LIVE_PLAN_MEMBERSHIP_TABLES)
     return tuple(statements)
 
 
@@ -192,6 +198,7 @@ def _admin_client(url: str) -> ClickHouseHttpClient:
 
 
 def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
+              staged_live_plan_membership: bool = False,
               fixed_backtest_v2: bool = False) -> None:
     if platform.node().upper() != "DESKTOP-SAAI85T":
         raise RuntimeError("Provisioning must run on DESKTOP-SAAI85T")
@@ -210,6 +217,7 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
         raise RuntimeError("ClickHouse principal inventory is inconsistent")
     print(f"Journal principal: {'present' if present == '1' else 'absent'}")
     grants = _grants(staged_live_signal=staged_live_signal,
+                     staged_live_plan_membership=staged_live_plan_membership,
                      fixed_backtest_v2=fixed_backtest_v2)
     print(f"Required grants: {len(grants)} exact table grants")
     if not apply:
@@ -218,6 +226,8 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
 
     if staged_live_signal:
         staged_live_signal_storage_preflight(client)
+    if staged_live_plan_membership:
+        storage_preflight(client, tables=LIVE_PLAN_MEMBERSHIP_TABLES)
     if fixed_backtest_v2:
         # The journal principal never creates tables. An operator must install
         # and review the complete V2 DDL before permissions are changed.
@@ -255,12 +265,15 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="create credential and ClickHouse grants")
     parser.add_argument("--staged-live-signal", action="store_true",
                         help="also grant preprovisioned typed dispatch/completion tables")
+    parser.add_argument("--staged-live-plan-membership", action="store_true",
+                        help="also grant preprovisioned typed membership tables")
     parser.add_argument("--fixed-backtest-v2", action="store_true",
                         help="reconcile exact preprovisioned V2 grants and remove legacy V1 inserts")
     args = parser.parse_args()
     try:
         provision(args.url, apply=args.apply,
                   staged_live_signal=args.staged_live_signal,
+                  staged_live_plan_membership=args.staged_live_plan_membership,
                   fixed_backtest_v2=args.fixed_backtest_v2)
     except Exception as exc:
         print(f"Journal provisioning failed: {exc}", file=sys.stderr)

@@ -1827,6 +1827,12 @@ def journal_permission_preflight(
            for name in staged_names):
         staged_live_signal_storage_preflight(client)
         journal |= staged_names
+    from src.backend.live_plan_membership import TABLES as live_membership_tables
+    membership_names = {table.name for table in live_membership_tables}
+    if any(f"ON arte.{name} " in line for line in grant_lines
+           for name in membership_names):
+        storage_preflight(client, tables=live_membership_tables)
+        journal |= membership_names
     required = journal | market | read_only_tables
     names = ",".join(f"'{name}'" for name in sorted(required))
     actual = _rows(client,

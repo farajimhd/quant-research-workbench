@@ -276,18 +276,22 @@ def test_journal_principal_cannot_write_market_or_change_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.backend import live_signal_journal_preflight as staged_profile
+    from src.backend.live_plan_membership import TABLES as membership_tables
+    import src.trading_runtime.arte_journal_schema as schema_module
 
     market = {"bars_v1", "indicators_v1", "liquidity_100ms_v1",
               "structural_level_coverage_v7", "structural_level_observations_v7",
               "structural_levels_v7"}
     journal = {table.name for table in TABLES}
     staged_journal = {table.name for table in staged_profile.LIVE_SIGNAL_TABLES}
+    membership_journal = {table.name for table in membership_tables}
     unrelated = "unrelated_operator_table_v1"
 
     class Grants:
         extra_grant = ""
         grant_line = ""
         staged = False
+        membership = False
         reference = False
         missing_select = ""
         calls: list[str]
@@ -302,12 +306,14 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                     return (json.dumps({"name": "market_stock_split_v1"})
                             if self.reference else "")
                 assert "name IN (" in sql
-                tables = market | journal | (staged_journal if self.staged else set())
+                tables = (market | journal | (staged_journal if self.staged else set())
+                          | (membership_journal if self.membership else set()))
                 return "\n".join(json.dumps({"name": name}) for name in sorted(tables))
             if sql == "SELECT currentUser()":
                 return "journal_writer\n"
             if sql == "SHOW GRANTS FINAL":
-                writable = journal | (staged_journal if self.staged else set())
+                writable = (journal | (staged_journal if self.staged else set())
+                            | (membership_journal if self.membership else set()))
                 grants = [*(f"GRANT SELECT, INSERT ON arte.{name} TO journal_writer"
                             for name in sorted(writable)),
                           *(f"GRANT SELECT ON arte.{name} TO journal_writer"
@@ -327,7 +333,8 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                 privilege, scope = sql.removeprefix("CHECK GRANT ").split(" ON ")
                 if sql == self.extra_grant:
                     return "1\n"
-                writable = journal | (staged_journal if self.staged else set())
+                writable = (journal | (staged_journal if self.staged else set())
+                            | (membership_journal if self.membership else set()))
                 if privilege == "SELECT" and scope.removeprefix("arte.") in market | writable:
                     return "1\n"
                 if privilege == "INSERT" and scope.removeprefix("arte.") in writable:
@@ -360,6 +367,13 @@ def test_journal_principal_cannot_write_market_or_change_schema(
     journal_permission_preflight(client)
     assert checked == [True]
     client.staged = False
+    checked_membership = []
+    monkeypatch.setattr(schema_module, "storage_preflight",
+                        lambda _client, *, tables: checked_membership.append(tables))
+    client.membership = True
+    journal_permission_preflight(client)
+    assert checked_membership == [membership_tables]
+    client.membership = False
     for grant in ("CHECK GRANT INSERT ON arte.bars_v1",
                   "CHECK GRANT INSERT ON arte.*",
                   "CHECK GRANT CREATE TABLE ON arte.*",
