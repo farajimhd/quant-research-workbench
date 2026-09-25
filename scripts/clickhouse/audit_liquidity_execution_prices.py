@@ -30,6 +30,7 @@ from src.trading_runtime.arte_market_day_cold_preflight import (
     audit_attested_market_day_certificate,
 )
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
+from src.trading_runtime.eligible_price_contract import volumes_match
 from src.trading_runtime.keeper_session import open_workstation_keeper_session
 
 
@@ -70,9 +71,21 @@ def audit(build_id: str, day: date, tickers: tuple[str, ...], *,
             rows = iter_market_day_rows(
                 market, client, through_boundary_ms=60_000, price_plan=result)
             try:
-                first = next(rows, None)
-                if first is None or "execution_price_levels" not in first:
-                    raise RuntimeError("Pinned market read lacks broker price levels")
+                checked = 0
+                for row in rows:
+                    if int(row["resolution_ms"]) != 100:
+                        continue
+                    levels = row.get("execution_price_levels")
+                    if levels is None or not volumes_match(
+                            row["execution_volume"],
+                            sum(float(level["volume"]) for level in levels)):
+                        raise RuntimeError(
+                            "Pinned market read lacks exact broker price levels: "
+                            f"{row['session_date']} {row['ticker']} "
+                            f"bucket {row['bucket_index']}")
+                    checked += 1
+                if checked == 0:
+                    raise RuntimeError("Pinned market read returned no 100ms liquidity")
             finally:
                 rows.close()
         return len(result.units), result.token
