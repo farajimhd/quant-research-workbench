@@ -8,6 +8,9 @@ from src.trading_runtime.arte_backtest_definition import (
     TABLES, load_backtest_definition, prepare_backtest_definition,
     verify_backtest_definition_rows,
 )
+from src.trading_runtime.arte_journal_schema import (
+    backtest_definition_ddl, fixed_backtest_v2_contracts,
+)
 
 
 def _definition(**changes):
@@ -31,6 +34,16 @@ def _definition(**changes):
 
 
 def test_fixed_definition_is_typed_ordered_and_contains_no_json_or_blob():
+    fixed_contracts = fixed_backtest_v2_contracts()
+    names = [table.name for table in fixed_contracts]
+    assert len(names) == len(set(names))
+    assert {table.name for table in TABLES} <= set(names)
+    assert all("JSON" not in column_type and "Blob" not in column_type
+               for table in TABLES for _, column_type in table.columns)
+    ddl = backtest_definition_ddl()
+    assert len(ddl) == len(TABLES)
+    assert all("live_market_ssd" in statement and "CREATE TABLE IF NOT EXISTS arte."
+               in statement for statement in ddl)
     prepared = prepare_backtest_definition("run-1", _definition())
     parent = prepared["definition"]
     assert parent["start_local_ms"] == 4 * 60 * 60 * 1000
@@ -128,3 +141,11 @@ def test_cold_loader_reads_only_exact_definition_tables_and_run_identity():
     with pytest.raises(RuntimeError, match="shared run authority"):
         load_backtest_definition(client, "run-1", run_context={
             **context, "market_plan_token": ""})
+    for invalid_context in (
+        {**context, "evaluation_interval_ms": 0},
+        {**context, "evaluation_interval_ms": 150},
+        {**context, "evaluation_interval_ms": True},
+        {**context, "run_month": "2026-07-01"},
+    ):
+        with pytest.raises(RuntimeError, match="shared run authority"):
+            load_backtest_definition(client, "run-1", run_context=invalid_context)

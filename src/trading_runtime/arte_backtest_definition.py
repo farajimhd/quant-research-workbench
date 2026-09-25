@@ -280,12 +280,19 @@ def load_backtest_definition(
             f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow"))
     verified = verify_backtest_definition_rows(**families)
     parent = verified["definition"]
+    try:
+        session_date = date.fromisoformat(str(run_context.get("session_date")))
+    except ValueError as exc:
+        raise RuntimeError("Backtest shared run lacks a valid session date") from exc
+    interval_ms = run_context.get("evaluation_interval_ms")
     if (parent["run_month"] != str(run_context.get("run_month"))
+            or parent["run_month"] != session_date.replace(day=1).isoformat()
             or date.fromisoformat(parent["final_session_date"])
-            < date.fromisoformat(str(run_context.get("session_date")))
-            or (parent["final_session_date"] == str(run_context.get("session_date"))
+            < session_date
+            or (parent["final_session_date"] == session_date.isoformat()
                 and parent["end_local_ms"] < parent["start_local_ms"])
-            or (run_context.get("evaluation_interval_ms") is None)
+            or type(interval_ms) is not int or not 100 <= interval_ms < 2**32
+            or interval_ms % 100
             or not run_context.get("market_plan_token")
             or not _HEX.fullmatch(str(run_context.get("configuration_hash") or ""))):
         raise RuntimeError("Backtest definition differs from shared run authority")

@@ -1321,10 +1321,13 @@ def versioned_journal_v2_preflight(client: Any) -> None:
 
 def fixed_backtest_v2_contracts() -> tuple[TableContract, ...]:
     """Exact occupied V1, active shared, and new fixed-V2 table shapes."""
+    from src.trading_runtime.arte_backtest_definition import TABLES as DEFINITION_TABLES
+
     legacy = {"trading_strategy_signal_v1", "trading_commit_v1"}
     shared = tuple(table for table in TABLES if table.name not in legacy)
     return (shared + VERSIONED_JOURNAL_V2_TABLES
             + BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES
+            + DEFINITION_TABLES
             + (LEGACY_STRATEGY_SIGNAL_V1, LEGACY_COMMIT_V1))
 
 
@@ -1348,6 +1351,13 @@ def fixed_backtest_v2_preflight(client: Any) -> None:
 def backtest_terminal_snapshot_v2_ddl() -> tuple[str, ...]:
     """Staged DDL only; never executed by a runtime or active schema check."""
     return tuple(table.ddl() for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES)
+
+
+def backtest_definition_ddl() -> tuple[str, ...]:
+    """Operator-only normalized definition DDL; never run by Backtest."""
+    from src.trading_runtime.arte_backtest_definition import TABLES as DEFINITION_TABLES
+
+    return tuple(table.ddl() for table in DEFINITION_TABLES)
 
 
 def schema_ddl() -> tuple[str, ...]:
