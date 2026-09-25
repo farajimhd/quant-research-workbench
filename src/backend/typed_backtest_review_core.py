@@ -10,8 +10,12 @@ from typing import Any
 
 from src.trading_runtime.arte_journal_reader import load_typed_event_page
 from src.trading_runtime.arte_journal_writer import (
-    _literal, _rows, load_committed_prefix, load_typed_run_context,
+    V2CommittedPrefix, _literal, _rows, load_committed_prefix,
+    load_typed_run_context,
 )
+from src.backend.backtest_terminal_v2_fence import _verify_rows, _verify_v1_rows
+from src.backend.backtest_terminal_v2_keeper import load_attested_terminal_v2_accounts
+from src.backend.backtest_terminal_v2_publication import audit_terminal_v2_run
 from src.trading_runtime.arte_terminal_recovery_audit import audit_terminal_backtest_recovery
 from src.trading_runtime.journal_contract import canonical_json
 
@@ -106,6 +110,135 @@ def _head_matches(client: Any, run_id: str, prefix: Any) -> bool:
 def _cache_key(client: Any, run_id: str, context: dict[str, Any], prefix: Any) -> tuple[str, str, str]:
     digest = sha256(canonical_json({"context": context, "prefix": prefix}).encode()).hexdigest()
     return _client_scope(client), run_id, digest
+
+
+def _v2_terminal_page(
+    client: Any, prefix: V2CommittedPrefix, seal: dict[str, Any], *,
+    after_sequence: int, limit: int,
+) -> tuple[dict[str, Any], ...]:
+    """Bounded terminal suffix page after whole-suffix and Keeper audit."""
+    batch_id = str(seal["batch_id"])
+    rows = _rows(client,
+        "SELECT * FROM arte.trading_event_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND batch_id=toUUID({_literal(batch_id)}) "
+        f"AND sequence>{after_sequence} "
+        f"AND sequence<={int(seal['last_sequence'])} "
+        f"ORDER BY sequence LIMIT {limit} FORMAT JSONEachRow")
+    events = _verify_v1_rows("trading_event_v1", tuple(rows))
+    selected = []
+    previous = after_sequence
+    families = {
+        ("snapshot", "portfolio"): "trading_backtest_account_snapshot_v2",
+        ("snapshot", "position"): "trading_backtest_position_snapshot_v2",
+        ("lifecycle", "run"): "trading_run_transition_v1",
+    }
+    for event in events:
+        sequence = int(event["sequence"])
+        if (sequence != previous + 1 or event["run_id"] != prefix.run_id
+                or str(event["batch_id"]) != batch_id
+                or (event["category"], event["entity_type"]) not in families):
+            raise RuntimeError("Terminal V2 page differs from its sealed suffix")
+        previous = sequence
+        selected.append(event)
+    if len(events) < limit and previous != int(seal["last_sequence"]):
+        raise RuntimeError("Terminal V2 page ends before its sealed suffix")
+    ids_by_family: dict[str, set[str]] = {}
+    for event in selected:
+        family = families[(event["category"], event["entity_type"])]
+        ids_by_family.setdefault(family, set()).add(str(event["record_id"]))
+    details_by_record: dict[tuple[str, str], dict[str, Any]] = {}
+    for family, identities in ids_by_family.items():
+        ids = ",".join(f"toUUID({_literal(record_id)})"
+                       for record_id in sorted(identities))
+        rows = _rows(client,
+            f"SELECT * FROM arte.{family} "
+            f"WHERE run_id={_literal(prefix.run_id)} "
+            f"AND batch_id=toUUID({_literal(batch_id)}) "
+            f"AND record_id IN ({ids}) "
+            f"LIMIT {len(identities) + 1} FORMAT JSONEachRow")
+        if len(rows) != len(identities):
+            raise RuntimeError("Terminal V2 page lacks exactly one typed detail")
+        details = (_verify_v1_rows(family, tuple(rows))
+                   if family == "trading_run_transition_v1"
+                   else _verify_rows(family, tuple(rows)))
+        for detail in details:
+            record_id = str(detail["record_id"])
+            key = family, record_id
+            if record_id not in identities or key in details_by_record:
+                raise RuntimeError("Terminal V2 page has unexpected typed detail")
+            details_by_record[key] = detail
+    result = []
+    for event in selected:
+        family = families[(event["category"], event["entity_type"])]
+        detail = details_by_record.get((family, str(event["record_id"])))
+        if detail is None:
+            raise RuntimeError("Terminal V2 page lacks exactly one typed detail")
+        if (detail["run_id"] != event["run_id"]
+                or str(detail["record_id"]) != str(event["record_id"])
+                or str(detail["batch_id"]) != batch_id
+                or detail["account_id"] != event["account_id"]):
+            raise RuntimeError("Terminal V2 detail differs from its event")
+        result.append({"event": event, "detail_family": family, "detail": detail})
+    return tuple(result)
+
+
+def load_typed_backtest_review_core_v2(
+    client: Any, keeper: Any, run_id: str, *, after_sequence: int = 0,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Read-only V2 review; a running prefix alone never authorizes terminal review."""
+    if (not isinstance(run_id, str) or not run_id
+            or type(after_sequence) is not int or after_sequence < 0
+            or type(limit) is not int or not 1 <= limit <= 1000):
+        raise ValueError("Typed V2 Backtest review has invalid page bounds")
+    context = load_typed_run_context(client, run_id)
+    if context.get("mode") != "backtest":
+        raise ValueError("Typed V2 review accepts Backtest runs only")
+    prefix = load_committed_prefix(client, run_id, journal_profile="backtest_v2")
+    if not isinstance(prefix, V2CommittedPrefix) or prefix.status != "running":
+        raise ValueError("Typed V2 review requires a verified running prefix")
+    accounts = load_attested_terminal_v2_accounts(client, keeper, run_id=run_id)
+    seal = audit_terminal_v2_run(
+        client, run_id=run_id, account_ids=tuple(context["account_ids"]))
+    if (set(accounts) != set(context["account_ids"])
+            or seal["prior_v2_batch_id"] != prefix.last_batch_id
+            or int(seal["prior_v2_sequence"]) != prefix.last_sequence
+            or seal["status"] not in {"completed", "stopped", "failed"}):
+        raise RuntimeError("Typed V2 review differs from its attested terminal seal")
+    if after_sequence > int(seal["last_sequence"]):
+        raise ValueError("Typed V2 review cursor exceeds the sealed suffix")
+    page = []
+    if after_sequence < prefix.last_sequence:
+        running = load_typed_event_page(
+            client, prefix, after_sequence=after_sequence, limit=limit)
+        page.extend({"event": row.event, "detail_family": row.detail_family,
+                     "detail": row.detail} for row in running)
+    next_sequence = int(page[-1]["event"]["sequence"]) if page else after_sequence
+    if len(page) < limit and next_sequence < int(seal["last_sequence"]):
+        page.extend(_v2_terminal_page(
+            client, prefix, seal, after_sequence=next_sequence,
+            limit=limit - len(page)))
+    next_sequence = int(page[-1]["event"]["sequence"]) if page else after_sequence
+    if (load_committed_prefix(client, run_id, journal_profile="backtest_v2") != prefix
+            or load_typed_run_context(client, run_id) != context
+            or audit_terminal_v2_run(
+                client, run_id=run_id,
+                account_ids=tuple(context["account_ids"])) != seal):
+        raise RuntimeError("Typed V2 review authority changed during page read")
+    return {
+        "schema_version": "typed-backtest-review-core-v2",
+        "review_only": True, "full_saved_review": False,
+        "run": context, "status": seal["status"],
+        "committed_sequence": int(seal["last_sequence"]),
+        "account_snapshot_count": len(accounts),
+        "account_snapshot_hash": sha256(canonical_json(tuple(
+            (account_id, sha256(canonical_json(accounts[account_id]).encode()).hexdigest())
+            for account_id in sorted(accounts)
+        )).encode()).hexdigest(),
+        "events": tuple(page), "next_sequence": next_sequence,
+        "complete": next_sequence == int(seal["last_sequence"]),
+    }
 
 
 def load_typed_backtest_review_core(

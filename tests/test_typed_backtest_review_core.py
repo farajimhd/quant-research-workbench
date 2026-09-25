@@ -1,5 +1,6 @@
 from dataclasses import replace
 from types import SimpleNamespace
+import re
 import pytest
 
 from src.backend import typed_backtest_review_core as review
@@ -7,6 +8,11 @@ from src.trading_runtime.arte_journal_writer import (
     publish_typed_batch, publish_typed_run, publish_typed_run_context,
 )
 from tests.test_arte_journal_writer import MemoryClient, RUN, batch, run_context, run_row
+from tests.test_backtest_terminal_v2_fence import (
+    AT as V2_AT, ATTEMPT as V2_ATTEMPT, BATCH as V2_BATCH,
+    RUN as V2_RUN, _suffix,
+)
+from src.backend.backtest_terminal_v2_fence import project_terminal_v2_commit
 
 
 def scoped(client):
@@ -133,3 +139,64 @@ def test_cache_expiry_reaudits_and_large_prefix_has_no_arbitrary_cap(monkeypatch
     clock[0] = 6.0
     review.load_typed_backtest_review_core(client, "run", cache=cache)
     assert len(audits) == 2
+
+
+def test_v2_terminal_review_pages_only_attested_suffix(monkeypatch):
+    prefix, events, transitions, accounts, positions = _suffix()
+    seal = project_terminal_v2_commit(
+        prefix, attempt_id=V2_ATTEMPT, batch_id=V2_BATCH,
+        account_ids=("DU1",), source_cursor="start", status="completed",
+        committed_at=V2_AT, events=events, transitions=transitions,
+        accounts=accounts, positions=positions)
+    tables = {
+        "trading_event_v1": events,
+        "trading_run_transition_v1": transitions,
+        "trading_backtest_account_snapshot_v2": accounts,
+        "trading_backtest_position_snapshot_v2": positions,
+    }
+    queries = []
+    def selected(_client, sql):
+        queries.append(sql)
+        table = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]
+        rows = list(tables[table])
+        assert f"batch_id=toUUID('{V2_BATCH}')" in sql
+        match = re.search(r"AND sequence>(\d+)", sql)
+        if match:
+            rows = [row for row in rows if row["sequence"] > int(match.group(1))]
+        if "AND record_id IN (" in sql:
+            identities = set(re.findall(r"toUUID\('([^']+)'\)",
+                                        sql.split("AND record_id IN (", 1)[1]))
+            rows = [row for row in rows if row["record_id"] in identities]
+        match = re.search(r"LIMIT (\d+)", sql)
+        return rows[:int(match.group(1))] if match else rows
+    monkeypatch.setattr(review, "_rows", selected)
+    context = {"mode": "backtest", "account_ids": ("DU1",)}
+    monkeypatch.setattr(review, "load_typed_run_context", lambda *_: context)
+    monkeypatch.setattr(review, "load_committed_prefix", lambda *_, **__: prefix)
+    monkeypatch.setattr(review, "load_attested_terminal_v2_accounts",
+                        lambda *_, **__: {"DU1": {"state_hash": "a" * 64}})
+    monkeypatch.setattr(review, "audit_terminal_v2_run", lambda *_, **__: seal)
+    monkeypatch.setattr(review, "load_typed_event_page",
+                        lambda *_, **__: (SimpleNamespace(
+                            event={"sequence": 1}, detail_family=None, detail=None),))
+    keeper = object()
+    pages = [review.load_typed_backtest_review_core_v2(
+        object(), keeper, V2_RUN, after_sequence=sequence, limit=1)
+        for sequence in range(4)]
+    assert [page["next_sequence"] for page in pages] == [1, 2, 3, 4]
+    assert [page["events"][0]["detail_family"] for page in pages] == [
+        None, "trading_backtest_account_snapshot_v2",
+        "trading_backtest_position_snapshot_v2", "trading_run_transition_v1"]
+    assert pages[-1]["complete"] and pages[-1]["status"] == "completed"
+    assert all(page["account_snapshot_count"] == 1 for page in pages)
+    queries.clear()
+    full_suffix = review.load_typed_backtest_review_core_v2(
+        object(), keeper, V2_RUN, after_sequence=1, limit=3)
+    assert [row["event"]["sequence"] for row in full_suffix["events"]] == [2, 3, 4]
+    assert len(queries) == 4  # One event query and one per typed detail family.
+    assert review.load_typed_backtest_review_core_v2(
+        object(), keeper, V2_RUN, after_sequence=4)["events"] == ()
+    monkeypatch.setattr(review, "load_attested_terminal_v2_accounts",
+                        lambda *_, **__: (_ for _ in ()).throw(RuntimeError("no proof")))
+    with pytest.raises(RuntimeError, match="no proof"):
+        review.load_typed_backtest_review_core_v2(object(), keeper, V2_RUN)
