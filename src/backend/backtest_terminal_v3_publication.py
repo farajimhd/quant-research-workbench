@@ -24,6 +24,9 @@ from src.trading_runtime.arte_portfolio_snapshot import (
     CapturedPortfolioSnapshot, _SNAPSHOT_COMMIT, _SNAPSHOT_FAMILIES,
     _stored_rows as _stored_portfolio_rows, load_portfolio_snapshot,
 )
+from src.trading_runtime.arte_portfolio_policy import (
+    _policy_rows, load_attested_portfolio_policy,
+)
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from src.trading_runtime.journal_contract import canonical_json
 
@@ -77,6 +80,20 @@ def _required_operation_tables(client: Any, *, run_id: str,
     return required, per_account
 
 
+def _require_prepublished_policies(
+    read_client: Any, dispatch: TypedInsertDispatch,
+    captures: tuple[CapturedPortfolioSnapshot, ...],
+) -> None:
+    """A terminal writer may reference, but never create, global policy rows."""
+    for capture in captures:
+        policy = capture.selected_policy
+        if policy is None:
+            continue
+        policy_hash = _policy_rows(policy)[0]
+        if load_attested_portfolio_policy(read_client, dispatch, policy_hash) != policy:
+            raise RuntimeError("V3 selected portfolio policy is not prepublished and attested")
+
+
 def publish_terminal_v3_suffix(
     read_client: Any, authority: FixedTerminalKeeperAuthority,
     dispatch: TypedInsertDispatch, *, run_id: str, account_ids: tuple[str, ...],
@@ -95,14 +112,12 @@ def publish_terminal_v3_suffix(
         raise TypeError("V3 terminal publication requires durable typed dispatch")
     if (not portfolio_captures or
             any(type(capture) is not CapturedPortfolioSnapshot
-                or capture.selected_policy is not None
                 for capture in portfolio_captures)):
-        # Policy publication has a distinct global admission protocol and may
-        # not be smuggled into a run-scoped terminal operation batch.
-        raise ValueError("V3 terminal captures require prepublished policy")
+        raise ValueError("V3 terminal captures are invalid")
     authority.assert_current(run_id, account_ids)
     if read_client is authority.client._client:
         raise ValueError("V3 terminal read and writer clients must be distinct")
+    _require_prepublished_policies(read_client, dispatch, portfolio_captures)
     storage_preflight(authority.client, tables=(TERMINAL_COMMIT_V3,))
     with attested_squeeze_v3_barrier(
         read_client, dispatch, run_id=run_id,

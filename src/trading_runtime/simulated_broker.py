@@ -852,6 +852,11 @@ class SimulatedBrokerAdapter:
         self._quotes_by_ticker.pop(ticker, None)
         if quote is not None:
             self._quotes_by_ticker[ticker] = quote
+        # An empty broker book has no conid-level quote, mark, performance, or
+        # fill consumers. Keep the completed ticker snapshot above for order
+        # admission and checkpoint recovery, then avoid per-ticker book scans.
+        if not self._orders and not any(self._positions.values()):
+            return []
         conids = {state.request.conid for state in self._orders.values()
                   if state.request.ticker.upper() == ticker}
         for positions in self._positions.values():

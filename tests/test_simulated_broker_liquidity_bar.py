@@ -52,6 +52,21 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
             orderType=kind, side=side, quantity=quantity, price=price, auxPrice=stop,
         )])
 
+    async def test_empty_book_preserves_completed_quote_mark_and_boundary(self):
+        at = START + timedelta(milliseconds=100)
+        self.assertEqual(await self.broker.on_liquidity_bar(bar(at), at=at), [])
+        self.assertEqual(self.broker.completed_liquidity_quote("AAPL").ask_price, 10.0)
+        self.assertEqual(self.broker._bar_marks_by_ticker["AAPL"], 10.0)
+        self.assertEqual(self.broker._bar_boundaries["AAPL"], at)
+        with self.assertRaisesRegex(ValueError, "must advance"):
+            await self.broker.on_liquidity_bar(bar(at), at=at)
+        stale_at = at + timedelta(milliseconds=1100)
+        stale = bar(stale_at, quote_age_us=1_100_000)
+        stale.update(price_valid=0, extremes_valid=0, close_int=0)
+        self.assertEqual(await self.broker.on_liquidity_bar(stale, at=stale_at), [])
+        self.assertIsNone(self.broker.completed_liquidity_quote("AAPL"))
+        self.assertNotIn("AAPL", self.broker._bar_marks_by_ticker)
+
     async def test_ticker_quote_checkpoint_is_not_derivable_from_conid_index(self):
         observed = replace(quote(bid=9.99, ask=10.0),
                            raw={}, ingest_ts=START, ts=START)

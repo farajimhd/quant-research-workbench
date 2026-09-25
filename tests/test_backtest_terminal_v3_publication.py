@@ -128,3 +128,20 @@ def test_v3_cold_state_rejects_changed_operation_inventory(monkeypatch):
             object(), object(), object(), run_id=prefix.run_id,
             account_ids=("DU1",), expected_market_plan_token="a" * 64,
             expected_query_sha256="b" * 64)
+
+
+def test_v3_terminal_only_references_attested_global_policy(monkeypatch):
+    policy = object()
+    capture = SimpleNamespace(selected_policy=policy)
+    calls = []
+    monkeypatch.setattr(subject, "_policy_rows", lambda value: ("a" * 64, {}, ()))
+    monkeypatch.setattr(
+        subject, "load_attested_portfolio_policy",
+        lambda client, dispatch, policy_hash: calls.append(policy_hash) or policy,
+    )
+    subject._require_prepublished_policies(object(), object(), (capture,))
+    assert calls == ["a" * 64]
+    monkeypatch.setattr(subject, "load_attested_portfolio_policy",
+                        lambda *_: None)
+    with pytest.raises(RuntimeError, match="not prepublished"):
+        subject._require_prepublished_policies(object(), object(), (capture,))
