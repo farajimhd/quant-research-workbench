@@ -5,7 +5,7 @@ column. This adapter does not retry an ambiguous INSERT or create any table.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from hashlib import sha256
 import json
 import math
@@ -50,6 +50,15 @@ def _column_value(name: str, kind: str, value: Any) -> Any:
     elif kind == "Date":
         if isinstance(value, str) and date.fromisoformat(value).isoformat() == value:
             return value
+    elif kind.startswith("DateTime64(6, 'UTC')"):
+        if (isinstance(value, str) and re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\.\d{6}(?:\+00:00|Z)?",
+                value)):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            if parsed.utcoffset().total_seconds() == 0:
+                return parsed.isoformat(timespec="microseconds")
     elif kind == "FixedString(64)":
         if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value):
             return value

@@ -6,7 +6,7 @@ import pytest
 
 from src.backend.live_assignment_state_snapshot import STATE_COMMIT, STATE_TABLES
 from src.backend.live_assignment_state_storage import (
-    ClickHouseAssignmentStateStorage, _row,
+    ClickHouseAssignmentStateStorage, _column_value, _row,
 )
 from tests.test_live_assignment_state_snapshot import _project
 from tests.test_arte_assignment_state_composite import KEY
@@ -100,3 +100,14 @@ def test_every_state_family_reads_from_its_exact_snapshot_identity():
     storage = ClickHouseAssignmentStateStorage(FixtureClient())
     for table in STATE_TABLES:
         assert storage.read(table.name, KEY) == by_table[table.name]
+
+
+def test_utc_datetime64_wire_normalization_is_exact_to_microseconds():
+    kind = "DateTime64(6, 'UTC')"
+    canonical = "2026-08-18T04:05:06.123456+00:00"
+    assert _column_value("observed_at", kind, canonical) == canonical
+    assert _column_value("observed_at", kind, "2026-08-18 04:05:06.123456") == canonical
+    with pytest.raises(ValueError, match="not a valid"):
+        _column_value("observed_at", kind, "2026-08-18T04:05:06.123456789+00:00")
+    with pytest.raises(ValueError, match="not a valid"):
+        _column_value("observed_at", kind, "2026-08-18T04:05:06.123456-04:00")
