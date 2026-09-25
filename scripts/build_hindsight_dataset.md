@@ -1,7 +1,7 @@
 # Multi-day hindsight dataset: Phase 1 and Phase 2
 
 For the new persisted `arte` source, use
-[build_hindsight_arte_dataset.py](build_hindsight_arte_dataset.md). It runs both
+[RL trading V1](../research/rl_trading/v1/README.md). It runs both
 phases without QMD or event reads, uses versioned completed-100 ms targets, and
 retains certified build/population identities. The workflow below remains the
 legacy event-exact dataset for reproducibility.
