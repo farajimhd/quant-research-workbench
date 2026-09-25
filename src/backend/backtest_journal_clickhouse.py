@@ -1,13 +1,10 @@
-"""Backtest-only ClickHouse journal publication contract.
+"""Historical bt_* verification only; every obsolete write entry point fails.
 
-The broker never imports this module.  A bounded journal worker owns INSERTs
-into these tables only; market products remain SELECT-only.  Schema creation
-is an operator action, not an execution or preflight action.
+New Backtests use the normalized typed trading-journal contract. These legacy
+readers remain solely to inspect already-persisted runs until their retirement.
 """
 from __future__ import annotations
 
-import asyncio
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from hashlib import sha256
@@ -23,7 +20,6 @@ from src.trading_runtime.journal_evidence import decode_evidence, encode_evidenc
 TABLE_PREFIX = "arte.bt_"
 STORAGE_POLICY = "live_market_ssd"
 TABLES = ("bt_run_v1", "bt_event_v1", "bt_blob_v1", "bt_commit_v1")
-WRITABLE_TABLES = frozenset(f"arte.{name}" for name in TABLES)
 _BATCH_NAMESPACE = UUID("9c911ad1-61b5-48ba-a858-6bba42e27f70")
 _LAYOUT = {
     "bt_run_v1": ("toYYYYMM(run_month)", "run_id"),
@@ -258,16 +254,7 @@ def _literal(value: str) -> str:
 
 
 def _insert(client: Any, table: str, rows: Sequence[dict[str, Any]], token: str) -> None:
-    if table not in WRITABLE_TABLES:
-        raise ValueError("Backtest journal cannot insert outside its four journal tables")
-    if not rows:
-        return
-    body = "\n".join(canonical_json(row) for row in rows)
-    client.execute(
-        f"INSERT INTO {table} SETTINGS async_insert=1,wait_for_async_insert=1,"
-        f"insert_deduplicate=1,insert_deduplication_token={_literal(token)} "
-        f"FORMAT JSONEachRow\n{body}"
-    )
+    raise RuntimeError("Retired bt_* journal INSERT is not allowed")
 
 
 def _rows(client: Any, sql: str) -> list[dict[str, Any]]:
@@ -277,49 +264,7 @@ def _rows(client: Any, sql: str) -> list[dict[str, Any]]:
 def publish_run(client: Any, *, run_id: str, run_date: date,
                 definition: dict[str, Any], configuration_hash: str,
                 market_plan_token: str, v7_plan_token: str, code_hash: str) -> str:
-    """Publish immutable run identity after its content-addressed definition."""
-    normalized = str(UUID(run_id))
-    if any(len(value) != 64 for value in (configuration_hash, code_hash)):
-        raise ValueError("Run configuration and code require SHA-256 identities")
-    body = canonical_json(definition)
-    identity = sha256(body.encode("utf-8")).hexdigest()
-    created = datetime.now(timezone.utc).isoformat()
-    _insert(client, "arte.bt_blob_v1", ({
-        "sha256": identity, "kind": "definition", "raw_bytes": len(body.encode("utf-8")),
-        "payload_json": body, "created_at": created,
-    },), f"{normalized}:definition")
-    rows = _rows(client,
-        "SELECT definition_hash,configuration_hash,"
-        "market_plan_token,v7_plan_token,code_hash,contract_version "
-        f"FROM arte.bt_run_v1 WHERE run_id=toUUID({_literal(normalized)}) "
-        "FORMAT JSONEachRow")
-    expected = (identity, configuration_hash, market_plan_token,
-                v7_plan_token, code_hash, VERSION)
-    for row in rows:
-        actual = tuple(str(row[field]) for field in (
-            "definition_hash", "configuration_hash",
-            "market_plan_token", "v7_plan_token", "code_hash", "contract_version"))
-        if actual != expected:
-            raise ValueError("Backtest run identity conflicts with an existing publication")
-    if not rows:
-        _insert(client, "arte.bt_run_v1", ({
-            "run_id": normalized, "run_month": run_date.replace(day=1).isoformat(),
-            "contract_version": VERSION, "definition_hash": identity,
-            "configuration_hash": configuration_hash,
-            "market_plan_token": market_plan_token, "v7_plan_token": v7_plan_token,
-            "code_hash": code_hash, "created_at": created,
-        },), f"{normalized}:run")
-    confirmed = _rows(client,
-        "SELECT definition_hash,configuration_hash,"
-        "market_plan_token,v7_plan_token,code_hash,contract_version "
-        f"FROM arte.bt_run_v1 WHERE run_id=toUUID({_literal(normalized)}) "
-        "FORMAT JSONEachRow")
-    if not confirmed or any(tuple(str(row[field]) for field in (
-            "definition_hash", "configuration_hash",
-            "market_plan_token", "v7_plan_token", "code_hash", "contract_version"))
-            != expected for row in confirmed):
-        raise ValueError("Backtest run identity was not durably published")
-    return identity
+    raise RuntimeError("Retired bt_* run publication is not allowed")
 
 
 def verify_run_identity(client: Any, *, run_id: str,
@@ -367,43 +312,11 @@ def _verify_events(client: Any, batch: JournalBatch) -> None:
 
 
 def publish_batch(client: Any, batch: JournalBatch) -> str:
-    """Stage an acknowledged batch; it is not reviewable until fenced."""
-    _insert(client, "arte.bt_blob_v1", batch.blobs, f"{batch.batch_id}:blobs")
-    _insert(client, "arte.bt_event_v1", batch.events, f"{batch.batch_id}:events")
-    _verify_events(client, batch)
-    return batch.batch_id
+    raise RuntimeError("Retired bt_* batch publication is not allowed")
 
 
 def publish_fence(client: Any, fence: JournalFence) -> str:
-    """Make already-staged batches durable for recovery after checkpoint ACK."""
-    prior = str(fence.commit["prior_fence_id"])
-    if UUID(prior).int:
-        rows = _rows(client,
-            "SELECT last_sequence FROM arte.bt_commit_v1 "
-            f"WHERE run_id=toUUID({_literal(fence.run_id)}) "
-            f"AND fence_id=toUUID({_literal(prior)}) FORMAT JSONEachRow")
-        if not rows or any(int(row["last_sequence"]) !=
-                           int(fence.commit["first_sequence"]) - 1 for row in rows):
-            raise ValueError("Backtest journal predecessor fence is unavailable")
-    for batch in fence.batches:
-        _verify_events(client, batch)
-    _insert(client, "arte.bt_blob_v1", fence.blobs, f"{fence.fence_id}:blobs")
-    _insert(client, "arte.bt_commit_v1", (fence.commit,), f"{fence.fence_id}:commit")
-    rows = _rows(client,
-        "SELECT batch_hash,checkpoint_hash,first_sequence,last_sequence,event_count "
-        "FROM arte.bt_commit_v1 "
-        f"WHERE run_id=toUUID({_literal(fence.run_id)}) "
-        f"AND attempt_id=toUUID({_literal(fence.attempt_id)}) "
-        f"AND fence_id=toUUID({_literal(fence.fence_id)}) FORMAT JSONEachRow")
-    expected = (fence.commit["batch_hash"], fence.checkpoint_hash,
-                fence.commit["first_sequence"], fence.commit["last_sequence"],
-                fence.commit["event_count"])
-    if not rows or any((str(row["batch_hash"]), str(row["checkpoint_hash"]),
-                        int(row["first_sequence"]), int(row["last_sequence"]),
-                        int(row["event_count"])) != expected for row in rows):
-        raise ValueError("Backtest journal commit fence was not confirmed")
-    return fence.fence_id
-
+    raise RuntimeError("Retired bt_* fence publication is not allowed")
 
 def _fence_event_proof(client: Any, fence: dict[str, Any]) -> None:
     rows = _rows(client,
@@ -526,59 +439,7 @@ def load_fenced_checkpoint(client: Any, run_id: str) -> dict[str, Any] | None:
 
 
 class BacktestJournalWriter:
-    """Bounded single-owner nonblocking transport; fences wait for durability."""
+    """Retired V1 writer; only historical verification is supported."""
 
-    def __init__(self, client: Any, *, pending_batches: int = 3) -> None:
-        if pending_batches < 1:
-            raise ValueError("Journal pending_batches must be positive")
-        self.client = client
-        self._slots = asyncio.Semaphore(pending_batches)
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="backtest-journal")
-        self._error: BaseException | None = None
-        self._closed = False
-
-    def _stage(self, batch: JournalBatch) -> str:
-        try:
-            if self._error is not None:
-                raise RuntimeError("Backtest journal writer is poisoned") from self._error
-            return publish_batch(self.client, batch)
-        except BaseException as exc:
-            self._error = exc
-            raise
-
-    async def stage(self, batch: JournalBatch) -> Future[str]:
-        """Queue a batch without blocking the event loop on ClickHouse I/O."""
-        if self._closed:
-            raise RuntimeError("Backtest journal writer is closed")
-        await self._slots.acquire()
-        try:
-            if self._error is not None:
-                raise RuntimeError("Backtest journal writer is poisoned") from self._error
-            loop = asyncio.get_running_loop()
-            future = self._pool.submit(self._stage, batch)
-            future.add_done_callback(lambda _done: loop.call_soon_threadsafe(self._slots.release))
-            return future
-        except BaseException:
-            self._slots.release()
-            raise
-
-    async def fence(self, fence: JournalFence) -> str:
-        """Wait at a safe checkpoint boundary, then publish the commit fence."""
-        if self._closed:
-            raise RuntimeError("Backtest journal writer is closed")
-        def commit() -> str:
-            if self._error is not None:
-                raise RuntimeError("Backtest journal writer is poisoned") from self._error
-            try:
-                return publish_fence(self.client, fence)
-            except BaseException as exc:
-                self._error = exc
-                raise
-        return await asyncio.wrap_future(self._pool.submit(commit))
-
-    async def close(self) -> None:
-        self._closed = True
-        await asyncio.to_thread(self._pool.shutdown, True, cancel_futures=False)
-        close = getattr(self.client, "close", None)
-        if close is not None:
-            await asyncio.to_thread(close)
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("Retired bt_* writer is not allowed")

@@ -5,11 +5,14 @@ import pytest
 
 import src.backend.backtest_market_data as market_data
 from src.backend.backtest_journal_clickhouse import (
-    prepare_batch, prepare_fence, publish_batch, publish_fence, publish_run,
+    prepare_batch, prepare_fence,
 )
 from src.backend.backtest_review import ClickHouseSavedBacktestReview
 from src.backend.replay_run_service import RESTART_CHECKPOINT_SCHEMA_VERSION
-from tests.test_backtest_journal_clickhouse import RUN, ATTEMPT, _Client, record
+from tests.test_backtest_journal_clickhouse import (
+    RUN, ATTEMPT, _Client, record, seed_legacy_batch,
+    seed_legacy_fence, seed_legacy_run,
+)
 
 
 def test_saved_clickhouse_review_requires_no_sqlite_journal(tmp_path, monkeypatch):
@@ -28,7 +31,7 @@ def test_saved_clickhouse_review_requires_no_sqlite_journal(tmp_path, monkeypatc
     client = Client()
     batch = prepare_batch(records=[record(1)], attempt_id=ATTEMPT,
                           run_date=date(2026, 8, 18))
-    publish_batch(client, batch)
+    seed_legacy_batch(client, batch)
     state = {
         "schema_version": RESTART_CHECKPOINT_SCHEMA_VERSION,
         "complete": True,
@@ -42,7 +45,7 @@ def test_saved_clickhouse_review_requires_no_sqlite_journal(tmp_path, monkeypatc
     }
     fence = prepare_fence(batches=[batch], checkpoint=state, source_cursor="bucket-1",
                           status="completed")
-    publish_fence(client, fence)
+    seed_legacy_fence(client, fence)
     monkeypatch.setattr(market_data, "readonly_clickhouse_client", lambda: client)
 
     run_dir = tmp_path / RUN
@@ -63,9 +66,9 @@ def test_saved_clickhouse_review_requires_no_sqlite_journal(tmp_path, monkeypatc
         },
     }
     (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    publish_run(client, run_id=RUN, run_date=date(2026, 8, 18),
-                definition=manifest["definition"], configuration_hash="a" * 64,
-                market_plan_token="", v7_plan_token="", code_hash="b" * 64)
+    seed_legacy_run(client, definition=manifest["definition"],
+                    configuration_hash="a" * 64,
+                    market_plan_token="", v7_plan_token="", code_hash="b" * 64)
     (run_dir / "approved-configuration.json").write_text(json.dumps({
         "revision_id": "revision", "content_hash": "a" * 64,
         "payload": {"strategy": {"strategy_id": "test", "revision": 1}},

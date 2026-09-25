@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import date, datetime, timezone
+from hashlib import sha256
 import json
 import os
 import unittest
@@ -21,6 +21,7 @@ from src.backend.backtest_journal_memory import BacktestJournalPublisher, Backte
 from src.trading_runtime.clickhouse import _journal_row
 from src.trading_runtime.journal import JournalRecord
 from src.trading_runtime.journal_contract import journal_row
+from src.trading_runtime.journal_contract import VERSION, canonical_json
 
 
 RUN = "00000000-0000-0000-0000-000000000010"
@@ -42,7 +43,7 @@ def test_source_identity_changes_with_deployed_python(tmp_path):
 
 
 def test_journal_insert_cannot_target_market_products():
-    with pytest.raises(ValueError, match="outside its four journal tables"):
+    with pytest.raises(RuntimeError, match="INSERT is not allowed"):
         _insert(_Client(), "arte.bars_v1", ({"ticker": "TEST"},), "token")
 
 
@@ -108,6 +109,29 @@ class _Client:
                              for row in self.tables.get("arte.bt_blob_v1", [])
                              if row["sha256"] == digest)
         raise AssertionError(sql)
+
+
+def seed_legacy_batch(client: _Client, batch) -> None:
+    """Test-only historical fixture; production V1 writes are retired."""
+    client.tables.setdefault("arte.bt_blob_v1", []).extend(batch.blobs)
+    client.tables.setdefault("arte.bt_event_v1", []).extend(batch.events)
+
+
+def seed_legacy_fence(client: _Client, fence) -> None:
+    client.tables.setdefault("arte.bt_blob_v1", []).extend(fence.blobs)
+    client.tables.setdefault("arte.bt_commit_v1", []).append(fence.commit)
+
+
+def seed_legacy_run(client: _Client, *, definition: dict,
+                    configuration_hash: str, market_plan_token: str,
+                    v7_plan_token: str, code_hash: str) -> None:
+    client.tables.setdefault("arte.bt_run_v1", []).append({
+        "definition_hash": sha256(canonical_json(definition).encode()).hexdigest(),
+        "configuration_hash": configuration_hash,
+        "market_plan_token": market_plan_token,
+        "v7_plan_token": v7_plan_token,
+        "code_hash": code_hash, "contract_version": VERSION,
+    })
 
 
 class BacktestJournalClickHouseTests(unittest.TestCase):
@@ -182,14 +206,16 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
         self.assertEqual(len(batch.events), 2)
         self.assertGreaterEqual(len(batch.blobs), 1)
         client = _Client()
-        self.assertEqual(publish_batch(client, batch), batch.batch_id)
+        with self.assertRaisesRegex(RuntimeError, "publication is not allowed"):
+            publish_batch(client, batch)
+        seed_legacy_batch(client, batch)
         self.assertNotIn("arte.bt_commit_v1", client.tables)
         fence = prepare_fence(batches=[batch], checkpoint={"broker": {"cash": 100}},
                               source_cursor="2026-08-18:04:05:00")
-        self.assertEqual(publish_fence(client, fence), fence.fence_id)
-        self.assertEqual([call.split()[2] for call in client.calls if call.startswith("INSERT INTO ")],
-                         ["arte.bt_blob_v1", "arte.bt_event_v1",
-                          "arte.bt_blob_v1", "arte.bt_commit_v1"])
+        with self.assertRaisesRegex(RuntimeError, "publication is not allowed"):
+            publish_fence(client, fence)
+        seed_legacy_fence(client, fence)
+        self.assertFalse(any(call.startswith("INSERT INTO ") for call in client.calls))
         restored = load_fenced_checkpoint(client, RUN)
         self.assertEqual(restored["batch_ids"], (batch.batch_id,))
         self.assertEqual(restored["sequence"], 2)
@@ -201,11 +227,11 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "predecessor"):
             prepare_fence(batches=[next_batch], checkpoint={"cash": 99},
                           source_cursor="next")
-        publish_batch(client, next_batch)
+        seed_legacy_batch(client, next_batch)
         next_fence = prepare_fence(batches=[next_batch], checkpoint={"cash": 99},
                                    source_cursor="next", prior_last_sequence=2,
                                    prior_fence_id=fence.fence_id)
-        publish_fence(client, next_fence)
+        seed_legacy_fence(client, next_fence)
         self.assertEqual(load_fenced_checkpoint(client, RUN)["sequence"], 3)
         # The latest range remains sound, but an older committed event is
         # corrupt. Recovery must reject the whole chain.
@@ -213,18 +239,15 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "recovery event range"):
             load_fenced_checkpoint(client, RUN)
 
-    def test_run_definition_is_content_addressed_and_idempotent(self) -> None:
+    def test_retired_run_publication_is_forbidden(self) -> None:
         client = _Client()
         values = dict(run_id=RUN, run_date=date(2026, 8, 18),
                       definition={"mode": "backtest", "execution_interval": "100ms"},
                       configuration_hash="a" * 64, market_plan_token="market",
                       v7_plan_token="v7", code_hash="b" * 64)
-        first = publish_run(client, **values)
-        second = publish_run(client, **values)
-        self.assertEqual(first, second)
-        self.assertEqual(len(client.tables["arte.bt_run_v1"]), 1)
-        with self.assertRaisesRegex(ValueError, "conflicts"):
-            publish_run(client, **{**values, "code_hash": "c" * 64})
+        with self.assertRaisesRegex(RuntimeError, "publication is not allowed"):
+            publish_run(client, **values)
+        self.assertFalse(client.tables)
 
     def test_noncontiguous_sequence_and_changed_readback_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "contiguous"):
@@ -232,38 +255,18 @@ class BacktestJournalClickHouseTests(unittest.TestCase):
                           run_date=date(2026, 8, 18))
         batch = prepare_batch(records=[record(1)], attempt_id=ATTEMPT,
                               run_date=date(2026, 8, 18))
-        class Corrupt(_Client):
-            def execute(self, sql: str) -> str:
-                response = super().execute(sql)
-                if "FROM arte.bt_event_v1" in sql:
-                    row = json.loads(response)
-                    row["payload_hash"] = "0" * 64
-                    return json.dumps(row)
-                return response
-        with self.assertRaisesRegex(ValueError, "not durably published"):
-            publish_batch(Corrupt(), batch)
+        with self.assertRaisesRegex(RuntimeError, "publication is not allowed"):
+            publish_batch(_Client(), batch)
 
-    def test_bounded_worker_fences_after_staged_batch(self) -> None:
-        async def exercise() -> None:
-            client = _Client()
-            writer = BacktestJournalWriter(client, pending_batches=1)
-            try:
-                batch = prepare_batch(records=[record(1)], attempt_id=ATTEMPT,
-                                      run_date=date(2026, 8, 18))
-                staged = await writer.stage(batch)
-                fence = prepare_fence(batches=[batch], checkpoint={"broker": {"cash": 100}},
-                                      source_cursor="cursor")
-                self.assertEqual(await writer.fence(fence), fence.fence_id)
-                self.assertEqual(staged.result(), batch.batch_id)
-            finally:
-                await writer.close()
-        asyncio.run(exercise())
+    def test_retired_writer_cannot_be_constructed(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "writer is not allowed"):
+            BacktestJournalWriter(_Client(), pending_batches=1)
 
     def test_unfenced_tail_is_not_recoverable(self) -> None:
         client = _Client()
         batch = prepare_batch(records=[record(1)], attempt_id=ATTEMPT,
                               run_date=date(2026, 8, 18))
-        publish_batch(client, batch)
+        seed_legacy_batch(client, batch)
         self.assertIsNone(load_fenced_checkpoint(client, RUN))
 
     def test_retired_memory_publisher_rejects_new_writes(self) -> None:
