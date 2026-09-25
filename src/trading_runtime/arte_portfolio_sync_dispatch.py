@@ -227,17 +227,22 @@ class PortfolioSyncDispatch:
     def acquire_cold_barrier(self, run_id: str, base_barrier: Any,
                              keeper: Any) -> "SyncColdBarrier":
         base_barrier.assert_fenced(run_id)
-        for _ in range(8):
-            gate, version = self._read(run_id)
-            if gate.mode != "open" or gate.revision:
-                raise KeeperUnavailable("Portfolio sync has unresolved INSERTs")
-            if self._cas(run_id, version, replace(gate, mode="closed")):
-                break
-        else:
-            raise KeeperUnavailable("Portfolio sync cold fence CAS contended")
+        self.close_for_cold(run_id)
         barrier = SyncColdBarrier(self, run_id, base_barrier, keeper)
         barrier.assert_fenced(run_id)
         return barrier
+
+    def close_for_cold(self, run_id: str) -> None:
+        """Close this run before acquiring the independent core run barrier."""
+        for _ in range(8):
+            gate, version = self._read(run_id)
+            if gate.mode == "closed" and not gate.revision:
+                return
+            if gate.mode != "open" or gate.revision:
+                raise KeeperUnavailable("Portfolio sync has unresolved INSERTs")
+            if self._cas(run_id, version, replace(gate, mode="closed")):
+                return
+        raise KeeperUnavailable("Portfolio sync cold fence CAS contended")
 
 
 @dataclass(frozen=True)
