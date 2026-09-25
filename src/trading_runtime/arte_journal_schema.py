@@ -1161,6 +1161,54 @@ ACTIVATION_TABLES = (
 TABLES += ACTIVATION_TABLES
 
 
+# Operator-only future fixed-Backtest terminal evidence. Keep these outside
+# active TABLES until the grouped projector, writer, and cold reader are wired.
+BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES = (
+    TableContract(
+        "trading_backtest_account_snapshot_v2",
+        (
+            ("record_id", "UUID"), ("run_id", "String"),
+            ("event_month", "Date"), ("batch_id", "UUID"),
+            ("account_id", "String"), ("currency", "String"),
+            ("source_timestamp_ms", "UInt64"),
+            ("net_liquidation", "Float64"),
+            ("total_cash_value", "Float64"),
+            ("buying_power", "Float64"),
+            ("gross_position_value", "Float64"),
+            ("available_funds", "Float64"),
+            ("excess_liquidity", "Float64"),
+            ("expected_position_count", "UInt32"),
+            ("position_set_sha256", "FixedString(64)"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)", "run_id, account_id, record_id",
+    ),
+    TableContract(
+        "trading_backtest_position_snapshot_v2",
+        (
+            ("record_id", "UUID"), ("parent_record_id", "UUID"),
+            ("run_id", "String"), ("event_month", "Date"),
+            ("batch_id", "UUID"), ("account_id", "String"),
+            ("ordinal", "UInt32"), ("conid", "UInt64"),
+            ("ticker", "String"), ("currency", "String"),
+            ("asset_class", "String"),
+            ("quantity", "Float64"), ("market_price", "Float64"),
+            ("market_value", "Float64"), ("average_cost", "Float64"),
+            ("average_price", "Float64"), ("realized_pnl", "Float64"),
+            ("unrealized_pnl", "Float64"),
+            ("content_hash", "FixedString(64)"),
+        ),
+        "toYYYYMM(event_month)",
+        "run_id, parent_record_id, ordinal, record_id",
+    ),
+)
+
+
+def backtest_terminal_snapshot_v2_ddl() -> tuple[str, ...]:
+    """Staged DDL only; never executed by a runtime or active schema check."""
+    return tuple(table.ddl() for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES)
+
+
 def schema_ddl() -> tuple[str, ...]:
     """Return DDL for a separately authorized installer, never run it here."""
     return tuple(table.ddl() for table in TABLES)

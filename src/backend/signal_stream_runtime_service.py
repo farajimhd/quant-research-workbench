@@ -719,6 +719,7 @@ def _occurrence(
     *,
     as_of: datetime,
     definition_revision: str,
+    typed_catalog: Any | None = None,
 ) -> dict[str, Any]:
     ticker = str(row.get("ticker") or row.get("symbol") or "").upper()
     event_id = hashlib.sha256(
@@ -752,7 +753,7 @@ def _occurrence(
                 or row.get(f"{runtime_field}_null_reason")
                 or "not_available_at_trigger"
             )
-    return {
+    occurrence = {
         "schema_version": SIGNAL_STREAM_SCHEMA_VERSION,
         "event_id": event_id,
         "signal_id": event_id,
@@ -809,6 +810,10 @@ def _occurrence(
         "evidence_null_reasons": null_reasons,
         **evidence,
     }
+    if typed_catalog is not None:
+        from src.backend.signal_stream_typed_catalog import validate_typed_occurrence_evidence
+        validate_typed_occurrence_evidence(occurrence, typed_catalog, stream, columns)
+    return occurrence
 
 
 def _route_expiry(route: dict[str, Any], as_of: datetime) -> str | None:
