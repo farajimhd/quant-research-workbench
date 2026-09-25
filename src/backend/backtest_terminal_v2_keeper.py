@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from contextlib import AsyncExitStack
 from hashlib import sha256
+import re
 from typing import Any
 
 from src.trading_runtime.journal_contract import canonical_json
@@ -128,9 +129,12 @@ def load_attested_terminal_v2_accounts(
     if proof is None:
         raise RuntimeError("Terminal V2 seal lacks committed Keeper proof")
     lines = proof.decode("utf-8").split("\n")
-    if (len(lines) < 6 or lines[0] != "2" or lines[1:5] != [
+    if (len(lines) != 6 + 3 * len(account_ids)
+            or lines[0] != "2" or lines[1:5] != [
             run_id, str(seal["batch_id"]), seal_hash, accounts_hash]
-            or int(lines[5]) != len(account_ids)
-            or lines[6::3] != sorted(account_ids)):
+            or lines[5] != str(len(account_ids))
+            or lines[6::3] != sorted(account_ids)
+            or any(not owner or re.fullmatch(r"[1-9][0-9]*", epoch) is None
+                   for owner, epoch in zip(lines[7::3], lines[8::3], strict=True))):
         raise RuntimeError("Terminal V2 Keeper proof differs from cold account seal")
     return accounts
