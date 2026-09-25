@@ -190,6 +190,8 @@ def test_cold_reader_rejects_missing_or_tampered_keeper_proof(monkeypatch):
                     "\n1\nDU1\nowner\n1").encode()
     assert terminal.load_attested_terminal_v2_accounts(
         object(), keeper, run_id=RUN) == accounts
+    assert terminal.load_attested_terminal_v2_state(
+        object(), keeper, run_id=RUN) == (seal, accounts)
     valid_proof = keeper.proof
     for malformed in (
         valid_proof.rsplit(b"\n", 2)[0],

@@ -173,9 +173,11 @@ def test_v2_terminal_review_pages_only_attested_suffix(monkeypatch):
     context = {"mode": "backtest", "account_ids": ("DU1",)}
     monkeypatch.setattr(review, "load_typed_run_context", lambda *_: context)
     monkeypatch.setattr(review, "load_committed_prefix", lambda *_, **__: prefix)
-    monkeypatch.setattr(review, "load_attested_terminal_v2_accounts",
-                        lambda *_, **__: {"DU1": {"state_hash": "a" * 64}})
-    monkeypatch.setattr(review, "audit_terminal_v2_run", lambda *_, **__: seal)
+    monkeypatch.setattr(review, "load_attested_terminal_v2_state",
+                        lambda *_, **__: (seal, {"DU1": {"state_hash": "a" * 64}}))
+    audit_calls = []
+    monkeypatch.setattr(review, "audit_terminal_v2_run",
+                        lambda *_, **__: audit_calls.append(1) or seal)
     monkeypatch.setattr(review, "load_typed_event_page",
                         lambda *_, **__: (SimpleNamespace(
                             event={"sequence": 1}, detail_family=None, detail=None),))
@@ -184,6 +186,7 @@ def test_v2_terminal_review_pages_only_attested_suffix(monkeypatch):
         object(), keeper, V2_RUN, after_sequence=sequence, limit=1)
         for sequence in range(4)]
     assert [page["next_sequence"] for page in pages] == [1, 2, 3, 4]
+    assert len(audit_calls) == 4  # One post-read authority check per page.
     assert [page["events"][0]["detail_family"] for page in pages] == [
         None, "trading_backtest_account_snapshot_v2",
         "trading_backtest_position_snapshot_v2", "trading_run_transition_v1"]
@@ -196,7 +199,7 @@ def test_v2_terminal_review_pages_only_attested_suffix(monkeypatch):
     assert len(queries) == 4  # One event query and one per typed detail family.
     assert review.load_typed_backtest_review_core_v2(
         object(), keeper, V2_RUN, after_sequence=4)["events"] == ()
-    monkeypatch.setattr(review, "load_attested_terminal_v2_accounts",
+    monkeypatch.setattr(review, "load_attested_terminal_v2_state",
                         lambda *_, **__: (_ for _ in ()).throw(RuntimeError("no proof")))
     with pytest.raises(RuntimeError, match="no proof"):
         review.load_typed_backtest_review_core_v2(object(), keeper, V2_RUN)

@@ -107,6 +107,14 @@ class FixedTerminalKeeperAuthority:
 def load_attested_terminal_v2_accounts(
     client: Any, keeper: Any, *, run_id: str,
 ) -> dict[str, dict[str, Any]]:
+    """Compatibility view of the exact attested terminal state."""
+    return load_attested_terminal_v2_state(
+        client, keeper, run_id=run_id)[1]
+
+
+def load_attested_terminal_v2_state(
+    client: Any, keeper: Any, *, run_id: str,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Cold recovery accepts only a V2 suffix with matching durable CAS proof."""
     from src.backend.backtest_terminal_v2_accounts import (
         load_terminal_v2_portfolio_accounts,
@@ -137,4 +145,4 @@ def load_attested_terminal_v2_accounts(
             or any(not owner or re.fullmatch(r"[1-9][0-9]*", epoch) is None
                    for owner, epoch in zip(lines[7::3], lines[8::3], strict=True))):
         raise RuntimeError("Terminal V2 Keeper proof differs from cold account seal")
-    return accounts
+    return seal, accounts

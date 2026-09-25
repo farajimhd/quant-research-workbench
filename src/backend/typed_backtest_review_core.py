@@ -14,7 +14,7 @@ from src.trading_runtime.arte_journal_writer import (
     load_typed_run_context,
 )
 from src.backend.backtest_terminal_v2_fence import _verify_rows, _verify_v1_rows
-from src.backend.backtest_terminal_v2_keeper import load_attested_terminal_v2_accounts
+from src.backend.backtest_terminal_v2_keeper import load_attested_terminal_v2_state
 from src.backend.backtest_terminal_v2_publication import audit_terminal_v2_run
 from src.trading_runtime.arte_terminal_recovery_audit import audit_terminal_backtest_recovery
 from src.trading_runtime.journal_contract import canonical_json
@@ -198,9 +198,8 @@ def load_typed_backtest_review_core_v2(
     prefix = load_committed_prefix(client, run_id, journal_profile="backtest_v2")
     if not isinstance(prefix, V2CommittedPrefix) or prefix.status != "running":
         raise ValueError("Typed V2 review requires a verified running prefix")
-    accounts = load_attested_terminal_v2_accounts(client, keeper, run_id=run_id)
-    seal = audit_terminal_v2_run(
-        client, run_id=run_id, account_ids=tuple(context["account_ids"]))
+    seal, accounts = load_attested_terminal_v2_state(
+        client, keeper, run_id=run_id)
     if (set(accounts) != set(context["account_ids"])
             or seal["prior_v2_batch_id"] != prefix.last_batch_id
             or int(seal["prior_v2_sequence"]) != prefix.last_sequence
