@@ -8271,6 +8271,10 @@ class ReplayRunController:
         # restart semantics without quadratic startup I/O.
 
     def _write_manifest(self, *, include_details: bool = True) -> None:
+        if self.definition.mode == RunMode.BACKTEST:
+            # Fixed Backtest has no run-local disk authority. Its run context,
+            # journal, and recovery fences must be read from typed arte rows.
+            return
         if not self.run_dir.exists():
             return
         run = self.snapshot(include_details=include_details)
@@ -8339,6 +8343,8 @@ class ReplayRunController:
         _replace_path_with_retry(selection_temporary, selection_target)
 
     def _write_approved_configuration(self) -> None:
+        if self.definition.mode == RunMode.BACKTEST:
+            raise RuntimeError("Fixed Backtest cannot persist configuration on disk")
         target = self.run_dir / "approved-configuration.json"
         expected_revision_id = str(
             self.definition.configuration_revision.get("revision_id") or ""

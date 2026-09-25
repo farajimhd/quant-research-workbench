@@ -120,9 +120,10 @@ def test_future_fixed_manifest_names_typed_journal_without_legacy_identity(
     monkeypatch.setattr(replay_run_service, "_run_selection_projection",
                         lambda *_args, **_kwargs: {})
     controller._write_manifest()
-    manifest = json.loads((controller.run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["journal_backend"] == "arte_typed_journal_v1"
-    assert manifest["journal_path"] == ""
+    assert not (controller.run_dir / "manifest.json").exists()
+    with pytest.raises(RuntimeError, match="cannot persist configuration on disk"):
+        controller._write_approved_configuration()
+    assert not (controller.run_dir / "approved-configuration.json").exists()
 
 
 def test_typed_saved_review_fails_before_retired_or_sqlite_reader(monkeypatch, tmp_path):
