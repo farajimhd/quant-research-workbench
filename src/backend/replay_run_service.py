@@ -3912,7 +3912,10 @@ class ReplayRunController:
             if self.definition.mode == RunMode.BACKTEST:
                 raise RuntimeError("Backtest requires its ClickHouse journal authority; SQLite is forbidden")
             self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
-        if record_configuration:
+        # Fixed Backtest pins its immutable configuration identity in the typed
+        # ClickHouse run context. The legacy event below embeds the whole
+        # nested revision and has no normalized journal projection.
+        if record_configuration and self.definition.mode != RunMode.BACKTEST:
             self._journal.append(
                 run_id=self.run_id,
                 category="configuration",

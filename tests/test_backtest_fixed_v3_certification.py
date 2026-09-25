@@ -9,10 +9,21 @@ import pytest
 from src.backend import backtest_fixed_v3_certification as cert
 
 
-def test_real_controller_direct_emitters_fail_closed_on_unprojected_families():
-    with pytest.raises(ValueError, match="configuration") as failure:
-        cert.certify_direct_v3_projection()
-    assert "watchlist_membership" not in str(failure.value)
+def test_real_controller_direct_emitters_have_fixed_projection_certificate():
+    assert len(cert.certify_direct_v3_projection()) == 64
+
+
+def test_fixed_configuration_event_is_excluded_only_with_exact_mode_guard(tmp_path):
+    source = cert._CONTROLLER.read_text(encoding="utf-8")
+    assert cert._fixed_configuration_emitter_unreachable(source)
+    changed = source.replace(
+        "if record_configuration and self.definition.mode != RunMode.BACKTEST:",
+        "if record_configuration:", 1)
+    assert not cert._fixed_configuration_emitter_unreachable(changed)
+    path = tmp_path / "replay_run_service.py"
+    path.write_text(changed, encoding="utf-8")
+    with pytest.raises(ValueError, match="configuration reachability"):
+        cert.certify_direct_v3_projection(source_path=path)
 
 
 def test_fixed_watchlist_is_excluded_only_with_proven_early_return():

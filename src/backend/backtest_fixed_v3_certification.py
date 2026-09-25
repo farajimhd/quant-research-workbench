@@ -241,6 +241,25 @@ def _fixed_watchlist_membership_unreachable(source: str) -> bool:
                                       for node in emitters)
 
 
+def _fixed_configuration_emitter_unreachable(source: str) -> bool:
+    """Prove the nested legacy configuration event cannot enter fixed mode."""
+    functions = [node for node in ast.walk(ast.parse(source))
+                 if isinstance(node, ast.AsyncFunctionDef)
+                 and node.name == "_initialize_runtime"]
+    if len(functions) != 1:
+        return False
+    emitters = [node for node in ast.walk(functions[0])
+                if isinstance(node, ast.Call) and _literal_pair(node)
+                == ("configuration", "approved_trading_configuration")]
+    if len(emitters) != 1:
+        return False
+    return any(
+        ast.unparse(node.test) == (
+            "record_configuration and self.definition.mode != RunMode.BACKTEST")
+        and emitters[0] in ast.walk(node)
+        for node in ast.walk(functions[0]) if isinstance(node, ast.If))
+
+
 def certify_direct_v3_projection(*, source_path: Path = _CONTROLLER) -> str:
     """Fail closed on a changed or unsupported direct-emitter family set."""
     source = source_path.read_text(encoding="utf-8")
@@ -254,6 +273,10 @@ def certify_direct_v3_projection(*, source_path: Path = _CONTROLLER) -> str:
         if not _fixed_watchlist_membership_unreachable(source):
             raise ValueError("Fixed-mode Watchlist reachability is unproven")
         fixed_families.remove(("watchlist_membership", "historical_watchlist_member"))
+    if ("configuration", "approved_trading_configuration") in fixed_families:
+        if not _fixed_configuration_emitter_unreachable(source):
+            raise ValueError("Fixed-mode nested configuration reachability is unproven")
+        fixed_families.remove(("configuration", "approved_trading_configuration"))
     unsupported = sorted(fixed_families - _V3_PROJECTED)
     if unsupported:
         raise ValueError(f"V3 direct emitters lack typed projection: {unsupported}")
