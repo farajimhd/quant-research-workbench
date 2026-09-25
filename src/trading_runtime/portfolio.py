@@ -1626,7 +1626,7 @@ class PortfolioManagementEngine:
             try:
                 planned_risk = _reserved_entry_loss(repriced, remaining) * fx
             except ValueError as exc:
-                self._record("entry_reprice_rejected", intent, account_id,
+                self._record("entry_reprice_rejected", intent.intent_id, account_id,
                              {"reason": "invalid_protection_at_reprice", "detail": str(exc),
                               "price": price, "remaining_quantity": remaining})
                 return False

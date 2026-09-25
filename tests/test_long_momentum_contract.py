@@ -404,6 +404,22 @@ class PortfolioContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await engine.authorize_entry_reprice(approved, "A", 90, 99))
         self.assertEqual(engine.reservations, before)
 
+    async def test_invalid_reprice_records_stable_intent_identity(self):
+        engine = self.make_portfolio()
+        request = intent("entry", quantity=100, price=100, invalidation=90)
+        _, approved = await engine.approve(request, account_id="A")
+        self.assertIsNotNone(approved)
+        with patch("src.trading_runtime.portfolio._reserved_entry_loss",
+                   side_effect=ValueError("invalid stop")):
+            self.assertFalse(await engine.authorize_entry_reprice(
+                approved, "A", 101, approved.quantity))
+        rejected = [row for row in engine.journal.records("contract")
+                    if row.entity_type == "entry_reprice_rejected"]
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0].entity_id, approved.intent_id)
+        self.assertEqual(rejected[0].payload["reason"],
+                         "invalid_protection_at_reprice")
+
     async def test_acquisition_headroom_is_reserved_once_and_consumed_by_repricing(self):
         engine = self.make_portfolio()
         request = replace(intent("entry", quantity=100, price=100, invalidation=90),
