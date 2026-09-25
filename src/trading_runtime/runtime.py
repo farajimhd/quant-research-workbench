@@ -1187,6 +1187,40 @@ class TradingRuntime:
         self.persist_strategy_assignments(event_time)
     async def snapshot_portfolios(self) -> None:
         event_time = self.last_event_time or datetime.now(timezone.utc)
+        if self.config.mode == RunMode.BACKTEST:
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        if (self.config.mode == RunMode.BACKTEST
+                and isinstance(self.journal, BacktestMemoryJournal)):
+            from src.backend.backtest_terminal_snapshot_v2 import (
+                position_set_sha256, project_account_scalars,
+                project_position_scalars,
+            )
+            for account_id in self.config.account_ids:
+                summary = (await self.broker.account_summary(account_id)).to_cpapi()
+                positions = [row.to_cpapi() for row in await self.broker.positions(account_id)]
+                # Prove that the exact emitted CPAPI evidence fits the closed
+                # V2 scalar contract before accepting any journal record.
+                project_account_scalars(summary)
+                normalized = tuple(project_position_scalars(row, account_id=account_id)
+                                   for row in positions)
+                digest = position_set_sha256(normalized)
+                snapshot_id = str(uuid4())
+                entries = [dict(
+                    run_id=self.run_id, category="snapshot", entity_type="portfolio",
+                    entity_id=account_id, account_id=account_id, event_time=event_time,
+                    payload={**summary, "snapshot_id": snapshot_id,
+                             "expected_position_count": len(positions),
+                             "position_set_sha256": digest},
+                )]
+                entries.extend(dict(
+                    run_id=self.run_id, category="snapshot", entity_type="position",
+                    entity_id=str(row["conid"]), account_id=account_id,
+                    event_time=event_time,
+                    payload={**row, "parent_snapshot_id": snapshot_id,
+                             "ordinal": ordinal},
+                ) for ordinal, row in enumerate(positions))
+                self.journal.append_many(entries)
+            return
         for account_id in self.config.account_ids:
             summary = await self.broker.account_summary(account_id)
             self.journal.append(

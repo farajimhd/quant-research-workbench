@@ -1169,6 +1169,7 @@ BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES = (
         (
             ("record_id", "UUID"), ("run_id", "String"),
             ("event_month", "Date"), ("batch_id", "UUID"),
+            ("snapshot_id", "UUID"),
             ("account_id", "String"), ("currency", "String"),
             ("source_timestamp_ms", "UInt64"),
             ("net_liquidation", "Float64"),
@@ -1186,7 +1187,7 @@ BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES = (
     TableContract(
         "trading_backtest_position_snapshot_v2",
         (
-            ("record_id", "UUID"), ("parent_record_id", "UUID"),
+            ("record_id", "UUID"), ("parent_snapshot_id", "UUID"),
             ("run_id", "String"), ("event_month", "Date"),
             ("batch_id", "UUID"), ("account_id", "String"),
             ("ordinal", "UInt32"), ("conid", "UInt64"),
