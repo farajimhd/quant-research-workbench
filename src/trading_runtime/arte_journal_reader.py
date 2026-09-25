@@ -8,7 +8,8 @@ from typing import Any
 from uuid import UUID
 
 from src.trading_runtime.arte_journal_writer import (
-    CommittedPrefix, _CONTRACTS, _EVENT_DETAILS, _canonical_typed_content,
+    CommittedPrefix, V2CommittedPrefix, VerifiedPrefix, _CONTRACTS,
+    _EVENT_DETAILS, _canonical_typed_content, _committed_batch_filter,
     _literal, _rows,
 )
 from src.trading_runtime.journal_contract import canonical_json
@@ -48,11 +49,11 @@ def _verified_row(name: str, row: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_typed_event_page(
-    client: Any, prefix: CommittedPrefix, *, after_sequence: int = 0,
+    client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
 ) -> tuple[TypedJournalEvent, ...]:
     """Read one typed page with one batched detail query per present family."""
-    if not isinstance(prefix, CommittedPrefix) or not prefix.batch_ids:
+    if not isinstance(prefix, (CommittedPrefix, V2CommittedPrefix)) or not prefix.batch_ids:
         raise ValueError("Typed event page requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 1000:
         raise ValueError("Typed event page bounds are invalid")
@@ -61,9 +62,7 @@ def load_typed_event_page(
         f"SELECT {event_columns} FROM arte.trading_event_v1 "
         f"WHERE run_id={_literal(prefix.run_id)} "
         f"AND sequence>{after_sequence} AND sequence<={prefix.last_sequence} "
-        "AND batch_id IN (SELECT batch_id FROM arte.trading_commit_v1 "
-        f"WHERE run_id={_literal(prefix.run_id)} "
-        f"AND last_sequence<={prefix.last_sequence}) "
+        f"{_committed_batch_filter(prefix)}"
         f"ORDER BY sequence LIMIT {limit} FORMAT JSONEachRow")
     if not events:
         if after_sequence < prefix.last_sequence:
@@ -86,6 +85,9 @@ def load_typed_event_page(
         if kind not in _EVENT_DETAILS:
             raise RuntimeError("Typed event page contains an unknown detail contract")
         family = _EVENT_DETAILS[kind]
+        if (family == "trading_strategy_signal_v1"
+                and isinstance(prefix, V2CommittedPrefix)):
+            family = "trading_strategy_signal_v2"
         if family is not None:
             by_family.setdefault(family, set()).add(record_id)
         sealed_events.append((record_id, event, family))
@@ -93,19 +95,21 @@ def load_typed_event_page(
         raise RuntimeError("Typed event page ends before the committed prefix")
     details: dict[tuple[str, str], dict[str, Any]] = {}
     for family, identities in by_family.items():
-        columns = ",".join(column for column, _ in _CONTRACTS[family].columns)
+        contract = (_CONTRACTS["trading_strategy_signal_v1"]
+                    if family == "trading_strategy_signal_v2" else _CONTRACTS[family])
+        columns = ",".join(column for column, _ in contract.columns)
         ids = ",".join(f"toUUID({_literal(value)})" for value in sorted(identities))
         rows = _rows(client,
             f"SELECT {columns} FROM arte.{family} "
             f"WHERE run_id={_literal(prefix.run_id)} AND record_id IN ({ids}) "
-            "AND batch_id IN (SELECT batch_id FROM arte.trading_commit_v1 "
-            f"WHERE run_id={_literal(prefix.run_id)} "
-            f"AND last_sequence<={prefix.last_sequence}) "
+            f"{_committed_batch_filter(prefix)}"
             f"LIMIT {len(identities) + 1} FORMAT JSONEachRow")
         if len(rows) != len(identities):
             raise RuntimeError(f"Typed event page has missing or duplicate {family} rows")
         for raw in rows:
-            detail = _verified_row(family, raw)
+            hash_contract = ("trading_strategy_signal_v1"
+                             if family == "trading_strategy_signal_v2" else family)
+            detail = _verified_row(hash_contract, raw)
             record_id = str(UUID(str(detail["record_id"])))
             key = (family, record_id)
             if record_id not in identities or key in details:

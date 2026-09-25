@@ -6,6 +6,7 @@ import re
 import pytest
 
 from src.trading_runtime import arte_journal_writer as writer
+from src.trading_runtime.arte_journal_reader import load_typed_event_page
 from src.trading_runtime.arte_journal_schema import (
     BATCH_LOOKUP_INDEX, LEGACY_COMMIT_V1, LEGACY_STRATEGY_SIGNAL_V1,
     MARKET_READ_TABLES, TABLES, VERSIONED_JOURNAL_V2_TABLES,
@@ -170,6 +171,29 @@ def test_explicit_v2_profile_seals_signal_and_commit_then_cold_reads(monkeypatch
     with pytest.raises(RuntimeError, match="row content differs"):
         writer.load_committed_prefix(client, batch.run_id,
                                      journal_profile="backtest_v2")
+
+
+def test_v2_event_page_uses_v2_commit_and_signal_detail(monkeypatch):
+    monkeypatch.setattr(writer, "versioned_journal_v2_preflight", lambda client: None)
+    monkeypatch.setattr(writer, "storage_preflight", lambda client, *, tables: None)
+    monkeypatch.setattr(writer, "_verify_run_identity",
+                        lambda client, run_id: {"mode": "backtest"})
+    client = V2MemoryClient()
+    batch = _batch()
+    writer.publish_typed_batch(client, batch, journal_profile="backtest_v2")
+    prefix = writer.load_committed_prefix(client, batch.run_id,
+                                          journal_profile="backtest_v2")
+    assert prefix is not None
+    page = load_typed_event_page(client, prefix)
+    assert len(page) == 1
+    assert page[0].detail_family == "trading_strategy_signal_v2"
+    assert page[0].detail["signal_id"] == "signal-1"
+    assert any("FROM arte.trading_commit_v2 " in sql for sql in client.selects)
+    assert not any("AND batch_id IN (SELECT batch_id FROM arte.trading_commit_v1 " in sql
+                   for sql in client.selects)
+    client.tables["trading_strategy_signal_v2"][0]["reason"] = "tampered"
+    with pytest.raises(RuntimeError, match="differs from its hash"):
+        load_typed_event_page(client, prefix)
 
 
 def test_v2_profile_cannot_use_terminal_batch_or_unknown_profile(monkeypatch):
