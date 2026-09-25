@@ -2238,7 +2238,8 @@ class OrderManagementEngine:
             )
             self._transition(group, OrderManagementState.ACKNOWLEDGED, {"event": "protected_exit_acknowledged"})
             if (
-                tactic
+                not self.causal_execution_clock
+                and tactic
                 and intent.resolved_execution_policy().envelope.maximum_reprices > 0
             ):
                 group.reprice_task = asyncio.create_task(self._run_repricing(group))

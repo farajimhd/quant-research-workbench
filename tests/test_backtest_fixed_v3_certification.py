@@ -233,3 +233,21 @@ def test_fixed_simulated_broker_cannot_start_live_stream_callbacks():
                    and node.name == "stream_broker_messages" for node in broker.body)
     runtime_source = (cert._RUNTIME_ROOT / "runtime.py").read_text(encoding="utf-8")
     assert 'if hasattr(self.broker, "stream_broker_messages"):' in runtime_source
+
+
+def test_causal_protected_exit_cannot_start_wall_clock_repricing():
+    source = (Path(__file__).parents[1] / "src/trading_runtime/order_management.py")
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    calls = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute)
+             and node.func.attr == "_run_repricing"]
+    assert len(calls) == 2
+    guards = [node for node in ast.walk(tree) if isinstance(node, ast.If)
+              and any(call in ast.walk(node) for call in calls)]
+    guarded_calls = set()
+    for guard in guards:
+        if "not self.causal_execution_clock" in ast.unparse(guard.test):
+            guarded_calls.update(call for call in calls
+                                 if any(call is nested for nested in ast.walk(guard)))
+    assert len(guarded_calls) == 2
