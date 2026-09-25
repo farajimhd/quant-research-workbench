@@ -351,9 +351,13 @@ def test_v3_refusal_upgrade_requires_empty_fence_and_is_resumable(monkeypatch):
     with pytest.raises(RuntimeError, match="has rows"):
         install.upgrade_v3_entry_reprice_rejected(legacy, apply=True)
     legacy.child_count = "0"
+    checked = []
+    monkeypatch.setattr(install, "storage_preflight", lambda *_a, **kw: checked.extend(
+        kw.get("tables", ())))
     assert install.upgrade_v3_entry_reprice_rejected(legacy, apply=True) == "upgraded"
     assert len(legacy.writes) == 2
     assert legacy.child_columns == list(install.ENTRY_REPRICE_REJECTED.columns)
+    assert checked[-1].columns == install.SQUEEZE_COMMIT_V3.columns
     assert install.upgrade_v3_entry_reprice_rejected(legacy, apply=False) == "verified"
 
     interrupted = RefusalClient()

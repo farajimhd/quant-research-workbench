@@ -183,7 +183,8 @@ def upgrade_v3_entry_reprice_rejected(client: object, *, apply: bool) -> str:
     for ddl in ddls[1 + present:]:
         client.execute(ddl)
     storage_preflight(client, tables=(ENTRY_REPRICE_REJECTED, TableContract(
-        SQUEEZE_COMMIT_V3.name, full[:start] + suffix + full[-3:],
+        SQUEEZE_COMMIT_V3.name,
+        full if actual == full else full[:start] + suffix + full[-3:],
         SQUEEZE_COMMIT_V3.partition, SQUEEZE_COMMIT_V3.order)))
     return "upgraded"
 
