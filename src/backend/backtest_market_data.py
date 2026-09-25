@@ -357,8 +357,12 @@ class MarketDayLedger:
         raise ValueError("No complete compatible market-day build: " + "; ".join(errors[:3]))
 
 
-def readonly_clickhouse_client(*, market_stream: bool = False):
+def readonly_clickhouse_client(*, market_stream: bool = False,
+                               v3_read_principal: bool = False):
     """Create the dedicated Backtest reader; never borrow writer credentials."""
+    if v3_read_principal:
+        from src.backend.backtest_v3_clients import v3_client
+        return v3_client("read", market_stream=market_stream)
     from research.mlops.clickhouse import ClickHouseHttpClient
 
     url = os.environ.get("BACKTEST_CLICKHOUSE_URL", "").strip()

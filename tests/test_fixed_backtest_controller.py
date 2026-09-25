@@ -489,6 +489,42 @@ def test_fixed_journal_rejects_changed_assembly_before_attaching(monkeypatch, tm
     assert not controller.run_dir.exists()
 
 
+def test_fixed_v3_assembly_requires_pinned_query_before_inactive_attach(tmp_path):
+    from src.backend import backtest_fixed_journal_bootstrap as bootstrap
+
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.run_dir = tmp_path / "must-not-exist"
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST,
+        configuration_revision={"content_hash": "c" * 64},
+        market_data_plan={"token": "b" * 64},
+    )
+    controller._journal = None
+    journal = BacktestMemoryJournal(run_id=RUN)
+    writer = SimpleNamespace(run_id=RUN, journal_profile="backtest_v3")
+    publisher = SimpleNamespace(journal=journal, writer=writer)
+    authority = SimpleNamespace(run_id=RUN, account_ids=("DU1",))
+    token = bootstrap.FixedV3JournalPreflightToken(
+        RUN, ("DU1",), date(2026, 8, 1), "c" * 64,
+        "b" * 64, "d" * 64, "a" * 64,
+    )
+    assembly = bootstrap.FixedJournalAssembly(
+        token, journal, writer, publisher, authority)
+    with pytest.raises(RuntimeError, match="differs from pinned run"):
+        controller._attach_fixed_journal_assembly(assembly)
+    with pytest.raises(RuntimeError, match="differs from pinned run"):
+        controller._attach_fixed_journal_assembly(
+            assembly, expected_query_sha256="e" * 64)
+    assert controller._journal is None
+    controller._attach_fixed_journal_assembly(
+        assembly, expected_query_sha256="d" * 64)
+    assert controller._journal is journal
+    assert controller._journal_writer is writer
+    assert not controller.run_dir.exists()
+    journal.close()
+
+
 def test_fixed_open_remains_blocked_even_with_prepared_assembly(monkeypatch):
     from src.backend import backtest_terminal_v2_preflight
     from src.trading_runtime import arte_journal_writer

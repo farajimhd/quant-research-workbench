@@ -394,13 +394,15 @@ def evaluate(host, a, o, p, old_state, *, typed_persistence=False):
                     return False
                 if impulse_required:
                     from .pullback_impulse import qualify
-                    return bool(qualify(market, candidate, entry_clock.get('consumed_moves', [])))
+                    return bool(qualify(market, candidate, entry_clock.get('consumed_moves', []),
+                                        typed_persistence=typed_persistence))
                 return True
             anchor = entry_anchor(o, market, not impulse_required, settings['late_entry_breaks'],
                                   fresh=not impulse_required, eligible=eligible)
             if anchor and impulse_required:
                 from .pullback_impulse import qualify
-                pullback_move = qualify(market, anchor, entry_clock.get('consumed_moves', []))
+                pullback_move = qualify(market, anchor, entry_clock.get('consumed_moves', []),
+                                        typed_persistence=typed_persistence)
         if anchor:
             entry_kind = 'post_move_pullback'
         elif late and not episode.get('used') and all(samples[tf] and samples[tf]['line'] > samples[tf]['signal']

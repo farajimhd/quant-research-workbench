@@ -2807,13 +2807,24 @@ class ReplayRunController:
             active = False
             self._dependency_retries.clear()
 
-    def _attach_fixed_journal_assembly(self, assembly) -> None:
+    def _attach_fixed_journal_assembly(
+        self, assembly, *, expected_query_sha256: str | None = None,
+    ) -> None:
         """Inactive handoff from a preflighted, disk-free typed bootstrap."""
-        from src.backend.backtest_fixed_journal_bootstrap import FixedJournalAssembly
+        from src.backend.backtest_fixed_journal_bootstrap import (
+            FixedJournalAssembly, FixedJournalPreflightToken,
+            FixedV3JournalPreflightToken,
+        )
         if self.definition.mode != RunMode.BACKTEST or self._journal is not None:
             raise RuntimeError("ClickHouse Backtest journal requires a new Backtest run")
         token = assembly.token if isinstance(assembly, FixedJournalAssembly) else None
-        if (token is None or token.run_id != self.run_id
+        v2 = isinstance(token, FixedJournalPreflightToken)
+        v3 = isinstance(token, FixedV3JournalPreflightToken)
+        if (not (v2 or v3)
+                or (v3 and (expected_query_sha256 is None
+                            or token.query_sha256 != expected_query_sha256))
+                or (v2 and expected_query_sha256 is not None)
+                or token.run_id != self.run_id
                 or token.configuration_hash != str(
                     self.definition.configuration_revision.get("content_hash") or "")
                 or token.market_plan_token != str(
@@ -2821,7 +2832,8 @@ class ReplayRunController:
                 or not token.account_ids
                 or assembly.journal.run_id != self.run_id
                 or assembly.writer.run_id != self.run_id
-                or assembly.writer.journal_profile != "backtest_v2"
+                or assembly.writer.journal_profile != (
+                    "backtest_v3" if v3 else "backtest_v2")
                 or assembly.publisher.journal is not assembly.journal
                 or assembly.publisher.writer is not assembly.writer
                 or assembly.terminal_authority.run_id != self.run_id

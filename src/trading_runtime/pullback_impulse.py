@@ -34,7 +34,7 @@ def observe(state, at, price, minimum_pct):
     state.update(at=at, rising=bool(rising))
 
 
-def qualify(market, anchor, consumed):
+def qualify(market, anchor, consumed, *, typed_persistence=False):
     move = market.get('pullback_impulse', {}).get('move')
     if not move or move.get('invalid') or move['id'] in consumed:
         return None
@@ -46,4 +46,8 @@ def qualify(market, anchor, consumed):
     fraction = (move['peak'] - swing['price']) / (move['peak'] - move['base'])
     if not .20 - 1e-12 <= fraction <= .45 + 1e-12:
         return None
-    return dict(deepcopy(move), retracement=fraction)
+    result = dict(deepcopy(move), retracement=fraction)
+    if typed_persistence:
+        from .arte_assignment_vwap_pullback_move import validate_entry_pullback_move
+        return validate_entry_pullback_move(result)
+    return result
