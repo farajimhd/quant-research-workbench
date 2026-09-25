@@ -427,9 +427,7 @@ def project_journal_record(
                 or execution.trade_time != record.event_time.astimezone(timezone.utc)):
             raise ValueError(
                 "Fill journal record needs exact identity and a separate commission event")
-        month = execution.trade_time.strftime("%Y-%m-01")
-        if run_month.isoformat() != month:
-            raise ValueError("Fill journal partition differs from source trade time")
+        month = execution.trade_time.astimezone(timezone.utc).strftime("%Y-%m-01")
         details = broker_fill_details(
             execution, run_id=record.run_id, event_month=month,
             batch_id=batch_id, execution_record_id=record.record_id,
@@ -468,8 +466,6 @@ def project_journal_record(
                        if key in payload)):
             raise ValueError("Commission journal source identity or fields are invalid")
         month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
-        if run_month.isoformat() != month:
-            raise ValueError("Commission journal partition differs from source time")
         amount = _exact_decimal(payload.get("commission"))
         common = {
             "run_id": record.run_id, "event_month": month,

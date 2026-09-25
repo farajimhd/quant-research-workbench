@@ -314,6 +314,39 @@ def test_shared_fill_record_projects_without_fee_or_information_loss() -> None:
             record, payload={**record.payload, "hidden": "source"}), **identity)
 
 
+def test_month_end_fill_and_fee_use_utc_event_month_not_run_month() -> None:
+    local_close = datetime(2026, 8, 31, 20, 0,
+                           tzinfo=timezone(timedelta(hours=-4)))
+    at = local_close.astimezone(timezone.utc)
+    identity = dict(
+        run_month=date(2026, 8, 1),
+        attempt_id="00000000-0000-0000-0000-000000000004",
+        batch_id="00000000-0000-0000-0000-000000000001",
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        source_cursor="broker-execution:e1",
+    )
+    fill = JournalRecord(
+        "00000000-0000-0000-0000-000000000083", "live:DU1", 1,
+        at, at, "execution", "fill", "e1", "DU1",
+        source(trade_time_r=0, trade_time=local_close.isoformat()),
+    )
+    projected_fill = project_journal_record(fill, **identity)
+    assert projected_fill.run_month == date(2026, 8, 1)
+    assert projected_fill.events[0]["event_month"] == "2026-09-01"
+    assert projected_fill.executions[0]["event_month"] == "2026-09-01"
+    assert dict(_sealed_families(projected_fill))["trading_execution_v1"]
+    fee = JournalRecord(
+        "00000000-0000-0000-0000-000000000084", "live:DU1", 2,
+        at, at, "execution", "commission", "e1", "DU1",
+        {"execution_id": "e1", "commission": 1.25, "currency": "USD",
+         "status": "final", "time_authority": "execution"},
+    )
+    projected_fee = project_journal_record(fee, **identity)
+    assert projected_fee.events[0]["event_month"] == "2026-09-01"
+    assert projected_fee.commissions[0]["event_month"] == "2026-09-01"
+    assert dict(_sealed_families(projected_fee))["trading_commission_v1"]
+
+
 def test_later_commission_is_a_separate_typed_revision() -> None:
     report = CommissionEvent(
         "e1", "DU1", Decimal("1.25"), "USD", Decimal("0.50"),
