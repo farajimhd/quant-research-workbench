@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import timezone
 from hashlib import sha256
+from itertools import zip_longest
 import re
 from typing import Any, Callable, Mapping
 
@@ -24,6 +25,13 @@ from src.trading_runtime.journal_contract import canonical_json
 
 _FENCE = "trading_portfolio_sync_fence_v1"
 _MARKER = "trading_portfolio_sync_snapshot_marker_v1"
+
+
+def _sync_dispatch(client: Any) -> Any | None:
+    dispatch = getattr(client, "typed_sync_insert_dispatch", None)
+    if getattr(client, "typed_insert_strict", False) and dispatch is None:
+        raise RuntimeError("Strict portfolio sync lacks durable dispatch")
+    return dispatch
 
 
 def _marker(batch: TypedJournalBatch, captured: CapturedPortfolioSnapshot) -> dict[str, Any]:
@@ -72,19 +80,39 @@ async def resume_complete_portfolio_sync(
             proof = await asyncio.to_thread(
                 keeper.load_portfolio_snapshot_receipt,
                 run_id, account_id, state_revision)
+            marker_hash, fence_hash, exact = await asyncio.to_thread(
+                _transition_hashes, client, run_id, account_id, state_revision)
+            if exact != fence:
+                raise RuntimeError("Portfolio sync resume fence changed before attestation")
             if proof is None:
                 await asyncio.to_thread(
                     keeper.attest_portfolio_snapshot_receipt,
                     lease, run_id, account_id, state_revision,
-                    str(fence["batch_id"]), str(fence["snapshot_hash"]))
+                    str(fence["batch_id"]), str(fence["snapshot_hash"]),
+                    marker_hash=marker_hash, fence_hash=fence_hash)
             verified = await asyncio.to_thread(
-                load_attested_portfolio_sync, client, keeper,
+                load_attested_portfolio_sync_transition, client, keeper,
                 run_id=run_id, account_id=account_id,
                 state_revision=state_revision)
             if (verified is None or verified["batch_id"] != fence["batch_id"]
                     or verified["snapshot_hash"] != fence["snapshot_hash"]
                     or not await asyncio.to_thread(current, lease)):
                 raise RuntimeError("Portfolio sync resume lacks an attested receipt")
+            dispatch = _sync_dispatch(client)
+            if dispatch is not None:
+                durable_proof = await asyncio.to_thread(
+                    keeper.load_portfolio_snapshot_receipt,
+                    run_id, account_id, state_revision)
+                if not await asyncio.to_thread(
+                        dispatch.is_latest_compacted, run_id, durable_proof):
+                    for table, row_hash in ((_MARKER, marker_hash), (_FENCE, fence_hash)):
+                        await asyncio.to_thread(dispatch.seal_readback,
+                            run_id=run_id, account_id=account_id,
+                            revision=state_revision, table=table, row_hash=row_hash)
+                    await asyncio.to_thread(dispatch.compact,
+                        run_id=run_id, account_id=account_id, revision=state_revision,
+                        marker_hash=marker_hash, fence_hash=fence_hash,
+                        proof=durable_proof)
             return verified
 
         if not await asyncio.to_thread(current, lease):
@@ -138,9 +166,14 @@ async def resume_complete_portfolio_sync(
             state_revision=state_revision, _provisional_fence=fence)
         if not await asyncio.to_thread(current, lease):
             raise RuntimeError("Portfolio sync resume lost its Keeper claim")
+        dispatch = _sync_dispatch(client)
+        if dispatch is not None:
+            await asyncio.to_thread(dispatch.reserve, run_id, account_id, state_revision)
         await asyncio.to_thread(
             _insert, client, _FENCE, (fence,),
-            f"portfolio-sync:{run_id}:{account_id}:{state_revision}")
+            f"portfolio-sync:{run_id}:{account_id}:{state_revision}",
+            **({"dispatch_sync_account_id": account_id,
+                "dispatch_sync_revision": state_revision} if dispatch is not None else {}))
         verified = await asyncio.to_thread(
             load_fenced_portfolio_sync,
             client, run_id=run_id, account_id=account_id,
@@ -148,6 +181,10 @@ async def resume_complete_portfolio_sync(
         if (verified is None or verified["batch_id"] != batch_id
                 or not await asyncio.to_thread(current, lease)):
             raise RuntimeError("Portfolio sync resume fence did not become durable")
+        if dispatch is not None:
+            await asyncio.to_thread(dispatch.seal_readback,
+                run_id=run_id, account_id=account_id, revision=state_revision,
+                table=_FENCE, row_hash=fence["content_hash"])
         return await attested(verified)
 
 
@@ -160,11 +197,21 @@ def _publish_marker(client: Any, row: Mapping[str, Any]) -> None:
     if prior is not None:
         if prior != expected:
             raise RuntimeError("Portfolio sync snapshot marker revision conflicts")
+        dispatch = _sync_dispatch(client)
+        if dispatch is not None:
+            dispatch.seal_readback(run_id=run_id, account_id=account_id,
+                revision=revision, table=_MARKER, row_hash=row["content_hash"])
         return
+    dispatch = _sync_dispatch(client)
     _insert(client, _MARKER, (row,),
-            f"portfolio-sync:{run_id}:{account_id}:{revision}:marker")
+            f"portfolio-sync:{run_id}:{account_id}:{revision}:marker",
+            **({"dispatch_sync_account_id": account_id,
+                "dispatch_sync_revision": revision} if dispatch is not None else {}))
     if _stored_marker(client, run_id, account_id, revision) != expected:
         raise RuntimeError("Portfolio sync snapshot marker did not become durable")
+    if dispatch is not None:
+        dispatch.seal_readback(run_id=run_id, account_id=account_id,
+            revision=revision, table=_MARKER, row_hash=row["content_hash"])
 
 
 def _fence(batch: TypedJournalBatch, captured: CapturedPortfolioSnapshot,
@@ -330,6 +377,10 @@ def publish_fenced_portfolio_sync(
             or batch.portfolio_reconciliation_events[0]["difference_hash"]
             != portfolio_reconciliation_hash(captured)):
         raise ValueError("Portfolio sync batch does not bind captured differences")
+    dispatch = _sync_dispatch(client)
+    if dispatch is not None:
+        dispatch.reserve(captured.run_id, captured.account_id,
+                         captured.state_revision)
     _publish_marker(client, _marker(batch, captured))
     if publish_typed_batch(client, batch) != batch.batch_id:
         raise RuntimeError("Portfolio sync event batch identity changed")
@@ -344,14 +395,24 @@ def publish_fenced_portfolio_sync(
             _FENCE, {key: value for key, value in fence.items() if key != "content_hash"})
         if prior != expected:
             raise RuntimeError("Portfolio sync revision has conflicting fence")
+        if dispatch is not None:
+            dispatch.seal_readback(run_id=captured.run_id,
+                account_id=captured.account_id, revision=captured.state_revision,
+                table=_FENCE, row_hash=fence["content_hash"])
         return digest
     _insert(client, _FENCE, (fence,),
-            f"portfolio-sync:{captured.run_id}:{captured.account_id}:{captured.state_revision}")
+            f"portfolio-sync:{captured.run_id}:{captured.account_id}:{captured.state_revision}",
+            **({"dispatch_sync_account_id": captured.account_id,
+                "dispatch_sync_revision": captured.state_revision} if dispatch is not None else {}))
     verified = load_fenced_portfolio_sync(
         client, run_id=captured.run_id, account_id=captured.account_id,
         state_revision=captured.state_revision)
     if verified is None or verified["snapshot_hash"] != digest:
         raise RuntimeError("Portfolio sync fence did not become durable")
+    if dispatch is not None:
+        dispatch.seal_readback(run_id=captured.run_id,
+            account_id=captured.account_id, revision=captured.state_revision,
+            table=_FENCE, row_hash=fence["content_hash"])
     return digest
 
 
@@ -379,6 +440,36 @@ class KeeperSyncAttestation:
     snapshot_hash: str
     owner_id: str
     epoch: int
+    marker_hash: str | None = None
+    fence_hash: str | None = None
+
+    def wire(self) -> bytes:
+        from src.trading_runtime.keeper_ownership import _sync_receipt_bytes
+        return _sync_receipt_bytes(
+            self.run_id, self.account_id, self.state_revision, self.batch_id,
+            self.snapshot_hash, self.owner_id, self.epoch,
+            marker_hash=self.marker_hash, fence_hash=self.fence_hash)
+
+
+@dataclass(frozen=True, slots=True)
+class KeeperSyncTransitionHead:
+    run_id: str
+    account_id: str | None
+    proof_count: int
+    proof_xor: str
+    last_revision: int
+
+    def wire(self) -> bytes:
+        from src.trading_runtime.keeper_ownership import _identity
+        _identity(self.run_id, "run")
+        if self.account_id is not None:
+            _identity(self.account_id, "account")
+        if (type(self.proof_count) is not int or self.proof_count < 0
+                or type(self.last_revision) is not int or self.last_revision < 0
+                or re.fullmatch(r"[0-9a-f]{64}", self.proof_xor) is None):
+            raise ValueError("Portfolio sync transition head is invalid")
+        return (f"1\n{self.run_id}\n{self.account_id or ''}\n"
+                f"{self.proof_count}\n{self.proof_xor}\n{self.last_revision}").encode()
 
 
 def load_attested_portfolio_sync(
@@ -400,6 +491,123 @@ def load_attested_portfolio_sync(
             or not proof.owner_id or type(proof.epoch) is not int or proof.epoch < 1):
         raise RuntimeError("Portfolio sync has no matching Keeper CAS attestation")
     return fence
+
+
+def _transition_hashes(client: Any, run_id: str, account_id: str,
+                       revision: int) -> tuple[str, str, dict[str, Any]]:
+    marker = _stored_marker(client, run_id, account_id, revision)
+    fence = load_fenced_portfolio_sync(
+        client, run_id=run_id, account_id=account_id,
+        state_revision=revision)
+    if marker is None or fence is None or marker["batch_id"] != fence["batch_id"]:
+        raise RuntimeError("Portfolio sync transition lacks exact marker and fence")
+    return (sha256(canonical_json(marker).encode()).hexdigest(),
+            sha256(canonical_json(fence).encode()).hexdigest(), fence)
+
+
+def load_attested_portfolio_sync_transition(
+    client: Any, keeper: Any, *, run_id: str, account_id: str,
+    state_revision: int,
+) -> dict[str, Any]:
+    """Strict V2 proof binds marker and late fence, not only batch/snapshot."""
+    fence = load_attested_portfolio_sync(
+        client, keeper, run_id=run_id, account_id=account_id,
+        state_revision=state_revision)
+    if fence is None:
+        raise RuntimeError("Portfolio sync transition lacks committed ClickHouse facts")
+    marker_hash, fence_hash, exact = _transition_hashes(
+        client, run_id, account_id, state_revision)
+    proof = keeper.load_portfolio_snapshot_receipt(
+        run_id, account_id, state_revision)
+    if (not isinstance(proof, KeeperSyncAttestation)
+            or proof.marker_hash != marker_hash
+            or proof.fence_hash != fence_hash
+            or proof.batch_id != exact["batch_id"]
+            or proof.snapshot_hash != exact["snapshot_hash"]):
+        raise RuntimeError("Portfolio sync transition lacks matching V2 Keeper proof")
+    if _transition_hashes(client, run_id, account_id, state_revision)[:2] != (
+            marker_hash, fence_hash):
+        raise RuntimeError("Portfolio sync transition changed during proof audit")
+    return exact
+
+
+def audit_attested_portfolio_sync_transitions(
+    client: Any, keeper: Any, run_id: str, *, quiescence: Any,
+    page_size: int = 256,
+) -> int:
+    """Bounded dual-table scan, with a durable run head catching orphan proofs."""
+    if not run_id or type(page_size) is not int or not 1 <= page_size <= 1000:
+        raise ValueError("Portfolio sync transition audit identity or page size is invalid")
+    if quiescence is None or not callable(getattr(quiescence, "assert_fenced", None)):
+        raise RuntimeError("Portfolio sync transition audit needs writer-drain proof")
+    quiescence.assert_fenced(run_id)
+
+    def keys(table: str):
+        cursor: tuple[str, int] | None = None
+        while True:
+            quiescence.assert_fenced(run_id)
+            after = ("" if cursor is None else
+                     "AND (account_id,state_revision) > "
+                     f"({_literal(cursor[0])},{cursor[1]}) ")
+            rows = _rows(client,
+                "SELECT account_id,state_revision FROM arte."
+                f"{table} WHERE run_id={_literal(run_id)} {after}"
+                "ORDER BY account_id,state_revision "
+                f"LIMIT {page_size} FORMAT JSONEachRow")
+            if len(rows) > page_size:
+                raise RuntimeError("Portfolio sync transition page exceeds bound")
+            for row in rows:
+                key = (row.get("account_id"), row.get("state_revision"))
+                if (not isinstance(key[0], str) or not key[0]
+                        or type(key[1]) is not int or key[1] < 1
+                        or cursor is not None and key <= cursor):
+                    raise RuntimeError("Portfolio sync transition keys are invalid or duplicate")
+                cursor = key
+                yield key
+            if len(rows) < page_size:
+                break
+
+    zero = "0" * 64
+    count = 0
+    run_xor = 0
+    account_heads: dict[str, KeeperSyncTransitionHead] = {}
+    pinned = keeper.load_portfolio_sync_transition_head(run_id, None)
+    for marker_key, fence_key in zip_longest(
+            keys(_MARKER), keys(_FENCE)):
+        quiescence.assert_fenced(run_id)
+        if marker_key is None or marker_key != fence_key:
+            raise RuntimeError("Portfolio sync marker/fence inventory differs")
+        account_id, revision = marker_key
+        load_attested_portfolio_sync_transition(
+            client, keeper, run_id=run_id, account_id=account_id,
+            state_revision=revision)
+        proof = keeper.load_portfolio_snapshot_receipt(run_id, account_id, revision)
+        digest = int.from_bytes(sha256(proof.wire()).digest(), "big")
+        run_xor ^= digest
+        prior = account_heads.get(account_id)
+        if prior is None:
+            prior = KeeperSyncTransitionHead(run_id, account_id, 0, zero, 0)
+        if revision <= prior.last_revision:
+            raise RuntimeError("Portfolio sync account revisions are not increasing")
+        account_heads[account_id] = KeeperSyncTransitionHead(
+            run_id, account_id, prior.proof_count + 1,
+            f"{int(prior.proof_xor, 16) ^ digest:064x}", revision)
+        count += 1
+    quiescence.assert_fenced(run_id)
+    final_run = keeper.load_portfolio_sync_transition_head(run_id, None)
+    expected_run = KeeperSyncTransitionHead(
+        run_id, None, count, f"{run_xor:064x}",
+        max((head.last_revision for head in account_heads.values()), default=0))
+    if (pinned != final_run
+            or (final_run is None and count != 0)
+            or final_run is not None and final_run[0] != expected_run):
+        raise RuntimeError("Portfolio sync run proof head differs from CH transitions")
+    for account_id, expected in account_heads.items():
+        observed = keeper.load_portfolio_sync_transition_head(run_id, account_id)
+        if observed is None or observed[0] != expected:
+            raise RuntimeError("Portfolio sync account proof head differs")
+    quiescence.assert_fenced(run_id)
+    return count
 
 
 class TypedPortfolioSyncAuthority:
@@ -457,18 +665,30 @@ class TypedPortfolioSyncAuthority:
                 or loaded["state_revision"] != captured.state_revision
                 or not await asyncio.to_thread(self.claim_is_current, lease)):
             raise RuntimeError("Typed portfolio sync receipt differs from committed state")
+        marker_hash, fence_hash, exact = await asyncio.to_thread(
+            _transition_hashes, self._client, captured.run_id,
+            captured.account_id, captured.state_revision)
+        if exact != loaded:
+            raise RuntimeError("Typed portfolio sync transition changed before attestation")
         proof = await asyncio.to_thread(
             self._keeper.attest_portfolio_snapshot_receipt,
             lease, captured.run_id, captured.account_id,
-            captured.state_revision, batch.batch_id, digest)
+            captured.state_revision, batch.batch_id, digest,
+            marker_hash=marker_hash, fence_hash=fence_hash)
         if not isinstance(proof, KeeperSyncAttestation):
             raise RuntimeError("Typed portfolio sync Keeper CAS attestation failed")
         admitted = await asyncio.to_thread(
-            load_attested_portfolio_sync, self._client, self._keeper,
+            load_attested_portfolio_sync_transition, self._client, self._keeper,
             run_id=captured.run_id, account_id=captured.account_id,
             state_revision=captured.state_revision)
         if (admitted is None or admitted["snapshot_hash"] != digest
                 or not await asyncio.to_thread(self.claim_is_current, lease)):
             raise RuntimeError("Typed portfolio sync lost claim after Keeper attestation")
+        dispatch = _sync_dispatch(self._client)
+        if dispatch is not None:
+            await asyncio.to_thread(dispatch.compact,
+                run_id=captured.run_id, account_id=captured.account_id,
+                revision=captured.state_revision,
+                marker_hash=marker_hash, fence_hash=fence_hash, proof=proof)
         return PortfolioSyncReceipt(captured.run_id, captured.account_id,
                                     captured.state_revision, digest)

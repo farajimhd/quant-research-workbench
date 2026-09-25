@@ -219,6 +219,49 @@ def test_sync_attestation_is_idempotent_only_for_exact_receipt() -> None:
     asyncio.run(publish())
 
 
+def test_v2_sync_transition_head_is_atomic_ordered_and_historical() -> None:
+    store = _Store()
+    first = KeeperOwnershipCoordinator(_Client(store, 11))
+    second = KeeperOwnershipCoordinator(_Client(store, 12))
+    run, account = "run-v2", "DU1"
+    batch = "00000000-0000-0000-0000-000000000012"
+    async def publish():
+        async with first.claim_portfolio_snapshot(run, account) as lease:
+            receipt = first.attest_portfolio_snapshot_receipt(
+                lease, run, account, 1, batch, "a" * 64,
+                marker_hash="b" * 64, fence_hash="c" * 64)
+            assert receipt.marker_hash == "b" * 64
+            assert first.attest_portfolio_snapshot_receipt(
+                lease, run, account, 1, batch, "a" * 64,
+                marker_hash="b" * 64, fence_hash="c" * 64) == receipt
+            with pytest.raises(KeeperUnavailable, match="transition proof conflicts"):
+                first.attest_portfolio_snapshot_receipt(
+                    lease, run, account, 1, batch, "a" * 64,
+                    marker_hash="d" * 64, fence_hash="c" * 64)
+            later = first.attest_portfolio_snapshot_receipt(
+                lease, run, account, 3, batch, "e" * 64,
+                marker_hash="f" * 64, fence_hash="1" * 64)
+            head = first.load_portfolio_sync_transition_head(run, account)[0]
+            assert (head.proof_count, head.last_revision) == (2, 3)
+            assert first.load_portfolio_sync_transition_head(run, None)[0].proof_count == 2
+            with pytest.raises(KeeperUnavailable, match="revision is stale"):
+                first.attest_portfolio_snapshot_receipt(
+                    lease, run, account, 2, batch, "a" * 64,
+                    marker_hash="b" * 64, fence_hash="c" * 64)
+            return lease, receipt, later
+    old_lease, first_proof, last_proof = asyncio.run(publish())
+    async def new_owner():
+        async with second.claim_portfolio_snapshot(run, account) as lease:
+            assert lease["epoch"] > old_lease["epoch"]
+            assert second.load_portfolio_snapshot_receipt(run, account, 1) == first_proof
+            assert second.load_portfolio_snapshot_receipt(run, account, 3) == last_proof
+            with pytest.raises(KeeperUnavailable, match="expired before attestation"):
+                first.attest_portfolio_snapshot_receipt(
+                    old_lease, run, account, 4, batch, "a" * 64,
+                    marker_hash="b" * 64, fence_hash="c" * 64)
+    asyncio.run(new_owner())
+
+
 def test_sync_attestation_rejects_corrupt_historical_proof() -> None:
     store = _Store()
     coordinator = KeeperOwnershipCoordinator(_Client(store, 11))

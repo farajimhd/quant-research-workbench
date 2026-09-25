@@ -63,11 +63,13 @@ class Keeper:
 
     def attest_portfolio_snapshot_receipt(
         self, lease, run_id, account_id, revision, batch_id, snapshot_hash,
+        *, marker_hash=None, fence_hash=None,
     ):
         if not self.portfolio_snapshot_claim_is_current(lease):
             raise RuntimeError("Keeper CAS rejected stale owner")
         proof = sync.KeeperSyncAttestation(
-            run_id, account_id, revision, batch_id, snapshot_hash, "owner-a", 7)
+            run_id, account_id, revision, batch_id, snapshot_hash, "owner-a", 7,
+            marker_hash, fence_hash)
         if self.receipt is not None and self.receipt != proof:
             raise RuntimeError("Keeper CAS receipt conflicts")
         self.receipt = proof
@@ -77,10 +79,67 @@ class Keeper:
         return self.receipt
 
 
+def test_v2_sync_cold_audit_binds_marker_fence_and_enumerable_head(monkeypatch) -> None:
+    from hashlib import sha256
+    from test_keeper_ownership import _Client, _Store
+    from src.trading_runtime.journal_contract import canonical_json
+    from src.trading_runtime.keeper_ownership import KeeperOwnershipCoordinator
+
+    run, account, revision = "run-v2", "DU1", 1
+    marker = {"batch_id": BATCH, "snapshot_id": "broker-snapshot"}
+    fence = {"batch_id": BATCH, "snapshot_hash": "a" * 64}
+    coordinator = KeeperOwnershipCoordinator(_Client(_Store(), 11))
+    def attest():
+        async def work():
+            async with coordinator.claim_portfolio_snapshot(run, account) as lease:
+                coordinator.attest_portfolio_snapshot_receipt(
+                    lease, run, account, revision, BATCH, fence["snapshot_hash"],
+                    marker_hash=sha256(canonical_json(marker).encode()).hexdigest(),
+                    fence_hash=sha256(canonical_json(fence).encode()).hexdigest())
+        asyncio.run(work())
+    attest()
+    monkeypatch.setattr(sync, "_stored_marker",
+                        lambda *_args: dict(marker))
+    monkeypatch.setattr(sync, "load_fenced_portfolio_sync",
+                        lambda *_args, **_kwargs: dict(fence))
+    monkeypatch.setattr(sync, "load_attested_portfolio_sync",
+                        lambda *_args, **_kwargs: dict(fence))
+    def rows(_client, query):
+        if "SELECT account_id,state_revision" not in query:
+            raise AssertionError(query)
+        return [] if "AND (account_id,state_revision)" in query else [
+            {"account_id": account, "state_revision": revision}]
+    monkeypatch.setattr(sync, "_rows", rows)
+    class Barrier:
+        def assert_fenced(self, run_id):
+            assert run_id == run
+    assert sync.audit_attested_portfolio_sync_transitions(
+        object(), coordinator, run, quiescence=Barrier(), page_size=1) == 1
+    marker["snapshot_id"] = "tampered"
+    with pytest.raises(RuntimeError, match="matching V2 Keeper proof"):
+        sync.audit_attested_portfolio_sync_transitions(
+            object(), coordinator, run, quiescence=Barrier(), page_size=1)
+    marker["snapshot_id"] = "broker-snapshot"
+    async def orphan():
+        async with coordinator.claim_portfolio_snapshot(run, account) as lease:
+            coordinator.attest_portfolio_snapshot_receipt(
+                lease, run, account, 2, BATCH, fence["snapshot_hash"],
+                marker_hash="b" * 64, fence_hash="c" * 64)
+    asyncio.run(orphan())
+    with pytest.raises(RuntimeError, match="run proof head differs"):
+        sync.audit_attested_portfolio_sync_transitions(
+            object(), coordinator, run, quiescence=Barrier(), page_size=1)
+
+
 def test_sync_receipt_requires_writer_then_cold_verified_snapshot(monkeypatch) -> None:
     writer = Writer()
     monkeypatch.setattr(sync, "load_fenced_portfolio_sync", lambda _client, **_identity: {
         "snapshot_hash": "a" * 64, "state_revision": 1, "batch_id": BATCH})
+    monkeypatch.setattr(sync, "_transition_hashes", lambda *_args:
+                        ("b" * 64, "c" * 64, {"snapshot_hash": "a" * 64,
+                         "state_revision": 1, "batch_id": BATCH}))
+    monkeypatch.setattr(sync, "load_attested_portfolio_sync_transition",
+                        lambda *_args, **_kwargs: {"snapshot_hash": "a" * 64})
     authority = sync.TypedPortfolioSyncAuthority(
         client=object(), writer=writer, keeper=Keeper(),
         next_revision=lambda *_args: 1, batch_identity=identity)
@@ -96,6 +155,8 @@ def test_sync_receipt_requires_writer_then_cold_verified_snapshot(monkeypatch) -
     receipt = asyncio.run(run())
     assert receipt.snapshot_hash == "a" * 64
     assert receipt.state_revision == 1
+    assert authority._keeper.receipt.marker_hash == "b" * 64
+    assert authority._keeper.receipt.fence_hash == "c" * 64
 
 
 def test_sync_cold_readback_does_not_block_event_loop(monkeypatch) -> None:
@@ -112,6 +173,11 @@ def test_sync_cold_readback_does_not_block_event_loop(monkeypatch) -> None:
                 "batch_id": BATCH}
 
     monkeypatch.setattr(sync, "load_fenced_portfolio_sync", slow_readback)
+    monkeypatch.setattr(sync, "_transition_hashes", lambda *_args:
+                        ("b" * 64, "c" * 64, {"snapshot_hash": "a" * 64,
+                         "state_revision": 1, "batch_id": BATCH}))
+    monkeypatch.setattr(sync, "load_attested_portfolio_sync_transition",
+                        lambda *_args, **_kwargs: {"snapshot_hash": "a" * 64})
     authority = sync.TypedPortfolioSyncAuthority(
         client=object(), writer=writer, keeper=Keeper(),
         next_revision=lambda *_args: 1, batch_identity=identity)
@@ -220,7 +286,10 @@ def test_keeper_cas_rejects_lease_loss_after_ch_readback(monkeypatch) -> None:
     writer.future.set_result("a" * 64)
     monkeypatch.setattr(sync, "load_fenced_portfolio_sync", lambda *_args, **_kwargs: {
         "snapshot_hash": "a" * 64, "state_revision": 1, "batch_id": BATCH})
-    def expire_before_cas(*args):
+    monkeypatch.setattr(sync, "_transition_hashes", lambda *_args:
+                        ("b" * 64, "c" * 64, {"snapshot_hash": "a" * 64,
+                         "state_revision": 1, "batch_id": BATCH}))
+    def expire_before_cas(*args, **kwargs):
         keeper.current = False
         raise RuntimeError("Keeper CAS rejected stale owner")
     keeper.attest_portfolio_snapshot_receipt = expire_before_cas
@@ -506,7 +575,7 @@ def test_cold_sync_resume_seals_only_complete_committed_sources(monkeypatch) -> 
         object(), keeper, run_id=RUN, account_id="DU1", state_revision=1) == result
 
 
-@pytest.mark.parametrize("proof_state", ["missing", "matching", "conflicting"])
+@pytest.mark.parametrize("proof_state", ["missing", "matching", "conflicting", "legacy"])
 def test_cold_sync_resume_existing_fence_requires_exact_keeper_proof(
     monkeypatch, proof_state,
 ) -> None:
@@ -519,10 +588,16 @@ def test_cold_sync_resume_existing_fence_requires_exact_keeper_proof(
     keeper = Keeper()
     fence = {"batch_id": BATCH, "snapshot_hash": "a" * 64}
     if proof_state != "missing":
+        from hashlib import sha256
+        from src.trading_runtime.journal_contract import canonical_json
+        marker_hash = sha256(canonical_json(marker).encode()).hexdigest()
+        fence_hash = sha256(canonical_json(fence).encode()).hexdigest()
         keeper.receipt = sync.KeeperSyncAttestation(
             RUN, "DU1", 1, BATCH,
             "b" * 64 if proof_state == "conflicting" else "a" * 64,
-            "historical-owner", 3)
+            "historical-owner", 3,
+            None if proof_state == "legacy" else marker_hash,
+            None if proof_state == "legacy" else fence_hash)
     monkeypatch.setattr(sync, "_stored_marker", lambda *_args: marker)
     monkeypatch.setattr(sync, "load_fenced_portfolio_sync", lambda *_args, **_kwargs: fence)
     monkeypatch.setattr(sync, "_insert", lambda *_args:
@@ -530,8 +605,10 @@ def test_cold_sync_resume_existing_fence_requires_exact_keeper_proof(
     if proof_state != "missing":
         monkeypatch.setattr(keeper, "attest_portfolio_snapshot_receipt", lambda *_args:
                             pytest.fail("existing proof must not be rewritten"))
-    if proof_state == "conflicting":
-        with pytest.raises(RuntimeError, match="no matching Keeper CAS attestation"):
+    if proof_state in {"conflicting", "legacy"}:
+        with pytest.raises(RuntimeError, match=(
+                "no matching Keeper CAS attestation" if proof_state == "conflicting"
+                else "matching V2 Keeper proof")):
             asyncio.run(sync.resume_complete_portfolio_sync(
                 object(), keeper, run_id=RUN, account_id="DU1", state_revision=1))
     else:

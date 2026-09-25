@@ -60,6 +60,10 @@ def _head_path(run_id: str) -> str:
     return _path("admission_epoch_head", run_id)
 
 
+def _account_head_path(run_id: str, account_id: str) -> str:
+    return _path("admission_epoch_account_head", run_id, account_id)
+
+
 @dataclass(frozen=True)
 class AdmissionProofHead:
     run_id: str
@@ -76,10 +80,44 @@ class AdmissionProofHead:
         return f"1\n{self.run_id}\n{self.proof_count}\n{self.proof_xor}".encode()
 
 
+@dataclass(frozen=True)
+class AdmissionAccountHead:
+    run_id: str
+    account_id: str
+    proof_count: int
+    proof_xor: str
+    last_revision: int
+
+    def __post_init__(self) -> None:
+        _identity(self.run_id, "run")
+        _identity(self.account_id, "account")
+        if (type(self.proof_count) is not int or self.proof_count < 0
+                or type(self.last_revision) is not int or self.last_revision < 0
+                or (self.proof_count == 0) != (self.last_revision == 0)
+                or not _HEX.fullmatch(self.proof_xor)):
+            raise ValueError("Admission account head is invalid")
+
+    def wire(self) -> bytes:
+        return (f"1\n{self.run_id}\n{self.account_id}\n{self.proof_count}\n"
+                f"{self.proof_xor}\n{self.last_revision}").encode()
+
+
 def _advance_head(head: AdmissionProofHead, proof: AdmissionEpochProof) -> AdmissionProofHead:
     digest = int.from_bytes(sha256(proof.wire()).digest(), "big")
     return AdmissionProofHead(head.run_id, head.proof_count + 1,
                               f"{int(head.proof_xor, 16) ^ digest:064x}")
+
+
+def _advance_account_head(head: AdmissionAccountHead,
+                          proof: AdmissionEpochProof) -> AdmissionAccountHead:
+    if (head.run_id, head.account_id) != (proof.run_id, proof.account_id):
+        raise ValueError("Admission account head differs from proof identity")
+    if proof.state_revision <= head.last_revision:
+        raise KeeperUnavailable("Admission account proof revision is stale")
+    digest = int.from_bytes(sha256(proof.wire()).digest(), "big")
+    return AdmissionAccountHead(head.run_id, head.account_id,
+        head.proof_count + 1, f"{int(head.proof_xor, 16) ^ digest:064x}",
+        proof.state_revision)
 
 
 def _fence_hashes(client: Any, run_id: str, account_id: str,
@@ -175,6 +213,27 @@ class KeeperAdmissionEpochAuthority:
         except (UnicodeError, ValueError, TypeError) as exc:
             raise KeeperUnavailable("Admission proof head is corrupt") from exc
 
+    def load_account_head(self, run_id: str, account_id: str) -> tuple[AdmissionAccountHead, int] | None:
+        self.coordinator._require_connected()
+        try:
+            value, stat = self.client.get(_account_head_path(run_id, account_id))
+        except Exception as exc:
+            if type(exc).__name__ == "NoNodeError":
+                return None
+            raise KeeperUnavailable("Cannot read admission account head") from exc
+        self.coordinator._require_connected()
+        try:
+            parts = value.decode("utf-8").split("\n")
+            if len(parts) != 6 or parts[0] != "1":
+                raise ValueError("unknown account head wire version")
+            head = AdmissionAccountHead(parts[1], parts[2], int(parts[3]),
+                                        parts[4], int(parts[5]))
+            if (head.run_id, head.account_id) != (run_id, account_id) or head.wire() != value:
+                raise ValueError("account head identity differs")
+            return head, stat.version
+        except (UnicodeError, ValueError, TypeError) as exc:
+            raise KeeperUnavailable("Admission account head is corrupt") from exc
+
     def attest(self, client: Any, lease: dict[str, Any], *, run_id: str,
                account_id: str, state_revision: int) -> AdmissionEpochProof:
         resource_id = f"portfolio-account:{account_id}"
@@ -201,15 +260,20 @@ class KeeperAdmissionEpochAuthority:
                 or holder_stat.ephemeralOwner != self.client.client_id[0]):
             raise KeeperUnavailable("Admission owner epoch changed before CAS")
         self.client.ensure_path(f"{_ROOT}/admission_epoch_head")
+        self.client.ensure_path(f"{_ROOT}/admission_epoch_account_head")
         for _ in range(8):
             prior = self.load_head(run_id)
+            account_prior = self.load_account_head(run_id, account_id)
             existing = self.load(run_id, account_id, state_revision)
             if existing is not None:
-                if existing != proof or prior is None:
+                if existing != proof or prior is None or account_prior is None:
                     raise KeeperUnavailable("Admission epoch CAS proof conflicts")
                 break
             before = prior[0] if prior else AdmissionProofHead(run_id, 0, "0" * 64)
             updated = _advance_head(before, proof)
+            account_before = (account_prior[0] if account_prior else
+                              AdmissionAccountHead(run_id, account_id, 0, "0" * 64, 0))
+            account_updated = _advance_account_head(account_before, proof)
             txn = self.client.transaction()
             txn.check(f"{base}/holder", version=holder_stat.version)
             txn.check(f"{base}/epoch", version=counter_stat.version)
@@ -219,6 +283,12 @@ class KeeperAdmissionEpochAuthority:
                 txn.set_data(_head_path(run_id), updated.wire(), version=prior[1])
             else:
                 txn.create(_head_path(run_id), updated.wire(), ephemeral=False)
+            if account_prior:
+                txn.set_data(_account_head_path(run_id, account_id), account_updated.wire(),
+                             version=account_prior[1])
+            else:
+                txn.create(_account_head_path(run_id, account_id), account_updated.wire(),
+                           ephemeral=False)
             if _committed(txn.commit()):
                 break
             if self.load(run_id, account_id, state_revision) == proof:
@@ -233,8 +303,8 @@ class KeeperAdmissionEpochAuthority:
             raise KeeperUnavailable("Admission proof head CAS contended beyond retry budget")
         if self.load(run_id, account_id, state_revision) != proof:
             raise KeeperUnavailable("Admission epoch proof is not durable")
-        if self.load_head(run_id) is None:
-            raise KeeperUnavailable("Admission proof head is not durable")
+        if self.load_head(run_id) is None or self.load_account_head(run_id, account_id) is None:
+            raise KeeperUnavailable("Admission proof heads are not durable")
         if not self.coordinator.portfolio_admission_lease_is_current(
                 resource_id, owner_id=proof.owner_id, epoch=proof.epoch):
             raise KeeperUnavailable("Admission owner changed after CAS")
@@ -272,6 +342,8 @@ def audit_attested_admission_revisions(
     cursor: tuple[str, int] | None = None
     checked = 0
     observed = AdmissionProofHead(run_id, 0, "0" * 64)
+    observed_accounts: dict[str, AdmissionAccountHead] = {}
+    pinned_accounts: dict[str, tuple[AdmissionAccountHead, int] | None] = {}
     pinned_head = authority.load_head(run_id)
     while True:
         quiescence.assert_fenced(run_id)
@@ -299,6 +371,11 @@ def audit_attested_admission_revisions(
             if not isinstance(proof, AdmissionEpochProof):
                 raise RuntimeError("Admission proof disappeared during startup audit")
             observed = _advance_head(observed, proof)
+            if key[0] not in pinned_accounts:
+                pinned_accounts[key[0]] = authority.load_account_head(run_id, key[0])
+            account_before = observed_accounts.get(key[0],
+                AdmissionAccountHead(run_id, key[0], 0, "0" * 64, 0))
+            observed_accounts[key[0]] = _advance_account_head(account_before, proof)
             cursor = key
             checked += 1
         quiescence.assert_fenced(run_id)
@@ -310,5 +387,10 @@ def audit_attested_admission_revisions(
             or (final_head is None and checked != 0)
             or (final_head is not None and final_head[0] != observed)):
         raise RuntimeError("Admission proof head differs from audited ClickHouse revisions")
+    for account_id, account_head in observed_accounts.items():
+        if (pinned_accounts[account_id] is None
+                or pinned_accounts[account_id] != authority.load_account_head(run_id, account_id)
+                or pinned_accounts[account_id][0] != account_head):
+            raise RuntimeError("Admission account head differs from audited revisions")
     quiescence.assert_fenced(run_id)
     return checked

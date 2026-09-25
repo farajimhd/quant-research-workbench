@@ -871,6 +871,8 @@ def _insert(
     dispatch_terminal_account_id: str | None = None,
     dispatch_snapshot_account_id: str | None = None,
     dispatch_policy_hash: str | None = None,
+    dispatch_sync_account_id: str | None = None,
+    dispatch_sync_revision: int | None = None,
 ) -> str | None:
     contract_name = (_profile_table(name, journal_profile)
                      if journal_profile == "backtest_v3" and name == "trading_commit_v1"
@@ -887,6 +889,27 @@ def _insert(
         f"insert_deduplication_token={_literal(token)} FORMAT JSONEachRow\n{body}"
     )
     dispatch = getattr(client, "typed_insert_dispatch", None)
+    sync_dispatch = getattr(client, "typed_sync_insert_dispatch", None)
+    if dispatch_sync_account_id is not None:
+        if (sync_dispatch is None or len(rows) != 1
+                or name not in {"trading_portfolio_sync_snapshot_marker_v1",
+                                "trading_portfolio_sync_fence_v1"}
+                or journal_profile != "v1" or
+                rows[0].get("account_id") != dispatch_sync_account_id or
+                rows[0].get("state_revision") != dispatch_sync_revision or
+                any(value is not None for value in (
+                    dispatch_sequence, dispatch_batch_id, dispatch_terminal_account_id,
+                    dispatch_snapshot_account_id, dispatch_policy_hash)) or
+                dispatch_run_context):
+            raise RuntimeError("Portfolio sync INSERT lacks strict dispatch identity")
+        sync_dispatch.execute(client, run_id=rows[0]["run_id"],
+            account_id=dispatch_sync_account_id, revision=dispatch_sync_revision,
+            table=name, token=token, sql=sql,
+            row_hash=_wire_row(contract_name, rows[0])["content_hash"])
+        return sql
+    if name in {"trading_portfolio_sync_snapshot_marker_v1",
+                "trading_portfolio_sync_fence_v1"} and getattr(client, "typed_insert_strict", False):
+        raise RuntimeError("Strict portfolio sync INSERT lacks dispatch identity")
     if getattr(client, "typed_insert_strict", False) and dispatch is None:
         raise RuntimeError("Strict typed journal INSERT lacks durable dispatch authority")
     if dispatch_policy_hash is not None and dispatch is None:

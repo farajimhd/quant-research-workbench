@@ -36,16 +36,30 @@ def _sync_receipt_path(run_id: str, account_id: str, revision: int) -> str:
     return _path("portfolio_sync_receipt", run_id, account_id, str(revision))
 
 
+def _sync_transition_head_path(run_id: str, account_id: str | None) -> str:
+    return _path("portfolio_sync_transition_head", run_id,
+                 account_id if account_id is not None else "@run")
+
+
 def _sync_receipt_bytes(run_id: str, account_id: str, revision: int,
                         batch_id: str, snapshot_hash: str,
-                        owner_id: str, epoch: int) -> bytes:
+                        owner_id: str, epoch: int, *,
+                        marker_hash: str | None = None,
+                        fence_hash: str | None = None) -> bytes:
     _sync_receipt_path(run_id, account_id, revision)
     UUID(batch_id)
     if (not re.fullmatch(r"[0-9a-f]{64}", snapshot_hash)
             or type(epoch) is not int or epoch < 1):
         raise ValueError("Portfolio sync receipt has invalid digest or epoch")
-    return (f"1\n{run_id}\n{account_id}\n{revision}\n{batch_id}\n"
-            f"{snapshot_hash}\n{_identity(owner_id, 'owner')}\n{epoch}").encode("utf-8")
+    common = (f"{run_id}\n{account_id}\n{revision}\n{batch_id}\n"
+              f"{snapshot_hash}\n{_identity(owner_id, 'owner')}\n{epoch}")
+    if marker_hash is None and fence_hash is None:
+        return ("1\n" + common).encode("utf-8")
+    if (marker_hash is None or fence_hash is None
+            or re.fullmatch(r"[0-9a-f]{64}", marker_hash) is None
+            or re.fullmatch(r"[0-9a-f]{64}", fence_hash) is None):
+        raise ValueError("Portfolio sync transition hashes are invalid")
+    return ("2\n" + common + f"\n{marker_hash}\n{fence_hash}").encode("utf-8")
 
 
 class KeeperUnavailable(RuntimeError):
@@ -342,7 +356,8 @@ class KeeperOwnershipCoordinator:
 
     def attest_portfolio_snapshot_receipt(
         self, lease: Any, run_id: str, account_id: str,
-        state_revision: int, batch_id: str, snapshot_hash: str,
+        state_revision: int, batch_id: str, snapshot_hash: str, *,
+        marker_hash: str | None = None, fence_hash: str | None = None,
     ):
         """Atomically bind one CH fence digest to the current owner epoch.
 
@@ -360,7 +375,8 @@ class KeeperOwnershipCoordinator:
         owner_id, epoch = lease["owner_id"], lease["epoch"]
         payload = _sync_receipt_bytes(
             run_id, account_id, state_revision, batch_id, snapshot_hash,
-            owner_id, epoch)
+            owner_id, epoch, marker_hash=marker_hash, fence_hash=fence_hash)
+        v2 = marker_hash is not None
         path = _sync_receipt_path(run_id, account_id, state_revision)
         base = _path("portfolio", resource_id)
         with self._lock:
@@ -376,24 +392,68 @@ class KeeperOwnershipCoordinator:
                     or session is None or holder_stat.ephemeralOwner != session[0]
                     or int(counter_value) != epoch):
                 raise KeeperUnavailable("Portfolio sync owner epoch changed before attestation")
+            if v2:
+                from src.trading_runtime.arte_portfolio_sync import KeeperSyncAttestation
+                existing_proof = self.load_portfolio_snapshot_receipt(
+                    run_id, account_id, state_revision)
+                expected_proof = KeeperSyncAttestation(
+                    run_id, account_id, state_revision, batch_id, snapshot_hash,
+                    owner_id, epoch, marker_hash, fence_hash)
+                if existing_proof is not None:
+                    if (existing_proof != expected_proof
+                            or self.load_portfolio_sync_transition_head(
+                                run_id, account_id) is None
+                            or self.load_portfolio_sync_transition_head(
+                                run_id, None) is None):
+                        raise KeeperUnavailable("Portfolio sync transition proof conflicts")
+                    return existing_proof
             txn = self._client.transaction()
             txn.check(f"{base}/holder", version=holder_stat.version)
             txn.check(f"{base}/epoch", version=counter_stat.version)
             txn.create(path, payload, ephemeral=False)
+            if v2:
+                from src.trading_runtime.arte_portfolio_sync import (
+                    KeeperSyncAttestation, KeeperSyncTransitionHead,
+                )
+                proof_value = KeeperSyncAttestation(
+                    run_id, account_id, state_revision, batch_id, snapshot_hash,
+                    owner_id, epoch, marker_hash, fence_hash)
+                self._client.ensure_path(f"{_ROOT}/portfolio_sync_transition_head")
+                proof_digest = int.from_bytes(sha256(proof_value.wire()).digest(), "big")
+                for scope in (account_id, None):
+                    prior = self.load_portfolio_sync_transition_head(run_id, scope)
+                    before = (prior[0] if prior else KeeperSyncTransitionHead(
+                        run_id, scope, 0, "0" * 64, 0))
+                    if scope is not None and state_revision <= before.last_revision:
+                        raise KeeperUnavailable("Portfolio sync transition revision is stale")
+                    updated = KeeperSyncTransitionHead(
+                        run_id, scope, before.proof_count + 1,
+                        f"{int(before.proof_xor, 16) ^ proof_digest:064x}",
+                        max(before.last_revision, state_revision))
+                    head_path = _sync_transition_head_path(run_id, scope)
+                    if prior:
+                        txn.set_data(head_path, updated.wire(), version=prior[1])
+                    else:
+                        txn.create(head_path, updated.wire(), ephemeral=False)
             if not _committed(txn.commit()):
                 existing = self.load_portfolio_snapshot_receipt(
                     run_id, account_id, state_revision)
                 if (existing is None or existing.owner_id != owner_id
                         or existing.epoch != epoch or existing.batch_id != batch_id
                         or existing.snapshot_hash != snapshot_hash
+                        or existing.marker_hash != marker_hash
+                        or existing.fence_hash != fence_hash
                         or not self.portfolio_snapshot_claim_is_current(lease)):
                     raise KeeperUnavailable("Portfolio sync CAS lost or conflicts")
             self._require_connected()
         proof = self.load_portfolio_snapshot_receipt(run_id, account_id, state_revision)
         if proof is None or proof != KeeperSyncAttestation(
                 run_id, account_id, state_revision, batch_id,
-                snapshot_hash, owner_id, epoch):
+                snapshot_hash, owner_id, epoch, marker_hash, fence_hash):
             raise KeeperUnavailable("Portfolio sync CAS receipt did not become durable")
+        if v2 and (self.load_portfolio_sync_transition_head(run_id, account_id) is None
+                   or self.load_portfolio_sync_transition_head(run_id, None) is None):
+            raise KeeperUnavailable("Portfolio sync transition head did not become durable")
         return proof
 
     def load_portfolio_snapshot_receipt(
@@ -413,20 +473,48 @@ class KeeperOwnershipCoordinator:
         self._require_connected()
         try:
             parts = value.decode("utf-8").split("\n")
-            if len(parts) != 8 or parts[0] != "1":
+            if (len(parts), parts[0]) not in {(8, "1"), (10, "2")}:
                 raise ValueError("unknown proof version")
-            _, stored_run, stored_account, revision, batch_id, digest, owner_id, epoch = parts
+            _, stored_run, stored_account, revision, batch_id, digest, owner_id, epoch = parts[:8]
+            marker_hash, fence_hash = (parts[8], parts[9]) if len(parts) == 10 else (None, None)
             proof = KeeperSyncAttestation(
                 stored_run, stored_account, int(revision), batch_id,
-                digest, owner_id, int(epoch))
+                digest, owner_id, int(epoch), marker_hash, fence_hash)
             if (_sync_receipt_bytes(stored_run, stored_account, int(revision),
-                                    batch_id, digest, owner_id, int(epoch)) != value
+                                    batch_id, digest, owner_id, int(epoch),
+                                    marker_hash=marker_hash,
+                                    fence_hash=fence_hash) != value
                     or proof.run_id != run_id or proof.account_id != account_id
                     or proof.state_revision != state_revision):
                 raise ValueError("proof identity differs")
         except (UnicodeError, ValueError, TypeError) as exc:
             raise KeeperUnavailable("Keeper sync receipt is corrupt") from exc
         return proof
+
+    def load_portfolio_sync_transition_head(
+        self, run_id: str, account_id: str | None,
+    ):
+        from src.trading_runtime.arte_portfolio_sync import KeeperSyncTransitionHead
+
+        self._require_connected()
+        try:
+            value, stat = self._client.get(_sync_transition_head_path(run_id, account_id))
+        except Exception as exc:
+            if type(exc).__name__ == "NoNodeError":
+                return None
+            raise KeeperUnavailable("Could not read Keeper sync transition head") from exc
+        self._require_connected()
+        try:
+            parts = value.decode("utf-8").split("\n")
+            if len(parts) != 6 or parts[0] != "1":
+                raise ValueError("unknown head version")
+            head = KeeperSyncTransitionHead(
+                parts[1], parts[2] or None, int(parts[3]), parts[4], int(parts[5]))
+            if head.run_id != run_id or head.account_id != account_id or head.wire() != value:
+                raise ValueError("head identity differs")
+            return head, stat.version
+        except (UnicodeError, ValueError, TypeError) as exc:
+            raise KeeperUnavailable("Keeper sync transition head is corrupt") from exc
 
     def acquire_campaign_session_ownership(
         self, resource_id: str, *, session_key: str, owner_id: str,

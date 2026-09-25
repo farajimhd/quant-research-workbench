@@ -79,7 +79,8 @@ class Keeper:
         return self.rows[path]
 
     def ensure_path(self, path):
-        assert path.endswith(("/admission_epoch_proof", "/admission_epoch_head"))
+        assert path.endswith(("/admission_epoch_proof", "/admission_epoch_head",
+                              "/admission_epoch_account_head"))
 
     def transaction(self):
         return Transaction(self)
@@ -112,6 +113,7 @@ def test_epoch_cas_attests_exact_fence_and_historical_read_survives_owner_change
     assert (proof.prepared_hash, proof.committed_hash, proof.epoch) == (*HASHES, 3)
     assert authority.attest(object(), LEASE, run_id=RUN,
                             account_id=ACCOUNT, state_revision=1) == proof
+    assert authority.load_account_head(RUN, ACCOUNT)[0].last_revision == 1
     coordinator.current = False
     assert authority.load(RUN, ACCOUNT, 1) == proof
     assert proof_module.load_attested_admission(object(), authority, run_id=RUN,
@@ -137,6 +139,38 @@ def test_stale_owner_and_duplicate_conflicting_proof_fail_closed(monkeypatch):
     with pytest.raises(RuntimeError, match="matching Keeper epoch proof"):
         proof_module.load_attested_admission(object(), authority, run_id=RUN,
                                              account_id=ACCOUNT, state_revision=1)
+
+
+def test_account_head_rejects_out_of_order_revision_and_missing_retry_head(monkeypatch):
+    _install(monkeypatch)
+    authority = proof_module.KeeperAdmissionEpochAuthority(Coordinator())
+    authority.attest(object(), LEASE, run_id=RUN,
+                     account_id=ACCOUNT, state_revision=3)
+    with pytest.raises(KeeperUnavailable, match="revision is stale"):
+        authority.attest(object(), LEASE, run_id=RUN,
+                         account_id=ACCOUNT, state_revision=2)
+    authority.client.rows.pop(proof_module._account_head_path(RUN, ACCOUNT))
+    with pytest.raises(KeeperUnavailable, match="CAS proof conflicts"):
+        authority.attest(object(), LEASE, run_id=RUN,
+                         account_id=ACCOUNT, state_revision=3)
+
+
+def test_account_head_is_same_transaction_as_proof(monkeypatch):
+    _install(monkeypatch)
+    coordinator = Coordinator()
+    authority = proof_module.KeeperAdmissionEpochAuthority(coordinator)
+    original = coordinator._client.transaction
+    def conflicted():
+        transaction = original()
+        transaction.commit = lambda: [RuntimeError("concurrent owner changed")]
+        return transaction
+    monkeypatch.setattr(coordinator._client, "transaction", conflicted)
+    with pytest.raises(KeeperUnavailable, match="ownership transaction failed"):
+        authority.attest(object(), LEASE, run_id=RUN,
+                         account_id=ACCOUNT, state_revision=1)
+    assert authority.load(RUN, ACCOUNT, 1) is None
+    assert authority.load_head(RUN) is None
+    assert authority.load_account_head(RUN, ACCOUNT) is None
 
 
 def test_late_duplicate_or_changed_fence_after_proof_is_rejected(monkeypatch):
@@ -211,6 +245,13 @@ def test_strict_startup_pages_and_verifies_every_historical_revision(monkeypatch
     class Authority:
         def load_head(self, _run_id):
             return head, 2
+        def load_account_head(self, _run_id, account_id):
+            account_head = proof_module.AdmissionAccountHead(
+                RUN, account_id, 0, "0" * 64, 0)
+            for (account, _revision), item in proofs.items():
+                if account == account_id:
+                    account_head = proof_module._advance_account_head(account_head, item)
+            return account_head, 1
         def load(self, _run_id, account_id, revision):
             return proofs[(account_id, revision)]
     assert proof_module.audit_attested_admission_revisions(
