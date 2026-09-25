@@ -11,6 +11,11 @@ from src.backend.backtest_typed_projection import project_pending_backtest_v3_pr
 from src.trading_runtime import arte_journal_writer as writer
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.journal_contract import JournalRecord
+from src.trading_runtime.portfolio import (
+    PortfolioAccountProfile, PortfolioDecisionStatus, PortfolioManagementEngine,
+    PortfolioPolicy,
+)
+from src.trading_runtime.signals import StrategyIntent
 from tests.test_arte_journal_writer import MemoryClient, RUN, ATTEMPT, BATCH, RECORD, ZERO
 
 
@@ -74,6 +79,28 @@ def test_actual_v3_pending_prefix_projects_decision():
     assert len(units) == 1
     assert len(units[0].base.portfolio_decisions) == 1
     assert units[0].episodes == ()
+
+
+def test_real_portfolio_decision_emitter_projects_without_sqlite():
+    journal = BacktestMemoryJournal(run_id=RUN)
+    engine = PortfolioManagementEngine(
+        [PortfolioAccountProfile("primary", "DU1", "backtest", "simulated",
+                                 PortfolioPolicy())],
+        journal=journal, run_id=RUN, strategy_id="strategy-a", strategy_revision=1)
+    intent = StrategyIntent(intent_id="intent-1", ticker="AAA", event_time=AT,
+                            action="enter_long", quantity=10.0,
+                            reference_price=5.0, invalidation_price=4.0,
+                            metadata={"assignment_id": "assignment-1"})
+    decision = engine._decision(intent, engine._state("DU1"),
+                                PortfolioDecisionStatus.REJECTED, 10.0, 0.0, 0.0,
+                                "", ["insufficient_capacity"], METRICS, METRICS, AT)
+    records = [row for row in journal.records(RUN)
+               if row.entity_type == "portfolio_decision"]
+    assert len(records) == 1 and records[0].entity_id == decision.decision_id
+    batch = _project(records[0])
+    sealed = dict(writer._sealed_families(batch))
+    assert sealed["trading_portfolio_decision_v1"][0]["status"] == "rejected"
+    assert sealed["trading_portfolio_decision_reason_v1"][0]["reason"] == "insufficient_capacity"
 
 
 def test_v3_fake_publication_and_cold_hash_tamper(monkeypatch):

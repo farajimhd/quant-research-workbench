@@ -26,6 +26,7 @@ _V3_PROJECTED = frozenset({
     ("strategy_decision", "signal"),
     ("resource_lease", "prepared_v7_stream"),
     ("market_discovery_signal", "signal_occurrence"),
+    ("portfolio_management", "portfolio_decision"),
 })
 
 
