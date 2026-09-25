@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock, Mock
 
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -231,4 +232,36 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         assert sum(record.category == "execution" and record.entity_type == "fill"
                    for record in journal.records(run_id)) == 1
         assert journal.latest_sequence(run_id) > 0
+        journal.close()
+
+    async def test_order_free_bucket_skips_oms_scans_but_keeps_quote(self):
+        class NoopStrategy:
+            strategy_id = "bar-test"
+            revision = 1
+            automatic = True
+
+        run_id = "00000000-0000-0000-0000-000000000124"
+        journal = BacktestMemoryJournal(run_id=run_id)
+        runtime = TradingRuntime(
+            RunConfig(RunMode.BACKTEST, "bar-test", 1, ("TEST",), START.date(),
+                      run_id=run_id, safety_supervisor_enabled=False,
+                      write_progress_checkpoints=False),
+            self.broker, NoopStrategy(), journal,
+        )
+        await runtime.initialize()
+        from types import SimpleNamespace
+        runtime.order_manager = SimpleNamespace(has_managed_groups=False)
+        runtime.order_manager.on_market_snapshot = Mock()
+        runtime.order_manager.enforce_entry_body_triggers = AsyncMock(
+            side_effect=AssertionError("OMS scan"))
+        runtime.order_manager.advance_adaptive_execution = AsyncMock(
+            side_effect=AssertionError("OMS scan"))
+        runtime.order_manager.expire_entry_deadlines = AsyncMock(
+            side_effect=AssertionError("OMS scan"))
+        at = START + timedelta(milliseconds=100)
+        completed = await runtime.process_liquidity_bar(bar(at), at=at)
+        assert completed is not None and completed.ticker == "AAPL"
+        runtime.order_manager.on_market_snapshot.assert_called_once()
+        assert runtime.execution_market_data.snapshot("AAPL") is not None
+        assert runtime.processed_events == 1
         journal.close()

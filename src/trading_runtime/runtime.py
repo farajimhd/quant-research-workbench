@@ -394,7 +394,8 @@ class TradingRuntime:
                 self.execution_market_data.update(snapshot)
                 if self.order_manager is not None:
                     self.order_manager.on_market_snapshot(snapshot)
-        if self.order_manager is not None:
+        if (self.order_manager is not None
+                and bool(getattr(self.order_manager, "has_managed_groups", True))):
             await self.order_manager.enforce_entry_body_triggers(at)
             await self.order_manager.advance_adaptive_execution(at)
             await self.order_manager.expire_entry_deadlines(at)

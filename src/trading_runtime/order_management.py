@@ -407,6 +407,11 @@ class OrderManagementEngine:
         self._closed = False
         self._broker_connected = True
 
+    @property
+    def has_managed_groups(self) -> bool:
+        """Whether any OMS group can require a causal market-boundary action."""
+        return bool(self._groups)
+
     def _command_lane(self, account_id: str) -> asyncio.Lock:
         if self.control_plane is not None:
             return self.control_plane.order_lane(account_id)

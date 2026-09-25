@@ -87,12 +87,20 @@ def _verify_rows(table: str, rows: tuple[Mapping[str, Any], ...]) -> tuple[dict[
     return tuple(result)
 
 
-def _verify_v1_rows(table: str, rows: tuple[Mapping[str, Any], ...]) -> None:
+def _verify_v1_rows(
+    table: str, rows: tuple[Mapping[str, Any], ...],
+) -> tuple[dict[str, Any], ...]:
+    result = []
     for row in rows:
         content = {key: value for key, value in row.items() if key != "content_hash"}
-        canonical = _canonical_typed_content(table, content)
+        probe = content.get("event_time", content.get("source_event_time", ""))
+        stored_utc = bool(re.fullmatch(
+            r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{6}(?:\d{3})?", str(probe)))
+        canonical = _canonical_typed_content(table, content, stored_utc=stored_utc)
         if row.get("content_hash") != _digest(canonical):
             raise ValueError(f"{table} row hash differs")
+        result.append({**canonical, "content_hash": row["content_hash"]})
+    return tuple(result)
 
 
 def _family_hash(rows: tuple[Mapping[str, Any], ...]) -> str:
