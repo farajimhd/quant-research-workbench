@@ -107,7 +107,11 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
           FROM {_COVERAGE} WHERE source_build_id={_literal(market.build_id)}
           AND (session_date,ticker,source_attempt_id) IN ({scopes})""")
         if len(coverage) != len(batch):
-            raise RuntimeError("Eligible-price coverage is missing or duplicate")
+            raise RuntimeError(
+                "Eligible-price coverage is missing or duplicate: "
+                f"expected {len(batch)}, found {len(coverage)}; "
+                f"first scope {batch[0][0][0]} {batch[0][0][1]} "
+                f"attempt {batch[0][1]}")
         covered = {}
         for row in coverage:
             key = (str(row["session_date"]), str(row["ticker"]))
