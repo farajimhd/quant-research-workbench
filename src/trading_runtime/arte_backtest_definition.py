@@ -8,7 +8,7 @@ not claim either authority or publish rows.
 """
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import math
@@ -126,16 +126,19 @@ def _canonical_stored_row(table: TableContract, row: Mapping[str, Any]) -> dict[
 
 
 def prepare_backtest_definition(
-    run_id: str, definition: Any,
+    run_id: str, definition: Any, *, run_month: date,
 ) -> dict[str, Any]:
-    """Project only fixed Backtest launch facts missing from trading_run_v1."""
+    """Project launch facts under the shared run's UTC-start partition."""
     from src.backend.backtest_market_data import ExecutionInterval
     from src.backend.replay_run_service import ReplayRunDefinition, RunMode
 
     if (not isinstance(definition, ReplayRunDefinition)
             or definition.mode != RunMode.BACKTEST
             or definition.prepare_frames_only or definition.debug_fixture is not None
-            or not isinstance(run_id, str) or not run_id):
+            or not isinstance(run_id, str) or not run_id
+            or not isinstance(run_month, date)
+            or isinstance(run_month, datetime)
+            or run_month.day != 1):
         raise ValueError("Typed definition requires a normal fixed Backtest run")
     interval = ExecutionInterval.parse(definition.execution_interval)
     if interval.kind != "fixed":
@@ -158,7 +161,7 @@ def prepare_backtest_definition(
             or (definition.experimental_structure_book == "level-book-v7"
                 and (fingerprint == _ZERO or not definition.causal_v7_plan.get("token")))):
         raise ValueError("Typed structure authority is incomplete or not SHA-256")
-    month = definition.session_date.replace(day=1).isoformat()
+    month = run_month.isoformat()
     common = {"run_id": run_id, "run_month": month}
     parent = _sealed({
         **common, "final_session_date": final_date.isoformat(),
@@ -286,7 +289,6 @@ def load_backtest_definition(
         raise RuntimeError("Backtest shared run lacks a valid session date") from exc
     interval_ms = run_context.get("evaluation_interval_ms")
     if (parent["run_month"] != str(run_context.get("run_month"))
-            or parent["run_month"] != session_date.replace(day=1).isoformat()
             or date.fromisoformat(parent["final_session_date"])
             < session_date
             or (parent["final_session_date"] == session_date.isoformat()

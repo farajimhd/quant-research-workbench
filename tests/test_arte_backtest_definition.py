@@ -13,6 +13,9 @@ from src.trading_runtime.arte_journal_schema import (
 )
 
 
+RUN_MONTH = date(2026, 9, 1)  # September execution of an August market session.
+
+
 def _definition(**changes):
     values = dict(
         session_date=date(2026, 8, 18), start_time=time(4, 0),
@@ -44,7 +47,7 @@ def test_fixed_definition_is_typed_ordered_and_contains_no_json_or_blob():
     assert len(ddl) == len(TABLES)
     assert all("live_market_ssd" in statement and "CREATE TABLE IF NOT EXISTS arte."
                in statement for statement in ddl)
-    prepared = prepare_backtest_definition("run-1", _definition())
+    prepared = prepare_backtest_definition("run-1", _definition(), run_month=RUN_MONTH)
     parent = prepared["definition"]
     assert parent["start_local_ms"] == 4 * 60 * 60 * 1000
     assert parent["end_local_ms"] == (9 * 60 + 30) * 60 * 1000
@@ -58,7 +61,9 @@ def test_fixed_definition_is_typed_ordered_and_contains_no_json_or_blob():
     assert [row["assignment_id"] for row in prepared["assignments"]] == [
         "assignment-a", "assignment-b"]
     assert prepared["commit"]["definition_hash"] == parent["content_hash"]
-    assert prepared == prepare_backtest_definition("run-1", _definition())
+    assert parent["run_month"] == RUN_MONTH.isoformat()
+    assert prepared == prepare_backtest_definition(
+        "run-1", _definition(), run_month=RUN_MONTH)
     assert verify_backtest_definition_rows(
         definitions=(prepared["definition"],), tickers=prepared["tickers"],
         assignments=prepared["assignments"],
@@ -83,26 +88,30 @@ def test_fixed_definition_is_typed_ordered_and_contains_no_json_or_blob():
 def test_definition_rejects_missing_identity_and_imprecise_scalars():
     with pytest.raises(ValueError, match="pinned configuration"):
         prepare_backtest_definition("run-1", _definition(
-            configuration_revision={"revision_id": "revision-1"}))
+            configuration_revision={"revision_id": "revision-1"}), run_month=RUN_MONTH)
     with pytest.raises(ValueError, match="losslessly"):
-        prepare_backtest_definition("run-1", _definition(initial_cash=100_000.00000000001))
+        prepare_backtest_definition("run-1", _definition(
+            initial_cash=100_000.00000000001), run_month=RUN_MONTH)
     with pytest.raises(ValueError, match="exact microseconds"):
         prepare_backtest_definition("run-1", _definition(
-            new_order_activation_delay_ms=0.0001))
+            new_order_activation_delay_ms=0.0001), run_month=RUN_MONTH)
     with pytest.raises(ValueError, match="normal fixed"):
         prepare_backtest_definition("run-1", _definition(
-            mode=RunMode.REPLAY, archived_review_only=True))
+            mode=RunMode.REPLAY, archived_review_only=True), run_month=RUN_MONTH)
+    with pytest.raises(ValueError, match="normal fixed"):
+        prepare_backtest_definition("run-1", _definition(), run_month=date(2026, 9, 2))
 
 
 def test_empty_explicit_ticker_list_pins_market_plan_population():
-    prepared = prepare_backtest_definition("run-1", _definition(tickers=()))
+    prepared = prepare_backtest_definition(
+        "run-1", _definition(tickers=()), run_month=RUN_MONTH)
     assert prepared["tickers"] == ()
     assert prepared["definition"]["ticker_population_mode"] == "market_plan"
     assert prepared["commit"]["ticker_count"] == 0
 
 
 def test_cold_definition_rejects_tampered_or_duplicate_membership():
-    prepared = prepare_backtest_definition("run-1", _definition())
+    prepared = prepare_backtest_definition("run-1", _definition(), run_month=RUN_MONTH)
     def verify(*, parent=None, tickers=None, commit=None):
         return verify_backtest_definition_rows(
             definitions=(parent or prepared["definition"],),
@@ -118,7 +127,7 @@ def test_cold_definition_rejects_tampered_or_duplicate_membership():
 
 
 def test_cold_loader_reads_only_exact_definition_tables_and_run_identity():
-    prepared = prepare_backtest_definition("run-1", _definition())
+    prepared = prepare_backtest_definition("run-1", _definition(), run_month=RUN_MONTH)
     names = {"trading_backtest_definition_v1": [prepared["definition"]],
              "trading_backtest_ticker_v1": prepared["tickers"],
              "trading_backtest_assignment_v1": prepared["assignments"],
@@ -131,7 +140,7 @@ def test_cold_loader_reads_only_exact_definition_tables_and_run_identity():
             table = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]
             return "\n".join(json.dumps(row) for row in names[table])
     client = Client()
-    context = {"run_id": "run-1", "run_month": "2026-08-01",
+    context = {"run_id": "run-1", "run_month": RUN_MONTH.isoformat(),
                "mode": "backtest", "session_date": "2026-08-18",
                "evaluation_interval_ms": 100,
                "market_plan_token": "certified-plan",
