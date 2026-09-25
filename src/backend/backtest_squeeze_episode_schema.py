@@ -3,7 +3,9 @@
 Operator provisioning and versioned commit/reader rollout must precede enabling
 this family. DDL is returned for review and never executed here.
 """
-from src.trading_runtime.arte_journal_schema import TableContract
+from src.trading_runtime.arte_journal_schema import (
+    TableContract, VERSIONED_JOURNAL_V2_TABLES,
+)
 
 
 SQUEEZE_EPISODE = TableContract(
@@ -26,6 +28,27 @@ SQUEEZE_EPISODE = TableContract(
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(event_month)", "run_id, event_month, record_id",
 )
+
+
+# This is a replacement commit, never an ALTER of occupied V1 or staged V2.
+# The new count/hash are part of the V3 seal's exact ordered column contract.
+_V2_COMMIT = next(table for table in VERSIONED_JOURNAL_V2_TABLES
+                  if table.name == "trading_commit_v2")
+_V2_COMMIT_COLUMNS = _V2_COMMIT.columns
+_V3_EXTENSION = (
+    ("backtest_squeeze_episode_count", "UInt32"),
+    ("backtest_squeeze_episode_hash", "FixedString(64)"),
+)
+SQUEEZE_COMMIT_V3 = TableContract(
+    "trading_commit_v3",
+    _V2_COMMIT_COLUMNS[:-3] + _V3_EXTENSION + _V2_COMMIT_COLUMNS[-3:],
+    _V2_COMMIT.partition, _V2_COMMIT.order,
+)
+
+
+def staged_v3_ddl() -> tuple[str, ...]:
+    """Operator-review DDL only; never run or validate at live startup."""
+    return SQUEEZE_EPISODE.ddl(), SQUEEZE_COMMIT_V3.ddl()
 
 
 def staged_upgrade_ddl() -> tuple[str, ...]:
