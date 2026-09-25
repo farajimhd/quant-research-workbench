@@ -38,6 +38,7 @@ class FixedJournalPreflightToken:
 
 @dataclass(frozen=True, slots=True)
 class FixedJournalAssembly:
+    token: FixedJournalPreflightToken
     journal: BacktestMemoryJournal
     writer: ArteJournalWriter
     publisher: BacktestTypedJournalPublisher
@@ -147,7 +148,7 @@ def assemble_fixed_journal(
         authority = FixedTerminalKeeperAuthority(
             keeper=keeper, client=terminal_client, run_id=token.run_id,
             account_ids=token.account_ids)
-        return FixedJournalAssembly(journal, writer, publisher, authority)
+        return FixedJournalAssembly(token, journal, writer, publisher, authority)
     except BaseException:
         writer.close()
         journal.close()

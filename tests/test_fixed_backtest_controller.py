@@ -287,6 +287,99 @@ def test_fixed_journal_refuses_retired_bt_resume_even_after_typed_preflight(monk
     assert client.closed
 
 
+def test_fixed_journal_attaches_only_pinned_memory_v2_assembly_without_disk_or_sqlite(
+    monkeypatch, tmp_path,
+):
+    from src.backend import backtest_fixed_journal_bootstrap as bootstrap
+    from src.trading_runtime import arte_journal_writer
+
+    monkeypatch.setattr(arte_journal_writer, "journal_client_from_env", lambda:
+                        pytest.fail("unexpected ClickHouse client"))
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.run_dir = tmp_path / "must-not-exist"
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST,
+        configuration_revision={"content_hash": "c" * 64},
+        market_data_plan={"token": "market-token"},
+    )
+    controller._journal = None
+    controller._journal_writer = None
+    controller._journal_publisher = None
+    journal = BacktestMemoryJournal(run_id=RUN)
+    writer = SimpleNamespace(run_id=RUN, journal_profile="backtest_v2")
+    publisher = SimpleNamespace(journal=journal, writer=writer)
+    authority = SimpleNamespace(run_id=RUN, account_ids=("DU1",))
+    token = bootstrap.FixedJournalPreflightToken(
+        RUN, ("DU1",), date(2026, 8, 1), "c" * 64,
+        "market-token", "a" * 64,
+    )
+    assembly = bootstrap.FixedJournalAssembly(
+        token, journal, writer, publisher, authority)
+    controller._attach_fixed_journal_assembly(assembly)
+    assert controller._journal is journal
+    assert controller._journal_writer is writer
+    assert controller._journal_publisher is publisher
+    assert controller._fixed_terminal_authority is authority
+    assert not controller.run_dir.exists()
+
+
+def test_fixed_journal_rejects_changed_assembly_before_attaching(monkeypatch, tmp_path):
+    from src.backend import backtest_fixed_journal_bootstrap as bootstrap
+    from src.trading_runtime import arte_journal_writer
+
+    monkeypatch.setattr(arte_journal_writer, "journal_client_from_env", lambda:
+                        pytest.fail("unexpected ClickHouse client"))
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.run_dir = tmp_path / "must-not-exist"
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST,
+        configuration_revision={"content_hash": "c" * 64},
+        market_data_plan={"token": "market-token"},
+    )
+    controller._journal = None
+    controller._journal_writer = None
+    controller._journal_publisher = None
+    journal = BacktestMemoryJournal(run_id=RUN)
+    writer = SimpleNamespace(run_id=RUN, journal_profile="backtest_v2")
+    publisher = SimpleNamespace(journal=journal, writer=writer)
+    authority = SimpleNamespace(run_id=RUN, account_ids=("DU1",))
+    token = bootstrap.FixedJournalPreflightToken(
+        RUN, ("DU1",), date(2026, 8, 1), "c" * 64,
+        "changed-token", "a" * 64,
+    )
+    assembly = bootstrap.FixedJournalAssembly(
+        token, journal, writer, publisher, authority)
+    with pytest.raises(RuntimeError, match="differs from pinned run"):
+        controller._attach_fixed_journal_assembly(assembly)
+    assert controller._journal is None
+    assert controller._journal_writer is None
+    assert controller._journal_publisher is None
+    assert not controller.run_dir.exists()
+
+
+def test_fixed_open_remains_blocked_even_with_prepared_assembly(monkeypatch):
+    from src.backend import backtest_terminal_v2_preflight
+    from src.trading_runtime import arte_journal_writer
+
+    class Client:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(arte_journal_writer, "journal_client_from_env", Client)
+    monkeypatch.setattr(backtest_terminal_v2_preflight,
+                        "terminal_v2_operator_preflight", lambda client: None)
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller._journal = None
+    controller._fixed_journal_assembly = object()
+    with pytest.raises(RuntimeError, match="typed journal publication and cold recovery"):
+        asyncio.run(controller._open_fixed_journal())
+    assert controller._journal is None
+
+
 def test_fixed_journal_shutdown_drains_off_event_loop():
     import threading
 

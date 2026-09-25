@@ -1145,6 +1145,7 @@ class ReplayRunController:
         self._journal: TradingJournal | None = None
         self._journal_publisher = None
         self._journal_writer = None
+        self._fixed_terminal_authority = None
         self._account_map: dict[str, str] = {}
         self._quotes: dict[str, QuoteEvent] = {}
         self._pending_passive_market_events: list[MarketEvent] = []
@@ -2810,6 +2811,31 @@ class ReplayRunController:
             active = False
             self._dependency_retries.clear()
 
+    def _attach_fixed_journal_assembly(self, assembly) -> None:
+        """Inactive handoff from a preflighted, disk-free typed bootstrap."""
+        from src.backend.backtest_fixed_journal_bootstrap import FixedJournalAssembly
+        if self.definition.mode != RunMode.BACKTEST or self._journal is not None:
+            raise RuntimeError("ClickHouse Backtest journal requires a new Backtest run")
+        token = assembly.token if isinstance(assembly, FixedJournalAssembly) else None
+        if (token is None or token.run_id != self.run_id
+                or token.configuration_hash != str(
+                    self.definition.configuration_revision.get("content_hash") or "")
+                or token.market_plan_token != str(
+                    self.definition.market_data_plan.get("token") or "")
+                or not token.account_ids
+                or assembly.journal.run_id != self.run_id
+                or assembly.writer.run_id != self.run_id
+                or assembly.writer.journal_profile != "backtest_v2"
+                or assembly.publisher.journal is not assembly.journal
+                or assembly.publisher.writer is not assembly.writer
+                or assembly.terminal_authority.run_id != self.run_id
+                or tuple(assembly.terminal_authority.account_ids) != token.account_ids):
+            raise RuntimeError("Fixed Backtest typed journal assembly differs from pinned run")
+        self._journal = assembly.journal
+        self._journal_writer = assembly.writer
+        self._journal_publisher = assembly.publisher
+        self._fixed_terminal_authority = assembly.terminal_authority
+
     async def _open_fixed_journal(self) -> None:
         """Fail closed at the typed journal boundary until recovery is complete."""
         from src.backend.backtest_terminal_v2_preflight import terminal_v2_operator_preflight
@@ -2830,6 +2856,7 @@ class ReplayRunController:
         writer = self._journal_writer
         self._journal_writer = None
         self._journal_publisher = None
+        self._fixed_terminal_authority = None
         try:
             if writer is not None:
                 await asyncio.to_thread(writer.close)
