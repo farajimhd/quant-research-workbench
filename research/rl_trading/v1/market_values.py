@@ -5,8 +5,8 @@ from pathlib import Path
 
 import polars as pl
 import pyarrow as pa
-import pyarrow.compute as pc
 import pyarrow.parquet as pq
+import numpy as np
 
 from research.rl_trading.v1.common import digest
 from src.market_engine.level_book_store import read
@@ -40,6 +40,7 @@ class _TimeTable:
         self.maxima = [r[1] for r in self.ranges]
         self.cached_index = None
         self.cached_group = None
+        self.cached_times = None
 
     def at(self, time_us):
         index = bisect_left(self.maxima,time_us)
@@ -47,10 +48,15 @@ class _TimeTable:
         while index < len(self.ranges) and self.ranges[index][0] <= time_us:
             if self.ranges[index][1] >= time_us:
                 if self.cached_index != index:
-                    self.cached_group = self.parquet.read_row_group(index)
+                    self.cached_group = pl.from_arrow(self.parquet.read_row_group(index))
+                    self.cached_times = self.cached_group['time_us'].to_numpy()
+                    if self.cached_times.size > 1 and np.any(self.cached_times[1:] < self.cached_times[:-1]):
+                        raise ValueError('Market value tensor row group is not time ordered')
                     self.cached_index = index
-                group = self.cached_group
-                frames.append(pl.from_arrow(group.filter(pc.equal(group['time_us'],time_us))))
+                left = int(np.searchsorted(self.cached_times,time_us,side='left'))
+                right = int(np.searchsorted(self.cached_times,time_us,side='right'))
+                if right > left:
+                    frames.append(self.cached_group.slice(left,right-left))
             index += 1
         return pl.concat(frames) if frames else None
 
@@ -107,6 +113,54 @@ class MarketValues:
                 pl.col('open_value_available').fill_null(False),
                 pl.col('value_available').fill_null(False))
         return result
+
+    def at_subset(self, time_us, top_n, held_tickers):
+        """Return the global volume leaders and every frontier holding.
+
+        The complete grid is still verified before narrowing. Phase 3 only
+        needs these rows to reproduce each parent's visible top-N slots.
+        """
+        if type(top_n) is not int or top_n < 1:
+            raise ValueError('top_n must be positive')
+        if type(time_us) is not int:
+            raise ValueError('Decision time must be an integer UTC microsecond timestamp')
+        holding = self.holding.at(time_us)
+        if (holding is None or holding.height != self.expected_rows or
+                holding.select('listing_index','side').n_unique() != self.expected_rows):
+            raise ValueError('Incomplete, duplicate or absent market snapshot')
+        longs = holding.filter(pl.col('side') == 'long')
+        if longs.height * 2 != self.expected_rows:
+            raise ValueError('Incomplete long market snapshot')
+        volumes = longs['volume_60s'].to_numpy()
+        if not np.isfinite(volumes).all() or (volumes < 0).any():
+            raise ValueError('Top-N selection requires finite completed 60s volume')
+        held = set(held_tickers)
+        if not held <= set(longs['ticker'].to_list()):
+            raise ValueError('Frontier holding is absent from the market')
+        leaders = longs.sort(['volume_60s','ticker'],descending=[True,False]).head(top_n)
+        visible = set(leaders['ticker'].to_list()) | held
+        result = longs.filter(pl.col('ticker').is_in(visible))
+        visible_indices = result['listing_index'].to_list()
+        if not self.sparse:
+            raise ValueError('Phase 3 subset requires sparse opening tensor')
+        openings = self.opening.at(time_us)
+        keys = ['time_us','listing_index','side']
+        if openings is None:
+            empty = pa.Table.from_batches([],schema=self.opening.parquet.schema_arrow)
+            openings = pl.from_arrow(empty)
+        if openings.select(*keys).n_unique() != openings.height or not openings['can_open'].all():
+            raise ValueError('Duplicate or invalid sparse openings')
+        eligible = openings.filter(
+            (pl.col('side') == 'long') & pl.col('open_value_available') &
+            (pl.col('entry_price') > 0) & (pl.col('capital_per_share') > 0) &
+            pl.col('open_value_per_dollar').is_finite()).height
+        openings = openings.filter((pl.col('side') == 'long') &
+            pl.col('listing_index').is_in(visible_indices))
+        result = result.join(openings,on=keys,how='left',validate='1:1',maintain_order='left')
+        result = result.with_columns(pl.col('can_open').fill_null(False),
+            pl.col('open_value_available').fill_null(False),
+            pl.col('value_available').fill_null(False))
+        return result, eligible
 
     def close(self):
         self.holding.close()

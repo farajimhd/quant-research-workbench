@@ -66,7 +66,8 @@ def _rank(node):
 
 
 def advance(frontier: list[Node], market_rows: list[dict], time_us: int,
-            config: SearchConfig, *, terminal: bool = False) -> tuple[list[Node], dict]:
+            config: SearchConfig, *, terminal: bool = False,
+            full_eligible_count: int | None = None) -> tuple[list[Node], dict]:
     """One exact action expansion, followed by explicit candidate/beam caps.
 
     Cash dominance among identical holdings is exact. Candidate and beam caps
@@ -85,6 +86,9 @@ def advance(frontier: list[Node], market_rows: list[dict], time_us: int,
         isinstance(r['open_value_per_dollar'],(int,float)) and
         math.isfinite(r['open_value_per_dollar'])]
     eligible.sort(key=lambda r:(-r['open_value_per_dollar'],r['ticker']))
+    if full_eligible_count is not None and (type(full_eligible_count) is not int or
+            full_eligible_count < len(eligible)):
+        raise ValueError('Full eligible count is smaller than the visible opening population')
     pruned_candidates = 0
     pruned_universe = 0
     best_by_lots = {}
@@ -94,7 +98,8 @@ def advance(frontier: list[Node], market_rows: list[dict], time_us: int,
             raise ValueError('Frontier node lacks a checkpoint id')
         visible = set(slots(volume_rank, (lot.ticker for lot in parent.lots), config.top_n)) if config.top_n else set(volume_rank)
         openings = [row for row in eligible if row['ticker'] in visible]
-        pruned_universe += len(eligible)-len(openings)
+        pruned_universe += (len(eligible) if full_eligible_count is None else
+            full_eligible_count)-len(openings)
         if config.max_candidates:
             pruned_candidates += max(0,len(openings)-config.max_candidates)
             openings = openings[:config.max_candidates]

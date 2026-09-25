@@ -223,8 +223,17 @@ def run(args,console):
                         total=seconds,frontier=len(frontier),stats=totals),immutable=False)
                     return 2
                 time_us = first_us+index*1_000_000
-                candidates,stats = advance(frontier,market.at(time_us).to_dicts(),time_us,
-                    config,terminal=index==seconds-1)
+                if config.top_n:
+                    held = {lot.ticker for node in frontier for lot in node.lots}
+                    snapshot,eligible_count = market.at_subset(time_us,config.top_n,held)
+                    if index == seconds-1:
+                        eligible_count = 0
+                    candidates,stats = advance(frontier,snapshot.to_dicts(),time_us,
+                        config,terminal=index==seconds-1,
+                        full_eligible_count=eligible_count)
+                else:
+                    candidates,stats = advance(frontier,market.at(time_us).to_dicts(),time_us,
+                        config,terminal=index==seconds-1)
                 frontier = [_insert_node(db,n,time_us) for n in candidates]
                 for key in totals:
                     totals[key] += stats[key]
