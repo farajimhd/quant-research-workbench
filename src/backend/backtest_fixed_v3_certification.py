@@ -219,6 +219,28 @@ def _fixed_v7_warning_unreachable(source: str) -> bool:
     return len(warnings) == 1 and fixed_guards[0].end_lineno < warnings[0].lineno
 
 
+def _fixed_watchlist_membership_unreachable(source: str) -> bool:
+    """Prove fixed mode returns before any legacy Watchlist journal emitter."""
+    functions = [node for node in ast.walk(ast.parse(source))
+                 if isinstance(node, ast.FunctionDef)
+                 and node.name == "_apply_historical_watchlist_membership"]
+    if len(functions) != 1:
+        return False
+    guards = [node for node in functions[0].body if isinstance(node, ast.If)]
+    if not guards or ast.unparse(guards[0].test) != (
+            "self.definition.mode == RunMode.BACKTEST and "
+            "ExecutionInterval.parse(self.definition.execution_interval).kind == 'fixed'"):
+        return False
+    guard = guards[0]
+    if not isinstance(guard.body[-1], ast.Return):
+        return False
+    emitters = [node for node in ast.walk(functions[0])
+                if isinstance(node, ast.Call) and _literal_pair(node)
+                == ("watchlist_membership", "historical_watchlist_member")]
+    return len(emitters) == 2 and all(guard.end_lineno < node.lineno
+                                      for node in emitters)
+
+
 def certify_direct_v3_projection(*, source_path: Path = _CONTROLLER) -> str:
     """Fail closed on a changed or unsupported direct-emitter family set."""
     source = source_path.read_text(encoding="utf-8")
@@ -228,6 +250,10 @@ def certify_direct_v3_projection(*, source_path: Path = _CONTROLLER) -> str:
         if not _fixed_v7_warning_unreachable(source):
             raise ValueError("Fixed-mode V7 warning reachability is unproven")
         fixed_families.remove(("warning", "level_book_coverage"))
+    if ("watchlist_membership", "historical_watchlist_member") in fixed_families:
+        if not _fixed_watchlist_membership_unreachable(source):
+            raise ValueError("Fixed-mode Watchlist reachability is unproven")
+        fixed_families.remove(("watchlist_membership", "historical_watchlist_member"))
     unsupported = sorted(fixed_families - _V3_PROJECTED)
     if unsupported:
         raise ValueError(f"V3 direct emitters lack typed projection: {unsupported}")

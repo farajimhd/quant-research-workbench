@@ -3585,7 +3585,6 @@ class ReplayRunController:
                             self._historical_external_signal_events[external_index]
                         )
                         external_index += 1
-                    self._apply_historical_watchlist_membership(at)
                     prepared_groups = []
                     completed_seconds = []
                     for _ticker_value, by_resolution in ticker_groups:
@@ -6961,6 +6960,15 @@ class ReplayRunController:
         await asyncio.to_thread(self._historical_watchlist_timeline)
 
     def _apply_historical_watchlist_membership(self, event_time: datetime) -> None:
+        from src.backend.backtest_market_data import ExecutionInterval
+        if (self.definition.mode == RunMode.BACKTEST
+                and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"):
+            if self._historical_watchlist_plans or self._historical_watchlist_timeline_cache:
+                raise RuntimeError(
+                    "Fixed Backtest cannot consume a QMD historical Watchlist timeline")
+            # Strategy 1 admission comes from the certified arte squeeze scan.
+            # There is no Watchlist transition to evaluate or journal here.
+            return
         timeline = self._historical_watchlist_timeline()
         while self._historical_watchlist_timeline_index < len(timeline):
             snapshot = timeline[self._historical_watchlist_timeline_index]

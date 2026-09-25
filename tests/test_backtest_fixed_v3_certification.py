@@ -10,8 +10,20 @@ from src.backend import backtest_fixed_v3_certification as cert
 
 
 def test_real_controller_direct_emitters_fail_closed_on_unprojected_families():
-    with pytest.raises(ValueError, match="configuration.*watchlist_membership"):
+    with pytest.raises(ValueError, match="configuration") as failure:
         cert.certify_direct_v3_projection()
+    assert "watchlist_membership" not in str(failure.value)
+
+
+def test_fixed_watchlist_is_excluded_only_with_proven_early_return():
+    source = cert._CONTROLLER.read_text(encoding="utf-8")
+    assert cert._fixed_watchlist_membership_unreachable(source)
+    changed = source.replace(
+        "ExecutionInterval.parse(self.definition.execution_interval).kind == \"fixed\"):\n            if self._historical_watchlist_plans",
+        "ExecutionInterval.parse(self.definition.execution_interval).kind == \"other\"):\n            if self._historical_watchlist_plans",
+        1,
+    )
+    assert not cert._fixed_watchlist_membership_unreachable(changed)
 
 
 def test_fixed_v7_warning_is_excluded_only_with_proven_early_return():

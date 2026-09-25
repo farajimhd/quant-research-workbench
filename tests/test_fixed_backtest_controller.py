@@ -208,6 +208,24 @@ def test_fixed_runtime_never_materializes_qmd_or_news_signals(monkeypatch):
         asyncio.run(controller._load_external_signal_events())
 
 
+def test_fixed_boundary_never_reads_or_journals_historical_watchlist():
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, execution_interval="100ms")
+    controller._historical_watchlist_plans = []
+    controller._historical_watchlist_timeline_cache = None
+    controller._historical_watchlist_timeline = lambda: pytest.fail("QMD Watchlist")
+    controller._journal = SimpleNamespace(
+        append=lambda **_kwargs: pytest.fail("Watchlist journal emission"))
+    controller._apply_historical_watchlist_membership(
+        datetime(2026, 8, 18, 4, tzinfo=NY))
+    controller._historical_watchlist_timeline_cache = [{"effective_at":
+        datetime(2026, 8, 18, 4, tzinfo=NY)}]
+    with pytest.raises(RuntimeError, match="cannot consume a QMD historical Watchlist"):
+        controller._apply_historical_watchlist_membership(
+            datetime(2026, 8, 18, 4, tzinfo=NY))
+
+
 def test_fixed_engine_opens_clickhouse_journal_before_any_sqlite(monkeypatch):
     from src.backend import replay_run_service
 
