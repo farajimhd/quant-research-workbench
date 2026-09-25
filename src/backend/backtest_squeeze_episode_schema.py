@@ -30,6 +30,17 @@ SQUEEZE_EPISODE = TableContract(
 )
 
 
+RESERVATION_REASON = TableContract(
+    "trading_portfolio_reservation_reason_v1",
+    (("record_id", "UUID"), ("run_id", "String"),
+     ("event_month", "Date"), ("batch_id", "UUID"),
+     ("parent_record_id", "UUID"), ("account_id", "String"),
+     ("ordinal", "UInt16"), ("reason", "String"),
+     ("content_hash", "FixedString(64)")),
+    "toYYYYMM(event_month)", "run_id, parent_record_id, ordinal, record_id",
+)
+
+
 # This is a replacement commit, never an ALTER of occupied V1 or staged V2.
 # The new count/hash are part of the V3 seal's exact ordered column contract.
 _V2_COMMIT = next(table for table in VERSIONED_JOURNAL_V2_TABLES
@@ -49,6 +60,11 @@ SQUEEZE_COMMIT_V3 = TableContract(
 def staged_v3_ddl() -> tuple[str, ...]:
     """Operator-review DDL only; never run or validate at live startup."""
     return SQUEEZE_EPISODE.ddl(), SQUEEZE_COMMIT_V3.ddl()
+
+
+def staged_reservation_reason_ddl() -> tuple[str, ...]:
+    """Stage only the normalized child DDL; publication is not enabled yet."""
+    return (RESERVATION_REASON.ddl(),)
 
 
 def staged_upgrade_ddl() -> tuple[str, ...]:
