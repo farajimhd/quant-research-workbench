@@ -280,6 +280,9 @@ def load_typed_backtest_running_page(
         raise ValueError("Typed running cursor exceeds its verified prefix")
     rows = load_typed_event_page(
         client, prefix, after_sequence=after_sequence, limit=limit)
+    from src.backend.backtest_typed_activity import project_fixed_typed_activity_rows
+    activity = project_fixed_typed_activity_rows(
+        client, prefix, rows, after_sequence=after_sequence)
     next_sequence = int(rows[-1].event["sequence"]) if rows else after_sequence
     if (load_typed_run_context(client, run_id) != context
             or not _head_matches(client, run_id, prefix)):
@@ -294,6 +297,8 @@ def load_typed_backtest_running_page(
             "event": row.event, "detail_family": row.detail_family,
             "detail": row.detail,
         } for row in rows),
+        "strategy_signal_summaries": activity["strategy_signal_summaries"],
+        "unprojected_activity_count": activity["unprojected_activity_count"],
         "next_sequence": next_sequence,
         "caught_up_to_prefix": next_sequence == prefix.last_sequence,
     }

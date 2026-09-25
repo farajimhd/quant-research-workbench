@@ -15,6 +15,7 @@ from tests.test_backtest_terminal_v2_fence import (
 from src.backend.backtest_terminal_v2_fence import project_terminal_v2_commit
 from src.trading_runtime import arte_journal_writer as writer
 from tests.test_arte_journal_v2_profile import V2MemoryClient, _batch as v2_batch
+from tests.test_backtest_typed_activity import ActivityClient
 
 
 def scoped(client):
@@ -208,7 +209,7 @@ def test_v2_terminal_review_pages_only_attested_suffix(monkeypatch):
 
 
 def test_running_page_uses_v2_prefix_without_terminal_claim(monkeypatch):
-    client = scoped(V2MemoryClient())
+    client = scoped(ActivityClient())
     selected = v2_batch()
     publish_typed_run(client, {**run_row(), "run_id": selected.run_id,
                                "mode": "backtest"})
@@ -230,6 +231,8 @@ def test_running_page_uses_v2_prefix_without_terminal_claim(monkeypatch):
     assert page["running_prefix_only"] and page["terminal_status_unknown"]
     assert page["verified_prefix_sequence"] == page["next_sequence"] == 1
     assert page["events"][0]["detail_family"] == "trading_strategy_signal_v2"
+    assert page["strategy_signal_summaries"][0]["source_signal_ids"] == ("source-a",)
+    assert page["unprojected_activity_count"] == 0
     assert review.load_typed_backtest_running_page(
         client, selected.run_id, after_sequence=1, cache=cache)["events"] == ()
     assert len(loads) == 1

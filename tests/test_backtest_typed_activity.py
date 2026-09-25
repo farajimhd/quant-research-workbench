@@ -1,5 +1,7 @@
 """Fixed activity pages use only V2 typed facts and a verified prefix."""
 import sqlite3
+import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -11,12 +13,26 @@ from src.trading_runtime import arte_journal_writer as writer
 from tests.test_arte_journal_v2_profile import V2MemoryClient, _batch
 
 
+class ActivityClient(V2MemoryClient):
+    def execute(self, sql):
+        if ("FROM arte.trading_signal_source_v1" in sql
+                and "parent_record_id IN (" in sql):
+            self.selects.append(sql)
+            columns = sql.removeprefix("SELECT ").split(" FROM ", 1)[0].split(",")
+            parents = set(re.findall(r"toUUID\('([0-9a-f-]+)'\)",
+                                     sql.split("parent_record_id IN (", 1)[1].split(") ", 1)[0]))
+            rows = [row for row in self.tables.get("trading_signal_source_v1", [])
+                    if row["parent_record_id"] in parents]
+            return "\n".join(json.dumps({key: row[key] for key in columns}) for row in rows)
+        return super().execute(sql)
+
+
 def _published(monkeypatch):
     monkeypatch.setattr(writer, "versioned_journal_v2_preflight", lambda client: None)
     monkeypatch.setattr(writer, "storage_preflight", lambda client, **kwargs: None)
     monkeypatch.setattr(writer, "_verify_run_identity",
                         lambda client, run_id: {"mode": "backtest"})
-    client = V2MemoryClient()
+    client = ActivityClient()
     first = _batch()
     second = _batch(batch_id="00000000-0000-0000-0000-000000000006",
                     prior_batch_id=first.batch_id, sequence=2,
@@ -63,6 +79,27 @@ def test_v2_activity_fails_on_gap_hash_corruption_or_wrong_prefix(monkeypatch):
     client.tables["trading_strategy_signal_v2"][0]["reason"] = "tampered"
     with pytest.raises(RuntimeError, match="differs from its hash"):
         load_fixed_typed_activity_page(client, prefix)
+
+
+def test_v2_signal_ui_requires_exact_child_count_hash_and_ordinal(monkeypatch):
+    client, prefix = _published(monkeypatch)
+    sources = client.tables["trading_signal_source_v1"]
+    first = sources.pop(0)
+    with pytest.raises(RuntimeError, match="source count"):
+        load_fixed_typed_activity_page(client, prefix, limit=1)
+    sources.insert(0, first)
+    original_id = first["source_signal_id"]
+    first["source_signal_id"] = "tampered"
+    with pytest.raises(RuntimeError, match="differs from its hash"):
+        load_fixed_typed_activity_page(client, prefix, limit=1)
+    first["source_signal_id"] = original_id
+    from src.trading_runtime.arte_journal_writer import typed_row
+    wrong_ordinal = dict(first)
+    wrong_ordinal["source_ordinal"] = 1
+    wrong_ordinal.pop("content_hash")
+    first.update(typed_row("trading_signal_source_v1", wrong_ordinal))
+    with pytest.raises(RuntimeError, match="differ from their parent"):
+        load_fixed_typed_activity_page(client, prefix, limit=1)
 
 
 def test_fixed_controller_typed_entrypoint_uses_only_v2_fence(monkeypatch):
