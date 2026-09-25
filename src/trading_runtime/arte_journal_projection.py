@@ -297,6 +297,53 @@ def project_journal_record(
         )
     if kind == ("market_discovery_signal", "signal_occurrence"):
         raise ValueError("Squeeze episode needs operator-provisioned Backtest-only journal family")
+    if kind == ("portfolio_management", "portfolio_reservation"):
+        from src.trading_runtime.portfolio import PortfolioReservation
+
+        payload = dict(record.payload)
+        reservation_fields = {field.name for field in fields(PortfolioReservation)}
+        lineage = {"correlation_id", "causation_id"}
+        if (set(payload) - lineage != reservation_fields | {"event"}
+                or payload.get("event") not in {
+                    "reservation_created", "cash_tranche_budget_reserved"}
+                or payload.get("reservation_id") != record.entity_id
+                or not record.account_id
+                or payload.get("account_id") != record.account_id
+                or not isinstance(payload.get("created_at"), datetime)
+                or payload["created_at"].tzinfo is None
+                or record.event_time.tzinfo is None
+                or record.recorded_at.tzinfo is None
+                or any(not isinstance(payload[key], str) for key in lineage
+                       if key in payload)):
+            raise ValueError("Portfolio reservation journal fact is incomplete")
+        numeric = ("quantity", "remaining_quantity", "reference_price",
+                   "reserved_notional", "reserved_planned_risk", "filled_quantity",
+                   "reserved_entry_fees", "cash_tranche_size", "cash_tranche_budget")
+        month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+        event = {
+            "run_id": record.run_id, "event_month": month,
+            "attempt_id": attempt_id, "batch_id": batch_id,
+            "record_id": record.record_id, "sequence": record.sequence,
+            "event_time": record.event_time.astimezone(timezone.utc).isoformat(),
+            "recorded_at": record.recorded_at.astimezone(timezone.utc).isoformat(),
+            "category": record.category, "entity_type": record.entity_type,
+            "entity_id": record.entity_id, "account_id": record.account_id,
+            "correlation_id": str(payload.get("correlation_id") or ""),
+            "causation_id": str(payload.get("causation_id") or ""),
+        }
+        detail = {
+            "record_id": record.record_id, "run_id": record.run_id,
+            "event_month": month, "batch_id": batch_id,
+            "event": payload["event"],
+            **{key: payload[key] for key in reservation_fields - set(numeric) - {"created_at"}},
+            **{key: _exact_decimal(payload[key], _MEASURE_SCALE) for key in numeric},
+            "created_at": payload["created_at"].astimezone(timezone.utc).isoformat(),
+        }
+        return TypedJournalBatch(
+            record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+            record.sequence, record.sequence, source_cursor, "running", (event,),
+            portfolio_reservation_events=(detail,),
+        )
     if kind == ("strategy", "strategy_intent"):
         from src.trading_runtime.arte_intent_projection import strategy_intent_batch
         from src.trading_runtime.execution_policies import (
