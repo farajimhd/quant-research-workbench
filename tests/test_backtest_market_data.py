@@ -188,7 +188,7 @@ class BacktestMarketDataTests(unittest.TestCase):
                             source for source in sources))
         premarket_sql = "\n".join(market_day_source_sqls(plan, through_boundary_ms=19_800_000))
         self.assertIn("bucket_index<342000", premarket_sql)
-        self.assertIn("(toUInt64(bucket_index)+1)*resolution_ms<=34200000", premarket_sql)
+        self.assertIn("(resolution_ms=1000 AND bucket_index<34200)", premarket_sql)
         self.assertIn("*100-14400000 AS boundary_ms", premarket_sql)
         with self.assertRaisesRegex(ValueError, "positive 100ms"):
             market_day_source_sqls(plan, through_boundary_ms=19_800_001)
@@ -208,6 +208,25 @@ class BacktestMarketDataTests(unittest.TestCase):
                 self.assertEqual(bucket_index < upper,
                                  (bucket_index + 1) * 100 <=
                                  boundary_ms + 14_400_000)
+
+    def test_bar_resolution_bounds_are_exact_completed_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self._ledger(Path(directory)).certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+        for boundary_ms in (100, 900, 1_000, 300_000, 57_600_000):
+            source = market_day_source_sqls(
+                plan, through_boundary_ms=boundary_ms)[1]
+            for resolution in (100, 1_000):
+                upper = (boundary_ms + 14_400_000) // resolution
+                self.assertIn(
+                    f"(resolution_ms={resolution} AND bucket_index<{upper})",
+                    source)
+                for bucket_index in (upper - 2, upper - 1, upper):
+                    self.assertEqual(bucket_index < upper,
+                                     (bucket_index + 1) * resolution <=
+                                     boundary_ms + 14_400_000)
 
     def test_boundary_groups_keep_sparse_quote_buckets_and_completed_seconds(self) -> None:
         rows = [

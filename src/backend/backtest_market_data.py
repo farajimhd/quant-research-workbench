@@ -527,14 +527,19 @@ def market_day_source_sqls(
             f"(toDate({_literal(day)}),{_literal(ticker)},toUUID({_literal(unit.attempt_id)}))"
             for (day, ticker), unit in sorted(units.items())
         )
-        boundary_filter = (
-            "" if through_boundary_ms is None else
-            (f" AND bucket_index<"
-             f"{(through_boundary_ms + SESSION_OPEN_OFFSET_MS) // 100}"
-             if stage == 'liquidity_100ms_v1' else
-             f" AND (toUInt64(bucket_index)+1)*resolution_ms"
-             f"<={through_boundary_ms + SESSION_OPEN_OFFSET_MS}")
-        )
+        boundary_filter = ""
+        if through_boundary_ms is not None:
+            upper_ms = through_boundary_ms + SESSION_OPEN_OFFSET_MS
+            if stage == 'liquidity_100ms_v1':
+                boundary_filter = f" AND bucket_index<{upper_ms // 100}"
+            else:
+                # Exact completed-bucket bounds per persisted resolution let
+                # ClickHouse prune by bucket_index before the pinned joins.
+                resolutions = sorted({100, *plan.required_resolutions_ms})
+                bounds = " OR ".join(
+                    f"(resolution_ms={resolution} AND bucket_index<{upper_ms // resolution})"
+                    for resolution in resolutions)
+                boundary_filter = f" AND ({bounds})"
         return (
             f"SELECT * FROM arte.{stage} WHERE build_id={_literal(plan.build_id)} "
             f"AND (session_date,ticker,attempt_id) IN ({attempts}){boundary_filter}"
