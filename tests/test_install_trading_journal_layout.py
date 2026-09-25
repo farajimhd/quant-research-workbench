@@ -131,6 +131,9 @@ class ControlUpgradeClient:
         self.rows, self.state, self.child = rows, state, child
         self.statements = []
 
+    def close(self):
+        pass
+
     def execute(self, sql):
         self.statements.append(sql)
         if sql.startswith("SELECT name,type FROM system.columns"):
@@ -168,6 +171,20 @@ def test_v3_control_upgrade_requires_empty_fence_and_is_restart_safe(monkeypatch
     with pytest.raises(RuntimeError, match="versioned migration"):
         install.upgrade_v3_portfolio_control(occupied, apply=True)
     assert all(sql.startswith("SELECT ") for sql in occupied.statements)
+
+
+def test_v3_control_cli_reports_plan_without_writes(monkeypatch, capsys):
+    client = ControlUpgradeClient()
+    monkeypatch.setattr(install.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(install.socket, "getaddrinfo", lambda *_args, **_kwargs: [
+        (None, None, None, None, (install.WORKSTATION_IPV4, 18123))])
+    monkeypatch.setattr(install, "_admin_client", lambda _: client)
+    monkeypatch.setattr(install, "storage_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sys, "argv", ["install_trading_journal_layout.py",
+                                     "--upgrade-v3-portfolio-control"])
+    assert install.main() == 0
+    assert "V3 portfolio-control layout: planned; no rows inserted" in capsys.readouterr().out
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
 
 
 def test_v3_reason_upgrade_refuses_nonempty_or_unknown_fence(monkeypatch):

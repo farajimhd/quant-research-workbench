@@ -294,11 +294,14 @@ def main() -> int:
                     args.upgrade_v3_portfolio_control)) > 1:
                 parser.error("Select only one V3 upgrade at a time")
             if args.upgrade_v3_portfolio_control:
-                upgrade_v3_portfolio_control(client, apply=args.apply)
+                result = upgrade_v3_portfolio_control(client, apply=args.apply)
+                print(f"V3 portfolio-control layout: {result}; no rows inserted")
             elif args.upgrade_v3_reconciliation_difference:
-                upgrade_v3_reconciliation_difference(client, apply=args.apply)
+                result = upgrade_v3_reconciliation_difference(client, apply=args.apply)
+                print(f"V3 reconciliation-difference layout: {result}; no rows inserted")
             elif args.upgrade_v3_reservation_reason:
-                upgrade_v3_reservation_reason(client, apply=args.apply)
+                result = upgrade_v3_reservation_reason(client, apply=args.apply)
+                print(f"V3 reservation-reason layout: {result}; no rows inserted")
             else:
                 install_missing(client, apply=args.apply, profile=args.profile)
         finally:
