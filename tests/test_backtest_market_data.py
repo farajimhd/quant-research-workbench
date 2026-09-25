@@ -186,6 +186,18 @@ class BacktestMarketDataTests(unittest.TestCase):
                 ExecutionInterval.parse("100ms"),
             )
 
+    def test_strategy_one_pins_completed_macd_and_stop_bar_resolutions(self) -> None:
+        from src.backend.backtest_market_data import compile_required_resolutions
+
+        required = compile_required_resolutions(
+            {"strategy": {"strategy_number": 1}},
+            ExecutionInterval.parse("100ms"),
+        )
+        self.assertEqual(required, (100, 1_000, 5_000, 10_000, 30_000))
+        self.assertEqual(compile_required_resolutions(
+            {"strategy": {"strategy_number": True}},
+            ExecutionInterval.parse("100ms")), (100, 1_000))
+
     def test_catalogue_pins_all_three_read_only_products(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             plan = self._ledger(Path(directory)).certified_plan(

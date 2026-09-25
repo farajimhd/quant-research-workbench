@@ -192,6 +192,14 @@ def compile_required_resolutions(
     required: set[int] = {1_000}
     if execution_interval.kind == "fixed":
         required.add(int(execution_interval.milliseconds or 100))
+    strategy = configuration.get("strategy")
+    if (isinstance(strategy, Mapping)
+            and type(strategy.get("strategy_number")) is int
+            and strategy["strategy_number"] == 1):
+        # Strategy 1 consumes completed MACD at all four clocks and the last
+        # completed 30s low. The dependency compiler must pin these products
+        # even when a saved UI rule-set omits an explicit timeframe label.
+        required.update((100, 1_000, 5_000, 10_000, 30_000))
 
     def visit(value: Any) -> None:
         if isinstance(value, Mapping):
