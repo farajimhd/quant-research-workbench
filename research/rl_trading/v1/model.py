@@ -38,7 +38,16 @@ class MarketPolicy(nn.Module):
         encoded = encoded+self.identity(batch['ticker_id'])+self.slot_metadata(
             torch.stack((batch['rank'],batch['held']),dim=-1))
         mask = ~batch['valid']
-        encoded = self.market(encoded,src_key_padding_mask=mask)
+        # PyTorch's inference-only fused MHA kernel can fault on heavily padded
+        # market slots. Keep the same attention semantics as the training path.
+        fastpath = torch.backends.mha.get_fastpath_enabled()
+        try:
+            if fastpath and not self.training:
+                torch.backends.mha.set_fastpath_enabled(False)
+            encoded = self.market(encoded,src_key_padding_mask=mask)
+        finally:
+            if fastpath and not self.training:
+                torch.backends.mha.set_fastpath_enabled(True)
         encoded = encoded.masked_fill(mask.unsqueeze(-1),0)
         context = encoded.sum(dim=1)/batch['valid'].sum(dim=1,keepdim=True).clamp_min(1)
         context = context+self.account(batch['account'])
