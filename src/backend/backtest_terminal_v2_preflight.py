@@ -12,29 +12,14 @@ from typing import Any
 from src.trading_runtime.arte_journal_schema import (
     BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES, BATCH_LOOKUP_INDEX,
     LEGACY_COMMIT_V1, LEGACY_STRATEGY_SIGNAL_V1, MARKET_READ_TABLES,
-    STORAGE_POLICY, TABLES, VERSIONED_JOURNAL_V2_TABLES,
+    STORAGE_POLICY,
+    fixed_backtest_v2_contracts,
 )
 
 
 _V2 = {table.name for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES}
-_V1 = {table.name for table in TABLES}
-_READ = _V1 | _V2
-_PORTFOLIO_INSERT = {
-    "trading_backtest_snapshot_anchor_v1",
-    "trading_portfolio_snapshot_v1", "trading_portfolio_disabled_strategy_v1",
-    "trading_portfolio_command_v1", "trading_portfolio_request_v1",
-    "trading_portfolio_request_reason_v1", "trading_portfolio_reservation_v1",
-    "trading_portfolio_allocation_v1", "trading_portfolio_reconciliation_v1",
-    "trading_portfolio_snapshot_commit_v1", "trading_portfolio_policy_v1",
-    "trading_portfolio_policy_commit_v2",
-    "trading_portfolio_policy_security_type_v1",
-    "trading_portfolio_policy_currency_v1",
-    "trading_portfolio_policy_restricted_symbol_v1",
-    "trading_portfolio_policy_execution_policy_v1",
-    "trading_portfolio_policy_protection_profile_v1",
-}
-_INSERT = _V2 | _PORTFOLIO_INSERT | {
-    "trading_event_v1", "trading_run_transition_v1"}
+_READ = {table.name for table in fixed_backtest_v2_contracts()}
+_INSERT = _READ - {LEGACY_STRATEGY_SIGNAL_V1.name, LEGACY_COMMIT_V1.name}
 if not _INSERT <= _READ:
     raise RuntimeError("Terminal V2 writer references an unprovisioned typed table")
 _SYSTEM_READ = {
@@ -191,8 +176,8 @@ def terminal_v2_operator_provisioning_sql(principal: str) -> tuple[str, ...]:
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", principal) is None:
         raise ValueError("Terminal V2 principal name is unsafe")
     legacy = {LEGACY_STRATEGY_SIGNAL_V1.name, LEGACY_COMMIT_V1.name}
-    writable = tuple(table for table in TABLES if table.name not in legacy)
-    writable += VERSIONED_JOURNAL_V2_TABLES + BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES
+    writable = tuple(table for table in fixed_backtest_v2_contracts()
+                     if table.name not in legacy)
     readable = {table.name for table in writable} | legacy | MARKET_READ_TABLES
     return (
         *(table.ddl() for table in writable),

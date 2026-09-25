@@ -9,8 +9,8 @@ from src.backend.backtest_terminal_v2_preflight import (
     terminal_v2_keeper_proof_preflight, _INSERT,
 )
 from src.trading_runtime.arte_journal_schema import (
-    BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES, MARKET_READ_TABLES, TABLES,
-    VERSIONED_JOURNAL_V2_TABLES,
+    BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES, MARKET_READ_TABLES,
+    fixed_backtest_v2_contracts,
 )
 from tests.test_arte_journal_v2_profile import V2Catalog
 
@@ -18,16 +18,17 @@ from tests.test_arte_journal_v2_profile import V2Catalog
 class FullV2Catalog(V2Catalog):
     def __init__(self):
         super().__init__()
-        terminal = {table.name for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES}
-        self.tables += BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES
+        terminal = {table.name for table in fixed_backtest_v2_contracts()}
+        terminal -= {table.name for table in self.tables}
+        self.tables += tuple(table for table in fixed_backtest_v2_contracts()
+                             if table.name in terminal)
         self.writable |= terminal
         self.readable |= terminal
 
 
 class FakeCatalog:
     def __init__(self):
-        self.contracts = {table.name: table for table in
-                          (*TABLES, *BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES)}
+        self.contracts = {table.name: table for table in fixed_backtest_v2_contracts()}
         self.read = set(self.contracts) | MARKET_READ_TABLES
         self.insert = set(_INSERT)
         self.policy_disks = ["live_market_ssd"]
@@ -138,14 +139,15 @@ def test_operator_preflight_rejects_market_write_and_broad_grants():
 
 def test_provisioning_sql_stages_v2_and_exact_portfolio_writer_grants():
     sql = terminal_v2_operator_provisioning_sql("terminal_v2")
-    expected = len(TABLES) - 2 + len(VERSIONED_JOURNAL_V2_TABLES)
-    expected += len(BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES)
+    expected = len(fixed_backtest_v2_contracts()) - 2
     assert len([statement for statement in sql if statement.startswith("CREATE TABLE")]) == expected
     assert "GRANT INSERT ON arte.trading_backtest_snapshot_anchor_v1 TO terminal_v2" in sql
     assert "GRANT INSERT ON arte.trading_portfolio_snapshot_commit_v1 TO terminal_v2" in sql
     assert "GRANT INSERT ON arte.trading_portfolio_policy_commit_v2 TO terminal_v2" in sql
     assert "GRANT INSERT ON arte.trading_strategy_signal_v2 TO terminal_v2" in sql
     assert "GRANT INSERT ON arte.trading_commit_v2 TO terminal_v2" in sql
+    assert "GRANT INSERT ON arte.trading_backtest_definition_v1 TO terminal_v2" in sql
+    assert "GRANT INSERT ON arte.trading_backtest_definition_commit_v1 TO terminal_v2" in sql
     assert "REVOKE INSERT ON arte.trading_strategy_signal_v1 FROM terminal_v2" in sql
     assert "REVOKE INSERT ON arte.trading_commit_v1 FROM terminal_v2" in sql
     assert "GRANT INSERT ON arte.trading_commit_v1 TO terminal_v2" not in sql
