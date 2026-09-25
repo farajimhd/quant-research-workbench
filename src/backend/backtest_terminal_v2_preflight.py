@@ -18,7 +18,24 @@ from src.trading_runtime.arte_journal_schema import (
 _V2 = {table.name for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES}
 _V1 = {table.name for table in TABLES}
 _READ = _V1 | _V2
-_INSERT = _V2 | {"trading_event_v1", "trading_run_transition_v1"}
+_PORTFOLIO_INSERT = {
+    "trading_backtest_snapshot_anchor_v1",
+    "trading_portfolio_snapshot_v1", "trading_portfolio_disabled_strategy_v1",
+    "trading_portfolio_command_v1", "trading_portfolio_request_v1",
+    "trading_portfolio_request_reason_v1", "trading_portfolio_reservation_v1",
+    "trading_portfolio_allocation_v1", "trading_portfolio_reconciliation_v1",
+    "trading_portfolio_snapshot_commit_v1", "trading_portfolio_policy_v1",
+    "trading_portfolio_policy_commit_v2",
+    "trading_portfolio_policy_security_type_v1",
+    "trading_portfolio_policy_currency_v1",
+    "trading_portfolio_policy_restricted_symbol_v1",
+    "trading_portfolio_policy_execution_policy_v1",
+    "trading_portfolio_policy_protection_profile_v1",
+}
+_INSERT = _V2 | _PORTFOLIO_INSERT | {
+    "trading_event_v1", "trading_run_transition_v1"}
+if not _INSERT <= _READ:
+    raise RuntimeError("Terminal V2 writer references an unprovisioned typed table")
 _SYSTEM_READ = {
     "storage_policies", "tables", "columns", "parts",
     "data_skipping_indices",
@@ -110,7 +127,7 @@ def terminal_v2_permission_preflight(client: Any) -> None:
             raise RuntimeError("Terminal V2 principal has an invalid grant")
         for privilege in privileges:
             if (privilege == "SELECT"
-                    and ((database == "arte" and table in _READ)
+                    and ((database == "arte" and table in _READ | MARKET_READ_TABLES)
                          or (database == "system" and table in _SYSTEM_READ))):
                 continue
             if privilege == "INSERT" and database == "arte" and table in _INSERT:
@@ -135,6 +152,8 @@ def terminal_v2_permission_preflight(client: Any) -> None:
             raise RuntimeError(f"Terminal V2 principal has incorrect INSERT on {scope}")
         if name in _READ and not allowed("SELECT", scope):
             raise RuntimeError(f"Terminal V2 principal cannot SELECT {scope}")
+        if name in MARKET_READ_TABLES and not allowed("SELECT", scope):
+            raise RuntimeError(f"Terminal V2 principal cannot SELECT {scope}")
         for privilege in ("ALTER", "ALTER DELETE", "ALTER UPDATE",
                           "DROP TABLE", "TRUNCATE"):
             if allowed(privilege, scope):
@@ -145,3 +164,34 @@ def terminal_v2_operator_preflight(client: Any) -> None:
     """Read-only admission; use a dedicated principal, never market writer."""
     terminal_v2_storage_preflight(client)
     terminal_v2_permission_preflight(client)
+
+
+def terminal_v2_keeper_proof_preflight(keeper: Any) -> None:
+    """Read-only check that the persistent proof namespace is accessible.
+
+    This cannot prove Keeper CREATE/CAS ACL without performing a mutation;
+    the fixed launch gate remains closed until an operator verifies that ACL.
+    """
+    from src.trading_runtime.keeper_ownership import (
+        KeeperOwnershipCoordinator, _BACKTEST_TERMINAL_RECEIPTS, _ROOT,
+    )
+    if not isinstance(keeper, KeeperOwnershipCoordinator):
+        raise TypeError("Terminal V2 needs the Keeper ownership coordinator")
+    keeper._require_connected()
+    for path in (f"{_ROOT}/portfolio", _BACKTEST_TERMINAL_RECEIPTS):
+        if keeper._client.exists(path) is None:
+            raise RuntimeError(f"Terminal V2 Keeper proof namespace is absent: {path}")
+    keeper._require_connected()
+
+
+def terminal_v2_operator_provisioning_sql(principal: str) -> tuple[str, ...]:
+    """Review-only staged DDL/grants; never executed by this module."""
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", principal) is None:
+        raise ValueError("Terminal V2 principal name is unsafe")
+    return (
+        *(table.ddl() for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES),
+        *(f"GRANT SELECT ON arte.{name} TO {principal}" for name in sorted(
+            _READ | MARKET_READ_TABLES)),
+        *(f"GRANT INSERT ON arte.{name} TO {principal}" for name in sorted(_INSERT)),
+        *(f"GRANT SELECT ON system.{name} TO {principal}" for name in sorted(_SYSTEM_READ)),
+    )

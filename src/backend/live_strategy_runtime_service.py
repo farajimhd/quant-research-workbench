@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from src.backend.live_assignment_admission import AssignmentAdmissionLane
 from src.backend.live_signal_work_completion import (
-    CompletionProof, CompletionPublicationQueue, CompletionStorage,
+    CompletionKeeper, CompletionProof, CompletionPublicationQueue, CompletionStorage,
     read_exact_completion,
 )
 from src.backend.qmd_gateway_client import qmd_current_structure_snapshot
@@ -231,7 +231,7 @@ class LiveStrategyRuntimeSupervisor:
 
     def restore_completed_signal_work(
         self, delivery: dict[str, Any], *, storage: CompletionStorage,
-        completion_proof: CompletionProof,
+        keeper: CompletionKeeper, completion_proof: CompletionProof,
     ) -> concurrent.futures.Future[str]:
         """Control-plane cold read; no execution or local-queue submission."""
         if self._typed_signal_completion is None:
@@ -239,7 +239,7 @@ class LiveStrategyRuntimeSupervisor:
         dispatch_intents, dispatch_acks = completion_proof.materialize()
         completion = read_exact_completion(
             storage, dispatch_intents, dispatch_acks,
-            ordinal=completion_proof.ordinal)
+            ordinal=completion_proof.ordinal, keeper=keeper)
         if completion is None:
             raise RuntimeError("signal work completion is absent; execution outcome uncertain")
         row = completion.row

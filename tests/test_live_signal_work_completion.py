@@ -45,6 +45,40 @@ class Storage:
         return rows
 
 
+class Keeper:
+    def __init__(self):
+        self.epoch = 0
+        self.current = None
+        self.proof = None
+        self.lost_before_attest = False
+
+    def acquire_completion_claim(self, resource, *, owner_id):
+        self.epoch += 1
+        self.current = (resource, owner_id, self.epoch)
+        return {"resource_id": resource, "owner_id": owner_id, "epoch": self.epoch}
+
+    def completion_claim_is_current(self, resource, *, owner_id, epoch):
+        return self.current == (resource, owner_id, epoch)
+
+    def attest_completion(self, resource, *, owner_id, epoch, content_hash):
+        if self.lost_before_attest or not self.completion_claim_is_current(
+                resource, owner_id=owner_id, epoch=epoch):
+            raise RuntimeError("stale Keeper owner")
+        self.proof = (resource, owner_id, epoch, content_hash)
+
+    def completion_proof_matches(self, resource, *, owner_id, epoch, content_hash):
+        return self.proof == (resource, owner_id, epoch, content_hash)
+
+    def completion_proof_exists(self, resource):
+        return self.proof is not None and self.proof[0] == resource
+
+    def release_completion_claim(self, resource, *, owner_id, epoch):
+        if not self.completion_claim_is_current(resource, owner_id=owner_id, epoch=epoch):
+            return False
+        self.current = None
+        return True
+
+
 def _proof_inputs():
     occurrence = {"event_id": "a" * 64, "ticker": "ABC",
                   "signal_stream_id": "stream-1",
@@ -78,37 +112,72 @@ def test_immutable_packet_survives_caller_mutation_and_cold_roundtrip() -> None:
     with pytest.raises(TypeError):
         proof.intents["commit"]["intent_count"] = 99
     storage = Storage()
-    queue = CompletionPublicationQueue(storage)
+    keeper = Keeper()
+    queue = CompletionPublicationQueue(storage, keeper, owner_id="owner-1")
     try:
         receipt = queue.submit(proof, processed_at="2026-09-24T14:00:02+00:00")
         assert not receipt.cancel()
         projected = receipt.result(timeout=3)
         original_intents, original_acks = proof.materialize()
         assert read_exact_completion(storage, original_intents, original_acks,
-                                     ordinal=0) == projected
+                                     ordinal=0, keeper=keeper) == projected
         assert projected.row["outcome"] == "completed"
         assert "storage_policy = 'live_market_ssd'" in COMPLETION.ddl()
     finally:
         queue.close()
+    restarted = CompletionPublicationQueue(storage, keeper, owner_id="owner-2")
+    try:
+        replayed = restarted.submit(
+            proof, processed_at="2026-09-24T14:00:05+00:00").result(timeout=3)
+        assert replayed == projected
+        assert len(storage.rows) == 1
+    finally:
+        restarted.close()
 
 
 def test_missing_duplicate_or_ambiguous_completion_fails_closed() -> None:
     _, intents, acks = _proof_inputs()
-    assert read_exact_completion(Storage(), intents, acks, ordinal=0) is None
+    keeper = Keeper()
+    assert read_exact_completion(Storage(), intents, acks, ordinal=0, keeper=keeper) is None
     storage = Storage()
     proof = prepare_completion_proof(intents, acks, ordinal=0)
     projected = project_completion(intents, acks, ordinal=0,
-                                   processed_at="2026-09-24T14:00:02+00:00")
+                                   processed_at="2026-09-24T14:00:02+00:00",
+                                   keeper_owner_id="owner-1", keeper_epoch=1)
     storage.rows = [dict(projected.row), dict(projected.row)]
     with pytest.raises(ValueError, match="duplicate"):
-        read_exact_completion(storage, intents, acks, ordinal=0)
+        read_exact_completion(storage, intents, acks, ordinal=0, keeper=keeper)
     storage = Storage()
     storage.fail_after_insert = True
-    queue = CompletionPublicationQueue(storage)
+    queue = CompletionPublicationQueue(storage, keeper, owner_id="owner-1")
     try:
         with pytest.raises(RuntimeError, match="ambiguous"):
             queue.submit(proof, processed_at="2026-09-24T14:00:02+00:00").result(timeout=3)
         with pytest.raises(RuntimeError, match="unavailable"):
             queue.submit(proof, processed_at="2026-09-24T14:00:03+00:00")
+    finally:
+        queue.close()
+
+
+def test_stale_keeper_owner_and_unattested_row_fail_closed() -> None:
+    _, intents, acks = _proof_inputs()
+    keeper = Keeper()
+    storage = Storage()
+    projected = project_completion(
+        intents, acks, ordinal=0, processed_at="2026-09-24T14:00:02+00:00",
+        keeper_owner_id="owner-1", keeper_epoch=1)
+    storage.rows.append(dict(projected.row))
+    with pytest.raises(ValueError, match="Keeper attestation"):
+        read_exact_completion(storage, intents, acks, ordinal=0, keeper=keeper)
+    storage.rows.clear()
+    keeper.lost_before_attest = True
+    proof = prepare_completion_proof(intents, acks, ordinal=0)
+    queue = CompletionPublicationQueue(storage, keeper, owner_id="owner-1")
+    try:
+        with pytest.raises(RuntimeError, match="stale Keeper owner"):
+            queue.submit(proof, processed_at="2026-09-24T14:00:02+00:00").result(timeout=3)
+        assert len(storage.rows) == 1
+        with pytest.raises(ValueError, match="Keeper attestation"):
+            read_exact_completion(storage, intents, acks, ordinal=0, keeper=keeper)
     finally:
         queue.close()

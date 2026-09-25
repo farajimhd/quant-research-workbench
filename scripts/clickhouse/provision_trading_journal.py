@@ -27,6 +27,9 @@ from research.mlops.env import load_env_file
 from src.trading_runtime.arte_journal_schema import (
     MARKET_READ_TABLES, TABLES, journal_permission_preflight, storage_preflight,
 )
+from src.backend.live_signal_journal_preflight import (
+    staged_grants, staged_live_signal_storage_preflight,
+)
 
 
 PRINCIPAL = "trading_journal_writer"
@@ -131,7 +134,7 @@ def _write_credential(path: Path) -> str:
     return password
 
 
-def _grants() -> tuple[str, ...]:
+def _grants(*, staged_live_signal: bool = False) -> tuple[str, ...]:
     statements = [
         f"GRANT SELECT, INSERT ON arte.{table.name} TO {PRINCIPAL}"
         for table in TABLES
@@ -144,6 +147,8 @@ def _grants() -> tuple[str, ...]:
         f"GRANT SELECT ON system.{name} TO {PRINCIPAL}"
         for name in SYSTEM_READ_TABLES
     )
+    if staged_live_signal:
+        statements.extend(staged_grants(PRINCIPAL))
     return tuple(statements)
 
 
@@ -158,7 +163,7 @@ def _admin_client(url: str) -> ClickHouseHttpClient:
     return ClickHouseHttpClient(url, user, password, timeout_seconds=20)
 
 
-def provision(url: str, *, apply: bool) -> None:
+def provision(url: str, *, apply: bool, staged_live_signal: bool = False) -> None:
     if platform.node().upper() != "DESKTOP-SAAI85T":
         raise RuntimeError("Provisioning must run on DESKTOP-SAAI85T")
     if not SECRET_ROOT.is_dir():
@@ -166,7 +171,7 @@ def provision(url: str, *, apply: bool) -> None:
     parsed = urlsplit(url)
     if (parsed.scheme, parsed.hostname, parsed.port, parsed.path, parsed.query,
             parsed.fragment, parsed.username, parsed.password) != (
-                "http", "192.168.0.21", 18123, "", "", "", None, None):
+                "http", "desktop-saai85t", 18123, "", "", "", None, None):
         raise RuntimeError("Unexpected ClickHouse endpoint; refusing credential creation")
     client = _admin_client(url)
     present = client.execute(
@@ -175,10 +180,14 @@ def provision(url: str, *, apply: bool) -> None:
     if present not in {"0", "1"}:
         raise RuntimeError("ClickHouse principal inventory is inconsistent")
     print(f"Journal principal: {'present' if present == '1' else 'absent'}")
-    print(f"Required grants: {len(_grants())} exact table grants")
+    grants = _grants(staged_live_signal=staged_live_signal)
+    print(f"Required grants: {len(grants)} exact table grants")
     if not apply:
         print("Plan only; no credential or ClickHouse state changed")
         return
+
+    if staged_live_signal:
+        staged_live_signal_storage_preflight(client)
 
     password = _credential(SECRET_PATH, account_exists=present == "1")
     writer = ClickHouseHttpClient(url, PRINCIPAL, password, timeout_seconds=20)
@@ -194,7 +203,7 @@ def provision(url: str, *, apply: bool) -> None:
             f"CREATE USER {PRINCIPAL} IDENTIFIED WITH sha256_hash BY '{digest}' "
             "HOST IP '172.16.0.0/12', IP '127.0.0.1', IP '::1'"
         )
-    for statement in _grants():
+    for statement in _grants(staged_live_signal=staged_live_signal):
         client.execute(statement)
     storage_preflight(writer)
     journal_permission_preflight(writer)
@@ -204,11 +213,15 @@ def provision(url: str, *, apply: bool) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Provision a least-privilege ARTE journal writer")
-    parser.add_argument("--url", default="http://192.168.0.21:18123")
+    parser.add_argument("--url", default="http://DESKTOP-SAAI85T:18123",
+                        help="managed workstation ClickHouse endpoint")
     parser.add_argument("--apply", action="store_true", help="create credential and ClickHouse grants")
+    parser.add_argument("--staged-live-signal", action="store_true",
+                        help="also grant preprovisioned typed dispatch/completion tables")
     args = parser.parse_args()
     try:
-        provision(args.url, apply=args.apply)
+        provision(args.url, apply=args.apply,
+                  staged_live_signal=args.staged_live_signal)
     except Exception as exc:
         print(f"Journal provisioning failed: {exc}", file=sys.stderr)
         return 1

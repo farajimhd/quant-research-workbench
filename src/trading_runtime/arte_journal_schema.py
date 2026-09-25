@@ -1651,6 +1651,17 @@ def journal_permission_preflight(client: Any) -> None:
     """Fail closed unless this principal can only read market and append journal."""
     journal = {table.name for table in TABLES}
     market = MARKET_READ_TABLES
+    # The staged live-signal profile is an explicit, all-or-nothing extension
+    # of this principal. Validate its physical tables before accepting grants.
+    from src.backend.live_signal_journal_preflight import (
+        LIVE_SIGNAL_TABLES, staged_live_signal_storage_preflight,
+    )
+    staged_names = {table.name for table in LIVE_SIGNAL_TABLES}
+    grant_lines = client.execute("SHOW GRANTS").splitlines()
+    if any(f"ON arte.{name} " in line for line in grant_lines
+           for name in staged_names):
+        staged_live_signal_storage_preflight(client)
+        journal |= staged_names
     required = journal | market
     names = ",".join(f"'{name}'" for name in sorted(required))
     actual = _rows(client,
@@ -1666,7 +1677,6 @@ def journal_permission_preflight(client: Any) -> None:
     user = client.execute("SELECT currentUser()").strip()
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", user) is None:
         raise ValueError("Journal principal has an unsafe identity")
-    grant_lines = client.execute("SHOW GRANTS").splitlines()
     if not grant_lines:
         raise ValueError("Journal principal has no inspectable grants")
     for line in grant_lines:

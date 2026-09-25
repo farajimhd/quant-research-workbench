@@ -14,7 +14,9 @@ from src.trading_runtime.arte_market_day_certification import (
 from src.trading_runtime.arte_market_day_keeper import (
     BuildAttestation, BuildClaim, MarketDayKeeperAuthority, require_attested_inventory,
 )
-from src.trading_runtime.arte_market_day_source_plan import TABLES as SOURCE_TABLES
+from src.trading_runtime.arte_market_day_source_plan import (
+    TABLES as SOURCE_TABLES, verify_source_plan_storage,
+)
 
 
 def _read(client: Any, name: str, build_id: str) -> list[dict[str, Any]]:
@@ -77,6 +79,7 @@ def publish_market_day_certificate(client: Any, keeper: MarketDayKeeperAuthority
             return "\n".join(json.dumps(row) for row in prepared[name])
     verify_market_day_certificate(_PreparedReader(), build_id, sessions=sessions)
     _placement(client)
+    verify_source_plan_storage(client)
     for name in names[:-1]:
         if not keeper.current(claim):
             raise RuntimeError("Market-day build claim changed before publication")

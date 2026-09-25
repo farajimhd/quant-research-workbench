@@ -12,7 +12,8 @@ from src.backend.live_strategy_runtime_service import (
 from src.backend.live_signal_work_completion import (
     prepare_completion_proof, project_completion,
 )
-from tests.test_live_signal_work_completion import Storage, _proof_inputs
+from src.backend.live_signal_completion_keeper import completion_resource
+from tests.test_live_signal_work_completion import Keeper, Storage, _proof_inputs
 
 
 class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
@@ -43,15 +44,21 @@ class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
         restored_intents, restored_acks = proof.materialize()
         projected = project_completion(
             restored_intents, restored_acks, ordinal=0,
-            processed_at=publisher.processed_at)
+            processed_at=publisher.processed_at,
+            keeper_owner_id="owner-1", keeper_epoch=1)
         publisher.receipt.set_result(projected)
         self.assertEqual(receipt.result(), projected.row["content_hash"])
         self.assertEqual(supervisor.snapshot()["processed"], 1)
         storage = Storage()
         storage.insert_completion_row(projected.row)
+        keeper = Keeper()
+        resource = completion_resource(
+            projected.row["session_key"], projected.row["source_batch_sequence"],
+            projected.row["ordinal"], projected.row["delivery_id"])
+        keeper.proof = (resource, "owner-1", 1, projected.row["content_hash"])
         restarted = LiveStrategyRuntimeSupervisor(typed_signal_completion=publisher)
         cold = restarted.restore_completed_signal_work(
-            delivery, storage=storage, completion_proof=proof)
+            delivery, storage=storage, keeper=keeper, completion_proof=proof)
         self.assertEqual(cold.result(), projected.row["content_hash"])
         self.assertEqual(restarted._queue.qsize(), 0)
 
@@ -156,6 +163,15 @@ class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
                     "upper": 3.82,
                 }],
             },
+        ), patch(
+            "src.backend.qmd_gateway_client.qmd_level_book_v7",
+            return_value={"book_version": "v7", "unified_levels": [{
+                "unified_level_id": 17,
+                "side": -1,
+                "price": 3.82,
+                "lower": 3.80,
+                "upper": 3.82,
+            }]},
         ):
             returned = await supervisor._process_market_row(
                 {
@@ -176,7 +192,7 @@ class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(returned, broker)
         observation = runtime.process_account_strategy_observation.await_args.args[0]
         self.assertEqual(observation.structural_resistance_levels[0]["unified_level_id"], 17)
-        self.assertEqual(observation.structural_resistance_upper, None)
+        self.assertEqual(observation.structural_resistance_upper, 3.82)
 
     async def test_external_intent_uses_same_runtime_as_strategy_signals(self) -> None:
         supervisor = LiveStrategyRuntimeSupervisor()

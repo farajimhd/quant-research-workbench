@@ -15,6 +15,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, Protocol
 
 from src.backend.signal_dispatch_typed_cursor import verify_dispatch_cursor
+from src.backend.live_signal_completion_keeper import completion_resource
 from src.backend.signal_stream_typed_cursor import TypedTable
 from src.backend.signal_stream_typed_readback import canonical_row
 from src.trading_runtime.journal_contract import canonical_json
@@ -27,6 +28,7 @@ COMPLETION = TypedTable(
      ("delivery_id", "String"), ("intent_content_hash", "FixedString(64)"),
      ("dispatch_ack_commit_hash", "FixedString(64)"),
      ("activation_receipt_hash", "FixedString(64)"),
+     ("keeper_owner_id", "String"), ("keeper_epoch", "UInt64"),
      ("processed_at", "DateTime64(6, 'UTC')"),
      ("outcome", "LowCardinality(String)"),
      ("content_hash", "FixedString(64)")),
@@ -103,6 +105,17 @@ class CompletionStorage(Protocol):
                              ordinal: int) -> list[Mapping[str, Any]]: ...
 
 
+class CompletionKeeper(Protocol):
+    def acquire_completion_claim(self, resource: str, *, owner_id: str) -> Mapping[str, Any] | None: ...
+    def completion_claim_is_current(self, resource: str, *, owner_id: str, epoch: int) -> bool: ...
+    def attest_completion(self, resource: str, *, owner_id: str, epoch: int,
+                          content_hash: str) -> None: ...
+    def completion_proof_matches(self, resource: str, *, owner_id: str, epoch: int,
+                                 content_hash: str) -> bool: ...
+    def completion_proof_exists(self, resource: str) -> bool: ...
+    def release_completion_claim(self, resource: str, *, owner_id: str, epoch: int) -> bool: ...
+
+
 def _hash(row: Mapping[str, Any]) -> str:
     return sha256(canonical_json(row).encode()).hexdigest()
 
@@ -124,7 +137,7 @@ def _hex(value: Any) -> str:
 
 def project_completion(
     intents: Mapping[str, Any], acks: Mapping[str, Any], *,
-    ordinal: int, processed_at: Any,
+    ordinal: int, processed_at: Any, keeper_owner_id: str, keeper_epoch: int,
 ) -> CompletionProjection:
     """Require a committed dispatch ACK and its exact activation receipt."""
     verify_dispatch_cursor(intents, acks)
@@ -132,6 +145,10 @@ def project_completion(
     if type(ordinal) is not int or ordinal < 0 or ordinal >= len(rows):
         raise ValueError("signal work completion ordinal is invalid")
     intent, ack = rows[ordinal], acks["acks"][ordinal]
+    if (not isinstance(keeper_owner_id, str) or not keeper_owner_id
+            or any(char in keeper_owner_id for char in ("\r", "\n", "\x00"))
+            or type(keeper_epoch) is not int or keeper_epoch < 1):
+        raise ValueError("signal work completion Keeper ownership is invalid")
     base = dict(
         schema_version=1, session_key=intent["session_key"],
         source_batch_sequence=intent["source_batch_sequence"], ordinal=ordinal,
@@ -139,6 +156,7 @@ def project_completion(
         intent_content_hash=_hex(intent["content_hash"]),
         dispatch_ack_commit_hash=_hex(acks["commit"]["content_hash"]),
         activation_receipt_hash=_hex(ack["activation_receipt_hash"]),
+        keeper_owner_id=keeper_owner_id, keeper_epoch=keeper_epoch,
         processed_at=_time(processed_at), outcome="completed",
     )
     return CompletionProjection({**base, "content_hash": _hash(base)})
@@ -146,7 +164,7 @@ def project_completion(
 
 def read_exact_completion(
     storage: CompletionStorage, intents: Mapping[str, Any],
-    acks: Mapping[str, Any], *, ordinal: int,
+    acks: Mapping[str, Any], *, ordinal: int, keeper: CompletionKeeper,
 ) -> CompletionProjection | None:
     """Cold verifier: zero rows is uncertain, duplicates/corruption fail closed."""
     verify_dispatch_cursor(intents, acks)
@@ -163,9 +181,17 @@ def read_exact_completion(
         raise ValueError("duplicate signal work completion receipt")
     row = canonical_row(COMPLETION, found[0])
     expected = project_completion(intents, acks, ordinal=ordinal,
-                                  processed_at=row["processed_at"])
+                                  processed_at=row["processed_at"],
+                                  keeper_owner_id=row["keeper_owner_id"],
+                                  keeper_epoch=row["keeper_epoch"])
     if row != expected.row:
         raise ValueError("signal work completion receipt differs from dispatch ACK")
+    resource = completion_resource(row["session_key"], row["source_batch_sequence"],
+                                   row["ordinal"], row["delivery_id"])
+    if not keeper.completion_proof_matches(
+            resource, owner_id=row["keeper_owner_id"],
+            epoch=row["keeper_epoch"], content_hash=row["content_hash"]):
+        raise ValueError("signal work completion lacks Keeper attestation")
     return expected
 
 
@@ -177,10 +203,16 @@ class _Receipt(Future[CompletionProjection]):
 class CompletionPublicationQueue:
     """Bounded independent worker; ambiguous INSERT is terminal, never retried."""
 
-    def __init__(self, storage: CompletionStorage, *, capacity: int = 128) -> None:
+    def __init__(self, storage: CompletionStorage, keeper: CompletionKeeper, *,
+                 owner_id: str, capacity: int = 128) -> None:
         if type(capacity) is not int or capacity < 1:
             raise ValueError("completion publication capacity is invalid")
         self._storage = storage
+        self._keeper = keeper
+        if not isinstance(owner_id, str) or not owner_id or any(
+                char in owner_id for char in ("\r", "\n", "\x00")):
+            raise ValueError("completion publisher Keeper owner is invalid")
+        self._owner_id = owner_id
         self._capacity = capacity
         self._queue: queue.Queue[tuple[CompletionProof, Any, Future[CompletionProjection]]] = queue.Queue()
         self._pending: set[tuple[str, int, int]] = set()
@@ -236,13 +268,50 @@ class CompletionPublicationQueue:
                 if failure is not None:
                     raise RuntimeError("signal work completion publication halted") from failure
                 frozen_intents, frozen_acks = proof.materialize()
-                projected = project_completion(
-                    frozen_intents, frozen_acks, ordinal=proof.ordinal, processed_at=processed_at)
-                self._storage.insert_completion_row(projected.row)
-                confirmed = read_exact_completion(
-                    self._storage, frozen_intents, frozen_acks, ordinal=proof.ordinal)
-                if confirmed != projected:
-                    raise ValueError("signal work completion cold readback differs")
+                resource = completion_resource(
+                    proof.session_key, proof.source_batch_sequence,
+                    proof.ordinal, proof.delivery_id)
+                lease = self._keeper.acquire_completion_claim(
+                    resource, owner_id=self._owner_id)
+                if (lease is None or lease.get("resource_id") != resource
+                        or lease.get("owner_id") != self._owner_id
+                        or type(lease.get("epoch")) is not int or lease["epoch"] < 1):
+                    raise RuntimeError("completion Keeper claim is contended or invalid")
+                epoch = lease["epoch"]
+                prior = read_exact_completion(
+                    self._storage, frozen_intents, frozen_acks,
+                    ordinal=proof.ordinal, keeper=self._keeper)
+                if prior is not None:
+                    projected = prior
+                else:
+                    if self._keeper.completion_proof_exists(resource):
+                        raise RuntimeError("completion Keeper proof exists without CH row")
+                    projected = project_completion(
+                        frozen_intents, frozen_acks, ordinal=proof.ordinal,
+                        processed_at=processed_at, keeper_owner_id=self._owner_id,
+                        keeper_epoch=epoch)
+                    if not self._keeper.completion_claim_is_current(
+                            resource, owner_id=self._owner_id, epoch=epoch):
+                        raise RuntimeError("completion Keeper claim was lost before INSERT")
+                    self._storage.insert_completion_row(projected.row)
+                    # Do not use attested cold read until the Keeper proof exists.
+                    found = self._storage.read_completion_rows(
+                        session_key=proof.session_key,
+                        source_batch_sequence=proof.source_batch_sequence,
+                        ordinal=proof.ordinal)
+                    if len(found) != 1 or canonical_row(COMPLETION, found[0]) != projected.row:
+                        raise ValueError("signal work completion cold readback differs")
+                    self._keeper.attest_completion(
+                        resource, owner_id=self._owner_id, epoch=epoch,
+                        content_hash=projected.row["content_hash"])
+                    confirmed = read_exact_completion(
+                        self._storage, frozen_intents, frozen_acks,
+                        ordinal=proof.ordinal, keeper=self._keeper)
+                    if confirmed != projected:
+                        raise RuntimeError("completion attested readback differs")
+                if not self._keeper.release_completion_claim(
+                        resource, owner_id=self._owner_id, epoch=epoch):
+                    raise RuntimeError("completion Keeper release failed")
             except BaseException as exc:
                 with self._lock:
                     self._fatal = exc

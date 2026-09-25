@@ -1160,10 +1160,12 @@ class ReplayRunController:
         self._signal_activated_tickers: set[str] = set()
         self._v7_excluded_tickers: set[str] = set()
         self._v7_coverage_report: dict[str, Any] = {}
-        coverage_path = self.run_dir / 'level-book-coverage.json'
-        if coverage_path.exists():
-            self._v7_coverage_report = json.loads(coverage_path.read_text(encoding='utf-8'))
-            self._v7_excluded_tickers = {row['ticker'] for row in self._v7_coverage_report['excluded']}
+        if self.definition.mode != RunMode.BACKTEST:
+            coverage_path = self.run_dir / 'level-book-coverage.json'
+            if coverage_path.exists():
+                self._v7_coverage_report = json.loads(coverage_path.read_text(encoding='utf-8'))
+                self._v7_excluded_tickers = {
+                    row['ticker'] for row in self._v7_coverage_report['excluded']}
         # Once a source-native signal has admitted a ticker, keep evaluating
         # that campaign after the short-lived signal episode expires (an open
         # position may still need management). Tickers that have never been
@@ -2808,16 +2810,15 @@ class ReplayRunController:
 
     async def _open_fixed_journal(self) -> None:
         """Fail closed at the typed journal boundary until recovery is complete."""
-        from src.trading_runtime.arte_journal_schema import (
-            journal_permission_preflight, storage_preflight,
-        )
+        from src.backend.backtest_terminal_v2_preflight import terminal_v2_operator_preflight
+        from src.trading_runtime.arte_journal_schema import storage_preflight
         from src.trading_runtime.arte_journal_writer import journal_client_from_env
         if self.definition.mode != RunMode.BACKTEST or self._journal is not None:
             raise RuntimeError("ClickHouse Backtest journal requires a new Backtest run")
         client = await asyncio.to_thread(journal_client_from_env)
         try:
             await asyncio.to_thread(storage_preflight, client)
-            await asyncio.to_thread(journal_permission_preflight, client)
+            await asyncio.to_thread(terminal_v2_operator_preflight, client)
         finally:
             await asyncio.to_thread(client.close)
         raise RuntimeError(

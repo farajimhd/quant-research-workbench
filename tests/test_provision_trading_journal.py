@@ -67,4 +67,4 @@ def test_provision_refuses_wrong_host_before_any_database_call(
     monkeypatch.setattr(provision.platform, "node", lambda: "other-computer")
     monkeypatch.setattr(provision, "_admin_client", lambda _url: pytest.fail("database touched"))
     with pytest.raises(RuntimeError, match="DESKTOP-SAAI85T"):
-        provision.provision("http://192.168.0.21:18123", apply=True)
+        provision.provision("http://DESKTOP-SAAI85T:18123", apply=True)

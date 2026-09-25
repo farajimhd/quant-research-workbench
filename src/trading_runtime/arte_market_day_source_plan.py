@@ -60,6 +60,46 @@ TABLES = (TableContract(_HEAD, (
 ))
 
 
+def verify_source_plan_storage(client: Any) -> None:
+    """Require the exact named schema and SSD-only active placement before use."""
+    def rows(sql: str) -> list[dict[str, Any]]:
+        return [json.loads(line) for line in client.execute(sql).splitlines() if line.strip()]
+
+    policies = rows("SELECT disks FROM system.storage_policies "
+                    "WHERE policy_name='live_market_ssd' FORMAT JSONEachRow")
+    if policies != [{"disks": ["live_market_ssd"]}]:
+        raise RuntimeError("Source-plan policy is not SSD-only")
+    names = ",".join(f"'{table.name}'" for table in TABLES)
+    actual = rows("SELECT name,engine,storage_policy,partition_key,sorting_key "
+                  "FROM system.tables WHERE database='arte' "
+                  f"AND name IN ({names}) FORMAT JSONEachRow")
+    by_name = {row.get("name"): row for row in actual}
+    if len(actual) != len(TABLES) or set(by_name) != {table.name for table in TABLES}:
+        raise RuntimeError("Source-plan tables are missing or duplicate")
+    for table in TABLES:
+        row = by_name[table.name]
+        if (row.get("engine"), row.get("storage_policy"),
+            row.get("partition_key"), row.get("sorting_key")) != (
+                "MergeTree", "live_market_ssd", table.partition, table.order):
+            raise RuntimeError(f"Source-plan table layout differs: {table.name}")
+    actual_columns = rows("SELECT table,name,type FROM system.columns "
+                          "WHERE database='arte' "
+                          f"AND table IN ({names}) ORDER BY table,position FORMAT JSONEachRow")
+    for table in TABLES:
+        columns = tuple((row.get("name"), row.get("type")) for row in actual_columns
+                        if row.get("table") == table.name)
+        if columns != table.columns:
+            raise RuntimeError(f"Source-plan table columns differ: {table.name}")
+    if len(actual_columns) != sum(len(table.columns) for table in TABLES):
+        raise RuntimeError("Source-plan column inventory has unexpected rows")
+    misplaced = rows("SELECT table,disk_name FROM system.parts "
+                     "WHERE database='arte' AND active "
+                     f"AND table IN ({names}) AND disk_name!='live_market_ssd' "
+                     "LIMIT 1 FORMAT JSONEachRow")
+    if misplaced:
+        raise RuntimeError("Source-plan active part is outside live_market_ssd")
+
+
 def _digest(value: Any) -> str:
     # Exactly the producer's `scripts.build_market_day.digest` wire contract.
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),

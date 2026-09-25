@@ -119,3 +119,22 @@ def test_late_duplicate_after_cas_is_not_a_successful_receipt() -> None:
         publish_market_day_certificate(client, keeper, claim,
                                        inventory(), sessions=(DAY,))
     assert keeper.load(BUILD) is not None
+
+
+def test_source_plan_layout_drift_blocks_first_insert() -> None:
+    class DriftClient(FakeClickHouse):
+        def execute(self, sql):
+            result = super().execute(sql)
+            if "FROM system.tables" in sql and "sorting_key" in sql:
+                rows = [json.loads(line) for line in result.splitlines()]
+                rows[0]["partition_key"] = "tuple()"
+                return "\n".join(json.dumps(row) for row in rows)
+            return result
+
+    _, _, keeper, claim = setup()
+    client = DriftClient()
+    with pytest.raises(RuntimeError, match="Source-plan table layout differs"):
+        publish_market_day_certificate(client, keeper, claim,
+                                       inventory(), sessions=(DAY,))
+    assert not client.inserts
+    assert keeper.load(BUILD) is None

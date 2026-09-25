@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 
 import pytest
 
 from src.trading_runtime.arte_market_day_cold_preflight import (
-    audit_attested_market_day_certificate, replay_canonical_source_plan_parity,
+    audit_attested_market_day_certificate, certified_market_day_plan_from_cold_audit,
+    replay_canonical_source_plan_parity,
     verify_attested_market_products,
 )
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperAuthority
@@ -157,3 +159,45 @@ def test_cold_source_replays_select_only_producer_plan_not_disk(monkeypatch) -> 
     monkeypatch.setattr(build_market_day, "source_plan", changed)
     with pytest.raises(RuntimeError, match="differs from attested"):
         replay_canonical_source_plan_parity(client, audit)
+
+
+def test_cold_constructor_requires_source_parity_and_matches_ledger_token() -> None:
+    from src.backend.backtest_market_data import _stable_hash
+
+    class ProductReader(FakeClickHouse):
+        def execute(self, sql):
+            if "FROM system.tables" in sql and "'bars_v1'" in sql:
+                return "\n".join(json.dumps(dict(
+                    name=name, storage_policy="live_market_ssd")) for name in (
+                    "bars_v1", "indicators_v1", "liquidity_100ms_v1"))
+            if "FROM system.parts" in sql and "'bars_v1'" in sql:
+                return ""
+            if any(f"FROM arte.{name} " in sql for name in (
+                    "bars_v1", "indicators_v1", "liquidity_100ms_v1")):
+                return ""  # All three attested output_rows are zero.
+            return super().execute(sql)
+
+    source, keeper = fixture()
+    client = ProductReader()
+    client.rows = deepcopy(source.rows)
+    audit = audit_attested_market_day_certificate(client, keeper, BUILD,
+                                                   sessions=(DAY,))
+    with pytest.raises(RuntimeError, match="canonical source parity"):
+        certified_market_day_plan_from_cold_audit(client, audit,
+            sessions=(DAY,), tickers=(), configuration={})
+    audit = replace(audit, source_authority_verified=True)
+    plan = certified_market_day_plan_from_cold_audit(client, audit,
+        sessions=(DAY,), tickers=(), configuration={})
+    assert plan.sessions == (DAY,)
+    assert plan.tickers == ("TEST",)
+    assert len(plan.units) == 3
+    assert plan.token == _stable_hash({
+        "build_id": BUILD, "definition_hash": audit.certificate.definition_hash,
+        "sessions": (DAY,), "tickers": ("TEST",), "resolutions": (100, 1000),
+        "units": [[unit.build_id, unit.session_date, unit.ticker, unit.stage,
+                   unit.attempt_id, unit.source_hash, unit.output_rows,
+                   unit.output_hash] for unit in plan.units]})
+    assert not audit.fixed_backtest_ready
+    with pytest.raises(ValueError, match="outside attested population"):
+        certified_market_day_plan_from_cold_audit(client, audit,
+            sessions=(DAY,), tickers=("OTHER",), configuration={})

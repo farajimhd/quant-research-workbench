@@ -21,7 +21,7 @@ from src.trading_runtime.arte_market_day_keeper import (
 )
 from src.trading_runtime.arte_market_day_publisher import _placement, _read
 from src.trading_runtime.arte_market_day_source_plan import (
-    TABLES as SOURCE_TABLES, recover_source_plan,
+    TABLES as SOURCE_TABLES, recover_source_plan, verify_source_plan_storage,
 )
 
 
@@ -70,43 +70,7 @@ def audit_attested_market_day_certificate(client: Any, keeper: Any,
 def verify_source_plan_table_placement(client: Any,
                                        audit: MarketDayColdAudit) -> MarketDayColdAudit:
     """Check exact named source-plan table layouts and physical SSD placement."""
-    def rows(sql: str) -> list[dict[str, Any]]:
-        return [json.loads(line) for line in client.execute(sql).splitlines() if line.strip()]
-
-    policies = rows("SELECT disks FROM system.storage_policies "
-                    "WHERE policy_name='live_market_ssd' FORMAT JSONEachRow")
-    if policies != [{"disks": ["live_market_ssd"]}]:
-        raise RuntimeError("Source-plan policy is not SSD-only")
-    names = ",".join(f"'{table.name}'" for table in SOURCE_TABLES)
-    actual = rows("SELECT name,engine,storage_policy,partition_key,sorting_key "
-                  "FROM system.tables WHERE database='arte' "
-                  f"AND name IN ({names}) FORMAT JSONEachRow")
-    by_name = {row.get("name"): row for row in actual}
-    if len(actual) != len(SOURCE_TABLES) or set(by_name) != {
-            table.name for table in SOURCE_TABLES}:
-        raise RuntimeError("Source-plan tables are missing or duplicate")
-    for table in SOURCE_TABLES:
-        row = by_name[table.name]
-        if (row.get("engine"), row.get("storage_policy"),
-            row.get("partition_key"), row.get("sorting_key")) != (
-                "MergeTree", "live_market_ssd", table.partition, table.order):
-            raise RuntimeError(f"Source-plan table layout differs: {table.name}")
-    actual_columns = rows("SELECT table,name,type FROM system.columns "
-                          "WHERE database='arte' "
-                          f"AND table IN ({names}) ORDER BY table,position FORMAT JSONEachRow")
-    for table in SOURCE_TABLES:
-        columns = tuple((row.get("name"), row.get("type")) for row in actual_columns
-                        if row.get("table") == table.name)
-        if columns != table.columns:
-            raise RuntimeError(f"Source-plan table columns differ: {table.name}")
-    if len(actual_columns) != sum(len(table.columns) for table in SOURCE_TABLES):
-        raise RuntimeError("Source-plan column inventory has unexpected rows")
-    misplaced = rows("SELECT table,disk_name FROM system.parts "
-                     "WHERE database='arte' AND active "
-                     f"AND table IN ({names}) AND disk_name!='live_market_ssd' "
-                     "LIMIT 1 FORMAT JSONEachRow")
-    if misplaced:
-        raise RuntimeError("Source-plan active part is outside live_market_ssd")
+    verify_source_plan_storage(client)
     return replace(audit, source_storage_verified=True)
 
 
@@ -191,3 +155,74 @@ def verify_attested_market_products(client: Any, audit: MarketDayColdAudit, *,
         units, required_resolutions_ms, token="unadmitted-certificate-audit")
     verify_market_day_plan(plan, client)
     return replace(audit, market_products_verified=True)
+
+
+def certified_market_day_plan_from_cold_audit(client: Any,
+                                               audit: MarketDayColdAudit, *,
+                                               sessions: tuple[str, ...],
+                                               tickers: tuple[str, ...],
+                                               configuration: Mapping[str, Any]) -> Any:
+    """Build the existing fixed Backtest plan token from rechecked typed facts.
+
+    This is an inactive constructor, not permission to replace the active
+    SQLite/manifest preflight. Product evidence is rechecked for this exact
+    interval and resolution set, even if the audit checked another set.
+    """
+    from src.backend.backtest_market_data import (
+        CertifiedMarketDayPlan, MarketDayUnit, _stable_hash,
+        compile_required_resolutions, effective_execution_interval,
+        verify_market_day_plan,
+    )
+
+    if not (audit.certificate_parts_on_ssd and audit.source_storage_verified
+            and audit.source_authority_verified):
+        raise RuntimeError("Market-day cold plan lacks attested canonical source parity")
+    interval = effective_execution_interval(configuration)
+    if interval.kind != "fixed":
+        raise ValueError("Event execution does not use the fixed market-day catalogue")
+    resolutions = compile_required_resolutions(configuration, interval)
+    verify_attested_market_products(client, audit, execution_interval=interval,
+                                    required_resolutions_ms=resolutions)
+    days = tuple(str(day) for day in sessions)
+    if not days or len(set(days)) != len(days):
+        raise ValueError("Cold market-day plan needs distinct requested sessions")
+    requested = set(audit.source_plan["requested"])
+    if not set(days).issubset(requested):
+        raise ValueError("Backtest sessions are outside attested source population")
+    population = {(day, ticker) for day, ticker in audit.certificate.scopes
+                  if day in days}
+    selected = ({(day, ticker) for day in days for ticker in tickers}
+                if tickers else population)
+    if not selected or not selected.issubset(population) or any(
+            not any(scope_day == day for scope_day, _ in selected) for day in days):
+        raise ValueError("Cold market-day scopes are empty or outside attested population")
+    stage_rows = _read(client, "market_day_stage_certificate_v1",
+                       audit.certificate.build_id)
+    observed = tuple(sorted((r["session_date"], r["ticker"], r["stage"],
+                             r["attempt_id"], int(r["output_rows"]),
+                             r["output_hash"]) for r in stage_rows))
+    if observed != audit.certificate.stages:
+        raise RuntimeError("Market-day stage facts changed after Keeper audit")
+    units = tuple(MarketDayUnit(r["build_id"], r["session_date"], r["ticker"],
+                                r["stage"], r["attempt_id"], r["source_hash"],
+                                int(r["output_rows"]), r["output_hash"])
+                  for r in sorted(stage_rows,
+                                  key=lambda r: (r["session_date"], r["ticker"], r["stage"]))
+                  if (r["session_date"], r["ticker"]) in selected)
+    if len(units) != 3 * len(selected) or any(
+            {unit.stage for unit in units if (unit.session_date, unit.ticker) == scope}
+            != {"bars", "technical", "broker_100ms"} for scope in selected):
+        raise RuntimeError("Cold market-day plan has incomplete typed stage scope")
+    ordered_tickers = tuple(sorted({ticker for _, ticker in selected}))
+    payload = {"build_id": audit.certificate.build_id,
+               "definition_hash": audit.certificate.definition_hash,
+               "sessions": days, "tickers": ordered_tickers,
+               "resolutions": resolutions,
+               "units": [[unit.build_id, unit.session_date, unit.ticker,
+                          unit.stage, unit.attempt_id, unit.source_hash,
+                          unit.output_rows, unit.output_hash] for unit in units]}
+    plan = CertifiedMarketDayPlan(interval, audit.certificate.build_id,
+        audit.certificate.definition_hash, days, ordered_tickers, units,
+        resolutions, token=_stable_hash(payload))
+    verify_market_day_plan(plan, client)
+    return plan

@@ -257,6 +257,7 @@ def test_inactive_fixed_terminal_handoff_orders_cursor_finish_capture_worker_aud
 
 def test_fixed_journal_refuses_retired_bt_resume_even_after_typed_preflight(monkeypatch):
     from src.backend import backtest_journal_clickhouse
+    from src.backend import backtest_terminal_v2_preflight
     from src.trading_runtime import arte_journal_schema, arte_journal_writer
 
     class Client:
@@ -269,8 +270,8 @@ def test_fixed_journal_refuses_retired_bt_resume_even_after_typed_preflight(monk
     monkeypatch.setattr(arte_journal_writer, "journal_client_from_env", lambda: client)
     monkeypatch.setattr(arte_journal_schema, "storage_preflight",
                         lambda value: checked.append(("storage", value)))
-    monkeypatch.setattr(arte_journal_schema, "journal_permission_preflight",
-                        lambda value: checked.append(("grants", value)))
+    monkeypatch.setattr(backtest_terminal_v2_preflight, "terminal_v2_operator_preflight",
+                        lambda value: checked.append(("v2_storage_and_grants", value)))
     monkeypatch.setattr(backtest_journal_clickhouse, "load_fenced_checkpoint",
                         lambda *_a: (_ for _ in ()).throw(AssertionError("retired bt_* read")))
     controller = object.__new__(ReplayRunController)
@@ -282,7 +283,7 @@ def test_fixed_journal_refuses_retired_bt_resume_even_after_typed_preflight(monk
 
     with pytest.raises(RuntimeError, match="typed journal publication and cold recovery"):
         asyncio.run(controller._open_fixed_journal())
-    assert checked == [("storage", client), ("grants", client)]
+    assert checked == [("storage", client), ("v2_storage_and_grants", client)]
     assert client.closed
 
 

@@ -5,7 +5,8 @@ import pytest
 
 from src.backend.backtest_terminal_v2_preflight import (
     terminal_v2_operator_preflight, terminal_v2_permission_preflight,
-    terminal_v2_storage_preflight,
+    terminal_v2_storage_preflight, terminal_v2_operator_provisioning_sql,
+    terminal_v2_keeper_proof_preflight, _INSERT,
 )
 from src.trading_runtime.arte_journal_schema import (
     BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES, MARKET_READ_TABLES, TABLES,
@@ -16,9 +17,8 @@ class FakeCatalog:
     def __init__(self):
         self.contracts = {table.name: table for table in
                           (*TABLES, *BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES)}
-        self.read = set(self.contracts)
-        self.insert = {table.name for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES} | {
-            "trading_event_v1", "trading_run_transition_v1"}
+        self.read = set(self.contracts) | MARKET_READ_TABLES
+        self.insert = set(_INSERT)
         self.policy_disks = ["live_market_ssd"]
         self.bad_parts = []
         self.missing_indexes = []
@@ -120,6 +120,39 @@ def test_operator_preflight_rejects_market_write_and_broad_grants():
     client.extra_grant = "GRANT INSERT ON arte.bars_v1 TO terminal_v2"
     with pytest.raises(RuntimeError, match="unauthorized INSERT"):
         terminal_v2_permission_preflight(client)
+
+
+def test_provisioning_sql_stages_v2_and_exact_portfolio_writer_grants():
+    sql = terminal_v2_operator_provisioning_sql("terminal_v2")
+    assert len([statement for statement in sql if statement.startswith("CREATE TABLE")]) == 3
+    assert "GRANT INSERT ON arte.trading_backtest_snapshot_anchor_v1 TO terminal_v2" in sql
+    assert "GRANT INSERT ON arte.trading_portfolio_snapshot_commit_v1 TO terminal_v2" in sql
+    assert "GRANT INSERT ON arte.trading_portfolio_policy_commit_v2 TO terminal_v2" in sql
+    assert "GRANT SELECT ON arte.bars_v1 TO terminal_v2" in sql
+    assert not any("GRANT INSERT ON arte.bars_v1" in statement for statement in sql)
+    with pytest.raises(ValueError, match="unsafe"):
+        terminal_v2_operator_provisioning_sql("bad; DROP TABLE")
+
+
+def test_keeper_proof_preflight_reads_required_namespaces_only():
+    from src.trading_runtime.keeper_ownership import KeeperOwnershipCoordinator
+    keeper = object.__new__(KeeperOwnershipCoordinator)
+    class Client:
+        connected = True
+        client_state = "CONNECTED"
+        calls = []
+        missing = False
+        def exists(self, path):
+            self.calls.append(path)
+            return None if self.missing else object()
+    keeper._client = Client()
+    terminal_v2_keeper_proof_preflight(keeper)
+    assert len(keeper._client.calls) == 2
+    assert all(path.startswith("/trading/ownership/v1/")
+               for path in keeper._client.calls)
+    keeper._client.missing = True
+    with pytest.raises(RuntimeError, match="namespace is absent"):
+        terminal_v2_keeper_proof_preflight(keeper)
     client = FakeCatalog()
     client.insert.add("bars_v1")
     with pytest.raises(RuntimeError, match="unauthorized INSERT"):
