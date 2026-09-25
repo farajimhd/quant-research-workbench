@@ -145,6 +145,18 @@ def seal_reservation_reason_family_v3(
     if len(identities) != len(set(identities)):
         raise ValueError("Reservation reason identity repeats")
     for parent_id, reservation in reservations.items():
+        parent_event = events.get(parent_id)
+        if (parent_event is None
+                or (parent_event["category"], parent_event["entity_type"]) != (
+                    "portfolio_management", "portfolio_reservation")
+                or parent_event["entity_id"] != reservation["reservation_id"]
+                or parent_event["account_id"] != reservation["account_id"]
+                or parent_event["event_month"] != reservation["event_month"]
+                or parent_event["run_id"] != run_id
+                or reservation["run_id"] != run_id
+                or str(UUID(str(parent_event["batch_id"]))) != batch
+                or str(UUID(str(reservation["batch_id"]))) != batch):
+            raise ValueError("Reservation parent differs from its journal event")
         event_name = reservation["event"]
         children = by_parent.get(parent_id, [])
         if (event_name not in {

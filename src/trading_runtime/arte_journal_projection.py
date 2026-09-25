@@ -234,6 +234,7 @@ def project_journal_record(
     fixed_market_parent_plan: Any | None = None,
     fixed_market_execution_plan: Any | None = None,
     expected_market_start: datetime | None = None,
+    allow_v3_reservation_reasons: bool = False,
 ) -> TypedJournalBatch:
     """Strict shared entry point for existing live/Backtest journal records.
 
@@ -299,14 +300,27 @@ def project_journal_record(
         raise ValueError("Squeeze episode needs operator-provisioned Backtest-only journal family")
     if kind == ("portfolio_management", "portfolio_reservation"):
         from src.trading_runtime.portfolio import PortfolioReservation
+        if allow_v3_reservation_reasons:
+            if expected_mode != "backtest":
+                raise ValueError("V3 reservation reasons require Backtest mode")
+            from src.backend.backtest_reservation_reason_v3 import (
+                project_reservation_reasons_v3,
+            )
+            project_reservation_reasons_v3(record, batch_id=batch_id)
 
         payload = dict(record.payload)
         reservation_fields = {field.name for field in fields(PortfolioReservation)}
         lineage = {"correlation_id", "causation_id"}
-        if (set(payload) - lineage != reservation_fields | {"event"}
-                or payload.get("event") not in {
-                    "reservation_created", "cash_tranche_budget_reserved",
-                    "reservation_updated"}
+        event = payload.get("event")
+        v3_extra = ({"reason"} if event == "reservation_released" else
+                    {"price", "reasons"} if event == "entry_reprice_authorized" else set())
+        allowed = {"reservation_created", "cash_tranche_budget_reserved",
+                   "reservation_updated"}
+        if allow_v3_reservation_reasons:
+            allowed |= {"reservation_released", "entry_reprice_authorized"}
+        if (set(payload) - lineage != reservation_fields | {"event"} | (
+                v3_extra if allow_v3_reservation_reasons else set())
+                or event not in allowed
                 or payload.get("reservation_id") != record.entity_id
                 or not record.account_id
                 or payload.get("account_id") != record.account_id

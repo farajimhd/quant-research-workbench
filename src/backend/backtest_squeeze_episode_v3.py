@@ -14,7 +14,10 @@ from typing import Any, Mapping, Sequence
 from uuid import UUID
 
 from src.backend.backtest_squeeze_episode_projection import project_fixed_squeeze_episode
-from src.backend.backtest_squeeze_episode_schema import SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE
+from src.backend.backtest_squeeze_episode_schema import (
+    RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
+)
+from src.backend.backtest_reservation_reason_v3 import seal_reservation_reason_family_v3
 from src.backend.fixed_bar_signal import CONTRACT, STREAM_ID
 from src.trading_runtime.arte_journal_schema import (
     storage_preflight, versioned_journal_v2_contracts,
@@ -147,6 +150,7 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
         raise ValueError("V3 coalescing requires closed typed units")
     base = _coalesce_unpublished(tuple(unit.base for unit in units))
     episodes = []
+    reservation_reasons = []
     pinned = set()
     for unit in units:
         for row in unit.episodes:
@@ -157,16 +161,24 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
             values["batch_id"] = base.batch_id
             values["content_hash"] = _digest(_canonical_row(values))
             episodes.append(values)
+        for row in unit.reservation_reasons:
+            values = {key: value for key, value in row.items()
+                      if key != "content_hash"}
+            values["batch_id"] = base.batch_id
+            values["content_hash"] = _digest(values)
+            reservation_reasons.append(values)
     if len(pinned) > 1:
         raise ValueError("V3 coalescing cannot mix market plan/query authority")
     if len(episodes) > len(base.events):
         raise ValueError("V3 squeeze children exceed parent events")
-    return V3SqueezeBatch(base, tuple(episodes))
+    return V3SqueezeBatch(base, tuple(episodes), tuple(reservation_reasons))
 
 
 def seal_squeeze_family_v3(
     v2_commit: Mapping[str, Any], rows: Sequence[Mapping[str, Any]],
     parent_events: Sequence[Mapping[str, Any]],
+    *, reservation_reasons: Sequence[Mapping[str, Any]] = (),
+    parent_reservations: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Produce a replacement V3 seal after exact parent/child verification.
 
@@ -174,7 +186,8 @@ def seal_squeeze_family_v3(
     This pure function never upgrades an existing V2 commit in storage.
     """
     if set(v2_commit) != _COMMIT_COLUMNS - {
-        "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash"}:
+        "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
+        "portfolio_reservation_reason_count", "portfolio_reservation_reason_hash"}:
         raise ValueError("V2 commit columns differ from V3 base")
     batch = str(UUID(str(v2_commit["batch_id"])))
     run = str(v2_commit["run_id"])
@@ -222,6 +235,9 @@ def seal_squeeze_family_v3(
     sealed = dict(v2_commit)
     sealed["backtest_squeeze_episode_count"] = len(rows)
     sealed["backtest_squeeze_episode_hash"] = _digest(sorted(identities))
+    sealed.update(seal_reservation_reason_family_v3(
+        reservation_reasons, parent_events, parent_reservations,
+        run_id=run, batch_id=batch))
     return sealed
 
 
@@ -229,12 +245,15 @@ def verify_squeeze_family_v3(
     commit: Mapping[str, Any], rows: Sequence[Mapping[str, Any]],
     parent_events: Sequence[Mapping[str, Any]],
     *, stored_utc: bool = False,
+    reservation_reasons: Sequence[Mapping[str, Any]] = (),
+    parent_reservations: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[dict[str, Any], ...]:
     """Verify V3 family seal before exposing a bounded typed occurrence page."""
     if set(commit) != _COMMIT_COLUMNS:
         raise ValueError("Not an exact V3 commit")
     base = {k: v for k, v in commit.items() if k not in {
-        "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash"}}
+        "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
+        "portfolio_reservation_reason_count", "portfolio_reservation_reason_hash"}}
     normalized = []
     for row in rows:
         if stored_utc:
@@ -244,7 +263,10 @@ def verify_squeeze_family_v3(
             normalized.append(converted)
         else:
             normalized.append(dict(row))
-    expected = seal_squeeze_family_v3(base, normalized, parent_events)
+    expected = seal_squeeze_family_v3(
+        base, normalized, parent_events,
+        reservation_reasons=reservation_reasons,
+        parent_reservations=parent_reservations)
     if (type(commit["backtest_squeeze_episode_count"]) is not int
             or expected != dict(commit)):
         raise ValueError("V3 squeeze count/hash or base commit differs")
@@ -267,7 +289,8 @@ def load_verified_squeeze_v3_prefix(
             or _HEX.fullmatch(expected_query_sha256) is None):
         raise ValueError("V3 squeeze reader requires pinned market authority")
     contracts = versioned_journal_v2_contracts() + (
-                          SQUEEZE_EPISODE, SQUEEZE_COMMIT_V3)
+                          SQUEEZE_EPISODE, RESERVATION_REASON,
+                          SQUEEZE_COMMIT_V3)
     storage_preflight(client, tables=contracts)
     for fence in ("trading_commit_v1", "trading_commit_v2"):
         if _rows(client, f"SELECT batch_id FROM arte.{fence} "
@@ -317,13 +340,32 @@ def load_verified_squeeze_v3_prefix(
             if match is None or match.group(2) != "000":
                 raise RuntimeError("Squeeze parent has non-microsecond completed clock")
             parent["event_time"] = match.group(1) + "+00:00"
+        reservation_events = _rows(client,
+            "SELECT record_id,run_id,event_month,batch_id,category,entity_type,entity_id,"
+            "account_id,event_time,sequence FROM arte.trading_event_v1 "
+            f"WHERE {ids} AND category='portfolio_management' "
+            "AND entity_type='portfolio_reservation' FORMAT JSONEachRow")
+        if any(not first <= int(parent["sequence"]) <= last
+               for parent in reservation_events):
+            raise RuntimeError("Reservation parent lies beyond committed causal prefix")
+        reservation_parents = _rows(client,
+            "SELECT record_id,run_id,event_month,batch_id,account_id,reservation_id,event "
+            "FROM arte.trading_portfolio_reservation_event_v1 "
+            f"WHERE {ids} FORMAT JSONEachRow")
+        reason_columns = ",".join(name for name, _ in RESERVATION_REASON.columns)
+        reasons = _rows(client,
+            f"SELECT {reason_columns} FROM arte.{RESERVATION_REASON.name} "
+            f"WHERE {ids} FORMAT JSONEachRow")
         projections = ",".join(
             f"toString({name}) AS {name}" if kind.startswith("Decimal") else name
             for name, kind in SQUEEZE_EPISODE.columns)
         children = _rows(client,
             f"SELECT {projections} FROM arte.{SQUEEZE_EPISODE.name} "
             f"WHERE {ids} FORMAT JSONEachRow")
-        verified = verify_squeeze_family_v3(commit, children, parents, stored_utc=True)
+        verified = verify_squeeze_family_v3(
+            commit, children, parents + reservation_events, stored_utc=True,
+            reservation_reasons=reasons,
+            parent_reservations=reservation_parents)
         if any(row["market_plan_token"] != expected_market_plan_token
                or row["query_sha256"] != expected_query_sha256 for row in verified):
             raise RuntimeError("V3 squeeze row differs from pinned market authority")

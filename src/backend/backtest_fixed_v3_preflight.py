@@ -4,7 +4,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from src.backend.backtest_squeeze_episode_schema import SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE
+from src.backend.backtest_squeeze_episode_schema import (
+    RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
+)
 from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
 from src.trading_runtime.arte_market_day_certification import TABLES as MARKET_DAY_CERTIFICATE_TABLES
 from src.trading_runtime.arte_journal_schema import (
@@ -14,12 +16,14 @@ from src.trading_runtime.arte_journal_schema import (
 
 
 def running_v3_contracts() -> tuple[Any, ...]:
-    return versioned_journal_v2_contracts() + (SQUEEZE_EPISODE, SQUEEZE_COMMIT_V3)
+    return versioned_journal_v2_contracts() + (
+        SQUEEZE_EPISODE, RESERVATION_REASON, SQUEEZE_COMMIT_V3)
 
 
 def terminal_v3_contracts() -> tuple[Any, ...]:
     return fixed_backtest_v2_contracts() + (
-        SQUEEZE_EPISODE, SQUEEZE_COMMIT_V3, TERMINAL_COMMIT_V3)
+        SQUEEZE_EPISODE, RESERVATION_REASON, SQUEEZE_COMMIT_V3,
+        TERMINAL_COMMIT_V3)
 
 
 def _exact_grants(client: Any, writable: frozenset[str]) -> None:
@@ -49,7 +53,8 @@ def running_v3_preflight(client: Any) -> None:
     contracts = running_v3_contracts()
     writable = frozenset(_profile_table(table, "backtest_v3")
                          for table, _, _, _ in _FAMILIES) | frozenset({
-                             SQUEEZE_EPISODE.name, SQUEEZE_COMMIT_V3.name})
+                             SQUEEZE_EPISODE.name, RESERVATION_REASON.name,
+                             SQUEEZE_COMMIT_V3.name})
     available = {table.name for table in contracts}
     if not writable <= available:
         raise RuntimeError("V3 running writer references an unprovisioned family")

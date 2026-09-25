@@ -127,6 +127,14 @@ def project_pending_backtest_v3_prefix(
                 expected_market_plan_token=expected_market_plan_token,
                 expected_query_sha256=expected_query_sha256)
         else:
+            reservation_reasons = ()
+            if (record.category, record.entity_type) == (
+                    "portfolio_management", "portfolio_reservation"):
+                from src.backend.backtest_reservation_reason_v3 import (
+                    project_reservation_reasons_v3,
+                )
+                reservation_reasons = project_reservation_reasons_v3(
+                    record, batch_id=batch_id)
             base = project_journal_record(
                 record, run_month=run_month, attempt_id=attempt,
                 batch_id=batch_id, prior_batch_id=previous,
@@ -134,8 +142,9 @@ def project_pending_backtest_v3_prefix(
                 expected_mode="backtest",
                 fixed_market_parent_plan=fixed_market_parent_plan,
                 fixed_market_execution_plan=fixed_market_execution_plan,
-                expected_market_start=expected_market_start)
-            unit = V3SqueezeBatch(base, ())
+                expected_market_start=expected_market_start,
+                allow_v3_reservation_reasons=True)
+            unit = V3SqueezeBatch(base, (), reservation_reasons)
         if (unit.base.run_id != journal.run_id
                 or unit.base.first_sequence != sequence
                 or unit.base.last_sequence != sequence

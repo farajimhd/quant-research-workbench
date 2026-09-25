@@ -27,7 +27,9 @@ def _fixture():
         "account_id": record.account_id, "event_time": record.event_time.isoformat(),
     }
     base = {name: "" for name, _ in SQUEEZE_COMMIT_V3.columns
-            if name not in {"backtest_squeeze_episode_count", "backtest_squeeze_episode_hash"}}
+            if name not in {"backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
+                            "portfolio_reservation_reason_count",
+                            "portfolio_reservation_reason_hash"}}
     base.update(run_id=record.run_id, batch_id=BATCH)
     return record, row, parent, base
 
@@ -35,8 +37,9 @@ def _fixture():
 def test_v3_contract_is_staged_and_v2_unchanged():
     v2 = next(t for t in VERSIONED_JOURNAL_V2_TABLES if t.name == "trading_commit_v2")
     assert "backtest_squeeze_episode_count" not in dict(v2.columns)
-    assert list(dict(SQUEEZE_COMMIT_V3.columns))[-5:-3] == [
-        "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash"]
+    assert list(dict(SQUEEZE_COMMIT_V3.columns))[-7:-3] == [
+        "backtest_squeeze_episode_count", "backtest_squeeze_episode_hash",
+        "portfolio_reservation_reason_count", "portfolio_reservation_reason_hash"]
     assert all("live_market_ssd" in ddl for ddl in staged_v3_ddl())
 
 
@@ -75,10 +78,14 @@ def test_dynamic_signal_occurrence_remains_rejected():
 
 
 class _FakeColdClient:
-    def __init__(self, commit, children, parents, *, old_fence=False):
+    def __init__(self, commit, children, parents, *, old_fence=False,
+                 reservation_events=(), reservation_parents=(), reasons=()):
         self.commit = commit
         self.children = children
         self.parents = parents
+        self.reservation_events = reservation_events
+        self.reservation_parents = reservation_parents
+        self.reasons = reasons
         self.old_fence = old_fence
         self.queries = []
 
@@ -89,9 +96,14 @@ class _FakeColdClient:
         elif "FROM arte.trading_commit_v3" in sql:
             rows = self.commit if isinstance(self.commit, list) else [self.commit]
         elif "FROM arte.trading_event_v1" in sql:
-            rows = self.parents
+            rows = (self.reservation_events if "category='portfolio_management'" in sql
+                    else self.parents)
         elif "FROM arte.trading_backtest_squeeze_episode_v1" in sql:
             rows = self.children
+        elif "FROM arte.trading_portfolio_reservation_event_v1" in sql:
+            rows = self.reservation_parents
+        elif "FROM arte.trading_portfolio_reservation_reason_v1" in sql:
+            rows = self.reasons
         else:
             raise AssertionError(sql)
         match = re.search(r"batch_id=toUUID\('([^']+)'\)", sql)
@@ -169,7 +181,9 @@ def test_cold_v3_reader_verifies_whole_chain_and_rejects_gap(monkeypatch):
     second_batch = "00000000-0000-0000-0000-000000000a99"
     second_base = {key: value for key, value in first.items()
                    if key not in {"backtest_squeeze_episode_count",
-                                  "backtest_squeeze_episode_hash"}}
+                                  "backtest_squeeze_episode_hash",
+                                  "portfolio_reservation_reason_count",
+                                  "portfolio_reservation_reason_hash"}}
     second_base.update(batch_id=second_batch, prior_batch_id=BATCH,
                        first_sequence=2, last_sequence=2, status="completed")
     second = seal_squeeze_family_v3(second_base, [], [])

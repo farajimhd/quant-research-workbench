@@ -1,4 +1,4 @@
-"""Install only absent, normalized ARTE journal tables; never insert rows.
+"""Install normalized ARTE journal DDL; never insert rows.
 
 The default is a read-only plan. An interrupted --apply is restart-safe: each
 installed table is checked against its exact contract before work continues.
@@ -22,8 +22,72 @@ sys.dont_write_bytecode = True
 from scripts.clickhouse.plan_trading_journal_layout import plan_missing, profile_contracts
 from scripts.clickhouse.provision_trading_journal import _admin_client
 from src.trading_runtime.arte_journal_schema import (
-    STORAGE_POLICY, fixed_backtest_v2_contracts, storage_preflight,
+    STORAGE_POLICY, TableContract, fixed_backtest_v2_contracts, storage_preflight,
 )
+from src.backend.backtest_squeeze_episode_schema import (
+    RESERVATION_REASON, SQUEEZE_COMMIT_V3, staged_reservation_reason_ddl,
+)
+
+
+_REASON_COLUMNS = frozenset({"portfolio_reservation_reason_count",
+                             "portfolio_reservation_reason_hash"})
+
+
+def upgrade_v3_reservation_reason(client: object, *, apply: bool) -> str:
+    """Restart-safe operator DDL; no row INSERT and no occupied fence rewrite."""
+    columns = [json.loads(line) for line in client.execute(
+        "SELECT name,type FROM system.columns WHERE database='arte' "
+        "AND table='trading_commit_v3' ORDER BY position FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    actual = tuple((row["name"], row["type"]) for row in columns)
+    full = SQUEEZE_COMMIT_V3.columns
+    old = tuple(column for column in full if column[0] not in _REASON_COLUMNS)
+    partial = tuple(column for column in full
+                    if column[0] != "portfolio_reservation_reason_hash")
+    if actual not in {old, partial, full}:
+        raise RuntimeError("V3 commit has an unknown schema; no ALTER attempted")
+    shape = TableContract(SQUEEZE_COMMIT_V3.name, actual,
+                          SQUEEZE_COMMIT_V3.partition, SQUEEZE_COMMIT_V3.order)
+    storage_preflight(client, tables=(shape,))
+    child_count = client.execute(
+        "SELECT count() FROM system.tables WHERE database='arte' "
+        "AND name='trading_portfolio_reservation_reason_v1'"
+    ).strip()
+    if child_count not in {"0", "1"}:
+        raise RuntimeError("Reservation reason table catalog is ambiguous")
+    child_present = child_count == "1"
+    if child_present:
+        storage_preflight(client, tables=(RESERVATION_REASON,))
+    if actual == full and child_present:
+        print("V3 reservation reasons: schema and SSD placement verified; no change")
+        return "verified"
+    fence_rows = client.execute("SELECT count() FROM arte.trading_commit_v3").strip()
+    if fence_rows != "0":
+        raise RuntimeError("V3 commit has rows; versioned migration required")
+    if child_present and client.execute(
+            "SELECT count() FROM arte.trading_portfolio_reservation_reason_v1"
+    ).strip() != "0":
+        raise RuntimeError("Reservation reason child has rows; no ALTER attempted")
+    pending = ["child table"] if not child_present else []
+    if actual == old:
+        pending.append("V3 reason count and hash")
+    elif actual == partial:
+        pending.append("V3 reason hash")
+    print("V3 reservation reasons: empty fence verified; pending " + ", ".join(pending))
+    if not apply:
+        print("Plan only; no ClickHouse state changed")
+        return "planned"
+    child_ddl, count_ddl, hash_ddl = staged_reservation_reason_ddl()
+    if not child_present:
+        client.execute(child_ddl)
+        storage_preflight(client, tables=(RESERVATION_REASON,))
+    if actual == old:
+        client.execute(count_ddl)
+    if actual in {old, partial}:
+        client.execute(hash_ddl)
+    storage_preflight(client, tables=(RESERVATION_REASON, SQUEEZE_COMMIT_V3))
+    print("V3 reservation reasons: table and commit fence verified; 0 rows inserted")
+    return "upgraded"
 
 
 def install_missing(client: object, *, apply: bool, profile: str = "fixed-v2",
@@ -70,9 +134,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://DESKTOP-SAAI85T:18123")
     parser.add_argument("--apply", action="store_true",
-                        help="create only absent journal tables after exact preflight")
+                        help="apply requested table DDL after exact preflight")
     parser.add_argument("--profile", choices=("fixed-v2", "fixed-v3"),
                         default="fixed-v2", help="exact journal table layout")
+    parser.add_argument("--upgrade-v3-reservation-reason", action="store_true",
+                        help="verify or install the empty-fence V3 reason upgrade")
     args = parser.parse_args()
     parsed = urlsplit(args.url)
     if (platform.node().upper() != "DESKTOP-SAAI85T"
@@ -83,11 +149,15 @@ def main() -> int:
     try:
         client = _admin_client(args.url)
         try:
-            install_missing(client, apply=args.apply, profile=args.profile)
+            if args.upgrade_v3_reservation_reason:
+                upgrade_v3_reservation_reason(client, apply=args.apply)
+            else:
+                install_missing(client, apply=args.apply, profile=args.profile)
         finally:
             client.close()
     except KeyboardInterrupt:
-        print("Interrupted; verified tables remain. Rerun to resume.", file=sys.stderr)
+        print("Interrupted; completed DDL remains. Rerun to verify or finish.",
+              file=sys.stderr)
         return 130
     except Exception as exc:
         print(f"Journal layout blocked: {exc}", file=sys.stderr)

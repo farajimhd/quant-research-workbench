@@ -49,6 +49,8 @@ _V2_COMMIT_COLUMNS = _V2_COMMIT.columns
 _V3_EXTENSION = (
     ("backtest_squeeze_episode_count", "UInt32"),
     ("backtest_squeeze_episode_hash", "FixedString(64)"),
+    ("portfolio_reservation_reason_count", "UInt32"),
+    ("portfolio_reservation_reason_hash", "FixedString(64)"),
 )
 SQUEEZE_COMMIT_V3 = TableContract(
     "trading_commit_v3",
@@ -59,12 +61,21 @@ SQUEEZE_COMMIT_V3 = TableContract(
 
 def staged_v3_ddl() -> tuple[str, ...]:
     """Operator-review DDL only; never run or validate at live startup."""
-    return SQUEEZE_EPISODE.ddl(), SQUEEZE_COMMIT_V3.ddl()
+    return SQUEEZE_EPISODE.ddl(), RESERVATION_REASON.ddl(), SQUEEZE_COMMIT_V3.ddl()
 
 
 def staged_reservation_reason_ddl() -> tuple[str, ...]:
-    """Stage only the normalized child DDL; publication is not enabled yet."""
-    return (RESERVATION_REASON.ddl(),)
+    """Operator-only V3 upgrade; requires a direct zero-row V3 fence audit."""
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        RESERVATION_REASON.ddl(),
+        "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+        "portfolio_reservation_reason_count UInt32 DEFAULT 0 "
+        "AFTER backtest_squeeze_episode_hash",
+        "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+        f"portfolio_reservation_reason_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER portfolio_reservation_reason_count",
+    )
 
 
 def staged_upgrade_ddl() -> tuple[str, ...]:

@@ -75,3 +75,70 @@ def test_cli_defaults_to_read_only_plan_on_workstation(monkeypatch, capsys):
     assert install.main() == 0
     assert "Plan only; no ClickHouse state changed" in capsys.readouterr().out
     assert all(sql.startswith("SELECT ") for sql in client.statements)
+
+
+class V3UpgradeClient:
+    def __init__(self, *, state="old", child=False, rows=0):
+        self.state = state
+        self.child = child
+        self.rows = rows
+        self.statements = []
+
+    def execute(self, sql):
+        self.statements.append(sql)
+        full = install.SQUEEZE_COMMIT_V3.columns
+        if sql.startswith("SELECT name,type FROM system.columns"):
+            omitted = ({"portfolio_reservation_reason_count",
+                        "portfolio_reservation_reason_hash"} if self.state == "old"
+                       else {"portfolio_reservation_reason_hash"}
+                       if self.state == "partial" else set())
+            return "\n".join(json.dumps({"name": name, "type": kind})
+                             for name, kind in full if name not in omitted)
+        if sql.startswith("SELECT count() FROM system.tables"):
+            return "1" if self.child else "0"
+        if sql == "SELECT count() FROM arte.trading_commit_v3":
+            return str(self.rows)
+        if sql == "SELECT count() FROM arte.trading_portfolio_reservation_reason_v1":
+            return "0"
+        if sql.startswith("CREATE TABLE IF NOT EXISTS arte.trading_portfolio_reservation_reason_v1"):
+            self.child = True
+            return ""
+        if sql.startswith("ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS"):
+            self.state = ("partial" if "portfolio_reservation_reason_count" in sql
+                          and self.state == "old" else "full")
+            return ""
+        raise AssertionError(sql)
+
+
+def test_v3_reason_upgrade_plans_read_only_and_applies_only_empty_fence(monkeypatch):
+    checks = []
+    monkeypatch.setattr(install, "storage_preflight",
+                        lambda _, *, tables: checks.append(tuple(t.name for t in tables)))
+    client = V3UpgradeClient()
+    assert install.upgrade_v3_reservation_reason(client, apply=False) == "planned"
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+    assert install.upgrade_v3_reservation_reason(client, apply=True) == "upgraded"
+    assert client.state == "full" and client.child
+    assert [sql.split(" ", 1)[0] for sql in client.statements
+            if not sql.startswith("SELECT ")] == ["CREATE", "ALTER", "ALTER"]
+    assert checks[-1] == ("trading_portfolio_reservation_reason_v1", "trading_commit_v3")
+
+
+def test_v3_reason_upgrade_refuses_nonempty_or_unknown_fence(monkeypatch):
+    monkeypatch.setattr(install, "storage_preflight", lambda *_args, **_kwargs: None)
+    occupied = V3UpgradeClient(rows=1)
+    with pytest.raises(RuntimeError, match="versioned migration"):
+        install.upgrade_v3_reservation_reason(occupied, apply=True)
+    assert all(sql.startswith("SELECT ") for sql in occupied.statements)
+    occupied.state = "full"
+    occupied.child = True
+    assert install.upgrade_v3_reservation_reason(occupied, apply=True) == "verified"
+    assert all(sql.startswith("SELECT ") for sql in occupied.statements)
+
+
+def test_v3_reason_upgrade_resumes_after_first_alter(monkeypatch):
+    monkeypatch.setattr(install, "storage_preflight", lambda *_args, **_kwargs: None)
+    client = V3UpgradeClient(state="partial", child=True)
+    assert install.upgrade_v3_reservation_reason(client, apply=True) == "upgraded"
+    writes = [sql for sql in client.statements if not sql.startswith("SELECT ")]
+    assert len(writes) == 1 and "portfolio_reservation_reason_hash" in writes[0]
