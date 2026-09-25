@@ -5,6 +5,7 @@ import pytest
 from src.trading_runtime.strategy_one_columnar import (
     CompletedMacd, CompletedThirtySecondLow, REJECT_MACD, REJECT_QUOTE,
     REJECT_STOP_BAR, prepare_strategy_one_entries,
+    schedule_strategy_one_entries,
 )
 
 
@@ -63,3 +64,30 @@ def test_missing_macd_and_misaligned_source_fail_closed():
     data["macd"][30_000] = CompletedMacd([30_100], [.2], [.1])
     with pytest.raises(ValueError, match="completed boundaries"):
         prepare_strategy_one_entries(**data)
+
+
+def test_squeeze_episode_schedule_is_causal_inclusive_and_compact():
+    data = inputs()
+    data["evaluation_boundary_ms"] = np.array(
+        [30_000, 30_100, 330_000, 330_100, 630_000])
+    data["evaluation_epoch_us"] = 1_800_000_000_000_000 + data["evaluation_boundary_ms"] * 1000
+    for name in ("close_int", "price_valid", "bid_int", "ask_int", "quote_valid",
+                 "quote_timestamp_us", "execution_vwap", "previous_close"):
+        data[name] = np.resize(data[name], 5)
+    data["quote_timestamp_us"] = data["evaluation_epoch_us"] - 100_000
+    data["macd"] = {resolution: CompletedMacd(
+        np.arange(resolution, 630_001, resolution, dtype=np.int64),
+        np.full(630_000 // resolution, .2),
+        np.full(630_000 // resolution, .1))
+        for resolution in (1_000, 5_000, 10_000, 30_000)}
+    data["thirty_second_low"] = CompletedThirtySecondLow(
+        np.arange(30_000, 630_001, 30_000), np.full(21, 97_000),
+        np.ones(21), np.ones(21))
+    batch = prepare_strategy_one_entries(**data)
+    schedule = schedule_strategy_one_entries(batch, [30_000, 630_000])
+    assert schedule.evaluation_boundary_ms.tolist() == [30_000, 30_100, 330_000, 630_000]
+    assert schedule.episode_start_boundary_ms.tolist() == [30_000] * 3 + [630_000]
+    assert schedule.row_index.tolist() == [0, 1, 2, 4]
+    assert schedule_strategy_one_entries(batch, []).row_index.size == 0
+    with pytest.raises(ValueError, match="overlap"):
+        schedule_strategy_one_entries(batch, [30_000, 30_100])

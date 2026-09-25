@@ -50,6 +50,48 @@ class StrategyOneCandidateBatch:
     stop_low_int: np.ndarray
 
 
+@dataclass(frozen=True, slots=True)
+class StrategyOneEntrySchedule:
+    """Compact, causal entry work; position-owned work is scheduled separately."""
+
+    row_index: np.ndarray
+    evaluation_boundary_ms: np.ndarray
+    episode_start_boundary_ms: np.ndarray
+
+
+def schedule_strategy_one_entries(
+    batch: StrategyOneCandidateBatch, episode_start_boundary_ms,
+    *, episode_ttl_ms: int = 300_000,
+) -> StrategyOneEntrySchedule:
+    """Intersect completed-bar gates with certified Early Squeeze episodes.
+
+    An episode remains active at its expiry boundary, matching the historical
+    source-native activation rule. This is only an entry prefilter: an existing
+    position and working orders must still visit every relevant market boundary.
+    """
+    if not isinstance(batch, StrategyOneCandidateBatch):
+        raise ValueError("Strategy 1 schedule needs a candidate batch")
+    evaluation = _clock(batch.evaluation_boundary_ms, resolution=100,
+                        name="evaluation")
+    eligible = _aligned(batch.entry_mask, len(evaluation), name="entry mask",
+                        dtype=np.bool_)
+    starts = _clock(episode_start_boundary_ms, resolution=100,
+                    name="squeeze episode")
+    if type(episode_ttl_ms) is not int or episode_ttl_ms != 300_000:
+        raise ValueError("Strategy 1 requires the certified five-minute episode rule")
+    if len(starts) > 1 and np.any(np.diff(starts) < episode_ttl_ms):
+        raise ValueError("Strategy 1 squeeze episodes overlap")
+    if not len(starts) or not len(evaluation):
+        empty = np.empty(0, dtype=np.int64)
+        return StrategyOneEntrySchedule(empty, empty, empty)
+    index = np.searchsorted(starts, evaluation, side="right") - 1
+    safe = np.maximum(index, 0)
+    age = evaluation - starts[safe]
+    rows = np.flatnonzero(eligible & (index >= 0)
+                         & (age >= 0) & (age <= episode_ttl_ms))
+    return StrategyOneEntrySchedule(rows, evaluation[rows], starts[index[rows]])
+
+
 def _clock(values, *, resolution: int, name: str) -> np.ndarray:
     result = np.asarray(values)
     if result.ndim == 1 and not len(result):
