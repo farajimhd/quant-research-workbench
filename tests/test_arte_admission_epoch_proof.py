@@ -36,23 +36,32 @@ class Transaction:
     def __init__(self, keeper):
         self.keeper = keeper
         self.checks = []
-        self.created = None
+        self.operations = []
 
     def check(self, path, version):
         self.checks.append((path, version))
 
     def create(self, path, value, ephemeral=False):
         assert not ephemeral
-        self.created = (path, value)
+        self.operations.append(("create", path, value, None))
+
+    def set_data(self, path, value, version):
+        self.operations.append(("set", path, value, version))
 
     def commit(self):
         if any(self.keeper.rows[path][1].version != version
                for path, version in self.checks):
             return [RuntimeError("conflict")]
-        path, value = self.created
-        if path in self.keeper.rows:
-            return [NodeExistsError()]
-        self.keeper.rows[path] = (value, Stat())
+        for operation, path, _, version in self.operations:
+            if operation == "create" and path in self.keeper.rows:
+                return [NodeExistsError()]
+            if operation == "set" and self.keeper.rows[path][1].version != version:
+                return [NodeExistsError()]
+        for operation, path, value, _ in self.operations:
+            if operation == "create":
+                self.keeper.rows[path] = (value, Stat())
+            else:
+                self.keeper.rows[path] = (value, Stat(self.keeper.rows[path][1].version + 1))
         return [True]
 
 
@@ -70,7 +79,7 @@ class Keeper:
         return self.rows[path]
 
     def ensure_path(self, path):
-        assert path.endswith("/admission_epoch_proof")
+        assert path.endswith(("/admission_epoch_proof", "/admission_epoch_head"))
 
     def transaction(self):
         return Transaction(self)
@@ -193,8 +202,19 @@ def test_strict_startup_pages_and_verifies_every_historical_revision(monkeypatch
             assert run_id == RUN
             self.calls += 1
     barrier = Barrier()
+    proofs = {(account, revision): proof_module.AdmissionEpochProof(
+        RUN, account, revision, f"portfolio-account:{account}", "worker-a", 3,
+        *HASHES) for account, revision in keys}
+    head = proof_module.AdmissionProofHead(RUN, 0, "0" * 64)
+    for item in proofs.values():
+        head = proof_module._advance_head(head, item)
+    class Authority:
+        def load_head(self, _run_id):
+            return head, 2
+        def load(self, _run_id, account_id, revision):
+            return proofs[(account_id, revision)]
     assert proof_module.audit_attested_admission_revisions(
-        object(), object(), RUN, quiescence=barrier, page_size=1) == 3
+        object(), Authority(), RUN, quiescence=barrier, page_size=1) == 3
     assert checked == keys
     assert len(queries) == 4 and barrier.calls > len(queries)
 
@@ -211,7 +231,24 @@ def test_strict_startup_lost_barrier_blocks_result_mid_scan(monkeypatch):
             self.calls += 1
             if self.calls == 3:
                 raise RuntimeError("writer barrier lost")
+    class Authority:
+        def load_head(self, _run_id):
+            return None
     with pytest.raises(RuntimeError, match="writer barrier lost"):
         proof_module.audit_attested_admission_revisions(
-            object(), object(), RUN, quiescence=Barrier(), page_size=1)
+            object(), Authority(), RUN, quiescence=Barrier(), page_size=1)
     assert not checked
+
+
+def test_orphan_keeper_proof_without_clickhouse_revision_blocks_cold_audit(monkeypatch):
+    _install(monkeypatch)
+    authority = proof_module.KeeperAdmissionEpochAuthority(Coordinator())
+    authority.attest(object(), LEASE, run_id=RUN,
+                     account_id=ACCOUNT, state_revision=1)
+    monkeypatch.setattr(proof_module, "_rows", lambda *_args: [])
+    class Barrier:
+        def assert_fenced(self, _run_id):
+            pass
+    with pytest.raises(RuntimeError, match="proof head differs"):
+        proof_module.audit_attested_admission_revisions(
+            object(), authority, RUN, quiescence=Barrier())

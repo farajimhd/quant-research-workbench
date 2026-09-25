@@ -56,6 +56,32 @@ def _path_for(run_id: str, account_id: str, revision: int) -> str:
     return _path("admission_epoch_proof", run_id, account_id, str(revision))
 
 
+def _head_path(run_id: str) -> str:
+    return _path("admission_epoch_head", run_id)
+
+
+@dataclass(frozen=True)
+class AdmissionProofHead:
+    run_id: str
+    proof_count: int
+    proof_xor: str
+
+    def __post_init__(self) -> None:
+        _identity(self.run_id, "run")
+        if (type(self.proof_count) is not int or self.proof_count < 0
+                or not _HEX.fullmatch(self.proof_xor)):
+            raise ValueError("Admission proof head is invalid")
+
+    def wire(self) -> bytes:
+        return f"1\n{self.run_id}\n{self.proof_count}\n{self.proof_xor}".encode()
+
+
+def _advance_head(head: AdmissionProofHead, proof: AdmissionEpochProof) -> AdmissionProofHead:
+    digest = int.from_bytes(sha256(proof.wire()).digest(), "big")
+    return AdmissionProofHead(head.run_id, head.proof_count + 1,
+                              f"{int(head.proof_xor, 16) ^ digest:064x}")
+
+
 def _fence_hashes(client: Any, run_id: str, account_id: str,
                   revision: int) -> tuple[str, str]:
     rows = _rows(client, f"SELECT * FROM arte.{_TABLE} "
@@ -129,6 +155,26 @@ class KeeperAdmissionEpochAuthority:
         except (UnicodeError, ValueError, TypeError) as exc:
             raise KeeperUnavailable("Admission epoch proof is corrupt") from exc
 
+    def load_head(self, run_id: str) -> tuple[AdmissionProofHead, int] | None:
+        self.coordinator._require_connected()
+        try:
+            value, stat = self.client.get(_head_path(run_id))
+        except Exception as exc:
+            if type(exc).__name__ == "NoNodeError":
+                return None
+            raise KeeperUnavailable("Cannot read admission proof head") from exc
+        self.coordinator._require_connected()
+        try:
+            parts = value.decode("utf-8").split("\n")
+            if len(parts) != 4 or parts[0] != "1":
+                raise ValueError("unknown head wire version")
+            head = AdmissionProofHead(parts[1], int(parts[2]), parts[3])
+            if head.run_id != run_id or head.wire() != value:
+                raise ValueError("head identity differs")
+            return head, stat.version
+        except (UnicodeError, ValueError, TypeError) as exc:
+            raise KeeperUnavailable("Admission proof head is corrupt") from exc
+
     def attest(self, client: Any, lease: dict[str, Any], *, run_id: str,
                account_id: str, state_revision: int) -> AdmissionEpochProof:
         resource_id = f"portfolio-account:{account_id}"
@@ -154,18 +200,41 @@ class KeeperAdmissionEpochAuthority:
                 or int(counter) != proof.epoch
                 or holder_stat.ephemeralOwner != self.client.client_id[0]):
             raise KeeperUnavailable("Admission owner epoch changed before CAS")
-        txn = self.client.transaction()
-        txn.check(f"{base}/holder", version=holder_stat.version)
-        txn.check(f"{base}/epoch", version=counter_stat.version)
-        txn.create(_path_for(run_id, account_id, state_revision), proof.wire(),
-                   ephemeral=False)
-        if not _committed(txn.commit()):
-            if (self.load(run_id, account_id, state_revision) != proof
-                    or not self.coordinator.portfolio_admission_lease_is_current(
-                        resource_id, owner_id=proof.owner_id, epoch=proof.epoch)):
-                raise KeeperUnavailable("Admission epoch CAS proof conflicts")
+        self.client.ensure_path(f"{_ROOT}/admission_epoch_head")
+        for _ in range(8):
+            prior = self.load_head(run_id)
+            existing = self.load(run_id, account_id, state_revision)
+            if existing is not None:
+                if existing != proof or prior is None:
+                    raise KeeperUnavailable("Admission epoch CAS proof conflicts")
+                break
+            before = prior[0] if prior else AdmissionProofHead(run_id, 0, "0" * 64)
+            updated = _advance_head(before, proof)
+            txn = self.client.transaction()
+            txn.check(f"{base}/holder", version=holder_stat.version)
+            txn.check(f"{base}/epoch", version=counter_stat.version)
+            txn.create(_path_for(run_id, account_id, state_revision), proof.wire(),
+                       ephemeral=False)
+            if prior:
+                txn.set_data(_head_path(run_id), updated.wire(), version=prior[1])
+            else:
+                txn.create(_head_path(run_id), updated.wire(), ephemeral=False)
+            if _committed(txn.commit()):
+                break
+            if self.load(run_id, account_id, state_revision) == proof:
+                if not self.coordinator.portfolio_admission_lease_is_current(
+                        resource_id, owner_id=proof.owner_id, epoch=proof.epoch):
+                    raise KeeperUnavailable("Admission epoch CAS proof conflicts")
+                break
+            if not self.coordinator.portfolio_admission_lease_is_current(
+                    resource_id, owner_id=proof.owner_id, epoch=proof.epoch):
+                raise KeeperUnavailable("Admission epoch CAS owner changed")
+        else:
+            raise KeeperUnavailable("Admission proof head CAS contended beyond retry budget")
         if self.load(run_id, account_id, state_revision) != proof:
             raise KeeperUnavailable("Admission epoch proof is not durable")
+        if self.load_head(run_id) is None:
+            raise KeeperUnavailable("Admission proof head is not durable")
         if not self.coordinator.portfolio_admission_lease_is_current(
                 resource_id, owner_id=proof.owner_id, epoch=proof.epoch):
             raise KeeperUnavailable("Admission owner changed after CAS")
@@ -202,6 +271,8 @@ def audit_attested_admission_revisions(
     quiescence.assert_fenced(run_id)
     cursor: tuple[str, int] | None = None
     checked = 0
+    observed = AdmissionProofHead(run_id, 0, "0" * 64)
+    pinned_head = authority.load_head(run_id)
     while True:
         quiescence.assert_fenced(run_id)
         after = ("" if cursor is None else
@@ -224,10 +295,20 @@ def audit_attested_admission_revisions(
             quiescence.assert_fenced(run_id)
             load_attested_admission(client, authority, run_id=run_id,
                                     account_id=key[0], state_revision=key[1])
+            proof = authority.load(run_id, key[0], key[1])
+            if not isinstance(proof, AdmissionEpochProof):
+                raise RuntimeError("Admission proof disappeared during startup audit")
+            observed = _advance_head(observed, proof)
             cursor = key
             checked += 1
         quiescence.assert_fenced(run_id)
         if len(page) < page_size:
             break
+    quiescence.assert_fenced(run_id)
+    final_head = authority.load_head(run_id)
+    if (pinned_head != final_head
+            or (final_head is None and checked != 0)
+            or (final_head is not None and final_head[0] != observed)):
+        raise RuntimeError("Admission proof head differs from audited ClickHouse revisions")
     quiescence.assert_fenced(run_id)
     return checked
