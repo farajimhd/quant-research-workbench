@@ -148,3 +148,17 @@ def test_proof_identity_rejects_delimiter_and_digest_conflict() -> None:
     authority.attest(claim, **args())
     with pytest.raises(KeeperUnavailable, match="conflicts"):
         authority.attest(claim, **{**args(), "seed_hash": "c" * 64})
+
+
+def test_pre_source_parity_keeper_proof_version_is_not_admitted() -> None:
+    store = FakeKeeper()
+    authority = MarketDayKeeperAuthority(store)
+    claim = authority.acquire(BUILD, "worker")
+    assert claim is not None
+    authority.attest(claim, **args())
+    path = next(path for path in store.rows if path.endswith("/attestation"))
+    value, stat = store.rows[path]
+    assert value.startswith(b"3\n")
+    store.rows[path] = (b"2\n" + value[2:], stat)
+    with pytest.raises(KeeperUnavailable, match="corrupt"):
+        authority.load(BUILD)

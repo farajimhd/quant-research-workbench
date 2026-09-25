@@ -15,7 +15,8 @@ from src.trading_runtime.arte_market_day_keeper import (
     BuildAttestation, BuildClaim, MarketDayKeeperAuthority, require_attested_inventory,
 )
 from src.trading_runtime.arte_market_day_source_plan import (
-    TABLES as SOURCE_TABLES, verify_source_plan_storage,
+    TABLES as SOURCE_TABLES, recover_source_plan,
+    verify_canonical_source_plan_at_publication, verify_source_plan_storage,
 )
 
 
@@ -55,7 +56,8 @@ def _placement(client: Any) -> None:
         raise RuntimeError("Market-day certificate part is outside live_market_ssd")
 
 
-def publish_market_day_certificate(client: Any, keeper: MarketDayKeeperAuthority,
+def publish_market_day_certificate(client: Any, source_client: Any,
+                                   keeper: MarketDayKeeperAuthority,
                                    claim: BuildClaim,
                                    prepared: Mapping[str, tuple[Mapping[str, Any], ...]],
                                    *, sessions: tuple[str, ...]) -> BuildAttestation:
@@ -78,6 +80,13 @@ def publish_market_day_certificate(client: Any, keeper: MarketDayKeeperAuthority
             name = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]
             return "\n".join(json.dumps(row) for row in prepared[name])
     verify_market_day_certificate(_PreparedReader(), build_id, sessions=sessions)
+    source_rows = {table.name: tuple(prepared[table.name]) for table in SOURCE_TABLES}
+    source_plan = recover_source_plan(
+        source_rows, build_id,
+        expected_hash=prepared["market_day_build_header_v1"][0]["source_plan_hash"])
+    verify_canonical_source_plan_at_publication(source_client, source_plan)
+    if not keeper.current(claim):
+        raise RuntimeError("Market-day claim changed during canonical source replay")
     _placement(client)
     verify_source_plan_storage(client)
     for name in names[:-1]:

@@ -6,11 +6,40 @@ Unknown producer fields fail before any publication can be attempted.
 from __future__ import annotations
 
 from hashlib import sha256
+from datetime import date
 import json
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 from src.trading_runtime.arte_journal_schema import TableContract
 from src.trading_runtime.journal_contract import canonical_json
+
+
+def verify_canonical_source_plan_at_publication(source_client: Any,
+                                                 pinned: Mapping[str, Any]) -> None:
+    """Producer-only canonical SELECT replay before a Keeper publication proof.
+
+    Fixed Backtest consumes the resulting attestation; it never runs this
+    expensive source-event query itself.
+    """
+    from scripts.build_market_day import source_plan
+
+    sessions = list(pinned["sessions"])
+    excluded = list(pinned["excluded_calendar_dates"])
+    days = [date.fromisoformat(value) for value in (*sessions, *excluded)]
+    if not days:
+        raise RuntimeError("Market-day source plan has no dated range")
+    populations = list(pinned["population"])
+    explicit = any(row["excluded_canonical_tickers"] is None for row in populations)
+    if explicit != all(row["excluded_canonical_tickers"] is None for row in populations):
+        raise RuntimeError("Market-day source population mixes explicit and full-universe scope")
+    symbols = tuple(sorted({row["ticker"] for row in pinned["units"]})) if explicit else ()
+    args = SimpleNamespace(start=min(days), end=max(days), symbols=symbols,
+        allow_carried_forward_universe=any(
+            row["certificate"]["status"] == "carried_forward" for row in populations),
+        max_plan_units=max(1, len(pinned["units"])))
+    if source_plan(source_client, args) != pinned:
+        raise RuntimeError("Canonical market-day source plan differs before publication")
 
 
 _FIELDS: dict[str, tuple[tuple[str, str], ...]] = {

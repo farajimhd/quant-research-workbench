@@ -62,7 +62,7 @@ class BuildAttestation:
             raise ValueError("Market-day attestation has invalid epoch or digest")
 
     def wire(self) -> bytes:
-        return ("2\n" + "\n".join(map(str, (
+        return ("3\n" + "\n".join(map(str, (
             self.build_id, self.definition_hash, self.source_plan_hash,
             self.source_inventory_hash, self.header_hash,
             self.scope_hash, self.stage_hash, self.seed_hash,
@@ -171,7 +171,7 @@ class MarketDayKeeperAuthority:
             raise KeeperUnavailable("Cannot read market-day attestation") from exc
         try:
             parts = value.decode("utf-8").split("\n")
-            if len(parts) != 11 or parts[0] != "2":
+            if len(parts) != 11 or parts[0] != "3":
                 raise ValueError("unknown attestation wire version")
             proof = BuildAttestation(*parts[1:10], int(parts[10]))
             if proof.build_id != build_id or proof.wire() != value:

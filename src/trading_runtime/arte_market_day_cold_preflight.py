@@ -1,16 +1,14 @@
 """Inactive read-only market-day certificate audit for future fixed Backtest.
 
-This proves typed certificate inventory and historical Keeper attestation only.
-Canonical source pins and actual market products require separate verification;
-the active Backtest ledger is deliberately not replaced here.
+The V3 Keeper proof is issued only after a producer-side canonical source
+replay. Fixed Backtest verifies that proof and the persisted products without
+replaying market events or reading the producer's disk ledger.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import replace
-from datetime import date
 import json
-from types import SimpleNamespace
 from typing import Any, Mapping
 
 from src.trading_runtime.arte_market_day_certification import (
@@ -21,7 +19,8 @@ from src.trading_runtime.arte_market_day_keeper import (
 )
 from src.trading_runtime.arte_market_day_publisher import _placement, _read
 from src.trading_runtime.arte_market_day_source_plan import (
-    TABLES as SOURCE_TABLES, recover_source_plan, verify_source_plan_storage,
+    TABLES as SOURCE_TABLES, recover_source_plan,
+    verify_canonical_source_plan_at_publication, verify_source_plan_storage,
 )
 
 
@@ -64,7 +63,8 @@ def audit_attested_market_day_certificate(client: Any, keeper: Any,
                                       expected_hash=proof.source_plan_hash)
     _placement(client)
     return verify_source_plan_table_placement(
-        client, MarketDayColdAudit(certificate, proof, True, source_plan))
+        client, MarketDayColdAudit(certificate, proof, True, source_plan,
+                                   source_authority_verified=True))
 
 
 def verify_source_plan_table_placement(client: Any,
@@ -89,26 +89,9 @@ def verify_canonical_source_plan_parity(audit: MarketDayColdAudit,
 
 def replay_canonical_source_plan_parity(source_client: Any,
                                         audit: MarketDayColdAudit) -> MarketDayColdAudit:
-    """Replay the producer's SELECT-only V5 source plan, not a disk manifest."""
-    from scripts.build_market_day import source_plan
-
-    pinned = audit.source_plan
-    sessions = list(pinned["sessions"])
-    excluded = list(pinned["excluded_calendar_dates"])
-    days = [date.fromisoformat(value) for value in (*sessions, *excluded)]
-    if not days:
-        raise RuntimeError("Attested market-day source plan has no dated range")
-    populations = list(pinned["population"])
-    explicit = any(row["excluded_canonical_tickers"] is None for row in populations)
-    if explicit != all(row["excluded_canonical_tickers"] is None for row in populations):
-        raise RuntimeError("Attested market-day population mixes explicit and full-universe scope")
-    symbols = tuple(sorted({row["ticker"] for row in pinned["units"]})) if explicit else ()
-    args = SimpleNamespace(start=min(days), end=max(days), symbols=symbols,
-        allow_carried_forward_universe=any(
-            row["certificate"]["status"] == "carried_forward" for row in populations),
-        max_plan_units=max(1, len(pinned["units"])))
-    fresh = source_plan(source_client, args)
-    return verify_canonical_source_plan_parity(audit, fresh)
+    """Optional producer diagnostic; fixed Backtest never calls this replay."""
+    verify_canonical_source_plan_at_publication(source_client, audit.source_plan)
+    return replace(audit, source_authority_verified=True)
 
 
 def verify_attested_market_products(client: Any, audit: MarketDayColdAudit, *,
@@ -228,20 +211,19 @@ def certified_market_day_plan_from_cold_audit(client: Any,
     return plan
 
 
-def cold_certified_market_day_plan(certificate_client: Any, source_client: Any,
+def cold_certified_market_day_plan(certificate_client: Any,
                                    keeper: Any, build_id: str, *,
                                    sessions: tuple[str, ...],
                                    tickers: tuple[str, ...],
                                    configuration: Mapping[str, Any]) -> Any:
     """Inactive SELECT-only replacement candidate for the SQLite plan read.
 
-    The certificate client and canonical source client are explicit so a
-    certificate cannot certify itself by replaying its own stored plan. This
-    does not authorize the fixed Backtest launch path or grant any writes.
+    Canonical replay is a producer-side prerequisite of the V3 Keeper proof;
+    Backtest performs no source-event query. This does not authorize the
+    fixed Backtest launch path or grant any writes.
     """
     audit = audit_attested_market_day_certificate(
         certificate_client, keeper, build_id, sessions=sessions)
-    audit = replay_canonical_source_plan_parity(source_client, audit)
     return certified_market_day_plan_from_cold_audit(
         certificate_client, audit, sessions=sessions, tickers=tickers,
         configuration=configuration)

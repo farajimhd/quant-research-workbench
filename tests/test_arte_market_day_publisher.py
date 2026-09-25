@@ -9,8 +9,21 @@ import pytest
 from src.trading_runtime.arte_market_day_certification import TABLES
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperAuthority
 from src.trading_runtime.arte_market_day_publisher import publish_market_day_certificate
+from src.trading_runtime.arte_market_day_source_plan import (
+    TABLES as SOURCE_TABLES, recover_source_plan,
+)
 from test_arte_market_day_certification import BUILD, DAY, inventory
 from test_arte_market_day_keeper import FakeKeeper
+
+
+@pytest.fixture(autouse=True)
+def canonical_source(monkeypatch):
+    from scripts import build_market_day
+    prepared = inventory()
+    source_rows = {table.name: prepared[table.name] for table in SOURCE_TABLES}
+    pinned = recover_source_plan(source_rows, BUILD,
+        expected_hash=prepared["market_day_build_header_v1"][0]["source_plan_hash"])
+    monkeypatch.setattr(build_market_day, "source_plan", lambda _client, _args: deepcopy(pinned))
 
 
 class FakeClickHouse:
@@ -64,12 +77,12 @@ def setup():
 def test_publishes_fence_last_and_attests_only_exact_readback() -> None:
     client, _, keeper, claim = setup()
     prepared = {name: tuple(rows) for name, rows in inventory().items()}
-    publish_market_day_certificate(client, keeper, claim, prepared, sessions=(DAY,))
+    publish_market_day_certificate(client, object(), keeper, claim, prepared, sessions=(DAY,))
     expected_inserts = [table.name for table in TABLES if prepared[table.name]]
     assert client.inserts == expected_inserts
     assert keeper.load(BUILD) is not None
     # Exact already-persisted retry is idempotent; it cannot append duplicates.
-    publish_market_day_certificate(client, keeper, claim, prepared, sessions=(DAY,))
+    publish_market_day_certificate(client, object(), keeper, claim, prepared, sessions=(DAY,))
     assert client.inserts == expected_inserts
 
 
@@ -80,7 +93,7 @@ def test_stale_owner_after_child_insert_never_reaches_fence_or_attestation() -> 
         del store.rows[holder]
     client.after_insert = expire
     with pytest.raises(RuntimeError, match="claim changed"):
-        publish_market_day_certificate(client, keeper, claim,
+        publish_market_day_certificate(client, object(), keeper, claim,
                                        inventory(), sessions=(DAY,))
     assert not client.rows["market_day_build_fence_v1"]
     assert keeper.load(BUILD) is None
@@ -94,13 +107,13 @@ def test_delayed_conflicting_child_or_bad_part_blocks_attestation() -> None:
                 deepcopy(client.rows["market_day_stage_certificate_v1"][0]))
     client.after_insert = delayed
     with pytest.raises(RuntimeError, match="exact stored inventory"):
-        publish_market_day_certificate(client, keeper, claim,
+        publish_market_day_certificate(client, object(), keeper, claim,
                                        inventory(), sessions=(DAY,))
     assert keeper.load(BUILD) is None
     client, _, keeper, claim = setup()
     client.disk = "default"
     with pytest.raises(RuntimeError, match="outside live_market_ssd"):
-        publish_market_day_certificate(client, keeper, claim,
+        publish_market_day_certificate(client, object(), keeper, claim,
                                        inventory(), sessions=(DAY,))
     assert not client.rows["market_day_build_fence_v1"]
     assert keeper.load(BUILD) is None
@@ -116,7 +129,7 @@ def test_late_duplicate_after_cas_is_not_a_successful_receipt() -> None:
         return proof
     keeper.attest = late
     with pytest.raises(RuntimeError, match="exact stored inventory"):
-        publish_market_day_certificate(client, keeper, claim,
+        publish_market_day_certificate(client, object(), keeper, claim,
                                        inventory(), sessions=(DAY,))
     assert keeper.load(BUILD) is not None
 
@@ -134,7 +147,23 @@ def test_source_plan_layout_drift_blocks_first_insert() -> None:
     _, _, keeper, claim = setup()
     client = DriftClient()
     with pytest.raises(RuntimeError, match="Source-plan table layout differs"):
-        publish_market_day_certificate(client, keeper, claim,
+        publish_market_day_certificate(client, object(), keeper, claim,
                                        inventory(), sessions=(DAY,))
+    assert not client.inserts
+    assert keeper.load(BUILD) is None
+
+
+def test_canonical_source_drift_blocks_every_insert_and_attestation(monkeypatch) -> None:
+    from scripts import build_market_day
+    client, _, keeper, claim = setup()
+    pinned = inventory()
+    source_rows = {table.name: pinned[table.name] for table in SOURCE_TABLES}
+    changed = recover_source_plan(source_rows, BUILD,
+        expected_hash=pinned["market_day_build_header_v1"][0]["source_plan_hash"])
+    changed["rules"][0]["modifier_int"] += 1
+    monkeypatch.setattr(build_market_day, "source_plan", lambda _client, _args: changed)
+    with pytest.raises(RuntimeError, match="differs before publication"):
+        publish_market_day_certificate(client, object(), keeper, claim,
+                                       pinned, sessions=(DAY,))
     assert not client.inserts
     assert keeper.load(BUILD) is None
