@@ -281,6 +281,38 @@ def test_background_fill_batch_has_stable_ids_and_contiguous_sequences() -> None
     assert len(pending.commissions) == 0
 
 
+def test_shared_fill_record_projects_without_fee_or_information_loss() -> None:
+    record = JournalRecord(
+        "00000000-0000-0000-0000-000000000083", "live:DU1", 1,
+        AT, AT, "execution", "fill", "e1", "DU1",
+        {**source(), "correlation_id": "corr-1", "causation_id": "cause-1"},
+    )
+    identity = dict(
+        run_month=date(2026, 8, 1),
+        attempt_id="00000000-0000-0000-0000-000000000004",
+        batch_id="00000000-0000-0000-0000-000000000001",
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        source_cursor="broker-execution:e1",
+    )
+    projected = project_journal_record(record, **identity)
+    assert projected.first_sequence == projected.last_sequence == 1
+    assert projected.events[0]["record_id"] == record.record_id
+    assert projected.events[0]["correlation_id"] == "corr-1"
+    assert projected.executions[0]["execution_id"] == "e1"
+    assert not projected.commissions
+    assert dict(_sealed_families(projected))["trading_execution_v1"]
+    client = MemoryClient()
+    publish_typed_batch(client, projected)
+    prefix = load_committed_prefix(client, record.run_id)
+    assert prefix is not None and prefix.last_sequence == 1
+    with pytest.raises(ValueError, match="separate commission event"):
+        project_journal_record(replace(
+            record, payload={**record.payload, "commission": 1.25}), **identity)
+    with pytest.raises(ValueError, match="unmodeled source fields"):
+        project_journal_record(replace(
+            record, payload={**record.payload, "hidden": "source"}), **identity)
+
+
 def test_later_commission_is_a_separate_typed_revision() -> None:
     report = CommissionEvent(
         "e1", "DU1", Decimal("1.25"), "USD", Decimal("0.50"),

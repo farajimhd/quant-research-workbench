@@ -358,6 +358,45 @@ def project_journal_record(
         )
     if kind == ("resource_lease", "prepared_v7_stream"):
         return prepared_v7_lease_batch(record, **identity)
+    if kind == ("execution", "fill"):
+        if (record.event_time.tzinfo is None or record.recorded_at.tzinfo is None
+                or any(not isinstance(record.payload[key], str)
+                       for key in ("correlation_id", "causation_id")
+                       if key in record.payload)):
+            raise ValueError("Fill journal source clocks or lineage are invalid")
+        source = {key: value for key, value in record.payload.items()
+                  if key not in {"correlation_id", "causation_id"}}
+        execution = parse_ibkr_execution(source)
+        if (execution.commission is not None
+                or execution.execution_id != record.entity_id
+                or execution.account != record.account_id
+                or execution.trade_time != record.event_time.astimezone(timezone.utc)):
+            raise ValueError(
+                "Fill journal record needs exact identity and a separate commission event")
+        month = execution.trade_time.strftime("%Y-%m-01")
+        if run_month.isoformat() != month:
+            raise ValueError("Fill journal partition differs from source trade time")
+        details = broker_fill_details(
+            execution, run_id=record.run_id, event_month=month,
+            batch_id=batch_id, execution_record_id=record.record_id,
+            commission_record_id=None, received_at=record.recorded_at,
+        )
+        event = {
+            "run_id": record.run_id, "event_month": month,
+            "attempt_id": attempt_id, "batch_id": batch_id,
+            "record_id": record.record_id, "sequence": record.sequence,
+            "event_time": execution.trade_time.isoformat(),
+            "recorded_at": record.recorded_at.astimezone(timezone.utc).isoformat(),
+            "category": "execution", "entity_type": "fill",
+            "entity_id": record.entity_id, "account_id": record.account_id,
+            "correlation_id": str(record.payload.get("correlation_id") or ""),
+            "causation_id": str(record.payload.get("causation_id") or ""),
+        }
+        return TypedJournalBatch(
+            record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+            record.sequence, record.sequence, source_cursor, "running", (event,),
+            executions=(details.execution,),
+        )
     raise ValueError(
         f"Journal record {record.category}/{record.entity_type} lacks a typed projection"
     )
