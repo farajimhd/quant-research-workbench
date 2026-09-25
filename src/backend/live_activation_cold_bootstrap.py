@@ -215,6 +215,7 @@ def _cold_recover_activation_checkpoint_under_fence(
     source_revision_id: str, catalogs: Mapping[str, Any],
     max_source_batches: int = 100_000,
     max_source_occurrences: int = 100_000,
+    receipt_defined: bool = False,
 ) -> tuple[dict[str, Any], ...]:
     """Read-only typed replacement prerequisite for the SQLite watch checkpoint.
 
@@ -259,7 +260,9 @@ def _cold_recover_activation_checkpoint_under_fence(
         source_commit_client, session_key=session_key,
         head_sequence=first.batch_sequence,
         max_occurrences=max_source_occurrences)
-    watches = cold_audit_activation_watches(
+    activation_reader = (read_attested_activation_prefix if receipt_defined
+                         else cold_audit_activation_watches)
+    watches = activation_reader(
         activation_client, dispatch_storage, completion_storage,
         completion_keeper, session_date=session_date,
         source_commit_hashes=hashes,
@@ -279,6 +282,7 @@ def audit_activation_checkpoint_under_cooperative_fences(
     owner_id: str, activation_fence: ActivationSessionFence,
     max_source_batches: int = 100_000,
     max_source_occurrences: int = 100_000,
+    receipt_defined: bool = False,
 ) -> tuple[dict[str, Any], ...]:
     """Diagnostic cold audit, not an admission or executable checkpoint.
 
@@ -310,7 +314,8 @@ def audit_activation_checkpoint_under_cooperative_fences(
             configuration_revision_id=configuration_revision_id,
             source_revision_id=source_revision_id, catalogs=catalogs,
             max_source_batches=max_source_batches,
-            max_source_occurrences=max_source_occurrences)
+            max_source_occurrences=max_source_occurrences,
+            receipt_defined=receipt_defined)
         if not source_keeper.is_current(session_key, owner_id=owner_id, epoch=epoch):
             raise RuntimeError("Signal Stream source owner fence lost during recovery")
         if not activation_fence.is_current(
@@ -322,6 +327,30 @@ def audit_activation_checkpoint_under_cooperative_fences(
             activation_fence.release(session_key, owner_id=owner_id,
                                      epoch=activation_epoch)
         source_keeper.release(session_key, owner_id=owner_id, epoch=epoch)
+
+
+def audit_receipt_defined_activation_prefix_under_fences(
+    activation_client: Any, source_storage: Any, source_commit_client: Any,
+    source_keeper: SignalSessionHeadKeeper,
+    dispatch_storage: DispatchColdStorage,
+    completion_storage: CompletionStorage, completion_keeper: CompletionKeeper, *,
+    session_date: date, configuration_revision_id: str,
+    source_revision_id: str, catalogs: Mapping[str, Any],
+    owner_id: str, activation_fence: ActivationSessionFence,
+    max_source_batches: int = 100_000,
+    max_source_occurrences: int = 100_000,
+) -> tuple[dict[str, Any], ...]:
+    """Inactive causal-prefix audit; only attested receipts become visible."""
+    return audit_activation_checkpoint_under_cooperative_fences(
+        activation_client, source_storage, source_commit_client,
+        source_keeper, dispatch_storage, completion_storage,
+        completion_keeper, session_date=session_date,
+        configuration_revision_id=configuration_revision_id,
+        source_revision_id=source_revision_id, catalogs=catalogs,
+        owner_id=owner_id, activation_fence=activation_fence,
+        max_source_batches=max_source_batches,
+        max_source_occurrences=max_source_occurrences,
+        receipt_defined=True)
 
 
 class ActivationRecoveryUnfenced(RuntimeError):

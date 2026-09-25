@@ -9,6 +9,7 @@ import pytest
 from src.backend.live_activation_cold_bootstrap import (
     _audit_source_orphans, ActivationRecoveryUnfenced,
     audit_activation_checkpoint_under_cooperative_fences,
+    audit_receipt_defined_activation_prefix_under_fences,
     cold_audit_activation_watches, read_attested_activation_prefix,
     cold_recover_activation_checkpoint,
 )
@@ -173,6 +174,13 @@ def test_typed_checkpoint_requires_stable_keeper_source_head(monkeypatch) -> Non
             activation, Source(), Client(), keeper, dispatch, completion,
             completion_keeper, **kwargs)
     assert restored[0]["delivery_id"] == delivery["delivery_id"]
+    activation.rows["trading_activation_v1"].append(
+        dict(activation.rows["trading_activation_v1"][0], event_id="f" * 64))
+    admitted = audit_receipt_defined_activation_prefix_under_fences(
+        activation, Source(), Client(), keeper, dispatch, completion,
+        completion_keeper, **kwargs)
+    assert [row["delivery_id"] for row in admitted] == [delivery["delivery_id"]]
+    activation.rows["trading_activation_v1"].pop()
     keeper.changed = True
     with pytest.raises(ValueError, match="cursor differs"):
         audit_activation_checkpoint_under_cooperative_fences(
