@@ -26,8 +26,11 @@ from src.trading_runtime.arte_journal_schema import (
 )
 
 
-def install_missing(client: object, *, apply: bool) -> tuple[int, int]:
-    """Return (already installed, newly created); verify each durable step."""
+def install_missing(client: object, *, apply: bool,
+                    verify_batch_size: int = 8) -> tuple[int, int]:
+    """Return (already installed, newly created); verify bounded DDL batches."""
+    if type(verify_batch_size) is not int or not 1 <= verify_batch_size <= 16:
+        raise ValueError("Journal verification batch size must be 1–16")
     policies = [json.loads(line) for line in client.execute(
         "SELECT disks FROM system.storage_policies "
         f"WHERE policy_name='{STORAGE_POLICY}' FORMAT JSONEachRow"
@@ -45,13 +48,18 @@ def install_missing(client: object, *, apply: bool) -> tuple[int, int]:
         print("Plan only; no ClickHouse state changed")
         return installed, 0
     created = 0
+    pending = []
     for name in missing:
         # IF NOT EXISTS protects restart after a lost response. The exact
-        # schema check catches an incompatible table; it is never overwritten.
+        # batch check catches an incompatible table; it is never overwritten.
         client.execute(by_name[name].ddl())
-        storage_preflight(client, tables=(by_name[name],))
-        created += 1
-        print(f"Created and verified {created}/{len(missing)}: arte.{name}")
+        pending.append(by_name[name])
+        if len(pending) == verify_batch_size or name == missing[-1]:
+            storage_preflight(client, tables=tuple(pending))
+            created += len(pending)
+            print(f"Created and verified {created}/{len(missing)}; "
+                  f"latest arte.{name}", flush=True)
+            pending.clear()
     storage_preflight(client, tables=contracts)
     print(f"Complete: {len(contracts)} verified; {created} newly created; 0 rows inserted")
     return installed, created

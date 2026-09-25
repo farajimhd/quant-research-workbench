@@ -36,7 +36,7 @@ def test_plan_is_read_only_and_apply_verifies_each_new_table(monkeypatch):
     assert install.install_missing(client, apply=False) == (len(contracts) - 2, 0)
     assert all(sql.startswith("SELECT ") for sql in client.statements)
     assert install.install_missing(client, apply=True) == (len(contracts) - 2, 2)
-    assert verified == [(missing[0],), (missing[1],), tuple(t.name for t in contracts)]
+    assert verified == [missing, tuple(t.name for t in contracts)]
     writes = [sql for sql in client.statements if not sql.startswith("SELECT ")]
     assert len(writes) == 2
     assert all(sql.startswith("CREATE TABLE IF NOT EXISTS arte.trading_") for sql in writes)
