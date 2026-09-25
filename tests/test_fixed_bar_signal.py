@@ -139,6 +139,33 @@ def test_squeeze_candidates_must_be_ordered_without_display_cap_truncation():
         client=Client([147000, 150000]))["occurrences"]) == 2
 
 
+def test_squeeze_candidate_stream_closes_on_invalid_evidence():
+    import pytest
+    stream, activation = _contract()
+    class Source:
+        def __init__(self):
+            self.closed = False
+        def __iter__(self):
+            return self
+        def __next__(self):
+            return {"session_date": DAY, "ticker": TICKER,
+                    "bucket_index": 147000, "close_int": 0,
+                    "previous_close_int": 100_000, "volume": 200.,
+                    "previous_volume": 100., "trade_count": 4,
+                    "previous_trade_count": 2}
+        def close(self):
+            self.closed = True
+    source = Source()
+    class Client:
+        def iter_json_each_row(self, _sql):
+            return source
+    with pytest.raises(ValueError, match="invalid or unordered"):
+        load_first_squeeze_occurrences(
+            _plan(), stream=stream, activation=activation,
+            through_boundary_ms=19_800_000, client=Client())
+    assert source.closed
+
+
 def test_candidate_projection_requires_sole_source_native_admission():
     stream, activation = _contract()
     activation["signal_streams"] = [stream]

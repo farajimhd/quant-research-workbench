@@ -121,68 +121,74 @@ def load_first_squeeze_occurrences(
 ) -> dict[str, Any]:
     validate_stream(stream, activation)
     query = first_squeeze_sql(plan, through_boundary_ms=through_boundary_ms)
-    rows = list(client.iter_json_each_row(query))
+    query_hash = hashlib.sha256(query.encode()).hexdigest()
+    rows = client.iter_json_each_row(query)
     # maximum_events is a display/query setting in the saved stream, not an
     # all-session producer cap.  The live engine does not suppress new starts
     # after it, so Backtest must not truncate or reject at that threshold.
     last_bucket: dict[tuple[str, str], int] = {}
     episode_expires: dict[tuple[str, str], int] = {}
     occurrences: list[dict[str, Any]] = []
-    for row in rows:
-        day, ticker = str(row["session_date"]), str(row["ticker"])
-        bucket = int(row["bucket_index"])
-        key = (day, ticker)
-        close_int, previous_int = int(row["close_int"]), int(row["previous_close_int"])
-        volume, previous_volume = float(row["volume"]), float(row["previous_volume"])
-        trades, previous_trades = int(row["trade_count"]), int(row["previous_trade_count"])
-        if (day not in plan.sessions or ticker not in plan.tickers
-                or not SESSION_OPEN_OFFSET_MS // 100 <= bucket
-                       < (through_boundary_ms + SESSION_OPEN_OFFSET_MS) // 100
-                or bucket <= last_bucket.get(key, -1)
-                or close_int <= 0 or previous_int <= 0
-                or not math.isfinite(volume) or not math.isfinite(previous_volume)
-                or (close_int / previous_int - 1) * 100 < 0.05
-                or volume <= previous_volume or trades <= previous_trades):
-            raise ValueError("Completed-bar squeeze query returned invalid or unordered evidence")
-        last_bucket[key] = bucket
-        # The QMD episode engine removes an episode at its expiry before
-        # checking the current impulse.  A qualifying bar inside an active
-        # episode is not a second start, even if the rule remains true.
-        if bucket < episode_expires.get(key, -1):
-            continue
-        episode_expires[key] = bucket + 3_000  # 300 seconds at 100 ms.
-        at = market_day_boundary(day, (bucket + 1) * 100 - SESSION_OPEN_OFFSET_MS)
-        price, anchor = close_int / 10_000, previous_int / 10_000
-        move = (price / anchor - 1) * 100
-        identity = f"{plan.token}:{STREAM_ID}:{day}:{ticker}:{bucket}"
-        event_id = hashlib.sha256(identity.encode()).hexdigest()
-        expires = at + timedelta(milliseconds=300_000)
-        occurrences.append({
-            "event_id": event_id, "signal_stream_id": STREAM_ID, "ticker": ticker,
-            "event_time": at.isoformat(), "effective_at": at.isoformat(),
-            "available_at": at.isoformat(), "last_price": price,
-            "squeeze_episode_id": event_id, "squeeze_episode_role": "start",
-            "squeeze_episode_started_at": at.isoformat(),
-            "squeeze_expires_at": expires.isoformat(),
-            "squeeze_anchor_price": anchor, "squeeze_move_pct": move,
-            "squeeze_high_water_pct": max(0., move),
-            "source_authority": CONTRACT,
-            "market_plan_token": plan.token,
-            "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
-            "evidence": {
-                "price_change_1_bar_pct": move,
-                "trade_count_change": trades - previous_trades,
-                "volume_change": volume - previous_volume,
-            },
-        })
-        if len(occurrences) > MAX_BACKTEST_EPISODES:
-            raise ValueError("Completed-bar squeeze occurrences exceed the Backtest safety bound")
+    try:
+        for row in rows:
+            day, ticker = str(row["session_date"]), str(row["ticker"])
+            bucket = int(row["bucket_index"])
+            key = (day, ticker)
+            close_int, previous_int = int(row["close_int"]), int(row["previous_close_int"])
+            volume, previous_volume = float(row["volume"]), float(row["previous_volume"])
+            trades, previous_trades = int(row["trade_count"]), int(row["previous_trade_count"])
+            if (day not in plan.sessions or ticker not in plan.tickers
+                    or not SESSION_OPEN_OFFSET_MS // 100 <= bucket
+                           < (through_boundary_ms + SESSION_OPEN_OFFSET_MS) // 100
+                    or bucket <= last_bucket.get(key, -1)
+                    or close_int <= 0 or previous_int <= 0
+                    or not math.isfinite(volume) or not math.isfinite(previous_volume)
+                    or (close_int / previous_int - 1) * 100 < 0.05
+                    or volume <= previous_volume or trades <= previous_trades):
+                raise ValueError("Completed-bar squeeze query returned invalid or unordered evidence")
+            last_bucket[key] = bucket
+            # The QMD episode engine removes an episode at its expiry before
+            # checking the current impulse. A qualifying bar inside an active
+            # episode is not a second start, even if the rule remains true.
+            if bucket < episode_expires.get(key, -1):
+                continue
+            episode_expires[key] = bucket + 3_000  # 300 seconds at 100 ms.
+            at = market_day_boundary(day, (bucket + 1) * 100 - SESSION_OPEN_OFFSET_MS)
+            price, anchor = close_int / 10_000, previous_int / 10_000
+            move = (price / anchor - 1) * 100
+            identity = f"{plan.token}:{STREAM_ID}:{day}:{ticker}:{bucket}"
+            event_id = hashlib.sha256(identity.encode()).hexdigest()
+            expires = at + timedelta(milliseconds=300_000)
+            occurrences.append({
+                "event_id": event_id, "signal_stream_id": STREAM_ID, "ticker": ticker,
+                "event_time": at.isoformat(), "effective_at": at.isoformat(),
+                "available_at": at.isoformat(), "last_price": price,
+                "squeeze_episode_id": event_id, "squeeze_episode_role": "start",
+                "squeeze_episode_started_at": at.isoformat(),
+                "squeeze_expires_at": expires.isoformat(),
+                "squeeze_anchor_price": anchor, "squeeze_move_pct": move,
+                "squeeze_high_water_pct": max(0., move),
+                "source_authority": CONTRACT,
+                "market_plan_token": plan.token,
+                "query_sha256": query_hash,
+                "evidence": {
+                    "price_change_1_bar_pct": move,
+                    "trade_count_change": trades - previous_trades,
+                    "volume_change": volume - previous_volume,
+                },
+            })
+            if len(occurrences) > MAX_BACKTEST_EPISODES:
+                raise ValueError("Completed-bar squeeze occurrences exceed the Backtest safety bound")
+    finally:
+        close = getattr(rows, "close", None)
+        if close is not None:
+            close()
     body = json.dumps(occurrences, sort_keys=True, separators=(",", ":"))
     return {
         "occurrences": occurrences,
         "authority": {
             "authority": CONTRACT, "market_plan_token": plan.token,
-            "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
+            "query_sha256": query_hash,
             "row_count": len(occurrences),
             "content_hash": hashlib.sha256(body.encode()).hexdigest(),
         },
