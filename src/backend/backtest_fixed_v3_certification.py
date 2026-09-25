@@ -75,15 +75,49 @@ def direct_controller_families(source: str) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(families))
 
 
+def _fixed_v7_warning_unreachable(source: str) -> bool:
+    """Recognize the fixed-mode early return before the legacy V7 warning.
+
+    This deliberately accepts one precise controller structure. A changed
+    branch must be reviewed instead of quietly excluding a newly reachable
+    warning from the fixed-mode family inventory.
+    """
+    tree = ast.parse(source)
+    functions = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.AsyncFunctionDef)
+                 and node.name == "_prepare_v7_coverage"]
+    if len(functions) != 1:
+        return False
+    body = functions[0].body
+    guard = body[0] if body else None
+    if (not isinstance(guard, ast.If)
+            or ast.unparse(guard.test) != "self.definition.mode == RunMode.BACKTEST"):
+        return False
+    fixed_guards = [node for node in guard.body if isinstance(node, ast.If)
+                    and ast.unparse(node.test)
+                    == "ExecutionInterval.parse(self.definition.execution_interval).kind == 'fixed'"]
+    if len(fixed_guards) != 1 or not isinstance(fixed_guards[0].body[-1], ast.Return):
+        return False
+    warnings = [node for node in ast.walk(functions[0])
+                if isinstance(node, ast.Call) and _literal_pair(node)
+                == ("warning", "level_book_coverage")]
+    return len(warnings) == 1 and fixed_guards[0].end_lineno < warnings[0].lineno
+
+
 def certify_direct_v3_projection(*, source_path: Path = _CONTROLLER) -> str:
     """Fail closed on a changed or unsupported direct-emitter family set."""
     source = source_path.read_text(encoding="utf-8")
     families = direct_controller_families(source)
-    unsupported = sorted(set(families) - _V3_PROJECTED)
+    fixed_families = set(families)
+    if ("warning", "level_book_coverage") in fixed_families:
+        if not _fixed_v7_warning_unreachable(source):
+            raise ValueError("Fixed-mode V7 warning reachability is unproven")
+        fixed_families.remove(("warning", "level_book_coverage"))
+    unsupported = sorted(fixed_families - _V3_PROJECTED)
     if unsupported:
         raise ValueError(f"V3 direct emitters lack typed projection: {unsupported}")
     payload = {"version": 1, "source_sha256": hashlib.sha256(source.encode()).hexdigest(),
-               "direct_families": families}
+               "direct_families": tuple(sorted(fixed_families))}
     return hashlib.sha256(json.dumps(payload, sort_keys=True,
                                      separators=(",", ":")).encode()).hexdigest()
 

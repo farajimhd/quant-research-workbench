@@ -8,8 +8,20 @@ from src.backend import backtest_fixed_v3_certification as cert
 
 
 def test_real_controller_direct_emitters_fail_closed_on_unprojected_families():
-    with pytest.raises(ValueError, match="configuration.*warning.*watchlist_membership"):
+    with pytest.raises(ValueError, match="configuration.*watchlist_membership"):
         cert.certify_direct_v3_projection()
+
+
+def test_fixed_v7_warning_is_excluded_only_with_proven_early_return():
+    source = cert._CONTROLLER.read_text(encoding="utf-8")
+    assert ("warning", "level_book_coverage") in cert.direct_controller_families(source)
+    assert cert._fixed_v7_warning_unreachable(source)
+    changed = source.replace(
+        "if ExecutionInterval.parse(self.definition.execution_interval).kind == \"fixed\":",
+        "if ExecutionInterval.parse(self.definition.execution_interval).kind == \"other\":",
+        1,
+    )
+    assert not cert._fixed_v7_warning_unreachable(changed)
 
 
 def test_direct_inventory_is_deterministic_and_rejects_dynamic_family(tmp_path):
