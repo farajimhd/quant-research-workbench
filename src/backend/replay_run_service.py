@@ -3004,7 +3004,9 @@ class ReplayRunController:
                 self._journal.close()
 
     async def _fixed_certified_market_plan(self):
-        from src.backend.backtest_market_data import MarketDayLedger, configuration_tickers
+        from src.backend.backtest_market_data import (
+            certified_market_plan_from_arte, configuration_tickers,
+        )
 
         cached = getattr(self, "_fixed_market_plan", None)
         if cached is not None:
@@ -3013,7 +3015,7 @@ class ReplayRunController:
         expected = dict(self.definition.market_data_plan)
         sessions = [date.fromisoformat(value) for value in expected.get("sessions") or ()]
         plan = await asyncio.to_thread(
-            MarketDayLedger().certified_plan, sessions=sessions,
+            certified_market_plan_from_arte, sessions=sessions,
             tickers=configuration_tickers(configuration, self.definition.tickers),
             configuration=configuration,
         )
@@ -3472,7 +3474,7 @@ class ReplayRunController:
         v7_reader = None
         v7_seeds = None
         if self.definition.causal_v7_plan:
-            v7_reader = readonly_clickhouse_client()
+            v7_reader = readonly_clickhouse_client(v3_read_principal=True)
             try:
                 v7_seeds = await asyncio.to_thread(certified_seed_plan, execution_plan, v7_reader)
                 pinned_v7 = self.definition.causal_v7_plan
@@ -8039,7 +8041,7 @@ class ReplayRunController:
                     from src.backend.fixed_bar_signal import load_first_squeeze_occurrences
 
                     def read_completed_bar_signals():
-                        with closing(readonly_clickhouse_client(market_stream=True)) as reader:
+                        with closing(readonly_clickhouse_client(market_stream=True, v3_read_principal=True)) as reader:
                             return load_first_squeeze_occurrences(
                                 fixed_bar_plan, stream=stream, activation=activation,
                                 through_boundary_ms=self._fixed_through_boundary_ms(),
@@ -10446,7 +10448,7 @@ def backtest_preflight(
     approved = configuration_revision or backtest_configuration_snapshot()
     configuration = dict(approved.get("payload") or {})
     from src.backend.backtest_market_data import (
-        MarketDayLedger,
+        certified_market_plan_from_arte,
         configuration_tickers,
         effective_execution_interval,
         verify_market_day_plan,
@@ -10518,13 +10520,13 @@ def backtest_preflight(
     )
     if execution_interval.kind == "fixed":
         try:
-            certified = MarketDayLedger().certified_plan(
+            certified = certified_market_plan_from_arte(
                 sessions=sessions,
                 tickers=configuration_tickers(configuration, tickers),
                 configuration=configuration,
             )
             from src.backend.backtest_market_data import readonly_clickhouse_client
-            with closing(readonly_clickhouse_client()) as reader:
+            with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
                 verify_market_day_plan(certified, reader)
                 market_data_plan = certified.payload()
                 if needs_v7 and not activated_signal_streams:
@@ -10738,7 +10740,7 @@ def backtest_preflight(
                     datetime.combine(sessions[-1], end_time, tzinfo=NEW_YORK)
                     - datetime.combine(sessions[-1], clock_time(4), tzinfo=NEW_YORK)
                 ).total_seconds() * 1_000)
-                with closing(readonly_clickhouse_client(market_stream=True)) as reader:
+                with closing(readonly_clickhouse_client(market_stream=True, v3_read_principal=True)) as reader:
                     bar_signals = load_first_squeeze_occurrences(
                         certified, stream=activated_signal_streams[0],
                         activation=dict(configuration.get("signal_activation") or {}),
@@ -10776,7 +10778,7 @@ def backtest_preflight(
                 from src.backend.structural_v7_seed import certified_seed_plan
                 projected = (project_market_day_plan(certified, projection_tickers)
                              if projection_tickers else certified)
-                with closing(readonly_clickhouse_client()) as reader:
+                with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
                     causal_v7_plan = certified_seed_plan(projected, reader).payload()
                 causal_v7_plan["market_projection_token"] = projected.token
                 causal_v7_plan["parent_market_plan_token"] = certified.token

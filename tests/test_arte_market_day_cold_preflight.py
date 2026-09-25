@@ -8,7 +8,8 @@ import pytest
 
 from src.trading_runtime.arte_market_day_cold_preflight import (
     audit_attested_market_day_certificate, certified_market_day_plan_from_cold_audit,
-    cold_certified_market_day_plan, replay_canonical_source_plan_parity,
+    cold_certified_market_day_plan, discover_cold_certified_market_day_plan,
+    replay_canonical_source_plan_parity,
     verify_attested_market_products,
 )
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperAuthority
@@ -239,3 +240,37 @@ def test_cold_plan_entrypoint_never_replays_canonical_source(
         sessions=(DAY,), tickers=(), configuration={})
     assert result.tickers == ("TEST",)
     assert client.product_reads > 0
+
+
+def test_catalogue_discovery_requires_one_compatible_attested_build(monkeypatch) -> None:
+    other = "b" * 64
+    class Catalogue:
+        def __init__(self, ids):
+            self.ids = ids
+        def execute(self, sql):
+            assert sql.startswith("SELECT build_id FROM arte.market_day_build_fence_v1 ")
+            selected = [value for value in self.ids if f"WHERE build_id='{value}'" in sql]
+            return "\n".join(json.dumps({"build_id": value}) for value in
+                             (selected if "WHERE" in sql else self.ids))
+    calls = []
+    def cold(_client, _keeper, build_id, **_kwargs):
+        calls.append(build_id)
+        return build_id
+    monkeypatch.setattr(
+        "src.trading_runtime.arte_market_day_cold_preflight.cold_certified_market_day_plan",
+        cold)
+    args = dict(sessions=(DAY,), tickers=(), configuration={})
+    assert discover_cold_certified_market_day_plan(
+        Catalogue([BUILD]), object(), **args) == BUILD
+    with pytest.raises(RuntimeError, match="No arte market-day certificate"):
+        discover_cold_certified_market_day_plan(Catalogue([]), object(), **args)
+    with pytest.raises(RuntimeError, match="Multiple compatible"):
+        discover_cold_certified_market_day_plan(
+            Catalogue([BUILD, other]), object(), **args)
+    assert discover_cold_certified_market_day_plan(
+        Catalogue([BUILD, other]), object(),
+        **{**args, "configuration": {"market_day_build_id": BUILD}}) == BUILD
+    with pytest.raises(RuntimeError, match="duplicate identities"):
+        discover_cold_certified_market_day_plan(
+            Catalogue([BUILD, BUILD]), object(), **args)
+    assert calls == [BUILD, BUILD, other, BUILD]

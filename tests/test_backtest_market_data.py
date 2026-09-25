@@ -148,6 +148,33 @@ class BacktestMarketDataTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ExecutionInterval.parse("250ms")
 
+    def test_fixed_plan_uses_clickhouse_certificate_and_keeper_only(self) -> None:
+        from unittest.mock import patch
+        from src.backend.backtest_market_data import certified_market_plan_from_arte
+
+        class Closed:
+            def __init__(self):
+                self.closed = False
+            def close(self):
+                self.closed = True
+        reader = Closed()
+        session = Closed()
+        session.client = object()
+        with (patch("src.backend.backtest_market_data.readonly_clickhouse_client",
+                    return_value=reader) as open_reader,
+              patch("src.trading_runtime.keeper_session.open_workstation_keeper_session",
+                    return_value=session),
+              patch("src.trading_runtime.arte_market_day_keeper.MarketDayKeeperReader",
+                    return_value="proof-reader"),
+              patch("src.trading_runtime.arte_market_day_cold_preflight.discover_cold_certified_market_day_plan",
+                    return_value="certified") as discover):
+            result = certified_market_plan_from_arte(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"], configuration={})
+        self.assertEqual(result, "certified")
+        open_reader.assert_called_once_with(v3_read_principal=True)
+        self.assertEqual(discover.call_args.kwargs["sessions"], ("2026-08-18",))
+        self.assertTrue(reader.closed and session.closed)
+
     def test_nested_unsupported_fixed_interval_fails_before_data_access(self) -> None:
         from src.backend.backtest_market_data import compile_required_resolutions
 

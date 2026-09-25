@@ -392,9 +392,31 @@ def readonly_clickhouse_client(*, market_stream: bool = False,
     )
 
 
+def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
+                                    tickers: Sequence[str],
+                                    configuration: Mapping[str, Any]) -> CertifiedMarketDayPlan:
+    """Read a Keeper-attested typed arte certificate, with no SQLite authority.
+
+    This is control-plane preflight only. It neither builds missing products nor
+    publishes market rows, and the reader has no market INSERT permission.
+    """
+    from src.trading_runtime.arte_market_day_cold_preflight import (
+        discover_cold_certified_market_day_plan,
+    )
+    from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
+    from src.trading_runtime.keeper_session import open_workstation_keeper_session
+
+    with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
+        with closing(open_workstation_keeper_session()) as session:
+            return discover_cold_certified_market_day_plan(
+                reader, MarketDayKeeperReader(session.client),
+                sessions=tuple(str(day) for day in sessions),
+                tickers=tuple(tickers), configuration=configuration)
+
+
 def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None) -> None:
     """Recheck pinned row counts, keys, hashes, and resolutions read-only."""
-    active = client or readonly_clickhouse_client()
+    active = client or readonly_clickhouse_client(v3_read_principal=True)
     close = client is None
     try:
         expected = len({(unit.session_date, unit.ticker) for unit in plan.units})
@@ -597,7 +619,7 @@ def market_day_source_sqls(
 def iter_market_day_rows(
     plan: CertifiedMarketDayPlan, client=None, *, through_boundary_ms: int | None = None,
 ) -> Iterator[dict[str, Any]]:
-    active = client or readonly_clickhouse_client(market_stream=True)
+    active = client or readonly_clickhouse_client(market_stream=True, v3_read_principal=True)
     close = client is None
     sources = []
     try:
@@ -646,7 +668,7 @@ def iter_persisted_v7_seconds(
         f"AND bucket_index<{completed_count} "
         "ORDER BY bucket_index FORMAT JSONEachRow"
     )
-    active = client or readonly_clickhouse_client()
+    active = client or readonly_clickhouse_client(v3_read_principal=True)
     source = None
     try:
         source = active.iter_json_each_row(query)

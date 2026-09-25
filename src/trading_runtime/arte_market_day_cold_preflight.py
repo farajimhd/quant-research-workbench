@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import replace
 import json
+import re
 from typing import Any, Mapping
 
 from src.trading_runtime.arte_market_day_certification import (
@@ -227,3 +228,46 @@ def cold_certified_market_day_plan(certificate_client: Any,
     return certified_market_day_plan_from_cold_audit(
         certificate_client, audit, sessions=sessions, tickers=tickers,
         configuration=configuration)
+
+
+def discover_cold_certified_market_day_plan(certificate_client: Any,
+                                             keeper: Any, *,
+                                             sessions: tuple[str, ...],
+                                             tickers: tuple[str, ...],
+                                             configuration: Mapping[str, Any]) -> Any:
+    """Select one attested build from arte, never a producer disk manifest.
+
+    An explicit build pin resolves overlapping certified builds. Without one,
+    ambiguity is a preflight error rather than an arbitrary newest-build guess.
+    """
+    pinned = str(configuration.get("market_day_build_id") or "").strip()
+    if pinned and not re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", pinned):
+        raise ValueError("Invalid pinned market-day build identity")
+    query = ("SELECT build_id FROM arte.market_day_build_fence_v1 "
+             + (f"WHERE build_id='{pinned}' " if pinned else "")
+             + "FORMAT JSONEachRow")
+    rows = [json.loads(line) for line in certificate_client.execute(query).splitlines()
+            if line.strip()]
+    ids = [row["build_id"] for row in rows if set(row) == {"build_id"}
+           and isinstance(row["build_id"], str)
+           and re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", row["build_id"])]
+    if len(ids) != len(rows) or len(ids) != len(set(ids)):
+        raise RuntimeError("Market-day fence catalogue has invalid or duplicate identities")
+    if pinned and ids != [pinned]:
+        raise RuntimeError("Pinned market-day build has no unique attested fence")
+    if not ids:
+        raise RuntimeError("No arte market-day certificate fence is published")
+    compatible = []
+    errors = []
+    for build_id in ids:
+        try:
+            compatible.append(cold_certified_market_day_plan(
+                certificate_client, keeper, build_id, sessions=sessions,
+                tickers=tickers, configuration=configuration))
+        except (RuntimeError, ValueError, KeyError, TypeError) as exc:
+            errors.append(f"{build_id}: {exc}")
+    if len(compatible) != 1:
+        if compatible:
+            raise RuntimeError("Multiple compatible attested market-day builds; pin market_day_build_id")
+        raise RuntimeError("No compatible attested market-day build: " + "; ".join(errors[:3]))
+    return compatible[0]
