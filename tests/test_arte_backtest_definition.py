@@ -2,14 +2,20 @@ from datetime import date, time
 import json
 
 import pytest
+import src.trading_runtime.arte_journal_schema as journal_schema
+import src.trading_runtime.arte_journal_writer as journal_writer
 
 from src.backend.replay_run_service import ReplayRunDefinition, RunMode
 from src.trading_runtime.arte_backtest_definition import (
     TABLES, load_backtest_definition, prepare_backtest_definition,
+    publish_backtest_definition,
     verify_backtest_definition_rows,
 )
 from src.trading_runtime.arte_journal_schema import (
     backtest_definition_ddl, fixed_backtest_v2_contracts,
+)
+from src.trading_runtime.keeper_ownership import (
+    KeeperOwnershipCoordinator, KeeperUnavailable,
 )
 
 
@@ -158,3 +164,108 @@ def test_cold_loader_reads_only_exact_definition_tables_and_run_identity():
     ):
         with pytest.raises(RuntimeError, match="shared run authority"):
             load_backtest_definition(client, "run-1", run_context=invalid_context)
+
+
+def test_definition_publisher_is_commit_last_idempotent_and_keeper_fenced(monkeypatch):
+    monkeypatch.setattr(journal_schema, "fixed_backtest_v2_preflight",
+                        lambda _client: None)
+    context = {
+        "run_id": "run-1", "run_month": RUN_MONTH.isoformat(),
+        "mode": "backtest", "session_date": "2026-08-18",
+        "evaluation_interval_ms": 100,
+        "market_plan_token": "certified-plan",
+        "configuration_hash": "a" * 64,
+    }
+    monkeypatch.setattr(journal_writer, "load_typed_run_context",
+                        lambda _client, _run_id: context)
+
+    class Client:
+        def __init__(self):
+            self.tables = {table.name: [] for table in TABLES}
+            self.inserts = []
+
+        def execute(self, sql):
+            table = sql.split("arte.", 1)[1].split(" ", 1)[0]
+            if sql.startswith("SELECT "):
+                return "\n".join(json.dumps(row) for row in self.tables[table])
+            assert sql.startswith("INSERT INTO ")
+            rows = [json.loads(line) for line in sql.split("FORMAT JSONEachRow\n", 1)[1].splitlines()]
+            self.tables[table].extend(rows)
+            self.inserts.append(table)
+            return ""
+
+    client = Client()
+    keeper = object.__new__(KeeperOwnershipCoordinator)
+    current = {"value": True, "calls": 0}
+    def is_current(resource, *, owner_id, epoch):
+        assert (resource, owner_id, epoch) == (
+            "backtest-definition:run-1", "owner-1", 1)
+        current["calls"] += 1
+        return current["value"]
+    keeper.portfolio_admission_lease_is_current = is_current
+    lease = {"resource_id": "backtest-definition:run-1",
+             "owner_id": "owner-1", "epoch": 1}
+    expected = prepare_backtest_definition("run-1", _definition(), run_month=RUN_MONTH)
+    digest = publish_backtest_definition(
+        client, "run-1", _definition(), keeper=keeper, lease=lease)
+    assert digest == expected["commit"]["definition_hash"]
+    assert client.inserts == [table.name for table in TABLES]
+    assert current["calls"] >= 2 * len(TABLES)
+    assert publish_backtest_definition(
+        client, "run-1", _definition(), keeper=keeper, lease=lease) == digest
+    assert client.inserts == [table.name for table in TABLES]
+    current["value"] = False
+    with pytest.raises(KeeperUnavailable, match="no longer current"):
+        publish_backtest_definition(
+            client, "run-1", _definition(), keeper=keeper, lease=lease)
+
+
+def test_definition_publisher_resumes_exact_partial_rows_without_duplication(monkeypatch):
+    monkeypatch.setattr(journal_schema, "fixed_backtest_v2_preflight",
+                        lambda _client: None)
+    monkeypatch.setattr(journal_writer, "load_typed_run_context",
+                        lambda _client, _run_id: {
+                            "run_id": "run-1", "run_month": RUN_MONTH.isoformat(),
+                            "mode": "backtest", "session_date": "2026-08-18",
+                            "evaluation_interval_ms": 100,
+                            "market_plan_token": "certified-plan",
+                            "configuration_hash": "a" * 64,
+                        })
+    prepared = prepare_backtest_definition("run-1", _definition(), run_month=RUN_MONTH)
+    class Client:
+        tables = {table.name: [] for table in TABLES}
+        def execute(self, sql):
+            table = sql.split("arte.", 1)[1].split(" ", 1)[0]
+            if sql.startswith("SELECT "):
+                return "\n".join(json.dumps(row) for row in self.tables[table])
+            self.tables[table].extend(
+                json.loads(line) for line in
+                sql.split("FORMAT JSONEachRow\n", 1)[1].splitlines())
+            return ""
+    client = Client()
+    client.tables[TABLES[1].name] = [prepared["tickers"][0]]
+    keeper = object.__new__(KeeperOwnershipCoordinator)
+    keeper.portfolio_admission_lease_is_current = lambda *_a, **_k: True
+    lease = {"resource_id": "backtest-definition:run-1",
+             "owner_id": "owner-1", "epoch": 1}
+    publish_backtest_definition(client, "run-1", _definition(),
+                                keeper=keeper, lease=lease)
+    assert len(client.tables[TABLES[1].name]) == 2
+    client.tables[TABLES[1].name].append(prepared["tickers"][0])
+    with pytest.raises(ValueError, match="membership differs"):
+        publish_backtest_definition(client, "run-1", _definition(),
+                                    keeper=keeper, lease=lease)
+    client.tables[TABLES[1].name] = [prepared["tickers"][0]]
+    with pytest.raises(ValueError, match="commit differs"):
+        publish_backtest_definition(client, "run-1", _definition(),
+                                    keeper=keeper, lease=lease)
+    assert len(client.tables[TABLES[1].name]) == 1
+    conflicting = Client()
+    conflicting.tables = {table.name: [] for table in TABLES}
+    other = prepare_backtest_definition(
+        "run-1", _definition(tickers=("ZZZZ", "EFGH")), run_month=RUN_MONTH)
+    conflicting.tables[TABLES[1].name] = [other["tickers"][0]]
+    with pytest.raises(RuntimeError, match="conflicting or duplicate"):
+        publish_backtest_definition(conflicting, "run-1", _definition(),
+                                    keeper=keeper, lease=lease)
+    assert conflicting.tables[TABLES[0].name] == []

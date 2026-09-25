@@ -299,3 +299,119 @@ def load_backtest_definition(
             or not _HEX.fullmatch(str(run_context.get("configuration_hash") or ""))):
         raise RuntimeError("Backtest definition differs from shared run authority")
     return verified
+
+
+def publish_backtest_definition(client: Any, run_id: str,
+                                definition: Any, *, keeper: Any,
+                                lease: Mapping[str, Any]) -> str:
+    """Operator-fenced, retry-safe typed publication with the commit last.
+
+    The caller must already own the run's exclusive launch claim. This
+    function never builds market data and does not create tables or grants.
+    A partial insert is replayed by exact row identity, not overwritten.
+    """
+    from src.backend.backtest_market_data import ExecutionInterval
+    from src.trading_runtime.arte_journal_schema import fixed_backtest_v2_preflight
+    from src.trading_runtime.arte_journal_writer import (
+        _literal, _rows, load_typed_run_context,
+    )
+    from src.trading_runtime.keeper_ownership import (
+        KeeperOwnershipCoordinator, KeeperUnavailable,
+    )
+
+    resource_id = f"backtest-definition:{run_id}"
+    if (not isinstance(keeper, KeeperOwnershipCoordinator)
+            or not isinstance(lease, Mapping)
+            or lease.get("resource_id") != resource_id
+            or not isinstance(lease.get("owner_id"), str)
+            or not lease["owner_id"]
+            or type(lease.get("epoch")) is not int
+            or lease["epoch"] < 1):
+        raise ValueError("Backtest definition needs an exact Keeper launch claim")
+
+    def require_claim() -> None:
+        if not keeper.portfolio_admission_lease_is_current(
+                resource_id, owner_id=lease["owner_id"], epoch=lease["epoch"]):
+            raise KeeperUnavailable("Backtest definition launch claim is no longer current")
+
+    require_claim()
+    fixed_backtest_v2_preflight(client)
+    context = load_typed_run_context(client, run_id)
+    interval = ExecutionInterval.parse(definition.execution_interval)
+    if (context.get("mode") != "backtest"
+            or str(context.get("session_date")) != definition.session_date.isoformat()
+            or context.get("evaluation_interval_ms") != interval.milliseconds
+            or context.get("configuration_hash")
+            != definition.configuration_revision.get("content_hash")
+            or context.get("market_plan_token")
+            != definition.market_data_plan.get("token")):
+        raise RuntimeError("Backtest definition differs from the shared run context")
+    run_month = date.fromisoformat(str(context["run_month"]))
+    prepared = prepare_backtest_definition(run_id, definition, run_month=run_month)
+
+    def stored(table: TableContract) -> tuple[dict[str, Any], ...]:
+        columns = ",".join(name for name, _ in table.columns)
+        rows = _rows(client,
+            f"SELECT {columns} FROM arte.{table.name} "
+            f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
+        return tuple(_canonical_stored_row(table, row) for row in rows)
+
+    # A published commit is immutable authority. Never "repair" a missing
+    # child after it exists; that would make a previously incomplete run look
+    # complete by changing committed history.
+    if stored(COMMIT):
+        verified = load_backtest_definition(client, run_id, run_context=context)
+        require_claim()
+        if verified != prepared:
+            raise RuntimeError("Backtest definition commit conflicts with source")
+        return prepared["commit"]["definition_hash"]
+
+    family_plan = []
+    for table, expected in (
+        (DEFINITION, (prepared["definition"],)),
+        (TICKER, prepared["tickers"]),
+        (ASSIGNMENT, prepared["assignments"]),
+        (COMMIT, (prepared["commit"],)),
+    ):
+        identity = (lambda row: row["ordinal"]) if table in (TICKER, ASSIGNMENT) else (
+            lambda row: row["run_id"])
+        expected_rows = {identity(row): _canonical_stored_row(table, row)
+                         for row in expected}
+        actual = stored(table)
+        actual_rows: dict[Any, dict[str, Any]] = {}
+        for row in actual:
+            key = identity(row)
+            if key in actual_rows or key not in expected_rows or row != expected_rows[key]:
+                raise RuntimeError(f"Backtest {table.name} has conflicting or duplicate rows")
+            actual_rows[key] = row
+        missing = tuple(expected_rows[key] for key in expected_rows
+                        if key not in actual_rows)
+        family_plan.append((table, identity, expected_rows, missing))
+
+    # Inspect every existing family before writing even the parent row. A
+    # conflict in a later child must not create more orphaned rows.
+    for table, identity, expected_rows, missing in family_plan:
+        if missing:
+            columns = ",".join(name for name, _ in table.columns)
+            for offset in range(0, len(missing), 1024):
+                require_claim()
+                chunk = missing[offset:offset + 1024]
+                token = _digest((table.name, run_id,
+                                 tuple(row.get("content_hash") or row.get("definition_hash")
+                                       for row in chunk)))
+                body = "\n".join(canonical_json(row) for row in chunk)
+                client.execute(
+                    f"INSERT INTO arte.{table.name} ({columns}) "
+                    "SETTINGS async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+                    f"insert_deduplication_token={_literal(token)} FORMAT JSONEachRow\n{body}"
+                )
+                require_claim()
+            after = stored(table)
+            if (len(after) != len(expected_rows)
+                    or {identity(row): row for row in after} != expected_rows):
+                raise RuntimeError(f"Backtest {table.name} did not become durable")
+    verified = load_backtest_definition(client, run_id, run_context=context)
+    require_claim()
+    if verified != prepared:
+        raise RuntimeError("Backtest definition commit differs from source")
+    return prepared["commit"]["definition_hash"]
