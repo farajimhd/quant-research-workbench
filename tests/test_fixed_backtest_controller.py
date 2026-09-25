@@ -45,6 +45,27 @@ def test_backtest_start_rejects_before_legacy_journal_or_disk_write(tmp_path, mo
     assert not controller.run_dir.exists()
 
 
+def test_zero_source_native_candidates_fail_before_full_universe_read(monkeypatch):
+    from src.backend import replay_run_service
+
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(configuration_revision={"payload": {
+        "assignments": [],
+        "signal_activation": {"signal_streams": [{
+            "enabled": True, "signal_stream_id": "price-squeeze-early"}]},
+        "run_plan": {"signal_stream_ids": ["price-squeeze-early"],
+                     "activation": {"watchlist_policy": "not_required"}},
+    }})
+    controller._historical_external_signal_events = []
+    controller._historical_core_signal_plans = ()
+    controller._fixed_certified_market_plan = AsyncMock(return_value=object())
+    monkeypatch.setattr(replay_run_service, "_fixed_market_evidence_gaps", lambda _: ())
+    monkeypatch.setattr(market_data, "iter_market_day_rows", lambda *_a, **_k:
+                        pytest.fail("full-universe market read"))
+    with pytest.raises(RuntimeError, match="zero-candidate terminal authority is not typed"):
+        asyncio.run(controller._run_fixed_market_days())
+
+
 @pytest.mark.parametrize("interval,blocker_name", [
     ("100ms", "FIXED_EXECUTION_BLOCKER"),
     ("events", "EVENT_EXECUTION_BLOCKER"),

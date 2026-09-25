@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from hashlib import sha256
 import json
 
 import pytest
 
 from src.trading_runtime.arte_market_day_certification import (
-    TABLES, family_hash, verify_market_day_certificate,
+    TABLES, family_hash, prepare_market_day_certificate, verify_market_day_certificate,
 )
 
 
@@ -114,3 +115,36 @@ def test_population_time_and_unrequested_session_fail_closed() -> None:
     with pytest.raises(RuntimeError, match="Requested session"):
         verify_market_day_certificate(FakeReader(inventory()), BUILD,
                                       sessions=("2026-08-19",))
+
+
+def test_producer_preparation_preserves_zero_row_scope_without_writing() -> None:
+    plan = dict(requested=[DAY], units=[dict(source_date=DAY, ticker="TEST",
+        event_count=1, next_ordinal=2, last_ordinal=1)], population=[dict(
+        session_date=DAY, certificate=dict(snapshot_id="snapshot",
+        revision="preopen-tradable-snapshot-v3", source_hash=123,
+        available_at_utc="2026-08-18T07:00:00+00:00",
+        cutoff_utc="2026-08-18T08:00:00+00:00"))])
+    definition = dict(version="market-day-core-v5", plan=plan,
+                      calculation_source=PIN, rules_hash=PIN)
+    build_id = sha256(json.dumps(definition, sort_keys=True, separators=(",", ":"),
+                                 default=str).encode()).hexdigest()
+
+    class Ledger:
+        def unit(self, build, day, ticker, stage):
+            return dict(status="complete", attempt_id="attempt", source_hash="source",
+                        output_rows=0, output_hash="0")
+
+        def seed(self, build, day, ticker):
+            return dict(attempt_id="attempt", mode=0, predecessor_date="",
+                        prior_build_id="", prior_state_hash="")
+
+    prepared = prepare_market_day_certificate(definition, build_id, Ledger())
+    assert verify_market_day_certificate(FakeReader(prepared), build_id,
+                                         sessions=(DAY,)).scopes == ((DAY, "TEST"),)
+
+    class MissingStage(Ledger):
+        def unit(self, build, day, ticker, stage):
+            return None if stage == "bars" else super().unit(build, day, ticker, stage)
+
+    with pytest.raises(ValueError, match="lacks completed bars"):
+        prepare_market_day_certificate(definition, build_id, MissingStage())

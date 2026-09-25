@@ -3147,6 +3147,13 @@ class ReplayRunController:
             [event.occurrence for event in self._historical_external_signal_events],
             has_core_signal_plans=bool(getattr(self, "_historical_core_signal_plans", ())),
         )
+        if projection_tickers == ():
+            # The scanner certified no possible participant. An empty tuple
+            # must not fall through the truthy projection branch and stream
+            # the entire universe. A terminal empty-plan journal authority is
+            # not yet defined, so fail closed before any market read.
+            raise RuntimeError(
+                "Fixed Backtest zero-candidate terminal authority is not typed")
         execution_plan = plan
         if projection_tickers:
             from src.backend.backtest_market_data import project_market_day_plan

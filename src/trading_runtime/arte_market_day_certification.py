@@ -149,3 +149,88 @@ def _utc(value: str) -> datetime:
     if parsed.tzinfo is None:
         raise RuntimeError("Market-day population timestamp is not timezone-aware")
     return parsed.astimezone(timezone.utc)
+
+
+def prepare_market_day_certificate(definition: Mapping[str, Any], build_id: str,
+                                   ledger: Any) -> dict[str, tuple[dict[str, Any], ...]]:
+    """Pure producer-side preparation; intentionally does not publish a fence.
+
+    The caller must hold the producer's immutable source plan. A future writer
+    needs stale-owner fencing before any prepared row can become authoritative.
+    """
+    if not re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", build_id):
+        raise ValueError("Market-day build ID does not name a definition")
+    if not isinstance(definition, Mapping) or definition.get("version") != "market-day-core-v5":
+        raise ValueError("Market-day definition version is unsupported")
+    plan = definition.get("plan")
+    if not isinstance(plan, Mapping):
+        raise ValueError("Market-day definition lacks a typed source plan")
+    producer_digest = lambda value: sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+    definition_hash = producer_digest(definition)
+    if build_id.split("-", 1)[0] != definition_hash:
+        raise ValueError("Market-day build ID differs from its definition")
+    populations = {str(row["session_date"]): row for row in plan.get("population", ())}
+    if len(populations) != len(plan.get("population", ())):
+        raise ValueError("Market-day population has duplicate sessions")
+    units = plan.get("units", ())
+    if not units:
+        raise ValueError("Market-day definition has no planned scopes")
+    scopes: list[dict[str, Any]] = []
+    stages: list[dict[str, Any]] = []
+    seeds: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for unit in units:
+        day, ticker = str(unit["source_date"]), str(unit["ticker"])
+        key = (day, ticker)
+        if key in seen or day not in populations or not ticker:
+            raise ValueError("Market-day planned scope is duplicate or lacks dated population")
+        seen.add(key)
+        certificate = populations[day]["certificate"]
+        scopes.append(dict(build_id=build_id, session_date=day, ticker=ticker,
+            source_event_count=int(unit["event_count"]),
+            first_ordinal=int(unit["next_ordinal"]) - int(unit["event_count"]),
+            last_ordinal=int(unit["last_ordinal"]),
+            population_snapshot_id=str(certificate["snapshot_id"]),
+            population_revision=str(certificate["revision"]),
+            population_available_at=str(certificate["available_at_utc"]),
+            population_cutoff_at=str(certificate["cutoff_utc"]),
+            population_source_hash=str(certificate["source_hash"])))
+        for stage in sorted(STAGES):
+            product = ledger.unit(build_id, day, ticker, stage)
+            if not product or product["status"] != "complete":
+                raise ValueError(f"Market-day planned scope lacks completed {stage}: {day} {ticker}")
+            stages.append(dict(build_id=build_id, session_date=day, ticker=ticker,
+                stage=stage, attempt_id=str(product["attempt_id"]),
+                source_hash=str(product["source_hash"]),
+                output_rows=int(product["output_rows"]),
+                output_hash=str(product["output_hash"])))
+        seed = ledger.seed(build_id, day, ticker)
+        if not seed:
+            raise ValueError(f"Market-day planned scope lacks seed: {day} {ticker}")
+        seeds.append(dict(build_id=build_id, session_date=day, ticker=ticker,
+            attempt_id=str(seed["attempt_id"]), mode=int(seed["mode"]),
+            predecessor_date=str(seed["predecessor_date"]),
+            prior_build_id=str(seed["prior_build_id"]),
+            prior_state_hash=str(seed["prior_state_hash"])))
+    header = [dict(build_id=build_id, definition_hash=definition_hash,
+        version=str(definition["version"]),
+        calculation_source_hash=str(definition["calculation_source"]),
+        rules_hash=str(definition["rules_hash"]),
+        source_plan_hash=producer_digest(plan), scope_count=len(scopes),
+        scope_hash=family_hash(scopes))]
+    fence = [dict(build_id=build_id, definition_hash=definition_hash,
+        header_hash=family_hash(header), scope_count=len(scopes),
+        scope_hash=family_hash(scopes), stage_count=len(stages),
+        stage_hash=family_hash(stages), seed_count=len(seeds),
+        seed_hash=family_hash(seeds))]
+    prepared = dict(zip((table.name for table in TABLES),
+                        (header, scopes, stages, seeds, fence)))
+    # Share all structural checks with the cold reader before returning rows.
+    class _PreparedReader:
+        def execute(self, sql: str) -> str:
+            name = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]
+            return "\n".join(json.dumps(row) for row in prepared[name])
+    verify_market_day_certificate(_PreparedReader(), build_id,
+                                  sessions=tuple(str(day) for day in plan.get("requested", ())))
+    return {name: tuple(rows) for name, rows in prepared.items()}
