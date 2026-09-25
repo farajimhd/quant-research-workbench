@@ -16,7 +16,7 @@ from src.trading_runtime.arte_market_day_keeper import (
 )
 from src.trading_runtime.arte_market_day_source_plan import (
     TABLES as SOURCE_TABLES, recover_source_plan,
-    verify_canonical_source_plan_at_publication, verify_source_plan_storage,
+    verify_source_plan_storage,
 )
 
 
@@ -84,9 +84,8 @@ def publish_market_day_certificate(client: Any, source_client: Any,
     source_plan = recover_source_plan(
         source_rows, build_id,
         expected_hash=prepared["market_day_build_header_v1"][0]["source_plan_hash"])
-    verify_canonical_source_plan_at_publication(source_client, source_plan)
-    if not keeper.current(claim):
-        raise RuntimeError("Market-day claim changed during canonical source replay")
+    keeper.verify_source(claim, source_client, source_plan,
+        expected_hash=prepared["market_day_build_header_v1"][0]["source_plan_hash"])
     _placement(client)
     verify_source_plan_storage(client)
     for name in names[:-1]:

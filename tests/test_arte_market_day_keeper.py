@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from unittest.mock import patch
 
 import pytest
 
@@ -8,10 +9,20 @@ from src.trading_runtime.arte_market_day_keeper import (
     MarketDayKeeperAuthority, require_attested_inventory,
 )
 from src.trading_runtime.keeper_ownership import KeeperUnavailable
+from src.trading_runtime.arte_market_day_source_plan import _digest
+from test_arte_market_day_source_plan import plan as source_plan_fixture
 
 
 BUILD = "a" * 64
 DIGEST = "b" * 64
+SOURCE_PLAN = source_plan_fixture()
+SOURCE_HASH = _digest(SOURCE_PLAN)
+
+
+def verify_source(authority, claim):
+    with patch("scripts.build_market_day.source_plan", return_value=SOURCE_PLAN):
+        authority.verify_source(claim, object(), SOURCE_PLAN,
+                                expected_hash=SOURCE_HASH)
 
 
 class NoNodeError(Exception):
@@ -99,7 +110,7 @@ class FakeKeeper:
 
 
 def args():
-    return dict(definition_hash=DIGEST, source_plan_hash=DIGEST,
+    return dict(definition_hash=DIGEST, source_plan_hash=SOURCE_HASH,
                 source_inventory_hash=DIGEST, header_hash=DIGEST, scope_hash=DIGEST,
                 stage_hash=DIGEST, seed_hash=DIGEST)
 
@@ -109,6 +120,7 @@ def test_cas_proof_survives_owner_change_and_matches_only_exact_fence() -> None:
     authority = MarketDayKeeperAuthority(store)
     claim = authority.acquire(BUILD, "worker-a")
     assert claim is not None and claim.epoch == 1
+    verify_source(authority, claim)
     proof = authority.attest(claim, **args())
     require_attested_inventory(proof, {"build_id": BUILD, **args()})
     with pytest.raises(RuntimeError, match="matching Keeper"):
@@ -130,6 +142,7 @@ def test_owner_change_during_cas_cannot_attest() -> None:
     authority = MarketDayKeeperAuthority(store)
     claim = authority.acquire(BUILD, "worker-a")
     assert claim is not None
+    verify_source(authority, claim)
     holder = next(path for path in store.rows if path.endswith("/holder"))
     store.before_commit = lambda: store.rows.pop(holder)
     with pytest.raises(KeeperUnavailable, match="CAS proof conflicts"):
@@ -145,6 +158,9 @@ def test_proof_identity_rejects_delimiter_and_digest_conflict() -> None:
     assert claim is not None
     with pytest.raises(ValueError, match="digest"):
         authority.attest(claim, **{**args(), "seed_hash": "bad"})
+    with pytest.raises(KeeperUnavailable, match="lacks canonical source"):
+        authority.attest(claim, **args())
+    verify_source(authority, claim)
     authority.attest(claim, **args())
     with pytest.raises(KeeperUnavailable, match="conflicts"):
         authority.attest(claim, **{**args(), "seed_hash": "c" * 64})
@@ -155,6 +171,7 @@ def test_pre_source_parity_keeper_proof_version_is_not_admitted() -> None:
     authority = MarketDayKeeperAuthority(store)
     claim = authority.acquire(BUILD, "worker")
     assert claim is not None
+    verify_source(authority, claim)
     authority.attest(claim, **args())
     path = next(path for path in store.rows if path.endswith("/attestation"))
     value, stat = store.rows[path]

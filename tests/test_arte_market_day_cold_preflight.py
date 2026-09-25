@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -11,6 +12,9 @@ from src.trading_runtime.arte_market_day_cold_preflight import (
     verify_attested_market_products,
 )
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperAuthority
+from src.trading_runtime.arte_market_day_source_plan import (
+    TABLES as SOURCE_TABLES, recover_source_plan,
+)
 from test_arte_market_day_certification import BUILD, DAY, inventory
 from test_arte_market_day_keeper import FakeKeeper
 from test_arte_market_day_publisher import FakeClickHouse
@@ -24,6 +28,12 @@ def fixture():
     claim = keeper.acquire(BUILD, "worker")
     assert claim is not None
     fence = prepared["market_day_build_fence_v1"][0]
+    source_rows = {table.name: prepared[table.name] for table in SOURCE_TABLES}
+    source_plan = recover_source_plan(source_rows, BUILD,
+        expected_hash=fence["source_plan_hash"])
+    with patch("scripts.build_market_day.source_plan", return_value=source_plan):
+        keeper.verify_source(claim, object(), source_plan,
+                             expected_hash=fence["source_plan_hash"])
     keeper.attest(claim, definition_hash=fence["definition_hash"],
                   source_plan_hash=fence["source_plan_hash"],
                   source_inventory_hash=fence["source_inventory_hash"],

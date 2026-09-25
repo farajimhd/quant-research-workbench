@@ -74,8 +74,22 @@ class MarketDayKeeperAuthority:
 
     def __init__(self, client: Any) -> None:
         self.client = client
+        self._verified_source: dict[BuildClaim, str] = {}
         self._connected()
         client.ensure_path(_ROOT)
+
+    def verify_source(self, claim: BuildClaim, source_client: Any,
+                      source_plan: dict[str, Any], *, expected_hash: str) -> None:
+        """Bind one canonical producer replay to the current claim epoch."""
+        from src.trading_runtime.arte_market_day_source_plan import (
+            _digest, verify_canonical_source_plan_at_publication,
+        )
+        if not self.current(claim) or _digest(source_plan) != expected_hash:
+            raise KeeperUnavailable("Market-day source verification identity changed")
+        verify_canonical_source_plan_at_publication(source_client, source_plan)
+        if not self.current(claim):
+            raise KeeperUnavailable("Market-day claim changed during source verification")
+        self._verified_source[claim] = expected_hash
 
     def _connected(self) -> None:
         if not self.client.connected or self.client.client_id is None:
@@ -141,6 +155,8 @@ class MarketDayKeeperAuthority:
                                     ("/holder", "/epoch", "/attestation"))
         if not self.current(claim):
             raise KeeperUnavailable("Stale market-day owner cannot attest")
+        if self._verified_source.get(claim) != source_plan_hash:
+            raise KeeperUnavailable("Market-day owner lacks canonical source verification")
         try:
             held, holder_stat = self.client.get(holder)
             _, counter_stat = self.client.get(counter)
