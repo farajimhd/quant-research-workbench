@@ -201,6 +201,15 @@ def test_v2_writer_opt_in_uses_bounded_worker_and_never_v1_fence(monkeypatch):
         coalesce_batches=False)
     try:
         assert lane.journal_profile == "backtest_v2"
+        for submit, message in (
+            (lane.submit_portfolio_snapshot, "terminal suffix fence"),
+            (lane.submit_captured_portfolio_snapshot, "terminal suffix fence"),
+            (lambda value: lane.submit_admission(value, None), "live admission"),
+            (lambda value: lane.submit_portfolio_sync(value, None), "live portfolio sync"),
+        ):
+            with pytest.raises(RuntimeError, match=message):
+                submit(batch)
+        assert lane.metrics()["queue_depth"] == 0
         assert lane.submit(batch).result(timeout=3) == batch.batch_id
         assert lane.submit(next_batch).result(timeout=3) == next_batch.batch_id
         assert checked == [client]

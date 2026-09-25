@@ -2078,6 +2078,8 @@ class ArteJournalWriter:
         """Enqueue immutable recovery rows without ClickHouse I/O or waiting."""
         from src.trading_runtime.arte_portfolio_snapshot import PreparedPortfolioSnapshot
 
+        if self._journal_profile == "backtest_v2":
+            raise RuntimeError("V2 portfolio recovery requires the terminal suffix fence")
         if not isinstance(prepared, PreparedPortfolioSnapshot):
             raise TypeError("Portfolio journal submission requires prepared immutable rows")
         with self._submission_lock:
@@ -2101,6 +2103,8 @@ class ArteJournalWriter:
         """Queue a cheap immutable actor capture; normalize only on this worker."""
         from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
 
+        if self._journal_profile == "backtest_v2":
+            raise RuntimeError("V2 portfolio recovery requires the terminal suffix fence")
         if not isinstance(captured, CapturedPortfolioSnapshot):
             raise TypeError("Portfolio journal submission requires a frozen capture")
         with self._submission_lock:
@@ -2149,6 +2153,8 @@ class ArteJournalWriter:
         """
         from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
 
+        if self._journal_profile == "backtest_v2":
+            raise RuntimeError("V2 Backtest cannot publish live admission units")
         if not isinstance(batch, TypedJournalBatch) or not isinstance(
             captured, CapturedPortfolioSnapshot
         ):
@@ -2183,6 +2189,8 @@ class ArteJournalWriter:
         """Queue reconciliation event and snapshot behind one late durable fence."""
         from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
 
+        if self._journal_profile == "backtest_v2":
+            raise RuntimeError("V2 Backtest cannot publish live portfolio sync")
         if (not isinstance(batch, TypedJournalBatch)
                 or not isinstance(captured, CapturedPortfolioSnapshot)
                 or batch.run_id != self._run_id or captured.run_id != self._run_id
