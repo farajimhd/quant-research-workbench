@@ -4,7 +4,15 @@ import json
 import pytest
 
 from pipelines.market_sip.events.liquidity_execution_price_producer import _digest
-from src.trading_runtime.eligible_price_contract import legacy_summary_digest
+from src.trading_runtime.eligible_price_contract import (
+    legacy_summary_digest, volumes_match,
+)
+
+
+def test_volume_reduction_order_tolerance_preserves_material_mismatch():
+    assert volumes_match(31676474.654285185, 31676474.654286593)
+    assert not volumes_match(31676474.654285185, 31676474.66)
+    assert not volumes_match(float("nan"), 1.0)
 from src.backend.backtest_liquidity_price import (
     PriceLevelPlan, PriceLevelUnit, certify_price_level_plan,
 )

@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 from pipelines.market_sip.events import liquidity_execution_price_sql as sql
 from pipelines.market_sip.events.market_day_sql import literal
 from src.trading_runtime.eligible_price_contract import (
-    matches_summary_digest, summary_digest,
+    matches_summary_digest, summary_digest, volumes_match,
 )
 
 
@@ -87,8 +87,8 @@ def publish_unit(client: Any, *, build_id: str, day: date, ticker: str,
             differences.append("row_count")
         if int(certificate["eligible_bucket_count"]) != int(result["eligible_bucket_count"]):
             differences.append("eligible_bucket_count")
-        if abs(float(certificate["total_execution_volume"])
-               - float(result["total_execution_volume"])) > 1e-6:
+        if not volumes_match(certificate["total_execution_volume"],
+                             result["total_execution_volume"]):
             differences.append("total_execution_volume")
         if not matches_summary_digest(
                 result, content_hash=certificate["content_hash"],
@@ -120,8 +120,8 @@ def publish_unit(client: Any, *, build_id: str, day: date, ticker: str,
             or int(certificates[0]["price_row_count"]) != int(result["row_count"])
             or int(certificates[0]["eligible_bucket_count"])
             != int(result["eligible_bucket_count"])
-            or abs(float(certificates[0]["total_execution_volume"])
-                   - float(result["total_execution_volume"])) > 1e-6
+            or not volumes_match(certificates[0]["total_execution_volume"],
+                                 result["total_execution_volume"])
             or certificates[0]["content_hash"] != digest):
         raise RuntimeError("Eligible-price coverage publication was not exact")
     return "published"

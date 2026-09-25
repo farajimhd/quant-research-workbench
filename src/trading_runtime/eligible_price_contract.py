@@ -7,7 +7,16 @@ stable row identities and their per-price persisted values instead.
 from __future__ import annotations
 
 from hashlib import sha256
+import math
 from typing import Any, Mapping
+
+
+def volumes_match(published: Any, observed: Any) -> bool:
+    """Allow Float64 reduction-order noise; exact persisted rows are hash sealed."""
+    left, right = float(published), float(observed)
+    return (math.isfinite(left) and math.isfinite(right) and left >= 0
+            and right >= 0 and math.isclose(left, right, rel_tol=1e-12,
+                                            abs_tol=1e-6))
 
 
 def summary_digest(row: Mapping[str, Any]) -> str:

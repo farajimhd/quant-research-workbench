@@ -14,7 +14,9 @@ from typing import Any
 from uuid import UUID
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, _literal
-from src.trading_runtime.eligible_price_contract import matches_summary_digest
+from src.trading_runtime.eligible_price_contract import (
+    matches_summary_digest, volumes_match,
+)
 
 
 _TABLE = "arte.liquidity_execution_price_100ms_v1"
@@ -156,8 +158,8 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
                     or int(row["row_count"]) != int(row["unique_keys"])
                     or int(row["row_count"]) != unit.price_row_count
                     or int(row["eligible_bucket_count"]) != unit.eligible_bucket_count
-                    or abs(float(row["total_execution_volume"])
-                           - unit.total_execution_volume) > 1e-6
+                    or not volumes_match(row["total_execution_volume"],
+                                         unit.total_execution_volume)
                     or not matches_summary_digest(
                         row, content_hash=unit.content_hash,
                         published_volume=unit.total_execution_volume)):
