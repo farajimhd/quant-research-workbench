@@ -1,0 +1,88 @@
+"""Fake transport tests: no ClickHouse or Keeper connection is made."""
+import json
+from uuid import uuid4
+
+import pytest
+
+from src.backend.live_assignment_state_snapshot import STATE_COMMIT
+from src.backend.live_assignment_state_storage import (
+    ClickHouseAssignmentStateStorage, _row, state_storage_preflight,
+)
+
+
+class Client:
+    def __init__(self, result=""):
+        self.result = result
+        self.calls = []
+
+    def execute(self, sql, **kwargs):
+        self.calls.append((sql, kwargs))
+        return self.result
+
+
+def _identity():
+    return dict(run_id="live-run", assignment_id="assignment-1", revision=2,
+                snapshot_id=str(uuid4()), session="2026-08-18")
+
+
+def _commit(identity):
+    return {**identity, "grouped_present": False, "child_count": 4,
+            "child_hash": "a" * 64, "content_hash": "b" * 64}
+
+
+def test_exact_state_commit_insert_uses_scalar_columns_and_stable_query_id():
+    client = Client()
+    storage = ClickHouseAssignmentStateStorage(client)
+    row = _commit(_identity())
+    storage.insert(STATE_COMMIT.name, [row])
+    first_sql, first_options = client.calls[0]
+    assert first_sql.startswith(f"INSERT INTO arte.{STATE_COMMIT.name} (")
+    assert "FORMAT JSONEachRow\n" in first_sql
+    assert json.loads(first_sql.split("FORMAT JSONEachRow\n", 1)[1]) == row
+    assert first_options["query_id"]
+    storage.insert(STATE_COMMIT.name, [row])
+    assert client.calls[1] == client.calls[0]
+    assert "JSON" not in {kind for _, kind in STATE_COMMIT.columns}
+
+
+def test_state_read_scopes_identity_and_normalizes_clickhouse_bool():
+    identity = _identity()
+    row = _commit(identity)
+    wire = {**row, "grouped_present": 0}
+    client = Client(json.dumps(wire) + "\n")
+    result = ClickHouseAssignmentStateStorage(client).read(STATE_COMMIT.name, identity)
+    assert result == [row]
+    sql, options = client.calls[0]
+    assert options == {}
+    assert f"FROM arte.{STATE_COMMIT.name}" in sql
+    assert "assignment_id='assignment-1'" in sql
+    assert "revision=2" in sql or "revision='2'" in sql
+    client.result = json.dumps({**wire, "assignment_id": "other"}) + "\n"
+    with pytest.raises(ValueError, match="another snapshot"):
+        ClickHouseAssignmentStateStorage(client).read(STATE_COMMIT.name, identity)
+
+
+def test_state_transport_rejects_unknown_table_types_and_mixed_identity():
+    client = Client()
+    storage = ClickHouseAssignmentStateStorage(client)
+    row = _commit(_identity())
+    with pytest.raises(ValueError, match="allowlisted"):
+        storage.insert("arte.bars_v1", [row])
+    with pytest.raises(ValueError, match="mixes snapshot"):
+        storage.insert(STATE_COMMIT.name, [row, {**row, "revision": 3}])
+    with pytest.raises(ValueError, match="not a valid"):
+        _row(STATE_COMMIT, {**row, "child_count": True})
+    with pytest.raises(ValueError, match="columns differ"):
+        _row(STATE_COMMIT, {**row, "checkpoint_json": "{}"})
+    assert client.calls == []
+
+
+def test_state_storage_preflight_is_read_only(monkeypatch):
+    observed = []
+    monkeypatch.setattr("src.backend.live_assignment_state_storage.storage_preflight",
+                        lambda client, *, tables: observed.append((client, tables)))
+    client = Client()
+    state_storage_preflight(client)
+    assert observed and observed[0][0] is client
+    assert STATE_COMMIT in observed[0][1]
+    assert client.calls == []
