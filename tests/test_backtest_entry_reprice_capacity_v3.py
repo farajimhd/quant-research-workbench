@@ -124,12 +124,12 @@ def test_capacity_projection_rejects_unmodeled_source_and_unclosed_reasons():
                 attempt_id=ATTEMPT, batch_id=BATCH)
 
 
-def test_other_portfolio_reprice_variant_remains_fail_closed():
+def test_unmodeled_portfolio_reprice_variant_remains_fail_closed():
     from src.backend.backtest_typed_projection import project_pending_backtest_v3_prefix
 
     journal = BacktestMemoryJournal(run_id=RUN)
     journal.append(run_id=RUN, category="portfolio_management",
-                   entity_type="entry_reprice_rejected", entity_id="intent-1",
+                   entity_type="entry_reprice_anomaly", entity_id="intent-1",
                    account_id="DU1", event_time=AT,
                    payload={"reason": "invalid_protection_at_reprice",
                             "detail": "stop unavailable", "price": 10.0,

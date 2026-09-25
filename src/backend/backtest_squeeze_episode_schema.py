@@ -13,6 +13,7 @@ from src.backend.backtest_broker_shortability_v3 import SHORT_ORDER_SKIP
 from src.backend.backtest_broker_policy_v3 import POLICY_EVENT, MESSAGE as POLICY_MESSAGE
 from src.backend.backtest_entry_reprice_deferred_v3 import DEFERRED as ENTRY_REPRICE_DEFERRED
 from src.backend.backtest_entry_reprice_capacity_v3 import TABLES as ENTRY_REPRICE_CAPACITY_TABLES
+from src.backend.backtest_entry_reprice_rejected_v3 import REJECTED as ENTRY_REPRICE_REJECTED
 
 BROKER_OMS_TABLES = (SHORT_ORDER_SKIP, POLICY_EVENT, POLICY_MESSAGE,
                      ENTRY_REPRICE_DEFERRED)
@@ -79,6 +80,8 @@ _V3_EXTENSION = (
     ("entry_reprice_capacity_hash", "FixedString(64)"),
     ("entry_reprice_capacity_reason_count", "UInt32"),
     ("entry_reprice_capacity_reason_hash", "FixedString(64)"),
+    ("entry_reprice_rejected_count", "UInt32"),
+    ("entry_reprice_rejected_hash", "FixedString(64)"),
 )
 SQUEEZE_COMMIT_V3 = TableContract(
     "trading_commit_v3",
@@ -94,7 +97,22 @@ def staged_v3_ddl() -> tuple[str, ...]:
             *(table.ddl() for table in TRADE_PROPOSAL_TABLES),
             *(table.ddl() for table in BROKER_OMS_TABLES),
             *(table.ddl() for table in ENTRY_REPRICE_CAPACITY_TABLES),
+            ENTRY_REPRICE_REJECTED.ddl(),
             SQUEEZE_COMMIT_V3.ddl())
+
+
+def staged_entry_reprice_rejected_ddl() -> tuple[str, ...]:
+    """Review-only additive DDL; operator must prove the V3 fence is empty."""
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    return (
+        ENTRY_REPRICE_REJECTED.ddl(),
+        "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+        "entry_reprice_rejected_count UInt32 DEFAULT 0 "
+        "AFTER entry_reprice_capacity_reason_hash",
+        "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+        f"entry_reprice_rejected_hash FixedString(64) DEFAULT '{empty_hash}' "
+        "AFTER entry_reprice_rejected_count",
+    )
 
 
 def staged_entry_reprice_capacity_ddl() -> tuple[str, ...]:

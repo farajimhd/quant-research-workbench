@@ -35,6 +35,7 @@ from src.backend.backtest_portfolio_control_v3 import CONTROL as PORTFOLIO_CONTR
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES,
+    ENTRY_REPRICE_REJECTED,
 )
 from src.trading_runtime.journal_contract import canonical_json
 
@@ -52,6 +53,7 @@ _CONTRACTS.update({table.name: table for table in (
 _CONTRACTS.update({table.name: table for table in TRADE_PROPOSAL_TABLES})
 _CONTRACTS.update({table.name: table for table in BROKER_OMS_TABLES})
 _CONTRACTS.update({table.name: table for table in ENTRY_REPRICE_CAPACITY_TABLES})
+_CONTRACTS[ENTRY_REPRICE_REJECTED.name] = ENTRY_REPRICE_REJECTED
 
 
 def _without_text_prefix(value: str) -> str:
@@ -267,6 +269,7 @@ class V3SqueezeBatch:
     entry_reprice_deferred: tuple[Mapping[str, Any], ...] = ()
     entry_reprice_capacities: tuple[Mapping[str, Any], ...] = ()
     entry_reprice_capacity_reasons: tuple[Mapping[str, Any], ...] = ()
+    entry_reprice_rejections: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.base.status != "running":
@@ -288,7 +291,8 @@ class V3SqueezeBatch:
             (name, MappingProxyType(dict(row))) for name, row in self.trade_proposal_rows))
         for family in ("short_order_skips", "broker_reply_policy_events",
                        "broker_reply_policy_messages", "entry_reprice_deferred",
-                       "entry_reprice_capacities", "entry_reprice_capacity_reasons"):
+                       "entry_reprice_capacities", "entry_reprice_capacity_reasons",
+                       "entry_reprice_rejections"):
             object.__setattr__(self, family, tuple(
                 MappingProxyType(dict(row)) for row in getattr(self, family)))
 
@@ -301,6 +305,7 @@ def _sealed_families(
     v3_reply_policy_ids: tuple[str, ...] = (),
     v3_reprice_deferred_ids: tuple[str, ...] = (),
     v3_reprice_capacity_ids: tuple[str, ...] = (),
+    v3_reprice_rejected_ids: tuple[str, ...] = (),
     v3_reconciliation: bool = False,
 ) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
     """Validate and hash the immutable snapshot on the persistence lane."""
@@ -394,7 +399,8 @@ def _sealed_families(
     expected_details = _EVENT_DETAILS
     if (v3_episode_ids or v3_control_ids or v3_proposal_ids
             or v3_short_skip_ids or v3_reply_policy_ids
-            or v3_reprice_deferred_ids or v3_reprice_capacity_ids):
+            or v3_reprice_deferred_ids or v3_reprice_capacity_ids
+            or v3_reprice_rejected_ids):
         expected_details = {**_EVENT_DETAILS,
             ("market_discovery_signal", "signal_occurrence"):
                 SQUEEZE_EPISODE.name,
@@ -413,7 +419,9 @@ def _sealed_families(
             ("order_management", "entry_reprice_deferred"):
                 BROKER_OMS_TABLES[3].name,
             ("portfolio_management", "entry_reprice_capacity"):
-                ENTRY_REPRICE_CAPACITY_TABLES[0].name}
+                ENTRY_REPRICE_CAPACITY_TABLES[0].name,
+            ("portfolio_management", "entry_reprice_rejected"):
+                ENTRY_REPRICE_REJECTED.name}
         for record_id in v3_episode_ids:
             identity = str(UUID(str(record_id)))
             if identity in details_by_record:
@@ -434,6 +442,7 @@ def _sealed_families(
             (v3_reply_policy_ids, BROKER_OMS_TABLES[1].name),
             (v3_reprice_deferred_ids, BROKER_OMS_TABLES[3].name),
             (v3_reprice_capacity_ids, ENTRY_REPRICE_CAPACITY_TABLES[0].name),
+            (v3_reprice_rejected_ids, ENTRY_REPRICE_REJECTED.name),
         ):
             for record_id in record_ids:
                 identity = str(UUID(str(record_id)))
@@ -1479,7 +1488,8 @@ def publish_typed_squeeze_batch_v3(
         broker_reply_policy_messages=unit.broker_reply_policy_messages,
         entry_reprice_deferred=unit.entry_reprice_deferred,
         entry_reprice_capacities=unit.entry_reprice_capacities,
-        entry_reprice_capacity_reasons=unit.entry_reprice_capacity_reasons)
+        entry_reprice_capacity_reasons=unit.entry_reprice_capacity_reasons,
+        entry_reprice_rejections=unit.entry_reprice_rejections)
 
 
 def _publish_typed_batch(
@@ -1497,6 +1507,7 @@ def _publish_typed_batch(
     entry_reprice_deferred: tuple[Mapping[str, Any], ...] | None = None,
     entry_reprice_capacities: tuple[Mapping[str, Any], ...] | None = None,
     entry_reprice_capacity_reasons: tuple[Mapping[str, Any], ...] | None = None,
+    entry_reprice_rejections: tuple[Mapping[str, Any], ...] | None = None,
 ) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
     if batch.signal_evidence_nodes:
@@ -1513,7 +1524,8 @@ def _publish_typed_batch(
             or broker_reply_policy_messages is not None
             or entry_reprice_deferred is not None
             or entry_reprice_capacities is not None
-            or entry_reprice_capacity_reasons is not None):
+            or entry_reprice_capacity_reasons is not None
+            or entry_reprice_rejections is not None):
         raise ValueError("V3 child families require a V3-only commit")
     if journal_profile == "backtest_v3" and (
             squeeze_episodes is None or reservation_reasons is None
@@ -1525,7 +1537,8 @@ def _publish_typed_batch(
             or broker_reply_policy_messages is None
             or entry_reprice_deferred is None
             or entry_reprice_capacities is None
-            or entry_reprice_capacity_reasons is None):
+            or entry_reprice_capacity_reasons is None
+            or entry_reprice_rejections is None):
         raise ValueError("V3 commit requires explicit closed child families")
     if journal_profile in {"backtest_v2", "backtest_v3"} and batch.status != "running":
         raise ValueError("Terminal Backtest requires separate anchored V2 publication")
@@ -1567,6 +1580,8 @@ def _publish_typed_batch(
             if journal_profile == "backtest_v3" else (),
         v3_reprice_capacity_ids=tuple(str(row["record_id"]) for row in entry_reprice_capacities or ())
             if journal_profile == "backtest_v3" else (),
+        v3_reprice_rejected_ids=tuple(str(row["record_id"]) for row in entry_reprice_rejections or ())
+            if journal_profile == "backtest_v3" else (),
         v3_reconciliation=journal_profile == "backtest_v3")
     if journal_profile == "backtest_v3":
         from src.backend.backtest_squeeze_episode_v3 import seal_squeeze_family_v3
@@ -1581,6 +1596,7 @@ def _publish_typed_batch(
             broker_reply_policy_messages or (), entry_reprice_deferred or ()))
         capacity_rows = tuple(tuple(dict(row) for row in family) for family in (
             entry_reprice_capacities or (), entry_reprice_capacity_reasons or ()))
+        rejected_rows = tuple(dict(row) for row in entry_reprice_rejections or ())
         selected_hashes = {row["policy_hash"] for row in control_rows
                            if row["control_event"] == "portfolio_policy_selected"}
         supplied = {selection.policy_hash: selection.policy
@@ -1605,7 +1621,8 @@ def _publish_typed_batch(
                 "broker_reply_policy_message_count", "broker_reply_policy_message_hash",
                 "entry_reprice_deferred_count", "entry_reprice_deferred_hash",
                 "entry_reprice_capacity_count", "entry_reprice_capacity_hash",
-                "entry_reprice_capacity_reason_count", "entry_reprice_capacity_reason_hash"}},
+                "entry_reprice_capacity_reason_count", "entry_reprice_capacity_reason_hash",
+                "entry_reprice_rejected_count", "entry_reprice_rejected_hash"}},
              "run_id": batch.run_id, "batch_id": batch.batch_id},
             v3_rows, families[0][1], reservation_reasons=reason_rows,
             parent_reservations=reservation_parents,
@@ -1618,7 +1635,8 @@ def _publish_typed_batch(
             broker_reply_policy_messages=broker_oms_rows[2],
             entry_reprice_deferred=broker_oms_rows[3],
             entry_reprice_capacities=capacity_rows[0],
-            entry_reprice_capacity_reasons=capacity_rows[1])
+            entry_reprice_capacity_reasons=capacity_rows[1],
+            entry_reprice_rejections=rejected_rows)
     else:
         v3_rows = ()
         reason_rows = ()
@@ -1629,6 +1647,7 @@ def _publish_typed_batch(
         proposal_rows = ()
         broker_oms_rows = ((), (), (), ())
         capacity_rows = ((), ())
+        rejected_rows = ()
     _verify_commission_links(client, batch, families, journal_profile=journal_profile)
     _verify_exact_intent_uses(client, batch, families, journal_profile=journal_profile)
     _verify_order_context_links(client, batch, families, journal_profile=journal_profile)
@@ -1786,6 +1805,18 @@ def _publish_typed_batch(
                         dispatch_sequence=batch.last_sequence)
                 actual_rows = _rows(client, query)
             actual_capacity.append(actual_rows)
+        rejected_columns = ",".join(name for name, _ in ENTRY_REPRICE_REJECTED.columns)
+        rejected_query = (
+            f"SELECT {rejected_columns} FROM arte.{ENTRY_REPRICE_REJECTED.name} "
+            f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
+        actual_rejected = _rows(client, rejected_query)
+        if not actual_rejected and rejected_rows:
+            _insert(client, ENTRY_REPRICE_REJECTED.name, rejected_rows,
+                    f"{batch.batch_id}:{ENTRY_REPRICE_REJECTED.name}",
+                    journal_profile=journal_profile,
+                    dispatch_batch_id=batch.batch_id,
+                    dispatch_sequence=batch.last_sequence)
+            actual_rejected = _rows(client, rejected_query)
         # The family verifier also rejects missing, duplicate and extra children.
         base_stub = {name: "" for name, _ in SQUEEZE_COMMIT_V3.columns
                      if name not in {"backtest_squeeze_episode_count",
@@ -1809,7 +1840,9 @@ def _publish_typed_batch(
                                      "entry_reprice_capacity_count",
                                      "entry_reprice_capacity_hash",
                                      "entry_reprice_capacity_reason_count",
-                                     "entry_reprice_capacity_reason_hash"}}
+                                     "entry_reprice_capacity_reason_hash",
+                                     "entry_reprice_rejected_count",
+                                     "entry_reprice_rejected_hash"}}
         base_stub.update(run_id=batch.run_id, batch_id=batch.batch_id)
         child_seal = seal_squeeze_family_v3(
             base_stub, v3_rows, families[0][1],
@@ -1824,7 +1857,8 @@ def _publish_typed_batch(
             broker_reply_policy_messages=broker_oms_rows[2],
             entry_reprice_deferred=broker_oms_rows[3],
             entry_reprice_capacities=capacity_rows[0],
-            entry_reprice_capacity_reasons=capacity_rows[1])
+            entry_reprice_capacity_reasons=capacity_rows[1],
+            entry_reprice_rejections=rejected_rows)
         try:
             verified_children = verify_squeeze_family_v3(
                 child_seal, actual_children, families[0][1], stored_utc=True,
@@ -1839,7 +1873,8 @@ def _publish_typed_batch(
                 broker_reply_policy_messages=actual_broker_oms[2],
                 entry_reprice_deferred=actual_broker_oms[3],
                 entry_reprice_capacities=actual_capacity[0],
-                entry_reprice_capacity_reasons=actual_capacity[1])
+                entry_reprice_capacity_reasons=actual_capacity[1],
+                entry_reprice_rejections=actual_rejected)
         except ValueError as exc:
             raise RuntimeError("V3 child families differ from durable readback") from exc
         if sorted((r["record_id"], r["content_hash"]) for r in verified_children) != sorted(
@@ -1874,7 +1909,8 @@ def _publish_typed_batch(
             broker_reply_policy_messages=broker_oms_rows[2],
             entry_reprice_deferred=broker_oms_rows[3],
             entry_reprice_capacities=capacity_rows[0],
-            entry_reprice_capacity_reasons=capacity_rows[1])
+            entry_reprice_capacity_reasons=capacity_rows[1],
+            entry_reprice_rejections=rejected_rows)
     expected = {key: value for key, value in commit.items() if key not in ("run_month", "committed_at")}
     if existing and (len(existing) != 1 or existing[0] != expected):
         raise RuntimeError("Typed journal commit conflicts with an existing batch")
@@ -1948,6 +1984,12 @@ def _publish_typed_batch(
                         token=f"{batch.batch_id}:{capacity_table.name}",
                         required=required, batch_id=batch.batch_id,
                         batch_last_sequence=batch.last_sequence)
+            if rejected_rows:
+                dispatch.seal_verified_operation(
+                    run_id=batch.run_id, table=ENTRY_REPRICE_REJECTED.name,
+                    token=f"{batch.batch_id}:{ENTRY_REPRICE_REJECTED.name}",
+                    required=required, batch_id=batch.batch_id,
+                    batch_last_sequence=batch.last_sequence)
         table = _profile_table("trading_commit_v1", journal_profile)
         dispatch.seal_verified_operation(
             run_id=batch.run_id, table=table,
@@ -1979,7 +2021,10 @@ def _publish_typed_batch(
             if journal_profile == "backtest_v3" and rows) + tuple(
             (table.name, f"{batch.batch_id}:{table.name}")
             for table, rows in zip(ENTRY_REPRICE_CAPACITY_TABLES, capacity_rows)
-            if journal_profile == "backtest_v3" and rows) + ((
+            if journal_profile == "backtest_v3" and rows) + (
+            ((ENTRY_REPRICE_REJECTED.name,
+              f"{batch.batch_id}:{ENTRY_REPRICE_REJECTED.name}"),)
+            if journal_profile == "backtest_v3" and rejected_rows else ()) + ((
             table, f"{batch.batch_id}:{table}:commit"),)
         dispatch.compact_verified_batch(
             run_id=batch.run_id, batch_id=batch.batch_id,
@@ -3023,7 +3068,8 @@ class ArteJournalWriter:
                         broker_reply_policy_messages=unit.broker_reply_policy_messages,
                         entry_reprice_deferred=unit.entry_reprice_deferred,
                         entry_reprice_capacities=unit.entry_reprice_capacities,
-                        entry_reprice_capacity_reasons=unit.entry_reprice_capacity_reasons)
+                        entry_reprice_capacity_reasons=unit.entry_reprice_capacity_reasons,
+                        entry_reprice_rejections=unit.entry_reprice_rejections)
                 elif isinstance(group[0][0], TypedJournalBatch):
                     batch = _coalesce_unpublished(tuple(row for row, _ in group))
                     if self._journal_profile == "v1":

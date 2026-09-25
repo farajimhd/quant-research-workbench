@@ -26,12 +26,13 @@ from src.trading_runtime.arte_journal_schema import (
     STORAGE_POLICY, TableContract, fixed_backtest_v2_contracts, storage_preflight,
 )
 from src.backend.backtest_squeeze_episode_schema import (
-    BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES, PORTFOLIO_CONTROL,
+    BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
+    PORTFOLIO_CONTROL,
     RECONCILIATION_DIFFERENCE, RESERVATION_REASON,
     SQUEEZE_COMMIT_V3, staged_portfolio_control_ddl,
     staged_reconciliation_difference_ddl, staged_reservation_reason_ddl,
     staged_trade_proposal_ddl, staged_broker_oms_ddl,
-    staged_entry_reprice_capacity_ddl,
+    staged_entry_reprice_capacity_ddl, staged_entry_reprice_rejected_ddl,
 )
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.live_plan_membership import TABLES as LIVE_PLAN_MEMBERSHIP_TABLES
@@ -56,6 +57,53 @@ _CAPACITY_COLUMNS = frozenset({
     "entry_reprice_capacity_count", "entry_reprice_capacity_hash",
     "entry_reprice_capacity_reason_count", "entry_reprice_capacity_reason_hash",
 })
+_REJECTED_COLUMNS = frozenset({
+    "entry_reprice_rejected_count", "entry_reprice_rejected_hash",
+})
+
+
+def upgrade_v3_entry_reprice_rejected(client: object, *, apply: bool) -> str:
+    """Install refusal fact only after an exact zero-row V3 fence proof."""
+    actual = tuple((row["name"], row["type"]) for row in (
+        json.loads(line) for line in client.execute(
+            "SELECT name,type FROM system.columns WHERE database='arte' "
+            "AND table='trading_commit_v3' ORDER BY position FORMAT JSONEachRow"
+        ).splitlines() if line.strip()))
+    full = SQUEEZE_COMMIT_V3.columns
+    start = next(i for i, (name, _) in enumerate(full)
+                 if name == "entry_reprice_rejected_count")
+    suffix = full[start:-3]
+    if actual not in {full[:start] + suffix[:i] + full[-3:]
+                      for i in range(len(suffix) + 1)}:
+        raise RuntimeError("V3 refusal commit suffix is not exact")
+    present = len(actual) - (len(full) - len(suffix))
+    storage_preflight(client, tables=(TableContract(
+        SQUEEZE_COMMIT_V3.name, actual, SQUEEZE_COMMIT_V3.partition,
+        SQUEEZE_COMMIT_V3.order),))
+    exists = client.execute(
+        "SELECT count() FROM system.tables WHERE database='arte' "
+        f"AND name='{ENTRY_REPRICE_REJECTED.name}'").strip()
+    if exists not in {"0", "1"}:
+        raise RuntimeError("V3 refusal table inventory is ambiguous")
+    if exists == "1":
+        storage_preflight(client, tables=(ENTRY_REPRICE_REJECTED,))
+    if present == len(suffix) and exists == "1":
+        return "verified"
+    if client.execute("SELECT count() FROM arte.trading_commit_v3").strip() != "0":
+        raise RuntimeError("V3 commit has rows; versioned migration required")
+    if exists == "1" and client.execute(
+            f"SELECT count() FROM arte.{ENTRY_REPRICE_REJECTED.name}").strip() != "0":
+        raise RuntimeError("V3 refusal fact has rows; no ALTER attempted")
+    if not apply:
+        return "planned"
+    ddls = staged_entry_reprice_rejected_ddl()
+    if exists == "0":
+        client.execute(ddls[0])
+        storage_preflight(client, tables=(ENTRY_REPRICE_REJECTED,))
+    for ddl in ddls[1 + present:]:
+        client.execute(ddl)
+    storage_preflight(client, tables=(ENTRY_REPRICE_REJECTED, SQUEEZE_COMMIT_V3))
+    return "upgraded"
 
 
 def install_live_plan_membership(client: object, *, apply: bool) -> str:
@@ -117,11 +165,12 @@ def upgrade_v3_entry_reprice_capacity(client: object, *, apply: bool) -> str:
     full = SQUEEZE_COMMIT_V3.columns
     start = next(i for i, (name, _) in enumerate(full)
                  if name == "entry_reprice_capacity_count")
-    suffix = full[start:-3]
+    suffix = full[start:start + 4]
     if actual not in {full[:start] + suffix[:i] + full[-3:]
-                      for i in range(len(suffix) + 1)}:
+                      for i in range(len(suffix) + 1)} | {full}:
         raise RuntimeError("V3 capacity commit suffix is not exact")
-    present = len(actual) - (len(full) - len(suffix))
+    present = (len(suffix) if actual == full
+               else len(actual) - (len(full) - len(suffix) - len(_REJECTED_COLUMNS)))
     storage_preflight(client, tables=(TableContract(
         SQUEEZE_COMMIT_V3.name, actual, SQUEEZE_COMMIT_V3.partition,
         SQUEEZE_COMMIT_V3.order),))
@@ -153,7 +202,9 @@ def upgrade_v3_entry_reprice_capacity(client: object, *, apply: bool) -> str:
     for ddl in ddls[len(ENTRY_REPRICE_CAPACITY_TABLES) + present:]:
         client.execute(ddl)
     storage_preflight(client, tables=ENTRY_REPRICE_CAPACITY_TABLES +
-                      (SQUEEZE_COMMIT_V3,))
+                      (TableContract(SQUEEZE_COMMIT_V3.name,
+                       full if actual == full else full[:start] + suffix + full[-3:],
+                       SQUEEZE_COMMIT_V3.partition, SQUEEZE_COMMIT_V3.order),))
     return "upgraded"
 
 
@@ -169,10 +220,12 @@ def upgrade_v3_broker_oms(client: object, *, apply: bool) -> str:
                  if name == "broker_short_order_skip_count")
     suffix = full[start:start + 8]
     if actual not in {full[:start] + suffix[:i] + full[-3:]
-                      for i in range(len(suffix) + 1)} | {full}:
+                      for i in range(len(suffix) + 1)} | {
+                          full[:-5] + full[-3:], full}:
         raise RuntimeError("V3 broker/OMS commit suffix is not exact")
-    present = (len(suffix) if actual == full
-               else len(actual) - (len(full) - len(suffix) - len(_CAPACITY_COLUMNS)))
+    present = (len(suffix) if len(actual) >= len(full) - len(_REJECTED_COLUMNS)
+               else len(actual) - (len(full) - len(suffix)
+                                   - len(_CAPACITY_COLUMNS) - len(_REJECTED_COLUMNS)))
     storage_preflight(client, tables=(TableContract(
         SQUEEZE_COMMIT_V3.name, actual, SQUEEZE_COMMIT_V3.partition,
         SQUEEZE_COMMIT_V3.order),))
@@ -205,7 +258,8 @@ def upgrade_v3_broker_oms(client: object, *, apply: bool) -> str:
         client.execute(ddl)
     storage_preflight(client, tables=BROKER_OMS_TABLES + (TableContract(
         SQUEEZE_COMMIT_V3.name,
-        full if actual == full else full[:start] + suffix + full[-3:],
+        actual if len(actual) >= len(full) - len(_REJECTED_COLUMNS)
+        else full[:start] + suffix + full[-3:],
         SQUEEZE_COMMIT_V3.partition,
         SQUEEZE_COMMIT_V3.order),))
     return "upgraded"
@@ -213,7 +267,8 @@ def upgrade_v3_broker_oms(client: object, *, apply: bool) -> str:
 
 def _without_proposals(columns):
     return tuple(column for column in columns if column[0] not in
-                 (_PROPOSAL_COLUMNS | _BROKER_OMS_COLUMNS | _CAPACITY_COLUMNS))
+                 (_PROPOSAL_COLUMNS | _BROKER_OMS_COLUMNS | _CAPACITY_COLUMNS
+                  | _REJECTED_COLUMNS))
 
 
 def _with_existing_proposals(columns, actual):
@@ -226,14 +281,18 @@ def _with_existing_proposals(columns, actual):
     capacity_expected = [name for name, _ in columns if name in _CAPACITY_COLUMNS]
     if capacity_present != capacity_expected[:len(capacity_present)]:
         raise RuntimeError("V3 commit has an invalid entry-reprice-capacity suffix")
+    rejected_present = [name for name, _ in actual if name in _REJECTED_COLUMNS]
+    rejected_expected = [name for name, _ in columns if name in _REJECTED_COLUMNS]
+    if rejected_present != rejected_expected[:len(rejected_present)]:
+        raise RuntimeError("V3 commit has an invalid entry-reprice-refusal suffix")
     present = {name for name, _ in actual} & _PROPOSAL_COLUMNS
     if present not in (set(), {"trade_proposal_child_count"}, _PROPOSAL_COLUMNS):
         raise RuntimeError("V3 commit has an invalid trade-proposal suffix")
     return tuple(column for column in columns
                  if column[0] not in (_PROPOSAL_COLUMNS | _BROKER_OMS_COLUMNS
-                                     | _CAPACITY_COLUMNS)
+                                     | _CAPACITY_COLUMNS | _REJECTED_COLUMNS)
                  or column[0] in present or column[0] in broker_present
-                 or column[0] in capacity_present)
+                 or column[0] in capacity_present or column[0] in rejected_present)
 
 
 def upgrade_v3_portfolio_control(client: object, *, apply: bool) -> str:
@@ -529,6 +588,8 @@ def main() -> int:
                         help="verify or install empty-fence V3 broker/OMS children")
     parser.add_argument("--upgrade-v3-entry-reprice-capacity", action="store_true",
                         help="verify or install empty-fence V3 capacity children")
+    parser.add_argument("--upgrade-v3-entry-reprice-rejected", action="store_true",
+                        help="verify or install empty-fence V3 reprice refusal fact")
     parser.add_argument("--install-live-plan-membership", action="store_true",
                         help="verify or install typed live plan membership tables")
     args = parser.parse_args()
@@ -552,11 +613,15 @@ def main() -> int:
                     args.upgrade_v3_trade_proposal,
                     args.upgrade_v3_broker_oms,
                     args.upgrade_v3_entry_reprice_capacity,
+                    args.upgrade_v3_entry_reprice_rejected,
                     args.install_live_plan_membership)) > 1:
                 parser.error("Select only one layout upgrade at a time")
             if args.install_live_plan_membership:
                 result = install_live_plan_membership(client, apply=args.apply)
                 print(f"Live plan membership layout: {result}; no rows inserted")
+            elif args.upgrade_v3_entry_reprice_rejected:
+                result = upgrade_v3_entry_reprice_rejected(client, apply=args.apply)
+                print(f"V3 entry-reprice-refusal layout: {result}; no rows inserted")
             elif args.upgrade_v3_entry_reprice_capacity:
                 result = upgrade_v3_entry_reprice_capacity(client, apply=args.apply)
                 print(f"V3 entry-reprice-capacity layout: {result}; no rows inserted")

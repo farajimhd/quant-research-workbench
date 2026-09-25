@@ -31,6 +31,13 @@ _V3_PROJECTED = frozenset({
     ("portfolio_management", "portfolio_reconciliation"),
     ("portfolio_management", "portfolio_control"),
     ("portfolio_management", "entry_reprice_capacity"),
+    ("portfolio_management", "entry_reprice_rejected"),
+    ("broker_policy", "short_order_skipped"),
+    ("broker_policy", "order_reply_suppression"),
+    ("broker_policy", "order_warning_decision"),
+    ("order_management", "entry_reprice_deferred"),
+    ("trade_proposal", "trade_proposal_confirmed"),
+    ("trade_proposal", "trade_proposal_result"),
 })
 
 
