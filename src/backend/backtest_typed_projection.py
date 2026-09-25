@@ -175,6 +175,41 @@ def project_pending_backtest_v3_prefix(
                 sequence, sequence, cursor, "running", (proposal.event,))
             unit = V3SqueezeBatch(
                 base, (), trade_proposal_rows=proposal.rows)
+        elif (record.category, record.entity_type) == (
+                "broker_policy", "short_order_skipped"):
+            from src.backend.backtest_broker_shortability_v3 import project_short_order_skip_v3
+
+            projected = project_short_order_skip_v3(
+                record, attempt_id=attempt, batch_id=batch_id)
+            base = TypedJournalBatch(
+                record.run_id, run_month, attempt, batch_id, previous,
+                sequence, sequence, cursor, "running", (projected.event,))
+            unit = V3SqueezeBatch(base, (), short_order_skips=(projected.detail,))
+        elif record.category == "broker_policy" and record.entity_type in {
+                "order_reply_suppression", "order_warning_decision"}:
+            from src.backend.backtest_broker_policy_v3 import project_broker_reply_policy_v3
+
+            projected = project_broker_reply_policy_v3(
+                record, attempt_id=attempt, batch_id=batch_id)
+            base = TypedJournalBatch(
+                record.run_id, run_month, attempt, batch_id, previous,
+                sequence, sequence, cursor, "running", (projected.event,))
+            unit = V3SqueezeBatch(
+                base, (), broker_reply_policy_events=(projected.detail,),
+                broker_reply_policy_messages=projected.messages)
+        elif (record.category, record.entity_type) == (
+                "order_management", "entry_reprice_deferred"):
+            from src.backend.backtest_entry_reprice_deferred_v3 import (
+                project_entry_reprice_deferred_v3,
+            )
+
+            projected = project_entry_reprice_deferred_v3(
+                record, attempt_id=attempt, batch_id=batch_id)
+            base = TypedJournalBatch(
+                record.run_id, run_month, attempt, batch_id, previous,
+                sequence, sequence, cursor, "running", (projected.event,))
+            unit = V3SqueezeBatch(
+                base, (), entry_reprice_deferred=(projected.detail,))
         else:
             reservation_reasons = ()
             if (record.category, record.entity_type) == (

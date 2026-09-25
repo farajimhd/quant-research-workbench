@@ -33,6 +33,7 @@ from src.backend.backtest_squeeze_episode_schema import (
 from src.backend.backtest_reconciliation_v3 import CHILD as RECONCILIATION_DIFFERENCE
 from src.backend.backtest_portfolio_control_v3 import CONTROL as PORTFOLIO_CONTROL
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
+from src.backend.backtest_squeeze_episode_schema import BROKER_OMS_TABLES
 from src.trading_runtime.journal_contract import canonical_json
 
 if TYPE_CHECKING:
@@ -47,6 +48,7 @@ _CONTRACTS.update({table.name: table for table in (
     PORTFOLIO_CONTROL,
     SQUEEZE_COMMIT_V3)})
 _CONTRACTS.update({table.name: table for table in TRADE_PROPOSAL_TABLES})
+_CONTRACTS.update({table.name: table for table in BROKER_OMS_TABLES})
 
 
 def _without_text_prefix(value: str) -> str:
@@ -256,6 +258,10 @@ class V3SqueezeBatch:
     portfolio_controls: tuple[Mapping[str, Any], ...] = ()
     policy_selections: tuple[Any, ...] = ()
     trade_proposal_rows: tuple[tuple[str, Mapping[str, Any]], ...] = ()
+    short_order_skips: tuple[Mapping[str, Any], ...] = ()
+    broker_reply_policy_events: tuple[Mapping[str, Any], ...] = ()
+    broker_reply_policy_messages: tuple[Mapping[str, Any], ...] = ()
+    entry_reprice_deferred: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.base.status != "running":
@@ -275,12 +281,19 @@ class V3SqueezeBatch:
         object.__setattr__(self, "policy_selections", tuple(self.policy_selections))
         object.__setattr__(self, "trade_proposal_rows", tuple(
             (name, MappingProxyType(dict(row))) for name, row in self.trade_proposal_rows))
+        for family in ("short_order_skips", "broker_reply_policy_events",
+                       "broker_reply_policy_messages", "entry_reprice_deferred"):
+            object.__setattr__(self, family, tuple(
+                MappingProxyType(dict(row)) for row in getattr(self, family)))
 
 
 def _sealed_families(
     batch: TypedJournalBatch, *, v3_episode_ids: tuple[str, ...] = (),
     v3_control_ids: tuple[str, ...] = (),
     v3_proposal_ids: tuple[str, ...] = (),
+    v3_short_skip_ids: tuple[str, ...] = (),
+    v3_reply_policy_ids: tuple[str, ...] = (),
+    v3_reprice_deferred_ids: tuple[str, ...] = (),
     v3_reconciliation: bool = False,
 ) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
     """Validate and hash the immutable snapshot on the persistence lane."""
@@ -372,7 +385,9 @@ def _sealed_families(
                 raise ValueError("Journal event has multiple typed detail families")
             details_by_record[record_id] = name
     expected_details = _EVENT_DETAILS
-    if v3_episode_ids or v3_control_ids or v3_proposal_ids:
+    if (v3_episode_ids or v3_control_ids or v3_proposal_ids
+            or v3_short_skip_ids or v3_reply_policy_ids
+            or v3_reprice_deferred_ids):
         expected_details = {**_EVENT_DETAILS,
             ("market_discovery_signal", "signal_occurrence"):
                 SQUEEZE_EPISODE.name,
@@ -381,7 +396,15 @@ def _sealed_families(
             ("trade_proposal", "trade_proposal_confirmed"):
                 TRADE_PROPOSAL_TABLES[0].name,
             ("trade_proposal", "trade_proposal_result"):
-                TRADE_PROPOSAL_TABLES[0].name}
+                TRADE_PROPOSAL_TABLES[0].name,
+            ("broker_policy", "short_order_skipped"):
+                BROKER_OMS_TABLES[0].name,
+            ("broker_policy", "order_reply_suppression"):
+                BROKER_OMS_TABLES[1].name,
+            ("broker_policy", "order_warning_decision"):
+                BROKER_OMS_TABLES[1].name,
+            ("order_management", "entry_reprice_deferred"):
+                BROKER_OMS_TABLES[3].name}
         for record_id in v3_episode_ids:
             identity = str(UUID(str(record_id)))
             if identity in details_by_record:
@@ -397,6 +420,16 @@ def _sealed_families(
             if identity in details_by_record:
                 raise ValueError("Journal event has multiple typed detail families")
             details_by_record[identity] = TRADE_PROPOSAL_TABLES[0].name
+        for record_ids, table in (
+            (v3_short_skip_ids, BROKER_OMS_TABLES[0].name),
+            (v3_reply_policy_ids, BROKER_OMS_TABLES[1].name),
+            (v3_reprice_deferred_ids, BROKER_OMS_TABLES[3].name),
+        ):
+            for record_id in record_ids:
+                identity = str(UUID(str(record_id)))
+                if identity in details_by_record:
+                    raise ValueError("Journal event has multiple typed detail families")
+                details_by_record[identity] = table
     for event in by_family["trading_event_v1"]:
         key = (str(event["category"]), str(event["entity_type"]))
         if key not in expected_details:
@@ -1430,7 +1463,11 @@ def publish_typed_squeeze_batch_v3(
         reconciliation_differences=unit.reconciliation_differences,
         portfolio_controls=unit.portfolio_controls,
         policy_selections=unit.policy_selections,
-        trade_proposal_rows=unit.trade_proposal_rows)
+        trade_proposal_rows=unit.trade_proposal_rows,
+        short_order_skips=unit.short_order_skips,
+        broker_reply_policy_events=unit.broker_reply_policy_events,
+        broker_reply_policy_messages=unit.broker_reply_policy_messages,
+        entry_reprice_deferred=unit.entry_reprice_deferred)
 
 
 def _publish_typed_batch(
@@ -1442,6 +1479,10 @@ def _publish_typed_batch(
     portfolio_controls: tuple[Mapping[str, Any], ...] | None = None,
     policy_selections: tuple[Any, ...] | None = None,
     trade_proposal_rows: tuple[tuple[str, Mapping[str, Any]], ...] | None = None,
+    short_order_skips: tuple[Mapping[str, Any], ...] | None = None,
+    broker_reply_policy_events: tuple[Mapping[str, Any], ...] | None = None,
+    broker_reply_policy_messages: tuple[Mapping[str, Any], ...] | None = None,
+    entry_reprice_deferred: tuple[Mapping[str, Any], ...] | None = None,
 ) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
     if batch.signal_evidence_nodes:
@@ -1452,13 +1493,21 @@ def _publish_typed_batch(
             squeeze_episodes is not None or reservation_reasons is not None
             or reconciliation_differences is not None
             or portfolio_controls is not None or policy_selections is not None
-            or trade_proposal_rows is not None):
+            or trade_proposal_rows is not None
+            or short_order_skips is not None
+            or broker_reply_policy_events is not None
+            or broker_reply_policy_messages is not None
+            or entry_reprice_deferred is not None):
         raise ValueError("V3 child families require a V3-only commit")
     if journal_profile == "backtest_v3" and (
             squeeze_episodes is None or reservation_reasons is None
             or reconciliation_differences is None
             or portfolio_controls is None or policy_selections is None
-            or trade_proposal_rows is None):
+            or trade_proposal_rows is None
+            or short_order_skips is None
+            or broker_reply_policy_events is None
+            or broker_reply_policy_messages is None
+            or entry_reprice_deferred is None):
         raise ValueError("V3 commit requires explicit closed child families")
     if journal_profile in {"backtest_v2", "backtest_v3"} and batch.status != "running":
         raise ValueError("Terminal Backtest requires separate anchored V2 publication")
@@ -1492,6 +1541,12 @@ def _publish_typed_batch(
             for row in portfolio_controls or ()) if journal_profile == "backtest_v3" else (),
         v3_proposal_ids=tuple(str(row["record_id"]) for name, row in trade_proposal_rows or ()
             if name == TRADE_PROPOSAL_TABLES[0].name) if journal_profile == "backtest_v3" else (),
+        v3_short_skip_ids=tuple(str(row["record_id"]) for row in short_order_skips or ())
+            if journal_profile == "backtest_v3" else (),
+        v3_reply_policy_ids=tuple(str(row["record_id"]) for row in broker_reply_policy_events or ())
+            if journal_profile == "backtest_v3" else (),
+        v3_reprice_deferred_ids=tuple(str(row["record_id"]) for row in entry_reprice_deferred or ())
+            if journal_profile == "backtest_v3" else (),
         v3_reconciliation=journal_profile == "backtest_v3")
     if journal_profile == "backtest_v3":
         from src.backend.backtest_squeeze_episode_v3 import seal_squeeze_family_v3
@@ -1501,6 +1556,9 @@ def _publish_typed_batch(
         difference_rows = tuple(dict(row) for row in reconciliation_differences or ())
         control_rows = tuple(dict(row) for row in portfolio_controls or ())
         proposal_rows = tuple((name, dict(row)) for name, row in trade_proposal_rows or ())
+        broker_oms_rows = tuple(tuple(dict(row) for row in family) for family in (
+            short_order_skips or (), broker_reply_policy_events or (),
+            broker_reply_policy_messages or (), entry_reprice_deferred or ()))
         selected_hashes = {row["policy_hash"] for row in control_rows
                            if row["control_event"] == "portfolio_policy_selected"}
         supplied = {selection.policy_hash: selection.policy
@@ -1519,14 +1577,22 @@ def _publish_typed_batch(
                 "portfolio_reconciliation_difference_count",
                 "portfolio_reconciliation_difference_hash",
                 "portfolio_control_count", "portfolio_control_hash",
-                "trade_proposal_child_count", "trade_proposal_child_hash"}},
+                "trade_proposal_child_count", "trade_proposal_child_hash",
+                "broker_short_order_skip_count", "broker_short_order_skip_hash",
+                "broker_reply_policy_event_count", "broker_reply_policy_event_hash",
+                "broker_reply_policy_message_count", "broker_reply_policy_message_hash",
+                "entry_reprice_deferred_count", "entry_reprice_deferred_hash"}},
              "run_id": batch.run_id, "batch_id": batch.batch_id},
             v3_rows, families[0][1], reservation_reasons=reason_rows,
             parent_reservations=reservation_parents,
             reconciliation_differences=difference_rows,
             parent_reconciliations=reconciliation_parents,
             portfolio_controls=control_rows,
-            trade_proposal_rows=proposal_rows)
+            trade_proposal_rows=proposal_rows,
+            short_order_skips=broker_oms_rows[0],
+            broker_reply_policy_events=broker_oms_rows[1],
+            broker_reply_policy_messages=broker_oms_rows[2],
+            entry_reprice_deferred=broker_oms_rows[3])
     else:
         v3_rows = ()
         reason_rows = ()
@@ -1535,6 +1601,7 @@ def _publish_typed_batch(
         reconciliation_parents = ()
         control_rows = ()
         proposal_rows = ()
+        broker_oms_rows = ((), (), (), ())
     _verify_commission_links(client, batch, families, journal_profile=journal_profile)
     _verify_exact_intent_uses(client, batch, families, journal_profile=journal_profile)
     _verify_order_context_links(client, batch, families, journal_profile=journal_profile)
@@ -1664,6 +1731,20 @@ def _publish_typed_batch(
                         dispatch_sequence=batch.last_sequence)
                 actual_rows = _rows(client, query)
             actual_proposals.extend((proposal_table.name, row) for row in actual_rows)
+        actual_broker_oms = []
+        for contract, expected_rows in zip(BROKER_OMS_TABLES, broker_oms_rows):
+            columns = ",".join(name for name, _ in contract.columns)
+            query = (f"SELECT {columns} FROM arte.{contract.name} "
+                     f"WHERE batch_id=toUUID({_literal(batch.batch_id)}) FORMAT JSONEachRow")
+            actual_rows = _rows(client, query)
+            if not actual_rows and expected_rows:
+                _insert(client, contract.name, expected_rows,
+                        f"{batch.batch_id}:{contract.name}",
+                        journal_profile=journal_profile,
+                        dispatch_batch_id=batch.batch_id,
+                        dispatch_sequence=batch.last_sequence)
+                actual_rows = _rows(client, query)
+            actual_broker_oms.append(actual_rows)
         # The family verifier also rejects missing, duplicate and extra children.
         base_stub = {name: "" for name, _ in SQUEEZE_COMMIT_V3.columns
                      if name not in {"backtest_squeeze_episode_count",
@@ -1675,7 +1756,15 @@ def _publish_typed_batch(
                                      "portfolio_control_count",
                                      "portfolio_control_hash",
                                      "trade_proposal_child_count",
-                                     "trade_proposal_child_hash"}}
+                                     "trade_proposal_child_hash",
+                                     "broker_short_order_skip_count",
+                                     "broker_short_order_skip_hash",
+                                     "broker_reply_policy_event_count",
+                                     "broker_reply_policy_event_hash",
+                                     "broker_reply_policy_message_count",
+                                     "broker_reply_policy_message_hash",
+                                     "entry_reprice_deferred_count",
+                                     "entry_reprice_deferred_hash"}}
         base_stub.update(run_id=batch.run_id, batch_id=batch.batch_id)
         child_seal = seal_squeeze_family_v3(
             base_stub, v3_rows, families[0][1],
@@ -1684,7 +1773,11 @@ def _publish_typed_batch(
             reconciliation_differences=difference_rows,
             parent_reconciliations=reconciliation_parents,
             portfolio_controls=control_rows,
-            trade_proposal_rows=proposal_rows)
+            trade_proposal_rows=proposal_rows,
+            short_order_skips=broker_oms_rows[0],
+            broker_reply_policy_events=broker_oms_rows[1],
+            broker_reply_policy_messages=broker_oms_rows[2],
+            entry_reprice_deferred=broker_oms_rows[3])
         try:
             verified_children = verify_squeeze_family_v3(
                 child_seal, actual_children, families[0][1], stored_utc=True,
@@ -1693,7 +1786,11 @@ def _publish_typed_batch(
                 reconciliation_differences=actual_differences,
                 parent_reconciliations=reconciliation_parents,
                 portfolio_controls=actual_controls,
-                trade_proposal_rows=actual_proposals)
+                trade_proposal_rows=actual_proposals,
+                short_order_skips=actual_broker_oms[0],
+                broker_reply_policy_events=actual_broker_oms[1],
+                broker_reply_policy_messages=actual_broker_oms[2],
+                entry_reprice_deferred=actual_broker_oms[3])
         except ValueError as exc:
             raise RuntimeError("V3 child families differ from durable readback") from exc
         if sorted((r["record_id"], r["content_hash"]) for r in verified_children) != sorted(
@@ -1722,7 +1819,11 @@ def _publish_typed_batch(
             reconciliation_differences=difference_rows,
             parent_reconciliations=reconciliation_parents,
             portfolio_controls=control_rows,
-            trade_proposal_rows=proposal_rows)
+            trade_proposal_rows=proposal_rows,
+            short_order_skips=broker_oms_rows[0],
+            broker_reply_policy_events=broker_oms_rows[1],
+            broker_reply_policy_messages=broker_oms_rows[2],
+            entry_reprice_deferred=broker_oms_rows[3])
     expected = {key: value for key, value in commit.items() if key not in ("run_month", "committed_at")}
     if existing and (len(existing) != 1 or existing[0] != expected):
         raise RuntimeError("Typed journal commit conflicts with an existing batch")
@@ -1782,6 +1883,13 @@ def _publish_typed_batch(
                         token=f"{batch.batch_id}:{proposal_table.name}",
                         required=required, batch_id=batch.batch_id,
                         batch_last_sequence=batch.last_sequence)
+            for broker_table, broker_rows in zip(BROKER_OMS_TABLES, broker_oms_rows):
+                if broker_rows:
+                    dispatch.seal_verified_operation(
+                        run_id=batch.run_id, table=broker_table.name,
+                        token=f"{batch.batch_id}:{broker_table.name}",
+                        required=required, batch_id=batch.batch_id,
+                        batch_last_sequence=batch.last_sequence)
         table = _profile_table("trading_commit_v1", journal_profile)
         dispatch.seal_verified_operation(
             run_id=batch.run_id, table=table,
@@ -1807,7 +1915,10 @@ def _publish_typed_batch(
             (table.name, f"{batch.batch_id}:{table.name}")
             for table in TRADE_PROPOSAL_TABLES
             if journal_profile == "backtest_v3" and any(
-                name == table.name for name, _ in proposal_rows)) + ((
+                name == table.name for name, _ in proposal_rows)) + tuple(
+            (table.name, f"{batch.batch_id}:{table.name}")
+            for table, rows in zip(BROKER_OMS_TABLES, broker_oms_rows)
+            if journal_profile == "backtest_v3" and rows) + ((
             table, f"{batch.batch_id}:{table}:commit"),)
         dispatch.compact_verified_batch(
             run_id=batch.run_id, batch_id=batch.batch_id,
@@ -2843,7 +2954,11 @@ class ArteJournalWriter:
                         reconciliation_differences=unit.reconciliation_differences,
                         portfolio_controls=unit.portfolio_controls,
                         policy_selections=unit.policy_selections,
-                        trade_proposal_rows=unit.trade_proposal_rows)
+                        trade_proposal_rows=unit.trade_proposal_rows,
+                        short_order_skips=unit.short_order_skips,
+                        broker_reply_policy_events=unit.broker_reply_policy_events,
+                        broker_reply_policy_messages=unit.broker_reply_policy_messages,
+                        entry_reprice_deferred=unit.entry_reprice_deferred)
                 elif isinstance(group[0][0], TypedJournalBatch):
                     batch = _coalesce_unpublished(tuple(row for row, _ in group))
                     if self._journal_profile == "v1":

@@ -126,6 +126,52 @@ def test_v3_reason_upgrade_plans_read_only_and_applies_only_empty_fence(monkeypa
     assert checks[-1] == ("trading_portfolio_reservation_reason_v1", "trading_commit_v3")
 
 
+def test_v3_broker_oms_upgrade_requires_empty_fence_and_is_resumable(monkeypatch):
+    from src.backend.backtest_squeeze_episode_schema import BROKER_OMS_TABLES
+
+    class BrokerClient:
+        def __init__(self, count="0"):
+            self.count = count
+            self.columns = list(install.SQUEEZE_COMMIT_V3.columns[:-(3 + 8)]) + list(
+                install.SQUEEZE_COMMIT_V3.columns[-3:])
+            self.tables = set()
+            self.writes = []
+
+        def execute(self, sql):
+            if sql.startswith("SELECT name,type FROM system.columns"):
+                return "\n".join(json.dumps({"name": n, "type": t})
+                                 for n, t in self.columns)
+            if sql.startswith("SELECT name FROM system.tables"):
+                return "\n".join(json.dumps({"name": name})
+                                 for name in sorted(self.tables))
+            if sql == "SELECT count() FROM arte.trading_commit_v3":
+                return self.count
+            if sql.startswith("CREATE TABLE IF NOT EXISTS arte."):
+                self.writes.append(sql)
+                self.tables.add(sql.split("arte.", 1)[1].split(" ", 1)[0])
+                return ""
+            if sql.startswith("ALTER TABLE arte.trading_commit_v3"):
+                self.writes.append(sql)
+                name = sql.split("ADD COLUMN IF NOT EXISTS ", 1)[1].split(" ", 1)[0]
+                self.columns.insert(-3, next(column for column in
+                    install.SQUEEZE_COMMIT_V3.columns if column[0] == name))
+                return ""
+            raise AssertionError(sql)
+
+    monkeypatch.setattr(install, "storage_preflight", lambda *_a, **_k: None)
+    occupied = BrokerClient(count="1")
+    with pytest.raises(RuntimeError, match="has rows"):
+        install.upgrade_v3_broker_oms(occupied, apply=True)
+    assert occupied.writes == []
+    client = BrokerClient()
+    assert install.upgrade_v3_broker_oms(client, apply=False) == "planned"
+    assert client.writes == []
+    assert install.upgrade_v3_broker_oms(client, apply=True) == "upgraded"
+    assert len(client.tables) == len(BROKER_OMS_TABLES)
+    assert len(client.writes) == len(BROKER_OMS_TABLES) + 8
+    assert install.upgrade_v3_broker_oms(client, apply=True) == "verified"
+
+
 class ControlUpgradeClient:
     def __init__(self, *, rows=0, state="old", child=False):
         self.rows, self.state, self.child = rows, state, child

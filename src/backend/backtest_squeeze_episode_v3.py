@@ -15,7 +15,8 @@ from uuid import UUID
 
 from src.backend.backtest_squeeze_episode_projection import project_fixed_squeeze_episode
 from src.backend.backtest_squeeze_episode_schema import (
-    PORTFOLIO_CONTROL, RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
+    BROKER_OMS_TABLES, PORTFOLIO_CONTROL, RESERVATION_REASON,
+    SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
 from src.backend.backtest_trade_proposal_v3 import (
     TABLES as TRADE_PROPOSAL_TABLES, seal_trade_proposals_v3,
@@ -162,6 +163,10 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
     portfolio_controls = []
     policy_selections = []
     trade_proposal_rows = []
+    short_order_skips = []
+    broker_reply_policy_events = []
+    broker_reply_policy_messages = []
+    entry_reprice_deferred = []
     pinned = set()
     for unit in units:
         for row in unit.episodes:
@@ -194,6 +199,18 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
         for name, row in unit.trade_proposal_rows:
             values = {**row, "batch_id": base.batch_id}
             trade_proposal_rows.append((name, values))
+        for family, collected in (
+            (unit.short_order_skips, short_order_skips),
+            (unit.broker_reply_policy_events, broker_reply_policy_events),
+            (unit.broker_reply_policy_messages, broker_reply_policy_messages),
+            (unit.entry_reprice_deferred, entry_reprice_deferred),
+        ):
+            for row in family:
+                values = {key: value for key, value in row.items()
+                          if key != "content_hash"}
+                values["batch_id"] = base.batch_id
+                values["content_hash"] = _digest(values)
+                collected.append(values)
     if len(pinned) > 1:
         raise ValueError("V3 coalescing cannot mix market plan/query authority")
     if len(episodes) > len(base.events):
@@ -201,7 +218,10 @@ def coalesce_squeeze_units_v3(units: tuple[Any, ...]) -> Any:
     return V3SqueezeBatch(base, tuple(episodes), tuple(reservation_reasons),
                           tuple(reconciliation_differences),
                           tuple(portfolio_controls), tuple(policy_selections),
-                          tuple(trade_proposal_rows))
+                          tuple(trade_proposal_rows), tuple(short_order_skips),
+                          tuple(broker_reply_policy_events),
+                          tuple(broker_reply_policy_messages),
+                          tuple(entry_reprice_deferred))
 
 
 def seal_squeeze_family_v3(
@@ -213,6 +233,10 @@ def seal_squeeze_family_v3(
     parent_reconciliations: Sequence[Mapping[str, Any]] = (),
     portfolio_controls: Sequence[Mapping[str, Any]] = (),
     trade_proposal_rows: Sequence[tuple[str, Mapping[str, Any]]] = (),
+    short_order_skips: Sequence[Mapping[str, Any]] = (),
+    broker_reply_policy_events: Sequence[Mapping[str, Any]] = (),
+    broker_reply_policy_messages: Sequence[Mapping[str, Any]] = (),
+    entry_reprice_deferred: Sequence[Mapping[str, Any]] = (),
     stored_utc: bool = False,
 ) -> dict[str, Any]:
     """Produce a replacement V3 seal after exact parent/child verification.
@@ -226,7 +250,11 @@ def seal_squeeze_family_v3(
         "portfolio_reconciliation_difference_count",
         "portfolio_reconciliation_difference_hash",
         "portfolio_control_count", "portfolio_control_hash",
-        "trade_proposal_child_count", "trade_proposal_child_hash"}:
+        "trade_proposal_child_count", "trade_proposal_child_hash",
+        "broker_short_order_skip_count", "broker_short_order_skip_hash",
+        "broker_reply_policy_event_count", "broker_reply_policy_event_hash",
+        "broker_reply_policy_message_count", "broker_reply_policy_message_hash",
+        "entry_reprice_deferred_count", "entry_reprice_deferred_hash"}:
         raise ValueError("V2 commit columns differ from V3 base")
     batch = str(UUID(str(v2_commit["batch_id"])))
     run = str(v2_commit["run_id"])
@@ -286,6 +314,18 @@ def seal_squeeze_family_v3(
     sealed.update(seal_trade_proposals_v3(
         trade_proposal_rows, parent_events, run_id=run, batch_id=batch,
         stored_utc=stored_utc))
+    from src.backend.backtest_broker_shortability_v3 import seal_short_order_skip_v3
+    from src.backend.backtest_broker_policy_v3 import seal_broker_reply_policy_v3
+    from src.backend.backtest_entry_reprice_deferred_v3 import (
+        seal_entry_reprice_deferred_v3,
+    )
+    sealed.update(seal_short_order_skip_v3(
+        short_order_skips, parent_events, run_id=run, batch_id=batch))
+    sealed.update(seal_broker_reply_policy_v3(
+        broker_reply_policy_events, broker_reply_policy_messages, parent_events,
+        run_id=run, batch_id=batch))
+    sealed.update(seal_entry_reprice_deferred_v3(
+        entry_reprice_deferred, parent_events, run_id=run, batch_id=batch))
     return sealed
 
 
@@ -299,6 +339,10 @@ def verify_squeeze_family_v3(
     parent_reconciliations: Sequence[Mapping[str, Any]] = (),
     portfolio_controls: Sequence[Mapping[str, Any]] = (),
     trade_proposal_rows: Sequence[tuple[str, Mapping[str, Any]]] = (),
+    short_order_skips: Sequence[Mapping[str, Any]] = (),
+    broker_reply_policy_events: Sequence[Mapping[str, Any]] = (),
+    broker_reply_policy_messages: Sequence[Mapping[str, Any]] = (),
+    entry_reprice_deferred: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[dict[str, Any], ...]:
     """Verify V3 family seal before exposing a bounded typed occurrence page."""
     if set(commit) != _COMMIT_COLUMNS:
@@ -309,7 +353,11 @@ def verify_squeeze_family_v3(
         "portfolio_reconciliation_difference_count",
         "portfolio_reconciliation_difference_hash",
         "portfolio_control_count", "portfolio_control_hash",
-        "trade_proposal_child_count", "trade_proposal_child_hash"}}
+        "trade_proposal_child_count", "trade_proposal_child_hash",
+        "broker_short_order_skip_count", "broker_short_order_skip_hash",
+        "broker_reply_policy_event_count", "broker_reply_policy_event_hash",
+        "broker_reply_policy_message_count", "broker_reply_policy_message_hash",
+        "entry_reprice_deferred_count", "entry_reprice_deferred_hash"}}
     normalized = []
     for row in rows:
         if stored_utc:
@@ -327,6 +375,10 @@ def verify_squeeze_family_v3(
         parent_reconciliations=parent_reconciliations,
         portfolio_controls=portfolio_controls,
         trade_proposal_rows=trade_proposal_rows,
+        short_order_skips=short_order_skips,
+        broker_reply_policy_events=broker_reply_policy_events,
+        broker_reply_policy_messages=broker_reply_policy_messages,
+        entry_reprice_deferred=entry_reprice_deferred,
         stored_utc=stored_utc)
     if (type(commit["backtest_squeeze_episode_count"]) is not int
             or expected != dict(commit)):
@@ -352,7 +404,7 @@ def load_verified_squeeze_v3_prefix(
     contracts = versioned_journal_v2_contracts() + (
                           SQUEEZE_EPISODE, RESERVATION_REASON,
                           RECONCILIATION_DIFFERENCE, PORTFOLIO_CONTROL,
-                          *TRADE_PROPOSAL_TABLES,
+                          *TRADE_PROPOSAL_TABLES, *BROKER_OMS_TABLES,
                           SQUEEZE_COMMIT_V3)
     storage_preflight(client, tables=contracts)
     for fence in ("trading_commit_v1", "trading_commit_v2"):
@@ -458,6 +510,24 @@ def load_verified_squeeze_v3_prefix(
             proposal_rows.extend((proposal_table.name, row) for row in _rows(
                 client, f"SELECT {columns} FROM arte.{proposal_table.name} "
                 f"WHERE {ids} FORMAT JSONEachRow"))
+        broker_policy_events = _rows(client,
+            "SELECT record_id,run_id,event_month,batch_id,category,entity_type,entity_id,"
+            "account_id,event_time,sequence FROM arte.trading_event_v1 "
+            f"WHERE {ids} AND category='broker_policy' FORMAT JSONEachRow")
+        reprice_events = _rows(client,
+            "SELECT record_id,run_id,event_month,batch_id,category,entity_type,entity_id,"
+            "account_id,event_time,sequence FROM arte.trading_event_v1 "
+            f"WHERE {ids} AND category='order_management' "
+            "AND entity_type='entry_reprice_deferred' FORMAT JSONEachRow")
+        if any(not first <= int(event["sequence"]) <= last
+               for event in broker_policy_events + reprice_events):
+            raise RuntimeError("Broker/OMS parent lies beyond committed causal prefix")
+        broker_oms_rows = []
+        for contract in BROKER_OMS_TABLES:
+            columns = ",".join(name for name, _ in contract.columns)
+            broker_oms_rows.append(_rows(client,
+                f"SELECT {columns} FROM arte.{contract.name} "
+                f"WHERE {ids} FORMAT JSONEachRow"))
         selected_hashes = {row["policy_hash"] for row in portfolio_controls
                            if row["control_event"] == "portfolio_policy_selected"}
         if selected_hashes:
@@ -483,14 +553,19 @@ def load_verified_squeeze_v3_prefix(
             f"WHERE {ids} FORMAT JSONEachRow")
         verified = verify_squeeze_family_v3(
             commit, children, parents + reservation_events + reconciliation_events
-            + control_events + proposal_events,
+            + control_events + proposal_events + broker_policy_events
+            + reprice_events,
             stored_utc=True,
             reservation_reasons=reasons,
             parent_reservations=reservation_parents,
             reconciliation_differences=reconciliation_differences,
             parent_reconciliations=reconciliation_parents,
             portfolio_controls=portfolio_controls,
-            trade_proposal_rows=proposal_rows)
+            trade_proposal_rows=proposal_rows,
+            short_order_skips=broker_oms_rows[0],
+            broker_reply_policy_events=broker_oms_rows[1],
+            broker_reply_policy_messages=broker_oms_rows[2],
+            entry_reprice_deferred=broker_oms_rows[3])
         if any(row["market_plan_token"] != expected_market_plan_token
                or row["query_sha256"] != expected_query_sha256 for row in verified):
             raise RuntimeError("V3 squeeze row differs from pinned market authority")

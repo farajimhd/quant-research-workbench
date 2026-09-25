@@ -191,7 +191,11 @@ def test_v3_cold_reader_verifies_reservation_reason_fence(monkeypatch):
                        "portfolio_reconciliation_difference_count",
                            "portfolio_reconciliation_difference_hash",
                            "portfolio_control_count", "portfolio_control_hash",
-                           "trade_proposal_child_count", "trade_proposal_child_hash"}}
+                           "trade_proposal_child_count", "trade_proposal_child_hash",
+                           "broker_short_order_skip_count", "broker_short_order_skip_hash",
+                           "broker_reply_policy_event_count", "broker_reply_policy_event_hash",
+                           "broker_reply_policy_message_count", "broker_reply_policy_message_hash",
+                           "entry_reprice_deferred_count", "entry_reprice_deferred_hash"}}
     commit_base.update(run_id=RUN, batch_id=BATCH, prior_batch_id=ZERO,
                        first_sequence=1, last_sequence=1, event_count=1,
                        status="completed", source_cursor="bar:1")
@@ -245,7 +249,11 @@ def test_v3_coalescing_rekeys_ordered_reservation_reasons():
                        "portfolio_reconciliation_difference_count",
                        "portfolio_reconciliation_difference_hash",
                        "portfolio_control_count", "portfolio_control_hash",
-                       "trade_proposal_child_count", "trade_proposal_child_hash"}}
+                       "trade_proposal_child_count", "trade_proposal_child_hash",
+                       "broker_short_order_skip_count", "broker_short_order_skip_hash",
+                       "broker_reply_policy_event_count", "broker_reply_policy_event_hash",
+                       "broker_reply_policy_message_count", "broker_reply_policy_message_hash",
+                       "entry_reprice_deferred_count", "entry_reprice_deferred_hash"}}
     commit_base.update(run_id=RUN, batch_id=merged.base.batch_id)
     seal = seal_squeeze_family_v3(
         commit_base, (), parent_events,

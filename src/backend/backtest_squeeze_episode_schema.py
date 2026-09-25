@@ -9,6 +9,12 @@ from src.trading_runtime.arte_journal_schema import (
 from src.backend.backtest_reconciliation_v3 import CHILD as RECONCILIATION_DIFFERENCE
 from src.backend.backtest_portfolio_control_v3 import CONTROL as PORTFOLIO_CONTROL
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
+from src.backend.backtest_broker_shortability_v3 import SHORT_ORDER_SKIP
+from src.backend.backtest_broker_policy_v3 import POLICY_EVENT, MESSAGE as POLICY_MESSAGE
+from src.backend.backtest_entry_reprice_deferred_v3 import DEFERRED as ENTRY_REPRICE_DEFERRED
+
+BROKER_OMS_TABLES = (SHORT_ORDER_SKIP, POLICY_EVENT, POLICY_MESSAGE,
+                     ENTRY_REPRICE_DEFERRED)
 
 
 SQUEEZE_EPISODE = TableContract(
@@ -60,6 +66,14 @@ _V3_EXTENSION = (
     ("portfolio_control_hash", "FixedString(64)"),
     ("trade_proposal_child_count", "UInt32"),
     ("trade_proposal_child_hash", "FixedString(64)"),
+    ("broker_short_order_skip_count", "UInt32"),
+    ("broker_short_order_skip_hash", "FixedString(64)"),
+    ("broker_reply_policy_event_count", "UInt32"),
+    ("broker_reply_policy_event_hash", "FixedString(64)"),
+    ("broker_reply_policy_message_count", "UInt32"),
+    ("broker_reply_policy_message_hash", "FixedString(64)"),
+    ("entry_reprice_deferred_count", "UInt32"),
+    ("entry_reprice_deferred_hash", "FixedString(64)"),
 )
 SQUEEZE_COMMIT_V3 = TableContract(
     "trading_commit_v3",
@@ -73,7 +87,29 @@ def staged_v3_ddl() -> tuple[str, ...]:
     return (SQUEEZE_EPISODE.ddl(), RESERVATION_REASON.ddl(),
             RECONCILIATION_DIFFERENCE.ddl(), PORTFOLIO_CONTROL.ddl(),
             *(table.ddl() for table in TRADE_PROPOSAL_TABLES),
+            *(table.ddl() for table in BROKER_OMS_TABLES),
             SQUEEZE_COMMIT_V3.ddl())
+
+
+def staged_broker_oms_ddl() -> tuple[str, ...]:
+    """Operator-only additive upgrade after direct zero-row V3 fence proof."""
+    empty_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    fields = (
+        ("broker_short_order_skip", "trade_proposal_child_hash"),
+        ("broker_reply_policy_event", "broker_short_order_skip_hash"),
+        ("broker_reply_policy_message", "broker_reply_policy_event_hash"),
+        ("entry_reprice_deferred", "broker_reply_policy_message_hash"),
+    )
+    alters = []
+    for prefix, prior in fields:
+        alters.extend((
+            "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+            f"{prefix}_count UInt32 DEFAULT 0 AFTER {prior}",
+            "ALTER TABLE arte.trading_commit_v3 ADD COLUMN IF NOT EXISTS "
+            f"{prefix}_hash FixedString(64) DEFAULT '{empty_hash}' "
+            f"AFTER {prefix}_count",
+        ))
+    return tuple(table.ddl() for table in BROKER_OMS_TABLES) + tuple(alters)
 
 
 def staged_reconciliation_difference_ddl() -> tuple[str, ...]:
