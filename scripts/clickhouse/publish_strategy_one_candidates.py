@@ -222,8 +222,10 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except Exception as exc:
         frames = traceback.extract_tb(exc.__traceback__)
-        stage = next((f"{frame.name}:{frame.lineno}" for frame in reversed(frames)
-                      if frame.filename == __file__), "external_dependency")
+        stage = next((f"{Path(frame.filename).name}:{frame.name}:{frame.lineno}"
+                      for frame in reversed(frames)
+                      if Path(frame.filename).is_relative_to(REPO_ROOT)),
+                     "external_dependency")
         print(f"Candidate campaign stopped: {type(exc).__name__} at {stage}. "
               "Completed ticker coverage is restart-safe; inspect private diagnostics.",
               file=sys.stderr)
