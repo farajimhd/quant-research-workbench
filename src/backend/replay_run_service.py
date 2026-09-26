@@ -3139,6 +3139,83 @@ class ReplayRunController:
             end_clock - datetime.combine(end_clock.date(), clock_time(4), tzinfo=NEW_YORK)
         ).total_seconds() * 1_000)
 
+    async def _run_strategy_one_fixed_days(
+        self, *, market, candidates, activations, pivots, hod, seeds,
+        entry, prices,
+    ) -> None:
+        """Run numbered Strategy 1 on the certified sparse tape, never frames."""
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        from src.backend.backtest_market_data import (
+            ExecutionInterval, market_day_boundary, readonly_clickhouse_client,
+        )
+        from src.backend.backtest_strategy_one_execution import (
+            run_certified_strategy_one_session,
+        )
+        from src.trading_runtime.strategy_one_runtime import AssignedStrategyOne
+
+        if (not isinstance(self._journal, BacktestMemoryJournal)
+                or not isinstance(self._strategy, AssignedStrategyOne)
+                or self._runtime is None or self._resume_state is not None
+                or ExecutionInterval.parse(
+                    self.definition.execution_interval).milliseconds != 100):
+            raise RuntimeError("Strategy 1 fixed session lacks new typed 100ms authorities")
+
+        class StopRequested(Exception):
+            pass
+
+        day = market.sessions[0]
+        if self.definition.requested_start != market_day_boundary(day, 0):
+            raise ValueError("Strategy 1 requires a flat start at the 04:00 session boundary")
+        boundary_count = 0
+        self._record_data_authority("fixed_market_data", {
+            **market.payload(), "database": "arte",
+            "tables": ["bars_v1", "indicators_v1", "liquidity_100ms_v1",
+                       "liquidity_execution_price_100ms_v1"],
+            "access": "select_only", "frame_spool": False,
+            "strategy_one_sparse_tape": True,
+        })
+        self._runtime_inputs_ready = True
+        self._preparation_stage = "strategy_one_sparse_boundaries"
+        self.status = "running"
+        self.current_time = self.definition.requested_start
+        await self._publish(force=True)
+
+        async def before(work):
+            if self._stop_requested:
+                raise StopRequested()
+            await self._wait_until_active()
+            if self._stop_requested:
+                raise StopRequested()
+
+        async def finish(work):
+            nonlocal boundary_count
+            boundary_count += 1
+            at = market_day_boundary(day, work.boundary_ms)
+            self._source_cursor = {
+                "session_date": day, "boundary_ms": work.boundary_ms,
+                "sequence": boundary_count,
+            }
+            self.processed_events += len(work.broker_rows)
+            await self._after_event(at)
+            if boundary_count % 256 == 0:
+                await self._publish()
+
+        try:
+            await run_certified_strategy_one_session(
+                market=market, candidates=candidates,
+                activations=activations, pivots=pivots, hod=hod,
+                seeds=seeds, entry=entry, prices=prices,
+                through_boundary_ms=self._fixed_through_boundary_ms(),
+                runtime=self._runtime,
+                assignments=self._strategy.assignments(),
+                client_factory=lambda: readonly_clickhouse_client(
+                    market_stream=True, v3_read_principal=True),
+                before_boundary=before, finish_boundary=finish)
+        except StopRequested:
+            await self._finish("stopped")
+            return
+        await self._finish("completed")
+
     async def _run_engine(self) -> None:
         try:
             if self.status == "created":
@@ -3155,6 +3232,18 @@ class ReplayRunController:
                 await self._open_fixed_journal()
             else:
                 self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
+            configuration = self.definition.configuration_revision["payload"]
+            if (self.definition.mode == RunMode.BACKTEST
+                    and dict(configuration.get("strategy") or {}).get(
+                        "strategy_number") == 1):
+                # Strategy 1 has a certified ARTE candidate/activation tape.
+                # Legacy signal occurrence, Watchlist, frame, and event
+                # preparation are not its execution authority.
+                self._preparation_stage = "strategy_one_runtime"
+                await self._publish(force=True)
+                await self._initialize_runtime()
+                await self._run_fixed_market_days()
+                return
             self._preparation_stage = "signal_occurrences"
             await self._publish(force=True)
             self._historical_external_signal_events = (
@@ -3168,7 +3257,6 @@ class ReplayRunController:
                     str(row.occurrence.get("event_id") or ""),
                 )
             )
-            configuration = self.definition.configuration_revision["payload"]
             source_native_identity_only = _uses_source_native_identity_preparation(
                 configuration, bool(self._historical_external_signal_events),
             )
@@ -3547,6 +3635,7 @@ class ReplayRunController:
             market_day_boundary, CompletedBoundaryValidator,
         )
         from src.backend.fixed_v7_stream import FixedV7Cache
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
         from src.backend.fixed_bar_signal import candidate_projection_tickers
         from src.backend.structural_v7_seed import certified_seed_plan
 
@@ -3663,6 +3752,20 @@ class ReplayRunController:
             except BaseException:
                 v7_reader.close()
                 raise
+        if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+            try:
+                if (v7_seeds is None or self._runtime is None
+                        or not isinstance(self._journal, BacktestMemoryJournal)):
+                    raise RuntimeError("Strategy 1 lacks its typed V7 and runtime authorities")
+                await self._run_strategy_one_fixed_days(
+                    market=plan, candidates=candidate_plan,
+                    activations=activation_plan, pivots=pivot_plan,
+                    hod=hod_plan, seeds=v7_seeds, entry=entry_plan,
+                    prices=price_plan)
+            finally:
+                if v7_reader is not None:
+                    await asyncio.to_thread(v7_reader.close)
+            return
         try:
             self._fixed_v7_caches = {}
             self._record_data_authority("fixed_market_data", {

@@ -61,6 +61,97 @@ def test_backtest_start_rejects_before_legacy_journal_or_disk_write(tmp_path, mo
     assert not controller.run_dir.exists()
 
 
+@pytest.mark.parametrize("stop_requested", [False, True])
+def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
+    monkeypatch, stop_requested,
+):
+    from src.backend import backtest_strategy_one_execution
+    from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryWork
+    from src.trading_runtime.strategy_engine import (
+        AssignmentStatus, StrategyAssignment, StrategyPermissions,
+    )
+    from src.trading_runtime.strategy_one_runtime import AssignedStrategyOne
+
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(
+        execution_interval="100ms",
+        requested_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc))
+    controller._journal = BacktestMemoryJournal(run_id=RUN)
+    controller._strategy = AssignedStrategyOne([StrategyAssignment(
+        "A1", "early-squeeze-strategy", 1, "DU1", "AAA", 123,
+        AssignmentStatus.WATCHING, StrategyPermissions(enter=True),
+        {"execution": {"tick_size": .01}})])
+    controller._runtime = object()
+    controller._resume_state = None
+    controller._stop_requested = False
+    controller.processed_events = 0
+    controller._source_cursor = {}
+    controller._data_authority = {}
+    controller._record_data_authority = lambda key, value: controller._data_authority.update(
+        {key: value})
+    controller._fixed_through_boundary_ms = lambda: 19_800_000
+    controller._publish = AsyncMock()
+    controller._after_event = AsyncMock()
+    controller._finish = AsyncMock()
+    controller._wait_until_active = AsyncMock()
+    controller._process_strategy_frame = AsyncMock(side_effect=AssertionError(
+        "legacy frame evaluation"))
+    work = StrategyOneBoundaryWork(100, (("AAA", {100: {}}),), ())
+
+    async def sparse_session(**kwargs):
+        assert kwargs["through_boundary_ms"] == 19_800_000
+        assert kwargs["assignments"] == controller._strategy.assignments()
+        controller._stop_requested = stop_requested
+        await kwargs["before_boundary"](work)
+        await kwargs["finish_boundary"](work)
+
+    monkeypatch.setattr(backtest_strategy_one_execution,
+                        "run_certified_strategy_one_session", sparse_session)
+    asyncio.run(controller._run_strategy_one_fixed_days(
+        market=SimpleNamespace(sessions=(DAY,), payload=lambda: {"token": "pinned"}),
+        candidates=object(),
+        activations=object(), pivots=object(), hod=object(), seeds=object(),
+        entry=object(), prices=object()))
+    assert controller._source_cursor == ({
+        "session_date": DAY, "boundary_ms": 100, "sequence": 1}
+        if not stop_requested else {})
+    assert controller.processed_events == (0 if stop_requested else 1)
+    assert controller._data_authority["fixed_market_data"]["frame_spool"] is False
+    assert controller._after_event.await_count == (0 if stop_requested else 1)
+    controller._finish.assert_awaited_once_with(
+        "stopped" if stop_requested else "completed")
+    controller._process_strategy_frame.assert_not_awaited()
+
+
+def test_strategy_one_engine_skips_legacy_signal_and_frame_preparation():
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, execution_interval="100ms",
+        configuration_revision={"payload": {"strategy": {"strategy_number": 1}}})
+    controller.status = "created"
+    controller._journal = None
+    controller._journal_writer = None
+    controller._prepared_v7 = None
+    controller._session_relative_volume_store = SimpleNamespace(close=lambda: None)
+    controller._publish = AsyncMock()
+
+    async def open_journal():
+        controller._journal = BacktestMemoryJournal(run_id=RUN)
+
+    controller._open_fixed_journal = open_journal
+    controller._initialize_runtime = AsyncMock()
+    controller._run_fixed_market_days = AsyncMock()
+    controller._load_historical_signal_events = AsyncMock(side_effect=AssertionError(
+        "legacy signal source was queried"))
+    controller._load_strategy_frames = AsyncMock(side_effect=AssertionError(
+        "legacy frame source was queried"))
+    asyncio.run(controller._run_engine())
+    controller._initialize_runtime.assert_awaited_once()
+    controller._run_fixed_market_days.assert_awaited_once()
+    controller._load_historical_signal_events.assert_not_awaited()
+    controller._load_strategy_frames.assert_not_awaited()
+
+
 def test_fixed_backtest_never_schedules_disk_manifest_task():
     controller = object.__new__(ReplayRunController)
     controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
