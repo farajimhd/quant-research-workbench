@@ -39,11 +39,12 @@ def test_dry_run_is_nonconnecting(capsys, monkeypatch):
     assert "DRY RUN" in text and "No connection" in text
 
 
-def test_new_producer_grants_only_ten_owned_tables(monkeypatch):
+def test_new_producer_grants_only_owned_products_and_dated_source(monkeypatch):
     monkeypatch.setattr(subject, "verify_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "verify_pivot_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "verify_hod_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "verify_entry_evidence_tables", lambda _admin: None)
+    monkeypatch.setattr(subject, "install_identity_tables", lambda _admin: None)
     admin = Admin()
     producer = Producer()
     def apply_grant(query):
@@ -56,7 +57,10 @@ def test_new_producer_grants_only_ten_owned_tables(monkeypatch):
     subject.provision(admin, credential=lambda **_kwargs: "p" * 40,
                       client_factory=lambda _user, _password: producer)
     assert producer.closed
-    assert len([sql for sql in admin.sql if sql.startswith("GRANT ")]) == 20
+    assert len([sql for sql in admin.sql if sql.startswith("GRANT ")]) == 25
+    assert "GRANT SELECT ON q_live.feature_tradable_universe_v1 " \
+           f"TO {subject.PRINCIPAL}" in admin.sql
+    assert not any("GRANT INSERT ON q_live." in sql for sql in admin.sql)
     assert not any("bars_v1" in sql or "indicators_v1" in sql or
                    "liquidity_100ms_v1" in sql for sql in admin.sql)
 
@@ -66,9 +70,10 @@ def test_existing_broad_grant_fails_before_new_grant(monkeypatch):
     monkeypatch.setattr(subject, "verify_pivot_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "verify_hod_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "verify_entry_evidence_tables", lambda _admin: None)
+    monkeypatch.setattr(subject, "install_identity_tables", lambda _admin: None)
     admin = Admin(present="1")
     producer = Producer((f"GRANT INSERT ON arte.bars_v1 TO {subject.PRINCIPAL}",))
-    with pytest.raises(RuntimeError, match="outside its ten tables"):
+    with pytest.raises(RuntimeError, match="outside its exact source/product tables"):
         subject.provision(admin, credential=lambda **_kwargs: "p" * 40,
                           client_factory=lambda _user, _password: producer)
     assert producer.closed
@@ -79,6 +84,8 @@ def test_clickhouse_combined_grant_line_is_exactly_parsed():
     producer = Producer((
         f"GRANT SELECT, INSERT ON {table} TO {subject.PRINCIPAL}"
         for table in subject._TABLES))
+    producer.grants.add(
+        f"GRANT SELECT ON q_live.feature_tradable_universe_v1 TO {subject.PRINCIPAL}")
     assert subject._grant_set(producer) == subject._GRANTS
 
 

@@ -42,6 +42,10 @@ from src.trading_runtime.strategy_one_entry_evidence_schema import (
     COVERAGE_TABLE as ENTRY_COVERAGE_TABLE,
     verify_tables as verify_entry_evidence_tables,
 )
+from src.trading_runtime.strategy_one_identity_schema import (
+    IDENTITY_TABLE, COVERAGE_TABLE as IDENTITY_COVERAGE_TABLE,
+    install_tables as install_identity_tables,
+)
 
 
 URL = "http://DESKTOP-SAAI85T:18123"
@@ -52,11 +56,13 @@ _TABLES = (CANDIDATE_TABLE, COVERAGE_TABLE,
            PIVOT_TABLE, PIVOT_COVERAGE_TABLE,
            HOD_CONTEXT_TABLE, HOD_COVERAGE_TABLE,
            ACTIVATION_TABLE, ACTIVATION_RESISTANCE_TABLE,
-           EVIDENCE_TABLE, ENTRY_COVERAGE_TABLE)
+           EVIDENCE_TABLE, ENTRY_COVERAGE_TABLE,
+           IDENTITY_TABLE, IDENTITY_COVERAGE_TABLE)
 _GRANTS = frozenset((privilege, table) for privilege in ("SELECT", "INSERT")
-                    for table in _TABLES)
+                    for table in _TABLES) | frozenset({
+    ("SELECT", "q_live.feature_tradable_universe_v1")})
 _GRANT_PATTERN = re.compile(
-    rf"GRANT ([A-Z ,]+) ON (arte\.[A-Za-z_][A-Za-z0-9_]*) TO {PRINCIPAL}\Z")
+    rf"GRANT ([A-Z ,]+) ON ((?:arte|q_live)\.[A-Za-z_][A-Za-z0-9_]*) TO {PRINCIPAL}\Z")
 
 
 def _credential(*, account_exists: bool) -> str:
@@ -104,7 +110,7 @@ def _grant_set(client) -> frozenset[tuple[str, str]]:
                 raise RuntimeError("Candidate producer has unauthorized privilege")
             grants.add((privilege, match.group(2)))
     if not grants <= _GRANTS:
-        raise RuntimeError("Strategy 1 producer has grants outside its ten tables")
+        raise RuntimeError("Strategy 1 producer has grants outside its exact source/product tables")
     return frozenset(grants)
 
 
@@ -114,6 +120,7 @@ def provision(admin, *, credential, client_factory) -> None:
     verify_pivot_tables(admin)
     verify_hod_tables(admin)
     verify_entry_evidence_tables(admin)
+    install_identity_tables(admin)
     present = admin.execute(
         "SELECT count() FROM system.users "
         f"WHERE name='{PRINCIPAL}' FORMAT TabSeparated").strip()
@@ -148,7 +155,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="required second confirmation for --apply")
     args = parser.parse_args(argv)
     if not args.apply:
-        print(f"DRY RUN: {PRINCIPAL}; SELECT and INSERT on ten derived-product tables only.")
+        print(f"DRY RUN: {PRINCIPAL}; exact derived-product SELECT/INSERT and "
+              "dated q_live universe SELECT only.")
         print("No connection, credential, account, or grant change was made.")
         print("Apply on DESKTOP-SAAI85T with --apply --confirm-candidate-producer.")
         return 0
@@ -183,7 +191,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if admin is not None:
             admin.close()
-    print("Strategy 1 producer authenticated with exactly ten SELECT/INSERT table grants.")
+    print("Strategy 1 producer authenticated with exact derived-product "
+          "SELECT/INSERT and dated universe SELECT grants.")
     return 0
 
 
