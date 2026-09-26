@@ -115,6 +115,14 @@ activation, confirmed/supported BOS, late-HOD, frozen-gap, entry/add/reentry,
 pending-order, and permission gates into a numbered Strategy 1 state machine
 with explicit completed-bar and V7 inputs. The columnar mask is only a
 necessary condition; its survivor must never submit an order by itself.
+The draft completed-bar BOS transition is in `strategy_one_bos.py`. Its
+confirmed swing input is not inferred from V7 geometry: a separate
+producer-owned `strategy_one_pivot_interval_v1` product is specified with
+one row per unique active pivot interval and a coverage-last seal. The
+normalizer matches the shared detector's pivot visibility on recorded
+completed candles; the producer derivation reads certified 1s ARTE bars.
+Neither table publication nor read-side certification is wired yet, so
+this product cannot currently satisfy Strategy 1 preflight.
 `src/backend/backtest_strategy_one_preparation.py` now scans the full certified
 universe for completed-bar Early Squeeze starts, loads only episode-bearing
 tickers in bounded read-only lanes, and merges compact candidate cursors in
