@@ -48,6 +48,7 @@ class Client:
             return "\n".join(json.dumps(row) for row in self.coverage)
         if "FROM arte.strategy_one_pivot_interval_v1" in query:
             return "\n".join(json.dumps({
+                "ticker": "ABCD", "derivation_attempt_text": DERIVED,
                 "side": item.side, "price_int": item.price_int,
                 "pivot_at_us": item.pivot_at_us,
                 "confirmed_at_us": item.confirmed_at_us,
@@ -95,3 +96,43 @@ def test_future_visibility_or_changed_child_blocks_preflight(monkeypatch):
     with pytest.raises(RuntimeError, match="differ"):
         store.certify_pivot_plan(market(), session_date=DAY,
                                   candidate_tickers=("ABCD",), client=client)
+
+
+def test_multi_ticker_intervals_use_one_bounded_attempt_scoped_query(monkeypatch):
+    monkeypatch.setattr(store, "verify_tables", lambda _: None)
+    units = tuple(MarketDayUnit("build", DAY, ticker, stage, SOURCE,
+                                "source", 100, "hash")
+                  for ticker in ("ABCD", "EFGH")
+                  for stage in ("bars", "technical", "broker_100ms"))
+    parent = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "build", "definition", (DAY,),
+        ("ABCD", "EFGH"), units, (100, 1000, 5000, 10000, 30000), "token")
+
+    class BatchedClient(Client):
+        def __init__(self):
+            super().__init__()
+            self.coverage.append({**self.coverage[0], "ticker": "EFGH"})
+
+        def execute(self, query):
+            if "FROM arte.strategy_one_pivot_interval_v1" not in query:
+                return super().execute(query)
+            self.queries.append(query)
+            return "\n".join(json.dumps({
+                "ticker": ticker, "derivation_attempt_text": DERIVED,
+                "side": INTERVAL.side, "price_int": INTERVAL.price_int,
+                "pivot_at_us": INTERVAL.pivot_at_us,
+                "confirmed_at_us": INTERVAL.confirmed_at_us,
+                "valid_from_boundary_ms": INTERVAL.valid_from_boundary_ms,
+                "valid_to_boundary_ms": INTERVAL.valid_to_boundary_ms,
+            }) for ticker in ("ABCD", "EFGH"))
+
+    client = BatchedClient()
+    plan = store.certify_pivot_plan(parent, session_date=DAY,
+                                    candidate_tickers=("ABCD", "EFGH"),
+                                    client=client)
+    assert len(plan.intervals) == 2
+    queries = [query for query in client.queries
+               if "FROM arte.strategy_one_pivot_interval_v1" in query]
+    assert len(queries) == 1
+    assert "(ticker,derivation_attempt_id) IN" in queries[0]
+    assert "LIMIT 3" in queries[0]

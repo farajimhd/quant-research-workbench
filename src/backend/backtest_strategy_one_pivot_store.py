@@ -120,37 +120,71 @@ def certify_pivot_plan(
                 ticker, attempt, bars_attempt, count, digest)
         if set(by_ticker) != set(batch):
             raise RuntimeError("Strategy 1 pivot coverage omits a candidate ticker")
+        # Bound decoded rows as well as ticker count. The old per-ticker read
+        # issued thousands of HTTP requests during a full-market preflight.
+        # A singleton may exceed the target; its certified 100k hard bound
+        # still caps that one read.
+        groups: list[list[str]] = []
+        group: list[str] = []
+        expected_rows = 0
         for ticker in batch:
-            fact = by_ticker[ticker]
-            rows = _rows(client, f"""SELECT side,price_int,pivot_at_us,
-              confirmed_at_us,valid_from_boundary_ms,valid_to_boundary_ms
+            count = by_ticker[ticker].interval_count
+            if group and expected_rows + count > 20_000:
+                groups.append(group)
+                group, expected_rows = [], 0
+            group.append(ticker)
+            expected_rows += count
+        if group:
+            groups.append(group)
+        for group in groups:
+            expected_rows = sum(by_ticker[ticker].interval_count for ticker in group)
+            attempts = ",".join(
+                f"({_literal(ticker)},toUUID({_literal(by_ticker[ticker].derivation_attempt_id)}))"
+                for ticker in group)
+            rows = _rows(client, f"""SELECT ticker,
+              toString(derivation_attempt_id) AS derivation_attempt_text,
+              side,price_int,pivot_at_us,confirmed_at_us,
+              valid_from_boundary_ms,valid_to_boundary_ms
               FROM {PIVOT_TABLE}
               WHERE source_build_id={_literal(market.build_id)}
                 AND session_date=toDate({_literal(session_date)})
-                AND ticker={_literal(ticker)}
-                AND derivation_attempt_id=toUUID({_literal(fact.derivation_attempt_id)})
-              ORDER BY valid_from_boundary_ms,toString(side),price_int,pivot_at_us,
-                       confirmed_at_us,valid_to_boundary_ms""")
-            values = tuple(PivotInterval(
-                str(row["side"]), int(row["price_int"]),
-                int(row["pivot_at_us"]), int(row["confirmed_at_us"]),
-                int(row["valid_from_boundary_ms"]),
-                (None if row["valid_to_boundary_ms"] is None
-                 else int(row["valid_to_boundary_ms"]))) for row in rows)
-            if (len(values) != fact.interval_count
-                    or interval_content_hash(values) != fact.content_hash):
+                AND (ticker,derivation_attempt_id) IN ({attempts})
+              ORDER BY ticker,valid_from_boundary_ms,toString(side),price_int,
+                       pivot_at_us,confirmed_at_us,valid_to_boundary_ms
+              LIMIT {expected_rows + 1}""")
+            if len(rows) != expected_rows:
                 raise RuntimeError("Strategy 1 pivot rows differ from coverage")
-            for item in values:
-                if (item.pivot_at_us < origin_us
-                        or item.confirmed_at_us >
-                        origin_us + item.valid_from_boundary_ms * 1_000):
-                    raise RuntimeError("Strategy 1 pivot visibility is noncausal")
-            coverage.append(fact)
-            intervals.append((ticker, values))
-            for value in (ticker, fact.derivation_attempt_id,
-                          fact.bars_attempt_id, str(fact.interval_count),
-                          fact.content_hash):
-                token.update(value.encode())
-                token.update(b"\0")
+            grouped: dict[str, list[dict]] = {ticker: [] for ticker in group}
+            for row in rows:
+                ticker = str(row["ticker"])
+                if (ticker not in grouped
+                        or row["derivation_attempt_text"]
+                           != by_ticker[ticker].derivation_attempt_id):
+                    raise RuntimeError("Strategy 1 pivot row lacks certified attempt")
+                grouped[ticker].append(row)
+            for ticker in group:
+                fact = by_ticker[ticker]
+                values = tuple(PivotInterval(
+                    str(row["side"]), int(row["price_int"]),
+                    int(row["pivot_at_us"]), int(row["confirmed_at_us"]),
+                    int(row["valid_from_boundary_ms"]),
+                    (None if row["valid_to_boundary_ms"] is None
+                     else int(row["valid_to_boundary_ms"])))
+                    for row in grouped[ticker])
+                if (len(values) != fact.interval_count
+                        or interval_content_hash(values) != fact.content_hash):
+                    raise RuntimeError("Strategy 1 pivot rows differ from coverage")
+                for item in values:
+                    if (item.pivot_at_us < origin_us
+                            or item.confirmed_at_us >
+                            origin_us + item.valid_from_boundary_ms * 1_000):
+                        raise RuntimeError("Strategy 1 pivot visibility is noncausal")
+                coverage.append(fact)
+                intervals.append((ticker, values))
+                for value in (ticker, fact.derivation_attempt_id,
+                              fact.bars_attempt_id, str(fact.interval_count),
+                              fact.content_hash):
+                    token.update(value.encode())
+                    token.update(b"\0")
     return CertifiedPivotPlan(market.build_id, session_date,
                               tuple(coverage), tuple(intervals), token.hexdigest())
