@@ -56,12 +56,11 @@ def _load_roots(paths, *, allow_segment):
     return sorted(result,key=lambda item:item.plan['date'])
 
 
-def _run_validation(model, shards, device, vocab, batch_size, trade_weight, value_weight):
+def _run_validation(model, sessions, device, batch_size, trade_weight, value_weight):
     model.eval()
     totals = dict(loss=0.,action_accuracy=0.,trade_recall=0.,samples=0)
     with torch.inference_mode():
-        for shard in shards:
-            data = shard.to_gpu(device,vocab)
+        for data in sessions:
             for start in range(0,data.rows,batch_size):
                 index = torch.arange(start,min(start+batch_size,data.rows),device=device)
                 batch = data.batch(index)
@@ -74,7 +73,6 @@ def _run_validation(model, shards, device, vocab, batch_size, trade_weight, valu
                 totals['action_accuracy'] += float(metrics['action_accuracy'])*count
                 totals['trade_recall'] += float(metrics['trade_recall'])*count
                 totals['samples'] += count
-            del data
     model.train()
     return {key:value/max(1,totals['samples']) for key,value in totals.items() if key != 'samples'}
 
@@ -165,6 +163,13 @@ def run(args):
         f'{sum(p.numel() for p in model.parameters()):,} parameters | {device}')
     previous = signal.signal(signal.SIGINT,_interrupt)
     try:
+        preload_started = perf_counter()
+        train_data = [shard.to_gpu(device,vocab,reserve_fraction=.25) for shard in train_shards]
+        val_data = [shard.to_gpu(device,vocab,reserve_fraction=.25) for shard in val_shards]
+        torch.cuda.synchronize()
+        preload_seconds = perf_counter()-preload_started
+        console.print(f'GPU-resident sessions ready | preload {preload_seconds:.1f}s | '
+            f'allocated {torch.cuda.memory_allocated(device)/2**30:.1f} GiB')
         for epoch in range(start_epoch,args.epochs):
             if STOP or (paths.run_root/'STOP').exists():
                 break
@@ -172,12 +177,7 @@ def run(args):
             sums = dict(loss=0.,action_accuracy=0.,trade_recall=0.,samples=0)
             wall_start = perf_counter()
             gpu_ms = 0.
-            loading_seconds = 0.
-            for shard in train_shards:
-                load_start = perf_counter()
-                data = shard.to_gpu(device,vocab)
-                torch.cuda.synchronize()
-                loading_seconds += perf_counter()-load_start
+            for shard,data in zip(train_shards,train_data):
                 generator = torch.Generator(device=device).manual_seed(args.seed+epoch*1000003+
                     int(shard.plan['date'].replace('-','')))
                 order = torch.randperm(data.rows,device=device,generator=generator)
@@ -207,17 +207,17 @@ def run(args):
                     if args.max_steps and global_step >= args.max_steps:
                         break
                 del batch,logits,value,loss,measure,index,order,generator
-                del data
                 if args.max_steps and global_step >= args.max_steps:
                     break
             torch.cuda.synchronize()
             elapsed = perf_counter()-wall_start
             train_result = {key:value/max(1,sums['samples']) for key,value in sums.items() if key != 'samples'}
             train_result.update(gpu_compute_fraction=min(1.,gpu_ms/1000/max(elapsed,1e-9)),
-                loading_seconds=loading_seconds,samples_per_second=sums['samples']/max(elapsed,1e-9))
+                preload_seconds=preload_seconds if epoch == start_epoch else 0.,
+                samples_per_second=sums['samples']/max(elapsed,1e-9))
             if sums['samples'] == 0:
                 raise ValueError('No training examples were processed')
-            val = _run_validation(model,val_shards,device,vocab,args.batch_size,
+            val = _run_validation(model,val_data,device,args.batch_size,
                 args.trade_weight,args.value_weight)
             report = {**{'train/'+key:float(value) for key,value in train_result.items()},
                 **{'val/'+key:float(value) for key,value in val.items()}}

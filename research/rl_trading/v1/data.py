@@ -51,16 +51,20 @@ class SessionShard:
                 or not self.arrays['done'][-1] or np.any(self.arrays['done'][:-1])):
             raise ValueError('Training shard tensor shape or terminal contract changed')
 
-    def to_gpu(self, device: torch.device, ticker_vocab: dict[str,int]):
+    def to_gpu(self, device: torch.device, ticker_vocab: dict[str,int],
+               *, reserve_fraction: float = .3):
         if device.type != 'cuda':
             raise ValueError('Training data must be assembled on a CUDA GPU')
-        needed = sum(value.nbytes for key,value in self.arrays.items() if key not in
+        if not 0 < reserve_fraction < 1:
+            raise ValueError('GPU reserve fraction must be between zero and one')
+        needed = sum(value.nbytes//2 if key == 'features' else value.nbytes
+                     for key,value in self.arrays.items() if key not in
                      ('volume_60s','execution','closeable'))
         # The preceding session's tensors may have been freed into PyTorch's
         # cache. Driver free memory alone then understates usable capacity.
         torch.cuda.empty_cache()
         available,_ = torch.cuda.mem_get_info(device)
-        if needed > available*.7:
+        if needed > available*(1-reserve_fraction):
             raise MemoryError(f'Session shard needs {needed/2**30:.1f} GiB before training activations; split the shard')
         return GpuSession(self,device,ticker_vocab)
 
@@ -69,9 +73,14 @@ class GpuSession:
     def __init__(self, source: SessionShard, device: torch.device, ticker_vocab: dict[str,int]):
         self.plan = source.plan
         self.device = device
-        self.values = {name:torch.from_numpy(np.asarray(value).copy()).to(device,non_blocking=True)
-                       for name,value in source.arrays.items() if name not in
-                       ('volume_60s','execution','closeable')}
+        self.values = {}
+        for name,value in source.arrays.items():
+            if name in ('volume_60s','execution','closeable'):
+                continue
+            host = np.asarray(value).astype(np.float16,copy=True) if name == 'features' else np.asarray(value).copy()
+            if name == 'features' and not np.isfinite(host).all():
+                raise ValueError('Feature bank cannot be represented in float16')
+            self.values[name] = torch.from_numpy(host).to(device,non_blocking=True)
         self.ticker_ids = torch.tensor([ticker_vocab.get(ticker,0) for ticker in source.plan['tickers']],
             device=device,dtype=torch.long)
         self.rows = source.complete['rows']
@@ -88,7 +97,7 @@ class GpuSession:
         time = second[:,None]-self.offsets[None,:]
         history_valid = time >= 0
         time = time.clamp_min(0)
-        market = values['features'][selected[:,:,None],time[:,None,:]]
+        market = values['features'][selected[:,:,None],time[:,None,:]].float()
         market = market*valid[:,:,None,None]*history_valid[:,None,:,None]
         return dict(market=market,valid=valid,ticker_id=self.ticker_ids[selected]*valid,
             rank=values['rank'][rows].float()/max(1,len(self.ticker_ids)),
