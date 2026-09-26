@@ -30,6 +30,7 @@ from src.trading_runtime.arte_journal_schema import (
     versioned_journal_v2_contracts, versioned_journal_v2_preflight,
 )
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.backend.backtest_squeeze_episode_schema import (
     RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
 
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
+_CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
 _CONTRACTS.update({table.name: table for table in V4_COMMIT_TABLES})
 _CONTRACTS.update({table.name: table for table in VERSIONED_JOURNAL_V2_TABLES})
 _CONTRACTS.update({table.name: table for table in (

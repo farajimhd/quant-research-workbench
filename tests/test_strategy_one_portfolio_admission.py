@@ -7,6 +7,7 @@ import pytest
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.arte_journal_projection import project_journal_record
+from src.trading_runtime.arte_broker_acknowledgement_v4 import project_broker_acknowledgement_v4
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
 from src.trading_runtime.arte_oms_projection import oms_group_state_batch
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary
@@ -195,6 +196,14 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
     }
     assert group.assignment_id == "assignment-1"
     assert group.broker_order_ids, group
+    acknowledgements = [record for record in records
+                        if (record.category, record.entity_type)
+                        == ("broker", "order_acknowledgement")]
+    assert acknowledgements
+    for record in acknowledgements:
+        projected_ack = project_broker_acknowledgement_v4(
+            record, batch_id=str(UUID(int=14)))
+        assert projected_ack.detail["broker_order_id"] in group.broker_order_ids
     assert frozen and all(item is not None and item.group_id == group.group_id
                           for item in frozen)
     assert any(record.category == "command" and record.entity_type == "order"
