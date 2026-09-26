@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import platform
 import sys
+import traceback
 from threading import Lock, local
 from time import monotonic
 
@@ -35,6 +36,10 @@ from src.backend.backtest_strategy_one_candidate_store import certify_candidate_
 from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 from src.trading_runtime.strategy_one_pivot_schema import verify_tables
+
+
+class PivotCampaignFailure(RuntimeError):
+    """Only this locally constructed message is safe for operator output."""
 
 
 def _writer(password: str) -> ClickHouseHttpClient:
@@ -126,8 +131,14 @@ def publish_session(*, session_date: str, build_id: str,
             client.close()
     if first_failure is not None:
         ticker, exc = first_failure
-        raise RuntimeError(f"Pivot publication stopped at {ticker}: "
-                           f"{type(exc).__name__}; rerun verifies prior coverage")
+        frames = traceback.extract_tb(exc.__traceback__)
+        stage = next((f"{Path(frame.filename).name}:{frame.name}:{frame.lineno}"
+                      for frame in reversed(frames)
+                      if Path(frame.filename).is_relative_to(REPO_ROOT)),
+                     "external_dependency")
+        raise PivotCampaignFailure(f"Pivot publication stopped at {ticker}: "
+                                   f"{type(exc).__name__} at {stage}; "
+                                   "rerun verifies prior coverage")
     with closing(readonly_clickhouse_client(
             market_stream=True, v3_read_principal=True)) as reader:
         from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
@@ -175,7 +186,9 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except Exception as exc:
         # ClickHouse exceptions may embed credentials or SQL.
-        print(f"Pivot campaign stopped: {type(exc).__name__}; "
+        detail = (str(exc) if isinstance(exc, PivotCampaignFailure)
+                  else type(exc).__name__)
+        print(f"Pivot campaign stopped: {detail}; "
               "completed ticker coverage remains restart-safe. "
               "Inspect private diagnostics.", file=sys.stderr)
         return 1

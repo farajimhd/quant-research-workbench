@@ -31,3 +31,14 @@ def test_apply_reports_verified_campaign_result(monkeypatch):
                          "--session-date", "2026-08-18", "--workers", "4"]) == 0
     assert calls == [{"session_date": "2026-08-18",
                       "build_id": "", "workers": 4}]
+
+
+def test_failure_output_exposes_only_owned_stage_or_exception_type(monkeypatch, capsys):
+    monkeypatch.setattr(command.platform, "node", lambda: "DESKTOP-SAAI85T")
+    def failed(**_kwargs):
+        raise RuntimeError("private SQL with credential")
+    monkeypatch.setattr(command, "publish_session", failed)
+    assert command.main(["--apply", "--confirm-pivot-publication"]) == 1
+    output = capsys.readouterr()
+    assert "RuntimeError" in output.err
+    assert "private SQL" not in output.err
