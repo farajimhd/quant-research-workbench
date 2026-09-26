@@ -234,13 +234,14 @@ def publish_base_typed_batch_v4(client, batch) -> str:
     """
     from src.trading_runtime.arte_journal_writer import (
         TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
-        _sealed_families,
+        _sealed_families, _v4_family_table,
     )
 
     if (not isinstance(batch, TypedJournalBatch)
             or not 1 <= len(batch.events) <= 512):
         raise ValueError("V4 publication needs one bounded typed event batch")
-    families = _sealed_families(batch)
+    families = tuple((_v4_family_table(name), rows)
+                     for name, rows in _sealed_families(batch))
     commit, family_rows = prepare_commit_v4(
         run_id=batch.run_id, run_month=batch.run_month,
         attempt_id=batch.attempt_id, batch_id=batch.batch_id,

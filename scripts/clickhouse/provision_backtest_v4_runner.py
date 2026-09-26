@@ -32,9 +32,12 @@ from scripts.clickhouse.provision_trading_journal import (
     SECRET_ROOT, SYSTEM_READ_TABLES, _admin_client, _restrict_secret_file,
 )
 from src.trading_runtime.arte_journal_schema import (
-    MARKET_READ_TABLES, TABLES, V4_COMMIT_TABLES, storage_preflight,
+    MARKET_READ_TABLES, V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
+    storage_preflight,
 )
-from src.trading_runtime.arte_journal_writer import _FAMILIES, _v4_preflight
+from src.trading_runtime.arte_journal_writer import (
+    _FAMILIES, _v4_family_table, _v4_preflight,
+)
 
 
 PRINCIPAL = "backtest_v4_runner"
@@ -45,11 +48,11 @@ PASSWORD_KEY = "BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD"
 
 
 def desired_plan() -> PrincipalPlan:
-    writable = frozenset(table for table, _, _, _ in _FAMILIES) | frozenset(
+    writable = frozenset(_v4_family_table(table) for table, _, _, _ in _FAMILIES) | frozenset(
         table.name for table in V4_COMMIT_TABLES)
     return PrincipalPlan(
         "running", PRINCIPAL,
-        frozenset(table.name for table in (*TABLES, *V4_COMMIT_TABLES))
+        frozenset(table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES))
         | MARKET_READ_TABLES,
         writable, frozenset(SYSTEM_READ_TABLES),
     )
@@ -90,7 +93,7 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
         f"WHERE name='{PRINCIPAL}' FORMAT TabSeparated").strip()
     if present not in {"0", "1"}:
         raise RuntimeError("V4 principal inventory is inconsistent")
-    storage_preflight(admin, tables=TABLES)
+    storage_preflight(admin, tables=fixed_backtest_v2_contracts())
     storage_preflight(admin, tables=V4_COMMIT_TABLES)
     password = credential(account_exists=present == "1")
     if not isinstance(password, str) or len(password) < 40:

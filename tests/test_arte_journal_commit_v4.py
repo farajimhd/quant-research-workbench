@@ -1,4 +1,5 @@
 """Strategy 1 commit family authority stays tabular and exact."""
+from dataclasses import replace
 from datetime import date, datetime, timezone
 
 import pytest
@@ -7,10 +8,13 @@ from src.trading_runtime.arte_journal_commit_v4 import (
     load_verified_commit_v4, prepare_commit_v4,
     publish_base_typed_batch_v4, verify_commit_v4,
 )
-from src.trading_runtime.arte_journal_schema import TABLES, V4_COMMIT_TABLES
+from src.trading_runtime.arte_journal_schema import (
+    TABLES, V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
+)
 from src.trading_runtime.arte_journal_writer import _sealed_families
 from src.trading_runtime.arte_journal_writer import ArteJournalWriter
 from src.trading_runtime import arte_journal_writer as writer_module
+from src.trading_runtime.arte_journal_writer import typed_row
 from tests.test_arte_journal_writer import MemoryClient, batch
 
 
@@ -182,8 +186,41 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
                                   "trading_commit_v4"]
     finally:
         journal.close()
-    assert observed[:2] == [None, V4_COMMIT_TABLES]
-    writable = frozenset(table for table, _, _, _ in writer_module._FAMILIES) | \
+    assert observed[:2] == [fixed_backtest_v2_contracts(), V4_COMMIT_TABLES]
+    writable = frozenset(writer_module._v4_family_table(table)
+                         for table, _, _, _ in writer_module._FAMILIES) | \
         frozenset(table.name for table in V4_COMMIT_TABLES)
     assert observed[2] == (
-        writable, frozenset(table.name for table in TABLES) - writable)
+        writable, frozenset(table.name for table in fixed_backtest_v2_contracts()) - writable)
+
+
+def test_v4_strategy_signal_uses_installed_v2_table_and_readback():
+    item = batch()
+    event = typed_row("trading_event_v1", {
+        key: ("strategy_decision" if key == "category" else
+              "signal" if key == "entity_type" else value)
+        for key, value in item.events[0].items() if key != "content_hash"
+    })
+    signal = typed_row("trading_strategy_signal_v1", {
+        "record_id": event["record_id"], "run_id": item.run_id,
+        "event_month": "2026-08-01", "batch_id": item.batch_id,
+        "account_id": "DU1", "strategy_id": "strategy-1",
+        "strategy_revision": 1, "signal_id": "signal-1",
+        "signal_type": "entry", "ticker": "ABCD", "action": "watch",
+        "direction": "long", "score": "1", "confidence": "1",
+        "reason": "candidate", "working_timeframe": "100ms",
+        "invalidation_price": None, "source_signal_count": 0,
+        "evidence_node_count": 0, "decision_assignment_id": None,
+        "decision_reference_price": None, "decision_status": None,
+        "decision_reason_detail": None,
+        "source_event_time": event["event_time"],
+    })
+    item = replace(item, events=(event,), signals=(signal,))
+    client = MemoryClient()
+    assert publish_base_typed_batch_v4(client, item) == item.batch_id
+    assert "trading_strategy_signal_v1" not in client.inserts
+    assert "trading_strategy_signal_v2" in client.inserts
+    assert client.tables["trading_commit_family_v4"][-1]["family_name"] == \
+        "trading_strategy_signal_v2"
+    assert load_verified_commit_v4(
+        client, run_id=item.run_id, batch_id=item.batch_id)[0]["event_count"] == 1

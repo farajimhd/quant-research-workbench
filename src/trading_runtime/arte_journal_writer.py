@@ -25,6 +25,7 @@ from uuid import UUID
 
 from src.trading_runtime.arte_journal_schema import (
     POLICY_ALLOWED_TABLES, TABLES, V4_COMMIT_TABLES,
+    VERSIONED_JOURNAL_V2_TABLES, fixed_backtest_v2_contracts,
     journal_permission_preflight, storage_preflight,
     versioned_journal_v2_contracts, versioned_journal_v2_preflight,
 )
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
 
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS.update({table.name: table for table in V4_COMMIT_TABLES})
+_CONTRACTS.update({table.name: table for table in VERSIONED_JOURNAL_V2_TABLES})
 _CONTRACTS.update({table.name: table for table in (
     SQUEEZE_EPISODE, RESERVATION_REASON, RECONCILIATION_DIFFERENCE,
     PORTFOLIO_CONTROL,
@@ -1490,14 +1492,21 @@ def _v3_preflight(client: Any) -> None:
 
 def _v4_preflight(client: Any) -> None:
     """Opt-in normalized fence; leave the live V1 startup contract unchanged."""
-    storage_preflight(client)
+    installed = fixed_backtest_v2_contracts()
+    storage_preflight(client, tables=installed)
     storage_preflight(client, tables=V4_COMMIT_TABLES)
     writable = frozenset(
-        (table for table, _, _, _ in _FAMILIES)
+        _v4_family_table(table) for table, _, _, _ in _FAMILIES
     ) | frozenset(table.name for table in V4_COMMIT_TABLES)
-    readonly = frozenset(table.name for table in TABLES) - writable
+    readonly = frozenset(table.name for table in installed) - writable
     journal_permission_preflight(
         client, journal_tables=writable, read_only_tables=readonly)
+
+
+def _v4_family_table(name: str) -> str:
+    """Write current signal shape to V2; occupied legacy V1 is read-only."""
+    return ("trading_strategy_signal_v2" if name == "trading_strategy_signal_v1"
+            else name)
 
 
 def _optional_v3_commit_exists(client: Any) -> bool:
