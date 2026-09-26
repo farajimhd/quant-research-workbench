@@ -2,7 +2,8 @@
 
 This is not a Backtest run, producer, or journal writer. It checks the full
 tradable population's candidate seal, then only the selected candidate
-tickers' pivot intervals and exact activation bars.
+tickers' pivot intervals, HOD context, V7 seeds, activation bars, exact entry
+evidence, and executable price levels. It never runs or writes a Backtest.
 """
 from __future__ import annotations
 
@@ -23,11 +24,17 @@ sys.dont_write_bytecode = True
 from scripts.clickhouse.publish_strategy_one_candidates import (
     FULL_SESSION_BOUNDARY_MS, _certified_plan,
 )
-from src.backend.backtest_market_data import readonly_clickhouse_client
+from src.backend.backtest_market_data import (
+    project_market_day_plan, readonly_clickhouse_client,
+)
+from src.backend.backtest_liquidity_price import certify_price_level_plan
 from src.backend.backtest_strategy_one_activation import load_strategy_one_activations
 from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+from src.backend.backtest_strategy_one_entry_store import certify_entry_evidence_plan
+from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
 from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
 from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
+from src.backend.structural_v7_seed import certified_seed_plan
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 
 
@@ -54,6 +61,21 @@ def verify(*, session_date: str, build_id: str) -> dict[str, int | float | str]:
         activations = load_strategy_one_activations(
             market, candidates, client=reader)
         activation_seconds = perf_counter() - started
+        projected = project_market_day_plan(market, selected)
+        started = perf_counter()
+        prices = certify_price_level_plan(projected, reader)
+        price_seconds = perf_counter() - started
+        started = perf_counter()
+        seeds = certified_seed_plan(projected, reader)
+        seed_seconds = perf_counter() - started
+        started = perf_counter()
+        hod = certify_hod_plan(market, candidates, seeds, client=reader)
+        hod_seconds = perf_counter() - started
+        started = perf_counter()
+        entry = certify_entry_evidence_plan(
+            market, candidates, activations, pivots, hod, seeds,
+            client=reader)
+        entry_seconds = perf_counter() - started
     return {
         "population": len(market.tickers),
         "candidate_tickers": len(selected),
@@ -61,13 +83,23 @@ def verify(*, session_date: str, build_id: str) -> dict[str, int | float | str]:
                                     for item in candidates.prepared),
         "pivot_intervals": sum(len(rows) for _, rows in pivots.intervals),
         "activations": len(activations.rows),
+        "price_units": len(prices.units),
+        "seed_units": len(seeds.units),
+        "hod_tickers": len(hod.contexts),
+        "entry_tickers": len(entry.coverage),
+        "entry_candidates": len(entry.candidates),
         "source_seconds": source_seconds,
         "candidate_seconds": candidate_seconds,
         "pivot_seconds": pivot_seconds,
         "activation_seconds": activation_seconds,
+        "price_seconds": price_seconds,
+        "seed_seconds": seed_seconds,
+        "hod_seconds": hod_seconds,
+        "entry_seconds": entry_seconds,
         "candidate_token": candidates.token,
         "pivot_token": pivots.token,
         "activation_token": activations.token,
+        "entry_token": entry.token,
     }
 
 
@@ -101,9 +133,15 @@ def main(argv: list[str] | None = None) -> int:
           f"candidate seal {result['candidate_seconds']:.3f}s | "
           f"pivot seal {result['pivot_seconds']:.3f}s | "
           f"activation bars {result['activation_seconds']:.3f}s")
+    print(f"Price {result['price_seconds']:.3f}s / {result['price_units']} units | "
+          f"V7 seeds {result['seed_seconds']:.3f}s / {result['seed_units']} units | "
+          f"HOD {result['hod_seconds']:.3f}s / {result['hod_tickers']} tickers | "
+          f"entry seal {result['entry_seconds']:.3f}s / "
+          f"{result['entry_candidates']} candidates")
     print(f"Candidate token {result['candidate_token']}")
     print(f"Pivot token {result['pivot_token']}")
     print(f"Activation token {result['activation_token']}")
+    print(f"Entry token {result['entry_token']}")
     print("Read-only verification complete; no Backtest was run or data written.")
     return 0
 

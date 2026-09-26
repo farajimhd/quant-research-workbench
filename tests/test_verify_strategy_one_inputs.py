@@ -11,9 +11,15 @@ def test_workstation_one_shot_prints_counts_without_claiming_backtest(monkeypatc
         "candidate_seconds": 2.0, "pivot_seconds": 3.0,
         "activation_seconds": 4.0, "candidate_token": "a" * 64,
         "pivot_token": "b" * 64, "activation_token": "c" * 64,
+        "price_seconds": 5.0, "price_units": 957,
+        "seed_seconds": 6.0, "seed_units": 957,
+        "hod_seconds": 7.0, "hod_tickers": 957,
+        "entry_seconds": 8.0, "entry_tickers": 957,
+        "entry_candidates": 62072, "entry_token": "d" * 64,
     })
     assert command.main(["--session-date", "2026-08-18"]) == 0
     output = capsys.readouterr().out
     assert "6100 tradable tickers" in output
     assert "pivot seal 3.000s" in output
+    assert "entry seal 8.000s / 62072 candidates" in output
     assert "no Backtest was run or data written" in output
