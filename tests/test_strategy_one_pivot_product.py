@@ -89,3 +89,12 @@ def test_content_hash_rejects_duplicate_or_overlapping_pivot_intervals():
             "high", 100_000, 1_000_000, 2_000_000, 3_000, None)))
     with pytest.raises(ValueError, match="duplicate"):
         interval_content_hash((first, first))
+
+
+def test_canonical_same_boundary_side_order_is_lexical_not_enum_numeric():
+    builder = PivotIntervalBuilder()
+    low = {**pivot(), "side": "support", "price": 9.5}
+    builder.observe(2_000, row(2.0, (low, pivot())))
+    intervals = builder.finish()
+    assert [item.side for item in intervals] == ["high", "low"]
+    assert len(interval_content_hash(intervals)) == 64

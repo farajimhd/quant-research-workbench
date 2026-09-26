@@ -80,6 +80,8 @@ def test_child_is_verified_before_coverage_and_retry_skips(monkeypatch):
         if call.startswith("INSERT INTO arte.strategy_one_pivot_coverage_v1"))
     assert producer.publish_unit(writer, object(), market(),
                                  session_date=DAY, ticker="ABCD") == "skipped"
+    assert any("toString(side)" in query for query in writer.calls
+               if query.startswith("SELECT") and "pivot_interval" in query)
 
 
 def test_uncertain_child_insert_never_publishes_coverage(monkeypatch):

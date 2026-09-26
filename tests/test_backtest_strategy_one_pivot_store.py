@@ -66,6 +66,8 @@ def test_certification_pins_exact_select_only_rows(monkeypatch):
     assert plan.intervals == (("ABCD", (INTERVAL,)),)
     assert len(plan.token) == 64
     assert all(query.startswith("SELECT") for query in client.queries)
+    assert any("toString(side)" in query for query in client.queries
+               if "pivot_interval" in query)
 
 
 def test_missing_duplicate_or_changed_coverage_blocks_preflight(monkeypatch):

@@ -77,7 +77,7 @@ def _child(client: Any, scope: PivotPublicationScope,
         AND session_date=toDate({literal(scope.session_date)})
         AND ticker={literal(scope.ticker)}
         AND derivation_attempt_id=toUUID({literal(attempt)})
-      ORDER BY valid_from_boundary_ms,side,price_int,pivot_at_us,
+      ORDER BY valid_from_boundary_ms,toString(side),price_int,pivot_at_us,
                confirmed_at_us,valid_to_boundary_ms""")
     return tuple(PivotInterval(
         str(row["side"]), int(row["price_int"]), int(row["pivot_at_us"]),

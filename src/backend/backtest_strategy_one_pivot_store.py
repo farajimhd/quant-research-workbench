@@ -121,7 +121,7 @@ def certify_pivot_plan(
                 AND session_date=toDate({_literal(session_date)})
                 AND ticker={_literal(ticker)}
                 AND derivation_attempt_id=toUUID({_literal(fact.derivation_attempt_id)})
-              ORDER BY valid_from_boundary_ms,side,price_int,pivot_at_us,
+              ORDER BY valid_from_boundary_ms,toString(side),price_int,pivot_at_us,
                        confirmed_at_us,valid_to_boundary_ms""")
             values = tuple(PivotInterval(
                 str(row["side"]), int(row["price_int"]),
