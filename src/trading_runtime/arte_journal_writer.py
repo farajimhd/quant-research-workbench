@@ -24,7 +24,8 @@ from typing import TYPE_CHECKING, Any, Mapping
 from uuid import UUID
 
 from src.trading_runtime.arte_journal_schema import (
-    POLICY_ALLOWED_TABLES, TABLES, journal_permission_preflight, storage_preflight,
+    POLICY_ALLOWED_TABLES, TABLES, V4_COMMIT_TABLES,
+    journal_permission_preflight, storage_preflight,
     versioned_journal_v2_contracts, versioned_journal_v2_preflight,
 )
 from src.backend.backtest_squeeze_episode_schema import (
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
 
 
 _CONTRACTS = {table.name: table for table in TABLES}
+_CONTRACTS.update({table.name: table for table in V4_COMMIT_TABLES})
 _CONTRACTS.update({table.name: table for table in (
     SQUEEZE_EPISODE, RESERVATION_REASON, RECONCILIATION_DIFFERENCE,
     PORTFOLIO_CONTROL,

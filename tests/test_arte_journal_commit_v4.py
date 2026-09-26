@@ -7,7 +7,7 @@ from src.trading_runtime.arte_journal_commit_v4 import (
     load_verified_commit_v4, prepare_commit_v4,
     publish_base_typed_batch_v4, verify_commit_v4,
 )
-from src.trading_runtime.arte_journal_schema import TABLES
+from src.trading_runtime.arte_journal_schema import TABLES, V4_COMMIT_TABLES
 from src.trading_runtime.arte_journal_writer import _sealed_families
 from tests.test_arte_journal_writer import MemoryClient, batch
 
@@ -26,7 +26,7 @@ def source():
 
 
 def test_v4_commit_has_two_narrow_normalized_ssd_tables():
-    contracts = {table.name: table for table in TABLES}
+    contracts = {table.name: table for table in (*TABLES, *V4_COMMIT_TABLES)}
     for name in ("trading_commit_v4", "trading_commit_family_v4"):
         ddl = contracts[name].ddl()
         assert "storage_policy = 'live_market_ssd'" in ddl

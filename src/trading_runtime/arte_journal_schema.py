@@ -1121,8 +1121,11 @@ TABLES = (
         ),
         "toYYYYMM(run_month)", "run_id, attempt_id, last_sequence, batch_id",
     ),
-    # Strategy 1 uses a versioned, narrow fence. One child row per nonempty
-    # typed family replaces another count/hash column for every new event kind.
+)
+
+# Explicit Strategy 1 opt-in. Legacy live startup and its existing grants must
+# not depend on these tables until a separately provisioned V4 cutover.
+V4_COMMIT_TABLES = (
     TableContract(
         "trading_commit_v4",
         (("run_id", "String"), ("run_month", "Date"),
