@@ -41,3 +41,30 @@ def test_temporal_encoder_uses_older_history_and_unknown_identity():
         after = model.encode(batch)[0]
     assert not torch.allclose(before,after)
     assert model.identity.weight[model.unknown_ticker_id].requires_grad
+
+
+def test_large_penny_stock_lot_has_finite_unsaturated_representation():
+    model = MarketPolicy(features=3,tickers=2,top_n=1,max_lots=1,max_orders=1,
+        d_model=16,layers=1,heads=4).eval()
+    batch = dict(market=torch.zeros(1,1,120,3),valid=torch.ones(1,1,dtype=torch.bool),
+        ticker_id=torch.tensor([[1]]),rank=torch.zeros(1,1),held=torch.ones(1,1),
+        lots=torch.tensor([[[38168.,.13,8.]]]),lot_slots=torch.tensor([[0]]),
+        account=torch.tensor([[0.,250.,.5]]))
+    with torch.no_grad():
+        encoded,context,held = model.encode(batch)
+        logits = model.action_logits(encoded,context,held,torch.zeros_like(context),0)
+    assert torch.isfinite(logits).all()
+    assert held.abs().max() < 20
+
+
+def test_later_order_logits_remember_all_earlier_orders():
+    model = MarketPolicy(features=3,tickers=2,top_n=1,max_lots=1,max_orders=3,
+        d_model=16,layers=1,heads=4).eval()
+    batch = dict(market=torch.ones(1,1,8,3),valid=torch.ones(1,1,dtype=torch.bool),
+        ticker_id=torch.tensor([[1]]),rank=torch.zeros(1,1),held=torch.zeros(1,1),
+        lots=torch.zeros(1,1,3),lot_slots=torch.full((1,1),-1),
+        account=torch.ones(1,3))
+    with torch.no_grad():
+        first,_ = model(batch,teacher_actions=torch.tensor([[1,0,0]]))
+        other,_ = model(batch,teacher_actions=torch.tensor([[0,0,0]]))
+    assert not torch.allclose(first[:,2],other[:,2])

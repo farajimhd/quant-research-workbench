@@ -61,7 +61,7 @@ class ModelSelector:
             with torch.inference_mode():
                 if step:
                     token = torch.tensor([previous_token],device=self.device)
-                    previous = self.model.action_embedding(encoded,held,token)
+                    previous = previous+self.model.action_embedding(encoded,held,token)
                 logits = self.model.action_logits(encoded,context,held,previous,step).float()
                 allowed = torch.as_tensor(mask,device=self.device).unsqueeze(0)
                 return int(logits.masked_fill(~allowed,-1e9).argmax(-1).item())

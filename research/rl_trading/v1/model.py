@@ -46,10 +46,17 @@ class MarketPolicy(nn.Module):
         encoded = self.market(encoded,src_key_padding_mask=mask)
         encoded = encoded.masked_fill(mask.unsqueeze(-1),0)
         context = encoded.sum(dim=1)/batch['valid'].sum(dim=1,keepdim=True).clamp_min(1)
-        context = context+self.account(batch['account'])
+        raw_account = batch['account']
+        account = torch.stack((torch.log1p(raw_account[:,0].clamp_min(0)),
+            torch.log1p(raw_account[:,1].clamp_min(0)),raw_account[:,2]),dim=-1)
+        context = context+self.account(account)
         lot_index = batch['lot_slots'].clamp_min(0)
         held = torch.gather(encoded,1,lot_index.unsqueeze(-1).expand(-1,-1,encoded.shape[-1]))
-        held = held+self.lot(batch['lots'])
+        raw_lots = batch['lots']
+        lot_features = torch.stack((torch.log1p(raw_lots[:,:,0].clamp_min(0))/12,
+            torch.log(raw_lots[:,:,1].clamp_min(1e-6))/8,
+            raw_lots[:,:,2].clamp(0,16)/16),dim=-1)
+        held = held+self.lot(lot_features)
         held = held.masked_fill((batch['lot_slots'] < 0).unsqueeze(-1),0)
         return encoded,context,held
 
@@ -80,5 +87,5 @@ class MarketPolicy(nn.Module):
         for order in range(self.max_orders):
             logits.append(self.action_logits(encoded,context,held,previous,order))
             if order+1 < self.max_orders and teacher_actions is not None:
-                previous = self.action_embedding(encoded,held,teacher_actions[:,order])
+                previous = previous+self.action_embedding(encoded,held,teacher_actions[:,order])
         return torch.stack(logits,dim=1),value
