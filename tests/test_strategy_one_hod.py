@@ -13,7 +13,8 @@ LEVEL = {"unified_level_id": "r11", "lower": 10.9, "upper": 11.1,
 
 def bar(boundary: int, opened: int, closed: int, *, high: int = 120_000):
     return {"boundary_ms": boundary, "resolution_ms": 100,
-            "price_valid": 1, "open_int": opened, "high_int": high,
+            "price_valid": 1, "extremes_valid": 1,
+            "open_int": opened, "high_int": high,
             "low_int": min(opened, closed), "close_int": closed}
 
 

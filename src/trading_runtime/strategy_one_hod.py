@@ -84,7 +84,8 @@ def observe_completed_hod(
             state.late_mode)
     opened, high, low, closed = (bar.get("open_int"), bar.get("high_int"),
                                  bar.get("low_int"), bar.get("close_int"))
-    if (any(type(value) is not int or value <= 0
+    if (bar.get("extremes_valid") != 1
+            or any(type(value) is not int or value <= 0
             for value in (opened, high, low, closed))
             or not low <= min(opened, closed) <= max(opened, closed) <= high):
         raise ValueError("Strategy 1 HOD price bar is invalid")
