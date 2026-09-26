@@ -581,6 +581,7 @@ def market_day_source_sqls(
     after_boundary_ms: int | None = None,
     strategy_one_projection: bool = False,
     price_plan: Any | None = None,
+    candidate_boundaries: Mapping[str, tuple[int, ...]] | None = None,
 ) -> tuple[str, ...]:
     """Separate pinned, sorted sources that can be merged without UNION ALL."""
     if through_boundary_ms is not None and (
@@ -596,6 +597,30 @@ def market_day_source_sqls(
             and after_boundary_ms >= through_boundary_ms)
     ):
         raise ValueError("Market-day start boundary must precede the completed end")
+    candidate_filter = ""
+    if candidate_boundaries is not None:
+        if (len(plan.sessions) != 1 or not candidate_boundaries
+                or not set(candidate_boundaries) <= set(plan.tickers)):
+            raise ValueError("Candidate market read differs from one certified session")
+        keys = []
+        for ticker in sorted(candidate_boundaries):
+            clocks = candidate_boundaries[ticker]
+            if (not isinstance(clocks, tuple) or not clocks
+                    or any(type(clock) is not int or clock <= 0
+                           or clock > 57_600_000 or clock % 100
+                           or (after_boundary_ms is not None
+                               and clock <= after_boundary_ms)
+                           or (through_boundary_ms is not None
+                               and clock > through_boundary_ms)
+                           for clock in clocks)
+                    or any(left >= right for left, right in zip(clocks, clocks[1:]))):
+                raise ValueError("Candidate market read needs distinct completed boundaries")
+            keys.extend((ticker, (clock + SESSION_OPEN_OFFSET_MS) // 100 - 1)
+                        for clock in clocks)
+        if len(keys) > 512:
+            raise ValueError("Candidate market read exceeds its bounded Arrow shard")
+        candidate_filter = " AND (ticker,bucket_index) IN (" + ",".join(
+            f"({_literal(ticker)},{bucket})" for ticker, bucket in keys) + ")"
     bars = _unit_map(plan, "bars")
     technical = _unit_map(plan, "technical")
     liquidity = _unit_map(plan, "broker_100ms")
@@ -647,7 +672,8 @@ def market_day_source_sqls(
                 boundary_filter = " AND (" + " OR ".join(bounds) + ")"
         return (
             f"SELECT * FROM arte.{stage} WHERE build_id={_literal(plan.build_id)} "
-            f"AND (session_date,ticker,attempt_id) IN ({attempts}){boundary_filter}"
+            f"AND (session_date,ticker,attempt_id) IN ({attempts})"
+            f"{boundary_filter}{candidate_filter}"
         )
 
     # Every 100 ms bar is copied from its liquidity bucket by the certified
@@ -686,7 +712,7 @@ def market_day_source_sqls(
           FROM arte.liquidity_execution_price_100ms_v1
           WHERE source_build_id={_literal(plan.build_id)}
           AND (session_date,ticker,source_attempt_id,derivation_attempt_id)
-            IN ({price_attempts}){price_lower}{price_upper}
+            IN ({price_attempts}){price_lower}{price_upper}{candidate_filter}
           GROUP BY session_date,ticker,bucket_index
         ) p ON p.session_date=l.session_date AND p.ticker=l.ticker
           AND p.bucket_index=l.bucket_index"""
@@ -699,7 +725,8 @@ def market_day_source_sqls(
         b.session_date=l.session_date AND b.ticker=l.ticker
         AND b.bucket_index=l.bucket_index AND b.resolution_ms=100
       {price_join}"""
-    higher = tuple(value for value in plan.required_resolutions_ms if value > 100)
+    higher = (() if candidate_boundaries is not None else
+              tuple(value for value in plan.required_resolutions_ms if value > 100))
     bases = [base_100]
     if higher:
         resolution_sql = ",".join(str(value) for value in higher)
@@ -741,6 +768,7 @@ def iter_market_day_rows(
     plan: CertifiedMarketDayPlan, client=None, *, through_boundary_ms: int | None = None,
     after_boundary_ms: int | None = None,
     price_plan: Any | None = None,
+    candidate_boundaries: Mapping[str, tuple[int, ...]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     active = client or readonly_clickhouse_client(market_stream=True, v3_read_principal=True)
     close = client is None
@@ -750,7 +778,8 @@ def iter_market_day_rows(
         sources = [active.iter_json_each_row(sql) for sql in
                    market_day_source_sqls(plan, through_boundary_ms=through_boundary_ms,
                                           after_boundary_ms=after_boundary_ms,
-                                          price_plan=price_plan)]
+                                          price_plan=price_plan,
+                                          candidate_boundaries=candidate_boundaries)]
         def normalized(source):
             for row in source:
                 levels = row.get("execution_price_levels")
@@ -772,6 +801,46 @@ def iter_market_day_rows(
                 close_source()
         if close:
             active.close()
+
+
+def iter_candidate_market_rows(
+    plan: CertifiedMarketDayPlan, *,
+    candidate_boundaries: Mapping[str, tuple[int, ...]],
+    client: Any,
+    price_plan: Any | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Return exactly the certified sparse 100ms rows, or fail closed.
+
+    This is only the entry-decision lane. Active orders and positions still
+    require subsequent causal liquidity/management windows; callers must not
+    treat an absent candidate as permission to skip those financial states.
+    """
+    expected = sorted((boundary, ticker)
+                      for ticker, clocks in candidate_boundaries.items()
+                      for boundary in clocks)
+    # The SQL compiler validates the 512-row bound, scope, and completed clocks
+    # before the first database read. It emits one pinned 100ms source.
+    market_day_source_sqls(plan, candidate_boundaries=candidate_boundaries,
+                           price_plan=price_plan)
+    source = iter_market_day_rows(
+        plan, client=client, candidate_boundaries=candidate_boundaries,
+        price_plan=price_plan)
+    count = 0
+    try:
+        for row in source:
+            key = (int(row["boundary_ms"]), str(row["ticker"]))
+            if (count >= len(expected) or key != expected[count]
+                    or str(row["session_date"]) != plan.sessions[0]
+                    or int(row["resolution_ms"]) != 100
+                    or int(row.get("price_valid") or 0) != 1
+                    or int(row.get("indicator_resolution_ms") or 0) != 100):
+                raise ValueError("Sparse Strategy 1 market row differs from pinned candidate")
+            count += 1
+            yield row
+        if count != len(expected):
+            raise ValueError("Sparse Strategy 1 market read omitted a candidate")
+    finally:
+        source.close()
 
 
 def iter_persisted_v7_seconds(

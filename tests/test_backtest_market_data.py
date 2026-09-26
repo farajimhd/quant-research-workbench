@@ -345,6 +345,64 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertIn("AND bucket_index<144010", source)
         self.assertIn("FROM arte.liquidity_execution_price_100ms_v1", source)
 
+    def test_sparse_candidate_query_reads_only_pinned_100ms_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self._ledger(Path(directory)).certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+        queries = market_day_source_sqls(
+            plan, through_boundary_ms=1_000,
+            candidate_boundaries={"SUGP": (100, 1_000)})
+        self.assertEqual(len(queries), 1)
+        query = queries[0]
+        self.assertIn("(ticker,bucket_index) IN (('SUGP',144000),('SUGP',144009))", query)
+        self.assertIn("FROM arte.liquidity_100ms_v1", query)
+        self.assertIn("FROM arte.bars_v1", query)
+        self.assertIn("FROM arte.indicators_v1", query)
+        self.assertNotIn("WHERE resolution_ms IN (1000)", query)
+        with self.assertRaisesRegex(ValueError, "distinct completed"):
+            market_day_source_sqls(plan, candidate_boundaries={"SUGP": (100, 100)})
+        with self.assertRaisesRegex(ValueError, "distinct completed"):
+            market_day_source_sqls(plan, through_boundary_ms=100,
+                                   candidate_boundaries={"SUGP": (200,)})
+        with self.assertRaisesRegex(ValueError, "bounded Arrow shard"):
+            market_day_source_sqls(plan, candidate_boundaries={
+                "SUGP": tuple(range(100, 51_400, 100))})
+
+    def test_sparse_candidate_reader_requires_every_exact_source_row(self) -> None:
+        from src.backend.backtest_market_data import iter_candidate_market_rows
+
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self._ledger(Path(directory)).certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+        rows = [{"session_date": "2026-08-18", "ticker": "SUGP",
+                 "boundary_ms": boundary, "resolution_ms": 100,
+                 "price_valid": 1, "indicator_resolution_ms": 100}
+                for boundary in (100, 1_000)]
+
+        class Source:
+            def __init__(self, supplied):
+                self.supplied = supplied
+
+            def iter_json_each_row(self, sql):
+                assert "(ticker,bucket_index) IN" in sql
+                return iter(self.supplied)
+
+        kwargs = dict(candidate_boundaries={"SUGP": (100, 1_000)})
+        self.assertEqual(list(iter_candidate_market_rows(
+            plan, client=Source(rows), **kwargs)), rows)
+        with self.assertRaisesRegex(ValueError, "omitted a candidate"):
+            list(iter_candidate_market_rows(plan, client=Source(rows[:1]), **kwargs))
+        with self.assertRaisesRegex(ValueError, "differs from pinned candidate"):
+            list(iter_candidate_market_rows(
+                plan, client=Source([rows[1], rows[0]]), **kwargs))
+        with self.assertRaisesRegex(ValueError, "differs from pinned candidate"):
+            list(iter_candidate_market_rows(plan, client=Source([
+                rows[0], {**rows[1], "indicator_resolution_ms": 0}]), **kwargs))
+
     def test_boundary_groups_keep_sparse_quote_buckets_and_completed_seconds(self) -> None:
         rows = [
             {"session_date": "2026-08-18", "boundary_ms": 100, "ticker": "AAPL", "resolution_ms": 100},
