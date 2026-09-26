@@ -3577,7 +3577,10 @@ class ReplayRunController:
                         market_stream=True, v3_read_principal=True)) as reader:
                     return certify_candidate_plan(
                         plan, candidate_rule_digest=RULE_DIGEST,
-                        through_boundary_ms=self._fixed_through_boundary_ms(),
+                        # Entry evidence and HOD are sealed against the full
+                        # producer product. The run horizon is projected only
+                        # after certification, never rehashed as another plan.
+                        through_boundary_ms=57_600_000,
                         client=reader)
             candidate_plan = await asyncio.to_thread(recheck_candidates)
             if candidate_plan.token != str(
@@ -11101,7 +11104,7 @@ def backtest_preflight(
                             v3_read_principal=True)) as candidate_reader:
                         candidate_plan = certify_candidate_plan(
                             certified, candidate_rule_digest=RULE_DIGEST,
-                            through_boundary_ms=through_boundary_ms,
+                            through_boundary_ms=57_600_000,
                             client=candidate_reader)
                     market_data_plan["strategy_one_candidate_token"] = candidate_plan.token
                     market_data_plan["strategy_one_candidate_rule_digest"] = (
