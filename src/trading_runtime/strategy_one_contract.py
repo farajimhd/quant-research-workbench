@@ -48,9 +48,15 @@ REQUIRED_INPUTS = (
     "arte.indicators_v1@30s",
     "arte.liquidity_100ms_v1@100ms",
     "arte.liquidity_100ms_v1.execution_vwap@100ms",
+    "arte.liquidity_execution_price_100ms_v1@100ms",
     "arte.indicators_v1.previous_close@session",
     "arte.structural_levels_v7@as_of_1s",
+    "arte.strategy_one_identity_v1@session",
+    "arte.strategy_one_candidate_v1@100ms",
+    "arte.strategy_one_entry_activation_v1@100ms",
     "arte.strategy_one_pivot_interval_v1@as_of_1s",
+    "arte.strategy_one_hod_context_v1@as_of_1s",
+    "arte.strategy_one_entry_evidence_v1@100ms",
 )
 
 
