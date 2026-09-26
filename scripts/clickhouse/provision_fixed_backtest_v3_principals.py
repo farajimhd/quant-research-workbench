@@ -43,6 +43,7 @@ from src.trading_runtime.strategy_one_hod_schema import (
     CONTEXT_TABLE as HOD_CONTEXT_TABLE,
     COVERAGE_TABLE as HOD_COVERAGE_TABLE,
 )
+from src.trading_runtime.structural_v7_lineage import TABLE as V7_LINEAGE_TABLE
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
@@ -119,7 +120,8 @@ def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
                       frozenset(table.split(".", 1)[1] for table in (
                           CANDIDATE_TABLE, COVERAGE_TABLE,
                           PIVOT_TABLE, PIVOT_COVERAGE_TABLE,
-                          HOD_CONTEXT_TABLE, HOD_COVERAGE_TABLE)),
+                          HOD_CONTEXT_TABLE, HOD_COVERAGE_TABLE,
+                          V7_LINEAGE_TABLE)),
                       frozenset(), system,
                       frozenset({("q_live", "market_stock_split_v1")})),
         PrincipalPlan("running", PRINCIPALS["running"], running | MARKET_READ_TABLES,

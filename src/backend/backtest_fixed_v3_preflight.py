@@ -25,6 +25,7 @@ from src.trading_runtime.strategy_one_hod_schema import (
     CONTEXT_TABLE as HOD_CONTEXT_TABLE,
     COVERAGE_TABLE as HOD_COVERAGE_TABLE,
 )
+from src.trading_runtime.structural_v7_lineage import TABLE as V7_LINEAGE_TABLE
 from src.trading_runtime.arte_journal_schema import (
     POLICY_ALLOWED_TABLES, TABLES, fixed_backtest_v2_contracts, journal_permission_preflight,
     storage_preflight, versioned_journal_v2_contracts,
@@ -138,7 +139,7 @@ def read_v3_preflight(client: Any) -> None:
     certificate_names = frozenset(table.name for table in MARKET_DAY_CERTIFICATE_TABLES)
     candidate_names = frozenset(table.split(".", 1)[1] for table in (
         CANDIDATE_TABLE, COVERAGE_TABLE, PIVOT_TABLE, PIVOT_COVERAGE_TABLE,
-        HOD_CONTEXT_TABLE, HOD_COVERAGE_TABLE))
+        HOD_CONTEXT_TABLE, HOD_COVERAGE_TABLE, V7_LINEAGE_TABLE))
     storage_preflight(client, tables=contracts + MARKET_DAY_CERTIFICATE_TABLES)
     journal_permission_preflight(
         client, journal_tables=frozenset(),

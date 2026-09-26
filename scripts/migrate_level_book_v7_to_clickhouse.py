@@ -38,6 +38,9 @@ from research.mlops.clickhouse import (
 )
 from src.backend.swing_book_source import session_bounds
 from src.market_engine.derived_trade_policy import POLICY as INPUT_POLICY
+from src.trading_runtime.structural_v7_lineage import (
+    TABLE as LINEAGE_TABLE, ddl as lineage_ddl, verify_table as verify_lineage_table,
+)
 from src.runtime_paths import WORKSTATION_RUNTIME_ROOT
 
 DEFAULT_SOURCE = WORKSTATION_RUNTIME_ROOT / "level-book-v7" / "all-tradable-20250101-20260912-mle-reporting-v1"
@@ -299,8 +302,35 @@ def run(args: argparse.Namespace) -> int:
         return run_locked(args)
 
 
-def verify_source_archive(source: Path) -> dict:
+def verify_source_archive(source: Path, *, supplement_parent: Path | None = None) -> dict:
     source_plan = read(source / "plan.json")
+    if supplement_parent is not None:
+        parent = read(supplement_parent / "plan.json")
+        repair_root = source.parent
+        repair = read(repair_root / "repair-plan.json")
+        applied = read(repair_root / "applied.json")
+        if (source_plan.get("plan_hash") != digest({k: v for k, v in source_plan.items()
+                                                   if k != "plan_hash"})
+                or parent.get("plan_hash") != digest({k: v for k, v in parent.items()
+                                                     if k != "plan_hash"})
+                or source_plan.get("parent_plan_hash") != parent["plan_hash"]
+                or source_plan.get("repair_hash") != repair.get("hash")
+                or applied.get("repair_hash") != repair.get("hash")
+                or repair.get("hash") != digest({k: v for k, v in repair.items()
+                                                if k != "hash"})
+                or applied.get("hash") != digest({k: v for k, v in applied.items()
+                                                 if k != "hash"})
+                or source_plan.get("source_policy") != parent.get("source_policy")
+                or any(source_plan.get(key) != parent.get(key) for key in (
+                    "band_config", "extraction_version", "rules", "source_files", "software"))):
+            raise ValueError("Supplement is not a verified disjoint child of the frozen V1 campaign")
+        expected = {str(row["ticker"]) for row in source_plan.get("rows") or ()}
+        if (not expected or len(expected) != len(source_plan["rows"])
+                or expected != set(applied.get("verified_tickers") or ())
+                or any(row.get("status") != "queued" or row.get("ticker") != row.get("requested_ticker")
+                       for row in source_plan["rows"])):
+            raise ValueError("Supplement population differs from repaired identity evidence")
+        return source_plan
     if (source_plan.get("reporting_revision") != REPORTING_REVISION or
             source_plan.get("input_policy") != INPUT_POLICY):
         raise ValueError(
@@ -314,26 +344,66 @@ def verify_source_archive(source: Path) -> dict:
 
 
 def run_locked(args: argparse.Namespace) -> int:
-    verify_source_archive(args.source)
+    verify_source_archive(args.source, supplement_parent=args.supplement_parent)
     budget = worker_budget(args.workers)
     if not 1 <= args.insert_workers <= budget["workers"]:
         raise ValueError(f"insert-workers must be 1..{budget['workers']}")
     budget["insert_workers"] = args.insert_workers
     plan_hash = source_plan_digest(args.source / "plan.json")
     paths = ticker_directories(args.source)
+    if args.supplement_parent is not None:
+        source_plan = read(args.source / "plan.json")
+        planned = {row["ticker"] for row in source_plan["rows"]}
+        if ({path.name for path in paths} != planned
+                or any(not (path / "ready.json").is_file() for path in paths)):
+            raise ValueError("Supplement ticker archive is not entirely ready")
+        for path in paths:
+            ready = read(path / "ready.json")
+            ticker_plan = read(path / "source-plan.json")
+            if (ready.get("ticker") != path.name
+                    or ready.get("plan_hash") != source_plan["plan_hash"]
+                    or ticker_plan.get("plan_hash") != source_plan["plan_hash"]
+                    or len(ticker_plan.get("days") or ()) != int(ready.get("sessions") or 0)
+                    or not ready.get("available_after_session_close")):
+                raise ValueError(f"Supplement receipt is not ready: {path.name}")
     c = client()
     preflight(c)
+    if args.supplement_parent is not None:
+        parent_hash = source_plan_digest(args.supplement_parent / "plan.json")
+        source_names = {row["ticker"] for row in read(args.source / "plan.json")["rows"]}
+        names = ",".join(repr(name) for name in sorted(source_names))
+        overlapping = query(client(readonly=True),
+            f"SELECT ticker FROM {COVERAGE_TABLE} FINAL WHERE ticker IN ({names}) "
+            f"AND source_plan_hash!='{plan_hash}' LIMIT 1")
+        if overlapping:
+            raise ValueError("Supplement ticker overlaps an existing V7 source campaign")
+        parent_rows = query(client(readonly=True),
+            f"SELECT count() AS n FROM {COVERAGE_TABLE} FINAL "
+            f"WHERE source_plan_hash='{parent_hash}'")
+        if len(parent_rows) != 1 or int(parent_rows[0]["n"]) == 0:
+            raise ValueError("Supplement parent V1 campaign is absent from arte")
+        c.execute(lineage_ddl())
+        verify_lineage_table(c)
     other_plans = query(client(readonly=True),
-        f"SELECT DISTINCT source_plan_hash FROM {COVERAGE_TABLE} WHERE source_plan_hash!='{plan_hash}' LIMIT 1")
-    if other_plans:
+        f"SELECT DISTINCT source_plan_hash FROM {COVERAGE_TABLE} WHERE source_plan_hash!='{plan_hash}' LIMIT 3")
+    if other_plans and args.supplement_parent is None:
         raise ValueError("V7 arte tables already contain another source plan; mixing campaigns is forbidden")
-    prior = {row["ticker"]: row["last_session"] for row in query(client(readonly=True),
-        f"SELECT ticker,max(session_date) AS last_session FROM {COVERAGE_TABLE} FINAL WHERE source_plan_hash='{plan_hash}' GROUP BY ticker")}
+    if args.supplement_parent is not None and {row["source_plan_hash"]
+            for row in other_plans} != {parent_hash}:
+        raise ValueError("V7 arte tables contain an unrelated campaign")
+    prior = {row["ticker"]: row for row in query(client(readonly=True),
+        f"SELECT ticker,min(session_date) AS first_session,max(session_date) AS last_session,"
+        f"count() AS sessions FROM {COVERAGE_TABLE} FINAL "
+        f"WHERE source_plan_hash='{plan_hash}' GROUP BY ticker")}
     def complete(path: Path) -> bool:
         if not (path / "ready.json").is_file():
             return False
         ready = read(path / "ready.json")
-        return prior.get(ready["ticker"]) == ready["last_session"]
+        found = prior.get(ready["ticker"])
+        return (found is not None
+                and found["first_session"] == ready["first_session"]
+                and found["last_session"] == ready["last_session"]
+                and int(found["sessions"]) == int(ready["sessions"]))
     pending = [path for path in paths if not complete(path)]
     counts = {"queued": len(pending), "completed": len(paths) - len(pending), "active": 0, "skipped": 0, "failed": 0}
     active: dict[str, str] = {}
@@ -378,16 +448,47 @@ def run_locked(args: argparse.Namespace) -> int:
     for path in paths:
         if (path / "ready.json").is_file():
             ready = read(path / "ready.json")
-            expected[ready["ticker"]] = ready["last_session"]
-    actual = {row["ticker"]: row["last_session"] for row in query(client(readonly=True),
-        f"SELECT ticker,max(session_date) AS last_session FROM {COVERAGE_TABLE} FINAL WHERE source_plan_hash='{plan_hash}' GROUP BY ticker")}
-    mismatches = [{"ticker": ticker, "expected": session, "actual": actual.get(ticker)}
-        for ticker, session in sorted(expected.items()) if actual.get(ticker) != session]
+            expected[ready["ticker"]] = {
+                "first_session": ready["first_session"],
+                "last_session": ready["last_session"],
+                "sessions": int(ready["sessions"]),
+            }
+    actual = {row["ticker"]: {"first_session": row["first_session"],
+            "last_session": row["last_session"], "sessions": int(row["sessions"])}
+        for row in query(client(readonly=True),
+            f"SELECT ticker,min(session_date) AS first_session,"
+            f"max(session_date) AS last_session,count() AS sessions "
+            f"FROM {COVERAGE_TABLE} FINAL WHERE source_plan_hash='{plan_hash}' GROUP BY ticker")}
+    mismatches = [{"ticker": ticker, "expected": receipt, "actual": actual.get(ticker)}
+        for ticker, receipt in sorted(expected.items()) if actual.get(ticker) != receipt]
     unexpected = sorted(set(actual) - set(expected))
     misplaced = query(client(readonly=True), f"SELECT table,disk_name,count() AS parts FROM system.parts WHERE active AND database='{DATABASE}' AND table IN ('structural_levels_v7','structural_level_coverage_v7','structural_level_observations_v7') AND disk_name!='{POLICY}' GROUP BY table,disk_name")
     audit = {"expected_tickers": len(expected), "published_tickers": len(actual), "coverage_mismatches": len(mismatches),
         "mismatch_examples": mismatches[:20], "unexpected_tickers": unexpected[:20], "misplaced_parts": misplaced}
     failed = bool(failures or mismatches or unexpected or misplaced)
+    if not failed and not STOP.is_set() and args.supplement_parent is not None:
+        stamp = datetime64_ns(time.time_ns())
+        lineage = [dict(parent_source_plan_hash=parent_hash,
+                        supplement_source_plan_hash=plan_hash,
+                        ticker=ticker, verified_at=stamp)
+                   for ticker in sorted(expected)]
+        existing = query(client(readonly=True),
+            f"SELECT parent_source_plan_hash,supplement_source_plan_hash,ticker "
+            f"FROM {LINEAGE_TABLE} ORDER BY ticker")
+        wanted = [{key: row[key] for key in (
+            "parent_source_plan_hash", "supplement_source_plan_hash", "ticker")}
+                  for row in lineage]
+        if existing and existing != wanted:
+            raise ValueError("Existing supplement lineage differs from verified coverage")
+        if not existing:
+            insert(c, LINEAGE_TABLE, lineage,
+                   f"v7-supplement-lineage-{plan_hash}",
+                   batch_rows=args.batch_rows, batch_bytes=args.batch_bytes)
+        actual_lineage = query(client(readonly=True),
+            f"SELECT parent_source_plan_hash,supplement_source_plan_hash,ticker "
+            f"FROM {LINEAGE_TABLE} ORDER BY ticker")
+        if actual_lineage != wanted:
+            raise ValueError("Supplement lineage readback differs from published rows")
     result = {"state": "interrupted" if STOP.is_set() else "failed" if failed else "complete", "source_plan_hash": plan_hash,
         "persistence_version": PERSISTENCE_VERSION, "counts": counts, "failures": failures, "audit": audit,
         "worker_budget": budget, "stage_worker_seconds": timing_sums,
@@ -400,6 +501,8 @@ def parse() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Migrate frozen retrospective Level Book V7 checkpoints into arte")
     parser.add_argument("command", choices=("preflight", "run"))
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    parser.add_argument("--supplement-parent", type=Path, default=None,
+        help="frozen primary V1 archive; enables only verified disjoint supplement publication")
     parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME)
     parser.add_argument("--workers", type=int, default=None,
         help="processes (default: fastest current CPU/RAM-safe budget)")
@@ -417,7 +520,7 @@ def parse() -> argparse.Namespace:
 def main() -> int:
     args = parse()
     if args.command == "preflight":
-        verify_source_archive(args.source)
+        verify_source_archive(args.source, supplement_parent=args.supplement_parent)
         load_env_files(discover_clickhouse_env_files()); preflight(client())
         print(f"ready: {DATABASE} tables use {POLICY}; source={args.source}")
         return 0
