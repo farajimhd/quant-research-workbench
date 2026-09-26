@@ -543,16 +543,37 @@ def _verify_prior_commit_v4(client, batch) -> None:
         raise RuntimeError("V4 predecessor does not seal the contiguous run prefix")
 
 
+def _family_operation_mode(dispatch, batch, family_rows) -> str:
+    """Preserve retry compatibility with older per-row family INSERTs."""
+    table = "trading_commit_family_v4"
+    grouped = dispatch.operation_present(
+        run_id=batch.run_id, table=table,
+        token=f"{batch.batch_id}:family-set:v4")
+    old = any(dispatch.operation_present(
+        run_id=batch.run_id, table=table,
+        token=f"{batch.batch_id}:family:{row['family_name']}")
+        for row in family_rows)
+    if grouped and old:
+        raise RuntimeError("V4 family transport has mixed Keeper operations")
+    return "grouped" if grouped or not old else "per_row"
+
+
 def _compact_verified_v4_batch(dispatch, batch, families, family_rows, commit) -> None:
     """Seal exact acknowledged INSERTs and advance the Keeper watermark."""
-    operations = tuple(
+    mode = _family_operation_mode(dispatch, batch, family_rows)
+    operations = [
         (name, f"{batch.batch_id}:{name}:v4")
         for name, rows in families if rows
-    ) + tuple(
-        ("trading_commit_family_v4",
-         f"{batch.batch_id}:family:{row['family_name']}")
-        for row in family_rows
-    ) + (("trading_commit_v4", f"{batch.batch_id}:commit:v4"),)
+    ]
+    if mode == "grouped":
+        operations.append(("trading_commit_family_v4",
+                           f"{batch.batch_id}:family-set:v4"))
+    else:
+        operations.extend(("trading_commit_family_v4",
+                           f"{batch.batch_id}:family:{row['family_name']}")
+                          for row in family_rows)
+    operations.append(("trading_commit_v4", f"{batch.batch_id}:commit:v4"))
+    operations = tuple(operations)
     for table, token in operations:
         dispatch.seal_verified_operation(
             run_id=batch.run_id, table=table, token=token, required=True,
@@ -1157,15 +1178,24 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         by_name[name] = row
     if set(by_name) - {row["family_name"] for row in family_rows}:
         raise RuntimeError("V4 family publication includes foreign evidence")
+    mode = _family_operation_mode(dispatch, batch, family_rows)
     for row in family_rows:
         prior = by_name.get(row["family_name"])
         if prior is not None and prior != row:
             raise RuntimeError("V4 family publication conflicts with a prior attempt")
-        if prior is None:
-            _insert(client, "trading_commit_family_v4", (row,),
-                    f"{batch.batch_id}:family:{row['family_name']}",
+    if mode == "grouped":
+        if not existing_families:
+            _insert(client, "trading_commit_family_v4", tuple(family_rows),
+                    f"{batch.batch_id}:family-set:v4",
                     dispatch_batch_id=batch.batch_id,
                     dispatch_sequence=batch.last_sequence)
+    else:
+        for row in family_rows:
+            if row["family_name"] not in by_name:
+                _insert(client, "trading_commit_family_v4", (row,),
+                        f"{batch.batch_id}:family:{row['family_name']}",
+                        dispatch_batch_id=batch.batch_id,
+                        dispatch_sequence=batch.last_sequence)
     verified_families = _rows(client,
         f"SELECT {family_columns} FROM arte.trading_commit_family_v4 "
         f"{filters}LIMIT 257 FORMAT JSONEachRow")

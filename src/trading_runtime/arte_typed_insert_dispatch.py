@@ -191,6 +191,17 @@ class TypedInsertDispatch:
             raise KeeperUnavailable("Typed dispatch run gate is absent or unavailable") from exc
         return _decode_gate(value), stat.version
 
+    def operation_present(self, *, run_id: str, table: str, token: str) -> bool:
+        """Inspect an unfinished operation identity; a compacted one is absent."""
+        path = _operation_path(run_id, typed_insert_query_id(run_id, table, token))
+        try:
+            self.keeper.get(path)
+        except Exception as exc:
+            if type(exc).__name__ == "NoNodeError":
+                return False
+            raise KeeperUnavailable("Typed dispatch operation cannot be inspected") from exc
+        return True
+
     def _read_policy_gate(self, policy_hash: str) -> tuple[_PolicyGate, int] | None:
         if re.fullmatch(r"[0-9a-f]{64}", policy_hash) is None:
             raise ValueError("Portfolio policy hash is invalid")

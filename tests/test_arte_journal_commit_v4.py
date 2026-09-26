@@ -119,6 +119,7 @@ class MemoryV4Dispatch(TypedInsertDispatch):
         self.compacted = []
         self.timeline = []
         self.ambiguous_tokens = set()
+        self.operations = set()
 
     def assert_next_batch(self, **kwargs):
         self.reserved.append(kwargs)
@@ -128,12 +129,16 @@ class MemoryV4Dispatch(TypedInsertDispatch):
         token = kwargs["token"]
         if token in self.ambiguous_tokens:
             raise RuntimeError("ambiguous pending Keeper INSERT")
+        self.operations.add((kwargs["table"], token))
         self.timeline.append("insert:" + kwargs["table"])
         try:
             client.execute(kwargs["sql"])
         except OSError:
             self.ambiguous_tokens.add(token)
             raise
+
+    def operation_present(self, *, run_id, table, token):
+        return (table, token) in self.operations
 
     def seal_verified_operation(self, **kwargs):
         self.sealed.append(kwargs)
@@ -142,6 +147,7 @@ class MemoryV4Dispatch(TypedInsertDispatch):
     def compact_verified_batch(self, **kwargs):
         self.compacted.append(kwargs)
         self.timeline.append("compact")
+        self.operations.difference_update(kwargs["operations"])
 
 
 def attached_v4_client(client=None):
@@ -331,18 +337,44 @@ def test_v4_broker_acknowledgement_is_fenced_and_cold_verified():
     assert publish_broker_acknowledgement_batch_v4(
         client, unit.base, acknowledgement=unit.acknowledgement) == unit.base.batch_id
     assert client.inserts == ["trading_event_v1", ACKNOWLEDGEMENT.name,
-                              "trading_commit_family_v4", "trading_commit_family_v4",
-                              "trading_commit_v4"]
+                              "trading_commit_family_v4", "trading_commit_v4"]
     verified, families = load_verified_commit_v4(
         client, run_id=source.run_id, batch_id=unit.base.batch_id)
     assert verified["family_count"] == 2
     assert verified["run_month"] == "2026-09-01"
     assert {row["family_name"] for row in families} == {
         "trading_event_v1", ACKNOWLEDGEMENT.name}
+    old_client = attached_v4_client()
+    old_client.typed_insert_dispatch.operations.add((
+        "trading_commit_family_v4",
+        f"{unit.base.batch_id}:family:trading_event_v1"))
+    assert publish_broker_acknowledgement_batch_v4(
+        old_client, unit.base,
+        acknowledgement=unit.acknowledgement) == unit.base.batch_id
+    assert old_client.inserts.count("trading_commit_family_v4") == 2
+    assert ("trading_commit_family_v4",
+            f"{unit.base.batch_id}:family:trading_event_v1") in \
+        old_client.typed_insert_dispatch.compacted[0]["operations"]
     client.tables[ACKNOWLEDGEMENT.name][0]["order_status"] = "Inactive"
     with pytest.raises(RuntimeError, match="row hash"):
         load_verified_commit_v4(
             client, run_id=source.run_id, batch_id=unit.base.batch_id)
+
+
+def test_v4_family_retry_rejects_mixed_keeper_transport_versions():
+    from src.trading_runtime import arte_journal_commit_v4 as commit_module
+
+    item = batch()
+    client = attached_v4_client()
+    client.typed_insert_dispatch.operations.update({
+        ("trading_commit_family_v4", f"{item.batch_id}:family-set:v4"),
+        ("trading_commit_family_v4",
+         f"{item.batch_id}:family:trading_event_v1"),
+    })
+    with pytest.raises(RuntimeError, match="mixed Keeper operations"):
+        commit_module._family_operation_mode(
+            client.typed_insert_dispatch, item,
+            ({"family_name": "trading_event_v1"},))
 
 
 def test_v4_broker_acknowledgement_uses_nonblocking_writer_lane(monkeypatch):
