@@ -157,15 +157,18 @@ def test_no_future_information_in_observation_or_rank():
         np.testing.assert_array_equal(before[key],after[key])
 
 
-def test_all_120_candidates_and_outside_holdings_are_visible():
-    env = TradingEnv(market(n=125),replace(Config(),history_seconds=2,liquidation_buffer_seconds=2))
+def test_all_1000_candidates_and_outside_holdings_are_visible():
+    env = TradingEnv(market(n=1005),replace(Config(),history_seconds=2,liquidation_buffer_seconds=2))
     obs = env.observe()
-    assert len(obs['ids']) == 120
-    assert obs['action_mask'][:,1].sum() == 100
-    env.quantity[124] = 1
-    env.cash -= 5
+    assert len(obs['ids']) == 1000
+    assert obs['action_mask'][:,1].sum() == 900
+    assert obs['action_mask'][899,1] and not obs['action_mask'][900:,1].any()
+    env.quantity[[900,999,1004]] = 1
+    env.cash -= 15
     obs = env.observe()
-    assert len(obs['ids']) == 121 and obs['ids'][-1] == 124
+    assert len(obs['ids']) == 1001 and obs['ids'][-1] == 1004
+    assert obs['action_mask'][900].tolist() == [True,False,True,True]
+    assert obs['action_mask'][999].tolist() == [True,False,True,True]
     assert obs['action_mask'][-1].tolist() == [True,False,False,False]
 
 
@@ -367,14 +370,14 @@ def test_direct_extraction_price_clock_and_rolling_activity(monkeypatch):
 
 @pytest.mark.parametrize('device',['cpu',pytest.param('cuda',marks=pytest.mark.skipif(
     not torch.cuda.is_available(),reason='Laptop CUDA unavailable'))])
-def test_actual_launcher_with_120_candidates(tmp_path,monkeypatch,device):
+def test_actual_launcher_with_1000_candidates(tmp_path,monkeypatch,device):
     import os
     import subprocess
     import sys
     from pathlib import Path
     monkeypatch.setenv('QW_RUNTIME_ROOT',str(tmp_path))
-    training = save_market(tmp_path/'training',market(n=125,seconds=8))
-    validation = save_market(tmp_path/'validation',market(n=125,seconds=8,day='2026-08-21'))
+    training = save_market(tmp_path/'training',market(n=1005,seconds=8))
+    validation = save_market(tmp_path/'validation',market(n=1005,seconds=8,day='2026-08-21'))
     launcher = Path(train.__file__).with_name('run_train.py')
     command = [sys.executable,'-B',str(launcher),'--train-sessions',str(training),
         '--val-sessions',str(validation),'--run-name','wide-smoke','--allow-segment',
@@ -386,5 +389,5 @@ def test_actual_launcher_with_120_candidates(tmp_path,monkeypatch,device):
     assert result.returncode == 0, result.stdout+result.stderr
     run = tmp_path/'rl-trading/v2/train/wide-smoke'
     manifest = read(run/'run_manifest.json')
-    assert manifest['config']['entry_rank'] == 100 and manifest['config']['hold_rank'] == 120
+    assert manifest['config']['entry_rank'] == 900 and manifest['config']['hold_rank'] == 1000
     assert read(run/'metrics/000001.json')['updates'] > 0

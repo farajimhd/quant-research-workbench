@@ -18,8 +18,8 @@ def share_cap(price: float) -> int:
 
 @dataclass(frozen=True)
 class Config:
-    entry_rank: int = 100
-    hold_rank: int = 120
+    entry_rank: int = 900
+    hold_rank: int = 1000
     history_seconds: int = 60
     initial_cash: float = 10000.
     max_ticker_weight: float = 1.  # No extra percentage cap was chosen by the user.

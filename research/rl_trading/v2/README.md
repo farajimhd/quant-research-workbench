@@ -48,9 +48,9 @@ Actual full-market throughput has not been benchmarked on the busy workstation.
 Every second, liquid listings are ranked by completed trailing 60-second share
 volume with a stable listing-ID tie break. Default liquidity requires 20,000
 shares and 11 trades in that window and a price no more than 5 seconds old.
-The policy sees top 120 candidates plus every held listing outside that set.
-Only ranks 1–100 can increase exposure. Ranks 101–120 can hold/reduce/close.
-Leaving the top 120 issues a sticky mandatory liquidation, even on later reentry.
+The policy sees top 1000 candidates plus every held listing outside that set.
+Only ranks 1–900 can increase exposure. Ranks 901–1000 can hold/reduce/close.
+Leaving the top 1000 issues a sticky mandatory liquidation, even on later reentry.
 Falling below the liquidity gate also removes a listing from the eligible set.
 
 History is gathered by listing identity, never by yesterday's or last second's
