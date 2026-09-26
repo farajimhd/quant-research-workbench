@@ -927,7 +927,13 @@ class TradingRuntime:
                 # health/reconciliation mechanism, not sizing authority for a
                 # new exposure-increasing order.
                 await self._refresh_portfolio_from_broker()
-            decision, approved_intent = await self.portfolio.approve(intent, account_id=account_id)
+            if strategy_one_proposal is None:
+                decision, approved_intent = await self.portfolio.approve(
+                    intent, account_id=account_id)
+            else:
+                decision, approved_intent = await self.portfolio.approve(
+                    intent, account_id=account_id,
+                    assignment_id=strategy_one_proposal.assignment_id)
             if approved_intent is None:
                 await self._fund_momentum_request(intent, account_id, decision)
                 from .momentum_session_policy import cash_shortfall
@@ -938,6 +944,11 @@ class TradingRuntime:
                     await self._record_intent_rejection(intent, account_id, decision)
                 results.append({"decision": decision.payload(), "order_group": None})
                 continue
+            if (strategy_one_proposal is not None
+                    and approved_intent.metadata.get("assignment_id")
+                    != strategy_one_proposal.assignment_id):
+                raise RuntimeError(
+                    "Strategy 1 Portfolio approval lost its normalized assignment")
             if getattr(self.portfolio, "_typed_recovery", False):
                 raise RuntimeError(
                     "Typed portfolio live order submission remains disabled until "

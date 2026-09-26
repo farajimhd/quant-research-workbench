@@ -69,17 +69,23 @@ def test_numbered_proposal_uses_shared_runtime_portfolio_and_oms_path():
     result = asyncio.run(runtime.submit_strategy_one_proposal(proposal))
     assert result == [{"decision": {"status": "approved"},
                        "order_group": {"filled_quantity": 0.}}]
-    runtime.portfolio.approve.assert_awaited_once()
+    runtime.portfolio.approve.assert_awaited_once_with(
+        intent, account_id="DU1", assignment_id="assignment-1")
     runtime.order_manager.submit_intent.assert_awaited_once_with(
         approved, account_id="DU1", event=None)
     source = runtime.journal.records(runtime.run_id)[0]
     assert source.entity_type == "strategy_intent"
     assert runtime.journal.strategy_one_entry_for_record(source.record_id) == (
         proposal, session)
+    runtime.portfolio.approve.return_value = (
+        decision, replace(approved, metadata={"assignment_id": "other"}))
+    with pytest.raises(RuntimeError, match="lost its normalized assignment"):
+        asyncio.run(runtime.submit_strategy_one_proposal(proposal))
+    assert runtime.order_manager.submit_intent.await_count == 1
     runtime.config.mode = RunMode.REPLAY
     with pytest.raises(ValueError, match="numbered Backtest runtime"):
         asyncio.run(runtime.submit_strategy_one_proposal(proposal))
-    assert len(runtime.journal.records(runtime.run_id)) == 1
+    assert len(runtime.journal.records(runtime.run_id)) == 2
     runtime.journal.close()
 
 
