@@ -121,6 +121,13 @@ def propose_strategy_one_entry(
         return StrategyOneEntryDecision("entry_permission_closed")
     if evidence.boundary_ms < financial.reentry_not_before_ms:
         return StrategyOneEntryDecision("reentry_cooldown")
+    if financial.completed_entries:
+        # Candidate 350 also requires a fresh break of the prior position's
+        # resistance high for rapid/same-resistance re-entry. This reducer
+        # does not yet receive a producer-certified completed-bar witness for
+        # that transition. Re-entry must remain closed, not inferred from a
+        # permission flag or from unordered trades inside a 100ms bucket.
+        return StrategyOneEntryDecision("reentry_structure_confirmation_unavailable")
     if (evidence.activation_gap is None
             or type(evidence.activation_gap) is not float
             or not isfinite(evidence.activation_gap)

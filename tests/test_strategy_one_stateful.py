@@ -67,13 +67,14 @@ def test_financial_state_blocks_new_entry_without_losing_management(change, reas
     assert result.proposal is None
 
 
-def test_reentry_requires_explicit_permission_and_completed_cooldown():
+def test_reentry_stays_closed_without_certified_prior_position_break():
     candidate, fact, activation, financial = _facts()
     permitted = replace(financial, completed_entries=1,
                         reentry_not_before_ms=31_000,
                         permissions=replace(financial.permissions, reenter=True))
     assert propose_certified_strategy_one_entry(
-        candidate, fact, activation, permitted).reason == "entry_proposed"
+        candidate, fact, activation, permitted).reason == (
+            "reentry_structure_confirmation_unavailable")
 
 
 def test_missing_protection_and_stale_quote_fail_without_fabrication():
