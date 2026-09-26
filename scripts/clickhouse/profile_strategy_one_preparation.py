@@ -6,6 +6,7 @@ publish a signal, create a table, or certify journal/recovery readiness.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
@@ -27,7 +28,8 @@ from src.backend.backtest_strategy_one_preparation import (
 )
 from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
 from src.backend.backtest_market_data import (
-    iter_market_boundary_groups, iter_market_day_rows, iter_market_time_groups,
+    iter_candidate_market_rows, iter_market_boundary_groups, iter_market_day_rows,
+    iter_market_time_groups,
     project_market_day_plan,
 )
 from src.backend.backtest_liquidity_price import certify_price_level_plan
@@ -115,6 +117,100 @@ class CertifiedReadProfile:
     stream_seconds: float
 
 
+@dataclass(frozen=True, slots=True)
+class SparseReadProfile:
+    tickers: int
+    candidate_tickers: int
+    candidate_boundaries: int
+    read_rows: int
+    shards: int
+    preflight_seconds: float
+    candidate_seconds: float
+    price_seconds: float
+    sparse_seconds: float
+
+
+def _candidate_shards(prepared) -> tuple[dict[str, tuple[int, ...]], ...]:
+    """Bound both SQL key count and ticker fan-out for primary-key pruning."""
+    shards = []
+    current: dict[str, tuple[int, ...]] = {}
+    count = 0
+    for item in prepared:
+        clocks = tuple(int(value) for value in item.boundary_ms)
+        for offset in range(0, len(clocks), 512):
+            chunk = clocks[offset:offset + 512]
+            if current and (len(current) >= 8 or count + len(chunk) > 512
+                            or item.ticker in current):
+                shards.append(current)
+                current, count = {}, 0
+            current[item.ticker] = chunk
+            count += len(chunk)
+    if current:
+        shards.append(current)
+    return tuple(shards)
+
+
+def profile_sparse(build_id: str, day: date, tickers: tuple[str, ...], *,
+                   through_boundary_ms: int, max_workers: int) -> SparseReadProfile:
+    """Profile full-universe proof plus exact candidate-key market reads."""
+    if platform.node().upper() != "DESKTOP-SAAI85T":
+        raise RuntimeError("Sparse Strategy 1 profile requires the workstation")
+    credential = _secret_path("read")
+    if not credential.is_file():
+        raise RuntimeError("Private V3 reader credential is unavailable")
+    environment = {"BACKTEST_V3_READ_CREDENTIAL_FILE": str(credential)}
+    def client():
+        return v3_client("read", environment=environment, market_stream=True)
+    with closing(client()) as reader, closing(open_workstation_keeper_session()) as keeper:
+        started = perf_counter()
+        plan = cold_certified_market_day_plan(
+            reader, MarketDayKeeperReader(keeper.client), build_id,
+            sessions=(day.isoformat(),), tickers=tickers,
+            configuration={"strategy": {"strategy_number": 1,
+                                          "execution_interval": "100ms"}})
+        preflight_seconds = perf_counter() - started
+        print(f"Market preflight complete: {len(plan.tickers)} tickers",
+              file=sys.stderr, flush=True)
+        started = perf_counter()
+        candidates = certify_candidate_plan(
+            plan, candidate_rule_digest=RULE_DIGEST,
+            through_boundary_ms=through_boundary_ms, client=reader)
+        candidate_seconds = perf_counter() - started
+        shards = _candidate_shards(candidates.prepared)
+        print(f"Candidate read complete: {len(candidates.prepared)} tickers, "
+              f"{len(shards)} bounded shards", file=sys.stderr, flush=True)
+        started = perf_counter()
+        prices = certify_price_level_plan(plan, reader)
+        price_seconds = perf_counter() - started
+        print("Fill-price certification complete; reading candidate rows",
+              file=sys.stderr, flush=True)
+
+        def read(shard: dict[str, tuple[int, ...]]) -> int:
+            projected = project_market_day_plan(plan, tuple(sorted(shard)))
+            projected_prices = prices.projected(projected)
+            with closing(client()) as market_reader:
+                return sum(1 for _ in iter_candidate_market_rows(
+                    projected, candidate_boundaries=shard,
+                    price_plan=projected_prices, client=market_reader))
+
+        started = perf_counter()
+        read_rows = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for index, rows in enumerate(pool.map(read, shards), start=1):
+                read_rows += rows
+                if index % 16 == 0 or index == len(shards):
+                    print(f"Candidate market shards: {index}/{len(shards)} complete",
+                          file=sys.stderr, flush=True)
+        sparse_seconds = perf_counter() - started
+    expected = sum(len(item.boundary_ms) for item in candidates.prepared)
+    if read_rows != expected:
+        raise RuntimeError("Sparse candidate market read differs from certified count")
+    return SparseReadProfile(
+        len(plan.tickers), len(candidates.prepared), expected, read_rows,
+        len(shards), preflight_seconds, candidate_seconds, price_seconds,
+        sparse_seconds)
+
+
 def profile_certified(build_id: str, day: date, tickers: tuple[str, ...], *,
                       through_boundary_ms: int) -> CertifiedReadProfile:
     """Measure the actual SELECT-only fixed-run data path, not regeneration."""
@@ -174,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-workers", type=int, default=4)
     parser.add_argument("--certified-read", action="store_true",
                         help="Profile persisted candidate certification and fixed market reads; never regenerate candidates")
+    parser.add_argument("--sparse-market", action="store_true",
+                        help="Profile exact persisted candidate-key reads with bounded concurrent SELECTs")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", args.build_id):
         parser.error("Invalid market-day build ID")
@@ -186,7 +284,24 @@ def main(argv: list[str] | None = None) -> int:
             or args.through_boundary_ms % 100
             or not 1 <= args.max_workers <= 16):
         parser.error("Boundary must be a completed 100ms session clock; workers 1-16")
+    if args.certified_read and args.sparse_market:
+        parser.error("Choose either certified full stream or sparse candidate market profile")
     try:
+        if args.sparse_market:
+            result = profile_sparse(
+                args.build_id, args.date, tickers,
+                through_boundary_ms=args.through_boundary_ms,
+                max_workers=args.max_workers)
+            print(f"Strategy 1 sparse market read | {args.date} | {result.tickers} tickers | "
+                  f"through {args.through_boundary_ms} ms")
+            print(f"Candidate tickers {result.candidate_tickers} | "
+                  f"candidate boundaries {result.candidate_boundaries} | "
+                  f"market rows {result.read_rows} | shards {result.shards}")
+            print(f"Cold market preflight {result.preflight_seconds:.3f}s | "
+                  f"candidate read {result.candidate_seconds:.3f}s | "
+                  f"fill-price certification {result.price_seconds:.3f}s | "
+                  f"sparse market read {result.sparse_seconds:.3f}s")
+            return 0
         if args.certified_read:
             result = profile_certified(
                 args.build_id, args.date, tickers,
