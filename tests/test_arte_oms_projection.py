@@ -9,11 +9,13 @@ import pytest
 
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
 from src.trading_runtime.arte_journal_writer import (
-    _coalesce_unpublished, _sealed_families, load_committed_prefix,
-    publish_typed_batch,
+    CommittedPrefix, _coalesce_unpublished, _sealed_families, _wire_row,
+    load_committed_prefix, publish_typed_batch, typed_row,
 )
 from src.trading_runtime.arte_oms_projection import (
-    freeze_oms_group, load_committed_oms_group_state_page, oms_group_state_batch,
+    RecoveredOmsGroupState, freeze_oms_group,
+    load_committed_oms_admission_page, load_committed_oms_group_state_page,
+    oms_group_state_batch,
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.order_management import _ManagedOrderGroup, OrderManagementState
@@ -21,6 +23,46 @@ from src.trading_runtime.signals import CapitalRequest
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 from tests.test_arte_intent_projection import intent
 from tests.test_arte_journal_writer import MemoryClient
+
+
+def test_cold_oms_admission_joins_only_one_fenced_normalized_reservation() -> None:
+    run_id, batch_id, record_id = "backtest:admission-read", str(uuid4()), str(uuid4())
+    intent_id = "intent-1"
+    row = {
+        "record_id": record_id, "run_id": run_id, "event_month": "2026-08-01",
+        "batch_id": batch_id, "account_id": "DU1",
+        "reservation_id": "reservation-1", "event": "reservation_created",
+        "decision_id": "decision-1", "intent_id": intent_id,
+        "account_key": "cash", "strategy_id": "strategy-1",
+        "assignment_id": "assignment-1", "ticker": "AAA", "action": "enter_long",
+        "quantity": "4", "remaining_quantity": "4", "reference_price": "10.01",
+        "reserved_notional": "40.04", "reserved_planned_risk": "0.48",
+        "created_at": "2026-08-18T08:05:00+00:00", "status": "reserved",
+        "filled_quantity": "0", "admission_epoch": 1, "admission_owner": "actor",
+        "reserved_entry_fees": "0", "cash_tranche_key": "",
+        "cash_tranche_size": "0", "cash_tranche_count": 0,
+        "cash_tranche_next": 0, "cash_tranche_budget": "0",
+    }
+    name = "trading_portfolio_reservation_event_v1"
+    client = MemoryClient()
+    client.tables[name] = [_wire_row(name, typed_row(name, row))]
+    client.tables["trading_event_v1"] = [{
+        "record_id": record_id, "run_id": run_id, "batch_id": batch_id,
+        "sequence": 1, "account_id": "DU1", "entity_id": "reservation-1",
+        "category": "portfolio_management", "entity_type": "portfolio_reservation",
+    }]
+    client.tables["trading_commit_v1"] = [{
+        "run_id": run_id, "batch_id": batch_id, "last_sequence": 2,
+    }]
+    prefix = CommittedPrefix(run_id, 2, batch_id, "oms", "running", (batch_id,))
+    group = RecoveredOmsGroupState(
+        2, None, {"account_id": "DU1", "strategy_intent_id": intent_id,
+                  "group_id": "group-1"}, (), (), (), (), (), ())
+    result = load_committed_oms_admission_page(client, prefix, (group,))
+    assert result["group-1"]["assignment_id"] == "assignment-1"
+    client.tables[name][0]["quantity"] = "5.000000000000000000"
+    with pytest.raises(RuntimeError, match="differs from its hash"):
+        load_committed_oms_admission_page(client, prefix, (group,))
 
 
 def test_oms_projection_uses_original_intent_and_normalized_admission() -> None:

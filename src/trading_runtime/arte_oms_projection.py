@@ -300,6 +300,73 @@ def _verified_rows(name: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]
     return rows
 
 
+def load_committed_oms_admission_page(
+    client: Any, prefix: VerifiedPrefix,
+    groups: tuple[RecoveredOmsGroupState, ...], *, max_rows: int = 500,
+) -> dict[str, dict[str, Any]]:
+    """Join OMS revisions to one earlier normalized reservation per intent.
+
+    This is a cold read only. The reservation is the sole authority for the
+    approved quantity and assignment; OMS does not store a redundant blob.
+    """
+    if not _valid_prefix(prefix) or not groups or not 1 <= len(groups) <= max_rows <= 4096:
+        raise ValueError("OMS admission recovery needs a bounded verified page")
+    intent_ids = {str(row.group["strategy_intent_id"]) for row in groups}
+    if not all(intent_ids):
+        raise ValueError("OMS admission page has an empty intent identity")
+    ids = ",".join(_literal(value) for value in sorted(intent_ids))
+    name = "trading_portfolio_reservation_event_v1"
+    columns = ",".join(column for column, _ in _CONTRACTS[name].columns)
+    rows = _verified_rows(name, _rows(client,
+        f"SELECT {columns} FROM arte.{name} "
+        f"WHERE run_id={_literal(prefix.run_id)} AND intent_id IN ({ids}) "
+        f"{_committed_batch_filter(prefix)}"
+        f"LIMIT {max_rows + 1} FORMAT JSONEachRow"))
+    if len(rows) > max_rows:
+        raise RuntimeError("Committed OMS admission exceeds its row budget")
+    created = [row for row in rows if row["event"] == "reservation_created"]
+    record_ids = {str(UUID(str(row["record_id"]))) for row in created}
+    events: dict[str, dict[str, Any]] = {}
+    if record_ids:
+        event_ids = ",".join(f"toUUID({_literal(value)})" for value in sorted(record_ids))
+        source = _rows(client,
+            "SELECT record_id,batch_id,sequence,account_id,entity_id,category,entity_type "
+            "FROM arte.trading_event_v1 "
+            f"WHERE run_id={_literal(prefix.run_id)} AND record_id IN ({event_ids}) "
+            f"{_committed_batch_filter(prefix)}"
+            f"LIMIT {max_rows + 1} FORMAT JSONEachRow")
+        events = {str(UUID(str(row["record_id"]))): row for row in source}
+        if len(source) != len(record_ids) or len(events) != len(record_ids):
+            raise RuntimeError("Committed OMS admission event is missing or duplicated")
+    by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in created:
+        key = (str(row["account_id"]), str(row["intent_id"]))
+        by_key.setdefault(key, []).append(row)
+    result = {}
+    for group in groups:
+        state = group.group
+        key = (str(state["account_id"]), str(state["strategy_intent_id"]))
+        matches = by_key.get(key, [])
+        if len(matches) != 1:
+            raise RuntimeError("Committed OMS state lacks one unique admission")
+        reservation = matches[0]
+        event = events[str(UUID(str(reservation["record_id"])))]
+        if (str(UUID(str(reservation["batch_id"]))) != str(UUID(str(event["batch_id"])))
+                or event["account_id"] != key[0]
+                or event["entity_id"] != reservation["reservation_id"]
+                or (event["category"], event["entity_type"]) !=
+                   ("portfolio_management", "portfolio_reservation")
+                or int(event["sequence"]) >= group.sequence
+                or reservation["status"] != "reserved"
+                or not reservation["assignment_id"]
+                or float(reservation["quantity"]) <= 0):
+            raise RuntimeError("Committed OMS admission differs from its event or order")
+        if state["group_id"] in result:
+            raise RuntimeError("Committed OMS admission page repeats a group")
+        result[str(state["group_id"])] = reservation
+    return result
+
+
 def load_committed_oms_group_state_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 200, max_children: int = 4096,
