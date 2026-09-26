@@ -3168,7 +3168,7 @@ class ReplayRunController:
 
     async def _run_strategy_one_fixed_days(
         self, *, market, candidates, activations, pivots, hod, seeds,
-        entry, prices,
+        entry, prices, execution_market,
     ) -> None:
         """Run numbered Strategy 1 on the certified sparse tape, never frames."""
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -3177,6 +3177,9 @@ class ReplayRunController:
         )
         from src.backend.backtest_strategy_one_execution import (
             run_certified_strategy_one_session,
+        )
+        from src.backend.backtest_fixed_market_authority import (
+            fixed_market_authority_payload,
         )
         from src.trading_runtime.strategy_one_runtime import AssignedStrategyOne
 
@@ -3194,13 +3197,10 @@ class ReplayRunController:
         if self.definition.requested_start != market_day_boundary(day, 0):
             raise ValueError("Strategy 1 requires a flat start at the 04:00 session boundary")
         boundary_count = 0
-        self._record_data_authority("fixed_market_data", {
-            **market.payload(), "database": "arte",
-            "tables": ["bars_v1", "indicators_v1", "liquidity_100ms_v1",
-                       "liquidity_execution_price_100ms_v1"],
-            "access": "select_only", "frame_spool": False,
-            "strategy_one_sparse_tape": True,
-        })
+        authority = fixed_market_authority_payload(market, execution_market)
+        self._record_data_authority(
+            "fixed_market_data", {key: value for key, value in authority.items()
+                                  if key != "source_key"})
         self._runtime_inputs_ready = True
         self._preparation_stage = "strategy_one_sparse_boundaries"
         self.status = "running"
@@ -3676,7 +3676,7 @@ class ReplayRunController:
                 market=plans.market, candidates=plans.candidates,
                 activations=plans.activations, pivots=plans.pivots,
                 hod=plans.hod, seeds=plans.seeds, entry=plans.entry,
-                prices=plans.prices)
+                prices=plans.prices, execution_market=plans.execution_market)
             return
         evidence_gaps = _fixed_market_evidence_gaps(configuration)
         if evidence_gaps:

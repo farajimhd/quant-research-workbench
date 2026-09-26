@@ -6,7 +6,8 @@ import json
 import pytest
 
 from src.backend.backtest_fixed_market_authority import (
-    project_fixed_market_authority, recover_fixed_market_authority,
+    fixed_market_authority_payload, project_fixed_market_authority,
+    recover_fixed_market_authority,
 )
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -53,6 +54,9 @@ def _record(parent, execution):
 def test_fixed_market_authority_projects_only_pinned_hashes_and_recovers():
     parent, execution = _plans()
     record = _record(parent, execution)
+    assert fixed_market_authority_payload(parent, execution) == {
+        key: value for key, value in record.payload.items()
+        if key not in {"correlation_id", "causation_id"}}
     row = project_fixed_market_authority(
         record, parent_plan=parent, execution_plan=execution,
         expected_event_time=AT)

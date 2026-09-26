@@ -56,6 +56,17 @@ def _validate_plans(parent: CertifiedMarketDayPlan,
         raise ValueError("Fixed market execution projection lacks its parent hash")
 
 
+def fixed_market_authority_payload(
+    parent: CertifiedMarketDayPlan, execution: CertifiedMarketDayPlan,
+) -> dict[str, Any]:
+    """One exact payload for the executor and its typed journal projector."""
+    _validate_plans(parent, execution)
+    return {"source_key": "fixed_market_data", **execution.payload(),
+            "parent_market_plan_token": parent.token,
+            "scanner_ticker_count": len(parent.tickers),
+            "execution_ticker_count": len(execution.tickers), **_STATIC}
+
+
 def project_fixed_market_authority(
     record: JournalRecord, *, parent_plan: CertifiedMarketDayPlan,
     execution_plan: CertifiedMarketDayPlan, expected_event_time: datetime,
@@ -69,10 +80,7 @@ def project_fixed_market_authority(
             or record.event_time.astimezone(timezone.utc)
             != expected_event_time.astimezone(timezone.utc)):
         raise ValueError("Fixed market authority journal envelope is invalid")
-    expected = {"source_key": "fixed_market_data", **execution_plan.payload(),
-                "parent_market_plan_token": parent_plan.token,
-                "scanner_ticker_count": len(parent_plan.tickers),
-                "execution_ticker_count": len(execution_plan.tickers), **_STATIC}
+    expected = fixed_market_authority_payload(parent_plan, execution_plan)
     payload = {key: value for key, value in record.payload.items()
                if key not in {"correlation_id", "causation_id"}}
     if payload != expected:
@@ -93,7 +101,4 @@ def recover_fixed_market_authority(
     if (row.execution_plan_token != execution_plan.token
             or row.parent_market_plan_token != parent_plan.token):
         raise ValueError("Fixed market authority row differs from pinned run plans")
-    return {"source_key": "fixed_market_data", **execution_plan.payload(),
-            "parent_market_plan_token": parent_plan.token,
-            "scanner_ticker_count": len(parent_plan.tickers),
-            "execution_ticker_count": len(execution_plan.tickers), **_STATIC}
+    return fixed_market_authority_payload(parent_plan, execution_plan)
