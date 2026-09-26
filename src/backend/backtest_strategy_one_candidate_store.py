@@ -115,7 +115,7 @@ def certify_candidate_plan(market: CertifiedMarketDayPlan, *,
     ordered = sorted(scoped)
     for offset in range(0, len(ordered), batch_size):
         batch = ordered[offset:offset + batch_size]
-        scopes = ",".join(f"(toDate({_literal(day)}),{_literal(ticker)}))"
+        scopes = ",".join(f"(toDate({_literal(day)}),{_literal(ticker)})"
                           for day, ticker in batch)
         facts = _rows(client, f"""SELECT session_date,ticker,
           toString(derivation_attempt_id) AS derivation_attempt_text,

@@ -95,6 +95,9 @@ def test_candidate_reader_seals_positive_and_empty_ticker():
     assert len(result.token) == 64
     assert all(query.startswith("SELECT") and "INSERT" not in query
                for query in reader.queries)
+    coverage_query = next(query for query in reader.queries
+                          if "FROM arte.strategy_one_candidate_coverage_v1" in query)
+    assert "(toDate('2026-08-18'),'ABCD'),(toDate('2026-08-18'),'EFGH')" in coverage_query
 
 
 def test_missing_tampered_or_misplaced_candidates_fail_closed():
