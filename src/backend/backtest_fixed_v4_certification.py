@@ -51,6 +51,52 @@ _LEGACY_PROTECTION_FAMILIES = {
 }
 
 
+def certify_strategy_one_portfolio_request_unreachable(
+    *, runtime_path: Path, portfolio_path: Path,
+    contract_path: Path = _STRATEGY_ONE_CONTRACT,
+) -> str:
+    """Prove the legacy revision-41 deferred-request cleanup cannot run at 1."""
+    paths = (runtime_path, portfolio_path, contract_path)
+    sources = tuple(path.read_text(encoding="utf-8") for path in paths)
+    runtime, portfolio, contract = (ast.parse(source) for source in sources)
+    numbers = [node.value.value for node in contract.body
+               if isinstance(node, ast.Assign) and len(node.targets) == 1
+               and isinstance(node.targets[0], ast.Name)
+               and node.targets[0].id == "STRATEGY_NUMBER"
+               and isinstance(node.value, ast.Constant)]
+    if numbers != [1]:
+        raise ValueError("Strategy 1 number no longer precedes deferred-request cleanup")
+    runtime_classes = [node for node in runtime.body if isinstance(node, ast.ClassDef)
+                       and node.name == "TradingRuntime"]
+    portfolio_classes = [node for node in portfolio.body if isinstance(node, ast.ClassDef)
+                         and node.name == "PortfolioManagementEngine"]
+    if len(runtime_classes) != 1 or len(portfolio_classes) != 1:
+        raise ValueError("Portfolio request source owners changed")
+    execute = [node for node in runtime_classes[0].body
+               if isinstance(node, ast.AsyncFunctionDef) and node.name == "_execute_intents"]
+    withdraw = [node for node in portfolio_classes[0].body
+                if isinstance(node, ast.FunctionDef)
+                and node.name == "withdraw_invalidated_requests"]
+    calls = [node for node in ast.walk(runtime)
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+             and node.func.attr == "withdraw_invalidated_requests"]
+    emitters = [node for node in ast.walk(portfolio)
+                if isinstance(node, ast.Constant) and node.value == "portfolio_request"]
+    if (len(execute) != 1 or len(withdraw) != 1 or len(calls) != 1
+            or calls[0] not in ast.walk(execute[0])
+            or len(emitters) != 1 or emitters[0] not in ast.walk(withdraw[0])):
+        raise ValueError("Portfolio request has another or missing route")
+    guards = [node for node in ast.walk(execute[0]) if isinstance(node, ast.If)
+              and calls[0] in ast.walk(node)]
+    if (len(guards) != 1 or ast.unparse(guards[0].test) !=
+            "self.config.strategy_revision >= 41 and hasattr(self.strategy, "
+            "'assignments') and self.portfolio.has_pending_entry_requests(account_id)"):
+        raise ValueError("Portfolio request is not revision-41 guarded")
+    return sha256(json.dumps({"version": 1, "sources": tuple(
+        sha256(source.encode()).hexdigest() for source in sources)},
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def certify_strategy_one_legacy_protection_unreachable(
     *, oms_path: Path, runtime_path: Path,
     contract_path: Path = _STRATEGY_ONE_CONTRACT,
@@ -309,6 +355,16 @@ def certify_strategy_one_v4_projection(
             oms_path=sources_by_name["order_management.py"],
             runtime_path=sources_by_name["runtime.py"])
         unreachable.update(set(families) & _LEGACY_PROTECTION_FAMILIES.keys())
+    if ("portfolio_management", "portfolio_request") in families:
+        sources_by_name = {path.name: path for path in indirect_sources}
+        if (len(sources_by_name) != len(indirect_sources)
+                or "portfolio.py" not in sources_by_name
+                or "runtime.py" not in sources_by_name):
+            raise ValueError("V4 portfolio request lacks source authority")
+        unreachable_proof += certify_strategy_one_portfolio_request_unreachable(
+            runtime_path=sources_by_name["runtime.py"],
+            portfolio_path=sources_by_name["portfolio.py"])
+        unreachable.add(("portfolio_management", "portfolio_request"))
     supported = _V3_PROJECTED | _COMMON_TYPED | _V4_ADDITIONS
     unsupported = sorted(set(families) - supported - unreachable)
     if unsupported:

@@ -7,6 +7,7 @@ from src.backend.backtest_fixed_v4_certification import (
     certify_fixed_broker_stream_unreachable,
     certify_fixed_rebalance_unreachable,
     certify_strategy_one_legacy_protection_unreachable,
+    certify_strategy_one_portfolio_request_unreachable,
     certify_strategy_one_v4_projection,
 )
 
@@ -162,3 +163,26 @@ def test_numbered_protection_bypasses_legacy_oms_managers(tmp_path):
         assert await manager.apply_profit_pocket_transition(None) == []
         assert await manager._ratchet_dynamic_protection(None, None) is None
     asyncio.run(exercise())
+
+
+def test_strategy_one_cannot_enter_legacy_deferred_request_cleanup(tmp_path):
+    from pathlib import Path
+    from src.backend import backtest_fixed_v4_certification as cert
+
+    sources = {
+        "runtime_path": Path(__file__).parents[1] / "src/trading_runtime/runtime.py",
+        "portfolio_path": Path(__file__).parents[1] / "src/trading_runtime/portfolio.py",
+        "contract_path": cert._STRATEGY_ONE_CONTRACT,
+    }
+    copies = {}
+    for key, source in sources.items():
+        target = tmp_path / source.name
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        copies[key] = target
+    assert len(certify_strategy_one_portfolio_request_unreachable(**copies)) == 64
+    runtime = copies["runtime_path"]
+    runtime.write_text(runtime.read_text(encoding="utf-8").replace(
+        "self.config.strategy_revision >= 41", "self.config.strategy_revision >= 1", 1),
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="revision-41 guarded"):
+        certify_strategy_one_portfolio_request_unreachable(**copies)
