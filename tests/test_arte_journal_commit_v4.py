@@ -301,6 +301,17 @@ def test_v4_publication_is_detail_first_commit_last_and_idempotent():
         publish_base_typed_batch_v4(client, item)
 
 
+def test_v4_fresh_commit_uses_precommit_detail_seal_not_second_cold_scan(monkeypatch):
+    from src.trading_runtime import arte_journal_commit_v4 as commit_module
+
+    client = attached_v4_client()
+    item = batch()
+    monkeypatch.setattr(commit_module, "load_verified_commit_v4",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                            AssertionError("fresh writer repeated cold verification")))
+    assert publish_base_typed_batch_v4(client, item) == item.batch_id
+
+
 def test_v4_broker_acknowledgement_is_fenced_and_cold_verified():
     at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
     source = JournalRecord(

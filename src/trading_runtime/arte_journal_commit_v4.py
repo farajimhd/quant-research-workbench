@@ -1174,9 +1174,23 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
     _insert(client, "trading_commit_v4", (commit,),
             f"{batch.batch_id}:commit:v4", dispatch_batch_id=batch.batch_id,
             dispatch_sequence=batch.last_sequence)
-    loaded, _ = load_verified_commit_v4(
-        client, run_id=batch.run_id, batch_id=batch.batch_id)
-    if loaded["content_hash"] != commit["content_hash"]:
+    # Every detail family and the family set were independently read back and
+    # sealed above. A second cold verification of all children here multiplies
+    # ClickHouse round-trips per event without adding a new durability fact.
+    # Recovery still runs load_verified_commit_v4 over the complete graph.
+    loaded_rows = _rows(client,
+        f"SELECT {commit_columns} FROM arte.trading_commit_v4 "
+        f"{filters}LIMIT 2 FORMAT JSONEachRow")
+    if len(loaded_rows) != 1:
+        raise RuntimeError("V4 committed cursor is missing or ambiguous")
+    loaded = loaded_rows[0]
+    loaded_content = {key: value for key, value in loaded.items()
+                      if key not in {"committed_at", "content_hash"}}
+    if (loaded["run_id"] != batch.run_id
+            or str(UUID(str(loaded["batch_id"]))) != batch.batch_id
+            or sha256(canonical_json(loaded_content).encode()).hexdigest()
+               != loaded["content_hash"]
+            or loaded["content_hash"] != commit["content_hash"]):
         raise RuntimeError("V4 committed cursor differs from the intended batch")
     _compact_verified_v4_batch(
         dispatch, batch, families, family_rows, loaded)
