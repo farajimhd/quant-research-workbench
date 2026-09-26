@@ -56,6 +56,10 @@ class EntryPublicationScope:
             raise ValueError("Strategy 1 entry publication scope is not pinned")
 
 
+class EntryReadbackMismatch(RuntimeError):
+    """Only safe field names and counts, never values or credentials."""
+
+
 def _rows(client: Any, sql: str) -> list[dict]:
     return [json.loads(line) for line in client.execute(
         sql + " FORMAT JSONEachRow").splitlines() if line.strip()]
@@ -228,7 +232,28 @@ def publish_unit(
             or resistance_count != sum(len(value.resistance_ids)
                                        for value in activations)
             or content_hash(observed_activations, observed_candidates) != digest):
-        raise RuntimeError("Strategy 1 entry child read-back differs")
+        differences = []
+        for family, expected, observed in (
+                ("activation", activations, observed_activations),
+                ("evidence", candidates, observed_candidates)):
+            if len(expected) != len(observed):
+                differences.append(f"{family}_count={len(expected)}/{len(observed)}")
+            else:
+                for left, right in zip(expected, observed):
+                    if left != right:
+                        differences.extend(
+                            f"{family}.{name}" for name in left.__dataclass_fields__
+                            if getattr(left, name) != getattr(right, name))
+                        break
+        expected_resistance = sum(len(value.resistance_ids)
+                                  for value in activations)
+        if resistance_count != expected_resistance:
+            differences.append(
+                f"resistance_count={expected_resistance}/{resistance_count}")
+        if not differences:
+            differences.append("content_hash")
+        raise EntryReadbackMismatch(
+            "Strategy 1 entry child read-back differs: " + ",".join(differences))
     writer.execute(f"""INSERT INTO {COVERAGE_TABLE}
       (source_build_id,session_date,ticker,derivation_attempt_id,bars_attempt_id,
        candidate_attempt_id,candidate_content_hash,candidate_plan_token,

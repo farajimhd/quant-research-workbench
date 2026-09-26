@@ -26,7 +26,9 @@ sys.dont_write_bytecode = True
 from pipelines.strategy_one.entry_evidence_derivation import (
     derive_unit_sync, publication_scope,
 )
-from pipelines.strategy_one.entry_evidence_publication import publish_unit
+from pipelines.strategy_one.entry_evidence_publication import (
+    EntryReadbackMismatch, publish_unit,
+)
 from research.mlops.clickhouse import ClickHouseHttpClient
 from scripts.clickhouse.provision_strategy_one_candidate_producer import (
     PRINCIPAL, WORKSTATION_IPV4, _GRANTS, _credential, _grant_set,
@@ -172,9 +174,10 @@ def publish_session(*, session_date: str, build_id: str,
                       for frame in reversed(traceback.extract_tb(exc.__traceback__))
                       if Path(frame.filename).is_relative_to(REPO_ROOT)),
                      "external_dependency")
+        detail = f" detail={exc}" if isinstance(exc, EntryReadbackMismatch) else ""
         raise EntryCampaignFailure(
             f"Entry publication stopped at {symbol}: {type(exc).__name__} "
-            f"at {stage}; rerun verifies completed coverage")
+            f"at {stage}{detail}; rerun verifies completed coverage")
     if not ticker:
         with closing(readonly_clickhouse_client(
                 market_stream=True, v3_read_principal=True)) as reader:
