@@ -453,6 +453,7 @@ class ReplayRunDefinition:
             strategy = dict(self.configuration_revision.get("payload", {}).get("strategy") or {})
             if strategy.get("strategy_number") == 1:
                 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
+                from src.trading_runtime.strategy_one_hod_schema import PRODUCT_DIGEST as HOD_DIGEST
                 from src.trading_runtime.strategy_one_pivot_schema import PRODUCT_DIGEST
                 if (resolved_interval.milliseconds != 100
                         or re.fullmatch(r"[0-9a-f]{64}", str(
@@ -464,8 +465,11 @@ class ReplayRunDefinition:
                             self.market_data_plan.get("strategy_one_pivot_token") or "")) is None
                         or re.fullmatch(r"[0-9a-f]{64}", str(
                             self.market_data_plan.get("strategy_one_activation_token") or "")) is None
+                        or re.fullmatch(r"[0-9a-f]{64}", str(
+                            self.market_data_plan.get("strategy_one_hod_token") or "")) is None
+                        or self.market_data_plan.get("strategy_one_hod_digest") != HOD_DIGEST
                         or self.market_data_plan.get("strategy_one_pivot_digest") != PRODUCT_DIGEST):
-                    raise ValueError("Strategy 1 requires pinned candidates, activations, and pivots")
+                    raise ValueError("Strategy 1 requires pinned candidates, activations, pivots, and HOD context")
         if type(self.prepare_frames_only) is not bool or (self.prepare_frames_only and self.mode != RunMode.BACKTEST):
             raise ValueError('Frame preparation only requires Backtest mode and a boolean flag')
         if not 0 <= self.minimum_p_norm <= 1:
@@ -3556,6 +3560,7 @@ class ReplayRunController:
         if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
             from src.backend.backtest_strategy_one_activation import load_strategy_one_activations
             from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+            from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
             from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
             from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
             from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
@@ -3626,6 +3631,15 @@ class ReplayRunController:
                         or v7_seeds.catalog_hash != pinned_v7.get("catalog_hash")
                         or v7_seeds.provisional != pinned_v7.get("provisional")):
                     raise ValueError("Certified causal V7 seed plan changed after preflight")
+                if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+                    def recheck_hod():
+                        with closing(readonly_clickhouse_client(
+                                market_stream=True, v3_read_principal=True)) as reader:
+                            return certify_hod_plan(plan, candidate_plan, v7_seeds, client=reader)
+                    hod_plan = await asyncio.to_thread(recheck_hod)
+                    if hod_plan.token != self.definition.market_data_plan.get(
+                            "strategy_one_hod_token"):
+                        raise ValueError("Certified Strategy 1 HOD context changed after preflight")
             except BaseException:
                 v7_reader.close()
                 raise
@@ -11096,7 +11110,17 @@ def backtest_preflight(
                 projected = (project_market_day_plan(certified, projection_tickers)
                              if projection_tickers else certified)
                 with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
-                    causal_v7_plan = certified_seed_plan(projected, reader).payload()
+                    seed_plan = certified_seed_plan(projected, reader)
+                    causal_v7_plan = seed_plan.payload()
+                if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+                    from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
+                    from src.trading_runtime.strategy_one_hod_schema import PRODUCT_DIGEST as HOD_DIGEST
+                    with closing(readonly_clickhouse_client(
+                            market_stream=True, v3_read_principal=True)) as hod_reader:
+                        hod_plan = certify_hod_plan(
+                            certified, candidate_plan, seed_plan, client=hod_reader)
+                    market_data_plan["strategy_one_hod_token"] = hod_plan.token
+                    market_data_plan["strategy_one_hod_digest"] = HOD_DIGEST
                 causal_v7_plan["market_projection_token"] = projected.token
                 causal_v7_plan["parent_market_plan_token"] = certified.token
                 causal_v7_error = ""
@@ -11117,6 +11141,19 @@ def backtest_preflight(
                 causal_v7_plan.get("token", "") if causal_v7_plan else causal_v7_error)
     if (execution_interval.kind == "fixed"
             and dict(configuration.get("strategy") or {}).get("strategy_number") == 1):
+        hod_token = str((market_data_plan or {}).get("strategy_one_hod_token") or "")
+        checks.append({
+            "id": "strategy_one_hod_context",
+            "label": "Certified causal HOD context",
+            "status": "ready" if re.fullmatch(r"[0-9a-f]{64}", hod_token) else "blocked",
+            "required": True,
+            "summary": (
+                "Every candidate boundary has normalized, source-pinned HOD context."
+                if hod_token else "Strategy 1 HOD context is unavailable: " +
+                (causal_v7_error or "candidate or market-data certification did not complete")
+            ),
+            "evidence": hod_token or causal_v7_error,
+        })
         pivot_token = str((market_data_plan or {}).get("strategy_one_pivot_token") or "")
         checks.append({
             "id": "strategy_one_confirmed_pivots",
