@@ -6,7 +6,8 @@ from uuid import uuid4
 import pytest
 
 from src.trading_runtime.arte_strategy_one_entry_journal import (
-    ENTRY_EVIDENCE, project_strategy_one_entry_evidence,
+    ENTRY_EVIDENCE, load_committed_strategy_one_entry_page,
+    project_strategy_one_entry_evidence,
     seal_strategy_one_entry_evidence,
 )
 from src.trading_runtime.arte_journal_writer import _CONTRACTS
@@ -15,7 +16,8 @@ from src.trading_runtime.arte_journal_writer import ArteJournalWriter, V4Strateg
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
 from src.trading_runtime.arte_journal_commit_v4 import (
     _publish_typed_batch_v4, _sealed_strategy_one_entry_rows,
-    load_verified_commit_v4, publish_base_typed_batch_v4,
+    load_verified_commit_v4, load_verified_v4_prefix,
+    publish_base_typed_batch_v4,
 )
 from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
 from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
@@ -107,6 +109,15 @@ def test_v4_commit_seals_exact_one_entry_child_to_the_typed_parent():
     assert commit["family_count"] == len(families)
     assert ENTRY_EVIDENCE.name in {row["family_name"] for row in families}
     assert len(client.tables[ENTRY_EVIDENCE.name]) == 1
+    prefix = load_verified_v4_prefix(client, item.run_id)
+    page = load_committed_strategy_one_entry_page(client, prefix)
+    assert page.scanned_through_sequence == 1 and page.exhausted
+    assert len(page.entries) == 1
+    assert page.entries[0].proposal == proposal
+    assert page.entries[0].intent == intent
+    client.tables[ENTRY_EVIDENCE.name].clear()
+    with pytest.raises(RuntimeError, match="missing or duplicated"):
+        load_committed_strategy_one_entry_page(client, prefix)
 
 
 def test_v4_writer_queues_strategy_one_child_and_returns_verified_receipt(monkeypatch):
