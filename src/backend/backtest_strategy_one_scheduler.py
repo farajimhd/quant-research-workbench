@@ -23,6 +23,18 @@ from src.backend.backtest_liquidity_price import PriceLevelPlan
 MarketGroup = tuple[int, Mapping[int, Mapping]]
 MarketSource = Callable[[str, int], Iterator[MarketGroup]]
 
+# The sparse candidate projection and the active-ticker projection are two
+# SELECT-only views of the same certified 100 ms product. Every shared field
+# used for entry, broker matching, or market identity must agree exactly.
+_SHARED_CANDIDATE_FIELDS = (
+    "session_date", "ticker", "boundary_ms", "resolution_ms",
+    "close_int", "low_int", "price_valid", "extremes_valid",
+    "bid_int", "ask_int", "quote_valid", "quote_timestamp_us",
+    "execution_vwap", "cumulative_volume", "cumulative_notional",
+    "indicator_resolution_ms", "macd_line", "macd_signal",
+    "previous_close",
+)
+
 
 def persisted_active_market_source(
     plan: CertifiedMarketDayPlan, *, price_plan: PriceLevelPlan,
@@ -209,10 +221,12 @@ class StrategyOneBoundaryScheduler:
                 # evaluates an order at this same boundary.
                 by_resolution[100] = row
             elif any(key in existing and key in row
-                     and existing[key] != row[key] for key in (
-                         "bid_int", "ask_int", "quote_timestamp_us",
-                         "close_int", "price_valid", "execution_vwap")):
-                raise ValueError("Active and candidate liquidity disagree at boundary")
+                     and existing[key] != row[key]
+                     for key in _SHARED_CANDIDATE_FIELDS) or (
+                         "trade_count" in existing
+                         and "volume_trade_count" in row
+                         and existing["trade_count"] != row["volume_trade_count"]):
+                raise ValueError("Active and candidate market rows disagree at boundary")
         return StrategyOneBoundaryWork(
             boundary, tuple(sorted(broker.items())), tuple(candidates))
 

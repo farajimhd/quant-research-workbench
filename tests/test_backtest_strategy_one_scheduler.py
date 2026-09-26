@@ -137,7 +137,50 @@ def test_active_candidate_uses_one_broker_row_and_rejects_conflicting_quote():
         active_source=conflicting)
     clock.pop_next()
     clock.activate("AAA")
-    with pytest.raises(ValueError, match="liquidity disagree"):
+    with pytest.raises(ValueError, match="market rows disagree"):
+        clock.pop_next()
+    clock.close()
+
+
+@pytest.mark.parametrize("field,active,candidate_value", [
+    ("low_int", 99_000, 98_000),
+    ("cumulative_volume", 25_000, 26_000),
+    ("macd_line", .2, .3),
+    ("previous_close", 9., 10.),
+])
+def test_active_candidate_rejects_any_shared_entry_evidence_divergence(
+        field, active, candidate_value):
+    def source(ticker, after):
+        boundary, rows = group(ticker, 300)
+        rows[100][field] = active
+        return iter(((boundary, rows),))
+
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY,
+        candidate_rows=iter((candidate("AAA", 100),
+                             {**candidate("AAA", 300), field: candidate_value})),
+        active_source=source)
+    clock.pop_next()
+    clock.activate("AAA")
+    with pytest.raises(ValueError, match="market rows disagree"):
+        clock.pop_next()
+    clock.close()
+
+
+def test_active_candidate_rejects_trade_count_alias_divergence():
+    def source(ticker, after):
+        boundary, rows = group(ticker, 300)
+        rows[100]["trade_count"] = 3
+        return iter(((boundary, rows),))
+
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY,
+        candidate_rows=iter((candidate("AAA", 100),
+                             {**candidate("AAA", 300), "volume_trade_count": 4})),
+        active_source=source)
+    clock.pop_next()
+    clock.activate("AAA")
+    with pytest.raises(ValueError, match="market rows disagree"):
         clock.pop_next()
     clock.close()
 
