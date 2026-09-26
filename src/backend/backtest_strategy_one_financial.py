@@ -68,12 +68,16 @@ async def read_strategy_one_financial_views(
             row.action in {"exit_long", "reduce_long"}
             and row.state not in TERMINAL_MANAGEMENT_STATES for row in groups)
         state = assignment.state
-        reentry = state.get("reentry_not_before_ms", 0)
-        if type(reentry) is not int or reentry < 0:
-            raise ValueError("Strategy 1 reentry clock is invalid")
+        if (not isinstance(state, dict)
+                or "reentry_not_before_ms" in state
+                or "pending_capital_request" in state):
+            # Numbered Strategy 1 never mutates these legacy assignment-state
+            # fields. OMS owns pending entry/exit, and completed-entry
+            # re-entry remains closed until a certified break witness exists.
+            raise ValueError("Strategy 1 has unsupported assignment financial state")
         result.append(StrategyOneFinancialView(
             assignment.assignment_id, assignment.account_id, assignment.ticker,
             assignment.status, assignment.permissions, quantity, pending_entry,
-            pending_exit, bool(state.get("pending_capital_request")),
-            sum(row.filled_quantity > 0 for row in entries), reentry))
+            pending_exit, False,
+            sum(row.filled_quantity > 0 for row in entries), 0))
     return tuple(result)

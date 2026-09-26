@@ -1,5 +1,6 @@
 """Strategy 1 financial admission follows broker/OMS state after a boundary."""
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -82,3 +83,21 @@ def test_same_ticker_assignments_share_one_account_read_and_oms_snapshot():
     assert [view.position_quantity for view in views] == [5., 7.]
     assert [view.completed_entries for view in views] == [1, 0]
     assert reads == {"positions": 1, "groups": 1}
+
+
+@pytest.mark.parametrize("state", [
+    {"pending_capital_request": {"request_id": "r1"}},
+    {"pending_capital_request": False},
+    {"reentry_not_before_ms": 100},
+    {"reentry_not_before_ms": 0},
+])
+def test_strategy_one_rejects_legacy_mutable_assignment_financial_state(state):
+    async def positions(_account):
+        return []
+
+    assignment = replace(_assignment(), state=state)
+    broker = SimpleNamespace(positions=positions)
+    manager = SimpleNamespace(snapshots=lambda: [])
+    with pytest.raises(ValueError, match="unsupported assignment financial state"):
+        asyncio.run(read_strategy_one_financial_view(
+            assignment, broker, manager))
