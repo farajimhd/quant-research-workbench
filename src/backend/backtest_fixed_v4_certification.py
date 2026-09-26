@@ -40,6 +40,7 @@ _V4_ADDITIONS = frozenset({
     ("order_management", "protection_reconciliation"),
     ("snapshot", "portfolio"),
     ("snapshot", "position"),
+    ("order_management", "protection_replacement_deferred"),
 })
 _SIMULATED_BROKER = Path(__file__).parents[1] / "trading_runtime" / "simulated_broker.py"
 _STRATEGY_ONE_INTENT = Path(__file__).parents[1] / "trading_runtime" / "strategy_one_intent.py"

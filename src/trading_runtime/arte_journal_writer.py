@@ -164,6 +164,8 @@ _EVENT_DETAILS = {
     ("resource_lease", "prepared_v7_stream"): "trading_prepared_v7_lease_v1",
     ("strategy_decision", "intent_rejection"): "trading_intent_decision_v1",
     ("strategy_decision", "intent_deferral"): "trading_intent_decision_v1",
+    ("order_management", "protection_replacement_deferred"):
+        "trading_intent_decision_v1",
     ("portfolio_management", "portfolio_decision"): "trading_portfolio_decision_v1",
     ("portfolio_management", "portfolio_reservation"): "trading_portfolio_reservation_event_v1",
     ("portfolio_management", "portfolio_reconciliation"): "trading_portfolio_reconciliation_event_v1",
@@ -774,13 +776,22 @@ def _sealed_families(
     for decision_id, decision in decisions.items():
         parent = events_by_id[decision_id]
         reasons = decision_reasons.get(decision_id, [])
-        if (parent["category"] != "strategy_decision"
+        kind = (parent["category"], parent["entity_type"])
+        if (kind not in {("strategy_decision", "intent_rejection"),
+                         ("strategy_decision", "intent_deferral"),
+                         ("order_management", "protection_replacement_deferred")}
                 or parent["entity_type"] != decision["decision_kind"]
-                or decision["decision_kind"] not in {"intent_rejection", "intent_deferral"}
+                or decision["decision_kind"] not in {
+                    "intent_rejection", "intent_deferral",
+                    "protection_replacement_deferred"}
                 or str(parent["account_id"]) != str(decision["account_id"])
                 or not str(decision["account_id"]) or not str(decision["intent_id"])
                 or not str(decision["ticker"]) or not str(decision["reason_code"])
                 or decision["action"] != "wait"
+                or (kind == ("order_management", "protection_replacement_deferred")
+                    and (parent["entity_id"] != decision["intent_id"]
+                         or decision["reason_code"] != "broker_replacement_not_confirmed"
+                         or decision["reason_count"] != 0))
                 or _datetime_wire(decision["source_event_time"], 9)
                 != _datetime_wire(parent["event_time"], 9)
                 or len(reasons) != int(decision["reason_count"])

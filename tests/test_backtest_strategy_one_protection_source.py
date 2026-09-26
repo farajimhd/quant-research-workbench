@@ -94,3 +94,34 @@ def test_numbered_protection_without_source_fails_projection():
             source_cursor="2026-08-18:31000",
             expected_config={"strategy_id": "early-squeeze-strategy",
                              "strategy_revision": 1}, through_sequence=1)
+
+
+def test_failed_amendment_projects_and_cold_verifies_as_typed_decision():
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+
+    run_id = str(UUID(int=905))
+    journal = BacktestMemoryJournal(run_id=run_id)
+    intent = strategy_one_protection_intents(
+        previous(), transition(), financial(),
+        session_date=date(2026, 8, 18), bid=10., ask=10.01)[0]
+    journal.append_strategy_one_protection_intent(
+        intent=intent, account_id="DU1", strategy_id="early-squeeze-strategy",
+        strategy_revision=1)
+    journal.append(
+        run_id=run_id, category="order_management",
+        entity_type="protection_replacement_deferred",
+        entity_id=intent.intent_id, account_id="DU1",
+        event_time=intent.event_time,
+        payload={"action": intent.action, "reason": "modify rejected"})
+    units = project_pending_backtest_v4_prefix(
+        journal, attempt_id=str(UUID(int=906)), run_month=date(2026, 8, 1),
+        prior_sequence=0, source_cursor="2026-08-18:31000",
+        expected_config={"strategy_id": "early-squeeze-strategy",
+                         "strategy_revision": 1}, through_sequence=2)
+    assert len(units) == 2
+    assert units[1].intent_decisions[0]["reason_detail"] == "modify rejected"
+    assert units[1].intent_decisions[0]["intent_id"] == intent.intent_id
+    client = attached_v4_client()
+    for unit in units:
+        publish_base_typed_batch_v4(client, unit)
+    assert load_verified_v4_prefix(client, run_id).last_sequence == 2

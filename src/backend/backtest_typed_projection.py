@@ -118,6 +118,19 @@ def project_pending_backtest_v4_prefix(
                 record, run_month=run_month, attempt_id=attempt,
                 batch_id=batch_id, prior_batch_id=previous,
                 source_cursor=cursor)
+        elif kind == ("order_management", "protection_replacement_deferred"):
+            from src.trading_runtime.arte_protection_deferral_v4 import (
+                protection_deferral_batch_v4,
+            )
+            source = sources.get(record.entity_id)
+            if source is None:
+                raise RuntimeError("Protection deferral lacks a journaled source intent")
+            unit = protection_deferral_batch_v4(
+                record, source_batch=source[0], source_intent=source[1],
+                run_month=run_month, attempt_id=attempt, batch_id=batch_id,
+                prior_batch_id=previous, source_cursor=cursor,
+                strategy_id=(expected_config or {}).get("strategy_id"),
+                strategy_revision=(expected_config or {}).get("strategy_revision"))
         elif kind == ("protection", "protection_change"):
             unit = protection_change_batch_v4(
                 record, run_month=run_month, attempt_id=attempt,
