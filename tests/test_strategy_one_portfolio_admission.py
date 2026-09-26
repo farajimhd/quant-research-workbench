@@ -9,6 +9,12 @@ import pytest
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
 from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
+from src.trading_runtime.arte_journal_commit_v4 import (
+    load_verified_v4_prefix, publish_base_typed_batch_v4,
+    publish_broker_acknowledgement_batch_v4,
+    publish_protection_change_batch_v4,
+    publish_strategy_one_entry_batch_v4,
+)
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_broker_acknowledgement_v4 import project_broker_acknowledgement_v4
 from src.trading_runtime.arte_protection_change_v4 import protection_change_batch_v4
@@ -204,18 +210,31 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
                 def __init__(self):
                     self.run_id = run_id
                     self.units = []
+                    from tests.test_arte_journal_commit_v4 import attached_v4_client
+                    self.client = attached_v4_client()
 
-                def _receipt(self, unit):
+                def _receipt(self, unit, publish):
                     self.units.append(unit)
                     result = Future()
-                    result.set_result((unit.base if hasattr(unit, "base")
-                                       else unit).batch_id)
+                    result.set_result(publish())
                     return result
 
-                submit_base_v4 = _receipt
-                submit_strategy_one_entry_v4 = _receipt
-                submit_broker_acknowledgement_v4 = _receipt
-                submit_protection_change_v4 = _receipt
+                def submit_base_v4(self, batch):
+                    return self._receipt(batch, lambda: publish_base_typed_batch_v4(
+                        self.client, batch))
+
+                def submit_strategy_one_entry_v4(self, unit):
+                    return self._receipt(unit, lambda: publish_strategy_one_entry_batch_v4(
+                        self.client, unit.base, entry_evidence=unit.entry_evidence))
+
+                def submit_broker_acknowledgement_v4(self, unit):
+                    return self._receipt(unit, lambda: publish_broker_acknowledgement_batch_v4(
+                        self.client, unit.base, acknowledgement=unit.acknowledgement))
+
+                def submit_protection_change_v4(self, unit):
+                    return self._receipt(unit, lambda: publish_protection_change_batch_v4(
+                        self.client, unit.base, change=unit.change,
+                        entry_orders=unit.entry_orders))
 
             writer = FencedV4Writer()
             publisher = BacktestTypedJournalPublisher(
@@ -228,6 +247,8 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
             assert len(writer.units) == len(records)
             assert intent.intent_id in publisher._committed_strategy_intents
             assert journal.pending_record_count == 0
+            assert load_verified_v4_prefix(
+                writer.client, run_id).last_sequence == records[-1].sequence
             latest = frozen[-1]
             assert latest is not None
             manager._groups[group.group_id].broker_order_ids.append("later-mutation")
