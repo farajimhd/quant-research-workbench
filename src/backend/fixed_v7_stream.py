@@ -128,6 +128,7 @@ class FixedV7Cache:
         if not expected_tickers or set(self._coverage) != expected_tickers:
             raise ValueError("V7 seed plan does not cover the certified ticker population")
         self._streams: dict[str, FixedV7Stream] = {}
+        self._last_loaded_second_ms: dict[str, int] = {}
 
     def has_stream(self, ticker: str) -> bool:
         """True after this session's private book has been loaded and caught up."""
@@ -151,8 +152,13 @@ class FixedV7Cache:
             return
         if str(row.get("ticker") or "") != ticker:
             raise ValueError("V7 persisted second ticker changed")
+        boundary_ms = self._boundary_ms(at)
+        prior = self._last_loaded_second_ms[ticker]
+        if boundary_ms <= prior or boundary_ms % 1_000:
+            raise ValueError("V7 completed second duplicated or moved backward")
         if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
             stream.update_second(row, at=at)
+        self._last_loaded_second_ms[ticker] = boundary_ms
 
     def advance_seconds(self, rows: Sequence[Mapping[str, Any]], *, at: datetime) -> None:
         """Amortize one async handoff across all active books at a boundary."""
@@ -161,7 +167,9 @@ class FixedV7Cache:
 
     def _stream(self, ticker: str, *, as_of: datetime) -> FixedV7Stream:
         boundary_ms = self._boundary_ms(as_of)
+        completed_ms = boundary_ms // 1_000 * 1_000
         stream = self._streams.get(ticker)
+        after_ms = 0
         if stream is None:
             pinned = self._coverage.get(ticker)
             if pinned is None:
@@ -172,9 +180,13 @@ class FixedV7Cache:
                                     session=self.session)
             stream = FixedV7Stream(seed, ticker=ticker, session=self.session,
                                    splits=splits, consume_seed=True)
+        else:
+            after_ms = self._last_loaded_second_ms[ticker]
+        if completed_ms > after_ms:
             for row in iter_persisted_v7_seconds(
                 self.market_plan, session_date=self.session.isoformat(), ticker=ticker,
-                through_boundary_ms=boundary_ms, client=self.client,
+                after_boundary_ms=after_ms, through_boundary_ms=completed_ms,
+                client=self.client,
             ):
                 if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
                     bar_at = market_day_boundary(
@@ -182,7 +194,8 @@ class FixedV7Cache:
                         (int(row["bucket_index"]) + 1) * 1_000 - SESSION_OPEN_OFFSET_MS,
                     )
                     stream.update_second(row, at=bar_at)
-            self._streams[ticker] = stream
+        self._streams[ticker] = stream
+        self._last_loaded_second_ms[ticker] = completed_ms
         return stream
 
     def context(self, ticker: str, *, as_of: datetime, price: float) -> dict[str, Any]:

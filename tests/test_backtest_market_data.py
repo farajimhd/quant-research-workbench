@@ -472,6 +472,18 @@ class BacktestMarketDataTests(unittest.TestCase):
         assert "AND resolution_ms=1000 AND bucket_index>=14400" in client.queries[0]
         assert "AND bucket_index<14700" in client.queries[0]
         assert "attempt_id=toUUID('00000000-0000-0000-0000-000000000001')" in client.queries[0]
+        later = _ReadClient()
+        list(iter_persisted_v7_seconds(
+            plan, session_date="2026-08-18", ticker="SUGP",
+            after_boundary_ms=300_000, through_boundary_ms=301_000,
+            client=later))
+        assert "bucket_index>=14700" in later.queries[0]
+        assert "bucket_index<14701" in later.queries[0]
+        with self.assertRaisesRegex(ValueError, "outside the market session"):
+            list(iter_persisted_v7_seconds(
+                plan, session_date="2026-08-18", ticker="SUGP",
+                after_boundary_ms=300_100, through_boundary_ms=301_000,
+                client=later))
         with self.assertRaisesRegex(ValueError, "outside the certified"):
             list(iter_persisted_v7_seconds(plan, session_date="2026-08-18",
                                             ticker="OTHER", through_boundary_ms=300_100,

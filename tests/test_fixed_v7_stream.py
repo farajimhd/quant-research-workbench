@@ -98,6 +98,7 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
     bar = dict(ticker="TEST", resolution_ms=1000, bucket_index=14700,
                price_valid=1, extremes_valid=1, open_int=100000,
                high_int=100100, low_int=99900, close_int=100050, volume=100)
+    next_bar = {**bar, "bucket_index": 14701, "close_int": 100100}
 
     class Client:
         def __init__(self):
@@ -112,7 +113,9 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
             elif "market_stock_split_v1" in sql:
                 rows = []
             elif "arte.bars_v1" in sql:
-                rows = [bar] if "bucket_index<14701" in sql else []
+                rows = ([next_bar] if "bucket_index>=14701" in sql
+                        and "bucket_index<14702" in sql else
+                        [bar] if "bucket_index<14701" in sql else [])
             else:
                 raise AssertionError(sql)
             return "\n".join(json.dumps(row) for row in rows)
@@ -149,6 +152,14 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
     assert cache.context("TEST", as_of=completed, price=10.0)["qmd_structure_session_high"] == 10.01
     assert cache._streams["TEST"].engine.bars_processed == 1
     assert all(sql.startswith("SELECT") for sql in client.queries)
+    later = datetime(2026, 8, 18, 4, 5, 2, tzinfo=NY)
+    cache.strategy_one_levels("TEST", as_of=later)
+    assert cache._streams["TEST"].engine.bars_processed == 2
+    assert any("bucket_index>=14701" in sql and "bucket_index<14702" in sql
+               for sql in client.queries)
+    count = len(client.queries)
+    cache.strategy_one_levels("TEST", as_of=later + timedelta(milliseconds=100))
+    assert len(client.queries) == count
 
     late = FixedV7Cache(market_plan=market, seed_plan=v7,
                         session=date(2026, 8, 18), client=Client())

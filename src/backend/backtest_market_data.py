@@ -845,10 +845,13 @@ def iter_candidate_market_rows(
 
 def iter_persisted_v7_seconds(
     plan: CertifiedMarketDayPlan, *, session_date: str, ticker: str,
-    through_boundary_ms: int, client=None,
+    through_boundary_ms: int, client=None, after_boundary_ms: int = 0,
 ) -> Iterator[dict[str, Any]]:
     """Read only completed pinned 1s bars needed for lazy intraday V7 catch-up."""
-    if not 0 <= through_boundary_ms <= 57_600_000:
+    if (type(after_boundary_ms) is not int
+            or not 0 <= after_boundary_ms <= through_boundary_ms
+            or after_boundary_ms % 1_000
+            or not 0 <= through_boundary_ms <= 57_600_000):
         raise ValueError("V7 catch-up boundary is outside the market session")
     if session_date not in plan.sessions or ticker not in plan.tickers:
         raise ValueError("V7 catch-up scope is outside the certified market-day plan")
@@ -856,7 +859,7 @@ def iter_persisted_v7_seconds(
     if unit is None:
         raise ValueError("V7 catch-up lacks a pinned bar attempt")
     completed_count = (through_boundary_ms + SESSION_OPEN_OFFSET_MS) // 1_000
-    if through_boundary_ms == 0:
+    if completed_count <= (after_boundary_ms + SESSION_OPEN_OFFSET_MS) // 1_000:
         return
     query = assert_select_only(
         "SELECT ticker,resolution_ms,bucket_index,price_valid,extremes_valid,"
@@ -866,7 +869,8 @@ def iter_persisted_v7_seconds(
         f"AND session_date=toDate({_literal(session_date)}) "
         f"AND ticker={_literal(ticker)} "
         f"AND attempt_id=toUUID({_literal(unit.attempt_id)}) "
-        f"AND resolution_ms=1000 AND bucket_index>={SESSION_OPEN_OFFSET_MS // 1_000} "
+        f"AND resolution_ms=1000 AND bucket_index>="
+        f"{(after_boundary_ms + SESSION_OPEN_OFFSET_MS) // 1_000} "
         f"AND bucket_index<{completed_count} "
         "ORDER BY bucket_index FORMAT JSONEachRow"
     )
