@@ -7,7 +7,7 @@ from src.backend.backtest_v4_run_context import (
     fixed_v4_context_rows, historical_runtime_config,
     historical_simulated_account_ids,
 )
-from src.trading_runtime.runtime import RunMode
+from src.trading_runtime.runtime import RunMode, typed_run_config_payload
 
 
 def _config(*, mode=RunMode.BACKTEST):
@@ -38,6 +38,10 @@ def test_v4_context_uses_same_runtime_scalars_and_uint32_checkpoint_field():
     assert runtime["run_plan_id"] == config.run_plan_id
     assert runtime["checkpoint_interval_events"] == 2**32 - 1
     assert runtime["write_progress_checkpoints"] is False
+    assert runtime == typed_run_config_payload(config)
+    assert set(runtime) == {"strategy_id", "strategy_revision", "anchor_date",
+                            "run_plan_id", "safety_supervisor_enabled",
+                            "checkpoint_interval_events", "write_progress_checkpoints"}
 
 
 def test_v4_context_pins_selected_fixed_interval_and_rejects_events():

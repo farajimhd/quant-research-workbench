@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from src.backend.backtest_fixed_run_context import _validate_local_context
 from src.backend.backtest_market_data import ExecutionInterval
-from src.trading_runtime.runtime import RunConfig, RunMode
+from src.trading_runtime.runtime import RunConfig, RunMode, typed_run_config_payload
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
 
@@ -101,14 +101,6 @@ def fixed_v4_context_rows(config: RunConfig, *, execution_interval: Any,
         "market_plan_token": market_plan_token,
         "started_at": started.isoformat(),
     }
-    runtime = {
-        "strategy_id": config.strategy_id,
-        "strategy_revision": config.strategy_revision,
-        "anchor_date": config.anchor_date.isoformat(),
-        "run_plan_id": config.run_plan_id,
-        "safety_supervisor_enabled": config.safety_supervisor_enabled,
-        "checkpoint_interval_events": config.checkpoint_interval_events,
-        "write_progress_checkpoints": config.write_progress_checkpoints,
-    }
+    runtime = typed_run_config_payload(config)
     _validate_local_context(run, runtime, config.account_ids)
     return run, runtime

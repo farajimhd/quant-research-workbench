@@ -146,6 +146,19 @@ class RunConfig:
         return self.run_id or str(uuid4())
 
 
+def typed_run_config_payload(config: RunConfig) -> dict[str, Any]:
+    """The one normalized Start/ClickHouse run-configuration projection."""
+    return {
+        "strategy_id": config.strategy_id,
+        "strategy_revision": config.strategy_revision,
+        "anchor_date": config.anchor_date.isoformat(),
+        "run_plan_id": config.run_plan_id,
+        "safety_supervisor_enabled": config.safety_supervisor_enabled,
+        "checkpoint_interval_events": config.checkpoint_interval_events,
+        "write_progress_checkpoints": config.write_progress_checkpoints,
+    }
+
+
 class TradingRuntime:
     """One event/order/portfolio lifecycle for live, paper, replay, and backtest."""
 
@@ -322,7 +335,10 @@ class TradingRuntime:
                 category="lifecycle",
                 entity_type="run",
                 entity_id=self.run_id,
-                payload={"status": "running", "config": asdict(self.config)},
+                payload={"status": "running", "config": (
+                    typed_run_config_payload(self.config)
+                    if self.config.mode == RunMode.BACKTEST
+                    else asdict(self.config))},
             )
 
     async def process_event(
