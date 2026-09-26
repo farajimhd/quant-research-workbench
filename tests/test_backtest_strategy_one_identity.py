@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -59,6 +60,16 @@ def test_identity_certifies_exact_market_population():
     assert plan.conid_for("BBB") == 102
     assert len(client.queries) == 2
     assert all("SELECT" in query and "INSERT" not in query for query in client.queries)
+
+
+def test_subset_projects_only_after_verifying_full_identity_seal():
+    subset = replace(_market(), tickers=("BBB",), token="subset-market-token")
+    plan = certify_identity_plan(subset, client=Client())
+    assert plan.tickers == ("BBB",)
+    assert plan.conids == (102,)
+    assert plan.market_token == "subset-market-token"
+    with pytest.raises(RuntimeError):
+        certify_identity_plan(subset, client=Client(rows=ROWS[1:]))
 
 
 @pytest.mark.parametrize("client", [

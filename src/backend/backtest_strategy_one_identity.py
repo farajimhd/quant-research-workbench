@@ -5,7 +5,7 @@ never become candidates.  Backtest cannot repair missing or changed identities.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 from hashlib import sha256
 import json
@@ -33,9 +33,16 @@ class CertifiedIdentityPlan:
     conids: tuple[int, ...]
     content_hash: str
     token: str
+    _conid_by_ticker: dict[str, int] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if len(self.tickers) != len(self.conids) or len(set(self.tickers)) != len(self.tickers):
+            raise ValueError("Certified identity projection is misaligned")
+        object.__setattr__(self, "_conid_by_ticker", dict(zip(
+            self.tickers, self.conids, strict=True)))
 
     def conid_for(self, ticker: str) -> int:
-        return self.conids[self.tickers.index(ticker)]
+        return self._conid_by_ticker[ticker]
 
 
 def identity_content_hash(rows: list[dict[str, Any]]) -> str:
@@ -71,7 +78,7 @@ def certify_identity_plan(
     if (not _UUID.fullmatch(attempt)
             or seal.get("universe_date") != session_date
             or type(seal.get("ticker_count")) is not int
-            or seal["ticker_count"] != len(market.tickers)
+            or seal["ticker_count"] < len(market.tickers)
             or not _HEX.fullmatch(str(seal.get("content_hash") or ""))):
         raise RuntimeError("Strategy 1 dated identity coverage is invalid")
     rows = [json.loads(line) for line in client.execute(
@@ -91,7 +98,10 @@ def certify_identity_plan(
                      for stamp in stamps)
     except (KeyError, TypeError, ValueError):
         causal = False
-    if (tickers != market.tickers or len(set(tickers)) != len(tickers)
+    if (len(tickers) != seal["ticker_count"]
+            or tuple(sorted(tickers)) != tickers
+            or len(set(tickers)) != len(tickers)
+            or not set(market.tickers).issubset(tickers)
             or not causal
             or any(not str(row.get(field) or "")
                    for row in rows for field in (
@@ -103,6 +113,8 @@ def certify_identity_plan(
     token = sha256(json.dumps((build_id, session_date, attempt, market.token,
                                seal["content_hash"]),
                               separators=(",", ":")).encode("utf-8")).hexdigest()
+    conid_by_ticker = {row["ticker"]: row["ibkr_conid"] for row in rows}
     return CertifiedIdentityPlan(
-        build_id, session_date, attempt, market.token, tickers,
-        tuple(row["ibkr_conid"] for row in rows), seal["content_hash"], token)
+        build_id, session_date, attempt, market.token, market.tickers,
+        tuple(conid_by_ticker[ticker] for ticker in market.tickers),
+        seal["content_hash"], token)
