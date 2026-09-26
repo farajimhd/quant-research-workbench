@@ -22,6 +22,7 @@ from src.trading_runtime.arte_journal_writer import (
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.signals import StrategyIntent
 
 
@@ -60,6 +61,24 @@ class FrozenOmsGroup:
     protection_required_quantity: float
     protection_coverage_quantity: float
     protection_delegated: bool
+
+
+_APPROVED_ADMISSION_KEYS = frozenset({
+    "assignment_id", "portfolio_account_key", "portfolio_decision_id",
+    "unprotected_backtest_authorized", "portfolio_policy",
+    "portfolio_reservation_id", "requested_quantity", "portfolio_fx_to_base",
+    "correlation_id", "causation_id",
+})
+
+
+def approved_oms_lineage_intent(group: FrozenOmsGroup) -> StrategyIntent:
+    """Use original admission metadata to verify orders after protection trails."""
+    meta = group.intent.metadata
+    if (_APPROVED_ADMISSION_KEYS <= set(meta)
+            and set(meta) - _APPROVED_ADMISSION_KEYS <= {"confirmed_support_stop"}):
+        return replace(group.intent, metadata={key: meta[key]
+                                               for key in _APPROVED_ADMISSION_KEYS})
+    return group.intent
 
 
 def freeze_oms_group(group: Any) -> FrozenOmsGroup:
@@ -103,6 +122,7 @@ def oms_group_state_batch(
     committed_intent_batch_id: str,
     admission_source_intent: StrategyIntent | None = None,
     admission_reservation: Mapping[str, Any] | None = None,
+    authorized_protection: Mapping[str, JournalRecord] | None = None,
     journal_record_id: str | None = None,
     correlation_id: str = "",
     causation_id: str = "",
@@ -121,19 +141,57 @@ def oms_group_state_batch(
     source_intent = admission_source_intent or group.intent
     if admission_reservation is not None:
         meta = group.intent.metadata
-        required = {
-            "assignment_id", "portfolio_account_key", "portfolio_decision_id",
-            "unprotected_backtest_authorized", "portfolio_policy",
-            "portfolio_reservation_id", "requested_quantity",
-            "portfolio_fx_to_base", "correlation_id", "causation_id",
-        }
+        required = _APPROVED_ADMISSION_KEYS
         mismatch = []
-        if set(meta) != required:
+        extra = set(meta) - required
+        if (not required <= set(meta)
+                or extra - {"confirmed_support_stop"}):
             mismatch.append("metadata_keys")
         if source_intent.metadata:
             mismatch.append("source_metadata")
-        if replace(group.intent, quantity=source_intent.quantity,
-                   metadata={}) != source_intent:
+        amended_stop = group.intent.invalidation_price != source_intent.invalidation_price
+        amended_target = group.intent.profit_target_price != source_intent.profit_target_price
+        proofs = authorized_protection or {}
+        for changed, kind, action, price in (
+                (amended_stop, "stop", "replace_protective_stop",
+                 group.intent.invalidation_price),
+                (amended_target, "target", "replace_profit_target",
+                 group.intent.profit_target_price)):
+            if not changed:
+                continue
+            proof = proofs.get(kind)
+            if (proof is None or proof.sequence >= sequence
+                    or proof.run_id != run_id or proof.account_id != group.account_id
+                    or proof.category != "protection"
+                    or proof.entity_type != "protection_change"
+                    or proof.payload.get("order_group_id") != group.group_id
+                    or proof.payload.get("source_intent_id") != group.intent.intent_id
+                    or proof.payload.get("phase") != "effective"
+                    or proof.payload.get("kind") != kind
+                    or proof.payload.get("action") != action
+                    or proof.event_time > group.updated_at
+                    or proof.payload.get("price") != price):
+                mismatch.append(f"{kind}_amendment")
+        if extra == {"confirmed_support_stop"} and (
+                not amended_stop
+                or meta["confirmed_support_stop"] != group.intent.invalidation_price):
+            mismatch.append("confirmed_support_stop")
+        original_profile = source_intent.protection_profile
+        expected_profile = original_profile
+        if original_profile is not None and (amended_stop or amended_target):
+            expected_profile = replace(original_profile, slices=tuple(
+                replace(item,
+                        stop=(replace(item.stop, price=group.intent.invalidation_price)
+                              if amended_stop else item.stop),
+                        profit_target_price=(group.intent.profit_target_price
+                                             if amended_target and item.profit_target_price is not None
+                                             else item.profit_target_price))
+                for item in original_profile.slices))
+        if (group.intent.protection_profile != expected_profile
+                or replace(group.intent, quantity=source_intent.quantity,
+                           metadata={}, invalidation_price=source_intent.invalidation_price,
+                           profit_target_price=source_intent.profit_target_price,
+                           protection_profile=source_intent.protection_profile) != source_intent):
             mismatch.append("source_intent")
         for field, expected in (
                 ("intent_id", group.intent.intent_id),
@@ -192,6 +250,7 @@ def oms_group_state_batch(
         raise ValueError("OMS warning and OCA identities must be nonempty strings")
     from src.trading_runtime.strategy_orders import canonical_runtime_metadata
 
+    lineage_intent = approved_oms_lineage_intent(group)
     for order in group.orders:
         if order.strategyParameters:
             raise ValueError("OMS order has unmodeled broker algo evidence")
@@ -200,7 +259,7 @@ def oms_group_state_batch(
                 "canonical_run_id": run_id,
                 "canonical_strategy_id": strategy_id,
                 "canonical_strategy_revision": strategy_revision,
-                "canonical_metadata": canonical_runtime_metadata(order, group.intent),
+                "canonical_metadata": canonical_runtime_metadata(order, lineage_intent),
             }
             if order.raw != expected_raw:
                 raise ValueError("OMS order has unmodeled raw lineage differing from its typed intent")

@@ -61,6 +61,23 @@ def test_oms_admission_retains_creation_after_reservation_changes_and_fence():
         "status": "released"}]})
     assert journal.portfolio_reservation("DU1", "reservation-1")["status"] == "released"
     assert journal.portfolio_admission_reservation("DU1", "reservation-1")["status"] == "reserved"
+    first = journal.append(
+        run_id=run_id, category="protection", entity_type="protection_change",
+        entity_id="stop-1", account_id="DU1", event_time=at,
+        payload={"order_group_id": "group-1", "source_intent_id": "intent-1",
+                 "phase": "effective", "kind": "stop",
+                 "action": "replace_protective_stop", "price": 9.9})
+    group = journal.append(
+        run_id=run_id, category="order_management", entity_type="order_group_state",
+        entity_id="group-1", account_id="DU1", event_time=at,
+        payload={"intent_id": "intent-1"})
+    journal.append(
+        run_id=run_id, category="protection", entity_type="protection_change",
+        entity_id="stop-1", account_id="DU1", event_time=at,
+        payload={"order_group_id": "group-1", "source_intent_id": "intent-1",
+                 "phase": "effective", "kind": "stop",
+                 "action": "replace_protective_stop", "price": 10.0})
+    assert journal.oms_effective_protection_for_record(group) == {"stop": first}
 from src.trading_runtime.risk import RiskAuthority
 from src.trading_runtime.runtime import RunMode, TradingRuntime
 
@@ -324,6 +341,38 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
                     admission_reservation=admission,
                     journal_record_id=transition.record_id)
                 assert projected.events[0]["record_id"] == transition.record_id
+            first = frozen[0]
+            assert first is not None and first.intent.protection_profile is not None
+            revised_stop = first.intent.invalidation_price + .01
+            amended_profile = replace(first.intent.protection_profile, slices=tuple(
+                replace(item, stop=replace(item.stop, price=revised_stop))
+                for item in first.intent.protection_profile.slices))
+            amended = replace(first, intent=replace(
+                first.intent, invalidation_price=revised_stop,
+                protection_profile=amended_profile,
+                metadata={**first.intent.metadata,
+                          "confirmed_support_stop": revised_stop}))
+            proof = replace(transitions[0], category="protection",
+                entity_type="protection_change", sequence=transitions[0].sequence - 1,
+                payload={"order_group_id": first.group_id,
+                         "source_intent_id": first.intent.intent_id,
+                         "phase": "effective", "kind": "stop",
+                         "action": "replace_protective_stop", "price": revised_stop})
+            amended_args = dict(
+                run_id=run_id, run_month=date(2026, 8, 1),
+                attempt_id=str(UUID(int=14)), batch_id=str(UUID(int=57)),
+                prior_batch_id=str(UUID(int=15)), sequence=transitions[-1].sequence + 1,
+                source_cursor="oms", run_status="running",
+                strategy_id="strategy-1", strategy_revision=1,
+                recorded_at=at, published_intent_batch=source,
+                committed_intent_batch_id=source.batch_id,
+                admission_source_intent=intent, admission_reservation=admissions[0],
+                journal_record_id=str(UUID(int=58)))
+            with pytest.raises(ValueError, match="stop_amendment"):
+                oms_group_state_batch(amended, **amended_args)
+            assert oms_group_state_batch(
+                amended, authorized_protection={"stop": proof},
+                **amended_args).events[0]["entity_id"] == first.group_id
             projected_prefix = project_pending_backtest_v4_prefix(
                 journal, attempt_id=str(UUID(int=14)),
                 run_month=date(2026, 8, 1), prior_sequence=0,

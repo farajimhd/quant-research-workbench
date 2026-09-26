@@ -36,6 +36,7 @@ def committed_oms_order_lineage(group: object, *, run_id: str,
                                 strategy_id: str, strategy_revision: int) -> dict[str, tuple]:
     """Index only lineage already validated against a typed OMS transition."""
     from src.trading_runtime.strategy_orders import canonical_runtime_metadata
+    from src.trading_runtime.arte_oms_projection import approved_oms_lineage_intent
 
     result = {}
     for order in group.orders:
@@ -45,7 +46,8 @@ def committed_oms_order_lineage(group: object, *, run_id: str,
             "strategy_id": strategy_id,
             "canonical_strategy_revision": strategy_revision,
             "canonical_run_id": run_id,
-            "canonical_metadata": canonical_runtime_metadata(order, group.intent),
+            "canonical_metadata": canonical_runtime_metadata(
+                order, approved_oms_lineage_intent(group)),
         }
         lineage = (expected, group.account_id, order.ticker.upper(), order.conid)
         prior = result.setdefault(order.cOID, lineage)
@@ -196,6 +198,7 @@ def project_pending_backtest_v4_prefix(
                 committed_intent_batch_id=source_batch.batch_id,
                 admission_source_intent=source_intent,
                 admission_reservation=admission,
+                authorized_protection=journal.oms_effective_protection_for_record(record),
                 journal_record_id=record.record_id,
                 correlation_id=record.payload.get("correlation_id", ""),
                 causation_id=record.payload.get("causation_id", ""))

@@ -167,6 +167,32 @@ class BacktestMemoryJournal:
         with self._lock:
             return deepcopy(self._oms_admissions.get(record_id))
 
+    def oms_effective_protection_for_record(
+        self, record: JournalRecord,
+    ) -> dict[str, JournalRecord]:
+        """Earlier normalized effective amendments only; never use a future fact."""
+        with self._lock:
+            if (record.run_id != self.run_id or record.category != "order_management"
+                    or record.entity_type != "order_group_state"):
+                raise ValueError("OMS protection lookup requires a group transition")
+            result: dict[str, JournalRecord] = {}
+            for prior in reversed(self._protection_records):
+                if prior.sequence >= record.sequence:
+                    continue
+                payload = prior.payload
+                kind = payload.get("kind")
+                if (kind in {"stop", "target"} and kind not in result
+                        and payload.get("phase") == "effective"
+                        and payload.get("order_group_id") == record.entity_id
+                        and payload.get("source_intent_id") == record.payload.get("intent_id")
+                        and prior.account_id == record.account_id
+                        and payload.get("action") in {
+                            "replace_protective_stop", "replace_profit_target"}):
+                    result[kind] = prior
+                    if len(result) == 2:
+                        break
+            return result
+
     def append_many(self, entries: Iterable[dict[str, Any]]) -> list[JournalRecord]:
         pending = [dict(entry) for entry in entries]
         with self._lock:
