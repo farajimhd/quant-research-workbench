@@ -24,6 +24,16 @@ def test_apply_rejects_non_workstation_before_market_read(capsys, monkeypatch):
     assert "managed workstation" in capsys.readouterr().err
 
 
+def test_verify_only_never_dispatches_publisher(monkeypatch):
+    monkeypatch.setattr(subject.platform, "node", lambda: "DESKTOP-SAAI85T")
+    checked = []
+    monkeypatch.setattr(subject, "verify_session", lambda **kwargs: checked.append(kwargs))
+    monkeypatch.setattr(subject, "publish_session", lambda **_kwargs:
+                        pytest.fail("verification published candidates"))
+    assert subject.main(["--verify-only"]) == 0
+    assert checked[0]["session_date"] == subject.DEFAULT_DAY
+
+
 def test_reader_uses_existing_private_file_without_copying_secret(tmp_path, monkeypatch):
     path = tmp_path / "reader.env"
     path.write_text("credential-stays-here", encoding="utf-8")

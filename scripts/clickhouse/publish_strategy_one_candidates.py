@@ -14,6 +14,7 @@ from datetime import date
 import os
 from pathlib import Path
 import platform
+import re
 import sys
 import traceback
 from threading import Lock, local
@@ -69,19 +70,42 @@ def _writer_client(password: str):
         timeout_seconds=60, persistent=True)
 
 
-def publish_session(*, session_date: str, through_boundary_ms: int,
-                    build_id: str, read_workers: int, write_workers: int) -> dict[str, int]:
-    """Full-population campaign with bounded ticker publication and final seal."""
-    started = monotonic()
+def _certified_plan(*, session_date: str, build_id: str):
     configuration = {
         "strategy": {"strategy_number": 1, "execution_interval": "100ms"},
         **({"market_day_build_id": build_id} if build_id else {}),
     }
+    _bootstrap_reader_credential()
+    return certified_market_plan_from_arte(
+        sessions=(session_date,), tickers=(), configuration=configuration)
+
+
+def verify_session(*, session_date: str, through_boundary_ms: int,
+                   build_id: str, plan=None):
+    print(f"Certifying arte source and candidate coverage: {session_date}...",
+          flush=True)
+    if plan is None:
+        plan = _certified_plan(session_date=session_date, build_id=build_id)
+    with closing(readonly_clickhouse_client(
+            market_stream=True, v3_read_principal=True)) as reader:
+        verify_tables(reader)
+        sealed = certify_candidate_plan(
+            plan, candidate_rule_digest=RULE_DIGEST,
+            through_boundary_ms=through_boundary_ms, client=reader)
+    if len(sealed.coverage) != len(plan.tickers):
+        raise RuntimeError("Candidate publication lacks full ticker coverage")
+    print(f"Certified {len(plan.tickers)} ticker-days; token {sealed.token}.",
+          flush=True)
+    return sealed
+
+
+def publish_session(*, session_date: str, through_boundary_ms: int,
+                    build_id: str, read_workers: int, write_workers: int) -> dict[str, int]:
+    """Full-population campaign with bounded ticker publication and final seal."""
+    started = monotonic()
     print(f"Certifying arte 100ms source: {session_date}, all planned tickers...",
           flush=True)
-    _bootstrap_reader_credential()
-    plan = certified_market_plan_from_arte(
-        sessions=(session_date,), tickers=(), configuration=configuration)
+    plan = _certified_plan(session_date=session_date, build_id=build_id)
     stream, activation = canonical_stream_activation()
     print(f"Certified build {plan.build_id[:12]}: {len(plan.tickers)} tickers; "
           "scanning completed-bar squeeze episodes...", flush=True)
@@ -180,11 +204,9 @@ def publish_session(*, session_date: str, through_boundary_ms: int,
         ticker, exc = first_failure
         raise RuntimeError(f"Candidate publication stopped at {ticker}: "
                            f"{type(exc).__name__}; rerun verifies completed coverage")
-    with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
-        verify_tables(reader)
-        sealed = certify_candidate_plan(
-            plan, candidate_rule_digest=RULE_DIGEST,
-            through_boundary_ms=through_boundary_ms, client=reader)
+    sealed = verify_session(session_date=session_date,
+                            through_boundary_ms=through_boundary_ms,
+                            build_id=plan.build_id, plan=plan)
     if len(sealed.coverage) != len(plan.tickers):
         raise RuntimeError("Candidate publication lacks full ticker coverage")
     elapsed = monotonic() - started
@@ -192,6 +214,22 @@ def publish_session(*, session_date: str, through_boundary_ms: int,
           f"{candidates} boundaries, {elapsed:.1f}s wall time.", flush=True)
     return {"published": completed, "skipped": skipped, "failed": failed,
             "tickers": len(plan.tickers), "candidates": candidates}
+
+
+def _report_failure(exc: Exception) -> None:
+    frames = traceback.extract_tb(exc.__traceback__)
+    stage = next((f"{Path(frame.filename).name}:{frame.name}:{frame.lineno}"
+                  for frame in reversed(frames)
+                  if Path(frame.filename).is_relative_to(REPO_ROOT)),
+                 "external_dependency")
+    status = getattr(exc, "status_code", None)
+    match = re.search(r"\bCode:\s*(\d+)", str(exc)) if status else None
+    code = f" HTTP {status}" if isinstance(status, int) else ""
+    if match:
+        code += f" ClickHouse code {match.group(1)}"
+    print(f"Candidate campaign stopped: {type(exc).__name__} at {stage}{code}. "
+          "Completed ticker coverage is restart-safe; inspect private diagnostics.",
+          file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -205,6 +243,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--write-workers", type=int, default=8)
     parser.add_argument("--apply", action="store_true",
                         help="publish candidate child and coverage rows")
+    parser.add_argument("--verify-only", action="store_true",
+                        help="read-only exact coverage audit; no candidate writes")
     parser.add_argument("--confirm-candidate-publication", action="store_true",
                         help="required second confirmation for --apply")
     args = parser.parse_args(argv)
@@ -218,6 +258,19 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
     if not args.apply:
+        if args.verify_only:
+            if platform.node().upper() != "DESKTOP-SAAI85T":
+                print("Blocked: verification requires the managed workstation.",
+                      file=sys.stderr)
+                return 1
+            try:
+                verify_session(session_date=day,
+                               through_boundary_ms=args.through_boundary_ms,
+                               build_id=args.build_id)
+            except Exception as exc:
+                _report_failure(exc)
+                return 1
+            return 0
         print(f"DRY RUN: {day} through {args.through_boundary_ms}ms; "
               "all certified tickers; no connection or write.")
         print("Apply on DESKTOP-SAAI85T with --apply "
@@ -239,14 +292,7 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 130
     except Exception as exc:
-        frames = traceback.extract_tb(exc.__traceback__)
-        stage = next((f"{Path(frame.filename).name}:{frame.name}:{frame.lineno}"
-                      for frame in reversed(frames)
-                      if Path(frame.filename).is_relative_to(REPO_ROOT)),
-                     "external_dependency")
-        print(f"Candidate campaign stopped: {type(exc).__name__} at {stage}. "
-              "Completed ticker coverage is restart-safe; inspect private diagnostics.",
-              file=sys.stderr)
+        _report_failure(exc)
         return 1
     return 0
 

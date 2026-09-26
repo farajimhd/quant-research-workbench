@@ -3487,7 +3487,8 @@ class ReplayRunController:
             if len(plan.sessions) != 1:
                 raise ValueError("Strategy 1 execution needs one flat-start session")
             def recheck_candidates():
-                with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
+                with closing(readonly_clickhouse_client(
+                        market_stream=True, v3_read_principal=True)) as reader:
                     return certify_candidate_plan(
                         plan, candidate_rule_digest=RULE_DIGEST,
                         through_boundary_ms=self._fixed_through_boundary_ms(),
@@ -10914,6 +10915,7 @@ def backtest_preflight(
                     if len(certified.sessions) != 1:
                         raise ValueError("Strategy 1 V7 candidate scope requires one flat-start session")
                     with closing(readonly_clickhouse_client(
+                            market_stream=True,
                             v3_read_principal=True)) as candidate_reader:
                         candidate_plan = certify_candidate_plan(
                             certified, candidate_rule_digest=RULE_DIGEST,
