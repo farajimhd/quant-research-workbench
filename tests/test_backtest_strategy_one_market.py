@@ -44,7 +44,8 @@ def authority(items):
 
 
 def test_sparse_loader_merges_concurrent_shards_by_global_boundary(monkeypatch):
-    items = (prepared("AAA", (100, 300)), prepared("BBB", (200,)))
+    items = (prepared("AAA", (100, 300)), prepared("BBB", (200,)),
+             prepared("EMPTY", ()))
     market, prices, candidates = authority(items)
     visited = []
     closed = []
@@ -68,6 +69,7 @@ def test_sparse_loader_merges_concurrent_shards_by_global_boundary(monkeypatch):
     assert [(row["boundary_ms"], row["ticker"]) for row in result] == [
         (100, "AAA"), (200, "BBB"), (300, "AAA")]
     assert sum(len(clocks) for shard in visited for clocks in shard.values()) == 3
+    assert all("EMPTY" not in shard for shard in visited)
     assert len(closed) == len(visited)
 
 

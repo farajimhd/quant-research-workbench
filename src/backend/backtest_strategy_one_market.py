@@ -93,7 +93,11 @@ def candidate_market_shards(
     count = 0
     for item in sorted(prepared, key=lambda row: row.ticker):
         clocks = tuple(int(value) for value in item.boundary_ms)
-        if not clocks or any(clock <= 0 or clock % 100
+        if not clocks:
+            # Complete producer coverage may legitimately certify no entry
+            # boundary for a ticker; it contributes no sparse SELECT keys.
+            continue
+        if any(clock <= 0 or clock % 100
                              or clock > 57_600_000 for clock in clocks) \
                 or any(a >= b for a, b in zip(clocks, clocks[1:])):
             raise ValueError("Strategy 1 prepared market boundaries are invalid")
