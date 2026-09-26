@@ -11186,13 +11186,26 @@ def backtest_preflight(
             "summary": EVENT_EXECUTION_BLOCKER,
             "evidence": "run_local_frame_spool_still_present",
         })
-    from src.backend.historical_signal_preparation import signal_coverage_check
-    signal_check = signal_coverage_check(
-        activated_signal_streams,
-        start=datetime.combine(sessions[0], start_time, tzinfo=NEW_YORK),
-        end=datetime.combine(sessions[-1], end_time, tzinfo=NEW_YORK),
-    ) if sessions else {"id": "historical_signal_coverage", "label": "Historical signal coverage",
-                        "status": "blocked", "required": True, "summary": "No sessions selected"}
+    strategy_one_fixed = (execution_interval.kind == "fixed"
+                          and dict(configuration.get("strategy") or {}).get(
+                              "strategy_number") == 1)
+    if strategy_one_fixed:
+        # Strategy 1 certifies completed-bar episode starts below. Legacy
+        # signal artifacts on disk are neither its authority nor a fallback.
+        signal_check = {
+            "id": "historical_signal_coverage", "label": "Historical signal coverage",
+            "status": "blocked", "required": True,
+            "summary": "Strategy 1 completed-bar episodes have not been certified.",
+            "evidence": "arte_completed_bar_episode_pending",
+        }
+    else:
+        from src.backend.historical_signal_preparation import signal_coverage_check
+        signal_check = signal_coverage_check(
+            activated_signal_streams,
+            start=datetime.combine(sessions[0], start_time, tzinfo=NEW_YORK),
+            end=datetime.combine(sessions[-1], end_time, tzinfo=NEW_YORK),
+        ) if sessions else {"id": "historical_signal_coverage", "label": "Historical signal coverage",
+                            "status": "blocked", "required": True, "summary": "No sessions selected"}
     bar_signals = None
     if execution_interval.kind == "fixed" and activated_signal_streams:
         from src.backend.fixed_bar_signal import (
@@ -11226,8 +11239,8 @@ def backtest_preflight(
                     "summary": f"Completed-bar Early Squeeze cannot be certified: {exc}",
                     "evidence": str(exc),
                 }
-        elif any(not stream.get("historical_occurrence_artifact")
-                 for stream in activated_signal_streams):
+        elif strategy_one_fixed or any(not stream.get("historical_occurrence_artifact")
+                                       for stream in activated_signal_streams):
             signal_check = {
                 **signal_check, "status": "blocked",
                 "summary": "Fixed Backtest has an unsupported native Signal Stream without certified persisted coverage.",
@@ -11396,14 +11409,21 @@ def backtest_preflight(
             "summary": "Fixed Backtest requires already certified signal sessions; preparation during execution is forbidden.",
         }
     checks.append(signal_check)
-    try:
-        version_check = runtime_version_check(
-            configuration, dict(qmd_history_get_json("/health", timeout=5)),
+    if (execution_interval.kind == "fixed"
+            and dict(configuration.get("strategy") or {}).get("strategy_number") == 1):
+        from src.backend.historical_runtime_versions import (
+            fixed_strategy_one_runtime_version_check,
         )
-    except Exception as exc:
-        version_check = {"id": "runtime_versions", "label": "Current execution code and strategy",
-                         "status": "blocked", "required": True,
-                         "summary": f"Cannot verify execution versions: {exc}", "evidence": ""}
+        version_check = fixed_strategy_one_runtime_version_check(configuration)
+    else:
+        try:
+            version_check = runtime_version_check(
+                configuration, dict(qmd_history_get_json("/health", timeout=5)),
+            )
+        except Exception as exc:
+            version_check = {"id": "runtime_versions", "label": "Current execution code and strategy",
+                             "status": "blocked", "required": True,
+                             "summary": f"Cannot verify execution versions: {exc}", "evidence": ""}
     checks.append(version_check)
     checks.append(
         {

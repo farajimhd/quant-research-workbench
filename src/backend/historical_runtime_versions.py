@@ -83,3 +83,46 @@ def runtime_version_check(configuration: dict[str, Any], health: dict[str, Any])
                          "qmd_source_fingerprint": health.get("source_fingerprint"),
                          "expected_qmd_source_fingerprint": expected_qmd,
                          "backend_source_fingerprint": LOADED_BACKEND_FINGERPRINT}}
+
+
+def fixed_strategy_one_runtime_version_check(
+    configuration: dict[str, Any],
+) -> dict[str, Any]:
+    """Certify the ARTE-only Strategy 1 executor without contacting QMD."""
+    from src.backend.backtest_fixed_v4_certification import (
+        certify_strategy_one_v4_projection,
+    )
+    from src.trading_runtime.strategy_one_contract import (
+        STRATEGY_ID as ONE_ID, STRATEGY_NUMBER,
+    )
+
+    strategy = dict(configuration.get("strategy") or {})
+    selected = [(strategy.get("strategy_id"), strategy.get("revision"))]
+    selected.extend((row.get("strategy_id"), row.get("strategy_revision"))
+                    for row in configuration.get("assignments") or []
+                    if row.get("status") not in {"disabled", "completed", "error"})
+    problems = []
+    if strategy.get("strategy_number") != STRATEGY_NUMBER or any(
+            identity != (ONE_ID, STRATEGY_NUMBER) for identity in selected):
+        problems.append("Selected Strategy and active assignments must all be immutable Strategy 1.")
+    current = backend_source_fingerprint()
+    if current != LOADED_BACKEND_FINGERPRINT:
+        problems.append("Backend source changed after startup; restart the backend.")
+    certificate = ""
+    if not problems:
+        try:
+            certificate = certify_strategy_one_v4_projection()
+        except (OSError, RuntimeError, ValueError) as exc:
+            problems.append(f"Strategy 1 journal projection is incomplete: {exc}")
+    return {
+        "id": "runtime_versions", "label": "Current execution code and strategy",
+        "status": "blocked" if problems else "ready", "required": True,
+        "summary": " ".join(problems) if problems else
+                   "Strategy 1 executor and typed journal projection match the loaded source.",
+        "evidence": {
+            "strategy_id": strategy.get("strategy_id"),
+            "strategy_revision": strategy.get("revision"),
+            "backend_source_fingerprint": current,
+            "projection_certificate": certificate,
+        },
+    }
