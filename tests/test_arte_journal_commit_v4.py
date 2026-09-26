@@ -71,6 +71,41 @@ def terminal_batch():
                    run_transitions=(transition,))
 
 
+def terminal_broker_unit():
+    from uuid import uuid4
+    from src.backend.backtest_terminal_broker_snapshot_v4 import (
+        project_v4_terminal_broker_batch,
+    )
+    from src.backend.backtest_terminal_snapshot_v2 import (
+        ACCOUNT_METRICS, position_set_sha256,
+    )
+
+    run_id = "run-v4-terminal-queue"
+    at = datetime(2026, 8, 18, 13, 30, tzinfo=timezone.utc)
+    source = BacktestMemoryJournal(run_id=run_id)
+    account = {name: {"amount": 1000.0, "currency": "USD", "timestamp": 123}
+               for name, _ in ACCOUNT_METRICS}
+    source.append(
+        run_id=run_id, category="snapshot", entity_type="portfolio",
+        entity_id="DU1", account_id="DU1", event_time=at,
+        payload={**account, "snapshot_id": str(uuid4()),
+                 "expected_position_count": 0,
+                 "position_set_sha256": position_set_sha256(())})
+    source.append(
+        run_id=run_id, category="lifecycle", entity_type="run",
+        entity_id=run_id, event_time=at,
+        payload={"status": "completed", "processed_events": 2})
+    unit = project_v4_terminal_broker_batch(
+        tuple(source.unfenced_records()), run_id=run_id,
+        account_ids=("DU1",), attempt_id=str(uuid4()),
+        run_month=date(2026, 8, 1), prior_batch_id=str(UUID(int=0)),
+        source_cursor="2026-08-18:34200000")
+    source.close()
+    capture = replace(captured(), run_id=run_id, state_revision=2,
+                      snapshot_at=at)
+    return unit, capture
+
+
 class MemoryV4Dispatch(TypedInsertDispatch):
     """Test transport only; production uses the real Keeper CAS dispatch."""
 
@@ -372,7 +407,8 @@ def test_v4_terminal_is_lifecycle_last_and_anchors_all_accounts(monkeypatch):
     from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
 
     client = attached_v4_client()
-    item = terminal_batch()
+    unit, capture = terminal_broker_unit()
+    item = unit.base
     monkeypatch.setattr(writer_module, "load_typed_run_context",
                         lambda _client, _run: {
                             "mode": "backtest", "account_ids": ("DU1",)})
@@ -381,12 +417,14 @@ def test_v4_terminal_is_lifecycle_last_and_anchors_all_accounts(monkeypatch):
                         lambda _client, prefix, captures: anchored.append(
                             (prefix, captures)))
     prefix = publish_terminal_typed_batch_v4(
-        client, item, captures=(captured(),))
+        client, item, captures=(capture,),
+        broker_snapshots=unit.broker_snapshots)
     assert prefix.status == "completed" and prefix.last_batch_id == item.batch_id
-    assert len(anchored) == 1 and anchored[0][1] == (captured(),)
+    assert len(anchored) == 1 and anchored[0][1] == (capture,)
     assert client.inserts[-1] == "trading_commit_v4"
     assert publish_terminal_typed_batch_v4(
-        client, item, captures=(captured(),)) == prefix
+        client, item, captures=(capture,),
+        broker_snapshots=unit.broker_snapshots) == prefix
     assert len(client.tables["trading_commit_v4"]) == 1
     with pytest.raises(ValueError, match="running event batch"):
         publish_base_typed_batch_v4(client, item)
@@ -639,7 +677,8 @@ def test_v4_terminal_writer_queue_waits_for_anchor_before_receipt(monkeypatch):
     from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
 
     client = attached_v4_client()
-    item = terminal_batch()
+    unit, capture = terminal_broker_unit()
+    item = unit.base
     entered, release = Event(), Event()
     monkeypatch.setattr(writer_module, "storage_preflight",
                         lambda *_args, **_kwargs: None)
@@ -664,7 +703,10 @@ def test_v4_terminal_writer_queue_waits_for_anchor_before_receipt(monkeypatch):
         client, run_id=item.run_id, journal_profile="backtest_v4",
         coalesce_batches=False)
     try:
-        receipt = journal.submit_terminal_backtest(item, (captured(),))
+        with pytest.raises(ValueError, match="typed broker snapshot"):
+            journal.submit_terminal_backtest(item, (capture,))
+        receipt = journal.submit_terminal_backtest(
+            item, (capture,), unit.broker_snapshots)
         assert entered.wait(5)
         assert not receipt.done()
         release.set()

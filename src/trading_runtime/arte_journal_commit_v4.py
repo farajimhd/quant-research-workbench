@@ -560,10 +560,10 @@ def publish_terminal_typed_batch_v4(
     if (context["mode"] != "backtest"
             or set(context["account_ids"]) != {row.account_id for row in captures}):
         raise ValueError("V4 terminal account membership differs from run context")
-    if (broker_snapshots is not None
-            and (len(broker_snapshots.accounts) != len(context["account_ids"])
-                 or {row["account_id"] for row in broker_snapshots.accounts}
-                    != set(context["account_ids"]))):
+    if (broker_snapshots is None
+            or len(broker_snapshots.accounts) != len(context["account_ids"])
+            or {row["account_id"] for row in broker_snapshots.accounts}
+               != set(context["account_ids"])):
         raise ValueError("V4 terminal broker evidence differs from run accounts")
     _publish_typed_batch_v4(client, batch,
                             broker_snapshot_rows=broker_snapshots)

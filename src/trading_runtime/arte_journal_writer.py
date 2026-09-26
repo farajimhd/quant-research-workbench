@@ -3485,10 +3485,12 @@ class ArteJournalWriter:
         if self._journal_profile == "backtest_v2":
             raise RuntimeError("V2 terminal publication requires the staged separate fence")
 
-        if (broker_snapshots is not None
-                and (self._journal_profile != "backtest_v4"
-                     or type(broker_snapshots) is not V4BrokerSnapshotRows)):
+        if (self._journal_profile == "backtest_v4"
+                and type(broker_snapshots) is not V4BrokerSnapshotRows):
             raise ValueError("V4 terminal needs typed broker snapshot rows")
+        if (self._journal_profile != "backtest_v4"
+                and broker_snapshots is not None):
+            raise ValueError("Broker snapshot rows belong only to V4 terminal")
 
         if (not isinstance(batch, TypedJournalBatch)
                 or self._run_mode != "backtest"

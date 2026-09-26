@@ -515,15 +515,16 @@ def test_v4_cold_barrier_matches_nonempty_keeper_watermark() -> None:
 
 
 def test_v4_terminal_commit_compacts_real_keeper_dispatch(monkeypatch) -> None:
-    from test_arte_journal_writer import MemoryClient, captured
-    from test_arte_journal_commit_v4 import terminal_batch
+    from test_arte_journal_writer import MemoryClient
+    from test_arte_journal_commit_v4 import terminal_broker_unit
     from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
     from src.trading_runtime import arte_journal_writer as journal_writer
     from src.trading_runtime.arte_journal_commit_v4 import (
         publish_terminal_typed_batch_v4,
     )
 
-    item = terminal_batch()
+    unit, capture = terminal_broker_unit()
+    item = unit.base
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run(item.run_id)
     attest_direct(authority, item.run_id)
@@ -542,7 +543,8 @@ def test_v4_terminal_commit_compacts_real_keeper_dispatch(monkeypatch) -> None:
                         lambda *_args: ("anchored",))
     client = WriterClient()
     prefix = publish_terminal_typed_batch_v4(
-        client, item, captures=(captured(),))
+        client, item, captures=(capture,),
+        broker_snapshots=unit.broker_snapshots)
     barrier = authority.acquire_cold_barrier(item.run_id)
     assert barrier.verify_committed_prefix(
         client, journal_profile="backtest_v4") == prefix
