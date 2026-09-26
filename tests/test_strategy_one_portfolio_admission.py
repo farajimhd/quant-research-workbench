@@ -6,11 +6,17 @@ from uuid import UUID
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary
+from src.trading_runtime.domain import InstrumentContract, TradingMode
+from src.trading_runtime.execution_policies import ExecutionMarketSnapshot
+from src.trading_runtime.order_management import BrokerCommunicationPolicy, OrderManagementEngine
 from src.trading_runtime.portfolio import (
     PortfolioAccountProfile, PortfolioManagementEngine, PortfolioPolicy,
 )
 from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
 from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
+from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner
+from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+from src.trading_runtime.risk import RiskAuthority
 
 
 def test_strategy_one_initial_admission_uses_no_sqlite_or_disk():
@@ -73,3 +79,66 @@ def test_strategy_one_initial_admission_uses_no_sqlite_or_disk():
         )
         assert len(projected.events) == 1
         assert projected.events[0]["event_month"] == "2026-08-01"
+
+
+def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
+    at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
+
+    async def exercise():
+        run_id = str(UUID(int=11))
+        journal = BacktestMemoryJournal(run_id=run_id)
+        broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.BACKTEST,
+                                        initial_time=at)
+        await broker.initialize()
+        risk = RiskAuthority()
+        await risk.prime(broker, ["DU1"])
+        policy = PortfolioPolicy(maximum_position_fraction=1.,
+                                 maximum_ticker_fraction=1.,
+                                 maximum_planned_risk_fraction=.5,
+                                 maximum_open_risk_fraction=.5,
+                                 allow_outside_rth=True)
+        portfolio = PortfolioManagementEngine(
+            [PortfolioAccountProfile("cash", "DU1", "backtest", "simulated", policy)],
+            journal=journal, run_id=run_id, strategy_id="strategy-1",
+            strategy_revision=1, event_clock=lambda: at)
+        portfolio.synchronize_snapshot(
+            "DU1", summary=AccountSummary(
+                account_id="DU1", netliquidation=9000, totalcashvalue=9000,
+                buyingpower=9000, grosspositionvalue=0, availablefunds=9000,
+                excessliquidity=9000, timestamp=at),
+            ledger=AccountLedger(
+                acctId="DU1", cashbalance=9000, settledcash=9000,
+                stockmarketvalue=0, netliquidationvalue=9000,
+                realizedpnl=0, unrealizedpnl=0, timestamp=at), positions=[])
+        proposal = StrategyOneEntryProposal(
+            "assignment-1", "DU1", "AAA", 31_000, 30_000,
+            10.01, 9.89, 12., "R4", .5, 30_000, "S1")
+        intent = strategy_one_entry_intent(proposal, session_date=date(2026, 8, 18))
+        _, approved = await portfolio.approve(
+            intent, account_id="DU1", assignment_id=proposal.assignment_id)
+        assert approved is not None
+        planner = IbkrStrategyOrderPlanner()
+        instrument = InstrumentContract("AAA", 123, "AAA", "STK", "USD")
+        manager = OrderManagementEngine(
+            broker=broker,
+            planner=lambda item, account_id, _event: planner.plan(
+                account_id=account_id, instrument=instrument, intent=item,
+                strategy_id="strategy-1", strategy_revision=1),
+            risk=risk, journal=journal, run_id=run_id,
+            strategy_id="strategy-1", strategy_revision=1,
+            policy=BrokerCommunicationPolicy(), causal_execution_clock=True)
+        manager.on_market_snapshot(ExecutionMarketSnapshot(
+            "AAA", 9.99, 10.01, .01, at, "qmd-history"))
+        try:
+            group = await asyncio.wait_for(manager.submit_intent(
+                approved, account_id="DU1", event=None), 5)
+            return group, journal.records(run_id)
+        finally:
+            await manager.close()
+            journal.close()
+
+    group, records = asyncio.run(exercise())
+    assert group.assignment_id == "assignment-1"
+    assert group.broker_order_ids, group
+    assert any(record.category == "command" and record.entity_type == "order"
+               for record in records)
