@@ -14,7 +14,9 @@ DAY = "2026-08-18"
 
 
 def candidate(ticker, boundary):
-    return {"session_date": DAY, "ticker": ticker, "boundary_ms": boundary}
+    return {"session_date": DAY, "ticker": ticker, "boundary_ms": boundary,
+            "resolution_ms": 100, "price_valid": 1,
+            "indicator_resolution_ms": 100}
 
 
 def group(ticker, boundary):
@@ -36,8 +38,9 @@ def test_candidates_merge_with_active_broker_rows_in_causal_order():
         candidate_rows=iter((candidate("AAA", 100), candidate("BBB", 300))),
         active_source=source)
     first = clock.pop_next()
-    assert (first.boundary_ms, first.broker_rows,
-            [row["ticker"] for row in first.candidate_rows]) == (100, (), ["AAA"])
+    assert first.boundary_ms == 100
+    assert [ticker for ticker, _ in first.broker_rows] == ["AAA"]
+    assert [row["ticker"] for row in first.candidate_rows] == ["AAA"]
     clock.activate("AAA")
     second = clock.pop_next()
     assert second.boundary_ms == 200
@@ -45,7 +48,7 @@ def test_candidates_merge_with_active_broker_rows_in_causal_order():
     assert second.candidate_rows == ()
     third = clock.pop_next()
     assert third.boundary_ms == 300
-    assert [ticker for ticker, _ in third.broker_rows] == ["AAA"]
+    assert [ticker for ticker, _ in third.broker_rows] == ["AAA", "BBB"]
     assert [row["ticker"] for row in third.candidate_rows] == ["BBB"]
     clock.deactivate("AAA")
     assert clock.pop_next() is None
@@ -89,6 +92,37 @@ def test_source_exhaustion_does_not_implicitly_close_financial_state():
     assert clock.pop_next() is None
     clock.deactivate("AAA")
     assert clock.exhausted_tickers == ()
+    clock.close()
+
+
+def test_active_candidate_uses_one_broker_row_and_rejects_conflicting_quote():
+    def matching(ticker, after):
+        return iter((group(ticker, 300),))
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY,
+        candidate_rows=iter((candidate("AAA", 100), candidate("AAA", 300))),
+        active_source=matching)
+    clock.pop_next()
+    clock.activate("AAA")
+    work = clock.pop_next()
+    assert work.boundary_ms == 300
+    assert len(work.broker_rows) == 1
+    assert len(work.candidate_rows) == 1
+    clock.close()
+
+    def conflicting(ticker, after):
+        boundary, rows = group(ticker, 300)
+        rows[100]["bid_int"] = 100
+        return iter(((boundary, rows),))
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY,
+        candidate_rows=iter((candidate("AAA", 100),
+                             {**candidate("AAA", 300), "bid_int": 101})),
+        active_source=conflicting)
+    clock.pop_next()
+    clock.activate("AAA")
+    with pytest.raises(ValueError, match="liquidity disagree"):
+        clock.pop_next()
     clock.close()
 
 

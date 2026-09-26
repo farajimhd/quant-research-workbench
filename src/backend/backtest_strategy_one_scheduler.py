@@ -95,12 +95,17 @@ class StrategyOneBoundaryScheduler:
         if row is None:
             self._candidate = None
             return
+        if not isinstance(row, Mapping):
+            raise ValueError("Strategy 1 candidate market row is malformed")
         boundary = row.get("boundary_ms")
         ticker = row.get("ticker")
         key = (boundary, ticker)
         if (type(boundary) is not int or boundary <= 0 or boundary % 100
                 or boundary > 57_600_000 or not isinstance(ticker, str)
                 or not ticker or row.get("session_date") != self.session_date
+                or row.get("resolution_ms") != 100
+                or row.get("price_valid") != 1
+                or row.get("indicator_resolution_ms") != 100
                 or (self._prior_candidate is not None
                     and key <= self._prior_candidate)):
             raise ValueError("Strategy 1 candidates are not unique causal boundaries")
@@ -178,21 +183,35 @@ class StrategyOneBoundaryScheduler:
         if boundary <= self._boundary_ms:
             raise ValueError("Strategy 1 scheduler moved backward")
         self._boundary_ms = boundary
-        broker = []
+        broker: dict[str, dict[int, Mapping]] = {}
         while self._heads and self._heads[0][0] == boundary:
             _, ticker, generation, resolutions = heappop(self._heads)
             if (ticker not in self._active
                     or generation != self._generation[ticker]):
                 continue
-            broker.append((ticker, resolutions))
+            broker[ticker] = dict(resolutions)
             self._advance_active(ticker)
         candidates = []
         while (self._candidate is not None
                and self._candidate["boundary_ms"] == boundary):
             candidates.append(self._candidate)
             self._advance_candidate()
+        for row in candidates:
+            ticker = str(row["ticker"])
+            by_resolution = broker.setdefault(ticker, {})
+            existing = by_resolution.get(100)
+            if existing is None:
+                # A first entry candidate is itself a completed persisted
+                # liquidity row. The broker must see its quote before OMS
+                # evaluates an order at this same boundary.
+                by_resolution[100] = row
+            elif any(key in existing and key in row
+                     and existing[key] != row[key] for key in (
+                         "bid_int", "ask_int", "quote_timestamp_us",
+                         "close_int", "price_valid", "execution_vwap")):
+                raise ValueError("Active and candidate liquidity disagree at boundary")
         return StrategyOneBoundaryWork(
-            boundary, tuple(sorted(broker)), tuple(candidates))
+            boundary, tuple(sorted(broker.items())), tuple(candidates))
 
     @property
     def exhausted_tickers(self) -> tuple[str, ...]:
