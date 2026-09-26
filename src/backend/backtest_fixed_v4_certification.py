@@ -48,6 +48,10 @@ _LEGACY_PROTECTION_FAMILIES = {
     ("order_management", "partial_target_completion"): "_complete_partial_target",
     ("order_management", "profit_pocket_transition"): "apply_profit_pocket_transition",
     ("order_management", "dynamic_stop_ratcheted"): "_ratchet_dynamic_protection",
+    ("broker", "protected_exit_modified"): "_modify_existing_protected_exit",
+    ("broker", "protected_sliced_exit_modified"): "_modify_existing_protected_exit",
+    ("order_management", "entry_acquisition_frozen_before_exit"):
+        "_cancel_pending_acquisition_before_exit",
 }
 
 
@@ -101,7 +105,7 @@ def certify_strategy_one_legacy_protection_unreachable(
     *, oms_path: Path, runtime_path: Path,
     contract_path: Path = _STRATEGY_ONE_CONTRACT,
 ) -> str:
-    """Prove the numbered strategy bypasses three legacy OMS managers."""
+    """Prove the numbered strategy bypasses legacy OMS protection and exits."""
     paths = (oms_path, runtime_path, contract_path)
     sources = tuple(path.read_text(encoding="utf-8") for path in paths)
     oms, runtime, contract = (ast.parse(source) for source in sources)
@@ -144,6 +148,8 @@ def certify_strategy_one_legacy_protection_unreachable(
         "_complete_partial_target": "return False",
         "apply_profit_pocket_transition": "return []",
         "_ratchet_dynamic_protection": "return",
+        "_modify_existing_protected_exit": "return None",
+        "_cancel_pending_acquisition_before_exit": "return",
     }
     for family, name in _LEGACY_PROTECTION_FAMILIES.items():
         methods = [node for node in oms_classes[0].body
@@ -190,8 +196,10 @@ def certify_fixed_rebalance_unreachable(
         "if self.config.mode == RunMode.BACKTEST and "
         "self.config.strategy_id == STRATEGY_ID and "
         "(self.config.strategy_revision == STRATEGY_NUMBER):\n"
-        "    from .strategy_one_intent import require_no_replacement_capital\n"
-        "    require_no_replacement_capital(evaluation.intents)"
+        "    from .strategy_one_intent import require_no_replacement_capital, "
+        "require_strategy_one_actions\n"
+        "    require_no_replacement_capital(evaluation.intents)\n"
+        "    require_strategy_one_actions(evaluation.intents)"
     )
     if (len(execute.body) < 2
             or ast.unparse(execute.body[0]) !=

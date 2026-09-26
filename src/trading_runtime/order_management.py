@@ -1969,6 +1969,8 @@ class OrderManagementEngine:
         plan: StrategyOrderPlan,
         tactic: ExecutionTactic | None,
     ) -> OrderGroupSnapshot | None:
+        if (self.strategy_id, self.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):
+            return None  # Strategy 1 uses broker-held stop/target, not managed exits.
         action = str(intent.action)
         if action not in {"exit", "take_profit", "reduce_long", "cover", "reduce_short"}:
             return None
@@ -2739,6 +2741,9 @@ class OrderManagementEngine:
         the managed exit.  Protective children are reconciled by the existing
         managed-exit path after the parent cancellation.
         """
+
+        if (self.strategy_id, self.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):
+            return  # Strategy 1 never submits a legacy reduction intent.
 
         action = str(intent.action)
         if action not in {

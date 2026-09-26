@@ -129,6 +129,16 @@ def test_strategy_one_rejects_replacement_capital():
         require_no_replacement_capital((replacement,))
 
 
+def test_strategy_one_rejects_legacy_managed_exit_actions():
+    from types import SimpleNamespace
+    from src.trading_runtime.strategy_one_intent import require_strategy_one_actions
+
+    require_strategy_one_actions(tuple(SimpleNamespace(action=action) for action in (
+        "enter_long", "replace_protective_stop", "replace_profit_target")))
+    with pytest.raises(ValueError, match="legacy managed exit"):
+        require_strategy_one_actions((SimpleNamespace(action="take_profit"),))
+
+
 def test_numbered_protection_bypasses_legacy_oms_managers(tmp_path):
     import asyncio
     from datetime import datetime, timezone

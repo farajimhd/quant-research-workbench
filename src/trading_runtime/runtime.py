@@ -846,8 +846,11 @@ class TradingRuntime:
         if (self.config.mode == RunMode.BACKTEST
                 and self.config.strategy_id == STRATEGY_ID
                 and self.config.strategy_revision == STRATEGY_NUMBER):
-            from .strategy_one_intent import require_no_replacement_capital
+            from .strategy_one_intent import (
+                require_no_replacement_capital, require_strategy_one_actions,
+            )
             require_no_replacement_capital(evaluation.intents)
+            require_strategy_one_actions(evaluation.intents)
         if strategy_one_assignment_id is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
 

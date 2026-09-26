@@ -31,6 +31,14 @@ def require_no_replacement_capital(intents: tuple[StrategyIntent, ...]) -> None:
         raise ValueError("Strategy 1 cannot request replacement capital")
 
 
+def require_strategy_one_actions(intents: tuple[StrategyIntent, ...]) -> None:
+    """Strategy 1 exits only through its broker-held full stop and target."""
+    if any(intent.action not in {
+            "enter_long", "replace_protective_stop", "replace_profit_target"}
+           for intent in intents):
+        raise ValueError("Strategy 1 cannot submit a legacy managed exit")
+
+
 def strategy_one_entry_intent(
     proposal: StrategyOneEntryProposal, *, session_date: date,
 ) -> StrategyIntent:
