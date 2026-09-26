@@ -2,6 +2,7 @@
 import numpy as np
 
 from scripts.clickhouse import profile_strategy_one_preparation as cli
+from src.backend.backtest_strategy_one_preparation import PreparedStrategyOneTicker
 from src.backend.fixed_bar_signal import validate_stream
 
 
@@ -51,12 +52,14 @@ def test_sparse_profile_reports_exact_candidate_market_rows(monkeypatch, capsys)
 
 
 def test_sparse_profile_shards_bound_tickers_and_candidate_keys():
-    class Item:
-        def __init__(self, ticker, count):
-            self.ticker = ticker
-            self.boundary_ms = np.arange(100, 100 * (count + 1), 100)
+    def item(ticker, count):
+        clocks = np.arange(100, 100 * (count + 1), 100)
+        return PreparedStrategyOneTicker(
+            ticker, count, np.arange(count), clocks, clocks,
+            np.zeros((count, 4), dtype=np.int64),
+            np.zeros(count, dtype=np.int64), np.zeros(count, dtype=np.uint64))
 
-    shards = cli._candidate_shards((Item("AAA", 520), Item("BBB", 20)))
+    shards = cli._candidate_shards((item("AAA", 520), item("BBB", 20)))
     assert [sum(map(len, shard.values())) for shard in shards] == [512, 28]
     assert all(len(shard) <= 8 for shard in shards)
     assert shards[0]["AAA"][0] == 100

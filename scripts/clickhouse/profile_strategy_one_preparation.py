@@ -26,6 +26,7 @@ from scripts.clickhouse.provision_fixed_backtest_v3_principals import _secret_pa
 from src.backend.backtest_strategy_one_preparation import (
     prepare_strategy_one_session, strategy_one_v7_tickers,
 )
+from src.backend.backtest_strategy_one_market import candidate_market_shards
 from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
 from src.backend.backtest_market_data import (
     iter_candidate_market_rows, iter_market_boundary_groups, iter_market_day_rows,
@@ -130,24 +131,7 @@ class SparseReadProfile:
     sparse_seconds: float
 
 
-def _candidate_shards(prepared) -> tuple[dict[str, tuple[int, ...]], ...]:
-    """Bound both SQL key count and ticker fan-out for primary-key pruning."""
-    shards = []
-    current: dict[str, tuple[int, ...]] = {}
-    count = 0
-    for item in prepared:
-        clocks = tuple(int(value) for value in item.boundary_ms)
-        for offset in range(0, len(clocks), 512):
-            chunk = clocks[offset:offset + 512]
-            if current and (len(current) >= 8 or count + len(chunk) > 512
-                            or item.ticker in current):
-                shards.append(current)
-                current, count = {}, 0
-            current[item.ticker] = chunk
-            count += len(chunk)
-    if current:
-        shards.append(current)
-    return tuple(shards)
+_candidate_shards = candidate_market_shards
 
 
 def profile_sparse(build_id: str, day: date, tickers: tuple[str, ...], *,
