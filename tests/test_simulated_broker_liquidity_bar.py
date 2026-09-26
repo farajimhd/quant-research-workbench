@@ -1,9 +1,11 @@
 """Native completed-liquidity-bucket execution, without synthetic tape events."""
 import unittest
 from dataclasses import replace
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from src.trading_runtime.ibkr_schema import OrderRequest
@@ -15,6 +17,14 @@ from tests.test_trading_runtime import quote, trade
 
 
 START = datetime(2026, 8, 18, 14, 0, tzinfo=timezone.utc)
+
+
+def test_incremental_commission_is_exact_on_journal_decimal_grid():
+    broker = SimulatedBrokerAdapter(["DU1"])
+    order = SimpleNamespace(filled=203.0, commission_paid=1.01)
+    incremental = broker._incremental_order_commission(order)
+    assert Decimal(str(incremental)) == Decimal("0.005")
+    assert Decimal(str(order.commission_paid)) == Decimal("1.015")
 
 
 def bar(at, *, bid=9.99, ask=10.0, bid_size=100, ask_size=100,

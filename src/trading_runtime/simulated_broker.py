@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
+from decimal import Decimal, ROUND_HALF_EVEN
 from datetime import datetime, timedelta, timezone
 from math import floor, isclose, isfinite
 from typing import Any, Mapping
@@ -1749,11 +1750,18 @@ class SimulatedBrokerAdapter:
         return is_bracket or all(order.isSingleGroup for order in orders)
 
     def _commission(self, quantity: float) -> float:
-        return max(self.config.minimum_commission, abs(quantity) * self.config.commission_per_share)
+        # Financial journal columns are exact Decimal(38, 10). Compute on a
+        # decimal monetary grid so binary-float tails never become journal facts.
+        minimum = Decimal(str(self.config.minimum_commission))
+        variable = (Decimal(str(abs(quantity)))
+                    * Decimal(str(self.config.commission_per_share)))
+        return float(max(minimum, variable).quantize(
+            Decimal("0.0000000001"), rounding=ROUND_HALF_EVEN))
 
     def _incremental_order_commission(self, state: _OrderState) -> float:
         cumulative = self._commission(state.filled)
-        incremental = max(0.0, cumulative - state.commission_paid)
+        incremental = float(max(Decimal(0), Decimal(str(cumulative))
+                                - Decimal(str(state.commission_paid))))
         state.commission_paid = cumulative
         return incremental
 
