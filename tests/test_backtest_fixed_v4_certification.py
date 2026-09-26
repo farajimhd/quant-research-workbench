@@ -42,8 +42,12 @@ def test_v4_certificate_rejects_unprojected_indirect_family(tmp_path):
 
 
 def test_current_runtime_is_not_yet_v4_certified():
-    with pytest.raises(ValueError, match="order_cancel_requested"):
+    with pytest.raises(ValueError, match="order_cancel_requested") as failure:
         certify_strategy_one_v4_projection()
+    # The initial Backtest save is event-free, but that alone does not prove
+    # every future assignment update unreachable. Keep this family blocked
+    # until it has a normalized projection or a complete call-graph proof.
+    assert "strategy_assignment_state" in str(failure.value)
 
 
 def test_simulated_broker_websocket_exclusion_fails_on_source_change(tmp_path):
