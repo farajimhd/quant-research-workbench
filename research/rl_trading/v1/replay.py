@@ -129,6 +129,8 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
                     quantity = step_cash/float(current[2])
                     cash -= step_cash
                     lots.append(Lot(ticker,quantity,float(current[0]),time_us))
+                    lots.sort(key=lambda lot:(tickers[lot.ticker_index],lot.entry_us,
+                        lot.entry_price,lot.quantity))
                     buys += 1
                 else:
                     lot_index = token-top_n-1

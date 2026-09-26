@@ -12,6 +12,7 @@ TRADES_60S = FEATURE_NAMES.index('log_trades_60s')
 
 
 def pack(trajectory: list[dict], bank: np.ndarray, volumes: np.ndarray,
+         execution: np.ndarray,
          tickers: list[str], *, left_us: int, top_n: int, max_lots: int,
          max_orders: int, allocation_step: float, initial_cash: float,
          min_volume: float, min_trades: int) -> dict[str,np.ndarray]:
@@ -23,7 +24,8 @@ def pack(trajectory: list[dict], bank: np.ndarray, volumes: np.ndarray,
     count = len(trajectory)
     universe = len(tickers)
     if (count == 0 or bank.shape != (universe,SECONDS,len(FEATURE_NAMES))
-            or volumes.shape != (universe,SECONDS) or top_n < max_lots
+            or volumes.shape != (universe,SECONDS)
+            or execution.shape != (universe,SECONDS,3) or top_n < max_lots
             or len(tickers) != len(set(tickers)) or max_orders < 1):
         raise ValueError('Teacher packing requires a complete identified feature bank')
     lookup = {ticker:i for i,ticker in enumerate(tickers)}
@@ -75,8 +77,13 @@ def pack(trajectory: list[dict], bank: np.ndarray, volumes: np.ndarray,
             location = {tickers[value]:slot for slot,value in enumerate(visible)}
             for slot,value in enumerate(visible):
                 result['held_slots'][index,slot] = value in held
+            current_equity = float(row['cash_before'])+sum(
+                float(lot['quantity'])*float(execution[lookup[lot['ticker']],second,1])
+                for lot in prior)
+            if not np.isfinite(current_equity) or current_equity < 0:
+                raise ValueError('Teacher has no valid current account mark')
             result['account'][index] = (float(row['cash_before'])/initial_cash,
-                float(row['equity_before'])/initial_cash,second/(SECONDS-1))
+                current_equity/initial_cash,second/(SECONDS-1))
             for lot_index,lot in enumerate(prior):
                 result['lot_slots'][index,lot_index] = location[lot['ticker']]
                 result['lots'][index,lot_index] = (float(lot['quantity']),

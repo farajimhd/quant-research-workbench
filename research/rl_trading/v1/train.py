@@ -30,10 +30,12 @@ from research.rl_trading.v1.data import SessionShard, ticker_vocabulary
 from research.rl_trading.v1.features import FEATURE_NAMES
 from research.rl_trading.v1.model import MarketPolicy
 from research.rl_trading.v1.objectives import teacher_loss
+from research.rl_trading.v1.evaluate_replay import ModelSelector
+from research.rl_trading.v1.replay import replay_session
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
 
-VERSION = 'rl-trading-market-policy-bc-v1'
+VERSION = 'rl-trading-market-policy-bc-v2'
 STOP = False
 
 
@@ -48,6 +50,8 @@ def _load_roots(paths, *, allow_segment):
         raise ValueError('Require one complete shard per distinct session date')
     if not allow_segment and any(item.plan['segment'] for item in result):
         raise ValueError('Segment shards are permitted only for a smoke test')
+    if any(item.plan.get('account_clock') != 'current_completed_second' for item in result):
+        raise ValueError('Training requires current-second marked account observations')
     contract = [(item.plan['top_n'],item.plan['history_seconds'],
                  item.plan['max_lots'],item.plan['max_orders'],item.plan['feature_names'])
                 for item in result]
@@ -75,6 +79,22 @@ def _run_validation(model, sessions, device, batch_size, trade_weight, value_wei
                 totals['samples'] += count
     model.train()
     return {key:value/max(1,totals['samples']) for key,value in totals.items() if key != 'samples'}
+
+
+def _run_closed_loop(model, shards, sessions, device):
+    model.eval()
+    reports = []
+    with torch.inference_mode():
+        for shard,data in zip(shards,sessions):
+            result = replay_session(shard,ModelSelector(model,data,shard,device))
+            if not result['complete']:
+                raise ValueError('Training replay did not reach liquidation')
+            reports.append(dict(date=shard.plan['date'],profit=result['profit'],
+                profit_to_cash=result['profit_to_cash'],max_drawdown=result['max_drawdown'],
+                buys=result['buys'],voluntary_sells=result['sells']-result['forced_liquidations'],
+                forced_liquidations=result['forced_liquidations']))
+    model.train()
+    return reports
 
 
 def run(args):
@@ -107,9 +127,11 @@ def run(args):
         training=dict(epochs=args.epochs,batch_size=args.batch_size,learning_rate=args.learning_rate,
             weight_decay=args.weight_decay,grad_clip=args.grad_clip,
             trade_weight=args.trade_weight,value_weight=args.value_weight,
-            seed=args.seed,allow_segment=args.allow_segment,archive_every=args.archive_every),
+            seed=args.seed,allow_segment=args.allow_segment,archive_every=args.archive_every,
+            replay_every=args.replay_every,unknown_ticker_dropout=args.unknown_ticker_dropout),
         code_hashes={name:file_hash(Path(__file__).with_name(name)) for name in
-            ('train.py','data.py','model.py','objectives.py','features.py')})
+            ('train.py','data.py','model.py','objectives.py','features.py',
+             'replay.py','evaluate_replay.py','shard_labels.py')})
     config['config_hash'] = digest(config)
     runtime = runtime_root().resolve()
     if not runtime.is_dir():
@@ -157,6 +179,20 @@ def run(args):
         CheckpointPolicy(latest_steps=1,archive_steps=max(1,args.archive_every),
             monitor_train_key='train/loss',monitor_val_key='val/loss',
             clock_name='epoch',archive_prefix='checkpoint_epoch'))
+    checkpoint_state_path = paths.run_root/'checkpoint_selection_state.json'
+    if args.resume and checkpoint_state_path.exists():
+        selection = read(checkpoint_state_path)
+        if (selection['config_hash'] != config['config_hash'] or
+                selection['epoch'] != start_epoch):
+            raise ValueError('Checkpoint selection state belongs to another run')
+        checkpoint.load_state_dict(selection['state'])
+        if (checkpoint.best_val_loss < float('inf') and
+                not (paths.checkpoints_dir/'checkpoint_best_val.pt').is_file()):
+            raise ValueError('Best validation checkpoint is missing on resume')
+    replay_best_path = paths.run_root/'best_closed_loop.json'
+    replay_best = read(replay_best_path) if replay_best_path.exists() else None
+    if replay_best and replay_best['config_hash'] != config['config_hash']:
+        raise ValueError('Best closed-loop checkpoint belongs to another run')
     console = Console()
     console.print(f'Training {name} | {len(train_shards)} train days | {len(val_shards)} validation days | '
         f'{len(vocab)} tickers | top {contract["top_n"]} | history {contract["history_seconds"]}s | '
@@ -186,6 +222,10 @@ def run(args):
                     begin,end = torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
                     begin.record()
                     batch = data.batch(index)
+                    if args.unknown_ticker_dropout:
+                        forget = (torch.rand(batch['ticker_id'].shape,device=device)
+                            < args.unknown_ticker_dropout) & batch['valid']
+                        batch['ticker_id'][forget] = model.unknown_ticker_id
                     optimizer.zero_grad(set_to_none=True)
                     with torch.autocast('cuda',dtype=torch.bfloat16):
                         logits,value = model(batch,teacher_actions=batch['actions'])
@@ -221,7 +261,6 @@ def run(args):
                 args.trade_weight,args.value_weight)
             report = {**{'train/'+key:float(value) for key,value in train_result.items()},
                 **{'val/'+key:float(value) for key,value in val.items()}}
-            metrics.log(report,global_step)
             console.print(f'Epoch {epoch+1}/{args.epochs} | train {train_result["loss"]:.4f} | '
                 f'val {val["loss"]:.4f} | GPU compute {train_result["gpu_compute_fraction"]:.1%} | '
                 f'{train_result["samples_per_second"]:,.0f} samples/s | {elapsed:.1f}s')
@@ -230,6 +269,40 @@ def run(args):
                     config_hash=config['config_hash'],epoch=epoch,global_step=global_step,
                     model=model.state_dict(),optimizer=optimizer.state_dict(),
                     scheduler=scheduler.state_dict(),ticker_vocabulary=vocab))
+            write(checkpoint_state_path,dict(config_hash=config['config_hash'],
+                epoch=epoch+1,state=checkpoint.state_dict()),immutable=False)
+            if args.replay_every and (epoch == 0 or (epoch+1)%args.replay_every == 0
+                    or epoch+1 == args.epochs):
+                replay_start = perf_counter()
+                train_replays = _run_closed_loop(model,train_shards,train_data,device)
+                val_replays = _run_closed_loop(model,val_shards,val_data,device)
+                replay_report = dict(config_hash=config['config_hash'],epoch=epoch+1,
+                    train=train_replays,validation=val_replays,
+                    train_profit=sum(item['profit'] for item in train_replays),
+                    val_profit=sum(item['profit'] for item in val_replays),
+                    val_max_drawdown=max(item['max_drawdown'] for item in val_replays),
+                    wall_seconds=perf_counter()-replay_start)
+                write(paths.run_root/f'closed_loop_epoch_{epoch+1:03d}.json',replay_report)
+                report.update({'replay/train_profit':replay_report['train_profit'],
+                    'replay/val_profit':replay_report['val_profit'],
+                    'replay/val_max_drawdown':replay_report['val_max_drawdown'],
+                    'replay/wall_seconds':replay_report['wall_seconds'],
+                    **{f'replay/train/{item["date"]}/profit':item['profit'] for item in train_replays}})
+                console.print(f'Epoch {epoch+1} closed loop | train '
+                    f'${replay_report["train_profit"]:,.2f} | validation '
+                    f'${replay_report["val_profit"]:,.2f} | '
+                    f'drawdown {replay_report["val_max_drawdown"]:.1%}')
+                if (replay_best is None or
+                        (replay_report['val_profit'],-replay_report['val_max_drawdown']) >
+                        (replay_best['val_profit'],-replay_best['val_max_drawdown'])):
+                    candidate = paths.checkpoints_dir/'checkpoint_best_replay.pt.tmp'
+                    torch.save(dict(config_hash=config['config_hash'],epoch=epoch,
+                        global_step=global_step,model=model.state_dict(),
+                        ticker_vocabulary=vocab),candidate)
+                    os.replace(candidate,paths.checkpoints_dir/'checkpoint_best_replay.pt')
+                    replay_best = replay_report
+                    write(replay_best_path,replay_best,immutable=False)
+            metrics.log(report,global_step)
             if args.require_gpu_bound and train_result['gpu_compute_fraction'] < args.min_gpu_fraction:
                 raise RuntimeError(f'Training is not GPU-bound: measured compute fraction '
                     f'{train_result["gpu_compute_fraction"]:.1%} < {args.min_gpu_fraction:.1%}')
@@ -262,6 +335,10 @@ def main(argv=None):
     parser.add_argument('--value-weight',type=float,default=.1)
     parser.add_argument('--seed',type=int,default=17)
     parser.add_argument('--archive-every',type=int,default=5)
+    parser.add_argument('--replay-every',type=int,default=10,
+        help='Full closed-loop training and validation replay interval; 0 disables')
+    parser.add_argument('--unknown-ticker-dropout',type=float,default=.1,
+        help='Training probability of replacing ticker identity with a learned unknown token')
     parser.add_argument('--max-steps',type=int,default=0,help='Bounded smoke validation only')
     parser.add_argument('--allow-segment',action='store_true',help='Allow bounded segment shards for smoke validation')
     parser.add_argument('--require-gpu-bound',action=argparse.BooleanOptionalAction,default=True)
@@ -272,6 +349,7 @@ def main(argv=None):
     parser.add_argument('--resume',action='store_true')
     args = parser.parse_args(argv)
     if (args.epochs < 1 or args.batch_size < 1 or args.max_steps < 0 or args.archive_every < 1
+            or args.replay_every < 0 or not 0 <= args.unknown_ticker_dropout < 1
             or not 0 < args.min_gpu_fraction <= 1):
         parser.error('Training budgets must be positive')
     return run(args)

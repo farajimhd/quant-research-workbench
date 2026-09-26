@@ -16,6 +16,7 @@ def _shard(root: Path, day: date):
     left,_ = bounds(day)
     plan = dict(date=str(day),tickers=['A'],top_n=1,history_seconds=4,max_lots=1,
         max_orders=1,segment=True,feature_names=FEATURE_NAMES,initial_cash=100.,
+        account_clock='current_completed_second',
         allocation_step=50.,liquidity_filter=dict(min_volume_60s=0.,min_trades_60s=0))
     plan['plan_hash'] = digest(plan)
     write(root/'plan.json',plan)
@@ -54,8 +55,10 @@ def test_cuda_training_launcher_reads_disk_shards_and_checkpoints(tmp_path,monke
     assert (root/'run_manifest.json').is_file()
     assert (root/'checkpoints'/'checkpoint_latest.pt').is_file()
     assert (root/'checkpoints'/'checkpoint_best_val.pt').is_file()
+    assert (root/'checkpoints'/'checkpoint_best_replay.pt').is_file()
+    assert (root/'closed_loop_epoch_001.json').is_file()
     test_root = _shard(tmp_path/'test',date(2026,8,22))
     assert evaluate_supervised.main(['--run',str(root),'--test-shards',str(test_root),
         '--batch-size','2','--allow-segment']) == 0
     assert evaluate_replay.main(['--run',str(root),'--test-shards',str(test_root),
-        '--allow-segment','--max-seconds','2']) == 0
+        '--allow-segment','--max-seconds','2','--checkpoint','best-replay']) == 0

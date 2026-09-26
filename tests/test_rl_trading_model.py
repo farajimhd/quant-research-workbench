@@ -25,3 +25,19 @@ def test_policy_scores_identity_preserving_market_and_teacher_orders():
     loss.backward()
     assert model.temporal[0].weight.grad is not None
     assert 'trade_recall' in metrics
+
+
+def test_temporal_encoder_uses_older_history_and_unknown_identity():
+    model = MarketPolicy(features=3,tickers=2,top_n=1,max_lots=1,max_orders=1,
+        d_model=16,layers=1,heads=4).eval()
+    market = torch.zeros(1,1,120,3)
+    batch = dict(market=market,valid=torch.ones(1,1,dtype=torch.bool),
+        ticker_id=torch.tensor([[model.unknown_ticker_id]]),rank=torch.zeros(1,1),
+        held=torch.zeros(1,1),lots=torch.zeros(1,1,3),
+        lot_slots=torch.full((1,1),-1),account=torch.ones(1,3))
+    with torch.no_grad():
+        before = model.encode(batch)[0].clone()
+        batch['market'][0,0,10,0] = 100.
+        after = model.encode(batch)[0]
+    assert not torch.allclose(before,after)
+    assert model.identity.weight[model.unknown_ticker_id].requires_grad

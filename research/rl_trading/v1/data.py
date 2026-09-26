@@ -29,14 +29,26 @@ class SessionShard:
             raise ValueError('Training shard completion mismatch')
         if tuple(self.plan['feature_names']) != FEATURE_NAMES:
             raise ValueError('Training feature contract changed')
-        if set(self.complete['files']) != {name+'.npy' for name in ARRAYS}:
-            raise ValueError('Training shard file certificate is incomplete')
+        base_root = self.plan.get('base_shard_root')
+        if base_root:
+            base = SessionShard(Path(base_root),verify=verify)
+            if (base.plan['plan_hash'] != self.plan['base_plan_hash'] or
+                    file_hash(base.root/'complete.json') != self.plan['base_complete_hash'] or
+                    set(self.complete['files']) != {'account.npy'}):
+                raise ValueError('Account overlay source certificate changed')
+            self.arrays = dict(base.arrays)
+            names = ('account',)
+        else:
+            if set(self.complete['files']) != {name+'.npy' for name in ARRAYS}:
+                raise ValueError('Training shard file certificate is incomplete')
+            self.arrays = {}
+            names = ARRAYS
         if verify:
             for name,expected in self.complete['files'].items():
                 if file_hash(self.root/name) != expected:
                     raise ValueError('Training shard file hash changed: '+name)
-        self.arrays = {name:np.load(self.root/(name+'.npy'),mmap_mode='r',allow_pickle=False)
-                       for name in ARRAYS}
+        for name in names:
+            self.arrays[name] = np.load(self.root/(name+'.npy'),mmap_mode='r',allow_pickle=False)
         rows = self.complete['rows']
         tickers = self.plan['tickers']
         if (self.arrays['features'].shape != (len(tickers),SECONDS,len(FEATURE_NAMES))
@@ -46,6 +58,7 @@ class SessionShard:
                 or self.arrays['actions'].shape != (rows,self.plan['max_orders'])
                 or self.arrays['action_mask'].shape != (rows,self.plan['max_orders'],
                     1+self.plan['top_n']+self.plan['max_lots'])
+                or self.arrays['account'].shape != (rows,3)
                 or self.arrays['time_us'].shape != (rows,)
                 or np.any(np.diff(self.arrays['time_us']) != 1_000_000)
                 or not self.arrays['done'][-1] or np.any(self.arrays['done'][:-1])):
@@ -81,7 +94,8 @@ class GpuSession:
             if name == 'features' and not np.isfinite(host).all():
                 raise ValueError('Feature bank cannot be represented in float16')
             self.values[name] = torch.from_numpy(host).to(device,non_blocking=True)
-        self.ticker_ids = torch.tensor([ticker_vocab.get(ticker,0) for ticker in source.plan['tickers']],
+        self.ticker_ids = torch.tensor([ticker_vocab.get(ticker,len(ticker_vocab)+1)
+            for ticker in source.plan['tickers']],
             device=device,dtype=torch.long)
         self.rows = source.complete['rows']
         self.left_us = bounds(date.fromisoformat(source.plan['date']))[0]

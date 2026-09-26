@@ -36,7 +36,7 @@ from research.rl_trading.v1.shard_labels import pack
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
 
-VERSION = 'rl-trading-structural-shards-v3'
+VERSION = 'rl-trading-structural-shards-v4'
 SOURCES = ('build_shards.py','features.py','shard_labels.py','universe.py',
     'phase3_search.py','arte_source.py','arte_sql.py','reference_features.py')
 ENGINE_SOURCES = ('src/backend/fixed_v7_stream.py','src/backend/structural_v7_seed.py',
@@ -194,6 +194,7 @@ def run(args,console):
             reference_contract=REFERENCE_VERSION,
             tickers=tickers,top_n=int(teacher['config']['top_n']),
             history_seconds=args.history_seconds,feature_names=FEATURE_NAMES,
+            account_clock='current_completed_second',
             feature_dtype='float32',volume_dtype='float64',
             teacher_first_us=teacher['first_us'],teacher_end_us=teacher['end_us'],
             segment=teacher['end_us'] != teacher['true_session_cutoff_us'],
@@ -288,7 +289,7 @@ def run(args,console):
                 console.print(f'Features {len(progress["done"]):,}/{len(tickers):,} listings | '
                     f'queued {len(tickers)-len(progress["done"]):,} | failed 0')
         trajectory = pl.read_parquet(phase3/'trajectory.parquet').to_dicts()
-        packed = pack(trajectory,bank,volumes,tickers,left_us=left,
+        packed = pack(trajectory,bank,volumes,execution,tickers,left_us=left,
             top_n=plan['top_n'],max_lots=plan['max_lots'],max_orders=plan['max_orders'],
             allocation_step=plan['allocation_step'],initial_cash=plan['initial_cash'],
             min_volume=float(p2['liquidity_filter']['min_volume_60s']),

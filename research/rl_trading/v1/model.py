@@ -16,7 +16,10 @@ class MarketPolicy(nn.Module):
         self.max_orders = max_orders
         self.temporal = nn.Sequential(nn.Conv1d(features,d_model,3,padding=1),nn.GELU(),
             nn.Conv1d(d_model,d_model,3,padding=1),nn.GELU())
-        self.identity = nn.Embedding(tickers+1,d_model,padding_idx=0)
+        self.temporal_pool = nn.AdaptiveAvgPool1d(16)
+        self.history_projection = nn.Linear(16*d_model,d_model)
+        self.identity = nn.Embedding(tickers+2,d_model,padding_idx=0)
+        self.unknown_ticker_id = tickers+1
         self.slot_metadata = nn.Linear(2,d_model)
         layer = nn.TransformerEncoderLayer(d_model,heads,4*d_model,dropout=.05,batch_first=True)
         self.market = nn.TransformerEncoder(layer,layers,enable_nested_tensor=False)
@@ -33,7 +36,9 @@ class MarketPolicy(nn.Module):
         count,tickers,history,features = x.shape
         if tickers != self.top_n:
             raise ValueError('Policy input top-N differs from its action head')
-        encoded = self.temporal(x.reshape(count*tickers,history,features).transpose(1,2))[:,:,-1]
+        sequence = self.temporal(x.reshape(count*tickers,history,features).transpose(1,2))
+        encoded = sequence[:,:,-1]+self.history_projection(
+            self.temporal_pool(sequence).flatten(1))
         encoded = encoded.reshape(count,tickers,-1)
         encoded = encoded+self.identity(batch['ticker_id'])+self.slot_metadata(
             torch.stack((batch['rank'],batch['held']),dim=-1))
