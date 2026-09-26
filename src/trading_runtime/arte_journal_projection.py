@@ -695,7 +695,7 @@ def project_journal_record(
                        if key in payload)):
             raise ValueError("Commission journal source identity or fields are invalid")
         month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
-        amount = _exact_decimal(payload.get("commission"))
+        amount = _exact_decimal(payload.get("commission"), field="commission")
         common = {
             "run_id": record.run_id, "event_month": month,
             "batch_id": batch_id, "account_id": record.account_id,
@@ -1575,16 +1575,16 @@ def order_command_batch(
         "conid": request.conid, "ticker": request.ticker,
         "side": request.side, "order_type": request.orderType,
         "time_in_force": request.tif,
-        "quantity": _exact_decimal(request.quantity) if request.quantity is not None else None,
-        "cash_quantity": _exact_decimal(request.cashQty) if request.cashQty is not None else None,
-        "limit_price": _exact_decimal(request.price) if request.price is not None else None,
-        "aux_price": _exact_decimal(request.auxPrice) if request.auxPrice is not None else None,
+        "quantity": _exact_decimal(request.quantity, field="order.quantity") if request.quantity is not None else None,
+        "cash_quantity": _exact_decimal(request.cashQty, field="order.cash_quantity") if request.cashQty is not None else None,
+        "limit_price": _exact_decimal(request.price, field="order.limit_price") if request.price is not None else None,
+        "aux_price": _exact_decimal(request.auxPrice, field="order.aux_price") if request.auxPrice is not None else None,
         "outside_rth": int(request.outsideRTH),
         "parent_command_id": "", "oca_group": "",
         "strategy_id": strategy_id, "strategy_revision": strategy_revision,
         "created_at": at, "security_type": request.secType,
         "listing_exchange": request.listingExchange,
-        "trailing_amount": (_exact_decimal(request.trailingAmt)
+        "trailing_amount": (_exact_decimal(request.trailingAmt, field="order.trailing_amount")
                             if request.trailingAmt is not None else None),
         "trailing_type": request.trailingType or "",
         "single_group": int(request.isSingleGroup),
@@ -1657,10 +1657,10 @@ def commission_revision_batch(
         "record_id": record_id, "run_id": run_id,
         "event_month": event_month, "batch_id": batch_id,
         "account_id": report.account_id, "execution_id": report.execution_id,
-        "commission": _exact_decimal(report.commission),
+        "commission": _exact_decimal(report.commission, field="report.commission"),
         "currency": report.currency, "status": commission_status,
         "time_authority": time_authority,
-        "realized_pnl": (_exact_decimal(report.realized_pnl)
+        "realized_pnl": (_exact_decimal(report.realized_pnl, field="report.realized_pnl")
                          if report.realized_pnl is not None else None),
         "source_event_time": source_time.isoformat(),
         "received_at": received.isoformat(),
@@ -1723,16 +1723,19 @@ def strategy_signal_batch(
         "ticker": signal.ticker.upper(),
         "action": str(getattr(signal.action, "value", signal.action)),
         "direction": str(getattr(signal.direction, "value", signal.direction)),
-        "score": _exact_decimal(signal.score, _MEASURE_SCALE),
-        "confidence": _exact_decimal(signal.confidence, _MEASURE_SCALE),
+        "score": _exact_decimal(signal.score, _MEASURE_SCALE, field="signal.score"),
+        "confidence": _exact_decimal(signal.confidence, _MEASURE_SCALE,
+                                      field="signal.confidence"),
         "reason": signal.reason, "working_timeframe": signal.working_timeframe,
-        "invalidation_price": (_exact_decimal(signal.invalidation_price)
+        "invalidation_price": (_exact_decimal(signal.invalidation_price,
+                                                field="signal.invalidation_price")
                                if signal.invalidation_price is not None else None),
         "source_signal_count": len(signal.source_signal_ids),
         "evidence_node_count": len(evidence_nodes),
         "decision_assignment_id": (decision_metadata["assignment_id"]
                                    if decision_metadata is not None else None),
-        "decision_reference_price": (_exact_decimal(decision_metadata["reference_price"])
+        "decision_reference_price": (_exact_decimal(decision_metadata["reference_price"],
+                                                     field="signal.decision_reference_price")
                                      if decision_metadata is not None else None),
         "decision_status": (decision_metadata["status"]
                             if decision_metadata is not None else None),
@@ -1772,7 +1775,7 @@ def recover_common_signal_decision_metadata(
                 event.get("correlation_id"), event.get("causation_id")))):
         raise ValueError("Typed Backtest signal decision metadata is incomplete")
     price = float(detail["decision_reference_price"])
-    if _exact_decimal(price) != detail["decision_reference_price"]:
+    if _exact_decimal(price, field="signal.reference_price") != detail["decision_reference_price"]:
         raise ValueError("Typed Backtest signal reference price cannot round-trip")
     return {
         "assignment_id": detail["decision_assignment_id"],
