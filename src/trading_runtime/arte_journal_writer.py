@@ -34,6 +34,9 @@ from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
+from src.trading_runtime.arte_portfolio_allocation_v4 import (
+    ALLOCATION as V4_ALLOCATION, V4PortfolioAllocationBatch,
+)
 from src.trading_runtime.arte_risk_action_v4 import (
     TABLES as RISK_ACTION_TABLES, V4RiskActionBatch,
 )
@@ -68,6 +71,7 @@ _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
 _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
 _CONTRACTS[CANCEL.name] = CANCEL
 _CONTRACTS[REPRICE.name] = REPRICE
+_CONTRACTS[V4_ALLOCATION.name] = V4_ALLOCATION
 _CONTRACTS.update({table.name: table for table in RISK_ACTION_TABLES})
 _CONTRACTS.update({table.name: table for table in PROTECTION_RECONCILIATION_TABLES})
 _CONTRACTS.update({table.name: table for table in V4_COMMIT_TABLES})
@@ -513,6 +517,7 @@ def _sealed_families(
     v3_portfolio_allocation_fill_ids: tuple[str, ...] = (),
     v3_reconciliation: bool = False,
     v4_broker_ack_ids: tuple[str, ...] = (),
+    v4_allocation_ids: tuple[str, ...] = (),
     v4_order_cancel_ids: tuple[str, ...] = (),
     v4_order_reprice_ids: tuple[str, ...] = (),
     v4_risk_action_ids: tuple[str, ...] = (),
@@ -684,6 +689,15 @@ def _sealed_families(
             if identity in details_by_record:
                 raise ValueError("Journal event has multiple typed detail families")
             details_by_record[identity] = ACKNOWLEDGEMENT.name
+    if v4_allocation_ids:
+        expected_details = {**expected_details,
+            ("portfolio_management", "portfolio_allocation"):
+                V4_ALLOCATION.name}
+        for record_id in v4_allocation_ids:
+            identity = str(UUID(str(record_id)))
+            if identity in details_by_record:
+                raise ValueError("Journal event has multiple typed detail families")
+            details_by_record[identity] = V4_ALLOCATION.name
     if v4_order_cancel_ids:
         expected_details = {**expected_details,
             ("command", "order_cancel"): CANCEL.name,
@@ -1762,7 +1776,7 @@ def _v3_preflight(client: Any) -> None:
 def v4_storage_contracts() -> tuple[Any, ...]:
     """One exact, deduplicated V4 catalog for every principal's storage audit."""
     installed = fixed_backtest_v2_contracts()
-    contracts = (*installed, *V4_COMMIT_TABLES, ENTRY_EVIDENCE,
+    contracts = (*installed, *V4_COMMIT_TABLES, ENTRY_EVIDENCE, V4_ALLOCATION,
                  ACKNOWLEDGEMENT, CANCEL, REPRICE, *RISK_ACTION_TABLES,
                  *PROTECTION_CHANGE_TABLES,
                  *PROTECTION_RECONCILIATION_TABLES)
@@ -1784,7 +1798,8 @@ def _v4_preflight(client: Any) -> None:
     writable = frozenset(
         _v4_family_table(table) for table, _, _, _ in _FAMILIES
     ) | frozenset(table.name for table in V4_COMMIT_TABLES) | {
-        ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name, CANCEL.name, REPRICE.name,
+        ENTRY_EVIDENCE.name, V4_ALLOCATION.name,
+        ACKNOWLEDGEMENT.name, CANCEL.name, REPRICE.name,
         *(table.name for table in RISK_ACTION_TABLES),
         *(table.name for table in PROTECTION_CHANGE_TABLES),
         *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
@@ -3283,7 +3298,8 @@ class ArteJournalWriter:
         self._coalesce_batches = coalesce_batches
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
-                  | V4StrategyOneEntryBatch | V4BrokerAcknowledgementBatch
+                  | V4StrategyOneEntryBatch | V4PortfolioAllocationBatch
+                  | V4BrokerAcknowledgementBatch
                   | V4OrderCancelBatch | V4OrderRepriceBatch | V4RiskActionBatch
                   | V4ProtectionChangeBatch
                   | V4ProtectionReconciliationBatch
@@ -3390,6 +3406,25 @@ class ArteJournalWriter:
                 raise RuntimeError("V4 writer is closed or failed")
             if unit.base.run_id != self._run_id:
                 raise ValueError("V4 writer cannot mix runs")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_portfolio_allocation_v4(
+        self, unit: V4PortfolioAllocationBatch,
+    ) -> Future[str]:
+        """Queue one normalized allocation and parent without caller I/O."""
+        if (self._journal_profile != "backtest_v4"
+                or not isinstance(unit, V4PortfolioAllocationBatch)
+                or unit.base.run_id != self._run_id):
+            raise ValueError("V4 allocation requires its pinned writer")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
             receipt: Future[str] = Future()
             try:
                 self._queue.put_nowait((unit, receipt))
@@ -3749,6 +3784,7 @@ class ArteJournalWriter:
                         and not isinstance(group[0][0],
                                            (TypedJournalBatch, V3SqueezeBatch,
                                             V4StrategyOneEntryBatch,
+                                            V4PortfolioAllocationBatch,
                                             V4BrokerAcknowledgementBatch,
                                             V4OrderCancelBatch,
                                             V4OrderRepriceBatch,
@@ -3814,6 +3850,13 @@ class ArteJournalWriter:
                     unit = group[0][0]
                     committed_id = publish_strategy_one_entry_batch_v4(
                         self._client, unit.base, entry_evidence=unit.entry_evidence)
+                elif isinstance(group[0][0], V4PortfolioAllocationBatch):
+                    from src.trading_runtime.arte_journal_commit_v4 import (
+                        publish_portfolio_allocation_batch_v4,
+                    )
+                    unit = group[0][0]
+                    committed_id = publish_portfolio_allocation_batch_v4(
+                        self._client, unit.base, allocation=unit.allocation)
                 elif isinstance(group[0][0], V3SqueezeBatch):
                     unit = group[0][0]
                     committed_id = _publish_typed_batch(

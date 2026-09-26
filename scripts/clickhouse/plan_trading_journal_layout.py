@@ -43,11 +43,13 @@ from src.backend.backtest_squeeze_episode_schema import (
 from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.trading_runtime.arte_journal_writer import journal_client_from_env
+from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
 
 
 def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
     if profile == "commit-v4":
-        return V4_COMMIT_TABLES + (ENTRY_EVIDENCE, ACKNOWLEDGEMENT, CANCEL, REPRICE,
+        return V4_COMMIT_TABLES + (ENTRY_EVIDENCE, V4_ALLOCATION,
+                                   ACKNOWLEDGEMENT, CANCEL, REPRICE,
                                    *RISK_ACTION_TABLES,
                                    *PROTECTION_CHANGE_TABLES,
                                    *PROTECTION_RECONCILIATION_TABLES)

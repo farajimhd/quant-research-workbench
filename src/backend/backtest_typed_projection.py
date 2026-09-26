@@ -24,6 +24,9 @@ from src.trading_runtime.arte_protection_reconciliation_v4 import (
 )
 from src.trading_runtime.arte_risk_action_v4 import V4RiskActionBatch
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.arte_portfolio_allocation_v4 import (
+    V4PortfolioAllocationBatch, project_portfolio_allocation_v3,
+)
 
 
 NIL_BATCH_ID = str(UUID(int=0))
@@ -72,7 +75,7 @@ def project_pending_backtest_v4_prefix(
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
            | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
            | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
-           | V4ProtectionReconciliationBatch, ...]:
+           | V4ProtectionReconciliationBatch | V4PortfolioAllocationBatch, ...]:
     """Project one bounded V4 prefix; special families never enter a base batch."""
     from src.trading_runtime.arte_broker_acknowledgement_v4 import (
         broker_acknowledgement_batch_v4,
@@ -207,6 +210,13 @@ def project_pending_backtest_v4_prefix(
                 if client_order_id in order_lineage and order_lineage[client_order_id] != lineage:
                     raise RuntimeError("OMS changed committed order lineage")
                 order_lineage[client_order_id] = lineage
+        elif kind == ("portfolio_management", "portfolio_allocation"):
+            projected = project_portfolio_allocation_v3(
+                record, attempt_id=attempt, batch_id=batch_id)
+            base = TypedJournalBatch(
+                record.run_id, run_month, attempt, batch_id, previous,
+                sequence, sequence, cursor, "running", (projected.event,))
+            unit = V4PortfolioAllocationBatch(base, projected.detail)
         else:
             batch = project_journal_record(
                 record, run_month=run_month, attempt_id=attempt,

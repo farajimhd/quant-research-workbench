@@ -20,6 +20,9 @@ from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
+from src.trading_runtime.arte_portfolio_allocation_v4 import (
+    ALLOCATION as V4_ALLOCATION, seal_portfolio_allocation_v3,
+)
 from src.trading_runtime.arte_risk_action_v4 import (
     ACTION as RISK_ACTION, REPLY as RISK_REPLY, seal_risk_action_v4,
 )
@@ -322,6 +325,7 @@ def _load_verified_details_v4(
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
                     ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name, CANCEL.name,
                     REPRICE.name,
+                    V4_ALLOCATION.name,
                     RISK_ACTION.name, RISK_REPLY.name,
                     PROTECTION_CHANGE.name, PROTECTION_ENTRY_ORDER.name,
                     PROTECTION_RECONCILIATION.name,
@@ -409,6 +413,12 @@ def _load_verified_details_v4(
         if (row["category"], row["entity_type"]) in
            {("broker", "order_repriced"), ("broker", "order_reprice_error")}} != seen_reprice:
         raise RuntimeError("V4 repricing has missing typed detail")
+    try:
+        seal_portfolio_allocation_v3(
+            related_rows.get(V4_ALLOCATION.name, ()), tuple(events.values()),
+            run_id=run_id, batch_id=batch_id)
+    except ValueError as exc:
+        raise RuntimeError("V4 portfolio allocation differs from its parent") from exc
     try:
         seal_risk_action_v4(
             related_rows.get(RISK_ACTION.name, ()),
@@ -553,6 +563,12 @@ def publish_base_typed_batch_v4(client, batch) -> str:
     if getattr(batch, "status", None) != "running":
         raise ValueError("V4 base publication needs one bounded running event batch")
     return _publish_typed_batch_v4(client, batch)
+
+
+def publish_portfolio_allocation_batch_v4(client, batch, *, allocation) -> str:
+    """Fence one normalized allocation fill with its parent event."""
+    return _publish_typed_batch_v4(
+        client, batch, portfolio_allocation_row=allocation)
 
 
 def publish_strategy_one_entry_batch_v4(client, batch, *, entry_evidence) -> str:
@@ -735,6 +751,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
 
 
 def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
+                            portfolio_allocation_row=None,
                             broker_acknowledgement_row=None,
                             order_cancel_row=None,
                             order_reprice_row=None,
@@ -763,7 +780,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         raise RuntimeError("V4 publication requires a strict Keeper-fenced insert dispatch")
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
-            strategy_one_entry_rows, broker_acknowledgement_row, order_cancel_row,
+            strategy_one_entry_rows, portfolio_allocation_row,
+            broker_acknowledgement_row, order_cancel_row,
             order_reprice_row,
             risk_action_row,
             protection_change_row, protection_reconciliation_row,
@@ -968,8 +986,27 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
             batch.events, run_id=batch.run_id, batch_id=batch.batch_id)
     elif protection_reconciliation_actions or protection_reconciliation_replies:
         raise ValueError("V4 reconciliation children lack their typed parent")
+    allocation_rows = ()
+    if portfolio_allocation_row is not None:
+        if (len(batch.events) != 1
+                or (batch.events[0]["category"], batch.events[0]["entity_type"])
+                != ("portfolio_management", "portfolio_allocation")
+                or not isinstance(portfolio_allocation_row, Mapping)):
+            raise ValueError("V4 allocation has an invalid parent event")
+        allocation = typed_row(V4_ALLOCATION.name, {
+            key: value for key, value in portfolio_allocation_row.items()
+            if key != "content_hash"})
+        if ("content_hash" in portfolio_allocation_row
+                and allocation["content_hash"]
+                != portfolio_allocation_row["content_hash"]):
+            raise ValueError("V4 allocation differs from its scalar seal")
+        seal_portfolio_allocation_v3(
+            (allocation,), batch.events, run_id=batch.run_id,
+            batch_id=batch.batch_id)
+        allocation_rows = (allocation,)
     base_families = _sealed_families(
         batch, v4_broker_ack_ids=tuple(row["record_id"] for row in ack_rows),
+        v4_allocation_ids=tuple(row["record_id"] for row in allocation_rows),
         v4_order_cancel_ids=tuple(row["record_id"] for row in cancel_rows),
         v4_order_reprice_ids=tuple(row["record_id"] for row in reprice_rows),
         v4_risk_action_ids=tuple(row["record_id"] for row in risk_rows),
@@ -983,6 +1020,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                      for name, rows in base_families)
     if entry_rows:
         families += ((ENTRY_EVIDENCE.name, entry_rows),)
+    if allocation_rows:
+        families += ((V4_ALLOCATION.name, allocation_rows),)
     if ack_rows:
         families += ((ACKNOWLEDGEMENT.name, ack_rows),)
     if cancel_rows:
