@@ -11,6 +11,8 @@ import argparse
 from datetime import date
 from hashlib import sha256
 import numpy as np
+import polars as pl
+import time
 
 from research.rl_trading.v1 import arte_source
 from research.rl_trading.v1.arte_sql import ArteReader
@@ -22,19 +24,20 @@ from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.rl_trading.v2.data import ARRAYS, DATA_VERSION, MarketSession
 from research.rl_trading.v2.io import output_root, read, write, code_identity
 from research.rl_trading.v2.market_status import StatusSidecar
+from research.rl_trading.v2.v1_cache import catalog, discover, copy_row
+from research.rl_trading.v2.build_workers import results
+from research.rl_trading.v1 import arte_sql
 
 
 def bank_hash(array):
     return sha256(np.ascontiguousarray(array).tobytes()).hexdigest()
 
 
-def extract(client, source, day, listing):
-    ticker = listing['ticker']
-    arte_source.verify_listing(client,source,day,ticker)
-    seed,splits,fundamental,reference = read_reference(client,day,listing)
-    bars,indicators = read_arte_seconds(client,source,day,ticker)
-    features,volume60 = encode(day,bars,indicators,seed,splits,fundamental)
+def execution_arrays(bars):
+    """Vectorized exact-price/activity projection, with no per-second Python loop."""
     index = bars['bucket_index'].to_numpy().astype(np.int64)-14400+1
+    if np.any(index < 1) or np.any(index >= SECONDS) or np.any(np.diff(index) <= 0):
+        raise ValueError('Execution bars must be unique, ordered completed session seconds')
     volume = np.zeros(SECONDS,dtype=np.float64)
     trades = np.zeros(SECONDS,dtype=np.float64)
     prices = np.zeros(SECONDS,dtype=np.float64)
@@ -49,9 +52,59 @@ def extract(client, source, day, listing):
     cumulative = np.concatenate(([0.],np.cumsum(trades)))
     ticks = np.arange(SECONDS)
     trades60 = cumulative[ticks+1]-cumulative[np.maximum(0,ticks-59)]
-    arte_source.verify_listing(client,source,day,ticker)
-    return dict(features=features,prices=prices,volume=volume,volume_60s=volume60,
-                trades_60s=trades60,fresh=fresh),reference
+    return dict(prices=prices,volume=volume,trades_60s=trades60,fresh=fresh)
+
+
+def read_execution_bars(client,source,day,ticker):
+    where = arte_sql.selection(source['build_id'],day,ticker,
+        source['units'][str(day)][ticker]['bars']['attempt_id'])
+    return arte_source.frame(client,
+        f'SELECT bucket_index,close_int,price_valid,volume,trade_count FROM arte.bars_v1 WHERE {where} '
+        'AND resolution_ms=1000 ORDER BY bucket_index',
+        dict(bucket_index=pl.Int64,close_int=pl.Int64,price_valid=pl.Int64,
+             volume=pl.Float64,trade_count=pl.Int64))
+
+
+def extract(client, source, day, listing, cached=None):
+    ticker = listing['ticker']
+    verify = arte_source.verify_listing if cached is None else verify_execution_source
+    verify(client,source,day,ticker)
+    if cached is None:
+        seed,splits,fundamental,reference = read_reference(client,day,listing)
+        bars,indicators = read_arte_seconds(client,source,day,ticker)
+        features,volume60 = encode(day,bars,indicators,seed,splits,fundamental)
+        values = dict(features=features,volume_60s=volume60)
+    else:
+        values,reference = copy_row(cached)
+        bars = read_execution_bars(client,source,day,ticker)
+    values.update(execution_arrays(bars))
+    verify(client,source,day,ticker)
+    return values,reference
+
+
+def verify_execution_source(client,source,day,ticker):
+    saved = source['units'][str(day)][ticker]['bars']
+    where = arte_sql.selection(source['build_id'],day,ticker,saved['attempt_id'])
+    actual = arte_sql.query(client,
+        'SELECT count() AS n,uniqExact((resolution_ms,bucket_index)) AS unique_keys,'
+        f'sum(cityHash64(tuple(*))) AS hash FROM arte.bars_v1 WHERE {where}')[0]
+    if (int(actual['n']) != saved['output_rows'] or int(actual['n']) != int(actual['unique_keys'])
+            or str(actual['hash']) != saved['output_hash']):
+        raise ValueError('Cached V1 supplemental bars differ from source certificate')
+
+
+def worker(job):
+    client = ArteReader(job['query_threads'])
+    try:
+        arte_source.storage_check(client)
+        storage_check(client)
+        if job['cached'] is None:
+            return extract(client,job['source'],job['day'],job['listing'])
+        return extract(client,job['source'],job['day'],job['listing'],job['cached'])
+    except Exception as exc:
+        raise RuntimeError(f"V2 listing {job['listing']['ticker']} failed: {exc}") from exc
+    finally:
+        client.close()
 
 
 def main(argv=None):
@@ -60,11 +113,14 @@ def main(argv=None):
     p.add_argument('--ledger',type=Path,required=True)
     p.add_argument('--date',type=date.fromisoformat,required=True)
     p.add_argument('--query-threads',type=int,default=2)
+    p.add_argument('--workers',type=int,default=2,help='Bounded independent listing processes (1-16)')
+    p.add_argument('--v1-shards',type=Path,nargs='+',
+        help='Certified V1 banks/overlays; default discovers completed local date banks')
     p.add_argument('--status-sidecar',type=Path,required=True,
                    help='Certified canonical-ingestion halt/resumption sidecar; never inferred from bars')
     args = p.parse_args(argv)
-    if args.query_threads < 1:
-        p.error('query threads must be positive')
+    if not 1 <= args.query_threads <= 4 or not 1 <= args.workers <= 16:
+        p.error('query threads must be 1-4 and workers 1-16')
     runtime = output_root()  # Fail before opening any database if runtime unavailable.
     source = arte_source.load_build(args.manifest,args.ledger,[args.date])
     load_env_files(discover_clickhouse_env_files(),verbose=False)
@@ -77,7 +133,13 @@ def main(argv=None):
             raise ValueError('V2 requires the entire certified tradable population, not a build subset')
         status = StatusSidecar(args.status_sidecar,day=str(args.date),listings=listings,
                                first_us=bounds(args.date)[0],seconds=SECONDS)
-        missing = missing_seeds(client,args.date,[x['ticker'] for x in listings])
+        candidates = args.v1_shards if args.v1_shards is not None else [
+            path.parent for path in discover(runtime.parents[1],args.date)]
+        cached,cache_report = catalog(candidates,source=source,day=args.date,listings=listings)
+        for item in cache_report:
+            print(f'V1 cache: {item}',flush=True)
+        uncached = [x['ticker'] for x in listings if str(x['listing_id']) not in cached]
+        missing = missing_seeds(client,args.date,uncached) if uncached else []
         if missing:
             raise ValueError(f'Missing certified V7 for {len(missing)} listings; no silent universe exclusion: {missing[:12]}')
         plan = dict(version=DATA_VERSION,date=str(args.date),listings=listings,population=population,
@@ -86,6 +148,7 @@ def main(argv=None):
             clock='completed_second',step_us=1000000,first_us=bounds(args.date)[0],rows=SECONDS,
             segment=False,teacher_dependency=False,source_manifest_hash=file_hash(args.manifest),
             market_status=status.certificate,
+            v1_market_cache=cache_report,
             code=code_identity())
         plan['plan_hash'] = digest(plan)
         root = runtime/'market'/str(args.date)/plan['plan_hash'][:20]
@@ -104,10 +167,12 @@ def main(argv=None):
                 arrays[name] = np.load(path,mmap_mode='r+') if path.exists() else np.lib.format.open_memmap(path,mode='w+',dtype=dtype,shape=shape)
                 if arrays[name].shape != shape or arrays[name].dtype != dtype:
                     raise ValueError('Restart bank differs from planned shape/dtype')
-            counts = dict(completed=0,reused=0,failed=0,retried=0,skipped=0)
+            counts = dict(completed=0,reused=0,failed=0,retried=0,skipped=0,
+                          copied_v1=0,extracted=0)
+            jobs = []
             for index,listing in enumerate(listings):
                 if (root/'STOP').exists():
-                    write(root/'progress.json',dict(**counts,active=0,queued=len(listings)-index,status='stopped'))
+                    write(root/'progress.json',dict(**counts,active=0,queued=len(listings)-counts['reused'],status='stopped'))
                     return 2
                 ready = root/'progress'/f'{index}.json'
                 if ready.exists():
@@ -116,22 +181,39 @@ def main(argv=None):
                         raise ValueError('Restart listing integrity changed')
                     counts['reused'] += 1
                 else:
-                    write(root/'progress.json',dict(**counts,active=1,queued=len(listings)-index-1,ticker=listing['ticker']))
-                    try:
-                        values,reference = extract(client,source,args.date,listing)
-                        values['status'] = status.states(listing['listing_id'])
-                        values['execution_status'] = status.states(listing['listing_id'],execution=True)
-                        for name,value in values.items():
-                            arrays[name][index] = value
-                            arrays[name].flush()
-                        write(ready,dict(listing=listing,reference=reference,
-                            hashes={name:bank_hash(arrays[name][index]) for name in ARRAYS}))
-                        counts['completed'] += 1
-                    except Exception:
-                        counts['failed'] += 1
-                        write(root/'progress.json',dict(**counts,active=0,queued=len(listings)-index-1,status='failed',ticker=listing['ticker']))
-                        raise
-                print(f"{args.date} completed={counts['completed']} reused={counts['reused']} queued={len(listings)-index-1} failed={counts['failed']}",flush=True)
+                    unit_source = dict(build_id=source['build_id'],units={str(args.date):{
+                        listing['ticker']:source['units'][str(args.date)][listing['ticker']]}})
+                    jobs.append(dict(index=index,listing=listing,source=unit_source,day=args.date,
+                        query_threads=args.query_threads,cached=cached.get(str(listing['listing_id']))))
+            started = time.monotonic()
+            def progress(state):
+                remaining = max(0,len(jobs)-counts['completed']-counts['failed'])
+                active = min(args.workers,remaining) if state == 'running' else 0
+                write(root/'progress.json',dict(**counts,status=state,active=active,
+                    queued=remaining-active,workers=args.workers,elapsed_seconds=time.monotonic()-started))
+            progress('running')
+            try:
+                for job,(values,reference) in results(jobs,worker,workers=args.workers,
+                        stopped=lambda:(root/'STOP').exists()):
+                    index,listing = job['index'],job['listing']
+                    values['status'] = status.states(listing['listing_id'])
+                    values['execution_status'] = status.states(listing['listing_id'],execution=True)
+                    for name,value in values.items():
+                        arrays[name][index] = value
+                        arrays[name].flush()
+                    write(root/'progress'/f'{index}.json',dict(listing=listing,reference=reference,
+                        v1_cache=job['cached'],hashes={name:bank_hash(arrays[name][index]) for name in ARRAYS}))
+                    counts['completed'] += 1
+                    counts['copied_v1' if job['cached'] else 'extracted'] += 1
+                    progress('running')
+                    print(f'{args.date} {counts} remaining={len(jobs)-counts["completed"]}',flush=True)
+            except BaseException:
+                counts['failed'] += 1
+                progress('failed')
+                raise
+            if (root/'STOP').exists():
+                progress('stopped')
+                return 2
             MarketSession(plan,arrays,root)
             write(root/'complete.json',dict(plan_hash=plan['plan_hash'],listing_count=len(listings),
                 files={name+'.npy':file_hash(root/(name+'.npy')) for name in ARRAYS}))

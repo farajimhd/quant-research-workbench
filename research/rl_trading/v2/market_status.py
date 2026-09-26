@@ -60,9 +60,11 @@ class StatusSidecar:
     def states(self, listing_id, *, execution=False):
         values = np.zeros(self.seconds,dtype=np.uint8)
         index = 0 if execution else 1
-        for effective,available,state in sorted(self.events[str(listing_id)],key=lambda row:row[index]):
-            clock = effective if execution else available
-            start = max(0,(clock-self.first_us+999999)//1000000)
-            if start < self.seconds:
-                values[start:] = state
+        events = sorted(self.events[str(listing_id)],key=lambda row:row[index])
+        if events:
+            transitions = np.asarray(events,dtype=np.int64)
+            clocks = self.first_us+np.arange(self.seconds,dtype=np.int64)*1000000
+            selected = np.searchsorted(transitions[:,index],clocks,side='right')-1
+            valid = selected >= 0
+            values[valid] = transitions[selected[valid],2]
         return values

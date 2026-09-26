@@ -1,8 +1,9 @@
 # V2: reward-driven portfolio PPO
 
 V2 starts a stochastic policy from random weights and trains on its own simulated
-account trajectories. There are no teacher actions, hindsight targets, teacher
-account states, or V1 Phase 1–3 dependencies. V1 source and runtime are unchanged.
+account trajectories. There are no teacher actions, hindsight targets, or teacher
+account states. Full extraction has no V1 Phase 1–3 dependency; optional V1 cache
+reuse reads its certified provenance metadata. V1 source and runtime are unchanged.
 This is a research implementation, not a released strategy or profitability claim.
 
 ## Market and observation contract
@@ -15,6 +16,34 @@ go through `ArteReader` with `readonly=1`, table-policy and actual part-placemen
 checks. No flatfile/event fallback or ClickHouse writes are permitted.
 Missing V7 certification fails the build instead of silently excluding a listing;
 certified empty V7 is allowed. Extraction never requires a teacher population.
+
+The builder automatically discovers completed V1 banks under the configured
+local runtime's `rl-trading-shards/<date>/*`. `--v1-shards <paths...>` selects
+explicit banks or account/cost overlays instead. It checks the source build and
+attempts, full listing identity, feature schema, observation code hashes, and
+market array certificates. Incompatible versions are reported and extracted
+afresh; corrupted certificates fail the build. It never reads teacher arrays.
+The selected V1 bank's linked Phase 1/2 plans, completion certificates and listing
+progress metadata must remain accessible while validating the cache.
+Compatible `features.npy` and `volume_60s.npy` rows are copied into independent
+V2 banks. V1 remains read-only; the finished V2 bank does not need V1 to train.
+The full V2 population is retained even when V1 covers only a subset.
+
+Cached rows skip indicator/reference extraction and V7 computation. They still
+fetch exact one-second close, price validity, volume and trade counts from the
+pinned ARTE bars, because V1 does not store those raw execution fields together
+losslessly. V2 does not invert rounded log features or substitute V1 execution
+prices. Missing listings use full extraction. The halt sidecar is still required.
+
+`--workers 2` defaults to two spawned listing processes (range 1–16), each with
+`--query-threads 2` (range 1–4). At most one task per worker is admitted; results
+are bounded and the parent owns all V2 writes and checkpoints. Each task carries
+only its listing's source unit. Array copies, price carrying and rolling activity
+use NumPy operations; causal V7 updates remain sequential within each uncached
+listing. `STOP` stops admission, joins running workers, and preserves certified
+completed rows. Progress distinguishes V1 copies, new extraction, resumed rows,
+queued/active work and failures. Worker count does not change dataset identity.
+Actual full-market throughput has not been benchmarked on the busy workstation.
 
 Every second, liquid listings are ranked by completed trailing 60-second share
 volume with a stable listing-ID tie break. Default liquidity requires 20,000
@@ -162,7 +191,7 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 $py = 'C:\Users\g835l\miniconda3\envs\ml4t\python.exe'
 # These extraction commands query the configured ARTE endpoint: do not run them
 # against the busy workstation during V1 training. Use certified local sessions.
-& $py -B research/rl_trading/v2/build_data.py --date 2026-08-20 --manifest <local-build-manifest> --ledger <local-build-ledger> --status-sidecar <certified-local-status-directory>
+& $py -B research/rl_trading/v2/build_data.py --date 2026-08-20 --manifest <local-build-manifest> --ledger <local-build-ledger> --status-sidecar <certified-local-status-directory> --workers 2 --query-threads 2
 & $py -B research/rl_trading/v2/run_train.py --train-sessions <earlier-v2-session-roots> --val-sessions <later-v2-session-roots> --run-name ppo-v2-seed17 --device cpu
 & $py -B research/rl_trading/v2/evaluate.py --run <v2-run-root> --test-sessions <strictly-later-v2-session-roots> --device cpu
 ```

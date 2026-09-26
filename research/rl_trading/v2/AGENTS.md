@@ -6,3 +6,4 @@
 - Artifacts belong under the configured runtime root. Workstation execution or synchronization is outside the initial V2 implementation task: V1 is running there.
 - Commission schedules are pinned replay scenarios; slippage remains uncalibrated. Do not claim executable profitability from synthetic or price-only validation.
 - Status sidecars must be certified by canonical ingestion. Keep observed availability separate from effective execution state; never expose future halt state to the policy or fabricate tradability from missing events.
+- Reuse compatible certified V1 market arrays read-only; copy into independent V2 banks. Never import V1 teacher arrays or let its selected population restrict V2. Keep process admission and array buffers bounded; one parent owns output publication.

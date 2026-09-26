@@ -327,7 +327,7 @@ def test_direct_builder_restart_and_certificate_without_teacher(tmp_path,monkeyp
         listing_ids=[x['listing_id'] for x in listings],clock='provider_effective_and_first_available',
         event_count=3,events_hash=file_hash(sidecar/'events.jsonl')))
     args = ['--manifest',str(manifest),'--ledger',str(tmp_path/'unused.db'),'--date','2026-08-20',
-            '--status-sidecar',str(sidecar)]
+            '--status-sidecar',str(sidecar),'--workers','1']
     assert build_data.main(args) == 0
     assert calls == [x['ticker'] for x in listings]
     assert build_data.main(args) == 0
