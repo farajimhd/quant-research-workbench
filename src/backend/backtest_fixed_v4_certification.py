@@ -43,6 +43,82 @@ _V4_ADDITIONS = frozenset({
 })
 _SIMULATED_BROKER = Path(__file__).parents[1] / "trading_runtime" / "simulated_broker.py"
 _STRATEGY_ONE_INTENT = Path(__file__).parents[1] / "trading_runtime" / "strategy_one_intent.py"
+_STRATEGY_ONE_CONTRACT = Path(__file__).parents[1] / "trading_runtime" / "strategy_one_contract.py"
+_LEGACY_PROTECTION_FAMILIES = {
+    ("order_management", "partial_target_completion"): "_complete_partial_target",
+    ("order_management", "profit_pocket_transition"): "apply_profit_pocket_transition",
+    ("order_management", "dynamic_stop_ratcheted"): "_ratchet_dynamic_protection",
+}
+
+
+def certify_strategy_one_legacy_protection_unreachable(
+    *, oms_path: Path, runtime_path: Path,
+    contract_path: Path = _STRATEGY_ONE_CONTRACT,
+) -> str:
+    """Prove the numbered strategy bypasses three legacy OMS managers."""
+    paths = (oms_path, runtime_path, contract_path)
+    sources = tuple(path.read_text(encoding="utf-8") for path in paths)
+    oms, runtime, contract = (ast.parse(source) for source in sources)
+    contract_values = {node.targets[0].id: node.value.value
+                       for node in contract.body if isinstance(node, ast.Assign)
+                       and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                       and isinstance(node.value, ast.Constant)
+                       and node.targets[0].id in {"STRATEGY_ID", "STRATEGY_NUMBER"}}
+    if contract_values != {"STRATEGY_ID": "early-squeeze-strategy", "STRATEGY_NUMBER": 1}:
+        raise ValueError("Strategy 1 legacy protection identity changed")
+    oms_classes = [node for node in oms.body if isinstance(node, ast.ClassDef)
+                   and node.name == "OrderManagementEngine"]
+    runtime_classes = [node for node in runtime.body if isinstance(node, ast.ClassDef)
+                       and node.name == "TradingRuntime"]
+    if len(oms_classes) != 1 or len(runtime_classes) != 1:
+        raise ValueError("Strategy 1 OMS construction identity changed")
+    imports = [node for node in oms.body if isinstance(node, ast.ImportFrom)
+               and node.module == "src.trading_runtime.strategy_one_contract"]
+    initializers = [node for node in oms_classes[0].body
+                    if isinstance(node, ast.FunctionDef) and node.name == "__init__"]
+    if (len(imports) != 1 or {alias.name for alias in imports[0].names}
+            != {"STRATEGY_ID", "STRATEGY_NUMBER"} or len(initializers) != 1
+            or any(sum(isinstance(node, ast.Assign)
+                       and ast.unparse(node) == f"self.{field} = {field}"
+                       for node in ast.walk(initializers[0])) != 1
+                   for field in ("strategy_id", "strategy_revision"))):
+        raise ValueError("Strategy 1 OMS identity binding changed")
+    constructors = [node for node in ast.walk(runtime_classes[0])
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "OrderManagementEngine"]
+    if len(constructors) != 1:
+        raise ValueError("Strategy 1 OMS constructor changed")
+    keyword_values = {keyword.arg: ast.unparse(keyword.value)
+                      for keyword in constructors[0].keywords}
+    if (keyword_values.get("strategy_id") != "config.strategy_id"
+            or keyword_values.get("strategy_revision") != "config.strategy_revision"):
+        raise ValueError("Strategy 1 identity is not forwarded to OMS")
+    guard = "if (self.strategy_id, self.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):"
+    returns = {
+        "_complete_partial_target": "return False",
+        "apply_profit_pocket_transition": "return []",
+        "_ratchet_dynamic_protection": "return",
+    }
+    for family, name in _LEGACY_PROTECTION_FAMILIES.items():
+        methods = [node for node in oms_classes[0].body
+                   if isinstance(node, ast.AsyncFunctionDef) and node.name == name]
+        emitters = [node for node in ast.walk(oms)
+                    if isinstance(node, ast.Constant) and node.value == family[1]]
+        body = methods[0].body if len(methods) == 1 else []
+        if (body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            body = body[1:]
+        if (len(methods) != 1 or len(emitters) != 1
+                or emitters[0] not in ast.walk(methods[0])
+                or not body or not isinstance(body[0], ast.If)
+                or ast.unparse(body[0]).split("\n", 1)[0] != guard
+                or len(body[0].body) != 1
+                or ast.unparse(body[0].body[0]) != returns[name]):
+            raise ValueError(f"Strategy 1 legacy OMS event may be reachable: {family}")
+    return sha256(json.dumps({"version": 1, "sources": tuple(
+        sha256(source.encode()).hexdigest() for source in sources)},
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def certify_fixed_rebalance_unreachable(
@@ -223,6 +299,16 @@ def certify_strategy_one_v4_projection(
             runtime_path=sources_by_name["runtime.py"],
             portfolio_path=sources_by_name["portfolio.py"])
         unreachable.add(("portfolio_management", "portfolio_rebalance"))
+    if set(families) & _LEGACY_PROTECTION_FAMILIES.keys():
+        sources_by_name = {path.name: path for path in indirect_sources}
+        if (len(sources_by_name) != len(indirect_sources)
+                or "order_management.py" not in sources_by_name
+                or "runtime.py" not in sources_by_name):
+            raise ValueError("V4 legacy protection lacks fixed-runtime source authority")
+        unreachable_proof += certify_strategy_one_legacy_protection_unreachable(
+            oms_path=sources_by_name["order_management.py"],
+            runtime_path=sources_by_name["runtime.py"])
+        unreachable.update(set(families) & _LEGACY_PROTECTION_FAMILIES.keys())
     supported = _V3_PROJECTED | _COMMON_TYPED | _V4_ADDITIONS
     unsupported = sorted(set(families) - supported - unreachable)
     if unsupported:

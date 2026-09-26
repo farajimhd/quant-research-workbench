@@ -6,6 +6,7 @@ import pytest
 from src.backend.backtest_fixed_v4_certification import (
     certify_fixed_broker_stream_unreachable,
     certify_fixed_rebalance_unreachable,
+    certify_strategy_one_legacy_protection_unreachable,
     certify_strategy_one_v4_projection,
 )
 
@@ -125,3 +126,39 @@ def test_strategy_one_rejects_replacement_capital():
         mode="mandate_fraction", value=1 / 3, allow_replacement=True))
     with pytest.raises(ValueError, match="replacement capital"):
         require_no_replacement_capital((replacement,))
+
+
+def test_numbered_protection_bypasses_legacy_oms_managers(tmp_path):
+    import asyncio
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from src.backend import backtest_fixed_v4_certification as cert
+    from src.trading_runtime.order_management import OrderManagementEngine
+    from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+
+    sources = {
+        "oms_path": Path(__file__).parents[1] / "src/trading_runtime/order_management.py",
+        "runtime_path": Path(__file__).parents[1] / "src/trading_runtime/runtime.py",
+        "contract_path": cert._STRATEGY_ONE_CONTRACT,
+    }
+    copies = {}
+    for key, source in sources.items():
+        target = tmp_path / source.name
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        copies[key] = target
+    assert len(certify_strategy_one_legacy_protection_unreachable(**copies)) == 64
+    oms = copies["oms_path"]
+    oms.write_text(oms.read_text(encoding="utf-8").replace(
+        "return False  # Strategy 1 owns its full-target amendment at completed boundaries.",
+        "pass", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="legacy OMS event may be reachable"):
+        certify_strategy_one_legacy_protection_unreachable(**copies)
+
+    manager = object.__new__(OrderManagementEngine)
+    manager.strategy_id = STRATEGY_ID
+    manager.strategy_revision = STRATEGY_NUMBER
+    async def exercise():
+        assert await manager._complete_partial_target(None, datetime.now(timezone.utc)) is False
+        assert await manager.apply_profit_pocket_transition(None) == []
+        assert await manager._ratchet_dynamic_protection(None, None) is None
+    asyncio.run(exercise())

@@ -32,6 +32,7 @@ from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES, LiveOrder, Orde
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.risk import RiskAuthority
 from src.trading_runtime.signals import CapitalRequest, StrategyIntent
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 
 
@@ -589,6 +590,8 @@ class OrderManagementEngine:
 
     async def _complete_partial_target(self, group: _ManagedOrderGroup, at: datetime) -> bool:
         """Complete only the touched target allocation; preserve its paired stop and runner."""
+        if (self.strategy_id, self.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):
+            return False  # Strategy 1 owns its full-target amendment at completed boundaries.
         if not group.intent.metadata.get('complete_partial_target') or group.protection_delegated:
             return False
         target_ids = {k for k, role in group.broker_order_roles.items() if role == 'profit_target'}
@@ -3714,6 +3717,8 @@ class OrderManagementEngine:
         return actions
 
     async def apply_profit_pocket_transition(self, group: _ManagedOrderGroup) -> list[dict[str, Any]]:
+        if (self.strategy_id, self.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):
+            return []  # Strategy 1 has no legacy pocket policy or partial target.
         profile = group.intent.resolved_protection_profile()
         if profile is None or profile.profit_pocket_transition in {
             ProfitPocketTransition.KEEP_EXISTING,
@@ -3903,6 +3908,8 @@ class OrderManagementEngine:
         group: _ManagedOrderGroup,
         snapshot: ExecutionMarketSnapshot,
     ) -> None:
+        if (self.strategy_id, self.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):
+            return  # Strategy 1 confirms its own bar-causal stop/target amendments.
         if not self.causal_execution_clock:
             await self._complete_partial_target(group, snapshot.observed_at)
         profile = group.intent.resolved_protection_profile()
