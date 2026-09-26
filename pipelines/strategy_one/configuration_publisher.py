@@ -142,10 +142,15 @@ def publish_configuration(client: Any, keeper: Any,
             "text_value,int_value,float_value,bool_value "
             f"FROM {NODE_TABLE} WHERE strategy_number=1 "
             f"AND release_attempt_id=toUUID('{attempt}') ORDER BY node_id")
-        if (len(readback) != len(nodes)
-                or node_hash(readback) != envelope["node_hash"]
-                or decode_nodes(readback) != payload):
-            raise RuntimeError("Strategy 1 typed row readback differs before release")
+        if len(readback) != len(nodes):
+            raise RuntimeError(
+                f"node_count:{len(readback)}:expected:{len(nodes)}")
+        actual_hash = node_hash(readback)
+        if actual_hash != envelope["node_hash"]:
+            raise RuntimeError(
+                f"node_hash:{actual_hash}:expected:{envelope['node_hash']}")
+        if decode_nodes(readback) != payload:
+            raise RuntimeError("node_payload_mismatch")
         if not keeper.connected:
             raise RuntimeError("Strategy 1 Keeper claim was lost before release")
         release = {
@@ -184,5 +189,9 @@ class PublicationStageError(RuntimeError):
         code_match = re.search(r"Code: ([0-9]{1,4})\b", str(cause))
         code = code_match.group(1) if code_match else "unknown"
         self.safe_diagnostic = (
-            f"{stage}:HTTP{status if type(status) is int else 'unknown'}:CH{code}")
+            f"{stage}:HTTP{status if type(status) is int else 'unknown'}:CH{code}"
+            f":{type(cause).__name__}"
+            + (f":{str(cause)}" if isinstance(cause, RuntimeError)
+               and str(cause).startswith(("node_count:", "node_hash:",
+                                           "node_payload_mismatch")) else ""))
         super().__init__(self.safe_diagnostic)

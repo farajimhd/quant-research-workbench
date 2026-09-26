@@ -125,10 +125,8 @@ def main() -> None:
         timeout=180, check=False)
     if result.returncode:
         diagnostic = result.stderr.decode("utf-8", errors="replace").strip()
-        match = re.search(
-            r"Strategy 1 receiver failed: ([A-Za-z]+)"
-            r"(:[a-z_]+:HTTP(?:[0-9]{3}|unknown):CH(?:[0-9]{1,4}|unknown)|:HTTP[0-9]{3})?",
-            diagnostic)
+        match = re.search(r"Strategy 1 receiver failed: ([A-Za-z]+)"
+                          r"(:[A-Za-z0-9_:]+)?", diagnostic)
         if match is not None:
             diagnostic = "".join(part or "" for part in match.groups())
         else:
