@@ -6545,10 +6545,18 @@ class ReplayRunController:
         self._flush_passive_market_events()
         if status == 'completed':
             await self._evaluate_momentum_session_cutoff(self.definition.session_end)
-        if self._runtime is not None and not self._runtime_finished:
+        v4_terminal = (
+            self.definition.mode == RunMode.BACKTEST
+            and getattr(getattr(self, '_journal_publisher', None), 'writer', None) is not None
+            and self._journal_publisher.writer.journal_profile == 'backtest_v4'
+        )
+        if v4_terminal:
+            await self._finish_fixed_v4(status)
+        elif self._runtime is not None and not self._runtime_finished:
             await self._runtime.finish(status=status)
             self._runtime_finished = True
-        if self.current_time is not None and (self._source_cursor or self._frame_cursor):
+        if (not v4_terminal and self.current_time is not None
+                and (self._source_cursor or self._frame_cursor)):
             await self._save_restart_checkpoint_responsive(
                 self.current_time, checkpoint_status=status)
         self._next_action_after_sequence = None
@@ -6574,6 +6582,41 @@ class ReplayRunController:
             pass
         self._finalizing = False
         await self._publish(force=True)
+
+    async def _finish_fixed_v4(self, status: str) -> None:
+        """Capture terminal account state on the actor; publish on the writer."""
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+
+        publisher = self._journal_publisher
+        if (status not in {'completed', 'stopped', 'failed'}
+                or self._runtime is None or self._runtime_finished
+                or not isinstance(self._journal, BacktestMemoryJournal)
+                or publisher is None
+                or publisher.writer.journal_profile != 'backtest_v4'
+                or not self.account_ids
+                or len(set(self.account_ids)) != len(self.account_ids)):
+            raise RuntimeError('V4 terminal requires one active typed run and account set')
+        await self._runtime.finish(status=status)
+        self._runtime_finished = True
+        records = self._journal.unfenced_records()
+        terminal = records[-1] if records else None
+        if (terminal is None or terminal.category != 'lifecycle'
+                or terminal.entity_type != 'run'
+                or terminal.entity_id != self.run_id
+                or terminal.payload.get('status') != status):
+            raise RuntimeError('V4 terminal lifecycle is not last')
+        captures = tuple(self._runtime.portfolio.capture_recovery_snapshot(
+            account_id, state_revision=terminal.sequence,
+            snapshot_at=terminal.event_time)
+            for account_id in sorted(self.account_ids))
+        terminal_task = publisher.enqueue_terminal(captures)
+        try:
+            await asyncio.shield(terminal_task)
+        except asyncio.CancelledError:
+            # A controller cancellation must not close the writer while its
+            # terminal batch and account anchors are still being published.
+            await terminal_task
+            raise
 
     def _schedule_bar_gpt_scope(self, event_time: datetime) -> None:
         if self._bar_gpt_fields_required():

@@ -174,6 +174,55 @@ def test_v4_terminal_appended_before_running_task_starts_stays_out_of_base_queue
     asyncio.run(exercise())
 
 
+def test_fixed_controller_v4_finish_captures_exact_terminal_actor_state():
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+        def submit_base_v4(self, batch):
+            return FakeWriter.submit(self, batch)
+
+        def submit_terminal_backtest(self, batch, captures):
+            assert batch.last_sequence == captures[0].state_revision
+            assert captures[0].snapshot_at == AT
+            return FakeWriter.submit(self, batch)
+
+    class Portfolio:
+        def capture_recovery_snapshot(self, account_id, *, state_revision, snapshot_at):
+            assert account_id == "DU1" and state_revision == 3
+            return CapturedPortfolioSnapshot(
+                RUN, account_id, state_revision, snapshot_at, "primary",
+                "enabled", "synchronized", "broker-snapshot-1", AT,
+                "", 1000.0, None, None, (), (), (), (), (), (),
+            )
+
+    async def exercise():
+        journal = _journal()
+        writer = V4Writer()
+        publisher = _publisher(journal, writer)
+        controller = object.__new__(ReplayRunController)
+        controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+        controller.run_id = RUN
+        controller._account_map = {"primary": "DU1"}
+        controller._journal = journal
+        controller._journal_publisher = publisher
+        controller._runtime_finished = False
+
+        async def finish(*, status):
+            journal.append(run_id=RUN, category="lifecycle", entity_type="run",
+                           entity_id=RUN, event_time=AT,
+                           payload={"status": status, "processed_events": 2})
+
+        controller._runtime = SimpleNamespace(
+            finish=finish, portfolio=Portfolio())
+        await controller._finish_fixed_v4("completed")
+        assert controller._runtime_finished
+        assert publisher.fenced_sequence == 3
+        assert journal.pending_record_count == 0
+        assert [batch.status for batch in writer.submitted] == ["running", "completed"]
+
+    asyncio.run(exercise())
+
+
 def test_invalid_evidence_fails_projection_before_writer_submission():
     async def exercise():
         journal = BacktestMemoryJournal(run_id=RUN)
