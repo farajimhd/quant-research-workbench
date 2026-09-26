@@ -1,0 +1,33 @@
+"""Pivot campaign is producer-only and dry-run safe by default."""
+import pytest
+
+from scripts.clickhouse import publish_strategy_one_pivots as command
+
+
+def test_dry_run_never_connects_or_writes(monkeypatch, capsys):
+    monkeypatch.setattr(command, "_certified_plan", lambda **_kwargs:
+                        pytest.fail("dry run accessed market authority"))
+    assert command.main([]) == 0
+    output = capsys.readouterr()
+    assert "DRY RUN" in output.out
+    assert "no connection or write" in output.out
+    assert output.err == ""
+
+
+def test_apply_requires_workstation_and_confirmation(monkeypatch, capsys):
+    monkeypatch.setattr(command.platform, "node", lambda: "LAPTOP")
+    with pytest.raises(SystemExit):
+        command.main(["--apply"])
+    assert command.main(["--apply", "--confirm-pivot-publication"]) == 1
+    assert "managed workstation" in capsys.readouterr().err
+
+
+def test_apply_reports_verified_campaign_result(monkeypatch):
+    monkeypatch.setattr(command.platform, "node", lambda: "DESKTOP-SAAI85T")
+    calls = []
+    monkeypatch.setattr(command, "publish_session", lambda **kwargs:
+                        calls.append(kwargs) or {"published": 1})
+    assert command.main(["--apply", "--confirm-pivot-publication",
+                         "--session-date", "2026-08-18", "--workers", "4"]) == 0
+    assert calls == [{"session_date": "2026-08-18",
+                      "build_id": "", "workers": 4}]

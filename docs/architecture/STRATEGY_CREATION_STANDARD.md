@@ -125,8 +125,11 @@ The producer-side publisher inserts interval rows under an immutable attempt,
 reads them back, and publishes coverage last; an uncertain insert cannot
 authorize a Backtest read. Backtest now certifies selected ticker coverage,
 source bar attempts, scalar content hashes, and causal visibility at preflight
-and rechecks its token at launch. Operator provisioning and a full historical
-campaign are not yet complete, so this product currently blocks Strategy 1.
+and rechecks its token at launch. The separate workstation producer command
+`scripts/clickhouse/publish_strategy_one_pivots.py` publishes only the sealed
+candidate tickers with bounded workers and coverage-last restart behavior.
+The full historical campaign is not yet complete, so this product currently
+blocks Strategy 1.
 `src/backend/backtest_strategy_one_preparation.py` now scans the full certified
 universe for completed-bar Early Squeeze starts, loads only episode-bearing
 tickers in bounded read-only lanes, and merges compact candidate cursors in
