@@ -149,7 +149,7 @@ def load_verified_commit_v4(
 ) -> tuple[dict, tuple[dict, ...]]:
     """SELECT one fenced batch and verify every normalized detail row."""
     from src.trading_runtime.arte_journal_writer import (
-        _CONTRACTS, _canonical_typed_content, _literal, _rows,
+        _CONTRACTS, _literal, _rows,
     )
 
     identity = str(UUID(batch_id))
@@ -174,6 +174,26 @@ def load_verified_commit_v4(
         f"{filters}LIMIT 257 FORMAT JSONEachRow")
     if len(family_rows) > 256 or len(family_rows) != commit["family_count"]:
         raise RuntimeError("V4 commit family readback is incomplete or unbounded")
+    details = _load_verified_details_v4(
+        client, run_id=run_id, batch_id=identity,
+        family_rows=family_rows, max_rows_per_family=max_rows_per_family)
+    try:
+        verify_commit_v4(commit, family_rows, details)
+    except ValueError as exc:
+        raise RuntimeError("V4 committed family seal differs from readback") from exc
+    return commit, tuple(family_rows)
+
+
+def _load_verified_details_v4(
+    client, *, run_id: str, batch_id: str,
+    family_rows: Sequence[Mapping], max_rows_per_family: int,
+) -> dict[str, list[tuple[str, str]]]:
+    from src.trading_runtime.arte_journal_writer import (
+        _CONTRACTS, _canonical_typed_content, _literal, _rows,
+    )
+
+    filters = (f"WHERE run_id={_literal(run_id)} "
+               f"AND batch_id=toUUID({_literal(batch_id)}) ")
     details = {}
     for family in family_rows:
         name = str(family["family_name"])
@@ -197,13 +217,103 @@ def load_verified_commit_v4(
             digest = sha256(canonical_json(_canonical_typed_content(
                 name, content, stored_utc=True)).encode()).hexdigest()
             if (row["run_id"] != run_id
-                    or str(UUID(str(row["batch_id"]))) != identity
+                    or str(UUID(str(row["batch_id"]))) != batch_id
                     or row["content_hash"] != digest):
                 raise RuntimeError("V4 typed detail differs from its row hash")
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
-    try:
-        verify_commit_v4(commit, family_rows, details)
-    except ValueError as exc:
-        raise RuntimeError("V4 committed family seal differs from readback") from exc
-    return commit, tuple(family_rows)
+    return details
+
+
+def publish_base_typed_batch_v4(client, batch) -> str:
+    """Publish a base typed batch with detail-first, commit-last V4 fencing.
+
+    Backtest V3-specific child families require a separate complete extension;
+    this base path cannot silently omit them. The execution thread must invoke
+    this on a bounded writer lane, never inline with market-data processing.
+    """
+    from src.trading_runtime.arte_journal_writer import (
+        TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
+        _sealed_families,
+    )
+
+    if (not isinstance(batch, TypedJournalBatch)
+            or not 1 <= len(batch.events) <= 512):
+        raise ValueError("V4 publication needs one bounded typed event batch")
+    families = _sealed_families(batch)
+    commit, family_rows = prepare_commit_v4(
+        run_id=batch.run_id, run_month=batch.run_month,
+        attempt_id=batch.attempt_id, batch_id=batch.batch_id,
+        prior_batch_id=batch.prior_batch_id,
+        first_sequence=batch.first_sequence, last_sequence=batch.last_sequence,
+        source_cursor=batch.source_cursor, status=batch.status,
+        sealed_families=families, committed_at=datetime.now(timezone.utc))
+    filters = (f"WHERE run_id={_literal(batch.run_id)} "
+               f"AND batch_id=toUUID({_literal(batch.batch_id)}) ")
+    commit_columns = ",".join(name for name, _ in
+                              _CONTRACTS["trading_commit_v4"].columns)
+    existing_commits = _rows(client,
+        f"SELECT {commit_columns} FROM arte.trading_commit_v4 "
+        f"{filters}LIMIT 2 FORMAT JSONEachRow")
+    if existing_commits:
+        existing, _ = load_verified_commit_v4(
+            client, run_id=batch.run_id, batch_id=batch.batch_id)
+        if existing["content_hash"] != commit["content_hash"]:
+            raise RuntimeError("V4 batch conflicts with a committed cursor")
+        return batch.batch_id
+
+    for name, rows in families:
+        if not rows:
+            continue
+        existing = _rows(client,
+            f"SELECT record_id,content_hash FROM arte.{name} "
+            f"{filters}FORMAT JSONEachRow")
+        identities = sorted((str(UUID(str(row["record_id"]))),
+                             str(row["content_hash"])) for row in existing)
+        expected = _identity(rows)
+        if existing and identities != expected:
+            raise RuntimeError("V4 typed detail conflicts with a prior attempt")
+        if not existing:
+            _insert(client, name, tuple(rows), f"{batch.batch_id}:{name}:v4",
+                    dispatch_batch_id=batch.batch_id,
+                    dispatch_sequence=batch.last_sequence)
+    actual_details = _load_verified_details_v4(
+        client, run_id=batch.run_id, batch_id=batch.batch_id,
+        family_rows=family_rows, max_rows_per_family=65_536)
+    verify_commit_v4(commit, family_rows, actual_details)
+
+    family_columns = ",".join(name for name, _ in
+                              _CONTRACTS["trading_commit_family_v4"].columns)
+    existing_families = _rows(client,
+        f"SELECT {family_columns} FROM arte.trading_commit_family_v4 "
+        f"{filters}LIMIT 257 FORMAT JSONEachRow")
+    by_name = {}
+    for row in existing_families:
+        name = str(row["family_name"])
+        if name in by_name:
+            raise RuntimeError("V4 family publication repeated a family")
+        by_name[name] = row
+    if set(by_name) - {row["family_name"] for row in family_rows}:
+        raise RuntimeError("V4 family publication includes foreign evidence")
+    for row in family_rows:
+        prior = by_name.get(row["family_name"])
+        if prior is not None and prior != row:
+            raise RuntimeError("V4 family publication conflicts with a prior attempt")
+        if prior is None:
+            _insert(client, "trading_commit_family_v4", (row,),
+                    f"{batch.batch_id}:family:{row['family_name']}",
+                    dispatch_batch_id=batch.batch_id,
+                    dispatch_sequence=batch.last_sequence)
+    verified_families = _rows(client,
+        f"SELECT {family_columns} FROM arte.trading_commit_family_v4 "
+        f"{filters}LIMIT 257 FORMAT JSONEachRow")
+    if sorted(verified_families, key=lambda row: row["family_name"]) != list(family_rows):
+        raise RuntimeError("V4 family publication lacks complete readback")
+    _insert(client, "trading_commit_v4", (commit,),
+            f"{batch.batch_id}:commit:v4", dispatch_batch_id=batch.batch_id,
+            dispatch_sequence=batch.last_sequence)
+    loaded, _ = load_verified_commit_v4(
+        client, run_id=batch.run_id, batch_id=batch.batch_id)
+    if loaded["content_hash"] != commit["content_hash"]:
+        raise RuntimeError("V4 committed cursor differs from the intended batch")
+    return batch.batch_id

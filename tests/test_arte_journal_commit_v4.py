@@ -4,7 +4,8 @@ from datetime import date, datetime, timezone
 import pytest
 
 from src.trading_runtime.arte_journal_commit_v4 import (
-    load_verified_commit_v4, prepare_commit_v4, verify_commit_v4,
+    load_verified_commit_v4, prepare_commit_v4,
+    publish_base_typed_batch_v4, verify_commit_v4,
 )
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import _sealed_families
@@ -115,3 +116,40 @@ def test_v4_cold_readback_recomputes_each_typed_row_hash():
     with pytest.raises(RuntimeError, match="family seal"):
         load_verified_commit_v4(
             client, run_id=commit["run_id"], batch_id=commit["batch_id"])
+
+
+def test_v4_publication_is_detail_first_commit_last_and_idempotent():
+    client = MemoryClient()
+    item = batch()
+    assert publish_base_typed_batch_v4(client, item) == item.batch_id
+    assert client.inserts == ["trading_event_v1", "trading_commit_family_v4",
+                              "trading_commit_v4"]
+    count = len(client.inserts)
+    assert publish_base_typed_batch_v4(client, item) == item.batch_id
+    assert len(client.inserts) == count
+    client.tables["trading_event_v1"][0]["entity_id"] = "tampered"
+    with pytest.raises(RuntimeError, match="row hash"):
+        publish_base_typed_batch_v4(client, item)
+
+
+def test_v4_publication_recovers_partial_family_prefix_without_duplicate_rows():
+    class InterruptedClient(MemoryClient):
+        fail_commit_once = True
+
+        def execute(self, sql):
+            if sql.startswith("INSERT INTO arte.trading_commit_v4 ") \
+                    and self.fail_commit_once:
+                self.fail_commit_once = False
+                raise OSError("simulated commit transport failure")
+            return super().execute(sql)
+
+    client = InterruptedClient()
+    item = batch()
+    with pytest.raises(OSError, match="transport failure"):
+        publish_base_typed_batch_v4(client, item)
+    assert client.inserts == ["trading_event_v1", "trading_commit_family_v4"]
+    assert publish_base_typed_batch_v4(client, item) == item.batch_id
+    assert client.inserts == ["trading_event_v1", "trading_commit_family_v4",
+                              "trading_commit_v4"]
+    assert len(client.tables["trading_event_v1"]) == 1
+    assert len(client.tables["trading_commit_family_v4"]) == 1
