@@ -81,6 +81,35 @@ def approved_oms_lineage_intent(group: FrozenOmsGroup) -> StrategyIntent:
     return group.intent
 
 
+def canonical_oms_order_metadata(
+    group: FrozenOmsGroup, order: OrderRequest,
+    authorized_protection: Mapping[str, JournalRecord] | None = None,
+) -> dict[str, Any]:
+    """Rebuild initial lineage plus only the target amendment's typed delta."""
+    from src.trading_runtime.strategy_orders import canonical_runtime_metadata
+
+    metadata = canonical_runtime_metadata(order, approved_oms_lineage_intent(group))
+    proof = (authorized_protection or {}).get("target")
+    if (proof is not None
+            and proof.category == "protection"
+            and proof.entity_type == "protection_change"
+            and proof.account_id == group.account_id
+            and proof.payload.get("order_group_id") == group.group_id
+            and proof.payload.get("source_intent_id") == group.intent.intent_id
+            and proof.payload.get("phase") == "effective"
+            and proof.payload.get("kind") == "target"
+            and proof.payload.get("action") == "replace_profit_target"
+            and proof.payload.get("client_order_id") == order.cOID
+            and proof.payload.get("price") == order.price
+            and proof.payload.get("price") == group.intent.profit_target_price
+            and isinstance(proof.payload.get("intent_id"), str)
+            and proof.payload["intent_id"]):
+        metadata = {**metadata, "reason": "structural_profit_target_advanced",
+                    "replacement_intent_id": proof.payload["intent_id"],
+                    "target_price": proof.payload["price"]}
+    return metadata
+
+
 def freeze_oms_group(group: Any) -> FrozenOmsGroup:
     """Copy only financial/order facts; never copy asyncio tasks or events."""
     return FrozenOmsGroup(
@@ -248,9 +277,6 @@ def oms_group_state_batch(
     if any(not isinstance(value, str) or not value
            for value in (*group.warning_message_ids, *group.plan.cancel_oca_groups)):
         raise ValueError("OMS warning and OCA identities must be nonempty strings")
-    from src.trading_runtime.strategy_orders import canonical_runtime_metadata
-
-    lineage_intent = approved_oms_lineage_intent(group)
     for order in group.orders:
         if order.strategyParameters:
             raise ValueError("OMS order has unmodeled broker algo evidence")
@@ -259,7 +285,8 @@ def oms_group_state_batch(
                 "canonical_run_id": run_id,
                 "canonical_strategy_id": strategy_id,
                 "canonical_strategy_revision": strategy_revision,
-                "canonical_metadata": canonical_runtime_metadata(order, lineage_intent),
+                "canonical_metadata": canonical_oms_order_metadata(
+                    group, order, authorized_protection),
             }
             if order.raw != expected_raw:
                 changed = sorted(key for key in set(order.raw) | set(expected_raw)

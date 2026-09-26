@@ -36,10 +36,10 @@ NIL_BATCH_ID = str(UUID(int=0))
 
 
 def committed_oms_order_lineage(group: object, *, run_id: str,
-                                strategy_id: str, strategy_revision: int) -> dict[str, tuple]:
+                                strategy_id: str, strategy_revision: int,
+                                authorized_protection: Mapping | None = None) -> dict[str, tuple]:
     """Index only lineage already validated against a typed OMS transition."""
-    from src.trading_runtime.strategy_orders import canonical_runtime_metadata
-    from src.trading_runtime.arte_oms_projection import approved_oms_lineage_intent
+    from src.trading_runtime.arte_oms_projection import canonical_oms_order_metadata
 
     result = {}
     for order in group.orders:
@@ -49,8 +49,8 @@ def committed_oms_order_lineage(group: object, *, run_id: str,
             "strategy_id": strategy_id,
             "canonical_strategy_revision": strategy_revision,
             "canonical_run_id": run_id,
-            "canonical_metadata": canonical_runtime_metadata(
-                order, approved_oms_lineage_intent(group)),
+            "canonical_metadata": canonical_oms_order_metadata(
+                group, order, authorized_protection),
         }
         lineage = (expected, group.account_id, order.ticker.upper(), order.conid)
         prior = result.setdefault(order.cOID, lineage)
@@ -190,6 +190,7 @@ def project_pending_backtest_v4_prefix(
             if source is None:
                 raise RuntimeError("V4 OMS transition lacks its committed source intent")
             source_batch, source_intent = source
+            protection_proof = journal.oms_effective_protection_for_record(record)
             unit = oms_group_state_batch(
                 group, run_id=record.run_id, run_month=run_month,
                 attempt_id=attempt, batch_id=batch_id,
@@ -202,7 +203,7 @@ def project_pending_backtest_v4_prefix(
                 committed_intent_batch_id=source_batch.batch_id,
                 admission_source_intent=source_intent,
                 admission_reservation=admission,
-                authorized_protection=journal.oms_effective_protection_for_record(record),
+                authorized_protection=protection_proof,
                 journal_record_id=record.record_id,
                 correlation_id=record.payload.get("correlation_id", ""),
                 causation_id=record.payload.get("causation_id", ""))
@@ -213,7 +214,8 @@ def project_pending_backtest_v4_prefix(
             for client_order_id, lineage in committed_oms_order_lineage(
                     group, run_id=record.run_id,
                     strategy_id=record.payload["strategy_id"],
-                    strategy_revision=record.payload["strategy_revision"]).items():
+                    strategy_revision=record.payload["strategy_revision"],
+                    authorized_protection=protection_proof).items():
                 if client_order_id in order_lineage and order_lineage[client_order_id] != lineage:
                     raise RuntimeError("OMS changed committed order lineage")
                 order_lineage[client_order_id] = lineage

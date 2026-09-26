@@ -26,7 +26,9 @@ from src.trading_runtime.arte_protection_reconciliation_v4 import (
     V4ProtectionReconciliationBatch, project_protection_reconciliation_v4,
 )
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
-from src.trading_runtime.arte_oms_projection import oms_group_state_batch
+from src.trading_runtime.arte_oms_projection import (
+    canonical_oms_order_metadata, oms_group_state_batch,
+)
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary
 from src.trading_runtime.domain import InstrumentContract, TradingMode
 from src.trading_runtime.execution_policies import ExecutionMarketSnapshot
@@ -373,6 +375,31 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
             assert oms_group_state_batch(
                 amended, authorized_protection={"stop": proof},
                 **amended_args).events[0]["entity_id"] == first.group_id
+            target_order = next(order for order in first.orders
+                                if order.raw.get("canonical_metadata", {}).get(
+                                    "execution_role") == "profit_target")
+            raised_target = first.intent.profit_target_price + .01
+            amended_target = replace(first, intent=replace(
+                first.intent, profit_target_price=raised_target))
+            amended_order = replace(target_order, price=raised_target)
+            target_proof = replace(proof, payload={
+                **proof.payload, "kind": "target", "price": raised_target,
+                "action": "replace_profit_target",
+                "client_order_id": target_order.cOID,
+                "intent_id": "target-amendment-1"})
+            initial_metadata = canonical_oms_order_metadata(
+                amended_target, amended_order)
+            revised_metadata = canonical_oms_order_metadata(
+                amended_target, amended_order, {"target": target_proof})
+            assert revised_metadata == {
+                **initial_metadata, "reason": "structural_profit_target_advanced",
+                "replacement_intent_id": "target-amendment-1",
+                "target_price": raised_target}
+            assert canonical_oms_order_metadata(
+                amended_target, amended_order,
+                {"target": replace(target_proof, payload={
+                    **target_proof.payload, "client_order_id": "foreign"})}
+            ) == initial_metadata
             projected_prefix = project_pending_backtest_v4_prefix(
                 journal, attempt_id=str(UUID(int=14)),
                 run_month=date(2026, 8, 1), prior_sequence=0,
