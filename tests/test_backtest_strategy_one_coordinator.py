@@ -1,12 +1,15 @@
 """The numbered proposal lane keeps broker, activation, and decision order."""
 import asyncio
 from dataclasses import replace
+import numpy as np
 
 from src.backend.backtest_strategy_one_activation import StrategyOneActivation
 from src.backend.backtest_strategy_one_coordinator import run_strategy_one_proposals
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
 from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryScheduler
-from src.trading_runtime.strategy_engine import AssignmentStatus
+from src.backend.backtest_strategy_one_static_gate import (
+    MISSING_INITIAL_PROTECTION, StrategyOneStaticGate,
+)
 from test_strategy_one_stateful import _facts
 
 
@@ -46,6 +49,7 @@ def test_proposal_lane_uses_broker_before_financial_entry_without_order():
         scheduler, entry, process_broker_boundary=broker,
         financial_views=view,
         on_entry_proposal=proposal, on_management=management,
+        position_source_owned=lambda _view: False,
         financially_active_tickers=lambda: (), finish_boundary=finished,
         observe_activation=activated, observe_completed_seconds=seconds))
     assert (counts.completed_boundaries, counts.candidate_decisions,
@@ -53,6 +57,37 @@ def test_proposal_lane_uses_broker_before_financial_entry_without_order():
     assert actions == [("activation", "AAA", 30_000),
                        ("broker", "AAA", 31_000),
                        ("proposal", "AAA", 31_000)]
+
+
+def test_vectorized_rejection_prevents_stateful_candidate_decision():
+    candidate, fact, activation, financial = _facts()
+    entry = CertifiedEntryEvidencePlan(
+        "b" * 16, "2026-08-18", (), (activation,), (fact,), "e" * 64)
+    gate = StrategyOneStaticGate(
+        (fact,), np.array([MISSING_INITIAL_PROTECTION], dtype=np.uint8),
+        np.array([], dtype=np.int64))
+    calls = []
+
+    async def noop(*_args):
+        pass
+
+    async def views(*_args):
+        calls.append("financial")
+        return (financial,)
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date="2026-08-18", candidate_rows=iter((candidate,)),
+        activation_rows=iter((StrategyOneActivation(30_000, "AAA", 100_000),)),
+        active_source=lambda _ticker, _after: iter(()))
+    counts = asyncio.run(run_strategy_one_proposals(
+        scheduler, entry, process_broker_boundary=noop,
+        financial_views=views, on_entry_proposal=noop, on_management=noop,
+        position_source_owned=lambda _view: False,
+        financially_active_tickers=lambda: (), finish_boundary=noop,
+        observe_activation=noop, observe_completed_seconds=noop,
+        static_gate=gate))
+    assert counts.candidate_decisions == counts.entry_proposals == 0
+    assert calls == []
 
 
 def test_held_candidate_routes_to_management_not_another_entry():
@@ -83,6 +118,7 @@ def test_held_candidate_routes_to_management_not_another_entry():
         scheduler, entry, process_broker_boundary=noop,
         financial_views=view,
         on_entry_proposal=proposal, on_management=management,
+        position_source_owned=lambda _view: False,
         financially_active_tickers=lambda: tuple(sorted(active)),
         finish_boundary=noop, observe_activation=noop,
         observe_completed_seconds=noop))
@@ -106,8 +142,9 @@ def test_broker_flattened_active_ticker_still_clears_position_management():
         pass
 
     async def view(_ticker, _boundary):
-        return (replace(financial, status=AssignmentStatus.MANAGING,
-                        completed_entries=1),)
+        # This state could otherwise admit a reentry on the very bucket that
+        # just filled the old protective exit.
+        return (financial,)
 
     async def management(current, _rows, boundary):
         managed.append((current.position_quantity, boundary))
@@ -120,6 +157,7 @@ def test_broker_flattened_active_ticker_still_clears_position_management():
         scheduler, entry, process_broker_boundary=broker,
         financial_views=view, on_entry_proposal=noop,
         on_management=management,
+        position_source_owned=lambda _view: True,
         financially_active_tickers=lambda: tuple(sorted(active)),
         finish_boundary=noop, observe_activation=noop,
         observe_completed_seconds=noop))
@@ -150,7 +188,8 @@ def test_one_ticker_evaluates_all_accounts_in_stable_financial_order():
     counts = asyncio.run(run_strategy_one_proposals(
         scheduler, entry, process_broker_boundary=noop,
         financial_views=views, on_entry_proposal=proposal,
-        on_management=noop, financially_active_tickers=lambda: (),
+        on_management=noop, position_source_owned=lambda _view: False,
+        financially_active_tickers=lambda: (),
         finish_boundary=noop, observe_activation=noop,
         observe_completed_seconds=noop))
     assert counts.candidate_decisions == counts.entry_proposals == 2
@@ -185,7 +224,8 @@ def test_second_assignment_sees_post_submission_financial_state():
     counts = asyncio.run(run_strategy_one_proposals(
         scheduler, entry, process_broker_boundary=noop,
         financial_views=views, on_entry_proposal=proposal,
-        on_management=noop, financially_active_tickers=lambda: (),
+        on_management=noop, position_source_owned=lambda _view: False,
+        financially_active_tickers=lambda: (),
         finish_boundary=noop, observe_activation=noop,
         observe_completed_seconds=noop))
     assert submitted == ["assignment-1"]

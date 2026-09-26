@@ -22,6 +22,7 @@ from src.backend.backtest_strategy_one_management import StrategyOneManagementRu
 from src.backend.backtest_strategy_one_scheduler import (
     StrategyOneBoundaryScheduler, StrategyOneBoundaryWork,
 )
+from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
 from src.trading_runtime.runtime import RunMode
 from src.trading_runtime.strategy_engine import StrategyAssignment
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
@@ -31,6 +32,7 @@ async def run_strategy_one_fixed_session(
     scheduler: StrategyOneBoundaryScheduler,
     entry: CertifiedEntryEvidencePlan, evidence: StrategyOneCausalEvidence,
     manager: StrategyOneManagementRunner, *, runtime: Any,
+    static_gate: StrategyOneStaticGate,
     assignments: Sequence[StrategyAssignment],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
 ) -> StrategyOneProposalCounts:
@@ -46,6 +48,7 @@ async def run_strategy_one_fixed_session(
             or not isinstance(entry, CertifiedEntryEvidencePlan)
             or not isinstance(evidence, StrategyOneCausalEvidence)
             or not isinstance(manager, StrategyOneManagementRunner)
+            or not isinstance(static_gate, StrategyOneStaticGate)
             or manager.runtime is not runtime or manager.evidence is not evidence
             or scheduler.session_date != entry.session_date
             or not isinstance(getattr(runtime, "journal", None), BacktestMemoryJournal)
@@ -74,6 +77,9 @@ async def run_strategy_one_fixed_session(
     session = date.fromisoformat(scheduler.session_date)
     if evidence.session != session:
         raise ValueError("Strategy 1 V7 evidence differs from fixed session")
+    if any(entry.lookup(fact.ticker, fact.boundary_ms) != fact
+           for fact in static_gate.facts):
+        raise ValueError("Strategy 1 vectorized gate differs from certified entry facts")
 
     async def process_broker(work: StrategyOneBoundaryWork) -> None:
         rows = [resolutions[100] for _, resolutions in work.broker_rows
@@ -101,7 +107,9 @@ async def run_strategy_one_fixed_session(
         financial_views=financial_views,
         on_entry_proposal=manager.on_entry_proposal,
         on_management=manager.on_management,
+        position_source_owned=manager.owns_position_source,
         financially_active_tickers=financially_active_tickers,
         finish_boundary=finish_boundary,
         observe_activation=evidence.observe_activation,
-        observe_completed_seconds=evidence.observe_completed_seconds)
+        observe_completed_seconds=evidence.observe_completed_seconds,
+        static_gate=static_gate)

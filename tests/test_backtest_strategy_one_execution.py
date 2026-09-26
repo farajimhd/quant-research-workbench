@@ -2,6 +2,7 @@
 import asyncio
 from datetime import date
 from types import SimpleNamespace
+import numpy as np
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
@@ -9,6 +10,7 @@ from src.backend.backtest_strategy_one_evidence import StrategyOneCausalEvidence
 from src.backend.backtest_strategy_one_execution import run_strategy_one_fixed_session
 from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
 from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryScheduler
+from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
 from src.trading_runtime.runtime import RunMode
 from src.trading_runtime.strategy_engine import (
     AssignmentStatus, StrategyAssignment, StrategyPermissions,
@@ -97,6 +99,9 @@ def test_fixed_adapter_clears_position_after_broker_exit_on_same_boundary():
         await manager.on_entry_proposal(proposal)
         counts = await run_strategy_one_fixed_session(
             scheduler, entry, evidence, manager, runtime=runtime,
+            static_gate=StrategyOneStaticGate(
+                (), np.array([], dtype=np.uint8),
+                np.array([], dtype=np.int64)),
             assignments=(assignment,), finish_boundary=finish)
         assert (counts.completed_boundaries, counts.management_evaluations) == (2, 2)
 

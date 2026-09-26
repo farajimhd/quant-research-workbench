@@ -39,6 +39,13 @@ class StrategyOneManagementRunner:
         self._positions: dict[tuple[str, str, str], ProtectionState] = {}
         self._pending_breaks: dict[tuple[str, str, str], list[ResistanceBreak]] = {}
 
+    def owns_position_source(self, financial: StrategyOneFinancialView) -> bool:
+        """Check ownership before cleanup; a same-bucket exit cannot reenter."""
+        if not isinstance(financial, StrategyOneFinancialView):
+            raise TypeError("Strategy 1 ownership needs typed financial state")
+        return ((financial.account_id, financial.assignment_id, financial.ticker)
+                in self._submitted)
+
     async def on_entry_proposal(self, proposal: StrategyOneEntryProposal) -> None:
         if not isinstance(proposal, StrategyOneEntryProposal):
             raise TypeError("Strategy 1 manager needs a numbered entry proposal")

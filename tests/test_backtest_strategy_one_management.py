@@ -76,8 +76,10 @@ def test_breaks_wait_for_fresh_quote_then_commit_only_confirmed_oms_state():
         source, runtime = _Evidence(), _Runtime()
         manager = StrategyOneManagementRunner(
             runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        assert not manager.owns_position_source(_financial(held=0.))
         await manager.on_entry_proposal(_proposal())
         held = _financial()
+        assert manager.owns_position_source(held)
         await manager.on_management(held, {}, 30_100)
         key = ("DU1", "A1", "AAA")
         assert manager._positions[key].stop == 9.69
@@ -101,6 +103,7 @@ def test_breaks_wait_for_fresh_quote_then_commit_only_confirmed_oms_state():
         await manager.on_management(replace(held, position_quantity=0.), {}, 31_200)
         assert key not in manager._positions
         assert key not in manager._submitted
+        assert not manager.owns_position_source(held)
 
     asyncio.run(run())
 

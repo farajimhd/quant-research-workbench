@@ -16,6 +16,7 @@ from src.backend.backtest_strategy_one_scheduler import (
     StrategyOneBoundaryScheduler, StrategyOneBoundaryWork,
     run_strategy_one_boundaries,
 )
+from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
 from src.backend.backtest_strategy_one_stateful import propose_certified_strategy_one_entry
 from src.trading_runtime.strategy_one_stateful import (
     StrategyOneEntryProposal, StrategyOneFinancialView,
@@ -37,18 +38,22 @@ async def run_strategy_one_proposals(
     financial_views: Callable[[str, int], Awaitable[tuple[StrategyOneFinancialView, ...]]],
     on_entry_proposal: Callable[[StrategyOneEntryProposal], Awaitable[None]],
     on_management: Callable[[StrategyOneFinancialView, Mapping[int, Mapping], int], Awaitable[None]],
+    position_source_owned: Callable[[StrategyOneFinancialView], bool],
     financially_active_tickers: Callable[[], tuple[str, ...]],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     observe_activation: Callable[[object], Awaitable[None]],
     observe_completed_seconds: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
+    static_gate: StrategyOneStaticGate | None = None,
 ) -> StrategyOneProposalCounts:
     """Dispatch certified entry proposals after broker liquidity at each clock."""
     if (not isinstance(scheduler, StrategyOneBoundaryScheduler)
             or not isinstance(entry, CertifiedEntryEvidencePlan)
             or scheduler.session_date != entry.session_date
+            or static_gate is not None
+            and not isinstance(static_gate, StrategyOneStaticGate)
             or any(not callable(callback) for callback in (
                 process_broker_boundary, financial_views, on_entry_proposal,
-                on_management, financially_active_tickers, finish_boundary,
+                on_management, position_source_owned, financially_active_tickers, finish_boundary,
                 observe_activation, observe_completed_seconds))):
         raise ValueError("Strategy 1 proposal lane lacks pinned causal callbacks")
     activations = {(row.ticker, row.episode_start_ms): row
@@ -99,6 +104,21 @@ async def run_strategy_one_proposals(
             raise ValueError("Strategy 1 proposal lacks frozen activation")
         for index, identity in enumerate(ordered_ids):
             current = current_by_id[identity]
+            # A broker exit may have flattened this assignment earlier in
+            # the same aggregate bucket. Retire its old source first, and
+            # never order a new entry after an unordered same-bucket fill.
+            owned = position_source_owned(current)
+            if type(owned) is not bool:
+                raise TypeError("Strategy 1 source ownership must be boolean")
+            if owned:
+                management_count += 1
+                await on_management(current, resolutions, boundary)
+                if index + 1 < len(ordered_ids):
+                    refreshed = await current_views()
+                    if set(refreshed) != set(ordered_ids):
+                        raise ValueError("Strategy 1 assignment roster changed within boundary")
+                    current_by_id = refreshed
+                continue
             decision = propose_certified_strategy_one_entry(
                 candidate, fact, activation, current)
             candidate_count += 1
@@ -122,6 +142,7 @@ async def run_strategy_one_proposals(
         financially_active_tickers=financially_active_tickers,
         finish_boundary=finish_boundary,
         observe_activation=observe_activation,
-        observe_completed_seconds=observe_completed_seconds)
+        observe_completed_seconds=observe_completed_seconds,
+        static_gate=static_gate)
     return StrategyOneProposalCounts(
         completed, candidate_count, proposal_count, management_count)
