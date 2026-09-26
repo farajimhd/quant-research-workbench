@@ -26,11 +26,14 @@ from scripts.clickhouse.provision_strategy_one_candidate_producer import (
     PRINCIPAL, WORKSTATION_IPV4, _GRANTS, _credential, _grant_set,
 )
 from scripts.clickhouse.publish_strategy_one_candidates import _certified_plan
+from src.backend.backtest_market_data import readonly_clickhouse_client
 from src.trading_runtime.strategy_one_identity_schema import verify_tables
 
 
 def publish_session(*, session_date: str, build_id: str) -> str:
     market = _certified_plan(session_date=session_date, build_id=build_id)
+    with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
+        verify_tables(reader)
     password = _credential(account_exists=True)
     with closing(ClickHouseHttpClient(
             f"http://{WORKSTATION_IPV4}:18123", PRINCIPAL, password,
@@ -38,7 +41,6 @@ def publish_session(*, session_date: str, build_id: str) -> str:
         if (writer.execute("SELECT currentUser()").strip() != PRINCIPAL
                 or _grant_set(writer) != _GRANTS):
             raise RuntimeError("Strategy 1 identity producer lacks exact grants")
-        verify_tables(writer)
         return publish_identity(writer, market)
 
 
