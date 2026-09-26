@@ -38,6 +38,8 @@ _V4_ADDITIONS = frozenset({
     ("broker", "order_acknowledgement"),
     ("command", "order_cancel"),
     ("broker", "order_cancel_requested"),
+    ("broker", "order_repriced"),
+    ("broker", "order_reprice_error"),
     ("order_management", "order_group_state"),
     ("order_management", "protection_reconciliation"),
     ("snapshot", "portfolio"),

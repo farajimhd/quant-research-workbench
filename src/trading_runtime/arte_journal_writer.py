@@ -33,6 +33,7 @@ from src.trading_runtime.arte_journal_schema import (
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
+from src.trading_runtime.arte_order_reprice_v4 import REPRICE
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     TABLES as PROTECTION_RECONCILIATION_TABLES,
     V4ProtectionReconciliationBatch,
@@ -63,6 +64,7 @@ _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
 _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
 _CONTRACTS[CANCEL.name] = CANCEL
+_CONTRACTS[REPRICE.name] = REPRICE
 _CONTRACTS.update({table.name: table for table in PROTECTION_RECONCILIATION_TABLES})
 _CONTRACTS.update({table.name: table for table in V4_COMMIT_TABLES})
 _CONTRACTS.update({table.name: table for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES})
@@ -442,6 +444,23 @@ class V4OrderCancelBatch:
 
 
 @dataclass(frozen=True, slots=True)
+class V4OrderRepriceBatch:
+    """One adaptive-order outcome and its exact scalar detail."""
+
+    base: TypedJournalBatch
+    repricing: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.base, TypedJournalBatch)
+                or self.base.status != "running"
+                or len(self.base.events) != 1
+                or not isinstance(self.repricing, Mapping)):
+            raise ValueError("V4 repricing requires one running event")
+        object.__setattr__(self, "repricing",
+                           MappingProxyType(dict(self.repricing)))
+
+
+@dataclass(frozen=True, slots=True)
 class V4ProtectionChangeBatch:
     """One normalized protection revision and its numbered entry identities."""
 
@@ -475,6 +494,7 @@ def _sealed_families(
     v3_reconciliation: bool = False,
     v4_broker_ack_ids: tuple[str, ...] = (),
     v4_order_cancel_ids: tuple[str, ...] = (),
+    v4_order_reprice_ids: tuple[str, ...] = (),
     v4_protection_ids: tuple[str, ...] = (),
     v4_reconciliation_ids: tuple[str, ...] = (),
     v4_snapshot_account_ids: tuple[str, ...] = (),
@@ -652,6 +672,15 @@ def _sealed_families(
             if identity in details_by_record:
                 raise ValueError("Journal event has multiple typed detail families")
             details_by_record[identity] = CANCEL.name
+    if v4_order_reprice_ids:
+        expected_details = {**expected_details,
+            ("broker", "order_repriced"): REPRICE.name,
+            ("broker", "order_reprice_error"): REPRICE.name}
+        for record_id in v4_order_reprice_ids:
+            identity = str(UUID(str(record_id)))
+            if identity in details_by_record:
+                raise ValueError("Journal event has multiple typed detail families")
+            details_by_record[identity] = REPRICE.name
     if v4_protection_ids:
         expected_details = {**expected_details,
                             ("protection", "protection_change"):
@@ -1704,7 +1733,7 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     """One exact, deduplicated V4 catalog for every principal's storage audit."""
     installed = fixed_backtest_v2_contracts()
     contracts = (*installed, *V4_COMMIT_TABLES, ENTRY_EVIDENCE,
-                 ACKNOWLEDGEMENT, CANCEL, *PROTECTION_CHANGE_TABLES,
+                 ACKNOWLEDGEMENT, CANCEL, REPRICE, *PROTECTION_CHANGE_TABLES,
                  *PROTECTION_RECONCILIATION_TABLES)
     by_name = {}
     for contract in contracts:
@@ -1724,7 +1753,7 @@ def _v4_preflight(client: Any) -> None:
     writable = frozenset(
         _v4_family_table(table) for table, _, _, _ in _FAMILIES
     ) | frozenset(table.name for table in V4_COMMIT_TABLES) | {
-        ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name, CANCEL.name,
+        ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name, CANCEL.name, REPRICE.name,
         *(table.name for table in PROTECTION_CHANGE_TABLES),
         *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
         "trading_backtest_account_snapshot_v2",
@@ -3223,7 +3252,7 @@ class ArteJournalWriter:
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
                   | V4StrategyOneEntryBatch | V4BrokerAcknowledgementBatch
-                  | V4OrderCancelBatch
+                  | V4OrderCancelBatch | V4OrderRepriceBatch
                   | V4ProtectionChangeBatch
                   | V4ProtectionReconciliationBatch
                   | _DurabilityBarrier | _AdmissionUnit
@@ -3361,6 +3390,24 @@ class ArteJournalWriter:
         if (self._journal_profile != "backtest_v4"
                 or not isinstance(unit, V4OrderCancelBatch)):
             raise ValueError("V4 cancellation requires its typed writer profile")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            if unit.base.run_id != self._run_id:
+                raise ValueError("V4 writer cannot mix runs")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_order_reprice_v4(self, unit: V4OrderRepriceBatch) -> Future[str]:
+        """Queue one scalar reprice outcome without blocking on I/O."""
+        if (self._journal_profile != "backtest_v4"
+                or not isinstance(unit, V4OrderRepriceBatch)):
+            raise ValueError("V4 repricing requires its typed writer profile")
         with self._submission_lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("V4 writer is closed or failed")
@@ -3654,6 +3701,7 @@ class ArteJournalWriter:
                                             V4StrategyOneEntryBatch,
                                             V4BrokerAcknowledgementBatch,
                                             V4OrderCancelBatch,
+                                            V4OrderRepriceBatch,
                                             V4ProtectionChangeBatch,
                                             V4ProtectionReconciliationBatch,
                                             _DurabilityBarrier))
@@ -3677,6 +3725,13 @@ class ArteJournalWriter:
                     committed_id = publish_protection_change_batch_v4(
                         self._client, unit.base, change=unit.change,
                         entry_orders=unit.entry_orders)
+                elif isinstance(group[0][0], V4OrderRepriceBatch):
+                    from src.trading_runtime.arte_journal_commit_v4 import (
+                        publish_order_reprice_batch_v4,
+                    )
+                    unit = group[0][0]
+                    committed_id = publish_order_reprice_batch_v4(
+                        self._client, unit.base, repricing=unit.repricing)
                 elif isinstance(group[0][0], V4OrderCancelBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_order_cancel_batch_v4,

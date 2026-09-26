@@ -439,6 +439,84 @@ def test_v4_cancellation_uses_nonblocking_writer_lane(monkeypatch):
         writer.close()
 
 
+def test_v4_repricing_is_fenced_and_cold_verified(monkeypatch):
+    from src.trading_runtime.arte_order_reprice_v4 import (
+        REPRICE, order_reprice_batch_v4,
+    )
+    from src.trading_runtime.arte_journal_commit_v4 import (
+        publish_order_reprice_batch_v4,
+    )
+
+    at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
+    common = {"order_group_id": "group-1", "requested_price": 10.25,
+              "ticker": "AAA", "action": "enter_long", "intent_id": "intent-1",
+              "correlation_id": "correlation", "causation_id": "causation",
+              "strategy_id": "early-squeeze-strategy", "strategy_revision": 1}
+    sources = (
+        JournalRecord(str(UUID(int=221)), "run-reprice", 1, at, at,
+                      "broker", "order_repriced", "1001", "DU1", {
+                          **common, "remaining_quantity": 10.,
+                          "quote_observed_at": at.isoformat(),
+                          "quote_bid": 10.2, "quote_ask": 10.25,
+                          "broker_response": [{"order_id": "1001",
+                                               "order_status": "Submitted",
+                                               "local_order_id": "entry-1001"}]}),
+        JournalRecord(str(UUID(int=222)), "run-reprice", 2, at, at,
+                      "broker", "order_reprice_error", "1001", "DU1", {
+                          **common, "error": "broker rejected modification"}),
+    )
+    client = attached_v4_client()
+    prior = str(UUID(int=0))
+    for sequence, source in enumerate(sources, start=1):
+        unit = order_reprice_batch_v4(
+            source, run_month=date(2026, 8, 1), attempt_id=str(UUID(int=223)),
+            batch_id=str(UUID(int=223 + sequence)), prior_batch_id=prior,
+            source_cursor="2026-08-18:31000")
+        assert publish_order_reprice_batch_v4(
+            client, unit.base, repricing=unit.repricing) == unit.base.batch_id
+        prior = unit.base.batch_id
+    assert load_verified_v4_prefix(client, "run-reprice").last_sequence == 2
+    assert len(client.tables[REPRICE.name]) == 2
+    client.tables[REPRICE.name][1]["requested_price"] = "10.26"
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_verified_v4_prefix(client, "run-reprice")
+
+
+def test_v4_repricing_uses_nonblocking_writer_lane(monkeypatch):
+    from src.trading_runtime.arte_order_reprice_v4 import order_reprice_batch_v4
+
+    at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
+    source = JournalRecord(
+        str(UUID(int=231)), "run-reprice-writer", 1, at, at,
+        "broker", "order_reprice_error", "1001", "DU1",
+        {"order_group_id": "group-1", "requested_price": 10.25,
+         "ticker": "AAA", "action": "enter_long", "intent_id": "intent-1",
+         "correlation_id": "correlation", "causation_id": "causation",
+         "strategy_id": "early-squeeze-strategy", "strategy_revision": 1,
+         "error": "broker rejected modification"})
+    unit = order_reprice_batch_v4(
+        source, run_month=date(2026, 8, 1), attempt_id=str(UUID(int=232)),
+        batch_id=str(UUID(int=233)), prior_batch_id=str(UUID(int=0)),
+        source_cursor="2026-08-18:31000")
+    client = attached_v4_client()
+    monkeypatch.setattr(writer_module, "storage_preflight",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity",
+                        lambda _client, _run: {
+                            "mode": "backtest", "account_ids": ("DU1",)})
+    writer = ArteJournalWriter(
+        client, run_id=source.run_id, journal_profile="backtest_v4",
+        coalesce_batches=False)
+    try:
+        receipt = writer.submit_order_reprice_v4(unit)
+        assert receipt.result(timeout=5) == unit.base.batch_id
+        assert load_verified_v4_prefix(client, source.run_id).last_sequence == 1
+    finally:
+        writer.close()
+
+
 def test_v4_protection_change_fences_numbered_children_and_cold_readback():
     from src.trading_runtime.arte_journal_commit_v4 import (
         publish_protection_change_batch_v4,
@@ -731,17 +809,20 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
         journal.close()
     from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
     from src.trading_runtime.arte_order_cancel_v4 import CANCEL
+    from src.trading_runtime.arte_order_reprice_v4 import REPRICE
 
     assert len(observed) == 2
     assert {table.name for table in observed[0]} == {
         table.name for table in (*fixed_backtest_v2_contracts(),
                                  *V4_COMMIT_TABLES, ENTRY_EVIDENCE,
-                                 ACKNOWLEDGEMENT, CANCEL, *PROTECTION_CHANGE_TABLES,
+                                 ACKNOWLEDGEMENT, CANCEL, REPRICE,
+                                 *PROTECTION_CHANGE_TABLES,
                                  *PROTECTION_RECONCILIATION_TABLES)}
     writable = frozenset(writer_module._v4_family_table(table)
                          for table, _, _, _ in writer_module._FAMILIES) | \
         frozenset(table.name for table in V4_COMMIT_TABLES) | {
             ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name, CANCEL.name,
+            REPRICE.name,
             *(table.name for table in PROTECTION_CHANGE_TABLES),
             *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
             "trading_backtest_account_snapshot_v2",

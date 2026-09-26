@@ -19,6 +19,7 @@ from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
+from src.trading_runtime.arte_order_reprice_v4 import REPRICE
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     RECONCILIATION as PROTECTION_RECONCILIATION,
     ACTION as RECONCILIATION_ACTION, REPLY as RECONCILIATION_REPLY,
@@ -317,6 +318,7 @@ def _load_verified_details_v4(
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
                     ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name, CANCEL.name,
+                    REPRICE.name,
                     PROTECTION_CHANGE.name, PROTECTION_ENTRY_ORDER.name,
                     PROTECTION_RECONCILIATION.name,
                     RECONCILIATION_ACTION.name, RECONCILIATION_REPLY.name,
@@ -381,6 +383,28 @@ def _load_verified_details_v4(
         if (row["category"], row["entity_type"]) in
            {("command", "order_cancel"), ("broker", "order_cancel_requested")}} != seen_cancel:
         raise RuntimeError("V4 cancellation has missing typed detail")
+    repricings = related_rows.get(REPRICE.name, ())
+    seen_reprice = set()
+    for row in repricings:
+        record_id = str(UUID(str(row["record_id"])))
+        parent = events.get(record_id)
+        if (record_id in seen_reprice or parent is None
+                or (parent["category"], parent["entity_type"])
+                   not in {("broker", "order_repriced"),
+                           ("broker", "order_reprice_error")}
+                or (row["result_kind"] == "modified")
+                   != (parent["entity_type"] == "order_repriced")
+                or parent["entity_id"] != row["broker_order_id"]
+                or parent["run_id"] != row["run_id"]
+                or parent["event_month"] != row["event_month"]
+                or str(UUID(str(parent["batch_id"])))
+                   != str(UUID(str(row["batch_id"])))):
+            raise RuntimeError("V4 repricing differs from its event")
+        seen_reprice.add(record_id)
+    if {record_id for record_id, row in events.items()
+        if (row["category"], row["entity_type"]) in
+           {("broker", "order_repriced"), ("broker", "order_reprice_error")}} != seen_reprice:
+        raise RuntimeError("V4 repricing has missing typed detail")
     try:
         seal_protection_changes_v3(
             related_rows.get(PROTECTION_CHANGE.name, ()),
@@ -538,6 +562,12 @@ def publish_order_cancel_batch_v4(client, batch, *, cancellation) -> str:
         client, batch, order_cancel_row=cancellation)
 
 
+def publish_order_reprice_batch_v4(client, batch, *, repricing) -> str:
+    """Commit one adaptive-order outcome and its exact scalar detail."""
+    return _publish_typed_batch_v4(
+        client, batch, order_reprice_row=repricing)
+
+
 def publish_protection_change_batch_v4(client, batch, *, change,
                                        entry_orders) -> str:
     """Fence one protection revision and all of its normalized entry links."""
@@ -690,6 +720,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
 def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                             broker_acknowledgement_row=None,
                             order_cancel_row=None,
+                            order_reprice_row=None,
                             protection_change_row=None,
                             protection_entry_order_rows=(),
                             protection_reconciliation_row=None,
@@ -714,6 +745,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
             strategy_one_entry_rows, broker_acknowledgement_row, order_cancel_row,
+            order_reprice_row,
             protection_change_row, protection_reconciliation_row,
             broker_snapshot_rows)) > 1:
         raise ValueError("V4 batch cannot mix independent typed supplements")
@@ -815,6 +847,29 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                    != (cancel["result_kind"] == "command")):
             raise ValueError("V4 cancellation differs from its parent")
         cancel_rows = (cancel,)
+    reprice_rows = ()
+    if order_reprice_row is not None:
+        if (len(batch.events) != 1 or not isinstance(order_reprice_row, Mapping)
+                or (batch.events[0]["category"], batch.events[0]["entity_type"])
+                   not in {("broker", "order_repriced"),
+                           ("broker", "order_reprice_error")}):
+            raise ValueError("V4 repricing has an invalid event envelope")
+        reprice = typed_row(REPRICE.name, {
+            key: value for key, value in order_reprice_row.items()
+            if key != "content_hash"})
+        event = batch.events[0]
+        if ("content_hash" in order_reprice_row
+                and reprice["content_hash"] != order_reprice_row["content_hash"]
+                or str(UUID(str(reprice["record_id"])))
+                   != str(UUID(str(event["record_id"])))
+                or reprice["run_id"] != batch.run_id
+                or str(UUID(str(reprice["batch_id"]))) != batch.batch_id
+                or reprice["event_month"] != event["event_month"]
+                or reprice["broker_order_id"] != event["entity_id"]
+                or (event["entity_type"] == "order_repriced")
+                   != (reprice["result_kind"] == "modified")):
+            raise ValueError("V4 repricing differs from its parent")
+        reprice_rows = (reprice,)
     protection_rows = ()
     protection_children = ()
     if protection_change_row is not None:
@@ -871,6 +926,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
     base_families = _sealed_families(
         batch, v4_broker_ack_ids=tuple(row["record_id"] for row in ack_rows),
         v4_order_cancel_ids=tuple(row["record_id"] for row in cancel_rows),
+        v4_order_reprice_ids=tuple(row["record_id"] for row in reprice_rows),
         v4_protection_ids=tuple(row["record_id"] for row in protection_rows),
         v4_reconciliation_ids=tuple(row["record_id"] for row in reconciliation_rows),
         v4_snapshot_account_ids=tuple(row["record_id"] for row in snapshot_accounts),
@@ -885,6 +941,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         families += ((ACKNOWLEDGEMENT.name, ack_rows),)
     if cancel_rows:
         families += ((CANCEL.name, cancel_rows),)
+    if reprice_rows:
+        families += ((REPRICE.name, reprice_rows),)
     if protection_rows:
         families += ((PROTECTION_CHANGE.name, protection_rows),)
     if protection_children:
