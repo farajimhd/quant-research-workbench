@@ -30,11 +30,11 @@ from src.backend.backtest_terminal_v2_preflight import (
 )
 from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
 from src.trading_runtime.arte_journal_schema import (
-    fixed_backtest_v2_contracts, missing_fixed_backtest_v2_tables,
+    V4_COMMIT_TABLES, fixed_backtest_v2_contracts, missing_fixed_backtest_v2_tables,
     storage_preflight,
 )
 from src.trading_runtime.arte_journal_writer import (
-    ArteJournalWriter, load_typed_run_context,
+    ArteJournalWriter, _v4_preflight, load_typed_run_context,
 )
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 
@@ -51,11 +51,11 @@ class FixedJournalPreflightToken:
 
 @dataclass(frozen=True, slots=True)
 class FixedJournalAssembly:
-    token: FixedJournalPreflightToken | FixedV3JournalPreflightToken
+    token: FixedJournalPreflightToken | FixedV3JournalPreflightToken | FixedV4JournalPreflightToken
     journal: BacktestMemoryJournal
     writer: ArteJournalWriter
     publisher: BacktestTypedJournalPublisher
-    terminal_authority: FixedTerminalKeeperAuthority
+    terminal_authority: FixedTerminalKeeperAuthority | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +66,16 @@ class FixedV3JournalPreflightToken:
     configuration_hash: str
     market_plan_token: str
     query_sha256: str
+    projection_certificate: str
+
+
+@dataclass(frozen=True, slots=True)
+class FixedV4JournalPreflightToken:
+    run_id: str
+    account_ids: tuple[str, ...]
+    run_month: date
+    configuration_hash: str
+    market_plan_token: str
     projection_certificate: str
 
 
@@ -283,6 +293,95 @@ def assemble_fixed_v3_journal(
             keeper=keeper, client=terminal_client, run_id=token.run_id,
             account_ids=token.account_ids)
         return FixedJournalAssembly(token, journal, writer, publisher, authority)
+    except BaseException:
+        if "writer" in locals():
+            writer.close()
+        journal.close()
+        raise
+
+
+def prepare_fixed_v4_journal_token(
+    read_client: Any, writer_client: Any, terminal_client: Any, *,
+    run_id: str, account_ids: tuple[str, ...], configuration_hash: str,
+    market_plan_token: str, projection_certifier: Callable[[], str],
+) -> FixedV4JournalPreflightToken:
+    """Certify a pre-published Strategy 1 context without inserting facts."""
+    dispatch = getattr(writer_client, "typed_insert_dispatch", None)
+    if (len({id(read_client), id(writer_client), id(terminal_client)}) != 3
+            or getattr(writer_client, "typed_insert_strict", False) is not True
+            or not isinstance(dispatch, TypedInsertDispatch)
+            or not account_ids or len(set(account_ids)) != len(account_ids)
+            or any(not isinstance(value, str) or not value for value in account_ids)
+            or any(re.fullmatch(r"[0-9a-f]{64}", value or "") is None
+                   for value in (configuration_hash, market_plan_token))
+            or not callable(projection_certifier)):
+        raise ValueError("V4 journal lacks distinct strict pinned authorities")
+    for client in (read_client, terminal_client):
+        storage_preflight(client, tables=fixed_backtest_v2_contracts())
+        storage_preflight(client, tables=V4_COMMIT_TABLES)
+    _v4_preflight(writer_client)
+    context = verify_fixed_run_context(
+        dispatch, read_client, terminal_client, run_id=run_id)
+    if (context["mode"] != "backtest"
+            or tuple(context["account_ids"]) != account_ids
+            or context["configuration_hash"] != configuration_hash
+            or context["market_plan_token"] != market_plan_token
+            or load_typed_run_context(writer_client, run_id) != context):
+        raise RuntimeError("V4 journal context differs across principals")
+    certificate = projection_certifier()
+    if (not isinstance(certificate, str)
+            or re.fullmatch(r"[0-9a-f]{64}", certificate) is None):
+        raise RuntimeError("V4 journal projector cannot certify emitted families")
+    month = date.fromisoformat(context["run_month"])
+    if month.day != 1:
+        raise RuntimeError("V4 journal run month is invalid")
+    return FixedV4JournalPreflightToken(
+        run_id, account_ids, month, configuration_hash,
+        market_plan_token, certificate)
+
+
+def assemble_fixed_v4_journal(
+    read_client: Any, writer_client: Any, terminal_client: Any,
+    token: FixedV4JournalPreflightToken, *, attempt_id: str,
+    expected_config: dict[str, Any], fixed_market_parent_plan: object,
+    fixed_market_execution_plan: object, expected_market_start: datetime,
+    writer_factory: Callable[..., ArteJournalWriter],
+    batch_size: int = 512, queue_capacity: int = 8,
+) -> FixedJournalAssembly:
+    """Build one bounded memory-to-Keeper writer lane; never open the gate."""
+    if (not isinstance(token, FixedV4JournalPreflightToken)
+            or len({id(read_client), id(writer_client), id(terminal_client)}) != 3
+            or not 1 <= batch_size <= 4096 or not 1 <= queue_capacity <= 64
+            or expected_market_start.tzinfo is None
+            or fixed_market_parent_plan is None
+            or fixed_market_execution_plan is None
+            or getattr(writer_client, "typed_insert_strict", False) is not True
+            or not isinstance(getattr(writer_client, "typed_insert_dispatch", None),
+                              TypedInsertDispatch)):
+        raise ValueError("V4 bootstrap lacks bounded strict certified inputs")
+    UUID(attempt_id)
+    context = load_typed_run_context(read_client, token.run_id)
+    if (context["mode"] != "backtest"
+            or tuple(context["account_ids"]) != token.account_ids
+            or context["configuration_hash"] != token.configuration_hash
+            or context["market_plan_token"] != token.market_plan_token
+            or load_typed_run_context(writer_client, token.run_id) != context
+            or load_typed_run_context(terminal_client, token.run_id) != context):
+        raise RuntimeError("V4 journal context changed before assembly")
+    _v4_preflight(writer_client)
+    journal = BacktestMemoryJournal(run_id=token.run_id)
+    try:
+        writer = writer_factory(
+            writer_client, run_id=token.run_id, capacity=queue_capacity,
+            max_events_per_commit=batch_size, coalesce_batches=False,
+            journal_profile="backtest_v4")
+        publisher = BacktestTypedJournalPublisher(
+            journal, writer, attempt_id=attempt_id, run_month=token.run_month,
+            batch_size=batch_size, expected_config=expected_config,
+            fixed_market_parent_plan=fixed_market_parent_plan,
+            fixed_market_execution_plan=fixed_market_execution_plan,
+            expected_market_start=expected_market_start)
+        return FixedJournalAssembly(token, journal, writer, publisher, None)
     except BaseException:
         if "writer" in locals():
             writer.close()

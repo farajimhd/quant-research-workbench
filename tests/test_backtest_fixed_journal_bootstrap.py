@@ -2,10 +2,12 @@
 from datetime import date, datetime, timezone
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 
 from src.backend import backtest_fixed_journal_bootstrap as bootstrap
+from src.backend.replay_run_service import ReplayRunController, RunMode
 
 
 RUN = "00000000-0000-0000-0000-000000000a01"
@@ -225,4 +227,60 @@ def test_v3_bootstrap_rejects_mismatched_query_before_writer(monkeypatch):
             account_ids=("DU1",), configuration_hash="c" * 64,
             market_plan_token="b" * 64, expected_query_sha256="d" * 64,
             query_hash_certifier=lambda: "e" * 64,
+            projection_certifier=lambda: "a" * 64)
+
+
+def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(monkeypatch):
+    read, writer_client, terminal = object(), SimpleNamespace(), object()
+    dispatch = bootstrap.TypedInsertDispatch(object())
+    writer_client.typed_insert_dispatch = dispatch
+    writer_client.typed_insert_strict = True
+    context = {"mode": "backtest", "account_ids": ("DU1",),
+               "run_month": "2026-08-01", "configuration_hash": "c" * 64,
+               "market_plan_token": "b" * 64}
+    checked = []
+    monkeypatch.setattr(bootstrap, "storage_preflight",
+                        lambda client, **kw: checked.append((client, kw["tables"])))
+    monkeypatch.setattr(bootstrap, "_v4_preflight",
+                        lambda client: checked.append((client, "v4")))
+    monkeypatch.setattr(bootstrap, "verify_fixed_run_context",
+                        lambda found, *_args, **_kw: context if found is dispatch
+                        else pytest.fail("wrong dispatch"))
+    monkeypatch.setattr(bootstrap, "load_typed_run_context",
+                        lambda *_args, **_kw: context)
+    token = bootstrap.prepare_fixed_v4_journal_token(
+        read, writer_client, terminal, run_id=RUN, account_ids=("DU1",),
+        configuration_hash="c" * 64, market_plan_token="b" * 64,
+        projection_certifier=lambda: "a" * 64)
+    assert len(checked) == 5
+    class Writer:
+        run_id = RUN
+        run_mode = "backtest"
+        journal_profile = "backtest_v4"
+        coalesce_batches = False
+        max_events_per_commit = 512
+        def close(self):
+            pass
+    assembly = bootstrap.assemble_fixed_v4_journal(
+        read, writer_client, terminal, token, attempt_id=ATTEMPT,
+        expected_config={"mode": "backtest"},
+        fixed_market_parent_plan=object(), fixed_market_execution_plan=object(),
+        expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
+        writer_factory=lambda client, **kwargs: Writer())
+    assert assembly.terminal_authority is None
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST,
+        configuration_revision={"content_hash": "c" * 64},
+        market_data_plan={"token": "b" * 64})
+    controller._journal = None
+    controller._attach_fixed_journal_assembly(assembly)
+    assert controller._journal_publisher is assembly.publisher
+    assembly.journal.close()
+    writer_client.typed_insert_strict = False
+    with pytest.raises(ValueError, match="strict pinned authorities"):
+        bootstrap.prepare_fixed_v4_journal_token(
+            read, writer_client, terminal, run_id=RUN, account_ids=("DU1",),
+            configuration_hash="c" * 64, market_plan_token="b" * 64,
             projection_certifier=lambda: "a" * 64)

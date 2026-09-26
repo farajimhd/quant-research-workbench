@@ -528,6 +528,56 @@ def test_fixed_controller_prepares_inactive_v3_with_distinct_clients(monkeypatch
     controller._journal.close()
 
 
+def test_fixed_controller_prepares_inactive_v4_without_disk_or_v2_terminal(monkeypatch, tmp_path):
+    from src.backend import backtest_fixed_journal_bootstrap as bootstrap
+    from tests.test_backtest_fixed_market_authority import _plans
+
+    parent, execution = _plans()
+    config = {"mode": "backtest", "assignments": []}
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller.run_dir = tmp_path / "must-not-exist"
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST, market_data_plan={"token": parent.token},
+        configuration_revision={"content_hash": "c" * 64, "payload": config},
+        session_start=datetime(2026, 8, 18, 8, tzinfo=timezone.utc))
+    controller._account_map = {"account": "DU1"}
+    controller._resume_state = None
+    controller._journal = None
+    read, terminal = object(), object()
+    running = SimpleNamespace(
+        typed_insert_dispatch=bootstrap.TypedInsertDispatch(object()),
+        typed_insert_strict=True)
+    context = dict(mode="backtest", account_ids=("DU1",), run_month="2026-08-01",
+                   configuration_hash="c" * 64, market_plan_token=parent.token)
+    monkeypatch.setattr(bootstrap, "storage_preflight", lambda *_a, **_k: None)
+    monkeypatch.setattr(bootstrap, "_v4_preflight", lambda *_a: None)
+    monkeypatch.setattr(bootstrap, "verify_fixed_run_context",
+                        lambda *_a, **_k: context)
+    monkeypatch.setattr(bootstrap, "load_typed_run_context",
+                        lambda *_a, **_k: context)
+    class Writer:
+        run_id = RUN
+        run_mode = "backtest"
+        journal_profile = "backtest_v4"
+        coalesce_batches = False
+        max_events_per_commit = 512
+        def close(self):
+            pass
+    asyncio.run(controller._prepare_fixed_v4_journal_assembly(
+        read_client=read, writer_client=running, terminal_client=terminal,
+        attempt_id="00000000-0000-0000-0000-000000000a02",
+        writer_factory=lambda client, **_k: Writer(),
+        projection_certifier=lambda: "a" * 64,
+        parent_market_plan=parent, execution_market_plan=execution,
+        expected_config=config))
+    assert controller._journal_writer.journal_profile == "backtest_v4"
+    assert controller._fixed_terminal_authority is None
+    assert controller._journal_publisher.writer is controller._journal_writer
+    assert not controller.run_dir.exists()
+    controller._journal.close()
+
+
 def test_fixed_controller_v3_rejects_shared_clients_before_preflight(monkeypatch):
     from src.backend import backtest_fixed_journal_bootstrap as bootstrap
     from tests.test_backtest_fixed_market_authority import _plans

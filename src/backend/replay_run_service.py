@@ -2830,17 +2830,18 @@ class ReplayRunController:
         """Inactive handoff from a preflighted, disk-free typed bootstrap."""
         from src.backend.backtest_fixed_journal_bootstrap import (
             FixedJournalAssembly, FixedJournalPreflightToken,
-            FixedV3JournalPreflightToken,
+            FixedV3JournalPreflightToken, FixedV4JournalPreflightToken,
         )
         if self.definition.mode != RunMode.BACKTEST or self._journal is not None:
             raise RuntimeError("ClickHouse Backtest journal requires a new Backtest run")
         token = assembly.token if isinstance(assembly, FixedJournalAssembly) else None
         v2 = isinstance(token, FixedJournalPreflightToken)
         v3 = isinstance(token, FixedV3JournalPreflightToken)
-        if (not (v2 or v3)
+        v4 = isinstance(token, FixedV4JournalPreflightToken)
+        if (not (v2 or v3 or v4)
                 or (v3 and (expected_query_sha256 is None
                             or token.query_sha256 != expected_query_sha256))
-                or (v2 and expected_query_sha256 is not None)
+                or ((v2 or v4) and expected_query_sha256 is not None)
                 or token.run_id != self.run_id
                 or token.configuration_hash != str(
                     self.definition.configuration_revision.get("content_hash") or "")
@@ -2850,11 +2851,13 @@ class ReplayRunController:
                 or assembly.journal.run_id != self.run_id
                 or assembly.writer.run_id != self.run_id
                 or assembly.writer.journal_profile != (
-                    "backtest_v3" if v3 else "backtest_v2")
+                    "backtest_v3" if v3 else "backtest_v4" if v4 else "backtest_v2")
                 or assembly.publisher.journal is not assembly.journal
                 or assembly.publisher.writer is not assembly.writer
-                or assembly.terminal_authority.run_id != self.run_id
-                or tuple(assembly.terminal_authority.account_ids) != token.account_ids):
+                or (v4 and assembly.terminal_authority is not None)
+                or (not v4 and (assembly.terminal_authority is None
+                    or assembly.terminal_authority.run_id != self.run_id
+                    or tuple(assembly.terminal_authority.account_ids) != token.account_ids))):
             raise RuntimeError("Fixed Backtest typed journal assembly differs from pinned run")
         self._journal = assembly.journal
         self._journal_writer = assembly.writer
@@ -2975,6 +2978,60 @@ class ReplayRunController:
                 raise RuntimeError("Fixed V3 journal authority changed during preflight")
             self._attach_fixed_journal_assembly(
                 assembly, expected_query_sha256=expected_query_sha256)
+        except BaseException:
+            await asyncio.to_thread(assembly.writer.close)
+            assembly.journal.close()
+            raise
+
+    async def _prepare_fixed_v4_journal_assembly(
+        self, *, read_client, writer_client, terminal_client,
+        attempt_id: str, writer_factory, projection_certifier,
+        parent_market_plan, execution_market_plan, expected_config,
+        batch_size: int = 512, queue_capacity: int = 8,
+    ) -> None:
+        """Inactive V4 handoff from a strict, pre-published run context."""
+        from src.backend.backtest_fixed_journal_bootstrap import (
+            assemble_fixed_v4_journal, prepare_fixed_v4_journal_token,
+        )
+        from src.backend.backtest_fixed_market_authority import _validate_plans
+
+        if (self.definition.mode != RunMode.BACKTEST
+                or self._journal is not None or self._resume_state is not None
+                or len({id(read_client), id(writer_client), id(terminal_client)}) != 3
+                or not callable(projection_certifier)
+                or not callable(writer_factory)):
+            raise RuntimeError('Fixed V4 journal requires distinct clients and a new pinned run')
+        _validate_plans(parent_market_plan, execution_market_plan)
+        pinned_hash = str(self.definition.configuration_revision.get('content_hash') or '')
+        if (parent_market_plan.token != str(
+                self.definition.market_data_plan.get('token') or '')
+                or expected_config != self.definition.configuration_revision['payload']):
+            raise RuntimeError('Fixed V4 journal plan or configuration changed')
+        token = await asyncio.to_thread(
+            prepare_fixed_v4_journal_token,
+            read_client, writer_client, terminal_client,
+            run_id=self.run_id, account_ids=self.account_ids,
+            configuration_hash=pinned_hash,
+            market_plan_token=parent_market_plan.token,
+            projection_certifier=projection_certifier)
+        assembly = await asyncio.to_thread(
+            assemble_fixed_v4_journal,
+            read_client, writer_client, terminal_client, token,
+            attempt_id=attempt_id, expected_config=expected_config,
+            fixed_market_parent_plan=parent_market_plan,
+            fixed_market_execution_plan=execution_market_plan,
+            expected_market_start=self.definition.session_start,
+            writer_factory=writer_factory, batch_size=batch_size,
+            queue_capacity=queue_capacity)
+        try:
+            if (self._resume_state is not None or self._journal is not None
+                    or pinned_hash != str(
+                        self.definition.configuration_revision.get('content_hash') or '')
+                    or expected_config != self.definition.configuration_revision['payload']
+                    or parent_market_plan.token != str(
+                        self.definition.market_data_plan.get('token') or '')):
+                raise RuntimeError('Fixed V4 journal authority changed during preflight')
+            self._attach_fixed_journal_assembly(assembly)
         except BaseException:
             await asyncio.to_thread(assembly.writer.close)
             assembly.journal.close()
