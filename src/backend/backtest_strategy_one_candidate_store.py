@@ -81,10 +81,16 @@ def certify_candidate_plan(market: CertifiedMarketDayPlan, *,
             or len(market.sessions) != 1
             or not market.units or candidate_rule_digest != RULE_DIGEST
             or type(through_boundary_ms) is not int
+            or not 0 < through_boundary_ms <= 57_600_000
+            or through_boundary_ms % 100
             or type(batch_size) is not int or not 1 <= batch_size <= 512):
         raise ValueError("Strategy 1 candidate plan lacks pinned fixed authority")
+    # The producer seals one full-session candidate product. A shorter Backtest
+    # must validate that complete immutable product before exposing its causal
+    # prefix; it must never infer an empty prefix from missing coverage or
+    # materialize another horizon inside Backtest.
     scan_query_sha256 = sha256(first_squeeze_sql(
-        market, through_boundary_ms=through_boundary_ms).encode()).hexdigest()
+        market, through_boundary_ms=57_600_000).encode()).hexdigest()
     names = tuple(table.split(".", 1)[1] for table in (CANDIDATE_TABLE, COVERAGE_TABLE))
     catalog = _rows(client, "SELECT name,storage_policy FROM system.tables "
                     "WHERE database='arte' AND name IN "
@@ -181,10 +187,12 @@ def certify_candidate_plan(market: CertifiedMarketDayPlan, *,
             if len(rows) != unit.candidate_count or digest != unit.content_hash:
                 raise RuntimeError(f"Strategy 1 candidate rows differ from coverage: {key}")
             all_coverage.append(unit)
-            if rows:
-                values = {name: np.fromiter((row[name] for row in rows),
+            visible = tuple(row for row in rows
+                            if int(row["boundary_ms"]) <= through_boundary_ms)
+            if visible:
+                values = {name: np.fromiter((row[name] for row in visible),
                                             dtype=(np.uint64 if name == "stop_low_int"
-                                                   else np.int64), count=len(rows))
+                                                   else np.int64), count=len(visible))
                           for name in VALUE_FIELDS}
                 macd = np.column_stack(tuple(values[f"macd_{label}_boundary_ms"]
                                         for label in ("1s", "5s", "10s", "30s")))
@@ -193,8 +201,11 @@ def certify_candidate_plan(market: CertifiedMarketDayPlan, *,
                     values["boundary_ms"], values["episode_start_ms"], macd,
                     values["stop_30s_boundary_ms"], values["stop_low_int"]))
     coverage = tuple(all_coverage)
+    base_token = _token(market.build_id, candidate_rule_digest,
+                        scan_query_sha256, coverage)
     return CertifiedCandidatePlan(market.build_id, candidate_rule_digest,
                                   scan_query_sha256, coverage,
                                   tuple(all_prepared),
-                                  _token(market.build_id, candidate_rule_digest,
-                                         scan_query_sha256, coverage))
+                                  (base_token if through_boundary_ms == 57_600_000
+                                   else sha256((base_token + ":through:" +
+                                                str(through_boundary_ms)).encode()).hexdigest()))

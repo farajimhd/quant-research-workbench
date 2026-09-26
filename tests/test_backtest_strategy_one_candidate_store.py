@@ -113,7 +113,23 @@ def test_missing_tampered_or_misplaced_candidates_fail_closed():
         certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
                                through_boundary_ms=THROUGH,
                                client=Reader(misplaced=True))
-    with pytest.raises(RuntimeError, match="pinned authority"):
+    with pytest.raises(ValueError, match="pinned fixed authority"):
         certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
-                               through_boundary_ms=30_000,
+                               through_boundary_ms=30_050,
                                client=Reader())
+
+
+def test_shorter_session_certifies_full_product_then_exposes_only_causal_prefix():
+    full = certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
+                                  through_boundary_ms=THROUGH, client=Reader())
+    reader = Reader()
+    prefix = certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
+                                    through_boundary_ms=29_900, client=reader)
+    assert len(prefix.coverage) == len(full.coverage) == 2
+    assert prefix.scan_query_sha256 == full.scan_query_sha256 == SCAN
+    assert prefix.prepared == ()
+    assert prefix.token != full.token
+    with pytest.raises(RuntimeError, match="differ from coverage"):
+        certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
+                               through_boundary_ms=29_900,
+                               client=Reader(changed=True))
