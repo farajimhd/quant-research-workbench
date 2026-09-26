@@ -23,6 +23,12 @@ def test_workstation_one_shot_prints_counts_without_claiming_backtest(monkeypatc
         "sparse_tape_open_seconds": .5,
         "sparse_tape_total_seconds": .7,
         "sparse_tape_boundaries": 1234,
+        "static_gate_seconds": .02,
+        "static_gate_eligible": 12,
+        "static_gate_reject_gap": 3,
+        "static_gate_reject_bos": 4,
+        "static_gate_reject_support": 5,
+        "static_gate_reject_protection": 6,
     })
     assert command.main(["--session-date", "2026-08-18"]) == 0
     output = capsys.readouterr().out
@@ -33,8 +39,11 @@ def test_workstation_one_shot_prints_counts_without_claiming_backtest(monkeypatc
     assert "no Backtest was run or data written" in output
     assert command.main(["--session-date", "2026-08-18",
                          "--through-boundary-ms", "19800000",
-                         "--profile-sparse-tape"]) == 0
+                         "--profile-sparse-tape",
+                         "--profile-static-gate"]) == 0
     profiled = capsys.readouterr().out
     assert "through 09:30 NY" in profiled
     assert "Sparse tape: 1234 completed boundaries" in profiled
     assert "no orders or fills were simulated" in profiled
+    assert "Static entry gate: 12 / 62072 candidates survive" in profiled
+    assert "overlapping reasons, no orders simulated" in profiled

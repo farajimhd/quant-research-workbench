@@ -41,6 +41,10 @@ from src.backend.backtest_strategy_one_preparation import strategy_one_v7_ticker
 from src.backend.backtest_strategy_one_scheduler import (
     build_certified_strategy_one_scheduler,
 )
+from src.backend.backtest_strategy_one_static_gate import (
+    MISSING_BOS_SUPPORT, MISSING_COMPLETED_BOS, MISSING_FROZEN_GAP,
+    MISSING_INITIAL_PROTECTION, compile_static_entry_gate,
+)
 from src.backend.structural_v7_seed import certified_seed_plan
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 
@@ -48,6 +52,7 @@ from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 def verify(*, session_date: str, build_id: str,
            through_boundary_ms: int = FULL_SESSION_BOUNDARY_MS,
            profile_sparse_tape: bool = False,
+           profile_static_gate: bool = False,
            ) -> dict[str, int | float | str]:
     started = perf_counter()
     market = _certified_plan(session_date=session_date, build_id=build_id)
@@ -92,6 +97,10 @@ def verify(*, session_date: str, build_id: str,
         visible_activations = project_activation_plan(
             activations, candidates, through_boundary_ms=through_boundary_ms)
         projection_seconds = perf_counter() - started
+        if profile_static_gate:
+            started = perf_counter()
+            gate = compile_static_entry_gate(visible_candidates, entry)
+            gate_seconds = perf_counter() - started
     result = {
         "population": len(market.tickers),
         "candidate_tickers": len(selected),
@@ -123,6 +132,15 @@ def verify(*, session_date: str, build_id: str,
         "activation_token": activations.token,
         "entry_token": entry.token,
     }
+    if profile_static_gate:
+        result.update(
+            static_gate_seconds=gate_seconds,
+            static_gate_eligible=int(gate.eligible_indices.size),
+            static_gate_reject_gap=int((gate.rejection_mask & MISSING_FROZEN_GAP != 0).sum()),
+            static_gate_reject_bos=int((gate.rejection_mask & MISSING_COMPLETED_BOS != 0).sum()),
+            static_gate_reject_support=int((gate.rejection_mask & MISSING_BOS_SUPPORT != 0).sum()),
+            static_gate_reject_protection=int((gate.rejection_mask & MISSING_INITIAL_PROTECTION != 0).sum()),
+        )
     if profile_sparse_tape:
         if not visible_candidates.prepared:
             raise RuntimeError("Sparse tape cannot open without a causal candidate")
@@ -173,6 +191,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="completed cutoff after 04:00 New York; default 20:00")
     parser.add_argument("--profile-sparse-tape", action="store_true",
                         help="read exact candidate liquidity rows and verify the causal tape")
+    parser.add_argument("--profile-static-gate", action="store_true",
+                        help="count position-independent entry survivors; does not simulate orders")
     args = parser.parse_args(argv)
     try:
         day = date.fromisoformat(args.session_date).isoformat()
@@ -188,7 +208,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = verify(session_date=day, build_id=args.build_id,
                         through_boundary_ms=args.through_boundary_ms,
-                        profile_sparse_tape=args.profile_sparse_tape)
+                        profile_sparse_tape=args.profile_sparse_tape,
+                        profile_static_gate=args.profile_static_gate)
     except Exception as exc:
         # Driver exceptions can embed credentials or SQL; do not print them.
         print(f"Strategy 1 input verification failed: {type(exc).__name__}.",
@@ -220,6 +241,15 @@ def main(argv: list[str] | None = None) -> int:
               f"{result['sparse_tape_open_seconds']:.3f}s load, "
               f"{result['sparse_tape_total_seconds']:.3f}s total; "
               "no orders or fills were simulated")
+    if args.profile_static_gate:
+        print(f"Static entry gate: {result['static_gate_eligible']} / "
+              f"{result['visible_candidate_boundaries']} candidates survive in "
+              f"{result['static_gate_seconds']:.3f}s; "
+              f"missing gap {result['static_gate_reject_gap']}, "
+              f"BOS {result['static_gate_reject_bos']}, "
+              f"support {result['static_gate_reject_support']}, "
+              f"protection {result['static_gate_reject_protection']}; "
+              "overlapping reasons, no orders simulated")
     print(f"Candidate token {result['candidate_token']}")
     print(f"Pivot token {result['pivot_token']}")
     print(f"Activation token {result['activation_token']}")
