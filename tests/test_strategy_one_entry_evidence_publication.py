@@ -84,6 +84,18 @@ def test_existing_coverage_skips_derivation(monkeypatch):
     assert writer.sql == []
 
 
+def test_float_inserts_use_exact_bits_not_decimal_values():
+    from struct import pack, unpack
+    writer = Writer()
+    gap = .12345678912345678
+    subject._insert_rows(writer, subject.ACTIVATION_TABLE, scope(), str(uuid4()),
+                         ({"episode_start_ms": 30_000, "price_int": 100_000,
+                           "average_gap": gap, "resistance_count": 0},))
+    bits = unpack("<Q", pack("<d", gap))[0]
+    assert f"reinterpretAsFloat64(toUInt64({bits}))" in writer.sql[0]
+    assert str(gap) not in writer.sql[0]
+
+
 def test_causal_producer_uses_candidate_only_scheduler_and_completed_evidence(
         monkeypatch):
     import asyncio

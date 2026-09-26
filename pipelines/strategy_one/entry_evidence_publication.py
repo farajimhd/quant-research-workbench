@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 import json
+from math import isfinite
+from struct import pack, unpack
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
@@ -197,8 +199,15 @@ def _insert_rows(client: Any, table: str, scope: EntryPublicationScope,
             return "NULL"
         if type(value) is bool:
             return str(int(value))
-        if type(value) in (int, float):
+        if type(value) is int:
             return str(value)
+        if type(value) is float:
+            if not isfinite(value):
+                raise ValueError("Strategy 1 insert contains nonfinite Float64")
+            bits = unpack("<Q", pack("<d", value))[0]
+            # Decimal VALUES parsing may round a binary Float64 by one ULP.
+            # An integer bit expression preserves the exact scalar contract.
+            return f"reinterpretAsFloat64(toUInt64({bits}))"
         if type(value) is str:
             return literal(value)
         raise TypeError("Strategy 1 entry insert contains a non-scalar")
