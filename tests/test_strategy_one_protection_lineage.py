@@ -6,7 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
 
+import pytest
+
 from src.backend.backtest_protection_change_v3 import project_protection_change_v3
+from src.trading_runtime.arte_broker_acknowledgement_v4 import (
+    project_broker_acknowledgement_v4,
+)
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.order_management import OrderManagementEngine
@@ -53,3 +58,35 @@ def test_effective_stop_change_carries_amendment_and_entry_lineage():
         attempt_id=str(uuid4()), batch_id=str(uuid4()))
     assert projected.detail["source_intent_id"] == entry.intent_id
     assert projected.detail["intent_id"] == amendment.intent_id
+
+
+def test_numbered_modify_reply_is_exact_typed_acknowledgement():
+    at = datetime(2026, 8, 18, 12, 1, tzinfo=timezone.utc)
+    entry = StrategyIntent("entry-1", "AAA", at, "enter_long", 10., 10.)
+    amendment = StrategyIntent(
+        "amendment-1", "AAA", at, "replace_profit_target", 10., 10.,
+        profit_target_price=12.)
+    group = SimpleNamespace(group_id="group-1", account_id="DU1", intent=entry)
+    manager = object.__new__(OrderManagementEngine)
+    manager.run_id = "run-1"
+    manager.strategy_id = STRATEGY_ID
+    manager.strategy_revision = STRATEGY_NUMBER
+    manager._groups = {group.group_id: group}
+    manager.journal = SimpleNamespace(append=Mock())
+    reply = [{"order_id": "42", "order_status": "Submitted",
+              "local_order_id": "client-target"}]
+    manager._record_strategy_one_modify_acknowledgement(
+        group, amendment, "42", reply)
+    recorded = manager.journal.append.call_args.kwargs
+    projected = project_broker_acknowledgement_v4(
+        JournalRecord(str(uuid4()), recorded["run_id"], 1, at, at,
+                      recorded["category"], recorded["entity_type"],
+                      recorded["entity_id"], recorded["account_id"],
+                      recorded["payload"]),
+        attempt_id=str(uuid4()), batch_id=str(uuid4()))
+    assert projected.detail["intent_id"] == amendment.intent_id
+    assert projected.detail["order_group_id"] == group.group_id
+    assert projected.detail["broker_order_id"] == "42"
+    with pytest.raises(ValueError, match="exact broker acknowledgement"):
+        manager._record_strategy_one_modify_acknowledgement(
+            group, amendment, "42", [{**reply[0], "opaque": {"x": 1}}])

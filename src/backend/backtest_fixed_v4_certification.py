@@ -54,6 +54,10 @@ _LEGACY_PROTECTION_FAMILIES = {
     ("order_management", "entry_acquisition_frozen_before_exit"):
         "_cancel_pending_acquisition_before_exit",
 }
+_REDUNDANT_MODIFY_SUMMARIES = {
+    ("broker", "profit_target_replaced"): "_replace_existing_profit_targets",
+    ("broker", "protective_stop_replaced"): "_replace_protective_stop",
+}
 
 
 def certify_strategy_one_portfolio_request_unreachable(
@@ -169,6 +173,44 @@ def certify_strategy_one_legacy_protection_unreachable(
                 or len(body[0].body) != 1
                 or ast.unparse(body[0].body[0]) != returns[name]):
             raise ValueError(f"Strategy 1 legacy OMS event may be reachable: {family}")
+    for family, name in _REDUNDANT_MODIFY_SUMMARIES.items():
+        methods = [node for node in oms_classes[0].body
+                   if isinstance(node, ast.AsyncFunctionDef) and node.name == name]
+        if len(methods) != 1:
+            raise ValueError("Strategy 1 modification route changed")
+        method = methods[0]
+        emitters = [node for node in ast.walk(oms)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "_record" and len(node.args) >= 2
+                    and all(isinstance(arg, ast.Constant) for arg in node.args[:2])
+                    and tuple(arg.value for arg in node.args[:2]) == family]
+        guards = [node for node in ast.walk(method) if isinstance(node, ast.If)
+                  and len(emitters) == 1 and emitters[0] in ast.walk(node)]
+        acknowledgements = [node for node in ast.walk(method)
+                            if isinstance(node, ast.Call)
+                            and isinstance(node.func, ast.Attribute)
+                            and node.func.attr ==
+                            "_record_strategy_one_modify_acknowledgement"]
+        effective = [node for node in ast.walk(method)
+                     if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Attribute)
+                     and node.func.attr == "_record_protection"
+                     and any(keyword.arg == "phase"
+                             and isinstance(keyword.value, ast.Constant)
+                             and keyword.value.value == "effective"
+                             for keyword in node.keywords)
+                     and any(keyword.arg == "amendment_intent"
+                             and isinstance(keyword.value, ast.Name)
+                             and keyword.value.id == "intent"
+                             for keyword in node.keywords)]
+        if (len(emitters) != 1 or len(guards) != 1
+                or ast.unparse(guards[0].test) !=
+                "(self.strategy_id, self.strategy_revision) != "
+                "(STRATEGY_ID, STRATEGY_NUMBER)"
+                or len(acknowledgements) != 1 or len(effective) != 1
+                or not acknowledgements[0].lineno < effective[0].lineno
+                       < emitters[0].lineno):
+            raise ValueError(f"Strategy 1 modification summary may be reachable: {family}")
     return sha256(json.dumps({"version": 1, "sources": tuple(
         sha256(source.encode()).hexdigest() for source in sources)},
         sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -354,7 +396,8 @@ def certify_strategy_one_v4_projection(
             runtime_path=sources_by_name["runtime.py"],
             portfolio_path=sources_by_name["portfolio.py"])
         unreachable.add(("portfolio_management", "portfolio_rebalance"))
-    if set(families) & _LEGACY_PROTECTION_FAMILIES.keys():
+    if set(families) & (_LEGACY_PROTECTION_FAMILIES.keys()
+                       | _REDUNDANT_MODIFY_SUMMARIES.keys()):
         sources_by_name = {path.name: path for path in indirect_sources}
         if (len(sources_by_name) != len(indirect_sources)
                 or "order_management.py" not in sources_by_name
@@ -364,6 +407,7 @@ def certify_strategy_one_v4_projection(
             oms_path=sources_by_name["order_management.py"],
             runtime_path=sources_by_name["runtime.py"])
         unreachable.update(set(families) & _LEGACY_PROTECTION_FAMILIES.keys())
+        unreachable.update(set(families) & _REDUNDANT_MODIFY_SUMMARIES.keys())
     if ("portfolio_management", "portfolio_request") in families:
         sources_by_name = {path.name: path for path in indirect_sources}
         if (len(sources_by_name) != len(indirect_sources)

@@ -1717,6 +1717,34 @@ class OrderManagementEngine:
                     if amendment_intent is not None else {})))
         cache[identity] = value
 
+    def _record_strategy_one_modify_acknowledgement(
+        self, group: _ManagedOrderGroup, intent: StrategyIntent,
+        broker_order_id: str, response: list[dict[str, Any]],
+    ) -> None:
+        """Retain one exact simulated reply per numbered protection amendment."""
+        if (self.strategy_id, self.strategy_revision) != (STRATEGY_ID, STRATEGY_NUMBER):
+            return
+        if (len(response) != 1 or type(response[0]) is not dict
+                or set(response[0]) != {"order_id", "order_status", "local_order_id"}
+                or str(response[0]["order_id"]) != broker_order_id
+                or response[0]["order_status"] not in {"Submitted", "Inactive"}
+                or type(response[0]["local_order_id"]) is not str
+                or not response[0]["local_order_id"]):
+            raise ValueError("Strategy 1 modification lacks exact broker acknowledgement")
+        lineage = causal_identity(
+            correlation_seed=self.run_id or intent.intent_id,
+            causation_seed=intent.intent_id)
+        self._record(
+            "broker", "order_acknowledgement", broker_order_id,
+            group.account_id, intent.event_time,
+            {"order_id": broker_order_id,
+             "order_status": response[0]["order_status"],
+             "local_order_id": response[0]["local_order_id"],
+             "order_group_id": group.group_id,
+             "decision_to_submit_ms": None,
+             "ticker": intent.ticker, "action": intent.action,
+             "intent_id": intent.intent_id, **lineage})
+
     async def _submit(self, group: _ManagedOrderGroup) -> None:
         started = perf_counter()
         if group.intent.action in {'enter_long', 'add_long'} and group.intent.metadata.get('entry_quality'):
@@ -1922,6 +1950,8 @@ class OrderManagementEngine:
                     async with self._warning_lane:
                         response = await self._resolve_warning_chain_locked(group, response)
                 _require_modify_acknowledgement(response)
+                self._record_strategy_one_modify_acknowledgement(
+                    group, intent, broker_order_id, response)
                 responses.extend(response)
                 self._record_protection(
                     group, replacement, phase="effective",
@@ -1958,21 +1988,16 @@ class OrderManagementEngine:
             )
             if self.state_callback is not None:
                 await self.state_callback(group.snapshot(self.policy.version))
-        self._record(
-            "broker",
-            "profit_target_replaced",
-            intent.intent_id,
-            account_id,
-            intent.event_time,
-            {
-                "ticker": intent.ticker,
-                "quantity": intent.quantity,
-                "target_price": target_price,
-                "source_group_ids": sorted(touched),
-                "targets_by_group": {key: group.intent.profit_target_price for key, group in touched.items()},
-                "broker_response": responses,
-            },
-        )
+        if (self.strategy_id, self.strategy_revision) != (STRATEGY_ID, STRATEGY_NUMBER):
+            self._record(
+                "broker", "profit_target_replaced", intent.intent_id,
+                account_id, intent.event_time,
+                {"ticker": intent.ticker, "quantity": intent.quantity,
+                 "target_price": target_price,
+                 "source_group_ids": sorted(touched),
+                 "targets_by_group": {key: group.intent.profit_target_price
+                                      for key, group in touched.items()},
+                 "broker_response": responses})
         return next(iter(touched.values())).snapshot(self.policy.version)
 
     async def _modify_existing_protected_exit(
@@ -2721,6 +2746,8 @@ class OrderManagementEngine:
                 async with self._warning_lane:
                     response = await self._resolve_warning_chain_locked(group, response)
             _require_modify_acknowledgement(response)
+            self._record_strategy_one_modify_acknowledgement(
+                group, intent, str(order.orderId), response)
             self._record_protection(
                 group, replacement, phase="effective",
                 broker_order_id=str(order.orderId),
@@ -2738,9 +2765,12 @@ class OrderManagementEngine:
                     'momentum_stop_advanced':True, 'stop_exit_reason':reason})
             group.updated_at = intent.event_time
             self._transition(group, group.state, {"event": "support_stop_replaced", "stop": desired})
-            self._record("broker", "protective_stop_replaced", str(order.orderId), account_id,
-                         intent.event_time, {"stop": desired, "intent_id": intent.intent_id,
-                                             "selection": intent.metadata.get("protective_stop_selection", {})})
+            if (self.strategy_id, self.strategy_revision) != (STRATEGY_ID, STRATEGY_NUMBER):
+                self._record(
+                    "broker", "protective_stop_replaced", str(order.orderId),
+                    account_id, intent.event_time,
+                    {"stop": desired, "intent_id": intent.intent_id,
+                     "selection": intent.metadata.get("protective_stop_selection", {})})
             changed.append(group)
         if not changed:
             raise ValueError("No broker-held support stop is available for replacement")

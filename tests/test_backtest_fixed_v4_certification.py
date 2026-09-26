@@ -164,6 +164,16 @@ def test_numbered_protection_bypasses_legacy_oms_managers(tmp_path):
         "pass", 1), encoding="utf-8")
     with pytest.raises(ValueError, match="legacy OMS event may be reachable"):
         certify_strategy_one_legacy_protection_unreachable(**copies)
+    oms.write_text(sources["oms_path"].read_text(encoding="utf-8").replace(
+        "if (self.strategy_id, self.strategy_revision) != (STRATEGY_ID, STRATEGY_NUMBER):\n"
+        "            self._record(\n"
+        "                \"broker\", \"profit_target_replaced\"",
+        "if True:\n"
+        "            self._record(\n"
+        "                \"broker\", \"profit_target_replaced\"", 1),
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="modification summary may be reachable"):
+        certify_strategy_one_legacy_protection_unreachable(**copies)
 
     manager = object.__new__(OrderManagementEngine)
     manager.strategy_id = STRATEGY_ID
