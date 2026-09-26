@@ -255,13 +255,13 @@ def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(mo
     from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
     from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 
-    assert len(checked) == 11
-    assert checked[2] == (read, (ENTRY_EVIDENCE,))
-    assert checked[3] == (read, (ACKNOWLEDGEMENT,))
-    assert checked[4] == (read, bootstrap.PROTECTION_CHANGE_TABLES)
-    assert checked[7] == (terminal, (ENTRY_EVIDENCE,))
-    assert checked[8] == (terminal, (ACKNOWLEDGEMENT,))
-    assert checked[9] == (terminal, bootstrap.PROTECTION_CHANGE_TABLES)
+    assert len(checked) == 3
+    expected = {table.name for table in bootstrap.v4_storage_contracts()}
+    assert checked[0][0] is read and {table.name for table in checked[0][1]} == expected
+    assert checked[1][0] is terminal and {table.name for table in checked[1][1]} == expected
+    assert {ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
+            *(table.name for table in bootstrap.PROTECTION_CHANGE_TABLES)} <= expected
+    assert checked[2] == (writer_client, "v4")
     class Writer:
         run_id = RUN
         run_mode = "backtest"

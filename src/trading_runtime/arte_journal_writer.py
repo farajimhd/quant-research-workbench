@@ -1626,12 +1626,9 @@ def _v3_preflight(client: Any) -> None:
     running_v3_preflight(client)
 
 
-def _v4_preflight(client: Any) -> None:
-    """Opt-in normalized fence; leave the live V1 startup contract unchanged."""
+def v4_storage_contracts() -> tuple[Any, ...]:
+    """One exact, deduplicated V4 catalog for every principal's storage audit."""
     installed = fixed_backtest_v2_contracts()
-    # A storage_preflight scans active parts as well as schema. Audit the
-    # union once: repeating that catalog scan for each family can dominate
-    # Backtest startup on a workstation with large market-part catalogs.
     contracts = (*installed, *V4_COMMIT_TABLES, ENTRY_EVIDENCE,
                  ACKNOWLEDGEMENT, *PROTECTION_CHANGE_TABLES)
     by_name = {}
@@ -1639,7 +1636,16 @@ def _v4_preflight(client: Any) -> None:
         previous = by_name.setdefault(contract.name, contract)
         if previous != contract:
             raise ValueError(f"V4 table has conflicting contracts: {contract.name}")
-    storage_preflight(client, tables=tuple(by_name.values()))
+    return tuple(by_name.values())
+
+
+def _v4_preflight(client: Any) -> None:
+    """Opt-in normalized fence; leave the live V1 startup contract unchanged."""
+    installed = fixed_backtest_v2_contracts()
+    # A storage_preflight scans active parts as well as schema. Audit the
+    # union once: repeating that catalog scan for each family can dominate
+    # Backtest startup on a workstation with large market-part catalogs.
+    storage_preflight(client, tables=v4_storage_contracts())
     writable = frozenset(
         _v4_family_table(table) for table, _, _, _ in _FAMILIES
     ) | frozenset(table.name for table in V4_COMMIT_TABLES) | {

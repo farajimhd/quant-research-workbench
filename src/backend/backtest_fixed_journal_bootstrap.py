@@ -40,6 +40,7 @@ from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, _v4_preflight, load_typed_run_context,
+    v4_storage_contracts,
 )
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 
@@ -322,11 +323,7 @@ def prepare_fixed_v4_journal_token(
             or not callable(projection_certifier)):
         raise ValueError("V4 journal lacks distinct strict pinned authorities")
     for client in (read_client, terminal_client):
-        storage_preflight(client, tables=fixed_backtest_v2_contracts())
-        storage_preflight(client, tables=V4_COMMIT_TABLES)
-        storage_preflight(client, tables=(ENTRY_EVIDENCE,))
-        storage_preflight(client, tables=(ACKNOWLEDGEMENT,))
-        storage_preflight(client, tables=PROTECTION_CHANGE_TABLES)
+        storage_preflight(client, tables=v4_storage_contracts())
     _v4_preflight(writer_client)
     context = verify_fixed_run_context(
         dispatch, read_client, terminal_client, run_id=run_id)
