@@ -220,7 +220,11 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except Exception as exc:
         detail = (str(exc) if isinstance(exc, HodCampaignFailure)
-                  else type(exc).__name__)
+                  else f"{type(exc).__name__} at " + next((
+                      f"{Path(frame.filename).name}:{frame.name}:{frame.lineno}"
+                      for frame in reversed(traceback.extract_tb(exc.__traceback__))
+                      if Path(frame.filename).is_relative_to(REPO_ROOT)),
+                      "external_dependency"))
         print(f"HOD campaign stopped: {detail}; covered tickers remain "
               "restart-safe. Inspect private diagnostics.", file=sys.stderr)
         return 1
