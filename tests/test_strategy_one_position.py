@@ -2,7 +2,8 @@
 import pytest
 
 from src.trading_runtime.strategy_one_position import (
-    ResistanceBreak, advance_protection, open_protection,
+    ResistanceBreak, advance_protection, confirm_protection_transition,
+    open_protection, ordered_protection_amendments,
 )
 
 
@@ -128,3 +129,36 @@ def test_only_latest_triple_is_retained_and_idle_boundary_reuses_state():
     assert idle.state.accepted_ids is second.state.accepted_ids
     assert idle.state.earned_group is second.state.earned_group
     assert idle.state.pending_group is second.state.pending_group
+
+
+def test_rejected_stop_keeps_break_evidence_but_retries_unapplied_group():
+    opened = opening()
+    transition = advancing(opened.state, breaks=[
+        ResistanceBreak(31_000, level(index, center))
+        for index, center in ((1, 9.8), (2, 9.9), (3, 10.1))])
+    rejected = confirm_protection_transition(
+        opened.state, transition, target_confirmed=False,
+        stop_confirmed=False)
+    assert rejected.stop == opened.state.stop
+    assert rejected.accepted_ids == transition.state.accepted_ids
+    assert rejected.earned_groups == 1 and rejected.applied_groups == 0
+    retry = advancing(rejected, now_ms=31_100, breaks=())
+    assert retry.stop_amendment["source"] == "three_resistance_step_stop"
+    confirmed = confirm_protection_transition(
+        rejected, retry, target_confirmed=False, stop_confirmed=True)
+    assert confirmed.stop == retry.state.stop
+    assert confirmed.applied_groups == 1
+
+
+def test_target_precedes_stop_and_unacknowledged_target_cannot_license_crossing():
+    opened = opening()
+    transition = advancing(opened.state, bid=10.5, ask=10.51,
+                           low_int=105_000, overhead_levels=[
+                               level(index, 11 + index * .1)
+                               for index in range(1, 8)])
+    assert [action for action, _ in ordered_protection_amendments(transition)] == [
+        "replace_profit_target", "replace_protective_stop"]
+    with pytest.raises(RuntimeError, match="cross working target"):
+        confirm_protection_transition(
+            opened.state, transition, target_confirmed=False,
+            stop_confirmed=True)

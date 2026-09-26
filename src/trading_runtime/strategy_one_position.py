@@ -56,6 +56,58 @@ class ProtectionTransition:
     target_amendment: Mapping | None = None
 
 
+def ordered_protection_amendments(
+    transition: ProtectionTransition,
+) -> tuple[tuple[str, Mapping], ...]:
+    """Submit an expanding target before a stop that may need its new room."""
+    if not isinstance(transition, ProtectionTransition):
+        raise TypeError("Strategy 1 protection needs a typed transition")
+    result = []
+    if transition.target_amendment is not None:
+        result.append(("replace_profit_target", transition.target_amendment))
+    if transition.stop_amendment is not None:
+        result.append(("replace_protective_stop", transition.stop_amendment))
+    return tuple(result)
+
+
+def confirm_protection_transition(
+    previous: ProtectionState, transition: ProtectionTransition, *,
+    target_confirmed: bool, stop_confirmed: bool,
+) -> ProtectionState:
+    """Commit only broker-acknowledged prices; retain causal break history.
+
+    OMS acknowledgement (or exact broker reconciliation) is the authority for
+    a replacement price. A refused stop leaves its earned resistance group
+    unapplied so a later completed boundary may retry it. A refused target
+    cannot license a stop above the still-working target.
+    """
+    if (not isinstance(previous, ProtectionState)
+            or not isinstance(transition, ProtectionTransition)
+            or type(target_confirmed) is not bool or type(stop_confirmed) is not bool
+            or transition.state.boundary_ms <= previous.boundary_ms
+            or target_confirmed and transition.target_amendment is None
+            or stop_confirmed and transition.stop_amendment is None
+            or (transition.target_amendment is None
+                and transition.state.target != previous.target)
+            or (transition.stop_amendment is None
+                and transition.state.stop != previous.stop)
+            or (transition.target_amendment is not None
+                and transition.target_amendment.get("price") != transition.state.target)
+            or (transition.stop_amendment is not None
+                and transition.stop_amendment.get("price") != transition.state.stop)
+            or not previous.accepted_ids <= transition.state.accepted_ids
+            or transition.state.earned_groups < previous.earned_groups):
+        raise ValueError("Strategy 1 protection confirmation lacks its proposal")
+    state = transition.state
+    stop = state.stop if stop_confirmed else previous.stop
+    target = state.target if target_confirmed else previous.target
+    if not 0 < stop < target:
+        raise RuntimeError("Strategy 1 confirmed stop would cross working target")
+    return replace(state, stop=stop, target=target,
+                   applied_groups=(state.applied_groups if stop_confirmed
+                                   else previous.applied_groups))
+
+
 def _quote(*, bid: float, ask: float, tick: float) -> None:
     if not all(type(value) in (int, float) and isfinite(value)
                for value in (bid, ask, tick)) or not 0 < bid <= ask or tick <= 0:
