@@ -517,6 +517,82 @@ def test_v4_repricing_uses_nonblocking_writer_lane(monkeypatch):
         writer.close()
 
 
+def test_v4_risk_action_fences_two_replies_and_cold_verifies():
+    from src.trading_runtime.arte_risk_action_v4 import (
+        ACTION, REPLY, risk_action_batch_v4,
+    )
+    from src.trading_runtime.arte_journal_commit_v4 import (
+        publish_risk_action_batch_v4,
+    )
+
+    at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
+    prefix = "risk-flatten-test"
+    source = JournalRecord(
+        str(UUID(int=241)), "run-risk", 1, at, at,
+        "risk", "emergency_flatten", prefix, "DU1", {
+            "reason": "risk_limit", "ticker": "AAA", "quantity": 10.,
+            "limit_price": 9.98, "fallback_stop": 9.8,
+            "broker_response": [
+                {"order_id": "42", "order_status": "Submitted",
+                 "local_order_id": f"{prefix}-limit"},
+                {"order_id": "43", "order_status": "Submitted",
+                 "local_order_id": f"{prefix}-stop"}],
+            "correlation_id": "correlation", "causation_id": "causation",
+            "strategy_id": "early-squeeze-strategy", "strategy_revision": 1,
+        })
+    unit = risk_action_batch_v4(
+        source, run_month=date(2026, 8, 1), attempt_id=str(UUID(int=242)),
+        batch_id=str(UUID(int=243)), prior_batch_id=str(UUID(int=0)),
+        source_cursor="2026-08-18:31000")
+    client = attached_v4_client()
+    assert publish_risk_action_batch_v4(
+        client, unit.base, action=unit.action,
+        replies=unit.replies) == unit.base.batch_id
+    assert load_verified_v4_prefix(client, source.run_id).last_sequence == 1
+    assert len(client.tables[ACTION.name]) == 1
+    assert len(client.tables[REPLY.name]) == 2
+    client.tables[REPLY.name][1]["ordinal"] = 4
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_verified_v4_prefix(client, source.run_id)
+
+
+def test_v4_risk_action_uses_nonblocking_writer_lane(monkeypatch):
+    from src.trading_runtime.arte_risk_action_v4 import risk_action_batch_v4
+
+    at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
+    source = JournalRecord(
+        str(UUID(int=251)), "run-risk-writer", 1, at, at,
+        "risk", "kill_entry_order", "42", "DU1", {
+            "order_group_id": "group-1", "reason": "risk_limit",
+            "broker_response": {"msg": "Request was submitted",
+                                "order_id": 42, "conid": 123, "account": "DU1"},
+            "ticker": "AAA", "action": "enter_long", "intent_id": "intent-1",
+            "correlation_id": "correlation", "causation_id": "causation",
+            "strategy_id": "early-squeeze-strategy", "strategy_revision": 1,
+        })
+    unit = risk_action_batch_v4(
+        source, run_month=date(2026, 8, 1), attempt_id=str(UUID(int=252)),
+        batch_id=str(UUID(int=253)), prior_batch_id=str(UUID(int=0)),
+        source_cursor="2026-08-18:31000")
+    client = attached_v4_client()
+    monkeypatch.setattr(writer_module, "storage_preflight",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity",
+                        lambda _client, _run: {
+                            "mode": "backtest", "account_ids": ("DU1",)})
+    writer = ArteJournalWriter(
+        client, run_id=source.run_id, journal_profile="backtest_v4",
+        coalesce_batches=False)
+    try:
+        receipt = writer.submit_risk_action_v4(unit)
+        assert receipt.result(timeout=5) == unit.base.batch_id
+        assert load_verified_v4_prefix(client, source.run_id).last_sequence == 1
+    finally:
+        writer.close()
+
+
 def test_v4_protection_change_fences_numbered_children_and_cold_readback():
     from src.trading_runtime.arte_journal_commit_v4 import (
         publish_protection_change_batch_v4,
@@ -810,12 +886,14 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
     from src.trading_runtime.arte_order_cancel_v4 import CANCEL
     from src.trading_runtime.arte_order_reprice_v4 import REPRICE
+    from src.trading_runtime.arte_risk_action_v4 import TABLES as RISK_ACTION_TABLES
 
     assert len(observed) == 2
     assert {table.name for table in observed[0]} == {
         table.name for table in (*fixed_backtest_v2_contracts(),
                                  *V4_COMMIT_TABLES, ENTRY_EVIDENCE,
                                  ACKNOWLEDGEMENT, CANCEL, REPRICE,
+                                 *RISK_ACTION_TABLES,
                                  *PROTECTION_CHANGE_TABLES,
                                  *PROTECTION_RECONCILIATION_TABLES)}
     writable = frozenset(writer_module._v4_family_table(table)
@@ -823,6 +901,7 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
         frozenset(table.name for table in V4_COMMIT_TABLES) | {
             ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name, CANCEL.name,
             REPRICE.name,
+            *(table.name for table in RISK_ACTION_TABLES),
             *(table.name for table in PROTECTION_CHANGE_TABLES),
             *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
             "trading_backtest_account_snapshot_v2",

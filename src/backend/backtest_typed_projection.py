@@ -22,6 +22,7 @@ from src.trading_runtime.arte_journal_writer import (
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     V4ProtectionReconciliationBatch,
 )
+from src.trading_runtime.arte_risk_action_v4 import V4RiskActionBatch
 from src.trading_runtime.journal_contract import canonical_json
 
 
@@ -70,7 +71,7 @@ def project_pending_backtest_v4_prefix(
     through_sequence: int,
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
            | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
-           | V4OrderRepriceBatch | V4ProtectionChangeBatch
+           | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
            | V4ProtectionReconciliationBatch, ...]:
     """Project one bounded V4 prefix; special families never enter a base batch."""
     from src.trading_runtime.arte_broker_acknowledgement_v4 import (
@@ -115,7 +116,14 @@ def project_pending_backtest_v4_prefix(
         kind = (record.category, record.entity_type)
         if kind == ("checkpoint", "market_boundary"):
             cursor = record.entity_id
-        if kind in {("broker", "order_repriced"),
+        if kind in {("risk", "kill_entry_order"),
+                    ("risk", "emergency_flatten")}:
+            from src.trading_runtime.arte_risk_action_v4 import risk_action_batch_v4
+            unit = risk_action_batch_v4(
+                record, run_month=run_month, attempt_id=attempt,
+                batch_id=batch_id, prior_batch_id=previous,
+                source_cursor=cursor)
+        elif kind in {("broker", "order_repriced"),
                     ("broker", "order_reprice_error")}:
             from src.trading_runtime.arte_order_reprice_v4 import order_reprice_batch_v4
             unit = order_reprice_batch_v4(

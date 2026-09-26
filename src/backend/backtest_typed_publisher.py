@@ -26,6 +26,7 @@ from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapsho
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     V4ProtectionReconciliationBatch,
 )
+from src.trading_runtime.arte_risk_action_v4 import V4RiskActionBatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,7 +122,7 @@ class BacktestTypedJournalPublisher:
     def _prepare_batches(self, through_sequence: int) -> tuple[
             TypedJournalBatch | V3SqueezeBatch | V4StrategyOneEntryBatch
             | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
-            | V4OrderRepriceBatch | V4ProtectionChangeBatch
+            | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
             | V4ProtectionReconciliationBatch, ...]:
         """Project at most one commit-sized prefix outside the event loop."""
         if not self._sequence < through_sequence <= self._sequence + self.batch_size:
@@ -190,6 +191,7 @@ class BacktestTypedJournalPublisher:
                         unit, (V3SqueezeBatch, V4StrategyOneEntryBatch,
                                V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
                                V4OrderRepriceBatch,
+                               V4RiskActionBatch,
                                V4ProtectionChangeBatch,
                                V4ProtectionReconciliationBatch)) else unit
                     if (batch.first_sequence != self._sequence + 1
@@ -203,6 +205,8 @@ class BacktestTypedJournalPublisher:
                                if isinstance(unit, V4OrderCancelBatch)
                                else self.writer.submit_order_reprice_v4(unit)
                                if isinstance(unit, V4OrderRepriceBatch)
+                               else self.writer.submit_risk_action_v4(unit)
+                               if isinstance(unit, V4RiskActionBatch)
                                else self.writer.submit_protection_change_v4(unit)
                                if isinstance(unit, V4ProtectionChangeBatch)
                                else self.writer.submit_protection_reconciliation_v4(unit)

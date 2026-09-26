@@ -45,12 +45,8 @@ def test_v4_certificate_rejects_unprojected_indirect_family(tmp_path):
             controller_source=controller, indirect_sources=(oms,))
 
 
-def test_current_runtime_is_not_yet_v4_certified():
-    with pytest.raises(ValueError, match="emergency_flatten") as failure:
-        certify_strategy_one_v4_projection()
-    assert "strategy_assignment_state" not in str(failure.value)
-    assert "order_cancel_requested" not in str(failure.value)
-    assert "order_repriced" not in str(failure.value)
+def test_current_runtime_has_complete_v4_emitter_inventory():
+    assert len(certify_strategy_one_v4_projection()) == 64
 
 
 def test_numbered_assignment_activity_exclusion_is_source_bound(tmp_path):

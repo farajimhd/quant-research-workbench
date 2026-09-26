@@ -20,6 +20,9 @@ from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
+from src.trading_runtime.arte_risk_action_v4 import (
+    ACTION as RISK_ACTION, REPLY as RISK_REPLY, seal_risk_action_v4,
+)
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     RECONCILIATION as PROTECTION_RECONCILIATION,
     ACTION as RECONCILIATION_ACTION, REPLY as RECONCILIATION_REPLY,
@@ -319,6 +322,7 @@ def _load_verified_details_v4(
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
                     ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name, CANCEL.name,
                     REPRICE.name,
+                    RISK_ACTION.name, RISK_REPLY.name,
                     PROTECTION_CHANGE.name, PROTECTION_ENTRY_ORDER.name,
                     PROTECTION_RECONCILIATION.name,
                     RECONCILIATION_ACTION.name, RECONCILIATION_REPLY.name,
@@ -405,6 +409,13 @@ def _load_verified_details_v4(
         if (row["category"], row["entity_type"]) in
            {("broker", "order_repriced"), ("broker", "order_reprice_error")}} != seen_reprice:
         raise RuntimeError("V4 repricing has missing typed detail")
+    try:
+        seal_risk_action_v4(
+            related_rows.get(RISK_ACTION.name, ()),
+            related_rows.get(RISK_REPLY.name, ()),
+            tuple(events.values()), run_id=run_id, batch_id=batch_id)
+    except ValueError as exc:
+        raise RuntimeError("V4 risk action differs from its reply graph") from exc
     try:
         seal_protection_changes_v3(
             related_rows.get(PROTECTION_CHANGE.name, ()),
@@ -568,6 +579,12 @@ def publish_order_reprice_batch_v4(client, batch, *, repricing) -> str:
         client, batch, order_reprice_row=repricing)
 
 
+def publish_risk_action_batch_v4(client, batch, *, action, replies) -> str:
+    """Commit one risk action and every ordered scalar broker reply."""
+    return _publish_typed_batch_v4(
+        client, batch, risk_action_row=action, risk_reply_rows=replies)
+
+
 def publish_protection_change_batch_v4(client, batch, *, change,
                                        entry_orders) -> str:
     """Fence one protection revision and all of its normalized entry links."""
@@ -721,6 +738,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                             broker_acknowledgement_row=None,
                             order_cancel_row=None,
                             order_reprice_row=None,
+                            risk_action_row=None,
+                            risk_reply_rows=(),
                             protection_change_row=None,
                             protection_entry_order_rows=(),
                             protection_reconciliation_row=None,
@@ -746,6 +765,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
     if sum(bool(value) for value in (
             strategy_one_entry_rows, broker_acknowledgement_row, order_cancel_row,
             order_reprice_row,
+            risk_action_row,
             protection_change_row, protection_reconciliation_row,
             broker_snapshot_rows)) > 1:
         raise ValueError("V4 batch cannot mix independent typed supplements")
@@ -870,6 +890,31 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                    != (reprice["result_kind"] == "modified")):
             raise ValueError("V4 repricing differs from its parent")
         reprice_rows = (reprice,)
+    risk_rows = ()
+    risk_replies = ()
+    if risk_action_row is not None:
+        if (len(batch.events) != 1 or not isinstance(risk_action_row, Mapping)
+                or (batch.events[0]["category"], batch.events[0]["entity_type"])
+                   not in {("risk", "kill_entry_order"),
+                           ("risk", "emergency_flatten")}):
+            raise ValueError("V4 risk action has an invalid event envelope")
+        risk_rows = (typed_row(RISK_ACTION.name, {
+            key: value for key, value in risk_action_row.items()
+            if key != "content_hash"}),)
+        risk_replies = tuple(typed_row(RISK_REPLY.name, {
+            key: value for key, value in source.items()
+            if key != "content_hash"}) for source in risk_reply_rows)
+        if ("content_hash" in risk_action_row
+                and risk_rows[0]["content_hash"] != risk_action_row["content_hash"]
+                or any("content_hash" in source
+                       and source["content_hash"] != child["content_hash"]
+                       for source, child in zip(risk_reply_rows, risk_replies))):
+            raise ValueError("V4 risk action differs from its scalar seal")
+        seal_risk_action_v4(
+            risk_rows, risk_replies, batch.events,
+            run_id=batch.run_id, batch_id=batch.batch_id)
+    elif risk_reply_rows:
+        raise ValueError("V4 risk replies lack their action parent")
     protection_rows = ()
     protection_children = ()
     if protection_change_row is not None:
@@ -927,6 +972,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         batch, v4_broker_ack_ids=tuple(row["record_id"] for row in ack_rows),
         v4_order_cancel_ids=tuple(row["record_id"] for row in cancel_rows),
         v4_order_reprice_ids=tuple(row["record_id"] for row in reprice_rows),
+        v4_risk_action_ids=tuple(row["record_id"] for row in risk_rows),
         v4_protection_ids=tuple(row["record_id"] for row in protection_rows),
         v4_reconciliation_ids=tuple(row["record_id"] for row in reconciliation_rows),
         v4_snapshot_account_ids=tuple(row["record_id"] for row in snapshot_accounts),
@@ -943,6 +989,9 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         families += ((CANCEL.name, cancel_rows),)
     if reprice_rows:
         families += ((REPRICE.name, reprice_rows),)
+    if risk_rows:
+        families += ((RISK_ACTION.name, risk_rows),
+                     (RISK_REPLY.name, risk_replies))
     if protection_rows:
         families += ((PROTECTION_CHANGE.name, protection_rows),)
     if protection_children:

@@ -90,10 +90,12 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
     from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
     from src.trading_runtime.arte_order_cancel_v4 import CANCEL
     from src.trading_runtime.arte_order_reprice_v4 import REPRICE
+    from src.trading_runtime.arte_risk_action_v4 import TABLES as RISK_ACTION_TABLES
     from src.backend.backtest_protection_change_v3 import TABLES as PROTECTION_CHANGE_TABLES
 
     assert plan.profile_contracts("commit-v4") == V4_COMMIT_TABLES + (
         ENTRY_EVIDENCE, ACKNOWLEDGEMENT, CANCEL, REPRICE,
+        *RISK_ACTION_TABLES,
         *PROTECTION_CHANGE_TABLES,
         *PROTECTION_RECONCILIATION_TABLES)
     present = V4_COMMIT_TABLES[0].name
@@ -110,6 +112,7 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
     assert [table.name for table in checked] == [present]
     assert missing == (V4_COMMIT_TABLES[1].name, ENTRY_EVIDENCE.name,
                            ACKNOWLEDGEMENT.name, CANCEL.name, REPRICE.name,
+                           *(table.name for table in RISK_ACTION_TABLES),
                        *(table.name for table in PROTECTION_CHANGE_TABLES),
                        *(table.name for table in PROTECTION_RECONCILIATION_TABLES))
     assert len(ddl) == len(missing) and all(

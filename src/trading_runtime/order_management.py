@@ -1614,6 +1614,25 @@ class OrderManagementEngine:
                 raise RuntimeError(
                     "Emergency flatten returned an unresolved broker warning; existing protection was retained"
                 )
+            if (self.causal_execution_clock
+                    and (self.strategy_id, self.strategy_revision)
+                    == (STRATEGY_ID, STRATEGY_NUMBER)):
+                # A rejected simulated OCA pair cannot replace existing
+                # protection. Validate both exact replies before recording or
+                # cancelling any working strategy stop/target.
+                if (type(response) is not list or len(response) != len(orders)
+                        or any(type(reply) is not dict
+                               or set(reply) != {"order_id", "order_status",
+                                                 "local_order_id"}
+                               or type(reply["order_id"]) is not str
+                               or not reply["order_id"]
+                               or reply["order_status"] not in {"Submitted", "Inactive"}
+                               or reply["local_order_id"] != order.cOID
+                               for reply, order in zip(response, orders))
+                        or len({reply["order_id"] for reply in response})
+                           != len(response)):
+                    raise RuntimeError(
+                        "Emergency flatten lacks two exact simulated broker acknowledgements")
             responses.extend(response)
             self._record(
                 "risk",

@@ -20,6 +20,7 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                 ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
                 provision.CANCEL.name,
                 provision.REPRICE.name,
+                *(table.name for table in provision.RISK_ACTION_TABLES),
                 *(table.name for table in PROTECTION_CHANGE_TABLES),
                 *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
                 "trading_backtest_account_snapshot_v2",
@@ -32,6 +33,7 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                                      ENTRY_EVIDENCE, ACKNOWLEDGEMENT,
                                      provision.CANCEL,
                                      provision.REPRICE,
+                                     *provision.RISK_ACTION_TABLES,
                                  *PROTECTION_CHANGE_TABLES,
                                  *PROTECTION_RECONCILIATION_TABLES)) | MARKET_READ_TABLES
     assert all(" ON arte." in grant or " ON system." in grant
