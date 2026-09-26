@@ -15,6 +15,7 @@ import re
 import secrets
 import socket
 import sys
+import traceback
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -306,8 +307,12 @@ def main(argv: list[str] | None = None) -> int:
         _operator_apply(args.url, plans)
     except Exception as exc:
         # Client exceptions may include SQL or credential data; print only a
-        # stable type and direct operators to inspect private workstation logs.
-        print(f"V3 provisioning stopped: {type(exc).__name__}; partial users or grants may exist. "
+        # stable type and source stage, never the exception or SQL text.
+        frames = traceback.extract_tb(exc.__traceback__)
+        stage = next((f"{frame.name}:{frame.lineno}" for frame in reversed(frames)
+                      if frame.filename == __file__), "external_dependency")
+        print(f"V3 provisioning stopped: {type(exc).__name__} at {stage}; "
+              "partial users or grants may exist. "
               "Review private operator diagnostics before retry.",
               file=sys.stderr)
         return 1
