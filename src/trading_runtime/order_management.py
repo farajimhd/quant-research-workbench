@@ -1514,7 +1514,10 @@ class OrderManagementEngine:
             },
         )
 
-    async def kill_entries(self, account_id: str, *, reason: str) -> list[dict[str, Any]]:
+    async def kill_entries(self, account_id: str, *, reason: str,
+                           event_time: datetime | None = None) -> list[dict[str, Any]]:
+        if event_time is not None and event_time.tzinfo is None:
+            raise ValueError("Risk command time must be timezone-aware")
         responses: list[dict[str, Any]] = []
         for group in self._groups.values():
             if group.account_id != account_id or group.remaining_quantity <= 0:
@@ -1531,7 +1534,9 @@ class OrderManagementEngine:
                     "kill_entry_order",
                     broker_order_id,
                     account_id,
-                    datetime.now(timezone.utc),
+                    event_time or (self._causal_group_time(
+                        group.intent, previous=group.updated_at)
+                        if self.causal_execution_clock else datetime.now(timezone.utc)),
                     {"order_group_id": group.group_id, "reason": reason, "broker_response": response},
                 )
             if _open_entry_roots(group):
@@ -1542,11 +1547,14 @@ class OrderManagementEngine:
                 )
         return responses
 
-    async def emergency_flatten(self, account_id: str, *, reason: str) -> list[dict[str, Any]]:
+    async def emergency_flatten(self, account_id: str, *, reason: str,
+                                event_time: datetime | None = None) -> list[dict[str, Any]]:
+        if event_time is not None and event_time.tzinfo is None:
+            raise ValueError("Risk command time must be timezone-aware")
         if not self._broker_connected:
             raise RuntimeError("Emergency flatten requires a connected broker session")
         await self.reconcile()
-        await self.kill_entries(account_id, reason=reason)
+        await self.kill_entries(account_id, reason=reason, event_time=event_time)
         responses: list[dict[str, Any]] = []
         for position in await self.broker.positions(account_id):
             quantity = abs(float(position.position))
@@ -1612,7 +1620,8 @@ class OrderManagementEngine:
                 "emergency_flatten",
                 prefix,
                 account_id,
-                datetime.now(timezone.utc),
+                event_time or (snapshot.observed_at if self.causal_execution_clock
+                               else datetime.now(timezone.utc)),
                 {
                     "reason": reason,
                     "ticker": ticker,
@@ -1626,7 +1635,8 @@ class OrderManagementEngine:
                 account_id=account_id,
                 ticker=ticker,
                 client_id_prefix=self._protective_order_prefix(),
-                event_time=datetime.now(timezone.utc),
+                event_time=event_time or (snapshot.observed_at if self.causal_execution_clock
+                                          else datetime.now(timezone.utc)),
             )
         return responses
 

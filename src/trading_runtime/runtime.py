@@ -1580,11 +1580,17 @@ class TradingRuntime:
                     await self.order_manager.kill_entries(
                         account_id,
                         reason=str(command.get("reason") or "operator"),
+                        event_time=(self.last_event_time if self.config.mode
+                                    in {RunMode.REPLAY, RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}
+                                    else datetime.now(timezone.utc)),
                     )
                 elif normalized == "emergency_flatten":
                     await self.order_manager.emergency_flatten(
                         account_id,
                         reason=str(command.get("reason") or "operator"),
+                        event_time=(self.last_event_time if self.config.mode
+                                    in {RunMode.REPLAY, RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}
+                                    else datetime.now(timezone.utc)),
                     )
                 elif normalized == "resume_entries":
                     await self.risk_supervisor.resume(
@@ -1700,9 +1706,11 @@ class TradingRuntime:
         await self.order_manager.kill_entries(
             evaluation.account_id,
             reason="continuous_risk_emergency",
+            event_time=evaluation.observed_at,
         )
         if policy.allow_emergency_auto_liquidation:
             await self.order_manager.emergency_flatten(
                 evaluation.account_id,
                 reason="continuous_risk_emergency",
+                event_time=evaluation.observed_at,
             )
