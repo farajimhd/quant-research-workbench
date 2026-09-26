@@ -170,6 +170,54 @@ def test_management_breaks_use_only_prior_known_completed_second():
     asyncio.run(run())
 
 
+def test_quote_only_second_advances_v7_without_fabricating_resistance_break():
+    session = date(2026, 8, 18)
+    level = {"unified_level_id": "r1", "lower": 10., "upper": 10.2,
+             "role": "resistance"}
+
+    class ReadyV7:
+        prefetches_seconds = False
+
+        def __init__(self):
+            self.advanced = []
+
+        def has_stream(self, ticker):
+            return ticker == "TEST"
+
+        def advance_seconds(self, rows, *, at):
+            self.advanced.extend(row["boundary_ms"] for row in rows)
+
+        def strategy_one_levels(self, ticker, *, as_of):
+            return (level,)
+
+    evidence = object.__new__(StrategyOneCausalEvidence)
+    evidence.session = session
+    evidence.v7 = ReadyV7()
+    evidence._resistance = {}
+    evidence._completed_breaks = {}
+    evidence._break_boundary_ms = 0
+    evidence._completed_30s = {}
+
+    async def observe(boundary, *, valid, opened=None, closed=None):
+        bar = {"session_date": session.isoformat(), "ticker": "TEST",
+               "boundary_ms": boundary, "resolution_ms": 1_000,
+               "price_valid": int(valid), "open_int": opened,
+               "close_int": closed}
+        await evidence.observe_completed_seconds(StrategyOneBoundaryWork(
+            boundary, (("TEST", {1_000: bar}),), ()))
+
+    async def run():
+        await observe(1_000, valid=True, opened=100_000, closed=100_500)
+        await observe(2_000, valid=False)
+        assert evidence.completed_resistance_breaks("TEST", boundary_ms=2_000) == ()
+        assert evidence._resistance["TEST"].boundary_ms == 1_000
+        await observe(3_000, valid=True, opened=100_500, closed=101_500)
+        assert evidence.completed_resistance_breaks("TEST", boundary_ms=3_000) == ()
+        assert evidence.v7.advanced == [1_000, 2_000, 3_000]
+
+    asyncio.run(run())
+
+
 def test_management_low_expires_and_invalid_completed_bucket_revokes_it():
     session = date(2026, 8, 18)
     evidence = object.__new__(StrategyOneCausalEvidence)

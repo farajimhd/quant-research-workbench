@@ -142,6 +142,13 @@ class StrategyOneCausalEvidence:
             # Acceptance uses the just-completed 1s close against geometry
             # known before that second. No intrabucket trade ordering exists.
             for row in rows:
+                # Persisted one-second buckets may be quote-only. V7/BOS must
+                # still advance their causal clock, but no resistance can be
+                # accepted without a completed price-bearing close. Retaining
+                # the last price observation makes the next traded second
+                # noncontiguous, so it cannot invent a crossing over this gap.
+                if row.get("price_valid") != 1:
+                    continue
                 ticker = str(row["ticker"])
                 levels = self.v7.strategy_one_levels(ticker, as_of=at)
                 state, breaks = observe_completed_resistance_second(
