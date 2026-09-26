@@ -262,7 +262,18 @@ def oms_group_state_batch(
                 "canonical_metadata": canonical_runtime_metadata(order, lineage_intent),
             }
             if order.raw != expected_raw:
-                raise ValueError("OMS order has unmodeled raw lineage differing from its typed intent")
+                changed = sorted(key for key in set(order.raw) | set(expected_raw)
+                                 if order.raw.get(key) != expected_raw.get(key))
+                actual_meta = order.raw.get("canonical_metadata")
+                expected_meta = expected_raw["canonical_metadata"]
+                meta_changed = (sorted(key for key in set(actual_meta) | set(expected_meta)
+                                if actual_meta.get(key) != expected_meta.get(key))
+                                if isinstance(actual_meta, Mapping) else [])
+                raise ValueError(
+                    "OMS order has unmodeled raw lineage differing from its typed intent: "
+                    + ",".join(changed)
+                    + (" [metadata: " + ",".join(meta_changed) + "]"
+                       if meta_changed else ""))
     lengths = tuple(len(batch) for batch in group.plan.broker_batches)
     if not lengths or any(length < 1 for length in lengths) or sum(lengths) != len(group.orders):
         raise ValueError("OMS plan batches do not cover every order")
