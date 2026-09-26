@@ -87,6 +87,7 @@ def test_oms_projection_uses_original_intent_and_normalized_admission() -> None:
     }
     run_id, attempt_id = "backtest:oms-admission", str(uuid4())
     first_id, second_id = str(uuid4()), str(uuid4())
+    transition_id = str(uuid4())
     first = strategy_intent_batch(
         original, run_id=run_id, run_month=date(2026, 8, 1),
         account_id="DU1", attempt_id=attempt_id, batch_id=first_id,
@@ -106,7 +107,11 @@ def test_oms_projection_uses_original_intent_and_normalized_admission() -> None:
         sequence=2, source_cursor="oms", run_status="running",
         strategy_id="strategy-1", strategy_revision=1, recorded_at=at,
         published_intent_batch=first, committed_intent_batch_id=first_id,
-        admission_source_intent=original, admission_reservation=reservation)
+        admission_source_intent=original, admission_reservation=reservation,
+        journal_record_id=transition_id, correlation_id="corr-1",
+        causation_id="decision-1")
+    assert batch.events[0]["record_id"] == transition_id
+    assert batch.events[0]["correlation_id"] == "corr-1"
     assert batch.oms_group_states[0]["strategy_intent_id"] == original.intent_id
     assert Decimal(batch.oms_order_states[0]["quantity"]) == 4
     with pytest.raises(ValueError, match="normalized admission"):

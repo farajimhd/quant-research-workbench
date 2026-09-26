@@ -138,12 +138,20 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
             frozen = tuple(journal.oms_group_for_record(record.record_id)
                            for record in records
                            if record.entity_type == "order_group_state")
+            admissions = tuple(journal.oms_admission_for_record(record.record_id)
+                               for record in records
+                               if record.entity_type == "order_group_state")
+            assert admissions and all(row is not None and
+                                      row["assignment_id"] == "assignment-1"
+                                      for row in admissions)
             latest = frozen[-1]
             assert latest is not None
             manager._groups[group.group_id].broker_order_ids.append("later-mutation")
             assert "later-mutation" not in latest.broker_order_ids
             journal.mark_fenced(records[-1].sequence)
             assert all(journal.oms_group_for_record(record.record_id) is None
+                       for record in records)
+            assert all(journal.oms_admission_for_record(record.record_id) is None
                        for record in records)
             return group, records, frozen
         finally:

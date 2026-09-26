@@ -89,6 +89,9 @@ def oms_group_state_batch(
     committed_intent_batch_id: str,
     admission_source_intent: StrategyIntent | None = None,
     admission_reservation: Mapping[str, Any] | None = None,
+    journal_record_id: str | None = None,
+    correlation_id: str = "",
+    causation_id: str = "",
 ) -> TypedJournalBatch:
     """Project the represented group revision and its keyed recovery components."""
     if not run_id or not group.group_id or not group.account_id or not group.intent.intent_id:
@@ -146,7 +149,10 @@ def oms_group_state_batch(
         **{key: value for key, value in sealed_intent.items() if key != "content_hash"},
         "batch_id": committed_source_id,
     })["content_hash"]
-    if recorded_at.tzinfo is None or group.created_at.tzinfo is None or group.updated_at.tzinfo is None:
+    if (recorded_at.tzinfo is None or group.created_at.tzinfo is None
+            or group.updated_at.tzinfo is None
+            or not isinstance(correlation_id, str)
+            or not isinstance(causation_id, str)):
         raise ValueError("OMS state timestamps must be timezone-aware")
     if len(group.orders) > 65535 or len(group.broker_order_ids) > 65535:
         raise ValueError("OMS state exceeds typed child bounds")
@@ -173,14 +179,17 @@ def oms_group_state_batch(
         raise ValueError("OMS deferred reprice must have two prices")
     at = group.updated_at.astimezone(timezone.utc).isoformat()
     month = group.updated_at.astimezone(timezone.utc).strftime("%Y-%m-01")
-    record_id = str(uuid5(NAMESPACE_URL, f"{run_id}:{batch_id}:{sequence}:oms-group-state"))
+    record_id = (str(UUID(journal_record_id)) if journal_record_id is not None
+                 else str(uuid5(NAMESPACE_URL,
+                                f"{run_id}:{batch_id}:{sequence}:oms-group-state")))
     common = {"run_id": run_id, "event_month": month, "batch_id": batch_id,
               "account_id": group.account_id}
     event = {**common, "record_id": record_id, "attempt_id": attempt_id,
              "sequence": sequence, "event_time": at,
              "recorded_at": recorded_at.astimezone(timezone.utc).isoformat(),
              "category": "order_management", "entity_type": "order_group_state",
-             "entity_id": group.group_id, "correlation_id": "", "causation_id": ""}
+             "entity_id": group.group_id, "correlation_id": correlation_id,
+             "causation_id": causation_id}
     optional_number = lambda value: _exact_decimal(value) if value is not None else None
     optional_time = lambda value: value.astimezone(timezone.utc).isoformat() if value is not None else None
     state = {

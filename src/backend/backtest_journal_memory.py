@@ -31,6 +31,7 @@ class BacktestMemoryJournal:
         self._records: list[JournalRecord] = []
         self._strategy_one_entries: dict[str, tuple[Any, date]] = {}
         self._oms_groups: dict[str, Any] = {}
+        self._oms_admissions: dict[str, dict[str, Any] | None] = {}
         self._base_sequence = initial_sequence
         self._next_sequence = initial_sequence
         self._fenced_sequence = initial_sequence
@@ -102,16 +103,27 @@ class BacktestMemoryJournal:
             raise ValueError("OMS transition and snapshot identities differ")
         frozen = freeze_oms_group(group)
         with self._lock:
+            reservation_id = str(group.intent.metadata.get("portfolio_reservation_id") or "")
+            admission = (self.portfolio_reservation(account_id, reservation_id)
+                         if reservation_id else None)
+            if reservation_id and (admission is None
+                                   or admission.get("intent_id") != group.intent.intent_id):
+                raise ValueError("OMS transition lacks its Portfolio reservation")
             record = self.append(
                 run_id=run_id, category=category, entity_type=entity_type,
                 entity_id=entity_id, payload=payload, account_id=account_id,
                 event_time=event_time)
             self._oms_groups[record.record_id] = frozen
+            self._oms_admissions[record.record_id] = deepcopy(admission)
             return record
 
     def oms_group_for_record(self, record_id: str) -> Any | None:
         with self._lock:
             return self._oms_groups.get(record_id)
+
+    def oms_admission_for_record(self, record_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            return deepcopy(self._oms_admissions.get(record_id))
 
     def append_many(self, entries: Iterable[dict[str, Any]]) -> list[JournalRecord]:
         pending = [dict(entry) for entry in entries]
@@ -193,6 +205,7 @@ class BacktestMemoryJournal:
                 for record in self._records[:discard]:
                     self._strategy_one_entries.pop(record.record_id, None)
                     self._oms_groups.pop(record.record_id, None)
+                    self._oms_admissions.pop(record.record_id, None)
                 del self._records[:discard]
                 self._base_sequence = sequence
             self._fenced_sequence = sequence
@@ -523,6 +536,8 @@ class BacktestMemoryJournal:
         with self._lock:
             self._closed = True
             self._strategy_one_entries.clear()
+            self._oms_groups.clear()
+            self._oms_admissions.clear()
 
 
 class BacktestJournalPublisher:
