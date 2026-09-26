@@ -15,6 +15,7 @@ from pathlib import Path
 import platform
 import sys
 from time import perf_counter
+import traceback
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -87,6 +88,18 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int) -> None:
         new_order_activation_delay_ms=0.0,
         experimental_structure_book="level-book-v7", tickers=selected)
     controller = ReplayRunController(definition, runtime_root=RUNTIME_ROOT)
+    open_journal = controller._open_fixed_journal
+
+    async def traced_open_journal():
+        try:
+            return await open_journal()
+        except Exception:
+            # This probe runs only on the managed workstation. Emit a Python
+            # stack, never SQL, request headers, credential values, or files.
+            traceback.print_exc(limit=12)
+            raise
+
+    controller._open_fixed_journal = traced_open_journal
     began = perf_counter()
     await controller._run()
     elapsed = perf_counter() - began
