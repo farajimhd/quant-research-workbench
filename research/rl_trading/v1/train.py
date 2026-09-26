@@ -206,6 +206,7 @@ def run(args):
                     sums['samples'] += count
                     if args.max_steps and global_step >= args.max_steps:
                         break
+                del batch,logits,value,loss,measure,index,order,generator
                 del data
                 if args.max_steps and global_step >= args.max_steps:
                     break

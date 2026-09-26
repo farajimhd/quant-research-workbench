@@ -56,6 +56,9 @@ class SessionShard:
             raise ValueError('Training data must be assembled on a CUDA GPU')
         needed = sum(value.nbytes for key,value in self.arrays.items() if key not in
                      ('volume_60s','execution','closeable'))
+        # The preceding session's tensors may have been freed into PyTorch's
+        # cache. Driver free memory alone then understates usable capacity.
+        torch.cuda.empty_cache()
         available,_ = torch.cuda.mem_get_info(device)
         if needed > available*.7:
             raise MemoryError(f'Session shard needs {needed/2**30:.1f} GiB before training activations; split the shard')
