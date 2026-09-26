@@ -43,9 +43,12 @@ class PivotCampaignFailure(RuntimeError):
 
 
 def _writer(password: str) -> ClickHouseHttpClient:
+    # Per-ticker detector work can leave a persistent socket idle past the
+    # server keepalive. Fresh requests avoid RemoteDisconnected without ever
+    # retrying an uncertain INSERT under the same attempt UUID.
     return ClickHouseHttpClient(f"http://{WORKSTATION_IPV4}:18123",
                                 PRINCIPAL, password, timeout_seconds=60,
-                                persistent=True)
+                                persistent=False)
 
 
 def publish_session(*, session_date: str, build_id: str,

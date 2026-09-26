@@ -14,6 +14,14 @@ def test_dry_run_never_connects_or_writes(monkeypatch, capsys):
     assert output.err == ""
 
 
+def test_writer_does_not_reuse_idle_socket_across_detector_work(monkeypatch):
+    captured = []
+    monkeypatch.setattr(command, "ClickHouseHttpClient", lambda *args, **kwargs:
+                        captured.append((args, kwargs)) or object())
+    command._writer("private")
+    assert captured[0][1]["persistent"] is False
+
+
 def test_apply_requires_workstation_and_confirmation(monkeypatch, capsys):
     monkeypatch.setattr(command.platform, "node", lambda: "LAPTOP")
     with pytest.raises(SystemExit):
