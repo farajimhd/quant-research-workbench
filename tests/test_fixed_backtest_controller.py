@@ -61,6 +61,36 @@ def test_backtest_start_rejects_before_legacy_journal_or_disk_write(tmp_path, mo
     assert not controller.run_dir.exists()
 
 
+def test_admitted_backtest_start_creates_no_local_authority(tmp_path, monkeypatch):
+    from src.backend import replay_run_service
+
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(
+        archived_review_only=False, mode=RunMode.BACKTEST,
+        execution_interval="100ms",
+    )
+    controller._task = None
+    controller.run_id = RUN
+    controller.run_dir = tmp_path / "must-not-exist"
+    monkeypatch.setattr(replay_run_service, "_backtest_launch_blocker", lambda _d: "")
+    monkeypatch.setattr(controller, "_write_approved_configuration", lambda: (
+        (_ for _ in ()).throw(AssertionError("local configuration write"))))
+    monkeypatch.setattr(controller, "_write_manifest", lambda: (
+        (_ for _ in ()).throw(AssertionError("local manifest write"))))
+
+    async def run_noop():
+        return None
+
+    monkeypatch.setattr(controller, "_run", run_noop)
+
+    async def check():
+        await controller.start()
+        await controller._task
+
+    asyncio.run(check())
+    assert not controller.run_dir.exists()
+
+
 @pytest.mark.parametrize("stop_requested", [False, True])
 def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
     monkeypatch, stop_requested,

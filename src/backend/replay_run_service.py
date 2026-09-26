@@ -1322,10 +1322,15 @@ class ReplayRunController:
         if self._task is not None:
             return
         if self.definition.mode == RunMode.BACKTEST:
-            raise RuntimeError(_backtest_launch_blocker(self.definition))
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(self._write_approved_configuration)
-        self._write_manifest()
+            blocker = _backtest_launch_blocker(self.definition)
+            if blocker:
+                raise RuntimeError(blocker)
+        else:
+            # Replay keeps its local restart contract. A Backtest admitted by
+            # the typed gate must never create a parallel disk authority.
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(self._write_approved_configuration)
+            self._write_manifest()
         self._task = asyncio.create_task(self._run(), name=f"replay-run-{self.run_id}")
 
     async def command(
@@ -8818,7 +8823,9 @@ class ReplayRunService:
         controller = ReplayRunController(definition, runtime_root=self.runtime_root)
         if definition.mode == RunMode.BACKTEST:
             # Reject before admission; start() independently protects direct callers.
-            raise RuntimeError(_backtest_launch_blocker(definition))
+            blocker = _backtest_launch_blocker(definition)
+            if blocker:
+                raise RuntimeError(blocker)
         await self._admit(controller)
         await controller.start()
         return controller
