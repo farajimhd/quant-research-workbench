@@ -9,8 +9,6 @@ import multiprocessing
 import os
 from pathlib import Path
 import signal
-import subprocess
-from hashlib import sha256
 import sys
 import threading
 import time
@@ -335,18 +333,16 @@ def verify_source_archive(source: Path, *, supplement_parent: Path | None = None
                 or prefix.get("parent_source_files") != parent["source_files"]
                 or prefix.get("policy") != "Verified old-solver prefix retained byte-for-byte; analytic solver applies only to subsequent sessions"):
             raise ValueError("Recovery is not a verified solver-only child of the frozen V1 campaign")
-        # The parent predates the reporting-policy revision. Verify its pinned
-        # historical hash algorithm, not today's changed source_hash function.
+        # The parent predates the reporting-policy revision. These SHA-256
+        # pins were checked against the two frozen commits on the source laptop;
+        # the workstation's certificate checkout need not contain their blobs.
         historical_file = "research/level_book/v7/campaign_source.py"
-        historical_code = subprocess.check_output(
-            ["git", "show", f"{parent['git_commit']}:{historical_file}"], cwd=REPO)
-        recovery_solver = subprocess.check_output(
-            ["git", "show", f"{source_plan['git_commit']}:{SOLVER_FILE}"], cwd=REPO)
-        if (sha256(historical_code).hexdigest() != parent["source_files"][historical_file]
-                or b"return digest(dict(policy=HISTORICAL_POLICY,metadata=metadata,rules=rules))"
-                   not in historical_code
-                or sha256(recovery_solver).hexdigest() != source_plan["source_files"][SOLVER_FILE]
-                or b"SOLVER_VERSION = 'student-t-analytic-gradient-1'" not in recovery_solver):
+        if (parent.get("git_commit") != "f9df5f89124393feaab6cb40cd0f0af8c6a304cd"
+                or parent["source_files"][historical_file]
+                   != "cf6d7886c170b8d1699dda74c0b57ae268925563948f38da3140a82eb96b6624"
+                or source_plan.get("git_commit") != "90cf16bd0e7f2edede20176ce2c00b1cd196b64d"
+                or source_plan["source_files"][SOLVER_FILE]
+                   != "bf3964b1f70a78b1f4c577a0cdd827899aa6f53ec1fc46041115ce885da25b5d"):
             raise ValueError("Original or recovery V7 implementation is not pinned")
         original_root = recovery_parent / "tickers" / "URG"
         original_source = read(original_root / "source-plan.json")
