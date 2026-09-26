@@ -20,7 +20,7 @@ sys.dont_write_bytecode = True
 from dotenv import load_dotenv
 
 from src.trading_runtime.arte_journal_schema import (
-    fixed_backtest_v2_contracts, missing_fixed_backtest_v2_tables,
+    V4_COMMIT_TABLES, fixed_backtest_v2_contracts, missing_fixed_backtest_v2_tables,
     storage_preflight,
 )
 from src.backend.backtest_squeeze_episode_schema import (
@@ -38,6 +38,8 @@ from src.trading_runtime.arte_journal_writer import journal_client_from_env
 
 
 def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
+    if profile == "commit-v4":
+        return V4_COMMIT_TABLES
     if profile == "fixed-v2":
         return fixed_backtest_v2_contracts()
     if profile == "fixed-v3":
@@ -70,7 +72,7 @@ def plan_missing(client: Any, *, profile: str = "fixed-v2") -> tuple[tuple[str, 
         expected = {table.name for table in contracts}
         if (len(installed) != len(set(installed)) or any(
                 set(row) != {"name"} or row["name"] not in expected for row in rows)):
-            raise RuntimeError("Fixed V3 journal catalog is ambiguous")
+            raise RuntimeError("Journal profile catalog is ambiguous")
         missing_names = tuple(table.name for table in contracts
                               if table.name not in installed)
     present = tuple(table for table in contracts if table.name not in missing_names)
@@ -88,7 +90,7 @@ def main() -> int:
                         help="private journal credential file; never printed")
     parser.add_argument("--show-ddl", action="store_true",
                         help="print operator-reviewed CREATE TABLE statements")
-    parser.add_argument("--profile", choices=("fixed-v2", "fixed-v3"),
+    parser.add_argument("--profile", choices=("fixed-v2", "fixed-v3", "commit-v4"),
                         default="fixed-v2", help="exact journal table layout")
     args = parser.parse_args()
     if not args.env_file.is_file():

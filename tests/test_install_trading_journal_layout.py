@@ -65,6 +65,22 @@ def test_v3_install_profile_is_read_only_by_default(monkeypatch):
     assert all(sql.startswith("SELECT ") for sql in client.statements)
 
 
+def test_v4_commit_install_is_opt_in_and_has_no_row_writes(monkeypatch):
+    client = Client()
+    contracts = install.profile_contracts("commit-v4")
+    monkeypatch.setattr(install, "plan_missing",
+                        lambda _, *, profile: (
+                            tuple(table.name for table in contracts), ())
+                        if profile == "commit-v4" else pytest.fail("wrong profile"))
+    monkeypatch.setattr(install, "storage_preflight",
+                        lambda *_args, **_kwargs: None)
+    assert install.install_missing(client, apply=False, profile="commit-v4") == (0, 0)
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+    assert install.install_missing(client, apply=True, profile="commit-v4") == (0, 2)
+    assert sum(sql.startswith("CREATE TABLE IF NOT EXISTS arte.trading_commit_")
+               for sql in client.statements) == 2
+
+
 def test_cli_defaults_to_read_only_plan_on_workstation(monkeypatch, capsys):
     client = Client()
     monkeypatch.setattr(install.platform, "node", lambda: "DESKTOP-SAAI85T")

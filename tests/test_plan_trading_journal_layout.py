@@ -1,7 +1,9 @@
 import json
 
 from scripts.clickhouse import plan_trading_journal_layout as plan
-from src.trading_runtime.arte_journal_schema import fixed_backtest_v2_contracts
+from src.trading_runtime.arte_journal_schema import (
+    V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
+)
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES,
@@ -78,3 +80,21 @@ def test_v3_plan_includes_only_missing_normalized_squeeze_and_terminal_tables(mo
     missing, ddl = plan.plan_missing(Client(), profile="fixed-v3")
     assert set(missing) == {table.name for table in contracts[len(v2):]}
     assert len(ddl) == 27 and all("live_market_ssd" in sql for sql in ddl)
+
+
+def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
+    assert plan.profile_contracts("commit-v4") == V4_COMMIT_TABLES
+    present = V4_COMMIT_TABLES[0].name
+
+    class Client:
+        def execute(self, sql):
+            assert sql.startswith("SELECT name FROM system.tables")
+            return json.dumps({"name": present})
+
+    checked = []
+    monkeypatch.setattr(plan, "storage_preflight",
+                        lambda _client, *, tables: checked.extend(tables))
+    missing, ddl = plan.plan_missing(Client(), profile="commit-v4")
+    assert [table.name for table in checked] == [present]
+    assert missing == (V4_COMMIT_TABLES[1].name,)
+    assert len(ddl) == 1 and "live_market_ssd" in ddl[0]
