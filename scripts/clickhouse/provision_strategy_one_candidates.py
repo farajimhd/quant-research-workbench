@@ -27,6 +27,11 @@ from src.trading_runtime.strategy_one_pivot_schema import (
     PIVOT_TABLE, COVERAGE_TABLE as PIVOT_COVERAGE_TABLE,
     install_tables as install_pivot_tables,
 )
+from src.trading_runtime.strategy_one_hod_schema import (
+    CONTEXT_TABLE as HOD_CONTEXT_TABLE,
+    COVERAGE_TABLE as HOD_COVERAGE_TABLE,
+    install_tables as install_hod_tables,
+)
 
 
 URL = "http://DESKTOP-SAAI85T:18123"
@@ -36,7 +41,7 @@ WORKSTATION_IPV4 = "192.168.1.218"
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true",
-                        help="create the four Strategy 1 app-owned tables")
+                        help="create the six Strategy 1 app-owned tables")
     parser.add_argument("--confirm-strategy-one-candidates", action="store_true",
                         help="required second confirmation for --apply")
     parser.add_argument("--rename-empty-rule-column", action="store_true",
@@ -46,7 +51,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.rename_empty_rule_column:
             parser.error("--rename-empty-rule-column requires --apply")
         print(f"DRY RUN: {CANDIDATE_TABLE}, {COVERAGE_TABLE}, "
-              f"{PIVOT_TABLE}, {PIVOT_COVERAGE_TABLE}; "
+              f"{PIVOT_TABLE}, {PIVOT_COVERAGE_TABLE}, "
+              f"{HOD_CONTEXT_TABLE}, {HOD_COVERAGE_TABLE}; "
               f"storage={STORAGE_POLICY}; no connection or database change.")
         print("Apply on DESKTOP-SAAI85T with --apply "
               "--confirm-strategy-one-candidates.")
@@ -75,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
             rename_empty_legacy_rule_column(client)
         install_tables(client)
         install_pivot_tables(client)
+        install_hod_tables(client)
     except Exception as exc:
         # Driver errors can embed SQL or credentials. Keep terminal output safe.
         print(f"Strategy 1 product installation stopped: {type(exc).__name__}. "

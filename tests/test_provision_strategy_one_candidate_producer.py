@@ -39,9 +39,10 @@ def test_dry_run_is_nonconnecting(capsys, monkeypatch):
     assert "DRY RUN" in text and "No connection" in text
 
 
-def test_new_producer_grants_only_four_owned_tables(monkeypatch):
+def test_new_producer_grants_only_six_owned_tables(monkeypatch):
     monkeypatch.setattr(subject, "verify_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "verify_pivot_tables", lambda _admin: None)
+    monkeypatch.setattr(subject, "verify_hod_tables", lambda _admin: None)
     admin = Admin()
     producer = Producer()
     def apply_grant(query):
@@ -54,7 +55,7 @@ def test_new_producer_grants_only_four_owned_tables(monkeypatch):
     subject.provision(admin, credential=lambda **_kwargs: "p" * 40,
                       client_factory=lambda _user, _password: producer)
     assert producer.closed
-    assert len([sql for sql in admin.sql if sql.startswith("GRANT ")]) == 8
+    assert len([sql for sql in admin.sql if sql.startswith("GRANT ")]) == 12
     assert not any("bars_v1" in sql or "indicators_v1" in sql or
                    "liquidity_100ms_v1" in sql for sql in admin.sql)
 
@@ -62,9 +63,10 @@ def test_new_producer_grants_only_four_owned_tables(monkeypatch):
 def test_existing_broad_grant_fails_before_new_grant(monkeypatch):
     monkeypatch.setattr(subject, "verify_tables", lambda _admin: None)
     monkeypatch.setattr(subject, "verify_pivot_tables", lambda _admin: None)
+    monkeypatch.setattr(subject, "verify_hod_tables", lambda _admin: None)
     admin = Admin(present="1")
     producer = Producer((f"GRANT INSERT ON arte.bars_v1 TO {subject.PRINCIPAL}",))
-    with pytest.raises(RuntimeError, match="outside its four tables"):
+    with pytest.raises(RuntimeError, match="outside its six tables"):
         subject.provision(admin, credential=lambda **_kwargs: "p" * 40,
                           client_factory=lambda _user, _password: producer)
     assert producer.closed
