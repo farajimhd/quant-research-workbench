@@ -10,7 +10,9 @@ from uuid import UUID
 import pytest
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
-from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
+from src.backend.backtest_typed_projection import (
+    authorized_oms_lineage_transition, project_pending_backtest_v4_prefix,
+)
 from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
 from src.trading_runtime.arte_journal_commit_v4 import (
     load_verified_v4_prefix, publish_base_typed_batch_v4,
@@ -422,6 +424,15 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
                 {"target": replace(target_proof, payload={
                     **target_proof.payload, "client_order_id": "foreign"})}
             ) == initial_metadata
+            prior_lineage = (dict(target_order.raw), "DU1", "AAA", 123)
+            changed_lineage = ({**target_order.raw,
+                "canonical_metadata": revised_metadata}, "DU1", "AAA", 123)
+            assert authorized_oms_lineage_transition(
+                prior_lineage, changed_lineage,
+                client_order_id=target_order.cOID, proof=target_proof)
+            assert not authorized_oms_lineage_transition(
+                prior_lineage, (changed_lineage[0], "OTHER", "AAA", 123),
+                client_order_id=target_order.cOID, proof=target_proof)
             projected_prefix = project_pending_backtest_v4_prefix(
                 journal, attempt_id=str(UUID(int=14)),
                 run_month=date(2026, 8, 1), prior_sequence=0,

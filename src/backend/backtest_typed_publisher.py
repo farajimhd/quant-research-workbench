@@ -253,18 +253,32 @@ class BacktestTypedJournalPublisher:
                             and len(batch.events) == 1
                             and batch.events[0]["entity_type"] == "order_group_state"):
                         from src.backend.backtest_typed_projection import (
+                            authorized_oms_lineage_transition,
                             committed_oms_order_lineage,
                         )
                         event = batch.events[0]
                         group = self.journal.oms_group_for_record(event["record_id"])
                         if group is None:
                             raise RuntimeError("Committed OMS order lost its frozen lineage")
+                        source_record, = self.journal.unfenced_records(
+                            after_sequence=batch.first_sequence - 1,
+                            through_sequence=batch.last_sequence)
+                        if source_record.record_id != event["record_id"]:
+                            raise RuntimeError("Committed OMS order changed journal identity")
+                        protection_proof = self.journal.oms_effective_protection_for_record(
+                            source_record)
                         for key, lineage in committed_oms_order_lineage(
                                 group, run_id=batch.run_id,
                                 strategy_id=batch.oms_group_states[0]["strategy_id"],
-                                strategy_revision=batch.oms_group_states[0]["strategy_revision"]).items():
-                            if key in self._committed_order_lineage and self._committed_order_lineage[key] != lineage:
-                                raise RuntimeError("Committed OMS order lineage changed")
+                                strategy_revision=batch.oms_group_states[0]["strategy_revision"],
+                                authorized_protection=protection_proof).items():
+                            if (key in self._committed_order_lineage
+                                    and self._committed_order_lineage[key] != lineage
+                                    and not authorized_oms_lineage_transition(
+                                        self._committed_order_lineage[key], lineage,
+                                        client_order_id=key,
+                                        proof=protection_proof.get(f"target:{key}"))):
+                                raise RuntimeError("Committed OMS order lineage changed without typed amendment")
                             self._committed_order_lineage[key] = lineage
                     self.journal.mark_fenced(batch.last_sequence)
                     self._sequence = batch.last_sequence

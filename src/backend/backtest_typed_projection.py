@@ -59,6 +59,42 @@ def committed_oms_order_lineage(group: object, *, run_id: str,
     return result
 
 
+def authorized_oms_lineage_transition(
+    old: tuple, new: tuple, *, client_order_id: str,
+    proof: object | None,
+) -> bool:
+    """Permit only a target child's journaled scalar amendment delta."""
+    if (proof is None or len(old) != 4 or len(new) != 4
+            or old[1:] != new[1:]
+            or not isinstance(old[0], dict) or not isinstance(new[0], dict)
+            or not isinstance(old[0].get("canonical_metadata"), dict)
+            or not isinstance(new[0].get("canonical_metadata"), dict)):
+        return False
+    before, after = old[0], new[0]
+    old_meta, new_meta = before["canonical_metadata"], after["canonical_metadata"]
+    amended = {"reason", "replacement_intent_id", "target_price"}
+    if ({key: value for key, value in before.items()
+         if key != "canonical_metadata"}
+            != {key: value for key, value in after.items()
+                if key != "canonical_metadata"}
+            or {key: value for key, value in old_meta.items()
+                if key not in amended}
+            != {key: value for key, value in new_meta.items()
+                if key not in amended}):
+        return False
+    payload = getattr(proof, "payload", {})
+    return bool(
+        getattr(proof, "category", None) == "protection"
+        and getattr(proof, "entity_type", None) == "protection_change"
+        and payload.get("phase") == "effective"
+        and payload.get("kind") == "target"
+        and payload.get("action") == "replace_profit_target"
+        and payload.get("client_order_id") == client_order_id
+        and payload.get("price") == new_meta.get("target_price")
+        and payload.get("intent_id") == new_meta.get("replacement_intent_id")
+        and new_meta.get("reason") == "structural_profit_target_advanced")
+
+
 @dataclass(frozen=True, slots=True)
 class ProjectedBacktestPrefix:
     batches: tuple[TypedJournalBatch, ...]
@@ -216,8 +252,13 @@ def project_pending_backtest_v4_prefix(
                     strategy_id=record.payload["strategy_id"],
                     strategy_revision=record.payload["strategy_revision"],
                     authorized_protection=protection_proof).items():
-                if client_order_id in order_lineage and order_lineage[client_order_id] != lineage:
-                    raise RuntimeError("OMS changed committed order lineage")
+                if (client_order_id in order_lineage
+                        and order_lineage[client_order_id] != lineage
+                        and not authorized_oms_lineage_transition(
+                            order_lineage[client_order_id], lineage,
+                            client_order_id=client_order_id,
+                            proof=protection_proof.get(f"target:{client_order_id}"))):
+                    raise RuntimeError("OMS changed committed order lineage without typed amendment")
                 order_lineage[client_order_id] = lineage
         elif kind == ("portfolio_management", "portfolio_allocation"):
             projected = project_portfolio_allocation_v3(
