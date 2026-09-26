@@ -8,6 +8,7 @@ of trades inside a completed bucket or submits an order.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Mapping, Sequence
 
 
@@ -25,6 +26,7 @@ class BosObservation:
     boundary_ms: int = 0
     close_int: int = 0
     reference: ConfirmedPivot | None = None
+    open_break: BosBreak | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +34,13 @@ class BosBreak:
     boundary_ms: int
     broken_pivot: ConfirmedPivot
     close_int: int
+
+
+@dataclass(frozen=True, slots=True)
+class BosSupport:
+    kind: str
+    level_id: str
+    pivot_id: str | None = None
 
 
 def observe_completed_bos(
@@ -76,4 +85,79 @@ def observe_completed_bos(
     reference = (latest if latest is not None and (
         prior is None or latest.pivot_boundary_ms > prior.pivot_boundary_ms
     ) else prior)
-    return BosObservation(boundary, close, reference), broken
+    return BosObservation(boundary, close, reference,
+                          broken or state.open_break), broken
+
+
+def supported_completed_bos(
+    broken: BosBreak | None, *,
+    candidate_boundary_ms: int,
+    visible_pivots: Sequence[ConfirmedPivot],
+    admitted_levels: Sequence[Mapping],
+) -> BosSupport | None:
+    """Apply Candidate 350's supported/reclaimed-base gate at this boundary.
+
+    Evidence is as-of the candidate, not retroactively attached to the BOS
+    candle. A low must precede the broken high; a support band must contain
+    that low. If none exists, a reclaimed resistance below the high may
+    substitute, matching the historical gate without inventing a pivot.
+    """
+    if (type(candidate_boundary_ms) is not int
+            or candidate_boundary_ms <= 0 or candidate_boundary_ms % 100):
+        raise ValueError("Strategy 1 BOS support needs a completed candidate boundary")
+    if broken is None:
+        return None
+    if (not isinstance(broken, BosBreak)
+            or not isinstance(broken.broken_pivot, ConfirmedPivot)
+            or broken.boundary_ms > candidate_boundary_ms
+            or broken.broken_pivot.confirmed_boundary_ms >= broken.boundary_ms
+            or not isinstance(visible_pivots, (tuple, list))
+            or not isinstance(admitted_levels, (tuple, list))):
+        raise ValueError("Strategy 1 supported BOS needs typed causal evidence")
+    if any(not isinstance(pivot, ConfirmedPivot)
+           or pivot.confirmed_boundary_ms > candidate_boundary_ms
+           for pivot in visible_pivots):
+        raise ValueError("Strategy 1 supported BOS pivot is malformed")
+    levels = []
+    identities = set()
+    for row in admitted_levels:
+        if not isinstance(row, Mapping):
+            raise ValueError("Strategy 1 supported BOS level is malformed")
+        identity = row.get("unified_level_id")
+        lower, upper = row.get("lower"), row.get("upper")
+        if (not isinstance(identity, str) or not identity
+                or identity in identities
+                or type(lower) not in (int, float)
+                or type(upper) not in (int, float)
+                or not isfinite(lower) or not isfinite(upper)
+                or not 0 < lower <= upper):
+            raise ValueError("Strategy 1 supported BOS level geometry is invalid")
+        identities.add(identity)
+        levels.append(row)
+    lows = sorted((pivot for pivot in visible_pivots
+                   if pivot.side == "low"
+                   and pivot.pivot_boundary_ms <
+                   broken.broken_pivot.pivot_boundary_ms),
+                  key=lambda pivot: (pivot.pivot_boundary_ms,
+                                     pivot.confirmed_boundary_ms,
+                                     pivot.pivot_id), reverse=True)
+    for pivot in lows:
+        price = pivot.price_int / 10_000
+        supports = [row for row in levels if row["lower"] <= price <= row["upper"]
+                    and (row.get("role") == "support"
+                         or row.get("side") in (1, "support"))]
+        if supports:
+            selected = min(supports, key=lambda row: (
+                row["upper"] - row["lower"], row["unified_level_id"]))
+            return BosSupport("support", selected["unified_level_id"],
+                              pivot.pivot_id)
+    # A qualifying resistance reclaimed below the broken high is the legacy
+    # fallback; never infer support from an arbitrary nearby V7 band.
+    from .early_squeeze_price import eligible, midpoint
+    reclaimed = [row for row in levels if eligible(row)
+                 and midpoint(row) < broken.broken_pivot.price_int / 10_000]
+    if reclaimed:
+        selected = max(reclaimed, key=lambda row: (
+            midpoint(row), row["unified_level_id"]))
+        return BosSupport("reclaimed_resistance", selected["unified_level_id"])
+    return None
