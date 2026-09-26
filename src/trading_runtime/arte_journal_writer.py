@@ -1492,9 +1492,12 @@ def _v4_preflight(client: Any) -> None:
     """Opt-in normalized fence; leave the live V1 startup contract unchanged."""
     storage_preflight(client)
     storage_preflight(client, tables=V4_COMMIT_TABLES)
+    writable = frozenset(
+        (table for table, _, _, _ in _FAMILIES)
+    ) | frozenset(table.name for table in V4_COMMIT_TABLES)
+    readonly = frozenset(table.name for table in TABLES) - writable
     journal_permission_preflight(
-        client, journal_tables=frozenset(
-            table.name for table in (*TABLES, *V4_COMMIT_TABLES)))
+        client, journal_tables=writable, read_only_tables=readonly)
 
 
 def _optional_v3_commit_exists(client: Any) -> bool:

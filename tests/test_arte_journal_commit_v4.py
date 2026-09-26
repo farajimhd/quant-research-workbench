@@ -165,7 +165,8 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
         lambda _client, **kwargs: observed.append(kwargs.get("tables")))
     monkeypatch.setattr(
         writer_module, "journal_permission_preflight",
-        lambda _client, **kwargs: observed.append(kwargs["journal_tables"]))
+        lambda _client, **kwargs: observed.append((
+            kwargs["journal_tables"], kwargs["read_only_tables"])))
     monkeypatch.setattr(
         writer_module, "_verify_run_identity",
         lambda _client, _run_id: {"mode": "backtest", "account_ids": ("DU1",)})
@@ -182,5 +183,7 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     finally:
         journal.close()
     assert observed[:2] == [None, V4_COMMIT_TABLES]
-    assert observed[2] == frozenset(
-        table.name for table in (*TABLES, *V4_COMMIT_TABLES))
+    writable = frozenset(table for table, _, _, _ in writer_module._FAMILIES) | \
+        frozenset(table.name for table in V4_COMMIT_TABLES)
+    assert observed[2] == (
+        writable, frozenset(table.name for table in TABLES) - writable)
