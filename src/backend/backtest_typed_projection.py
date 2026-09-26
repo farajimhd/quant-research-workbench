@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import Mapping
 from uuid import UUID, NAMESPACE_URL, uuid5
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -38,6 +39,7 @@ def project_pending_backtest_v4_prefix(
     fixed_market_parent_plan: object | None = None,
     fixed_market_execution_plan: object | None = None,
     expected_market_start: datetime | None = None,
+    published_sources: Mapping[str, tuple[TypedJournalBatch, object]] | None = None,
     through_sequence: int,
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
            | V4BrokerAcknowledgementBatch | V4ProtectionChangeBatch, ...]:
@@ -52,6 +54,7 @@ def project_pending_backtest_v4_prefix(
         project_strategy_one_entry_evidence,
     )
     from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+    from src.trading_runtime.arte_oms_projection import oms_group_state_batch
 
     attempt = str(UUID(attempt_id))
     previous = str(UUID(prior_batch_id))
@@ -68,6 +71,7 @@ def project_pending_backtest_v4_prefix(
         raise ValueError("V4 projection prefix is not contiguous")
     units = []
     ordinary: list[TypedJournalBatch] = []
+    sources = dict(published_sources or {})
     cursor = source_cursor
     for sequence, record in enumerate(records, start=prior_sequence + 1):
         if record.run_id != journal.run_id or record.sequence != sequence:
@@ -88,6 +92,41 @@ def project_pending_backtest_v4_prefix(
                 record, run_month=run_month, attempt_id=attempt,
                 batch_id=batch_id, prior_batch_id=previous,
                 source_cursor=cursor)
+        elif kind == ("order_management", "order_group_state"):
+            group = journal.oms_group_for_record(record.record_id)
+            admission = journal.oms_admission_for_record(record.record_id)
+            if group is None or admission is None:
+                raise RuntimeError("V4 OMS transition lacks its immutable admission")
+            if (record.entity_id != group.group_id
+                    or record.account_id != group.account_id
+                    or record.payload.get("intent_id") != group.intent.intent_id
+                    or record.payload.get("state") != group.state.value
+                    or record.payload.get("action") != group.intent.action
+                    or record.payload.get("ticker") != group.intent.ticker):
+                raise RuntimeError("V4 OMS transition differs from its frozen group")
+            source = sources.get(group.intent.intent_id)
+            if source is None:
+                raise RuntimeError("V4 OMS transition lacks its committed source intent")
+            source_batch, source_intent = source
+            unit = oms_group_state_batch(
+                group, run_id=record.run_id, run_month=run_month,
+                attempt_id=attempt, batch_id=batch_id,
+                prior_batch_id=previous, sequence=sequence,
+                source_cursor=cursor, run_status="running",
+                strategy_id=record.payload["strategy_id"],
+                strategy_revision=record.payload["strategy_revision"],
+                recorded_at=record.recorded_at,
+                published_intent_batch=source_batch,
+                committed_intent_batch_id=source_batch.batch_id,
+                admission_source_intent=source_intent,
+                admission_reservation=admission,
+                journal_record_id=record.record_id,
+                correlation_id=record.payload.get("correlation_id", ""),
+                causation_id=record.payload.get("causation_id", ""))
+            if (unit.events[0]["event_time"] != record.event_time.isoformat()
+                    or unit.events[0]["entity_id"] != record.entity_id
+                    or unit.events[0]["account_id"] != record.account_id):
+                raise RuntimeError("V4 OMS typed event differs from its journal source")
         else:
             batch = project_journal_record(
                 record, run_month=run_month, attempt_id=attempt,
@@ -112,6 +151,10 @@ def project_pending_backtest_v4_prefix(
                     run_id=batch.run_id, batch_id=batch.batch_id,
                     parent_record_id=record.record_id)
                 unit = V4StrategyOneEntryBatch(batch, (evidence,))
+                prior_source = sources.get(intent.intent_id)
+                if prior_source is not None and prior_source != (batch, intent):
+                    raise RuntimeError("V4 Strategy 1 intent identity was reused")
+                sources[intent.intent_id] = (batch, intent)
         base = unit.base if not isinstance(unit, TypedJournalBatch) else unit
         if (base.first_sequence != sequence or base.last_sequence != sequence
                 or len(base.events) != 1 or base.batch_id != batch_id

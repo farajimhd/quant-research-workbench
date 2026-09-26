@@ -1,11 +1,14 @@
 """Strategy 1 uses the shared Portfolio with a disk-free Backtest journal."""
 import asyncio
+from concurrent.futures import Future
 from datetime import date, datetime, timezone
 from uuid import UUID
 
 import pytest
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
+from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
+from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_broker_acknowledgement_v4 import project_broker_acknowledgement_v4
 from src.trading_runtime.arte_protection_change_v4 import protection_change_batch_v4
@@ -120,6 +123,9 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
             "assignment-1", "DU1", "AAA", 31_000, 30_000,
             10.01, 9.89, 12., "R4", .5, 30_000, "S1")
         intent = strategy_one_entry_intent(proposal, session_date=date(2026, 8, 18))
+        source_record = journal.append_strategy_one_intent(
+            intent=intent, proposal=proposal, session_date=date(2026, 8, 18),
+            account_id="DU1", strategy_id="strategy-1", strategy_revision=1)
         _, approved = await portfolio.approve(
             intent, account_id="DU1", assignment_id=proposal.assignment_id)
         assert approved is not None
@@ -172,6 +178,56 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
                     admission_reservation=admission,
                     journal_record_id=transition.record_id)
                 assert projected.events[0]["record_id"] == transition.record_id
+            projected_prefix = project_pending_backtest_v4_prefix(
+                journal, attempt_id=str(UUID(int=14)),
+                run_month=date(2026, 8, 1), prior_sequence=0,
+                source_cursor="2026-08-18:31000",
+                expected_config={"strategy_id": "strategy-1",
+                                 "strategy_revision": 1},
+                through_sequence=records[-1].sequence)
+            projected_events = [event for unit in projected_prefix
+                                for event in (unit.base if hasattr(unit, "base")
+                                              else unit).events]
+            assert len(projected_events) == len(records)
+            assert [event["sequence"] for event in projected_events] == [
+                record.sequence for record in records]
+            assert any((event["category"], event["entity_type"])
+                       == ("order_management", "order_group_state")
+                       for event in projected_events)
+            assert projected_events[0]["record_id"] == source_record.record_id
+            class FencedV4Writer:
+                run_mode = "backtest"
+                journal_profile = "backtest_v4"
+                coalesce_batches = False
+                max_events_per_commit = 1
+
+                def __init__(self):
+                    self.run_id = run_id
+                    self.units = []
+
+                def _receipt(self, unit):
+                    self.units.append(unit)
+                    result = Future()
+                    result.set_result((unit.base if hasattr(unit, "base")
+                                       else unit).batch_id)
+                    return result
+
+                submit_base_v4 = _receipt
+                submit_strategy_one_entry_v4 = _receipt
+                submit_broker_acknowledgement_v4 = _receipt
+                submit_protection_change_v4 = _receipt
+
+            writer = FencedV4Writer()
+            publisher = BacktestTypedJournalPublisher(
+                journal, writer, attempt_id=str(UUID(int=14)),
+                run_month=date(2026, 8, 1), batch_size=1,
+                expected_config={"strategy_id": "strategy-1",
+                                 "strategy_revision": 1})
+            receipt = await publisher.enqueue_pending()
+            assert receipt.last_sequence == records[-1].sequence
+            assert len(writer.units) == len(records)
+            assert intent.intent_id in publisher._committed_strategy_intents
+            assert journal.pending_record_count == 0
             latest = frozen[-1]
             assert latest is not None
             manager._groups[group.group_id].broker_order_ids.append("later-mutation")
@@ -188,6 +244,7 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
 
     group, records, frozen = asyncio.run(exercise())
     assert {(record.category, record.entity_type) for record in records} == {
+        ("strategy", "strategy_intent"),
         ("broker", "order_acknowledgement"),
         ("command", "order"),
         ("order_management", "order_group_state"),

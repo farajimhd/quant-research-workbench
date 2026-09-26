@@ -150,6 +150,9 @@ def oms_group_state_batch(
         source_cursor=published_intent_batch.source_cursor,
         run_status=published_intent_batch.status,
         recorded_at=datetime.fromisoformat(str(original["recorded_at"])),
+        record_id=str(original["record_id"]),
+        correlation_id=str(original["correlation_id"]),
+        causation_id=str(original["causation_id"]),
     )
     if (rebuilt.events != published_intent_batch.events
             or rebuilt.intents != published_intent_batch.intents

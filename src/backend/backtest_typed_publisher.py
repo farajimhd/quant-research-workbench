@@ -80,6 +80,9 @@ class BacktestTypedJournalPublisher:
         self._terminal_task: asyncio.Task[TypedBacktestReceipt] | None = None
         self._error: BaseException | None = None
         self._checkpoint_waiters: list[tuple[int, str, asyncio.Future[TypedBacktestReceipt]]] = []
+        # This is a performance index of already fenced source revisions, not
+        # recovery authority. Cold resume must reload and verify ClickHouse.
+        self._committed_strategy_intents: dict[str, tuple[TypedJournalBatch, object]] = {}
 
     @property
     def fenced_sequence(self) -> int:
@@ -125,6 +128,7 @@ class BacktestTypedJournalPublisher:
                 fixed_market_parent_plan=self.fixed_market_parent_plan,
                 fixed_market_execution_plan=self.fixed_market_execution_plan,
                 expected_market_start=self.expected_market_start,
+                published_sources=dict(self._committed_strategy_intents),
                 through_sequence=through_sequence)
         if self.writer.journal_profile == "backtest_v3":
             from src.backend.backtest_squeeze_episode_v3 import coalesce_squeeze_units_v3
@@ -195,6 +199,20 @@ class BacktestTypedJournalPublisher:
                     committed = await asyncio.wrap_future(receipt)
                     if str(UUID(str(committed))) != batch.batch_id:
                         raise RuntimeError("Typed Backtest writer changed an exclusive batch ID")
+                    if isinstance(unit, V4StrategyOneEntryBatch):
+                        from src.trading_runtime.strategy_one_intent import (
+                            strategy_one_entry_intent,
+                        )
+
+                        parent_id = unit.base.events[0]["record_id"]
+                        sidecar = self.journal.strategy_one_entry_for_record(parent_id)
+                        if sidecar is None:
+                            raise RuntimeError("Committed Strategy 1 entry lost its source")
+                        proposal, session_date = sidecar
+                        intent = strategy_one_entry_intent(
+                            proposal, session_date=session_date)
+                        self._committed_strategy_intents[intent.intent_id] = (
+                            unit.base, intent)
                     self.journal.mark_fenced(batch.last_sequence)
                     self._sequence = batch.last_sequence
                     self._batch_id = batch.batch_id

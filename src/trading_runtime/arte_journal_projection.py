@@ -259,6 +259,17 @@ def project_journal_record(
         context_keys = {"strategy_intent_id", "order_group_id", "policy_version",
                         "correlation_id", "causation_id"}
         context = {key: payload.pop(key, None) for key in context_keys}
+        # OMS policy revisions are integers; this occupied shared context
+        # column is String. Preserve the exact bounded revision in canonical
+        # decimal form, never through a float or an opaque payload.
+        if type(context["policy_version"]) is int:
+            if not 0 <= context["policy_version"] <= 0xFFFFFFFF:
+                raise ValueError("Order command policy revision is out of range")
+            context["policy_version"] = str(context["policy_version"])
+        source_strategy_id = payload.pop("strategy_id", None)
+        source_strategy_revision = payload.pop("strategy_revision", None)
+        source_action = payload.pop("action", None)
+        source_intent_id = payload.pop("intent_id", None)
         request = OrderRequest.from_cpapi(payload, account_id=record.account_id)
         strategy = (expected_config.get("strategy", expected_config)
                     if isinstance(expected_config, dict) else None)
@@ -271,6 +282,18 @@ def project_journal_record(
                 or request.to_cpapi() != payload
                 or not isinstance(strategy_id, str) or not strategy_id
                 or type(strategy_revision) is not int or strategy_revision < 0
+                or (source_strategy_id is not None
+                    and source_strategy_id != strategy_id)
+                or (source_strategy_revision is not None
+                    and source_strategy_revision != strategy_revision)
+                or (source_intent_id is not None
+                    and source_intent_id != context["strategy_intent_id"])
+                # Bracket protection legs have the opposite side from the
+                # parent strategy action; validate the named action itself,
+                # not an invented one-order/one-action equivalence.
+                or (source_action is not None and source_action not in {
+                    "enter_long", "add_long", "exit_long",
+                    "enter_short", "add_short", "exit_short"})
                 or any(not isinstance(context[key], str) or not context[key]
                        for key in ("strategy_intent_id", "order_group_id",
                                    "policy_version"))
