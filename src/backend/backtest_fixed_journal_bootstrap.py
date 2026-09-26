@@ -328,13 +328,26 @@ def prepare_fixed_v4_journal_token(
     _v4_preflight(writer_client)
     context = verify_fixed_run_context(
         dispatch, read_client, terminal_client, run_id=run_id)
-    if (context["mode"] != "backtest"
-            or tuple(context["account_ids"]) != account_ids
-            or context["configuration_hash"] != configuration_hash
-            or context["market_plan_token"] != market_plan_token
-            or load_typed_run_context(writer_client, run_id) != context):
+    if load_typed_run_context(writer_client, run_id) != context:
         raise RuntimeError("V4 journal context differs across principals")
     certificate = projection_certifier()
+    return _verified_v4_token(
+        context, run_id=run_id, account_ids=account_ids,
+        configuration_hash=configuration_hash,
+        market_plan_token=market_plan_token, certificate=certificate)
+
+
+def _verified_v4_token(
+    context: dict[str, Any], *, run_id: str, account_ids: tuple[str, ...],
+    configuration_hash: str, market_plan_token: str, certificate: str,
+) -> FixedV4JournalPreflightToken:
+    """Only seal a context already cold-verified across independent readers."""
+    if (not isinstance(context, dict) or context.get("run_id") != run_id
+            or context.get("mode") != "backtest"
+            or tuple(context.get("account_ids") or ()) != account_ids
+            or context.get("configuration_hash") != configuration_hash
+            or context.get("market_plan_token") != market_plan_token):
+        raise RuntimeError("V4 journal context differs across principals")
     if (not isinstance(certificate, str)
             or re.fullmatch(r"[0-9a-f]{64}", certificate) is None):
         raise RuntimeError("V4 journal projector cannot certify emitted families")
@@ -454,15 +467,19 @@ def publish_and_assemble_fixed_v4_journal(
     if (not isinstance(certificate, str)
             or re.fullmatch(r"[0-9a-f]{64}", certificate) is None):
         raise RuntimeError("V4 launch projector cannot certify emitted families")
-    publish_fixed_run_context(
+    published_context = publish_fixed_run_context(
         context_client, read_client, terminal_client, dispatch,
         run=run, config=config, account_ids=account_ids)
-    token = prepare_fixed_v4_journal_token(
-        read_client, writer_client, terminal_client,
-        run_id=run_id, account_ids=account_ids,
+    # Publication already cold-verified both independent readers behind a
+    # Keeper barrier. Rechecking that same context immediately adds expensive
+    # catalog scans and four ClickHouse reads per reader, but no new fact.
+    # The writer still performs its own context read before assembly.
+    if load_typed_run_context(writer_client, run_id) != published_context:
+        raise RuntimeError("V4 journal writer observes a different published context")
+    token = _verified_v4_token(
+        published_context, run_id=run_id, account_ids=account_ids,
         configuration_hash=run["configuration_hash"],
-        market_plan_token=run["market_plan_token"],
-        projection_certifier=lambda: certificate)
+        market_plan_token=run["market_plan_token"], certificate=certificate)
     return assemble_fixed_v4_journal(
         read_client, writer_client, terminal_client, token,
         attempt_id=attempt_id, expected_config=expected_config,

@@ -235,7 +235,7 @@ def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(mo
     dispatch = bootstrap.TypedInsertDispatch(object())
     writer_client.typed_insert_dispatch = dispatch
     writer_client.typed_insert_strict = True
-    context = {"mode": "backtest", "account_ids": ("DU1",),
+    context = {"run_id": RUN, "mode": "backtest", "account_ids": ("DU1",),
                "run_month": "2026-08-01", "configuration_hash": "c" * 64,
                "market_plan_token": "b" * 64}
     checked = []
@@ -364,9 +364,14 @@ def test_v4_publication_preflights_before_keeper_gate(monkeypatch):
                  "_v4_preflight"):
         monkeypatch.setattr(bootstrap, name,
                             lambda _client, name=name: calls.append(name))
+    published = {"run_id": RUN, "mode": "backtest", "account_ids": ("DU1",),
+                 "run_month": "2026-08-01", "configuration_hash": "c" * 64,
+                 "market_plan_token": "b" * 64}
     monkeypatch.setattr(bootstrap, "publish_fixed_run_context",
-                        lambda *_args, **_kwargs: calls.append("gate"))
-    monkeypatch.setattr(bootstrap, "prepare_fixed_v4_journal_token",
+                        lambda *_args, **_kwargs: calls.append("gate") or published)
+    monkeypatch.setattr(bootstrap, "load_typed_run_context",
+                        lambda *_args: calls.append("writer context") or published)
+    monkeypatch.setattr(bootstrap, "_verified_v4_token",
                         lambda *_args, **_kwargs: calls.append("token") or object())
     assembly = object()
     monkeypatch.setattr(bootstrap, "assemble_fixed_v4_journal",
@@ -383,7 +388,19 @@ def test_v4_publication_preflights_before_keeper_gate(monkeypatch):
         **kwargs) is assembly
     assert calls == ["market", "fixed_backtest_v2_preflight",
                      "_v4_cold_reader_preflight", "_v4_cold_reader_preflight",
-                     "_v4_preflight", "certificate", "gate", "token", "assembly"]
+                     "_v4_preflight", "certificate", "gate", "writer context",
+                     "token", "assembly"]
+    calls.clear()
+    monkeypatch.setattr(bootstrap, "load_typed_run_context",
+                        lambda *_args: calls.append("writer context") or
+                        {**published, "market_plan_token": "wrong"})
+    with pytest.raises(RuntimeError, match="writer observes"):
+        bootstrap.publish_and_assemble_fixed_v4_journal(
+            context, read, writer, terminal,
+            projection_certifier=lambda: "a" * 64, **kwargs)
+    assert "assembly" not in calls
+    monkeypatch.setattr(bootstrap, "load_typed_run_context",
+                        lambda *_args: calls.append("writer context") or published)
     calls.clear()
     with pytest.raises(RuntimeError, match="projector"):
         bootstrap.publish_and_assemble_fixed_v4_journal(
