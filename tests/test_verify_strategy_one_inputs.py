@@ -23,6 +23,8 @@ def test_workstation_one_shot_prints_counts_without_claiming_backtest(monkeypatc
         "sparse_tape_open_seconds": .5,
         "sparse_tape_total_seconds": .7,
         "sparse_tape_boundaries": 1234,
+        "sparse_tape_candidates": 62072,
+        "sparse_tape_activations": 1234,
         "static_gate_seconds": .02,
         "static_gate_eligible": 12,
         "static_gate_reject_gap": 3,
@@ -47,3 +49,7 @@ def test_workstation_one_shot_prints_counts_without_claiming_backtest(monkeypatc
     assert "no orders or fills were simulated" in profiled
     assert "Static entry gate: 12 / 62072 candidates survive" in profiled
     assert "overlapping reasons, no orders simulated" in profiled
+    assert command.main(["--profile-pruned-tape"]) == 0
+    pruned = capsys.readouterr().out
+    assert "Pruned sparse tape:" in pruned
+    assert "no orders or fills were simulated" in pruned

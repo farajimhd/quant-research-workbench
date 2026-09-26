@@ -1,6 +1,7 @@
 """Certified scalar entry facts reduce to a vectorized necessary mask."""
 from dataclasses import replace
 
+import numpy as np
 import pytest
 
 from src.backend.backtest_strategy_one_entry_store import (
@@ -8,7 +9,8 @@ from src.backend.backtest_strategy_one_entry_store import (
 )
 from src.backend.backtest_strategy_one_static_gate import (
     MISSING_BOS_SUPPORT, MISSING_COMPLETED_BOS, MISSING_FROZEN_GAP,
-    MISSING_INITIAL_PROTECTION, compile_static_entry_gate,
+    MISSING_INITIAL_PROTECTION, StrategyOneStaticGate,
+    compile_static_entry_gate, project_static_survivors,
 )
 from test_backtest_strategy_one_entry_store import Reader, _plans
 
@@ -56,3 +58,43 @@ def test_static_gate_rejects_episode_drift_not_as_a_normal_rejection():
         entry.candidates[0], episode_start_ms=29_900),))
     with pytest.raises(ValueError, match="changed candidate episode"):
         compile_static_entry_gate(plans[1], altered)
+
+
+def test_static_survivors_remove_unneeded_market_reads_not_parent_seals():
+    plans = _plans()
+    row = plans[1].prepared[0]
+    extended = replace(
+        row, source_rows=2, row_index=np.array([0, 1]),
+        boundary_ms=np.array([31_000, 31_100]),
+        episode_start_ms=np.array([30_000, 30_000]),
+        macd_boundary_ms=np.array([[31_000] * 4, [31_000] * 4]),
+        stop_bar_boundary_ms=np.array([30_000, 30_000]),
+        stop_low_int=np.array([99_000, 99_000]))
+    candidates = replace(plans[1], prepared=(extended,))
+    first = Reader(plans).candidate
+    gate = StrategyOneStaticGate(
+        (first, replace(first, boundary_ms=31_100)),
+        np.array([MISSING_FROZEN_GAP, 0], dtype=np.uint8),
+        np.array([1], dtype=np.int64))
+    visible, activations = project_static_survivors(
+        candidates, plans[2], gate)
+    assert visible.coverage is candidates.coverage
+    assert visible.prepared[0].boundary_ms.tolist() == [31_100]
+    assert visible.prepared[0].row_index.tolist() == [1]
+    assert activations.rows == plans[2].rows
+    assert visible.token != candidates.token
+    repeated, repeated_activations = project_static_survivors(
+        candidates, plans[2], gate)
+    assert (repeated.token, repeated_activations.token) == (
+        visible.token, activations.token)
+
+
+def test_static_survivors_reject_cross_plan_or_missing_activation():
+    plans = _plans()
+    entry = _entry(plans)
+    gate = compile_static_entry_gate(plans[1], entry)
+    with pytest.raises(ValueError, match="differs"):
+        project_static_survivors(plans[1], replace(plans[2], rows=()), gate)
+    with pytest.raises(ValueError, match="differs"):
+        project_static_survivors(plans[1], plans[2], replace(
+            gate, facts=(replace(gate.facts[0], boundary_ms=31_100),)))
