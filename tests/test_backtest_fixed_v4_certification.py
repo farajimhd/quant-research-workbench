@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from src.backend.backtest_fixed_v4_certification import (
+    certify_fixed_broker_stream_unreachable,
     certify_strategy_one_v4_projection,
 )
 
@@ -43,3 +44,27 @@ def test_v4_certificate_rejects_unprojected_indirect_family(tmp_path):
 def test_current_runtime_is_not_yet_v4_certified():
     with pytest.raises(ValueError, match="order_cancel_requested"):
         certify_strategy_one_v4_projection()
+
+
+def test_simulated_broker_websocket_exclusion_fails_on_source_change(tmp_path):
+    from src.backend import backtest_fixed_v4_certification as cert
+
+    sources = {
+        "controller_path": cert.Path(__file__).parents[1] / "src/backend/replay_run_service.py",
+        "runtime_path": cert.Path(__file__).parents[1] / "src/trading_runtime/runtime.py",
+        "oms_path": cert.Path(__file__).parents[1] / "src/trading_runtime/order_management.py",
+        "broker_path": cert._SIMULATED_BROKER,
+    }
+    copies = {}
+    for name, source in sources.items():
+        target = tmp_path / source.name
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        copies[name] = target
+    assert len(certify_fixed_broker_stream_unreachable(**copies)) == 64
+    broker = copies["broker_path"]
+    broker.write_text(broker.read_text(encoding="utf-8").replace(
+        "    requires_fresh_execution_state = False",
+        "    requires_fresh_execution_state = False\n"
+        "    def stream_broker_messages(self): pass", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="transport absence"):
+        certify_fixed_broker_stream_unreachable(**copies)
