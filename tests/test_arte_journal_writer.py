@@ -229,7 +229,8 @@ def test_v4_context_client_requires_keeper_and_audits_journal_grants(monkeypatch
     session._on_state("CONNECTED")
     client = Client()
     monkeypatch.setattr(writer_module, "journal_client_from_env", lambda: client)
-    monkeypatch.setattr(writer_module, "journal_permission_preflight",
+    from src.trading_runtime import arte_journal_schema
+    monkeypatch.setattr(arte_journal_schema, "fixed_backtest_v2_preflight",
                         lambda _client: None)
     result = writer_module.backtest_v4_context_client_from_env(
         keeper_session=session)
@@ -243,7 +244,7 @@ def test_v4_context_client_requires_keeper_and_audits_journal_grants(monkeypatch
     monkeypatch.setattr(writer_module, "journal_client_from_env", lambda: bad)
     def reject(_client):
         raise RuntimeError("journal grant mismatch")
-    monkeypatch.setattr(writer_module, "journal_permission_preflight", reject)
+    monkeypatch.setattr(arte_journal_schema, "fixed_backtest_v2_preflight", reject)
     with pytest.raises(RuntimeError, match="grant mismatch"):
         writer_module.backtest_v4_context_client_from_env(
             keeper_session=session)

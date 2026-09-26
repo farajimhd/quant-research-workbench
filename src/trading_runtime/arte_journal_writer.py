@@ -241,7 +241,10 @@ def backtest_v4_context_client_from_env(*, keeper_session=None) -> Any:
         raise RuntimeError("V4 run context needs a caller-owned writable Keeper session")
     client = journal_client_from_env()
     try:
-        journal_permission_preflight(client)
+        # The deployed journal principal owns the complete normalized V2
+        # family, not only the older V1 subset checked by the default audit.
+        from src.trading_runtime.arte_journal_schema import fixed_backtest_v2_preflight
+        fixed_backtest_v2_preflight(client)
         client.typed_insert_dispatch = TypedInsertDispatch(keeper_session.client)
         client.typed_insert_strict = True
         return client
