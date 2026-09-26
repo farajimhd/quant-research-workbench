@@ -26,6 +26,20 @@ DAY = "2026-08-18"
 RUN = "00000000-0000-0000-0000-000000000001"
 
 
+def test_numbered_strategy_one_uses_its_persisted_product_evidence_not_legacy_profile():
+    legacy = {
+        "strategy_profile": {"parameters": {
+            "market_pressure": {"enabled": True}}},
+        "run_plan": {"signal_stream_ids": ["price-squeeze-early"]},
+        "signal_activation": {"signal_streams": [{
+            "signal_stream_id": "price-squeeze-early",
+            "occurrence_source": "arte.strategy_one_candidate_v1"}]},
+    }
+    assert _fixed_market_evidence_gaps(legacy)
+    assert _fixed_market_evidence_gaps({
+        **legacy, "strategy": {"strategy_number": 1}}) == ()
+
+
 def _stub_price_plan(monkeypatch):
     from src.backend import backtest_liquidity_price
     class Plan:

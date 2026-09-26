@@ -10868,6 +10868,11 @@ def _fixed_market_evidence_gaps(configuration: Mapping[str, Any]) -> tuple[str, 
     A completed quote and aggregate volume cannot reconstruct intrabucket
     trade classification, NBBO extrema, or an event-fed RVOL baseline.
     """
+    if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+        # Numbered Strategy 1 does not execute the legacy profile or QMD
+        # stream. Its declared ARTE inputs and producer seals are checked by
+        # the fixed Strategy 1 preflight and launch certificate instead.
+        return ()
     profiles = [configuration.get("strategy_profile") or {},
                 *(configuration.get("assignments") or ())]
     gaps: set[str] = set()
