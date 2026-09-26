@@ -43,6 +43,7 @@ from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
 from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
+from src.trading_runtime.arte_reservation_reason_v4 import RESERVATION_REASON
 from src.trading_runtime.arte_risk_action_v4 import TABLES as RISK_ACTION_TABLES
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     TABLES as PROTECTION_RECONCILIATION_TABLES,
@@ -60,7 +61,7 @@ PASSWORD_KEY = "BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD"
 def desired_plan() -> PrincipalPlan:
     writable = frozenset(_v4_family_table(table) for table, _, _, _ in _FAMILIES) | frozenset(
         table.name for table in V4_COMMIT_TABLES) | {
-            ENTRY_EVIDENCE.name, V4_ALLOCATION.name,
+            ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
             ACKNOWLEDGEMENT.name, CANCEL.name,
             REPRICE.name,
             *(table.name for table in RISK_ACTION_TABLES),
@@ -72,6 +73,7 @@ def desired_plan() -> PrincipalPlan:
         "running", PRINCIPAL,
         frozenset(table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES,
                                           ENTRY_EVIDENCE, V4_ALLOCATION,
+                                          RESERVATION_REASON,
                                           ACKNOWLEDGEMENT, CANCEL,
                                           REPRICE,
                                           *RISK_ACTION_TABLES,

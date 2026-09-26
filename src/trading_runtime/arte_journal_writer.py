@@ -37,6 +37,7 @@ from src.trading_runtime.arte_order_reprice_v4 import REPRICE
 from src.trading_runtime.arte_portfolio_allocation_v4 import (
     ALLOCATION as V4_ALLOCATION, V4PortfolioAllocationBatch,
 )
+from src.trading_runtime.arte_reservation_reason_v4 import V4ReservationReasonBatch
 from src.trading_runtime.arte_risk_action_v4 import (
     TABLES as RISK_ACTION_TABLES, V4RiskActionBatch,
 )
@@ -1777,6 +1778,7 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     """One exact, deduplicated V4 catalog for every principal's storage audit."""
     installed = fixed_backtest_v2_contracts()
     contracts = (*installed, *V4_COMMIT_TABLES, ENTRY_EVIDENCE, V4_ALLOCATION,
+                 RESERVATION_REASON,
                  ACKNOWLEDGEMENT, CANCEL, REPRICE, *RISK_ACTION_TABLES,
                  *PROTECTION_CHANGE_TABLES,
                  *PROTECTION_RECONCILIATION_TABLES)
@@ -1798,7 +1800,7 @@ def _v4_preflight(client: Any) -> None:
     writable = frozenset(
         _v4_family_table(table) for table, _, _, _ in _FAMILIES
     ) | frozenset(table.name for table in V4_COMMIT_TABLES) | {
-        ENTRY_EVIDENCE.name, V4_ALLOCATION.name,
+        ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
         ACKNOWLEDGEMENT.name, CANCEL.name, REPRICE.name,
         *(table.name for table in RISK_ACTION_TABLES),
         *(table.name for table in PROTECTION_CHANGE_TABLES),
@@ -3299,6 +3301,7 @@ class ArteJournalWriter:
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
                   | V4StrategyOneEntryBatch | V4PortfolioAllocationBatch
+                  | V4ReservationReasonBatch
                   | V4BrokerAcknowledgementBatch
                   | V4OrderCancelBatch | V4OrderRepriceBatch | V4RiskActionBatch
                   | V4ProtectionChangeBatch
@@ -3422,6 +3425,25 @@ class ArteJournalWriter:
                 or not isinstance(unit, V4PortfolioAllocationBatch)
                 or unit.base.run_id != self._run_id):
             raise ValueError("V4 allocation requires its pinned writer")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_reservation_reason_v4(
+        self, unit: V4ReservationReasonBatch,
+    ) -> Future[str]:
+        """Queue a scalar reservation reason family outside the execution lane."""
+        if (self._journal_profile != "backtest_v4"
+                or not isinstance(unit, V4ReservationReasonBatch)
+                or unit.base.run_id != self._run_id):
+            raise ValueError("V4 reservation reasons require the pinned writer")
         with self._submission_lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("V4 writer is closed or failed")
@@ -3785,6 +3807,7 @@ class ArteJournalWriter:
                                            (TypedJournalBatch, V3SqueezeBatch,
                                             V4StrategyOneEntryBatch,
                                             V4PortfolioAllocationBatch,
+                                            V4ReservationReasonBatch,
                                             V4BrokerAcknowledgementBatch,
                                             V4OrderCancelBatch,
                                             V4OrderRepriceBatch,
@@ -3857,6 +3880,13 @@ class ArteJournalWriter:
                     unit = group[0][0]
                     committed_id = publish_portfolio_allocation_batch_v4(
                         self._client, unit.base, allocation=unit.allocation)
+                elif isinstance(group[0][0], V4ReservationReasonBatch):
+                    from src.trading_runtime.arte_journal_commit_v4 import (
+                        publish_reservation_reason_batch_v4,
+                    )
+                    unit = group[0][0]
+                    committed_id = publish_reservation_reason_batch_v4(
+                        self._client, unit.base, reasons=unit.reasons)
                 elif isinstance(group[0][0], V3SqueezeBatch):
                     unit = group[0][0]
                     committed_id = _publish_typed_batch(

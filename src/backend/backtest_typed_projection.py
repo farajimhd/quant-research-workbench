@@ -27,6 +27,9 @@ from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.arte_portfolio_allocation_v4 import (
     V4PortfolioAllocationBatch, project_portfolio_allocation_v3,
 )
+from src.trading_runtime.arte_reservation_reason_v4 import (
+    V4ReservationReasonBatch, project_reservation_reasons_v3,
+)
 
 
 NIL_BATCH_ID = str(UUID(int=0))
@@ -77,7 +80,8 @@ def project_pending_backtest_v4_prefix(
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
            | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
            | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
-           | V4ProtectionReconciliationBatch | V4PortfolioAllocationBatch, ...]:
+           | V4ProtectionReconciliationBatch | V4PortfolioAllocationBatch
+           | V4ReservationReasonBatch, ...]:
     """Project one bounded V4 prefix; special families never enter a base batch."""
     from src.trading_runtime.arte_broker_acknowledgement_v4 import (
         broker_acknowledgement_batch_v4,
@@ -220,6 +224,16 @@ def project_pending_backtest_v4_prefix(
                 record.run_id, run_month, attempt, batch_id, previous,
                 sequence, sequence, cursor, "running", (projected.event,))
             unit = V4PortfolioAllocationBatch(base, projected.detail)
+        elif (kind == ("portfolio_management", "portfolio_reservation")
+              and record.payload.get("event") in {
+                  "reservation_released", "entry_reprice_authorized"}):
+            base = project_journal_record(
+                record, run_month=run_month, attempt_id=attempt,
+                batch_id=batch_id, prior_batch_id=previous,
+                source_cursor=cursor, expected_config=expected_config,
+                expected_mode="backtest", allow_v3_reservation_reasons=True)
+            reasons = project_reservation_reasons_v3(record, batch_id=batch_id)
+            unit = V4ReservationReasonBatch(base, reasons) if reasons else base
         else:
             batch = project_journal_record(
                 record, run_month=run_month, attempt_id=attempt,

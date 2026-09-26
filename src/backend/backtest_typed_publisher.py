@@ -28,6 +28,7 @@ from src.trading_runtime.arte_protection_reconciliation_v4 import (
 )
 from src.trading_runtime.arte_risk_action_v4 import V4RiskActionBatch
 from src.trading_runtime.arte_portfolio_allocation_v4 import V4PortfolioAllocationBatch
+from src.trading_runtime.arte_reservation_reason_v4 import V4ReservationReasonBatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +123,7 @@ class BacktestTypedJournalPublisher:
 
     def _prepare_batches(self, through_sequence: int) -> tuple[
             TypedJournalBatch | V3SqueezeBatch | V4StrategyOneEntryBatch
-            | V4PortfolioAllocationBatch
+            | V4PortfolioAllocationBatch | V4ReservationReasonBatch
             | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
             | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
             | V4ProtectionReconciliationBatch, ...]:
@@ -191,7 +192,7 @@ class BacktestTypedJournalPublisher:
                 for unit in batches:
                     batch = unit.base if isinstance(
                         unit, (V3SqueezeBatch, V4StrategyOneEntryBatch,
-                               V4PortfolioAllocationBatch,
+                               V4PortfolioAllocationBatch, V4ReservationReasonBatch,
                                V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
                                V4OrderRepriceBatch,
                                V4RiskActionBatch,
@@ -204,6 +205,8 @@ class BacktestTypedJournalPublisher:
                                if isinstance(unit, V4StrategyOneEntryBatch)
                                else self.writer.submit_portfolio_allocation_v4(unit)
                                if isinstance(unit, V4PortfolioAllocationBatch)
+                               else self.writer.submit_reservation_reason_v4(unit)
+                               if isinstance(unit, V4ReservationReasonBatch)
                                else self.writer.submit_broker_acknowledgement_v4(unit)
                                if isinstance(unit, V4BrokerAcknowledgementBatch)
                                else self.writer.submit_order_cancel_v4(unit)

@@ -23,6 +23,9 @@ from src.trading_runtime.arte_order_reprice_v4 import REPRICE
 from src.trading_runtime.arte_portfolio_allocation_v4 import (
     ALLOCATION as V4_ALLOCATION, seal_portfolio_allocation_v3,
 )
+from src.trading_runtime.arte_reservation_reason_v4 import (
+    RESERVATION_REASON, seal_reservation_reason_family_v3,
+)
 from src.trading_runtime.arte_risk_action_v4 import (
     ACTION as RISK_ACTION, REPLY as RISK_REPLY, seal_risk_action_v4,
 )
@@ -37,7 +40,8 @@ from src.backend.backtest_protection_change_v3 import (
 )
 
 
-_MULTIROW_FAMILIES = frozenset({PROTECTION_ENTRY_ORDER.name})
+_MULTIROW_FAMILIES = frozenset({PROTECTION_ENTRY_ORDER.name,
+                                RESERVATION_REASON.name})
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,7 +329,8 @@ def _load_verified_details_v4(
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
                     ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name, CANCEL.name,
                     REPRICE.name,
-                    V4_ALLOCATION.name,
+                    V4_ALLOCATION.name, RESERVATION_REASON.name,
+                    "trading_portfolio_reservation_event_v1",
                     RISK_ACTION.name, RISK_REPLY.name,
                     PROTECTION_CHANGE.name, PROTECTION_ENTRY_ORDER.name,
                     PROTECTION_RECONCILIATION.name,
@@ -419,6 +424,14 @@ def _load_verified_details_v4(
             run_id=run_id, batch_id=batch_id)
     except ValueError as exc:
         raise RuntimeError("V4 portfolio allocation differs from its parent") from exc
+    try:
+        seal_reservation_reason_family_v3(
+            related_rows.get(RESERVATION_REASON.name, ()),
+            tuple(events.values()),
+            related_rows.get("trading_portfolio_reservation_event_v1", ()),
+            run_id=run_id, batch_id=batch_id)
+    except ValueError as exc:
+        raise RuntimeError("V4 reservation reasons differ from their parent") from exc
     try:
         seal_risk_action_v4(
             related_rows.get(RISK_ACTION.name, ()),
@@ -569,6 +582,12 @@ def publish_portfolio_allocation_batch_v4(client, batch, *, allocation) -> str:
     """Fence one normalized allocation fill with its parent event."""
     return _publish_typed_batch_v4(
         client, batch, portfolio_allocation_row=allocation)
+
+
+def publish_reservation_reason_batch_v4(client, batch, *, reasons) -> str:
+    """Fence a reservation transition and its ordered scalar reasons."""
+    return _publish_typed_batch_v4(
+        client, batch, reservation_reason_rows=reasons)
 
 
 def publish_strategy_one_entry_batch_v4(client, batch, *, entry_evidence) -> str:
@@ -752,6 +771,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
 
 def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                             portfolio_allocation_row=None,
+                            reservation_reason_rows=(),
                             broker_acknowledgement_row=None,
                             order_cancel_row=None,
                             order_reprice_row=None,
@@ -781,6 +801,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
             strategy_one_entry_rows, portfolio_allocation_row,
+            reservation_reason_rows,
             broker_acknowledgement_row, order_cancel_row,
             order_reprice_row,
             risk_action_row,
@@ -1004,6 +1025,17 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
             (allocation,), batch.events, run_id=batch.run_id,
             batch_id=batch.batch_id)
         allocation_rows = (allocation,)
+    reason_rows = tuple(typed_row(RESERVATION_REASON.name, {
+        key: value for key, value in row.items() if key != "content_hash"})
+        for row in reservation_reason_rows)
+    if reason_rows:
+        if (len(batch.events) != 1
+                or (batch.events[0]["category"], batch.events[0]["entity_type"])
+                != ("portfolio_management", "portfolio_reservation")):
+            raise ValueError("V4 reservation reasons lack one typed parent")
+        seal_reservation_reason_family_v3(
+            reason_rows, batch.events, batch.portfolio_reservation_events,
+            run_id=batch.run_id, batch_id=batch.batch_id)
     base_families = _sealed_families(
         batch, v4_broker_ack_ids=tuple(row["record_id"] for row in ack_rows),
         v4_allocation_ids=tuple(row["record_id"] for row in allocation_rows),
@@ -1022,6 +1054,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         families += ((ENTRY_EVIDENCE.name, entry_rows),)
     if allocation_rows:
         families += ((V4_ALLOCATION.name, allocation_rows),)
+    if reason_rows:
+        families += ((RESERVATION_REASON.name, reason_rows),)
     if ack_rows:
         families += ((ACKNOWLEDGEMENT.name, ack_rows),)
     if cancel_rows:

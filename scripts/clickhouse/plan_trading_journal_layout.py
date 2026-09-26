@@ -49,6 +49,7 @@ from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_AL
 def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
     if profile == "commit-v4":
         return V4_COMMIT_TABLES + (ENTRY_EVIDENCE, V4_ALLOCATION,
+                                   RESERVATION_REASON,
                                    ACKNOWLEDGEMENT, CANCEL, REPRICE,
                                    *RISK_ACTION_TABLES,
                                    *PROTECTION_CHANGE_TABLES,

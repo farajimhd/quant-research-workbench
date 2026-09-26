@@ -888,12 +888,14 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     from src.trading_runtime.arte_order_cancel_v4 import CANCEL
     from src.trading_runtime.arte_order_reprice_v4 import REPRICE
     from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
+    from src.trading_runtime.arte_reservation_reason_v4 import RESERVATION_REASON
     from src.trading_runtime.arte_risk_action_v4 import TABLES as RISK_ACTION_TABLES
 
     assert len(observed) == 2
     assert {table.name for table in observed[0]} == {
         table.name for table in (*fixed_backtest_v2_contracts(),
                                  *V4_COMMIT_TABLES, ENTRY_EVIDENCE, V4_ALLOCATION,
+                                 RESERVATION_REASON,
                                  ACKNOWLEDGEMENT, CANCEL, REPRICE,
                                  *RISK_ACTION_TABLES,
                                  *PROTECTION_CHANGE_TABLES,
@@ -901,7 +903,7 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     writable = frozenset(writer_module._v4_family_table(table)
                          for table, _, _, _ in writer_module._FAMILIES) | \
         frozenset(table.name for table in V4_COMMIT_TABLES) | {
-            ENTRY_EVIDENCE.name, V4_ALLOCATION.name,
+            ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
             ACKNOWLEDGEMENT.name, CANCEL.name,
             REPRICE.name,
             *(table.name for table in RISK_ACTION_TABLES),
