@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from copy import deepcopy
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 from hashlib import sha256
 from typing import Any, Mapping
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -79,6 +80,19 @@ def freeze_oms_group(group: Any) -> FrozenOmsGroup:
         group.protection_required_quantity, group.protection_coverage_quantity,
         group.protection_delegated,
     )
+
+
+def _duration_ms(value: float | None) -> str | None:
+    """Bound non-financial clock telemetry to its declared Decimal(38,10)."""
+    if value is None:
+        return None
+    try:
+        number = Decimal(str(value))
+        if not number.is_finite() or number < 0:
+            raise ValueError("OMS duration must be finite and nonnegative")
+        return str(number.quantize(Decimal("0.0000000001"), rounding=ROUND_HALF_EVEN))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("OMS duration cannot fit its typed column") from exc
 
 
 def oms_group_state_batch(
@@ -199,11 +213,11 @@ def oms_group_state_batch(
         "state": group.state.value, "created_at": group.created_at.astimezone(timezone.utc).isoformat(),
         "updated_at": at, "submitted_at": optional_time(group.submitted_at),
         "rejection_reason": group.rejection_reason,
-        "decision_to_submit_ms": optional_number(group.decision_to_submit_ms),
+        "decision_to_submit_ms": _duration_ms(group.decision_to_submit_ms),
         "reprice_count": group.reprice_count,
         "last_reprice_at": optional_time(group.last_reprice_at),
         "failed_reprice_at": optional_time(group.failed_reprice_at),
-        "internal_reaction_ms": optional_number(group.internal_reaction_ms),
+        "internal_reaction_ms": _duration_ms(group.internal_reaction_ms),
         "deferred_reprice_from": optional_number(group.deferred_reprice[0]) if group.deferred_reprice else None,
         "deferred_reprice_to": optional_number(group.deferred_reprice[1]) if group.deferred_reprice else None,
         "high_water_price": _exact_decimal(group.high_water_price),

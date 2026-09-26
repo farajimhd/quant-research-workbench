@@ -7,6 +7,8 @@ import pytest
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.arte_journal_projection import project_journal_record
+from src.trading_runtime.arte_intent_projection import strategy_intent_batch
+from src.trading_runtime.arte_oms_projection import oms_group_state_batch
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary
 from src.trading_runtime.domain import InstrumentContract, TradingMode
 from src.trading_runtime.execution_policies import ExecutionMarketSnapshot
@@ -144,6 +146,30 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
             assert admissions and all(row is not None and
                                       row["assignment_id"] == "assignment-1"
                                       for row in admissions)
+            source = strategy_intent_batch(
+                intent, run_id=run_id, run_month=date(2026, 8, 1),
+                account_id="DU1", attempt_id=str(UUID(int=14)),
+                batch_id=str(UUID(int=15)), prior_batch_id=str(UUID(int=0)),
+                sequence=1, source_cursor="intent", run_status="running",
+                recorded_at=at)
+            transitions = tuple(record for record in records
+                                if record.entity_type == "order_group_state")
+            for transition, captured, admission in zip(
+                    transitions, frozen, admissions, strict=True):
+                projected = oms_group_state_batch(
+                    captured, run_id=run_id, run_month=date(2026, 8, 1),
+                    attempt_id=str(UUID(int=14)),
+                    batch_id=str(UUID(int=16 + transition.sequence)),
+                    prior_batch_id=str(UUID(int=15)), sequence=transition.sequence,
+                    source_cursor="oms", run_status="running",
+                    strategy_id="strategy-1", strategy_revision=1,
+                    recorded_at=transition.recorded_at,
+                    published_intent_batch=source,
+                    committed_intent_batch_id=source.batch_id,
+                    admission_source_intent=intent,
+                    admission_reservation=admission,
+                    journal_record_id=transition.record_id)
+                assert projected.events[0]["record_id"] == transition.record_id
             latest = frozen[-1]
             assert latest is not None
             manager._groups[group.group_id].broker_order_ids.append("later-mutation")

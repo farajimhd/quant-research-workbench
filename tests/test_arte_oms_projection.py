@@ -13,7 +13,7 @@ from src.trading_runtime.arte_journal_writer import (
     load_committed_prefix, publish_typed_batch, typed_row,
 )
 from src.trading_runtime.arte_oms_projection import (
-    RecoveredOmsGroupState, freeze_oms_group,
+    RecoveredOmsGroupState, _duration_ms, freeze_oms_group,
     load_committed_oms_admission_page, load_committed_oms_group_state_page,
     oms_group_state_batch,
 )
@@ -23,6 +23,13 @@ from src.trading_runtime.signals import CapitalRequest
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 from tests.test_arte_intent_projection import intent
 from tests.test_arte_journal_writer import MemoryClient
+
+
+def test_oms_duration_precision_is_bounded_without_rounding_financial_fields() -> None:
+    assert _duration_ms(0.6272000027820468) == "0.6272000028"
+    assert _duration_ms(None) is None
+    with pytest.raises(ValueError, match="duration"):
+        _duration_ms(float("nan"))
 
 
 def test_cold_oms_admission_joins_only_one_fenced_normalized_reservation() -> None:
