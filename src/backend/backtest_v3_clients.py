@@ -51,6 +51,7 @@ def v3_client(
     role: str, *, environment: Mapping[str, str] | None = None,
     client_factory: Callable[..., Any] | None = None,
     market_stream: bool = False,
+    persistent: bool = True,
 ) -> Any:
     """Construct one role client; never consult legacy market/journal credentials."""
     if client_factory is None:
@@ -65,7 +66,7 @@ def v3_client(
         params.update(max_query_size=16 * 1024 * 1024,
                       max_ast_elements=500_000, max_execution_time=21_600)
     return client_factory(url, user, password, timeout_seconds=60,
-                          persistent=True, default_query_params=params)
+                          persistent=persistent, default_query_params=params)
 
 
 def _workstation_ipv4_transport(url: str) -> str:

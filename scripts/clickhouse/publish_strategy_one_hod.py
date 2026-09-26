@@ -36,6 +36,7 @@ from scripts.clickhouse.publish_strategy_one_candidates import (
 from src.backend.backtest_market_data import (
     project_market_day_plan, readonly_clickhouse_client,
 )
+from src.backend.backtest_v3_clients import v3_client
 from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
 from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
 from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
@@ -107,11 +108,12 @@ def publish_session(*, session_date: str, build_id: str,
     def worker(ticker: str) -> str:
         clients = getattr(state, "clients", None)
         if clients is None:
+            # Each ticker can spend seconds fitting V7 between reads. The
+            # workstation closes idle HTTP sockets; fresh SELECT connections
+            # avoid stale keepalive without retrying uncertain INSERTs.
             clients = (_writer(password),
-                       readonly_clickhouse_client(
-                           market_stream=True, v3_read_principal=True),
-                       readonly_clickhouse_client(
-                           market_stream=True, v3_read_principal=True))
+                       v3_client("read", market_stream=True, persistent=False),
+                       v3_client("read", market_stream=True, persistent=False))
             with opened_lock:
                 opened.extend(clients)
             state.clients = clients
