@@ -3,7 +3,9 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from src.trading_runtime.arte_journal_commit_v4 import prepare_commit_v4
+from src.trading_runtime.arte_journal_commit_v4 import (
+    prepare_commit_v4, verify_commit_v4,
+)
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import _sealed_families
 from tests.test_arte_journal_writer import batch
@@ -57,3 +59,27 @@ def test_v4_commit_rejects_missing_duplicate_or_foreign_detail_family():
     options["last_sequence"] = 2
     with pytest.raises(ValueError, match="sequence span"):
         prepare_commit_v4(**options)
+    options = source()
+    name, rows = options["sealed_families"][0]
+    options["last_sequence"] = 2
+    options["sealed_families"] = ((name, (
+        rows[0], {**rows[0], "content_hash": "0" * 64})),)
+    with pytest.raises(ValueError, match="repeated a typed row identity"):
+        prepare_commit_v4(**options)
+
+
+def test_v4_readback_requires_exact_family_set_and_detail_hashes():
+    options = source()
+    commit, families = prepare_commit_v4(**options)
+    event = options["sealed_families"][0][1][0]
+    details = {"trading_event_v1": [(event["record_id"], event["content_hash"])]}
+    verify_commit_v4(commit, families, details)
+    with pytest.raises(ValueError, match="detail identities"):
+        verify_commit_v4(commit, families,
+                         {"trading_event_v1": [(event["record_id"], "0" * 64)]})
+    with pytest.raises(ValueError, match="family set"):
+        verify_commit_v4({**commit, "family_set_hash": "0" * 64}, families, details)
+    with pytest.raises(ValueError, match="normalized families"):
+        verify_commit_v4(commit, families, {})
+    with pytest.raises(ValueError, match="count or sequence"):
+        verify_commit_v4({**commit, "event_count": 2}, families, details)
