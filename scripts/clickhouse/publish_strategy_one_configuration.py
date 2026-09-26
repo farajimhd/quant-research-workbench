@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 
@@ -91,7 +92,9 @@ def main() -> None:
         except Exception as exc:
             # Preserve the diagnostic class without exposing an HTTP request,
             # ClickHouse response, transfer payload, or workstation secret.
-            print(f"Strategy 1 receiver failed: {type(exc).__name__}",
+            status = getattr(exc, "status_code", None)
+            suffix = f":HTTP{status}" if type(status) is int else ""
+            print(f"Strategy 1 receiver failed: {type(exc).__name__}{suffix}",
                   file=sys.stderr, flush=True)
             raise SystemExit(1) from None
         return
@@ -120,8 +123,14 @@ def main() -> None:
         timeout=180, check=False)
     if result.returncode:
         diagnostic = result.stderr.decode("utf-8", errors="replace").strip()
-        if not diagnostic.startswith("Strategy 1 receiver failed: "):
-            diagnostic = "workstation transport or pre-receiver failure"
+        match = re.search(
+            r"Strategy 1 receiver failed: ([A-Za-z]+)(:HTTP[0-9]{3})?",
+            diagnostic)
+        if match is not None:
+            diagnostic = "".join(part or "" for part in match.groups())
+        else:
+            diagnostic = "workstation transport or pre-receiver failure " \
+                f"(stderr_bytes={len(result.stderr)}, stdout_bytes={len(result.stdout)})"
         raise RuntimeError(f"Workstation Strategy 1 publication failed: {diagnostic}")
     print(result.stdout.decode("utf-8", errors="replace").strip(), flush=True)
 
