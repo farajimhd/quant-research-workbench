@@ -27,7 +27,8 @@ from src.trading_runtime.strategy_one_hod_schema import (
 )
 from src.trading_runtime.structural_v7_lineage import TABLE as V7_LINEAGE_TABLE
 from src.trading_runtime.arte_journal_schema import (
-    POLICY_ALLOWED_TABLES, TABLES, fixed_backtest_v2_contracts, journal_permission_preflight,
+    POLICY_ALLOWED_TABLES, TABLES, V4_COMMIT_TABLES,
+    fixed_backtest_v2_contracts, journal_permission_preflight,
     storage_preflight, versioned_journal_v2_contracts,
 )
 
@@ -64,7 +65,8 @@ def terminal_v3_contracts() -> tuple[Any, ...]:
         PROTECTED_EXIT_SNAPSHOT,
         PORTFOLIO_ALLOCATION_FILL,
         SQUEEZE_COMMIT_V3,
-        TERMINAL_COMMIT_V3)
+        TERMINAL_COMMIT_V3,
+        *V4_COMMIT_TABLES)
 
 
 def _exact_grants(client: Any, writable: frozenset[str]) -> None:

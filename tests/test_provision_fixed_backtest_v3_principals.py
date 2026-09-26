@@ -90,6 +90,9 @@ def test_exact_three_role_plan_matches_v3_preflight_tables():
     read, running, terminal = command.desired_plan()
     assert len({read.principal, running.principal, terminal.principal}) == 3
     assert read.insert_arte == frozenset()
+    assert {"trading_commit_v4", "trading_commit_family_v4"} <= read.select_arte
+    assert {"trading_commit_v4", "trading_commit_family_v4"} <= terminal.select_arte
+    assert not {"trading_commit_v4", "trading_commit_family_v4"} & terminal.insert_arte
     from src.trading_runtime.arte_market_day_certification import TABLES as CERTIFICATE_TABLES
     assert {table.name for table in CERTIFICATE_TABLES} <= read.select_arte
     assert not ({table.name for table in CERTIFICATE_TABLES} & read.insert_arte)
