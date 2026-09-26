@@ -422,7 +422,8 @@ def project_journal_record(
             "event_month": month, "batch_id": batch_id,
             "event": payload["event"],
             **{key: payload[key] for key in reservation_fields - set(numeric) - {"created_at"}},
-            **{key: _exact_decimal(payload[key], _MEASURE_SCALE) for key in numeric},
+            **{key: _exact_decimal(payload[key], _MEASURE_SCALE,
+                                   field=f"portfolio_reservation.{key}") for key in numeric},
             "created_at": payload["created_at"].astimezone(timezone.utc).isoformat(),
         }
         return TypedJournalBatch(
@@ -467,13 +468,15 @@ def project_journal_record(
                 "decision_id", "request_id", "account_key", "ticker", "action",
                 "policy_id", "policy_revision", "snapshot_id", "status",
                 "reservation_id")},
-            **{key: _exact_decimal(payload[key], _MEASURE_SCALE) for key in (
+            **{key: _exact_decimal(payload[key], _MEASURE_SCALE,
+                                   field=f"portfolio_decision.{key}") for key in (
                 "requested_quantity", "approved_quantity", "approved_notional",
                 "planned_loss")},
             "reason_count": len(payload["reasons"]),
             "decided_at": at.astimezone(timezone.utc).isoformat(),
             **{f"{phase}_{metric}": _exact_decimal(payload[f"metrics_{phase}"][metric],
-                                                    _MEASURE_SCALE)
+                                                    _MEASURE_SCALE,
+                                                    field=f"portfolio_decision.{phase}_{metric}")
                for phase in ("before", "after") for metric in metric_names},
         }
         reasons = tuple({
@@ -826,10 +829,12 @@ def project_portfolio_admission_records(
                     "decision_id", "request_id", "account_key", "ticker", "action",
                     "policy_id", "policy_revision", "snapshot_id", "status",
                     "reservation_id")},
-                **{key: _exact_decimal(payload[key], _MEASURE_SCALE) for key in (
+                **{key: _exact_decimal(payload[key], _MEASURE_SCALE,
+                                       field=f"portfolio_decision.{key}") for key in (
                     "requested_quantity", "approved_quantity", "approved_notional", "planned_loss")},
                 "reason_count": len(payload["reasons"]), "decided_at": at.isoformat(),
-                **{f"{phase}_{metric}": _exact_decimal(payload[f"metrics_{phase}"][metric], _MEASURE_SCALE)
+                **{f"{phase}_{metric}": _exact_decimal(payload[f"metrics_{phase}"][metric], _MEASURE_SCALE,
+                                                         field=f"portfolio_decision.{phase}_{metric}")
                    for phase in ("before", "after") for metric in metric_names},
             }
             decisions.append(detail)
@@ -858,7 +863,8 @@ def project_portfolio_admission_records(
                 "batch_id": batch_id, "account_id": account_id,
                 "event": payload["event"],
                 **{key: payload[key] for key in reservation_fields - set(numeric) - {"created_at"}},
-                **{key: _exact_decimal(payload[key], _MEASURE_SCALE) for key in numeric},
+                **{key: _exact_decimal(payload[key], _MEASURE_SCALE,
+                                       field=f"portfolio_reservation.{key}") for key in numeric},
                 "created_at": at.isoformat(),
             }
             reservations.append(detail)
@@ -1255,13 +1261,17 @@ def account_risk_batch(
         "event_month": event_month, "batch_id": batch_id,
         "account_id": record.account_id, "account_key": payload["account_key"],
         "state": str(payload["state"]), "enforced": int(enforced),
-        **{key: _exact_decimal(metrics[key], _MEASURE_SCALE)
+        **{key: _exact_decimal(metrics[key], _MEASURE_SCALE,
+                               field=f"protection.{key}")
            for key in _RISK_METRICS if key != "position_count"},
         "position_count": int(count),
-        "protection_required": _exact_decimal(payload["protection_required"], _MEASURE_SCALE),
-        "protection_coverage": _exact_decimal(payload["protection_coverage"], _MEASURE_SCALE),
+        "protection_required": _exact_decimal(payload["protection_required"], _MEASURE_SCALE,
+                                                field="protection.required"),
+        "protection_coverage": _exact_decimal(payload["protection_coverage"], _MEASURE_SCALE,
+                                                field="protection.coverage"),
         "internal_reaction_ms": (
-            _exact_decimal(payload["internal_reaction_ms"], _MEASURE_SCALE)
+            _exact_decimal(payload["internal_reaction_ms"], _MEASURE_SCALE,
+                           field="protection.internal_reaction_ms")
             if payload["internal_reaction_ms"] is not None else None
         ),
         "reason_count": len(reasons), "source_event_time": at,
@@ -1309,7 +1319,7 @@ def intent_decision_batch(
                 or any(not isinstance(reason, str) or not reason for reason in reasons)
                 or len(set(reasons)) != len(reasons)):
             raise ValueError("Portfolio intent decision reasons are invalid")
-        reference_price = _exact_decimal(payload["reference_price"])
+        reference_price = _exact_decimal(payload["reference_price"], field="reference_price")
         strategy_id = payload["strategy_id"]
         revision = payload["strategy_revision"]
         status = payload["status"]
@@ -1370,18 +1380,20 @@ def intent_decision_batch(
     )
 
 
-def _exact_decimal(value: float | Decimal, scale: Decimal = _SCALE) -> str:
+def _exact_decimal(value: float | Decimal, scale: Decimal = _SCALE,
+                   *, field: str = "") -> str:
+    label = f" for {field}" if field else ""
     try:
         with localcontext() as context:
             context.prec = 50
             decimal = Decimal(str(value))
             quantized = decimal.quantize(scale)
     except (InvalidOperation, ValueError) as exc:
-        raise ValueError("Number cannot fit typed Decimal(38) precision") from exc
+        raise ValueError(f"Number cannot fit typed Decimal(38) precision{label}") from exc
     if not decimal.is_finite() or decimal != quantized:
-        raise ValueError("Number cannot fit typed Decimal(38) losslessly")
+        raise ValueError(f"Number cannot fit typed Decimal(38) losslessly{label}")
     if quantized.copy_abs() >= Decimal(10) ** (38 + scale.as_tuple().exponent):
-        raise ValueError("Number exceeds typed Decimal(38) width")
+        raise ValueError(f"Number exceeds typed Decimal(38) width{label}")
     return format(quantized, "f")
 
 
@@ -1436,13 +1448,14 @@ def broker_fill_details(
         "execution_id": execution.execution_id, "broker_order_id": execution.order_id,
         "client_order_id": execution.order_ref, "conid": execution.conid,
         "ticker": execution.symbol.upper(), "side": execution.side,
-        "quantity": _exact_decimal(execution.size),
-        "price": _exact_decimal(execution.price),
+        "quantity": _exact_decimal(execution.size, field="fill.quantity"),
+        "price": _exact_decimal(execution.price, field="fill.price"),
         "exchange": str(execution.raw.get("exchange") or ""),
         "currency": execution.currency, "net_amount": None,
         "cumulative_quantity": None, "average_price": None, "liquidity": "",
         "liquidation_trade": 0,
-        "signal_price": (_exact_decimal(signal_price) if signal_price is not None else None),
+        "signal_price": (_exact_decimal(signal_price, field="fill.signal_price")
+                         if signal_price is not None else None),
         "arrival_midpoint": None,
         "planned_risk": None, "source_event_time": at, "received_at": received,
         "strategy_id": strategy_id, "strategy_revision": strategy_revision,
@@ -1453,7 +1466,7 @@ def broker_fill_details(
         commission = {
             **common, "record_id": commission_record_id,
             "execution_id": execution.execution_id,
-            "commission": _exact_decimal(execution.commission),
+            "commission": _exact_decimal(execution.commission, field="fill.commission"),
             "currency": execution.currency, "status": "final",
             "time_authority": "execution",
             "realized_pnl": None, "source_event_time": at, "received_at": received,
