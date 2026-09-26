@@ -25,6 +25,7 @@ PRODUCT_DIGEST = sha256(json.dumps({
     "strategy_number": 1,
     "evaluation_interval_ms": 100,
     "tick_size": TICK_SIZE,
+    "price_grid": "one-ten-thousandth-with-five-nanodollar-tolerance",
     "source": "certified-candidate-pivot-hod-v7-seed-and-completed-bars",
     "coverage": "exact-candidate-activation-pivot-hod-v7-seed-plan-tokens",
     "activation": "one-frozen-gap-per-episode-with-ordinal-resistance-children",

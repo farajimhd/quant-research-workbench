@@ -7,12 +7,32 @@ attempt. The full V7 book, bars, and indicator values are never copied here.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from hashlib import sha256
 from math import isfinite
 from typing import Mapping, Sequence
 
 from src.backend.backtest_strategy_one_evidence import StrategyOneEntryEvidence
 from src.trading_runtime.strategy_one_activation_state import FrozenActivation
+
+
+_PRICE_QUANTUM = Decimal("0.0001")
+
+
+def canonical_price(value: float) -> float:
+    """Use the same 1/10,000 price unit as certified ARTE bars.
+
+    Floating subtraction of a tick may leave a sub-unit binary tail. A value
+    genuinely outside the persisted price grid fails instead of silently
+    changing the strategy's financial decision.
+    """
+    if type(value) is not float or not isfinite(value) or value <= 0:
+        raise ValueError("Strategy 1 price is not finite and positive")
+    source = Decimal(str(value))
+    rounded = source.quantize(_PRICE_QUANTUM)
+    if abs(source - rounded) > Decimal("0.000000005"):
+        raise ValueError("Strategy 1 price is outside the ARTE 1/10000 grid")
+    return float(rounded)
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +173,8 @@ def project_candidate(value: StrategyOneEntryEvidence) -> CandidateFact:
             raise ValueError("Strategy 1 initial protection differs from completed sources")
         target_id = str(target_source["level"]["unified_level_id"])
         ordinal = 3
+        stop = canonical_price(stop)
+        target = canonical_price(target)
     return CandidateFact(
         ticker, boundary, cursor.episode_start_ms, break_at, pivot_id,
         close_int, support_kind, support_level, support_pivot,
@@ -228,6 +250,8 @@ def content_hash(activations: Sequence[ActivationFact],
                     or not isfinite(candidate.stop_price)
                     or not isfinite(candidate.target_price)
                     or not 0 < candidate.stop_price < candidate.target_price
+                    or canonical_price(candidate.stop_price) != candidate.stop_price
+                    or canonical_price(candidate.target_price) != candidate.target_price
                     or not candidate.target_level_id
                     or candidate.target_ordinal != 3)
                 or not candidate.protection_valid and (
