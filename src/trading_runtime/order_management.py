@@ -69,6 +69,28 @@ def _is_terminal_modify_race(exc: ValueError) -> bool:
     return str(exc).strip().lower() == "only open orders may be modified"
 
 
+def _mandatory_broker_target(intent: StrategyIntent) -> bool:
+    """Keep full-target protection when a typed intent has no metadata.
+
+    The Strategy 1 full-target profile has a complete scalar journal contract.
+    Legacy intents keep their existing explicit metadata flag. A malformed
+    claimed full-target profile cannot silently downgrade target protection.
+    """
+    if intent.metadata.get("mandatory_broker_target"):
+        return True
+    profile = intent.protection_profile
+    if profile is None or (profile.profile_id, profile.revision) != (
+            "early-squeeze-fixed-stop-full-target", 1):
+        return False
+    if (len(profile.slices) != 1
+            or profile.slices[0].quantity_fraction != 1.
+            or profile.slices[0].profit_target_price is None
+            or intent.profit_target_price != profile.slices[0].profit_target_price
+            or intent.invalidation_price != profile.slices[0].stop.price):
+        raise ValueError("Full-target profile differs from the typed intent")
+    return True
+
+
 def _protective_repair_raw(parent_raw: dict[str, Any]) -> dict[str, Any]:
     """Retain entry lineage while assigning the repair fill its true role."""
 
@@ -1817,7 +1839,7 @@ class OrderManagementEngine:
                     (group, str(broker_order_id), request_index, group.orders[request_index], live)
                 )
         capacity = sum(float(live.remainingQuantity) for group, _, _, _, live in candidates
-                       if not group.intent.metadata.get('mandatory_broker_target') or live.order_status != OrderStatus.INACTIVE)
+                       if not _mandatory_broker_target(group.intent) or live.order_status != OrderStatus.INACTIVE)
         if not candidates or capacity + 1e-9 < float(intent.quantity):
             raise ValueError(
                 "Cannot replace profit target: live target protection does not cover "
@@ -3113,7 +3135,7 @@ class OrderManagementEngine:
         # existing position. Position-wide repair here can steal an earlier
         # tranche's stop capacity while leaving its target outstanding.
         initial_entry_group = str(group.intent.action) in {"enter_long", "enter_short", "add_long", "add_short"}
-        mandatory_target = bool(group.intent.metadata.get('mandatory_broker_target'))
+        mandatory_target = _mandatory_broker_target(group.intent)
         live_orders = await self.broker.live_orders()
         observed_fills = dict(group.filled_by_broker_order)
         # A broker match can execute several stops before its individual order
