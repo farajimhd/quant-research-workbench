@@ -42,6 +42,39 @@ def candidate_content_hash(rows: tuple[Mapping[str, Any], ...]) -> str:
     return digest.hexdigest()
 
 
+def validate_candidate_rows(rows: tuple[Mapping[str, Any], ...], *,
+                            source_rows: int) -> str:
+    """Check a SELECTed schedule against causal clocks and pinned liquidity size."""
+    if type(source_rows) is not int or not 0 < source_rows <= 1_000_000:
+        raise ValueError("Strategy 1 candidate source row count is invalid")
+    previous_index = -1
+    previous_boundary = 0
+    for row in rows:
+        if set(row) != set(VALUE_FIELDS) | {
+                "source_build_id", "session_date", "ticker", "derivation_attempt_id"}:
+            raise ValueError("Strategy 1 candidate row has missing or extra columns")
+        source_index, boundary, episode, stop_bar, low = (
+            row[name] for name in ("source_row_index", "boundary_ms",
+                                   "episode_start_ms", "stop_30s_boundary_ms",
+                                   "stop_low_int"))
+        macd_clocks = tuple(row[f"macd_{label}_boundary_ms"]
+                            for label in ("1s", "5s", "10s", "30s"))
+        if (any(type(value) is not int for value in (
+                source_index, boundary, episode, stop_bar, low, *macd_clocks))
+                or not previous_index < source_index < source_rows
+                or not previous_boundary < boundary <= 57_600_000
+                or boundary % 100 or not 0 < episode <= boundary
+                or episode % 100 or boundary - episode > 300_000
+                or not 0 < stop_bar <= boundary or stop_bar % 30_000
+                or boundary - stop_bar >= 30_000 or low <= 0
+                or any(not 0 < clock <= boundary or clock % resolution
+                       or boundary - clock >= resolution
+                       for clock, resolution in zip(macd_clocks, _MACD_RESOLUTIONS))):
+            raise ValueError("Strategy 1 candidate violates causal completed boundaries")
+        previous_index, previous_boundary = source_index, boundary
+    return candidate_content_hash(rows)
+
+
 def project_candidate_rows(prepared: PreparedStrategyOneTicker, *,
                            build_id: str, session_date: str,
                            derivation_attempt_id: str) -> tuple[dict[str, Any], ...]:
@@ -65,22 +98,10 @@ def project_candidate_rows(prepared: PreparedStrategyOneTicker, *,
             or macd.shape != (count, 4) or macd.dtype.kind not in "iu"):
         raise ValueError("Strategy 1 candidate scalar arrays are not aligned")
     rows = []
-    prior_index = -1
-    prior_boundary = 0
     for index in range(count):
         source_index, boundary, episode, stop_bar, low = (
             int(array[index]) for array in arrays)
         macd_clocks = tuple(int(value) for value in macd[index])
-        if (not prior_index < source_index < prepared.source_rows
-                or not prior_boundary < boundary <= 57_600_000
-                or boundary % 100 or not 0 < episode <= boundary
-                or episode % 100 or boundary - episode > 300_000
-                or not 0 < stop_bar <= boundary or stop_bar % 30_000
-                or boundary - stop_bar >= 30_000 or low <= 0
-                or any(not 0 < clock <= boundary or clock % resolution
-                       or boundary - clock >= resolution
-                       for clock, resolution in zip(macd_clocks, _MACD_RESOLUTIONS))):
-            raise ValueError("Strategy 1 candidate violates causal completed boundaries")
         row = dict(zip(VALUE_FIELDS, (
             boundary, source_index, episode, *macd_clocks, stop_bar, low)))
         rows.append({
@@ -88,7 +109,6 @@ def project_candidate_rows(prepared: PreparedStrategyOneTicker, *,
             "ticker": prepared.ticker, "derivation_attempt_id": attempt,
             **row,
         })
-        prior_index, prior_boundary = source_index, boundary
     result = tuple(rows)
-    candidate_content_hash(result)
+    validate_candidate_rows(result, source_rows=prepared.source_rows)
     return result

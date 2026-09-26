@@ -42,7 +42,6 @@ def ddl() -> tuple[str, str]:
           technical_attempt_id UUID,
           liquidity_attempt_id UUID,
           strategy_digest FixedString(64),
-          scan_query_sha256 FixedString(64),
           candidate_count UInt32,
           content_hash FixedString(64),
           certified_at DateTime64(6,'UTC')
