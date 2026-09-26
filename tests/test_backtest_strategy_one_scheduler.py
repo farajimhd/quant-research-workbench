@@ -186,8 +186,8 @@ def test_static_gate_reject_does_not_suppress_active_financial_evaluation():
     async def broker(*_args):
         pass
 
-    async def decision(ticker, rows, _candidate):
-        seen.append((ticker, rows[100]["boundary_ms"]))
+    async def decision(ticker, rows, candidate_row):
+        seen.append((ticker, rows[100]["boundary_ms"], candidate_row))
         active.clear()
 
     async def finish(_work):
@@ -200,7 +200,7 @@ def test_static_gate_reject_does_not_suppress_active_financial_evaluation():
         scheduler, process_broker_row=broker, evaluate_ticker=decision,
         financially_active_tickers=lambda: tuple(sorted(active)),
         finish_boundary=finish, static_gate=_gate(("AAA", 100, 1)))) == 1
-    assert seen == [("AAA", 100)]
+    assert seen == [("AAA", 100, None)]
 
 
 @pytest.mark.parametrize("gate_rows, message", [

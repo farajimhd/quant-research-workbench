@@ -440,7 +440,12 @@ async def run_strategy_one_boundaries(
                         and candidate_rejections[ticker] != 0
                         and ticker not in active):
                     continue
-                await evaluate_ticker(ticker, resolutions, candidates.get(ticker))
+                # An active position still needs management, but a rejected
+                # candidate must not authorize an entry/add in that callback.
+                candidate = candidates.get(ticker)
+                if candidate_rejections.get(ticker, 0):
+                    candidate = None
+                await evaluate_ticker(ticker, resolutions, candidate)
             await finish_boundary(work)
             desired = financially_active_tickers()
             if desired != scheduler.active_tickers:
