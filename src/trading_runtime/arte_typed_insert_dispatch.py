@@ -1070,9 +1070,45 @@ class ColdDispatchBarrier:
         )
         from src.trading_runtime.journal_contract import canonical_json
 
-        if journal_profile not in {"v1", "backtest_v2"}:
+        if journal_profile not in {"v1", "backtest_v2", "backtest_v4"}:
             raise ValueError("Cold dispatch needs an explicit typed journal profile")
         self.prefix_verified = False
+        if journal_profile == "backtest_v4":
+            from src.trading_runtime.arte_journal_commit_v4 import (
+                load_verified_v4_prefix,
+            )
+            from src.trading_runtime.arte_journal_writer import _CONTRACTS
+
+            self._assert_gate(self.run_id)
+            for other_table in ("trading_commit_v1", "trading_commit_v2"):
+                mixed = _rows(client,
+                    f"SELECT batch_id FROM arte.{other_table} "
+                    f"WHERE run_id={_literal(self.run_id)} LIMIT 1 FORMAT JSONEachRow")
+                if mixed:
+                    raise KeeperUnavailable("Cold dispatch cannot mix V4 and older commit fences")
+            prefix = load_verified_v4_prefix(client, self.run_id)
+            gate, _ = self.authority._read_gate(self.run_id)
+            if gate.compacted_through == 0:
+                if prefix is not None:
+                    raise KeeperUnavailable("ClickHouse V4 prefix lacks dispatch compaction")
+            else:
+                if (prefix is None or prefix.last_sequence != gate.compacted_through
+                        or prefix.last_batch_id != gate.compacted_batch_id):
+                    raise KeeperUnavailable("ClickHouse V4 prefix differs from dispatch watermark")
+                columns = ",".join(name for name, _ in
+                                   _CONTRACTS["trading_commit_v4"].columns)
+                rows = _rows(client,
+                    f"SELECT {columns} FROM arte.trading_commit_v4 "
+                    f"WHERE run_id={_literal(self.run_id)} "
+                    f"AND batch_id=toUUID({_literal(gate.compacted_batch_id)}) "
+                    "FORMAT JSONEachRow")
+                if (len(rows) != 1 or
+                        sha256(canonical_json(rows[0]).encode()).hexdigest()
+                        != gate.compacted_commit_hash):
+                    raise KeeperUnavailable("ClickHouse V4 commit differs from dispatch hash")
+            self._assert_gate(self.run_id)
+            self.prefix_verified = True
+            return prefix
         commit_table = ("trading_commit_v2" if journal_profile == "backtest_v2"
                         else "trading_commit_v1")
         other_table = ("trading_commit_v1" if journal_profile == "backtest_v2"

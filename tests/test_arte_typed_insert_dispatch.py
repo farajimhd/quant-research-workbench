@@ -468,6 +468,22 @@ def test_cold_barrier_is_accepted_by_strict_admission_audit(monkeypatch) -> None
         barrier.assert_fenced("run-1")
 
 
+def test_v4_cold_barrier_accepts_only_empty_verified_prefix() -> None:
+    from test_arte_journal_writer import MemoryClient
+
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    barrier = authority.acquire_cold_barrier("run-1")
+    client = MemoryClient()
+    assert barrier.verify_committed_prefix(
+        client, journal_profile="backtest_v4") is None
+    assert barrier.prefix_verified
+    client.tables["trading_commit_v1"] = [{"run_id": "run-1", "batch_id": BATCH_ID}]
+    with pytest.raises(KeeperUnavailable, match="cannot mix V4"):
+        barrier.verify_committed_prefix(client, journal_profile="backtest_v4")
+    assert not barrier.prefix_verified
+
+
 def test_operation_cap_fails_closed_without_unbounded_keeper_nodes() -> None:
     authority = TypedInsertDispatch(Keeper(), max_operations=1)
     authority.initialize_new_run("run-1")
