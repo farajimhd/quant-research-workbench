@@ -3139,6 +3139,28 @@ class ReplayRunController:
             end_clock - datetime.combine(end_clock.date(), clock_time(4), tzinfo=NEW_YORK)
         ).total_seconds() * 1_000)
 
+    async def _fixed_strategy_one_plans(self):
+        """Recheck all full-session ARTE seals before any V4 run publication."""
+        cached = getattr(self, "_strategy_one_fixed_plans", None)
+        if cached is not None:
+            return cached
+        from src.backend.backtest_market_data import readonly_clickhouse_client
+        from src.backend.backtest_strategy_one_plan import (
+            certify_strategy_one_fixed_plans,
+        )
+
+        market = await self._fixed_certified_market_plan()
+        if not self.definition.causal_v7_plan:
+            raise ValueError("Strategy 1 lacks its pinned V7 seed plan")
+        plans = await asyncio.to_thread(
+            certify_strategy_one_fixed_plans, market, self._fixed_price_plan,
+            market_pins=self.definition.market_data_plan,
+            v7_pins=self.definition.causal_v7_plan,
+            client_factory=lambda: readonly_clickhouse_client(
+                market_stream=True, v3_read_principal=True))
+        self._strategy_one_fixed_plans = plans
+        return plans
+
     async def _run_strategy_one_fixed_days(
         self, *, market, candidates, activations, pivots, hod, seeds,
         entry, prices,
@@ -3640,6 +3662,17 @@ class ReplayRunController:
         from src.backend.structural_v7_seed import certified_seed_plan
 
         configuration = self.definition.configuration_revision["payload"]
+        if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+            plans = await self._fixed_strategy_one_plans()
+            if (self._runtime is None
+                    or not isinstance(self._journal, BacktestMemoryJournal)):
+                raise RuntimeError("Strategy 1 lacks its typed journal and runtime")
+            await self._run_strategy_one_fixed_days(
+                market=plans.market, candidates=plans.candidates,
+                activations=plans.activations, pivots=plans.pivots,
+                hod=plans.hod, seeds=plans.seeds, entry=plans.entry,
+                prices=plans.prices)
+            return
         evidence_gaps = _fixed_market_evidence_gaps(configuration)
         if evidence_gaps:
             raise ValueError(
@@ -3652,54 +3685,6 @@ class ReplayRunController:
             [event.occurrence for event in self._historical_external_signal_events],
             has_core_signal_plans=bool(getattr(self, "_historical_core_signal_plans", ())),
         )
-        if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
-            from src.backend.backtest_strategy_one_activation import load_strategy_one_activations
-            from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
-            from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
-            from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
-            from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
-            from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
-            if len(plan.sessions) != 1:
-                raise ValueError("Strategy 1 execution needs one flat-start session")
-            def recheck_candidates():
-                with closing(readonly_clickhouse_client(
-                        market_stream=True, v3_read_principal=True)) as reader:
-                    return certify_candidate_plan(
-                        plan, candidate_rule_digest=RULE_DIGEST,
-                        # Entry evidence and HOD are sealed against the full
-                        # producer product. The run horizon is projected only
-                        # after certification, never rehashed as another plan.
-                        through_boundary_ms=57_600_000,
-                        client=reader)
-            candidate_plan = await asyncio.to_thread(recheck_candidates)
-            if candidate_plan.token != str(
-                    self.definition.market_data_plan.get("strategy_one_candidate_token") or ""):
-                raise ValueError("Certified Strategy 1 candidates changed after preflight")
-            if (candidate_plan.candidate_rule_digest != self.definition.market_data_plan.get(
-                    "strategy_one_candidate_rule_digest")
-                    or candidate_plan.scan_query_sha256 != self.definition.market_data_plan.get(
-                        "strategy_one_scan_query_sha256")):
-                raise ValueError("Strategy 1 candidate rule or scan changed after preflight")
-            projection_tickers = strategy_one_v7_tickers(candidate_plan.prepared)
-            def recheck_pivots():
-                with closing(readonly_clickhouse_client(
-                        market_stream=True, v3_read_principal=True)) as reader:
-                    return certify_pivot_plan(
-                        plan, session_date=plan.sessions[0],
-                        candidate_tickers=projection_tickers, client=reader)
-            pivot_plan = await asyncio.to_thread(recheck_pivots)
-            if (pivot_plan.token != self.definition.market_data_plan.get(
-                    "strategy_one_pivot_token")):
-                raise ValueError("Certified Strategy 1 pivots changed after preflight")
-            def recheck_activations():
-                with closing(readonly_clickhouse_client(
-                        market_stream=True, v3_read_principal=True)) as reader:
-                    return load_strategy_one_activations(
-                        plan, candidate_plan, client=reader)
-            activation_plan = await asyncio.to_thread(recheck_activations)
-            if (activation_plan.token != self.definition.market_data_plan.get(
-                    "strategy_one_activation_token")):
-                raise ValueError("Certified Strategy 1 activations changed after preflight")
         if projection_tickers == ():
             # The scanner certified no possible participant. An empty tuple
             # must not fall through the truthy projection branch and stream
@@ -3729,43 +3714,9 @@ class ReplayRunController:
                         or v7_seeds.catalog_hash != pinned_v7.get("catalog_hash")
                         or v7_seeds.provisional != pinned_v7.get("provisional")):
                     raise ValueError("Certified causal V7 seed plan changed after preflight")
-                if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
-                    def recheck_hod():
-                        with closing(readonly_clickhouse_client(
-                                market_stream=True, v3_read_principal=True)) as reader:
-                            return certify_hod_plan(plan, candidate_plan, v7_seeds, client=reader)
-                    hod_plan = await asyncio.to_thread(recheck_hod)
-                    if hod_plan.token != self.definition.market_data_plan.get(
-                            "strategy_one_hod_token"):
-                        raise ValueError("Certified Strategy 1 HOD context changed after preflight")
-                    from src.backend.backtest_strategy_one_entry_store import certify_entry_evidence_plan
-                    def recheck_entries():
-                        with closing(readonly_clickhouse_client(
-                                market_stream=True, v3_read_principal=True)) as reader:
-                            return certify_entry_evidence_plan(
-                                plan, candidate_plan, activation_plan, pivot_plan,
-                                hod_plan, v7_seeds, client=reader)
-                    entry_plan = await asyncio.to_thread(recheck_entries)
-                    if entry_plan.token != self.definition.market_data_plan.get(
-                            "strategy_one_entry_token"):
-                        raise ValueError("Certified Strategy 1 entry evidence changed after preflight")
             except BaseException:
                 v7_reader.close()
                 raise
-        if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
-            try:
-                if (v7_seeds is None or self._runtime is None
-                        or not isinstance(self._journal, BacktestMemoryJournal)):
-                    raise RuntimeError("Strategy 1 lacks its typed V7 and runtime authorities")
-                await self._run_strategy_one_fixed_days(
-                    market=plan, candidates=candidate_plan,
-                    activations=activation_plan, pivots=pivot_plan,
-                    hod=hod_plan, seeds=v7_seeds, entry=entry_plan,
-                    prices=price_plan)
-            finally:
-                if v7_reader is not None:
-                    await asyncio.to_thread(v7_reader.close)
-            return
         try:
             self._fixed_v7_caches = {}
             self._record_data_authority("fixed_market_data", {
