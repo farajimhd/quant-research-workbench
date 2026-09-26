@@ -484,6 +484,36 @@ def test_v4_cold_barrier_accepts_only_empty_verified_prefix() -> None:
     assert not barrier.prefix_verified
 
 
+def test_v4_cold_barrier_matches_nonempty_keeper_watermark() -> None:
+    from test_arte_journal_writer import MemoryClient, batch
+    from src.trading_runtime.arte_journal_commit_v4 import (
+        publish_base_typed_batch_v4,
+    )
+
+    item = batch()
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run(item.run_id)
+    attest_direct(authority, item.run_id)
+
+    class WriterClient(MemoryClient):
+        typed_insert_strict = True
+        typed_insert_dispatch = authority
+
+        def execute(self, sql, *, query_id=None):
+            return super().execute(sql)
+
+    client = WriterClient()
+    assert publish_base_typed_batch_v4(client, item) == item.batch_id
+    barrier = authority.acquire_cold_barrier(item.run_id)
+    prefix = barrier.verify_committed_prefix(
+        client, journal_profile="backtest_v4")
+    assert (prefix.last_sequence, prefix.last_batch_id) == (1, item.batch_id)
+    client.tables["trading_commit_v4"][0]["source_cursor"] = "tampered"
+    with pytest.raises((RuntimeError, KeeperUnavailable)):
+        barrier.verify_committed_prefix(client, journal_profile="backtest_v4")
+    assert not barrier.prefix_verified
+
+
 def test_operation_cap_fails_closed_without_unbounded_keeper_nodes() -> None:
     authority = TypedInsertDispatch(Keeper(), max_operations=1)
     authority.initialize_new_run("run-1")
