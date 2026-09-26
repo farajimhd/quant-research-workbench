@@ -67,7 +67,7 @@ def test_v2_activity_orders_and_pages_exact_typed_signal_facts(monkeypatch):
 
 def test_v2_activity_fails_on_gap_hash_corruption_or_wrong_prefix(monkeypatch):
     client, prefix = _published(monkeypatch)
-    with pytest.raises(ValueError, match="verified V2 prefix"):
+    with pytest.raises(ValueError, match="verified V2/V4 prefix"):
         load_fixed_typed_activity_page(client, object())
     with pytest.raises(ValueError, match="cursor exceeds"):
         load_fixed_typed_activity_page(client, prefix,

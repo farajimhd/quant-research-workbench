@@ -53,7 +53,10 @@ def load_typed_event_page(
     limit: int = 500,
 ) -> tuple[TypedJournalEvent, ...]:
     """Read one typed page with one batched detail query per present family."""
-    if not isinstance(prefix, (CommittedPrefix, V2CommittedPrefix)) or not prefix.batch_ids:
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+
+    if not isinstance(prefix, (CommittedPrefix, V2CommittedPrefix,
+                               V4CommittedPrefix)) or not prefix.batch_ids:
         raise ValueError("Typed event page requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 1000:
         raise ValueError("Typed event page bounds are invalid")
@@ -86,7 +89,7 @@ def load_typed_event_page(
             raise RuntimeError("Typed event page contains an unknown detail contract")
         family = _EVENT_DETAILS[kind]
         if (family == "trading_strategy_signal_v1"
-                and isinstance(prefix, V2CommittedPrefix)):
+                and isinstance(prefix, (V2CommittedPrefix, V4CommittedPrefix))):
             family = "trading_strategy_signal_v2"
         if family is not None:
             by_family.setdefault(family, set()).add(record_id)

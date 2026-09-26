@@ -2674,10 +2674,13 @@ class ReplayRunController:
     def fixed_typed_activity_page(
         self, *, client=None, after_sequence: int = 0, limit: int = 500,
     ) -> dict[str, Any]:
-        """Read a verified V2 event page; legacy JSON activity stays blocked."""
+        """Read a verified V2/V4 event page; legacy JSON activity stays blocked."""
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
         from src.backend.backtest_typed_activity import load_fixed_typed_activity_page
         from src.trading_runtime.arte_journal_reader import readonly_typed_journal_client
+        from src.trading_runtime.arte_journal_commit_v4 import (
+            V4CommittedPrefix, load_verified_v4_prefix,
+        )
         from src.trading_runtime.arte_journal_writer import (
             V2CommittedPrefix, load_committed_prefix,
         )
@@ -2691,8 +2694,12 @@ class ReplayRunController:
             with closing(readonly_typed_journal_client()) as read_client:
                 return self.fixed_typed_activity_page(
                     client=read_client, after_sequence=after_sequence, limit=limit)
-        prefix = load_committed_prefix(client, self.run_id, journal_profile="backtest_v2")
-        if (not isinstance(prefix, V2CommittedPrefix)
+        v4 = (getattr(getattr(publisher, 'writer', None), 'journal_profile', None)
+              == 'backtest_v4')
+        prefix = (load_verified_v4_prefix(client, self.run_id) if v4 else
+                  load_committed_prefix(client, self.run_id,
+                                        journal_profile="backtest_v2"))
+        if (not isinstance(prefix, V4CommittedPrefix if v4 else V2CommittedPrefix)
                 or prefix.status != "running"
                 or prefix.last_sequence != publisher.fenced_sequence
                 or prefix.last_batch_id != publisher._batch_id):

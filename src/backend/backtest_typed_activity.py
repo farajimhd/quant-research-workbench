@@ -1,7 +1,7 @@
-"""Read-only, bounded fixed-Backtest activity from verified V2 event facts.
+"""Read-only, bounded fixed-Backtest activity from verified typed event facts.
 
 This is an event/evidence page, not reconstruction of legacy JSON activity or
-a saved-review/resume authority. Callers must supply a cold-verified V2 prefix.
+a saved-review/resume authority. Callers must supply a cold-verified prefix.
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from uuid import UUID
 from src.trading_runtime.arte_journal_reader import (
     TypedJournalEvent, _verified_row, load_typed_event_page,
 )
+from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from src.trading_runtime.arte_journal_writer import (
     V2CommittedPrefix, _CONTRACTS, _committed_batch_filter, _literal, _rows,
 )
@@ -23,12 +24,12 @@ _ACTIVITY_CATEGORIES = frozenset({
 
 
 def load_fixed_typed_activity_page(
-    client: Any, prefix: V2CommittedPrefix, *, after_sequence: int = 0,
+    client: Any, prefix: V2CommittedPrefix | V4CommittedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
 ) -> dict[str, Any]:
     """Advance the complete event cursor; never skip unknown or corrupt facts."""
-    if not isinstance(prefix, V2CommittedPrefix):
-        raise ValueError("Fixed typed activity requires a verified V2 prefix")
+    if not isinstance(prefix, (V2CommittedPrefix, V4CommittedPrefix)):
+        raise ValueError("Fixed typed activity requires a verified V2/V4 prefix")
     if type(after_sequence) is not int or not 0 <= after_sequence <= prefix.last_sequence:
         raise ValueError("Fixed typed activity cursor exceeds its verified prefix")
     rows = load_typed_event_page(
@@ -38,12 +39,12 @@ def load_fixed_typed_activity_page(
 
 
 def project_fixed_typed_activity_rows(
-    client: Any, prefix: V2CommittedPrefix,
+    client: Any, prefix: V2CommittedPrefix | V4CommittedPrefix,
     rows: tuple[TypedJournalEvent, ...], *, after_sequence: int,
 ) -> dict[str, Any]:
     """Add typed signal UI fields to an already verified V2 event page."""
-    if not isinstance(prefix, V2CommittedPrefix):
-        raise ValueError("Fixed typed activity requires a verified V2 prefix")
+    if not isinstance(prefix, (V2CommittedPrefix, V4CommittedPrefix)):
+        raise ValueError("Fixed typed activity requires a verified V2/V4 prefix")
     signals = [row for row in rows if row.detail_family == "trading_strategy_signal_v2"]
     source_budget = sum(int(row.detail["source_signal_count"]) for row in signals)
     if source_budget > 10_000:

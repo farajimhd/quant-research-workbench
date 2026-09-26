@@ -2,6 +2,7 @@
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -20,6 +21,10 @@ from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_journal_writer import typed_row
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from src.trading_runtime.arte_journal_projection import commission_revision_batch
+from src.trading_runtime.arte_journal_reader import load_typed_event_page
+from src.backend.backtest_typed_activity import load_fixed_typed_activity_page
+from src.backend.backtest_journal_memory import BacktestMemoryJournal
+from src.backend.replay_run_service import ReplayRunController, RunMode
 from src.trading_runtime.domain import CommissionEvent
 from tests.test_arte_journal_writer import MemoryClient, batch, captured
 
@@ -81,6 +86,31 @@ def attached_v4_client(client=None):
     client.typed_insert_dispatch = MemoryV4Dispatch()
     client.typed_insert_strict = True
     return client
+
+
+def test_v4_cold_verified_prefix_reads_bounded_typed_event_page():
+    client = attached_v4_client()
+    item = batch()
+    publish_base_typed_batch_v4(client, item)
+    prefix = load_verified_v4_prefix(client, item.run_id)
+    page = load_typed_event_page(client, prefix, limit=1)
+    assert len(page) == 1
+    assert page[0].event["batch_id"] == item.batch_id
+    assert load_typed_event_page(client, prefix, after_sequence=1) == ()
+    activity = load_fixed_typed_activity_page(client, prefix, limit=1)
+    assert activity["verified_prefix_sequence"] == 1
+    assert activity["scanned_event_count"] == 1
+    assert activity["caught_up_to_prefix"]
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = item.run_id
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller._journal = BacktestMemoryJournal(run_id=item.run_id)
+    controller._journal_publisher = SimpleNamespace(
+        writer=SimpleNamespace(journal_profile="backtest_v4"),
+        fenced_sequence=prefix.last_sequence,
+        _batch_id=prefix.last_batch_id,
+    )
+    assert controller.fixed_typed_activity_page(client=client)["next_sequence"] == 1
 
 
 def source():
