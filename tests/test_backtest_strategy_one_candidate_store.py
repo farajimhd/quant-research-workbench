@@ -8,7 +8,9 @@ from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
 )
 from src.backend.backtest_strategy_one_candidate_contract import candidate_content_hash
-from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+from src.backend.backtest_strategy_one_candidate_store import (
+    certify_candidate_plan, project_candidate_plan,
+)
 from src.backend.fixed_bar_signal import first_squeeze_sql
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 
@@ -98,6 +100,25 @@ def test_candidate_reader_seals_positive_and_empty_ticker():
     coverage_query = next(query for query in reader.queries
                           if "FROM arte.strategy_one_candidate_coverage_v1" in query)
     assert "(toDate('2026-08-18'),'ABCD'),(toDate('2026-08-18'),'EFGH')" in coverage_query
+
+
+def test_full_candidate_certificate_projects_an_exact_read_only_horizon():
+    full = certify_candidate_plan(
+        _market(), candidate_rule_digest=RULE_DIGEST,
+        through_boundary_ms=THROUGH, client=Reader())
+    direct = certify_candidate_plan(
+        _market(), candidate_rule_digest=RULE_DIGEST,
+        through_boundary_ms=29_900, client=Reader())
+    prefix = project_candidate_plan(full, through_boundary_ms=29_900)
+    assert prefix.token == direct.token
+    assert prefix.coverage == full.coverage
+    assert prefix.prepared == direct.prepared == ()
+    included = project_candidate_plan(full, through_boundary_ms=30_000)
+    assert included.prepared[0].boundary_ms.tolist() == [30_000]
+    assert included.prepared[0].stop_low_int.tolist() == [150_000]
+    assert project_candidate_plan(full, through_boundary_ms=THROUGH) is full
+    with pytest.raises(ValueError, match="full certified plan"):
+        project_candidate_plan(prefix, through_boundary_ms=29_900)
 
 
 def test_missing_tampered_or_misplaced_candidates_fail_closed():

@@ -50,6 +50,50 @@ class CertifiedCandidatePlan:
     token: str
 
 
+def project_candidate_plan(
+    full: CertifiedCandidatePlan, *, through_boundary_ms: int,
+) -> CertifiedCandidatePlan:
+    """Project a certified full-session product without querying or deriving.
+
+    The parent coverage and its exact attempt IDs remain authoritative. This
+    is only an in-memory causal prefix for sparse execution; it is never
+    published as another candidate product.
+    """
+    if (not isinstance(full, CertifiedCandidatePlan)
+            or type(through_boundary_ms) is not int
+            or not 0 < through_boundary_ms <= 57_600_000
+            or through_boundary_ms % 100
+            or full.token != _token(
+                full.source_build_id, full.candidate_rule_digest,
+                full.scan_query_sha256, full.coverage)):
+        raise ValueError("Strategy 1 horizon projection needs a full certified plan")
+    by_ticker = {row.ticker: row for row in full.prepared}
+    covered = {row.ticker: row for row in full.coverage
+               if row.candidate_count > 0}
+    if (len(by_ticker) != len(full.prepared) or by_ticker.keys() != covered.keys()
+            or any(len(row.boundary_ms) != covered[row.ticker].candidate_count
+                   or np.any(row.boundary_ms[1:] <= row.boundary_ms[:-1])
+                   for row in full.prepared)):
+        raise ValueError("Strategy 1 full candidate rows differ from coverage")
+    if through_boundary_ms == 57_600_000:
+        return full
+    selected = []
+    for row in full.prepared:
+        count = int(np.searchsorted(row.boundary_ms, through_boundary_ms,
+                                    side="right"))
+        if count:
+            selected.append(PreparedStrategyOneTicker(
+                row.ticker, row.source_rows, row.row_index[:count],
+                row.boundary_ms[:count], row.episode_start_ms[:count],
+                row.macd_boundary_ms[:count], row.stop_bar_boundary_ms[:count],
+                row.stop_low_int[:count]))
+    token = sha256((full.token + ":through:" +
+                    str(through_boundary_ms)).encode()).hexdigest()
+    return CertifiedCandidatePlan(
+        full.source_build_id, full.candidate_rule_digest,
+        full.scan_query_sha256, full.coverage, tuple(selected), token)
+
+
 def _rows(client: Any, query: str) -> list[dict[str, Any]]:
     return [json.loads(line) for line in client.execute(
         query + " FORMAT JSONEachRow").splitlines() if line.strip()]
