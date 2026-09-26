@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 import re
+from types import MappingProxyType
+from typing import Mapping
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -47,14 +49,28 @@ class CandidateScanAuthority:
     market_plan_token: str
     through_boundary_ms: int
     query_sha256: str
+    source_by_ticker: Mapping[str, Mapping[str, Any]]
 
 
 def candidate_scan_authority(market: CertifiedMarketDayPlan, *,
                              through_boundary_ms: int) -> CandidateScanAuthority:
     """Build the full-universe scan seal once, never once per ticker."""
     query = first_squeeze_sql(market, through_boundary_ms=through_boundary_ms)
+    grouped: dict[str, dict[str, Any]] = {}
+    for unit in market.units:
+        if unit.session_date not in market.sessions or unit.ticker not in market.tickers:
+            raise ValueError("Candidate source unit is outside certified market scope")
+        stages = grouped.setdefault(unit.ticker, {})
+        if unit.stage in stages:
+            raise ValueError("Candidate source has a duplicate stage")
+        stages[unit.stage] = unit
+    if set(grouped) != set(market.tickers) or any(
+            set(stages) != set(_STAGES) for stages in grouped.values()):
+        raise ValueError("Candidate source lacks exact ticker stage coverage")
     return CandidateScanAuthority(
-        market.token, through_boundary_ms, sha256(query.encode()).hexdigest())
+        market.token, through_boundary_ms, sha256(query.encode()).hexdigest(),
+        MappingProxyType({ticker: MappingProxyType(stages)
+                          for ticker, stages in grouped.items()}))
 
 
 def _rows(client: Any, query: str) -> list[dict[str, Any]]:
@@ -76,12 +92,7 @@ def _scope(market: CertifiedMarketDayPlan, *, session_date: str,
             or _HASH.fullmatch(scan_authority.query_sha256) is None):
         raise ValueError("Strategy 1 producer lacks certified fixed source scope")
     scan_query_sha256 = scan_authority.query_sha256
-    stages = {}
-    for unit in market.units:
-        if unit.session_date == session_date and unit.ticker == ticker:
-            if unit.stage in stages:
-                raise ValueError("Strategy 1 producer source stage is duplicate")
-            stages[unit.stage] = unit
+    stages = scan_authority.source_by_ticker.get(ticker, {})
     if set(stages) != set(_STAGES):
         raise ValueError("Strategy 1 producer source scope is incomplete")
     attempts = tuple(str(UUID(stages[stage].attempt_id)) for stage in _STAGES)

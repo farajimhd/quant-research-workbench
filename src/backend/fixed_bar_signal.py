@@ -29,6 +29,28 @@ _CONDITIONS = {
 }
 
 
+def canonical_stream_activation() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Producer-facing canonical rule declaration; no saved UI state needed."""
+    stream = {
+        "signal_stream_id": STREAM_ID,
+        "occurrence_source": "qmd_squeeze_episode",
+        "episode_role": "start", "episode_ttl_ms": 300_000,
+        "inclusion_rule_sets": [RULE_ID], "exclusion_rule_sets": [],
+        "trigger_policy": "false_to_true", "rearm_policy": "after_false",
+        "cooldown_ms": 0,
+    }
+    activation = {"rule_sets": [{
+        "rule_set_id": RULE_ID, "operator": "all",
+        "conditions": [{
+            "left_source_id": source, "comparator": comparator,
+            "value": value,
+            "left_interval": {"value": 100, "unit": "milliseconds"},
+        } for source, comparator, value in sorted(_CONDITIONS)],
+    }]}
+    validate_stream(stream, activation)
+    return stream, activation
+
+
 def validate_stream(stream: Mapping[str, Any], activation: Mapping[str, Any]) -> None:
     """Fail closed if the saved scanner contract no longer matches this SQL."""
     if (stream.get("signal_stream_id") != STREAM_ID

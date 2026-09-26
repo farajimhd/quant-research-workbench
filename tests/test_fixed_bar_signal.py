@@ -4,9 +4,17 @@ from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
 )
 from src.backend.fixed_bar_signal import (
-    CONTRACT, candidate_projection_tickers, first_squeeze_sql, load_first_squeeze_occurrences,
+    CONTRACT, candidate_projection_tickers, canonical_stream_activation,
+    first_squeeze_sql, load_first_squeeze_occurrences,
     validate_stream,
 )
+
+
+def test_canonical_producer_stream_uses_the_same_validator():
+    stream, activation = canonical_stream_activation()
+    validate_stream(stream, activation)
+    assert stream["signal_stream_id"] == "price-squeeze-early"
+    assert len(activation["rule_sets"][0]["conditions"]) == 3
 
 
 DAY = "2026-08-18"

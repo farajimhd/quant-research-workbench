@@ -120,5 +120,6 @@ def test_candidate_producer_rejects_unsealed_rule_or_scan():
         producer.publish_unit(Client(), _market(), session_date=DAY,
             ticker="ABCD", candidate_rule_digest=RULE_DIGEST,
             scan_authority=producer.CandidateScanAuthority(
-                "wrong-market", THROUGH, SCAN_AUTHORITY.query_sha256),
+                "wrong-market", THROUGH, SCAN_AUTHORITY.query_sha256,
+                SCAN_AUTHORITY.source_by_ticker),
             has_episode=False, prepared=None)
