@@ -28,8 +28,12 @@ from src.backend.backtest_market_data import (
     project_market_day_plan, readonly_clickhouse_client,
 )
 from src.backend.backtest_liquidity_price import certify_price_level_plan
-from src.backend.backtest_strategy_one_activation import load_strategy_one_activations
-from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+from src.backend.backtest_strategy_one_activation import (
+    load_strategy_one_activations, project_activation_plan,
+)
+from src.backend.backtest_strategy_one_candidate_store import (
+    certify_candidate_plan, project_candidate_plan,
+)
 from src.backend.backtest_strategy_one_entry_store import certify_entry_evidence_plan
 from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
 from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
@@ -38,7 +42,9 @@ from src.backend.structural_v7_seed import certified_seed_plan
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 
 
-def verify(*, session_date: str, build_id: str) -> dict[str, int | float | str]:
+def verify(*, session_date: str, build_id: str,
+           through_boundary_ms: int = FULL_SESSION_BOUNDARY_MS,
+           ) -> dict[str, int | float | str]:
     started = perf_counter()
     market = _certified_plan(session_date=session_date, build_id=build_id)
     source_seconds = perf_counter() - started
@@ -76,6 +82,12 @@ def verify(*, session_date: str, build_id: str) -> dict[str, int | float | str]:
             market, candidates, activations, pivots, hod, seeds,
             client=reader)
         entry_seconds = perf_counter() - started
+        started = perf_counter()
+        visible_candidates = project_candidate_plan(
+            candidates, through_boundary_ms=through_boundary_ms)
+        visible_activations = project_activation_plan(
+            activations, candidates, through_boundary_ms=through_boundary_ms)
+        projection_seconds = perf_counter() - started
     return {
         "population": len(market.tickers),
         "candidate_tickers": len(selected),
@@ -88,6 +100,12 @@ def verify(*, session_date: str, build_id: str) -> dict[str, int | float | str]:
         "hod_tickers": len(hod.contexts),
         "entry_tickers": len(entry.coverage),
         "entry_candidates": len(entry.candidates),
+        "through_boundary_ms": through_boundary_ms,
+        "visible_candidate_tickers": len(visible_candidates.prepared),
+        "visible_candidate_boundaries": sum(len(row.boundary_ms)
+                                            for row in visible_candidates.prepared),
+        "visible_activations": len(visible_activations.rows),
+        "projection_seconds": projection_seconds,
         "source_seconds": source_seconds,
         "candidate_seconds": candidate_seconds,
         "pivot_seconds": pivot_seconds,
@@ -107,9 +125,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--session-date", default="2026-08-18")
     parser.add_argument("--build-id", default="")
+    parser.add_argument("--through-boundary-ms", type=int,
+                        default=FULL_SESSION_BOUNDARY_MS,
+                        help="completed cutoff after 04:00 New York; default 20:00")
     args = parser.parse_args(argv)
     try:
         day = date.fromisoformat(args.session_date).isoformat()
+        if (not 0 < args.through_boundary_ms <= FULL_SESSION_BOUNDARY_MS
+                or args.through_boundary_ms % 100):
+            raise ValueError("Cutoff must be a positive 100ms boundary through 20:00 NY")
     except ValueError as exc:
         parser.error(str(exc))
     if platform.node().upper() != "DESKTOP-SAAI85T":
@@ -117,7 +141,8 @@ def main(argv: list[str] | None = None) -> int:
               "workstation's read principal.", file=sys.stderr)
         return 1
     try:
-        result = verify(session_date=day, build_id=args.build_id)
+        result = verify(session_date=day, build_id=args.build_id,
+                        through_boundary_ms=args.through_boundary_ms)
     except Exception as exc:
         # Driver exceptions can embed credentials or SQL; do not print them.
         print(f"Strategy 1 input verification failed: {type(exc).__name__}.",
@@ -138,6 +163,12 @@ def main(argv: list[str] | None = None) -> int:
           f"HOD {result['hod_seconds']:.3f}s / {result['hod_tickers']} tickers | "
           f"entry seal {result['entry_seconds']:.3f}s / "
           f"{result['entry_candidates']} candidates")
+    local_minutes = (4 * 3_600_000 + result['through_boundary_ms']) // 60_000
+    print(f"Run projection through {local_minutes // 60:02}:{local_minutes % 60:02} NY: "
+          f"{result['visible_candidate_boundaries']} candidate boundaries / "
+          f"{result['visible_candidate_tickers']} tickers, "
+          f"{result['visible_activations']} activations "
+          f"in {result['projection_seconds']:.3f}s; no market reread")
     print(f"Candidate token {result['candidate_token']}")
     print(f"Pivot token {result['pivot_token']}")
     print(f"Activation token {result['activation_token']}")
