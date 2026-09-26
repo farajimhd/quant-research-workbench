@@ -461,6 +461,8 @@ class ReplayRunDefinition:
                 if (resolved_interval.milliseconds != 100
                         or re.fullmatch(r"[0-9a-f]{64}", str(
                             self.market_data_plan.get("strategy_one_candidate_token") or "")) is None
+                        or re.fullmatch(r"[0-9a-f]{64}", str(
+                            self.market_data_plan.get("strategy_one_identity_token") or "")) is None
                         or self.market_data_plan.get("strategy_one_candidate_rule_digest") != RULE_DIGEST
                         or re.fullmatch(r"[0-9a-f]{64}", str(
                             self.market_data_plan.get("strategy_one_scan_query_sha256") or "")) is None
@@ -7125,6 +7127,29 @@ class ReplayRunController:
             and self.definition.mode.value in set(row.get("modes") or [])
         ]
         allowed_account_keys = set(account_keys)
+        from src.backend.backtest_market_data import ExecutionInterval
+        if (self.definition.mode == RunMode.BACKTEST
+                and ExecutionInterval.parse(self.definition.execution_interval).kind == "fixed"
+                and dict(configuration.get("strategy") or {}).get("strategy_number") == 1):
+            # STRATEGY CREATION RULE: fixed Strategy 1 assignments inherit
+            # only the sealed dated ARTE identity. QMD/Watchlist and current
+            # conid lookup are never a historical fallback.
+            from src.backend.backtest_strategy_one_assignments import (
+                certified_strategy_one_assignments,
+            )
+            from src.backend.backtest_strategy_one_preparation import (
+                strategy_one_v7_tickers,
+            )
+            plans = getattr(self, "_strategy_one_fixed_plans", None)
+            if (plans is None or explicit_tickers or self.definition.assignment_ids
+                    or self._v7_excluded_tickers):
+                raise RuntimeError(
+                    "Fixed Strategy 1 needs a full certified identity/candidate plan "
+                    "before assignment creation")
+            return certified_strategy_one_assignments(
+                configuration, plans.identities,
+                candidate_tickers=strategy_one_v7_tickers(plans.candidates.prepared),
+                account_keys=account_keys)
         rows = [
             dict(row)
             for row in self.definition.configuration_revision["payload"]["assignments"]
@@ -11264,6 +11289,7 @@ def backtest_preflight(
                     # regenerate a missing strategy input inside Backtest.
                     from src.backend.backtest_strategy_one_activation import load_strategy_one_activations
                     from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+                    from src.backend.backtest_strategy_one_identity import certify_identity_plan
                     from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
                     from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
                     from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
@@ -11273,10 +11299,13 @@ def backtest_preflight(
                     with closing(readonly_clickhouse_client(
                             market_stream=True,
                             v3_read_principal=True)) as candidate_reader:
+                        identity_plan = certify_identity_plan(
+                            certified, client=candidate_reader)
                         candidate_plan = certify_candidate_plan(
                             certified, candidate_rule_digest=RULE_DIGEST,
                             through_boundary_ms=57_600_000,
                             client=candidate_reader)
+                    market_data_plan["strategy_one_identity_token"] = identity_plan.token
                     market_data_plan["strategy_one_candidate_token"] = candidate_plan.token
                     market_data_plan["strategy_one_candidate_rule_digest"] = (
                         candidate_plan.candidate_rule_digest)

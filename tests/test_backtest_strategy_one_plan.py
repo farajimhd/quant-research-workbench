@@ -10,6 +10,7 @@ from src.backend.backtest_strategy_one_activation import CertifiedActivationPlan
 from src.backend.backtest_strategy_one_candidate_store import CertifiedCandidatePlan
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
 from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
+from src.backend.backtest_strategy_one_identity import CertifiedIdentityPlan
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
 from src.backend.structural_v7_seed import CertifiedSeedPlan
 
@@ -28,9 +29,13 @@ def test_full_session_seals_are_checked_before_a_launch_bundle(monkeypatch):
     hod = CertifiedHodPlan("build", "2026-08-18", (), "h" * 64)
     entry = CertifiedEntryEvidencePlan(
         "build", "2026-08-18", (), (), (), "e" * 64)
+    identity = CertifiedIdentityPlan(
+        "build", "2026-08-18", "00000000-0000-0000-0000-000000000001",
+        market.token, ("AAA",), (101,), "f" * 64, "g" * 64)
     pins = {
         "token": market.token, "price_level_plan_token": prices.token,
         "strategy_one_candidate_token": candidate.token,
+        "strategy_one_identity_token": identity.token,
         "strategy_one_candidate_rule_digest": candidate.candidate_rule_digest,
         "strategy_one_scan_query_sha256": candidate.scan_query_sha256,
         "strategy_one_pivot_token": pivot.token,
@@ -44,6 +49,8 @@ def test_full_session_seals_are_checked_before_a_launch_bundle(monkeypatch):
     reader = SimpleNamespace(close=lambda: calls.append("closed"))
     monkeypatch.setattr(subject, "certify_candidate_plan",
                         lambda *_args, **_kwargs: candidate)
+    monkeypatch.setattr(subject, "certify_identity_plan",
+                        lambda *_args, **_kwargs: identity)
     monkeypatch.setattr(subject, "strategy_one_v7_tickers",
                         lambda _prepared: ("AAA",))
     monkeypatch.setattr(subject, "project_market_day_plan",
@@ -63,7 +70,7 @@ def test_full_session_seals_are_checked_before_a_launch_bundle(monkeypatch):
     plan = subject.certify_strategy_one_fixed_plans(
         market, prices, market_pins=pins, v7_pins=v7,
         client_factory=lambda: reader)
-    assert plan.entry is entry and plan.prices is prices
+    assert plan.entry is entry and plan.prices is prices and plan.identities is identity
     assert calls == ["closed"]
 
     calls.clear()

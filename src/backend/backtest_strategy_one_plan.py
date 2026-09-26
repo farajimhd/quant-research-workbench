@@ -26,6 +26,9 @@ from src.backend.backtest_strategy_one_entry_store import (
 from src.backend.backtest_strategy_one_hod_store import (
     CertifiedHodPlan, certify_hod_plan,
 )
+from src.backend.backtest_strategy_one_identity import (
+    CertifiedIdentityPlan, certify_identity_plan,
+)
 from src.backend.backtest_strategy_one_pivot_store import (
     CertifiedPivotPlan, certify_pivot_plan,
 )
@@ -37,6 +40,7 @@ from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 @dataclass(frozen=True, slots=True)
 class StrategyOneFixedPlans:
     market: CertifiedMarketDayPlan
+    identities: CertifiedIdentityPlan
     execution_market: CertifiedMarketDayPlan
     prices: PriceLevelPlan
     candidates: CertifiedCandidatePlan
@@ -69,6 +73,9 @@ def certify_strategy_one_fixed_plans(
     if reader is None or not callable(getattr(reader, "close", None)):
         raise TypeError("Strategy 1 launch needs a closable read-only client")
     with closing(reader):
+        identities = certify_identity_plan(market, client=reader)
+        if identities.token != market_pins.get("strategy_one_identity_token"):
+            raise ValueError("Strategy 1 dated broker identity seal changed")
         candidates = certify_candidate_plan(
             market, candidate_rule_digest=RULE_DIGEST,
             through_boundary_ms=57_600_000, client=reader)
@@ -106,5 +113,5 @@ def certify_strategy_one_fixed_plans(
         if entry.token != market_pins.get("strategy_one_entry_token"):
             raise ValueError("Strategy 1 entry evidence seal changed")
     return StrategyOneFixedPlans(
-        market, execution, projected_prices, candidates, activations,
+        market, identities, execution, projected_prices, candidates, activations,
         pivots, seeds, hod, entry)

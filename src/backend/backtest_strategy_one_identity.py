@@ -32,6 +32,7 @@ class CertifiedIdentityPlan:
     tickers: tuple[str, ...]
     conids: tuple[int, ...]
     content_hash: str
+    token: str
 
     def conid_for(self, ticker: str) -> int:
         return self.conids[self.tickers.index(ticker)]
@@ -99,6 +100,9 @@ def certify_identity_plan(
                    or row["ibkr_conid"] <= 0 for row in rows)
             or identity_content_hash(rows) != seal["content_hash"]):
         raise RuntimeError("Strategy 1 dated identity rows differ from market seal")
+    token = sha256(json.dumps((build_id, session_date, attempt, market.token,
+                               seal["content_hash"]),
+                              separators=(",", ":")).encode("utf-8")).hexdigest()
     return CertifiedIdentityPlan(
         build_id, session_date, attempt, market.token, tickers,
-        tuple(row["ibkr_conid"] for row in rows), seal["content_hash"])
+        tuple(row["ibkr_conid"] for row in rows), seal["content_hash"], token)
