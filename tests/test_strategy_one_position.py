@@ -100,6 +100,17 @@ def test_same_boundary_breaks_have_deterministic_price_order():
         "1", "2", "3"]
 
 
+def test_duplicate_break_witnesses_are_deterministic_and_conflicts_fail_closed():
+    opened = opening()
+    duplicate = ResistanceBreak(31_000, level(1, 9.8))
+    result = advancing(opened.state, breaks=(duplicate, duplicate))
+    assert len(result.state.accepted_ids) == 1
+    assert len(result.state.pending_group) == 1
+    with pytest.raises(ValueError, match="conflicting geometry"):
+        advancing(opened.state, breaks=(
+            duplicate, ResistanceBreak(31_000, level(1, 9.9))))
+
+
 def test_only_latest_triple_is_retained_and_idle_boundary_reuses_state():
     opened = opening()
     first = advancing(opened.state, breaks=[

@@ -122,6 +122,7 @@ def advance_protection(state: ProtectionState, *, now_ms: int,
     earned_group = state.earned_group
     earned_groups = state.earned_groups
     ordered_breaks = []
+    break_geometry: dict[tuple[int, str], tuple[float, float]] = {}
     for event in breaks:
         if not isinstance(event, ResistanceBreak) or not isinstance(event.level, Mapping):
             raise ValueError("Strategy 1 resistance break is malformed")
@@ -137,8 +138,13 @@ def advance_protection(state: ProtectionState, *, now_ms: int,
                 or not 0 < row["lower"] <= row["upper"]
                 or not price_rules.eligible(row)):
             raise ValueError("Strategy 1 resistance break lacks pinned geometry")
+        key = (at, identity)
+        geometry = (float(row["lower"]), float(row["upper"]))
+        prior_geometry = break_geometry.setdefault(key, geometry)
+        if prior_geometry != geometry:
+            raise ValueError("Strategy 1 resistance break has conflicting geometry")
         ordered_breaks.append((at, price_rules.midpoint(row), identity, row))
-    for _, _, identity, row in sorted(ordered_breaks):
+    for _, _, identity, row in sorted(ordered_breaks, key=lambda item: item[:3]):
         if identity not in seen:
             # Only new breaks allocate state. A completed triple, rather than
             # the full historical level catalogue, owns the next stop step.
