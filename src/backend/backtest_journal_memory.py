@@ -33,6 +33,9 @@ class BacktestMemoryJournal:
         self._strategy_one_protection: dict[str, Any] = {}
         self._oms_groups: dict[str, Any] = {}
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
+        # Admission evidence is the immutable creation fact, never the mutable
+        # reservation state after a fill, release, or cancellation.
+        self._reservation_creations: dict[tuple[str, str], dict[str, Any]] = {}
         self._base_sequence = initial_sequence
         self._next_sequence = initial_sequence
         self._fenced_sequence = initial_sequence
@@ -143,7 +146,7 @@ class BacktestMemoryJournal:
         frozen = freeze_oms_group(group)
         with self._lock:
             reservation_id = str(group.intent.metadata.get("portfolio_reservation_id") or "")
-            admission = (self.portfolio_reservation(account_id, reservation_id)
+            admission = (self.portfolio_admission_reservation(account_id, reservation_id)
                          if reservation_id else None)
             if reservation_id and (admission is None
                                    or admission.get("intent_id") != group.intent.intent_id):
@@ -205,8 +208,21 @@ class BacktestMemoryJournal:
                     account_id=str(entry.get("account_id") or ""), payload=payload,
                 )
                 result.append(record)
+            creations: dict[tuple[str, str], dict[str, Any]] = {}
+            for record in result:
+                if (record.category == "portfolio_management"
+                        and record.entity_type == "portfolio_reservation"
+                        and record.payload.get("event") == "reservation_created"):
+                    key = (record.account_id, record.entity_id)
+                    if (not all(key)
+                            or record.payload.get("reservation_id") != record.entity_id
+                            or record.payload.get("status") != "reserved"
+                            or key in self._reservation_creations or key in creations):
+                        raise ValueError("Portfolio reservation creation is invalid or duplicated")
+                    creations[key] = deepcopy(record.payload)
             self._records.extend(result)
             self._next_sequence += len(result)
+            self._reservation_creations.update(creations)
             for record in result:
                 if record.category == "market_discovery_signal":
                     self._signal_records.append(record)
@@ -422,6 +438,14 @@ class BacktestMemoryJournal:
                 return dict(reservation)
         return None
 
+    def portfolio_admission_reservation(
+        self, account_id: str, reservation_id: str,
+    ) -> dict[str, Any] | None:
+        """Original normalized admission fact for OMS projection, not live sizing."""
+        with self._lock:
+            creation = self._reservation_creations.get((account_id, reservation_id))
+            return deepcopy(creation) if creation is not None else None
+
     def acquire_portfolio_admission_lease(self, resource_id: str, *, owner_id: str,
                                           ttl_seconds: float = 30.0) -> dict[str, Any] | None:
         if not resource_id or not owner_id or ttl_seconds <= 0:
@@ -578,6 +602,7 @@ class BacktestMemoryJournal:
             self._strategy_one_entries.clear()
             self._oms_groups.clear()
             self._oms_admissions.clear()
+            self._reservation_creations.clear()
 
 
 class BacktestJournalPublisher:

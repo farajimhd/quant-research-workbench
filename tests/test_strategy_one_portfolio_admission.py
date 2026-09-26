@@ -43,6 +43,24 @@ from test_strategy_one_protection_intent import (
 from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
 from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+
+
+def test_oms_admission_retains_creation_after_reservation_changes_and_fence():
+    run_id = str(UUID(int=91))
+    journal = BacktestMemoryJournal(run_id=run_id)
+    at = datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc)
+    created = journal.append(
+        run_id=run_id, category="portfolio_management",
+        entity_type="portfolio_reservation", entity_id="reservation-1",
+        account_id="DU1", event_time=at,
+        payload={"event": "reservation_created", "reservation_id": "reservation-1",
+                 "intent_id": "intent-1", "status": "reserved"})
+    journal.mark_fenced(created.sequence)
+    journal.save_portfolio_state("DU1", {"reservations": [{
+        "reservation_id": "reservation-1", "intent_id": "intent-1",
+        "status": "released"}]})
+    assert journal.portfolio_reservation("DU1", "reservation-1")["status"] == "released"
+    assert journal.portfolio_admission_reservation("DU1", "reservation-1")["status"] == "reserved"
 from src.trading_runtime.risk import RiskAuthority
 from src.trading_runtime.runtime import RunMode, TradingRuntime
 
