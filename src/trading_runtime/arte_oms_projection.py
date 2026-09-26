@@ -127,18 +127,32 @@ def oms_group_state_batch(
             "portfolio_reservation_id", "requested_quantity",
             "portfolio_fx_to_base", "correlation_id", "causation_id",
         }
-        if (set(meta) != required or source_intent.metadata
-                or replace(group.intent, quantity=source_intent.quantity,
-                           metadata={}) != source_intent
-                or admission_reservation.get("intent_id") != group.intent.intent_id
-                or admission_reservation.get("account_id") != group.account_id
-                or admission_reservation.get("reservation_id") != meta["portfolio_reservation_id"]
-                or admission_reservation.get("decision_id") != meta["portfolio_decision_id"]
-                or admission_reservation.get("assignment_id") != meta["assignment_id"]
-                or admission_reservation.get("status") != "reserved"
-                or float(admission_reservation.get("quantity") or 0) != group.intent.quantity
-                or not meta["assignment_id"]):
-            raise ValueError("OMS approved intent differs from its normalized admission")
+        mismatch = []
+        if set(meta) != required:
+            mismatch.append("metadata_keys")
+        if source_intent.metadata:
+            mismatch.append("source_metadata")
+        if replace(group.intent, quantity=source_intent.quantity,
+                   metadata={}) != source_intent:
+            mismatch.append("source_intent")
+        for field, expected in (
+                ("intent_id", group.intent.intent_id),
+                ("account_id", group.account_id),
+                ("reservation_id", meta.get("portfolio_reservation_id")),
+                ("decision_id", meta.get("portfolio_decision_id")),
+                ("assignment_id", meta.get("assignment_id")),
+                ("status", "reserved")):
+            if admission_reservation.get(field) != expected:
+                mismatch.append("reservation_" + field)
+        if float(admission_reservation.get("quantity") or 0) != group.intent.quantity:
+            mismatch.append("reservation_quantity")
+        if not meta.get("assignment_id"):
+            mismatch.append("assignment_identity")
+        if mismatch:
+            # Names only: never place financial values or mutable metadata in
+            # an error, disk log, or untyped journal payload.
+            raise ValueError("OMS approved intent differs from its normalized admission: "
+                             + ",".join(mismatch))
     rebuilt = strategy_intent_batch(
         source_intent, run_id=published_intent_batch.run_id,
         run_month=published_intent_batch.run_month,
