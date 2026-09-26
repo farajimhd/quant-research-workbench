@@ -21,7 +21,8 @@ The builder automatically discovers completed V1 banks under the configured
 local runtime's `rl-trading-shards/<date>/*`. `--v1-shards <paths...>` selects
 explicit banks or account/cost overlays instead. It checks the source build and
 attempts, full listing identity, feature schema, observation code hashes, and
-market array certificates. Incompatible versions are reported and extracted
+market array certificates. Source hashes may differ only by LF/CRLF line endings;
+the normalized bytes must reproduce the certified hash. Incompatible versions are reported and extracted
 afresh; corrupted certificates fail the build. It never reads teacher arrays.
 The selected V1 bank's linked Phase 1/2 plans, completion certificates and listing
 progress metadata must remain accessible while validating the cache.

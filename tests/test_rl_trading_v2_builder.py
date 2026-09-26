@@ -69,6 +69,27 @@ def test_cache_copies_only_matching_market_rows_without_teacher_arrays(cache):
     assert not (root/'actions.npy').exists()
 
 
+def test_cache_accepts_only_identical_source_with_different_line_endings(cache):
+    root,_,_,_ = cache
+    plan = read(root/'plan.json')
+    plan.pop('plan_hash')
+    source = REPO/'research/rl_trading/v1/features.py'
+    from hashlib import sha256
+    alternate = source.read_bytes().replace(b'\r\n',b'\n').replace(b'\n',b'\r\n')
+    plan['code_hashes']['features.py'] = sha256(alternate).hexdigest()
+    publish(root,plan,files=read(root/'complete.json')['files'])
+    progress = read(root/'progress.json')
+    progress['plan_hash'] = read(root/'plan.json')['plan_hash']
+    write(root/'progress.json',progress)
+    assert set(lookup(cache)[0]) == {'a'}
+    alternate += b'# changed behavior\r\n'
+    plan = read(root/'plan.json')
+    plan.pop('plan_hash')
+    plan['code_hashes']['features.py'] = sha256(alternate).hexdigest()
+    publish(root,plan,files=read(root/'complete.json')['files'])
+    assert lookup(cache)[0] == {}
+
+
 def test_overlay_resolution_and_corruption_fail_closed(cache,tmp_path):
     root,source,listings,_ = cache
     plan = read(root/'plan.json')

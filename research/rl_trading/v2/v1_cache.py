@@ -1,9 +1,20 @@
 """Read only certified V1 market banks; never load teacher arrays or eligibility."""
 from pathlib import Path
+from hashlib import sha256
 import numpy as np
 from research.rl_trading.v1.common import digest, file_hash
 from research.rl_trading.v1.features import FEATURE_NAMES, SECONDS
 from research.rl_trading.v2.io import read, REPO
+
+
+def matching_source_hash(path, expected):
+    """Accept identical source with LF/CRLF packaging; no other code drift."""
+    source = Path(path).read_bytes()
+    if sha256(source).hexdigest() == expected:
+        return True
+    canonical = source.replace(b'\r\n',b'\n')
+    return sha256(canonical).hexdigest() == expected or sha256(
+        canonical.replace(b'\n',b'\r\n')).hexdigest() == expected
 
 
 def certified_plan(root):
@@ -64,7 +75,7 @@ def catalog(roots, *, source, day, listings):
                     'src/backend/fixed_v7_stream.py','src/backend/structural_v7_seed.py',
                     'src/market_engine/streaming_level_book.py','src/market_engine/v7_qmd.py'):
                 path = REPO/name if name.startswith('src/') else REPO/'research/rl_trading/v1'/name
-                if plan.get('code_hashes',{}).get(name) != file_hash(path):
+                if not matching_source_hash(path,plan.get('code_hashes',{}).get(name)):
                     reason = f'incompatible observation code: {name}'
                     break
         if reason:
