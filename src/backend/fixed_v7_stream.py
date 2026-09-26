@@ -134,6 +134,20 @@ class FixedV7Cache:
         """True after this session's private book has been loaded and caught up."""
         return ticker in self._streams
 
+    def strategy_one_ready_without_read(self, ticker: str, *,
+                                        as_of: datetime) -> bool:
+        """Whether V7 projection at this boundary needs no ClickHouse catch-up.
+
+        An existing stream may still need a new completed second. Equality,
+        not merely membership, is necessary to keep that SELECT off the hot
+        asyncio path without ever projecting a future-consumed book backward.
+        """
+        if ticker not in self._coverage:
+            raise ValueError("V7 ticker is outside the certified seed population")
+        completed_ms = self._boundary_ms(as_of) // 1_000 * 1_000
+        return (ticker in self._streams
+                and self._last_loaded_second_ms[ticker] == completed_ms)
+
     def _boundary_ms(self, at: datetime) -> int:
         if at.tzinfo is None:
             raise ValueError("V7 Backtest boundary requires a timezone")
