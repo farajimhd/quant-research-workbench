@@ -235,7 +235,15 @@ def test_v4_publisher_refuses_numbered_intent_without_atomic_sidecar():
     asyncio.run(exercise())
 
 
-def test_v4_terminal_queues_after_predecessor_and_fences_only_after_receipt():
+def test_v4_terminal_queues_after_predecessor_and_fences_only_after_receipt(monkeypatch):
+    import src.backend.backtest_typed_publisher as publisher_module
+
+    def legacy_projection_forbidden(*_args, **_kwargs):
+        raise AssertionError("V4 terminal used the legacy typed projector")
+
+    monkeypatch.setattr(publisher_module, "project_pending_backtest_prefix",
+                        legacy_projection_forbidden)
+
     class V4Writer(FakeWriter):
         journal_profile = "backtest_v4"
 

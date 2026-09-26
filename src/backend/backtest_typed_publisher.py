@@ -341,8 +341,8 @@ class BacktestTypedJournalPublisher:
                 await self._drain(target_sequence=sequence - 1)
             if self._sequence != sequence - 1:
                 raise RuntimeError("V4 terminal predecessor is not fully fenced")
-            prefix = await asyncio.to_thread(
-                project_pending_backtest_prefix, self.journal,
+            units = await asyncio.to_thread(
+                project_pending_backtest_v4_prefix, self.journal,
                 attempt_id=self.attempt_id, run_month=self.run_month,
                 prior_sequence=self._sequence, prior_batch_id=self._batch_id,
                 source_cursor=self._source_cursor,
@@ -351,11 +351,10 @@ class BacktestTypedJournalPublisher:
                 fixed_market_execution_plan=self.fixed_market_execution_plan,
                 expected_market_start=self.expected_market_start,
                 through_sequence=sequence)
-            if (len(prefix.batches) != 1
-                    or prefix.batches[0].status not in
-                    {"completed", "stopped", "failed"}):
+            if (len(units) != 1 or not isinstance(units[0], TypedJournalBatch)
+                    or units[0].status not in {"completed", "stopped", "failed"}):
                 raise RuntimeError("V4 terminal projection is not one lifecycle batch")
-            batch = prefix.batches[0]
+            batch = units[0]
             committed = await asyncio.wrap_future(
                 self.writer.submit_terminal_backtest(batch, captures))
             if str(UUID(str(committed))) != batch.batch_id:
