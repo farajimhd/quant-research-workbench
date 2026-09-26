@@ -35,7 +35,7 @@ from research.rl_trading.v1.replay import replay_session
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
 
-VERSION = 'rl-trading-market-policy-bc-v2'
+VERSION = 'rl-trading-market-policy-bc-v3'
 STOP = False
 
 
@@ -95,6 +95,12 @@ def _run_closed_loop(model, shards, sessions, device):
                 forced_liquidations=result['forced_liquidations']))
     model.train()
     return reports
+
+
+def _eligible_replay(report):
+    """A flat or losing validation policy is a diagnostic, not a selected trader."""
+    return (math.isfinite(report['val_profit']) and report['val_profit'] > 0
+        and all(item['buys'] > 0 for item in report['validation']))
 
 
 def run(args):
@@ -231,8 +237,14 @@ def run(args):
                         logits,value = model(batch,teacher_actions=batch['actions'])
                         loss,measure = teacher_loss(logits,value,batch,
                             trade_weight=args.trade_weight,value_weight=args.value_weight)
+                    if not torch.isfinite(loss) or not torch.isfinite(logits).all() or not torch.isfinite(value).all():
+                        raise FloatingPointError(f'Non-finite forward at epoch {epoch+1}, '
+                            f'{shard.plan["date"]}, batch {start//args.batch_size+1}')
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(),args.grad_clip)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),args.grad_clip)
+                    if not torch.isfinite(grad_norm):
+                        raise FloatingPointError(f'Non-finite gradient norm at epoch {epoch+1}, '
+                            f'{shard.plan["date"]}, batch {start//args.batch_size+1}')
                     optimizer.step()
                     end.record()
                     end.synchronize()
@@ -292,9 +304,9 @@ def run(args):
                     f'${replay_report["train_profit"]:,.2f} | validation '
                     f'${replay_report["val_profit"]:,.2f} | '
                     f'drawdown {replay_report["val_max_drawdown"]:.1%}')
-                if (replay_best is None or
+                if (_eligible_replay(replay_report) and (replay_best is None or
                         (replay_report['val_profit'],-replay_report['val_max_drawdown']) >
-                        (replay_best['val_profit'],-replay_best['val_max_drawdown'])):
+                        (replay_best['val_profit'],-replay_best['val_max_drawdown']))):
                     candidate = paths.checkpoints_dir/'checkpoint_best_replay.pt.tmp'
                     torch.save(dict(config_hash=config['config_hash'],epoch=epoch,
                         global_step=global_step,model=model.state_dict(),

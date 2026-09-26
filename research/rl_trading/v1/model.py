@@ -18,10 +18,12 @@ class MarketPolicy(nn.Module):
             nn.Conv1d(d_model,d_model,3,padding=1),nn.GELU())
         self.temporal_pool = nn.AdaptiveAvgPool1d(16)
         self.history_projection = nn.Linear(16*d_model,d_model)
+        self.token_norm = nn.LayerNorm(d_model)
         self.identity = nn.Embedding(tickers+2,d_model,padding_idx=0)
         self.unknown_ticker_id = tickers+1
         self.slot_metadata = nn.Linear(2,d_model)
-        layer = nn.TransformerEncoderLayer(d_model,heads,4*d_model,dropout=.05,batch_first=True)
+        layer = nn.TransformerEncoderLayer(d_model,heads,4*d_model,dropout=.05,
+            batch_first=True,norm_first=True)
         self.market = nn.TransformerEncoder(layer,layers,enable_nested_tensor=False)
         self.account = nn.Linear(3,d_model)
         self.lot = nn.Linear(3,d_model)
@@ -40,8 +42,8 @@ class MarketPolicy(nn.Module):
         encoded = sequence[:,:,-1]+self.history_projection(
             self.temporal_pool(sequence).flatten(1))
         encoded = encoded.reshape(count,tickers,-1)
-        encoded = encoded+self.identity(batch['ticker_id'])+self.slot_metadata(
-            torch.stack((batch['rank'],batch['held']),dim=-1))
+        encoded = self.token_norm(encoded+self.identity(batch['ticker_id'])+
+            self.slot_metadata(torch.stack((batch['rank'],batch['held']),dim=-1)))
         mask = ~batch['valid']
         encoded = self.market(encoded,src_key_padding_mask=mask)
         encoded = encoded.masked_fill(mask.unsqueeze(-1),0)

@@ -42,6 +42,16 @@ def _shard(root: Path, day: date):
     return root
 
 
+def test_flat_or_losing_replay_cannot_be_selected_as_profitable():
+    report = {'val_profit': 0., 'validation': [{'buys': 0}]}
+    assert not train._eligible_replay(report)
+    report['val_profit'] = -1.
+    report['validation'][0]['buys'] = 1
+    assert not train._eligible_replay(report)
+    report['val_profit'] = 1.
+    assert train._eligible_replay(report)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required by training contract')
 def test_cuda_training_launcher_reads_disk_shards_and_checkpoints(tmp_path,monkeypatch):
     train_root = _shard(tmp_path/'train',date(2026,8,20))
@@ -55,10 +65,10 @@ def test_cuda_training_launcher_reads_disk_shards_and_checkpoints(tmp_path,monke
     assert (root/'run_manifest.json').is_file()
     assert (root/'checkpoints'/'checkpoint_latest.pt').is_file()
     assert (root/'checkpoints'/'checkpoint_best_val.pt').is_file()
-    assert (root/'checkpoints'/'checkpoint_best_replay.pt').is_file()
+    assert not (root/'checkpoints'/'checkpoint_best_replay.pt').exists()
     assert (root/'closed_loop_epoch_001.json').is_file()
     test_root = _shard(tmp_path/'test',date(2026,8,22))
     assert evaluate_supervised.main(['--run',str(root),'--test-shards',str(test_root),
         '--batch-size','2','--allow-segment']) == 0
     assert evaluate_replay.main(['--run',str(root),'--test-shards',str(test_root),
-        '--allow-segment','--max-seconds','2','--checkpoint','best-replay']) == 0
+        '--allow-segment','--max-seconds','2','--checkpoint','best-val']) == 0
