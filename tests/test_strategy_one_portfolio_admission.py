@@ -3,6 +3,8 @@ import asyncio
 from datetime import date, datetime, timezone
 from uuid import UUID
 
+import pytest
+
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary
@@ -142,3 +144,17 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
     assert group.broker_order_ids, group
     assert any(record.category == "command" and record.entity_type == "order"
                for record in records)
+    group_transition = next(record for record in records
+                            if record.category == "order_management"
+                            and record.entity_type == "order_group_state")
+    # The direct OMS path is real, but a flattened transition is insufficient
+    # to recover its approved quantity, assignment, and keyed order state.
+    # Keep publication gated until a normalized OMS admission revision exists.
+    with pytest.raises(ValueError, match="lacks a typed projection"):
+        project_journal_record(
+            group_transition, run_month=date(2026, 8, 1),
+            attempt_id=str(UUID(int=12)), batch_id=str(UUID(int=13)),
+            prior_batch_id=str(UUID(int=0)), source_cursor="2026-08-18:31000",
+            expected_mode="backtest",
+            expected_config={"strategy_id": "strategy-1", "strategy_revision": 1},
+        )
