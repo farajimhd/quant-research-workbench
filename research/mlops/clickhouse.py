@@ -272,7 +272,16 @@ class ClickHouseHttpClient:
         if query_id:
             params["query_id"] = query_id
         if self.persistent:
-            return self._execute_persistent(sql, params)
+            try:
+                return self._execute_persistent(sql, params)
+            except http.client.RemoteDisconnected:
+                # A long preflight can leave a keep-alive socket idle beyond
+                # the server timeout. Only a plain SELECT is safe to replay:
+                # an INSERT with no response has ambiguous commit status and
+                # must be resolved by its caller's typed/Keeper authority.
+                if re.match(r"\s*SELECT\b", sql, re.IGNORECASE) is None:
+                    raise
+                return self._execute_persistent(sql, params)
         url = self._request_url(params)
         req = request.Request(url, data=sql.encode("utf-8"), method="POST")
         if self.user:
