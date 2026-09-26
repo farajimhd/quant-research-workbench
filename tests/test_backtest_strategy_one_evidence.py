@@ -180,6 +180,12 @@ def test_management_low_expires_and_invalid_completed_bucket_revokes_it():
     evidence._break_boundary_ms = 0
     evidence._completed_30s = {}
 
+    async def levels(_ticker, _boundary):
+        return ({"unified_level_id": "r1", "lower": 11., "upper": 11.1,
+                 "role": "resistance"},)
+
+    evidence._levels = levels
+
     async def observe(boundary, low=None, *, valid=True):
         rows = ({30_000: {"session_date": session.isoformat(),
                            "ticker": "TEST", "boundary_ms": boundary,
@@ -192,8 +198,24 @@ def test_management_low_expires_and_invalid_completed_bucket_revokes_it():
     async def run():
         await observe(30_000, 98_000)
         assert evidence.completed_30s_low("TEST", boundary_ms=30_000)["low_int"] == 98_000
+        now_us = round(market_day_boundary(session, 30_000).timestamp() * 1_000_000)
+        quote = {"session_date": session.isoformat(), "ticker": "TEST",
+                 "boundary_ms": 30_000, "resolution_ms": 100,
+                 "price_valid": 1, "quote_valid": 1,
+                 "quote_timestamp_us": now_us,
+                 "bid_int": 100_000, "ask_int": 100_100}
+        joined = await evidence.management_evidence(
+            "TEST", {100: quote}, boundary_ms=30_000)
+        assert (joined.bid, joined.ask, joined.low_boundary_ms,
+                joined.low_int) == (10., 10.01, 30_000, 98_000)
+        assert len(joined.overhead_levels) == 1
         await observe(59_900)
         assert evidence.completed_30s_low("TEST", boundary_ms=59_900)["low_int"] == 98_000
+        stale = await evidence.management_evidence(
+            "TEST", {100: {**quote, "boundary_ms": 59_900}},
+            boundary_ms=59_900)
+        assert stale.bid is None and stale.ask is None
+        assert stale.low_int == 98_000 and stale.overhead_levels == ()
         await observe(60_000, 95_000, valid=False)
         assert evidence.completed_30s_low("TEST", boundary_ms=60_000) is None
         await observe(60_100)

@@ -114,8 +114,13 @@ def _quote(*, bid: float, ask: float, tick: float) -> None:
         raise ValueError("Strategy 1 protection needs a valid completed quote")
 
 
-def _low(*, boundary_ms: int, low_int: int, price_valid: bool,
+def _low(*, boundary_ms: int | None, low_int: int | None, price_valid: bool,
          extremes_valid: bool, now_ms: int, tick: float) -> Mapping | None:
+    if boundary_ms is None or low_int is None:
+        if (boundary_ms is not None or low_int is not None
+                or price_valid or extremes_valid):
+            raise ValueError("Strategy 1 missing 30s bar must be explicit")
+        return None
     return completed_30s_low_stop(
         low_int=low_int, boundary_ms=boundary_ms, now_ms=now_ms, tick=tick,
         price_valid=price_valid, extremes_valid=extremes_valid)
@@ -142,7 +147,7 @@ def open_protection(*, now_ms: int, bid: float, ask: float, tick: float,
 
 def advance_protection(state: ProtectionState, *, now_ms: int,
                        bid: float, ask: float, tick: float,
-                       low_boundary_ms: int, low_int: int,
+                       low_boundary_ms: int | None, low_int: int | None,
                        low_price_valid: bool, low_extremes_valid: bool,
                        breaks: Sequence[ResistanceBreak],
                        overhead_levels: Sequence[Mapping],

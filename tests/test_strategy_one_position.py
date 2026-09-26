@@ -75,6 +75,16 @@ def test_quote_only_boundary_does_not_rerank_target():
     assert result.state.target == opened.state.target
 
 
+def test_missing_completed_30s_bar_does_not_fabricate_swing_trail():
+    opened = opening()
+    result = advancing(opened.state, low_boundary_ms=None, low_int=None,
+                       low_price_valid=False, low_extremes_valid=False)
+    assert result.stop_amendment is None
+    assert result.state.stop == opened.state.stop
+    with pytest.raises(ValueError, match="must be explicit"):
+        advancing(opened.state, low_boundary_ms=None, low_int=97_000)
+
+
 def test_sparse_bid_jump_cannot_cross_unfilled_target_with_stop():
     opened = opening()
     result = advancing(opened.state, bid=10.5, ask=10.51,

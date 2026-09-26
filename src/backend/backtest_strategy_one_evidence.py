@@ -50,6 +50,19 @@ class StrategyOneEntryEvidence:
     protection: ProtectionTransition | None
 
 
+@dataclass(frozen=True, slots=True)
+class StrategyOneManagementEvidence:
+    ticker: str
+    boundary_ms: int
+    bid: float | None
+    ask: float | None
+    price_bearing_bar: bool
+    low_boundary_ms: int | None
+    low_int: int | None
+    breaks: tuple[ResistanceBreak, ...]
+    overhead_levels: tuple[Mapping, ...]
+
+
 class StrategyOneCausalEvidence:
     """One sequential, read-only V7/BOS lane per candidate ticker."""
 
@@ -161,6 +174,47 @@ class StrategyOneCausalEvidence:
                 or not 0 <= boundary_ms - row["boundary_ms"] < 30_000):
             return None
         return row
+
+    async def management_evidence(
+        self, ticker: str, resolutions: Mapping[int, Mapping], *,
+        boundary_ms: int,
+    ) -> StrategyOneManagementEvidence:
+        """Join only completed persisted bars and a fresh liquidity quote."""
+        if (not ticker or not isinstance(resolutions, Mapping)
+                or type(boundary_ms) is not int
+                or boundary_ms != self._break_boundary_ms):
+            raise ValueError("Strategy 1 management differs from market clock")
+        breaks = self.completed_resistance_breaks(ticker, boundary_ms=boundary_ms)
+        low = self.completed_30s_low(ticker, boundary_ms=boundary_ms)
+        row = resolutions.get(100)
+        bid = ask = None
+        price_bearing = False
+        levels: tuple[Mapping, ...] = ()
+        if row is not None:
+            if (not isinstance(row, Mapping)
+                    or row.get("session_date") != self.session.isoformat()
+                    or row.get("ticker") != ticker
+                    or row.get("resolution_ms") != 100
+                    or row.get("boundary_ms") != boundary_ms):
+                raise ValueError("Strategy 1 liquidity row differs from management")
+            price_bearing = row.get("price_valid") == 1
+            if row.get("quote_valid") == 1:
+                bid_int, ask_int = row.get("bid_int"), row.get("ask_int")
+                quote_at = row.get("quote_timestamp_us")
+                if (any(type(value) is not int for value in (
+                        bid_int, ask_int, quote_at))
+                        or not 0 < bid_int <= ask_int):
+                    raise ValueError("Strategy 1 management quote is malformed")
+                now_us = round(market_day_boundary(
+                    self.session, boundary_ms).timestamp() * 1_000_000)
+                if 0 <= now_us - quote_at <= 1_000_000:
+                    bid, ask = bid_int / 10_000, ask_int / 10_000
+                    levels = await self._levels(ticker, boundary_ms)
+        return StrategyOneManagementEvidence(
+            ticker, boundary_ms, bid, ask, price_bearing,
+            int(low["boundary_ms"]) if low is not None else None,
+            int(low["low_int"]) if low is not None else None,
+            breaks, levels)
 
     async def _levels(self, ticker: str, boundary_ms: int) -> tuple[Mapping, ...]:
         at = market_day_boundary(self.session, boundary_ms)
