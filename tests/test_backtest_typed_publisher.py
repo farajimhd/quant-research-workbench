@@ -11,6 +11,7 @@ from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
 from src.backend.replay_run_service import ReplayRunController
 from src.trading_runtime.arte_journal_writer import JournalQueueFull
+from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
 from src.trading_runtime.runtime import RunMode
 
 
@@ -70,6 +71,74 @@ def test_fixed_publisher_rejects_legacy_v1_writer():
     writer.journal_profile = "v1"
     with pytest.raises(ValueError, match="exclusive bounded prefix"):
         _publisher(_journal(), writer)
+
+
+def test_v4_publisher_routes_running_prefix_only_to_v4_queue():
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+        def submit(self, batch):
+            pytest.fail("V4 publication used legacy typed queue")
+
+        def submit_base_v4(self, batch):
+            return FakeWriter.submit(self, batch)
+
+    async def exercise():
+        journal = _journal()
+        writer = V4Writer()
+        publisher = _publisher(journal, writer)
+        receipt = await publisher.enqueue_pending()
+        assert receipt.last_sequence == 2
+        assert len(writer.submitted) == 1
+        assert writer.submitted[0].status == "running"
+        assert journal.pending_record_count == 0
+
+    asyncio.run(exercise())
+
+
+def test_v4_terminal_queues_after_predecessor_and_fences_only_after_receipt():
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+        def submit_base_v4(self, batch):
+            return FakeWriter.submit(self, batch)
+
+        def submit_terminal_backtest(self, batch, captures):
+            assert len(captures) == 1 and captures[0].run_id == RUN
+            return FakeWriter.submit(self, batch)
+
+    async def exercise():
+        journal = _journal()
+        writer = V4Writer(automatic=False)
+        publisher = _publisher(journal, writer)
+        running = publisher.enqueue_pending()
+        await _wait_for_submission(writer)
+        journal.append(run_id=RUN, category="lifecycle", entity_type="run",
+                       entity_id=RUN, event_time=AT,
+                       payload={"status": "completed", "processed_events": 2})
+        capture = CapturedPortfolioSnapshot(
+            RUN, "DU1", 1, AT, "primary", "enabled", "synchronized",
+            "broker-snapshot-1", AT, "", 1000.0, None, None,
+            (), (), (), (), (), (),
+        )
+        terminal = publisher.enqueue_terminal((capture,))
+        assert not terminal.done() and publisher.fenced_sequence == 0
+        with pytest.raises(RuntimeError, match="terminal publication owns"):
+            publisher.enqueue_pending()
+        writer.receipts[0].set_result(writer.submitted[0].batch_id)
+        await running
+        for _ in range(100):
+            if len(writer.submitted) == 2:
+                break
+            await asyncio.sleep(0.001)
+        assert len(writer.submitted) == 2
+        assert writer.submitted[1].status == "completed"
+        assert publisher.fenced_sequence == 2 and journal.pending_record_count == 1
+        writer.receipts[1].set_result(writer.submitted[1].batch_id)
+        assert (await terminal).last_sequence == 3
+        assert journal.pending_record_count == 0
+
+    asyncio.run(exercise())
 
 
 def test_invalid_evidence_fails_projection_before_writer_submission():
