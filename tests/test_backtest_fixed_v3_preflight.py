@@ -68,5 +68,10 @@ def test_v3_reader_requires_only_exact_v7_split_reference(monkeypatch):
     from src.trading_runtime.strategy_one_candidate_schema import CANDIDATE_TABLE, COVERAGE_TABLE
     assert {name.split(".", 1)[1] for name in (
         CANDIDATE_TABLE, COVERAGE_TABLE)} <= seen[0]["read_only_tables"]
+    from src.trading_runtime.strategy_one_hod_schema import (
+        CONTEXT_TABLE, COVERAGE_TABLE as HOD_COVERAGE_TABLE,
+    )
+    assert {name.split(".", 1)[1] for name in (
+        CONTEXT_TABLE, HOD_COVERAGE_TABLE)} <= seen[0]["read_only_tables"]
     assert seen[0]["reference_read_tables"] == frozenset({
         ("q_live", "market_stock_split_v1")})
