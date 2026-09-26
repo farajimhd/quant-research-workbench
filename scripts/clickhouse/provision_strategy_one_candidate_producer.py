@@ -14,6 +14,7 @@ import re
 import secrets
 import socket
 import sys
+import traceback
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
@@ -147,7 +148,11 @@ def main(argv: list[str] | None = None) -> int:
                       endpoint, user, password, timeout_seconds=20))
     except Exception as exc:
         # Driver errors can contain SQL or credentials; do not echo them.
-        print(f"Candidate producer provisioning stopped: {type(exc).__name__}; "
+        frames = traceback.extract_tb(exc.__traceback__)
+        stage = next((f"{frame.name}:{frame.lineno}" for frame in reversed(frames)
+                      if frame.filename == __file__), "external_dependency")
+        print(f"Candidate producer provisioning stopped: {type(exc).__name__} "
+              f"at {stage}; "
               "partial account/grants may exist. Inspect private diagnostics.",
               file=sys.stderr)
         return 1
