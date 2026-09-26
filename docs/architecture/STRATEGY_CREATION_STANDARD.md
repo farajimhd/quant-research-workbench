@@ -154,8 +154,10 @@ coverage and pins its content token at preflight, then rechecks that token at
 execution. The candidate rule has its own technical digest, distinct from the
 unpublished complete Strategy 1 release seal; this lets the producer certify
 the expensive reusable mask without falsely claiming that Strategy 1 is live.
-Coverage also pins the exact squeeze SQL hash for the requested session end,
-so premarket and full-session products cannot be confused.
+Coverage pins the exact full-session squeeze SQL hash. A shorter Backtest
+certifies this complete immutable product first, then projects only candidate
+boundaries within its requested horizon; a prefix is never published as a
+second source product or confused with full-session coverage.
 The producer campaign for the certified August 18, 2026 full session has
 published and read-back-verified all 6,100 ticker-days, including empty
 candidate sets. Other sessions still require their own exact coverage. The
@@ -172,6 +174,19 @@ entry decisions only; once an order or position exists, the causal coordinator
 must continue reading the relevant liquidity and management windows until
 that financial state is resolved. Skipping those windows would silently omit
 fills, stops, targets, and exits.
+The producer-owned `strategy_one_entry_activation_v1`,
+`strategy_one_entry_activation_resistance_v1`,
+`strategy_one_entry_evidence_v1`, and `strategy_one_entry_coverage_v1` tables
+now store the expensive frozen V7/BOS/initial-protection facts as normalized
+scalar rows, with no copied bars, book snapshots, JSON, or blobs. Each
+ticker-day is sealed only after exact child read-back. On August 18 all 957
+candidate ticker-days and 62,072 candidate boundaries were certified; the
+read-only entry seal took 2.124 seconds on the workstation after the market
+plan was established. This is input certification, not Backtest runtime or
+authorization to launch Strategy 1. The app requires this seal at preflight
+and rechecks it at launch. The numbered state machine, active-symbol broker
+tape, typed ClickHouse journal recovery, and fill-equivalence acceptance
+remain required before the fixed execution gate can open.
 `src/trading_runtime/strategy_one_position.py` now owns a pure, deterministic
 active-position protection reducer: entry requires the completed 30s stop and
 third overhead target; accepted 1s resistance breaks are deduplicated and
