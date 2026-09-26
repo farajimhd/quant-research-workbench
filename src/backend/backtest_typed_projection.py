@@ -24,6 +24,28 @@ from src.trading_runtime.journal_contract import canonical_json
 NIL_BATCH_ID = str(UUID(int=0))
 
 
+def committed_oms_order_lineage(group: object, *, run_id: str,
+                                strategy_id: str, strategy_revision: int) -> dict[str, tuple]:
+    """Index only lineage already validated against a typed OMS transition."""
+    from src.trading_runtime.strategy_orders import canonical_runtime_metadata
+
+    result = {}
+    for order in group.orders:
+        if not order.cOID:
+            raise ValueError("Typed OMS order lacks a client order ID")
+        expected = {
+            "strategy_id": strategy_id,
+            "canonical_strategy_revision": strategy_revision,
+            "canonical_run_id": run_id,
+            "canonical_metadata": canonical_runtime_metadata(order, group.intent),
+        }
+        lineage = (expected, group.account_id, order.ticker.upper(), order.conid)
+        prior = result.setdefault(order.cOID, lineage)
+        if prior != lineage:
+            raise ValueError("Client order ID has conflicting OMS lineage")
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class ProjectedBacktestPrefix:
     batches: tuple[TypedJournalBatch, ...]
@@ -40,6 +62,7 @@ def project_pending_backtest_v4_prefix(
     fixed_market_execution_plan: object | None = None,
     expected_market_start: datetime | None = None,
     published_sources: Mapping[str, tuple[TypedJournalBatch, object]] | None = None,
+    committed_order_lineage: Mapping[str, tuple] | None = None,
     through_sequence: int,
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
            | V4BrokerAcknowledgementBatch | V4ProtectionChangeBatch, ...]:
@@ -72,6 +95,7 @@ def project_pending_backtest_v4_prefix(
     units = []
     ordinary: list[TypedJournalBatch] = []
     sources = dict(published_sources or {})
+    order_lineage = dict(committed_order_lineage or {})
     cursor = source_cursor
     for sequence, record in enumerate(records, start=prior_sequence + 1):
         if record.run_id != journal.run_id or record.sequence != sequence:
@@ -127,6 +151,13 @@ def project_pending_backtest_v4_prefix(
                     or unit.events[0]["entity_id"] != record.entity_id
                     or unit.events[0]["account_id"] != record.account_id):
                 raise RuntimeError("V4 OMS typed event differs from its journal source")
+            for client_order_id, lineage in committed_oms_order_lineage(
+                    group, run_id=record.run_id,
+                    strategy_id=record.payload["strategy_id"],
+                    strategy_revision=record.payload["strategy_revision"]).items():
+                if client_order_id in order_lineage and order_lineage[client_order_id] != lineage:
+                    raise RuntimeError("OMS changed committed order lineage")
+                order_lineage[client_order_id] = lineage
         else:
             batch = project_journal_record(
                 record, run_month=run_month, attempt_id=attempt,
@@ -135,7 +166,8 @@ def project_pending_backtest_v4_prefix(
                 expected_mode="backtest",
                 fixed_market_parent_plan=fixed_market_parent_plan,
                 fixed_market_execution_plan=fixed_market_execution_plan,
-                expected_market_start=expected_market_start)
+                expected_market_start=expected_market_start,
+                committed_order_lineage=order_lineage)
             sidecar = journal.strategy_one_entry_for_record(record.record_id)
             protection_source = journal.strategy_one_protection_for_record(
                 record.record_id)

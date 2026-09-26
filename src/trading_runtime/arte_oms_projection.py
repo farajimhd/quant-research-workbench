@@ -176,8 +176,20 @@ def oms_group_state_batch(
     if any(not isinstance(value, str) or not value
            for value in (*group.warning_message_ids, *group.plan.cancel_oca_groups)):
         raise ValueError("OMS warning and OCA identities must be nonempty strings")
-    if any(order.raw or order.strategyParameters for order in group.orders):
-        raise ValueError("OMS order has unmodeled raw or broker algo evidence")
+    from src.trading_runtime.strategy_orders import canonical_runtime_metadata
+
+    for order in group.orders:
+        if order.strategyParameters:
+            raise ValueError("OMS order has unmodeled broker algo evidence")
+        if order.raw:
+            expected_raw = {
+                "canonical_run_id": run_id,
+                "canonical_strategy_id": strategy_id,
+                "canonical_strategy_revision": strategy_revision,
+                "canonical_metadata": canonical_runtime_metadata(order, group.intent),
+            }
+            if order.raw != expected_raw:
+                raise ValueError("OMS order has unmodeled raw lineage differing from its typed intent")
     lengths = tuple(len(batch) for batch in group.plan.broker_batches)
     if not lengths or any(length < 1 for length in lengths) or sum(lengths) != len(group.orders):
         raise ValueError("OMS plan batches do not cover every order")

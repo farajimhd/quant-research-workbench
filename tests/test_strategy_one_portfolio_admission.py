@@ -2,7 +2,7 @@
 import asyncio
 from concurrent.futures import Future
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -37,7 +37,7 @@ from test_strategy_one_protection_intent import (
     transition as protection_transition,
 )
 from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
-from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner
+from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
 from src.trading_runtime.risk import RiskAuthority
 from src.trading_runtime.runtime import RunMode, TradingRuntime
@@ -252,13 +252,14 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
         _, approved = await portfolio.approve(
             intent, account_id="DU1", assignment_id=proposal.assignment_id)
         assert approved is not None
-        planner = IbkrStrategyOrderPlanner()
         instrument = InstrumentContract("AAA", 123, "AAA", "STK", "USD")
+        planner = RuntimeIbkrStrategyOrderPlanner(
+            {"AAA": instrument}, strategy_id="strategy-1",
+            strategy_revision=1, run_id=run_id)
         manager = OrderManagementEngine(
             broker=broker,
-            planner=lambda item, account_id, _event: planner.plan(
-                account_id=account_id, instrument=instrument, intent=item,
-                strategy_id="strategy-1", strategy_revision=1),
+            planner=lambda item, account_id, event: planner.plan(
+                account_id=account_id, intent=item, event=event),
             risk=risk, journal=journal, run_id=run_id,
             strategy_id="strategy-1", strategy_revision=1,
             policy=BrokerCommunicationPolicy(), causal_execution_clock=True)
@@ -375,6 +376,53 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
                        for record in records)
             assert all(journal.oms_admission_for_record(record.record_id) is None
                        for record in records)
+            next_at = at + timedelta(milliseconds=100)
+            last_us = int(next_at.timestamp() * 1_000_000) - 1
+            executions = await broker.on_liquidity_bar({
+                "ticker": "AAA", "resolution_ms": 100,
+                "bucket_index": 311, "event_count": 3,
+                "last_event_us": last_us, "quote_valid": 1,
+                "quote_timestamp_us": last_us - 10_000,
+                "bid_int": 99_900, "ask_int": 100_100,
+                "bid_size": 100, "ask_size": 100,
+                "price_valid": 1, "extremes_valid": 1,
+                "close_int": 100_100, "low_int": 99_800,
+                "high_int": 100_200, "execution_volume": 100,
+            }, at=next_at)
+            assert executions, "The approved Strategy 1 entry did not fill"
+            fill_runtime = object.__new__(TradingRuntime)
+            fill_runtime.run_id = run_id
+            fill_runtime.journal = journal
+            fill_runtime._record_executions(executions)
+            await manager.reconcile()
+            fill_records = journal.unfenced_records()
+            assert any((row.category, row.entity_type) == ("execution", "fill")
+                       for row in fill_records)
+            fill_units = project_pending_backtest_v4_prefix(
+                journal, attempt_id=str(UUID(int=14)),
+                run_month=date(2026, 8, 1),
+                prior_sequence=records[-1].sequence,
+                prior_batch_id=publisher._batch_id,
+                source_cursor=publisher._source_cursor,
+                expected_config={"strategy_id": "strategy-1",
+                                 "strategy_revision": 1},
+                published_sources=publisher._committed_strategy_intents,
+                committed_order_lineage=publisher._committed_order_lineage,
+                through_sequence=fill_records[0].sequence)
+            assert len(fill_units) == 1
+            assert fill_units[0].executions[0]["strategy_id"] == "strategy-1"
+            assert fill_units[0].executions[0]["signal_price"] == "10.0100000000"
+            tampered = replace(fill_records[0], payload={
+                **fill_records[0].payload, "canonical_strategy_revision": 2,
+            })
+            with pytest.raises(ValueError, match="Fill lineage differs"):
+                project_journal_record(
+                    tampered, run_month=date(2026, 8, 1),
+                    attempt_id=str(UUID(int=14)), batch_id=str(UUID(int=99)),
+                    prior_batch_id=publisher._batch_id,
+                    source_cursor=publisher._source_cursor,
+                    expected_mode="backtest",
+                    committed_order_lineage=publisher._committed_order_lineage)
             return group, records, frozen
         finally:
             await manager.close()

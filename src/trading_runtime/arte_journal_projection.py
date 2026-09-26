@@ -241,6 +241,7 @@ def project_journal_record(
     fixed_market_execution_plan: Any | None = None,
     expected_market_start: datetime | None = None,
     allow_v3_reservation_reasons: bool = False,
+    committed_order_lineage: Mapping[str, tuple] | None = None,
 ) -> TypedJournalBatch:
     """Strict shared entry point for existing live/Backtest journal records.
 
@@ -622,6 +623,22 @@ def project_journal_record(
             raise ValueError("Fill journal source clocks or lineage are invalid")
         source = {key: value for key, value in record.payload.items()
                   if key not in {"correlation_id", "causation_id"}}
+        canonical_keys = {"strategy_id", "canonical_strategy_revision",
+                          "canonical_run_id", "canonical_metadata"}
+        fill_lineage = None
+        if canonical_keys & source.keys():
+            lineage = (committed_order_lineage or {}).get(str(source.get("order_ref", "")))
+            if lineage is None:
+                raise ValueError("Fill has unmodeled source fields without a committed typed order lineage")
+            expected_raw, account, ticker, conid = lineage
+            if ({key: source.get(key) for key in canonical_keys} != expected_raw
+                    or record.account_id != account
+                    or str(source.get("symbol", "")).upper() != ticker
+                    or int(source.get("conid", -1)) != conid):
+                raise ValueError("Fill lineage differs from its committed typed order")
+            fill_lineage = expected_raw
+            for key in canonical_keys:
+                source.pop(key)
         execution = parse_ibkr_execution(source)
         if (execution.commission is not None
                 or execution.execution_id != record.entity_id
@@ -634,6 +651,13 @@ def project_journal_record(
             execution, run_id=record.run_id, event_month=month,
             batch_id=batch_id, execution_record_id=record.record_id,
             commission_record_id=None, received_at=record.recorded_at,
+            strategy_id=fill_lineage["strategy_id"] if fill_lineage else "",
+            strategy_revision=(fill_lineage["canonical_strategy_revision"]
+                               if fill_lineage else 0),
+            exit_reason=(str(fill_lineage["canonical_metadata"].get("exit_reason") or "")
+                         if fill_lineage else ""),
+            signal_price=(fill_lineage["canonical_metadata"].get("signal_price")
+                          if fill_lineage else None),
         )
         event = {
             "run_id": record.run_id, "event_month": month,
@@ -1366,6 +1390,7 @@ def broker_fill_details(
     batch_id: str, execution_record_id: str, commission_record_id: str | None,
     received_at: datetime, strategy_id: str = "", strategy_revision: int = 0,
     setup: str = "", exit_reason: str = "",
+    signal_price: float | None = None,
 ) -> FillDetails:
     """Project a broker fill without dropping an unmodeled source attribute."""
     if not run_id or not execution.execution_id or not execution.account or not execution.symbol:
@@ -1416,7 +1441,9 @@ def broker_fill_details(
         "exchange": str(execution.raw.get("exchange") or ""),
         "currency": execution.currency, "net_amount": None,
         "cumulative_quantity": None, "average_price": None, "liquidity": "",
-        "liquidation_trade": 0, "signal_price": None, "arrival_midpoint": None,
+        "liquidation_trade": 0,
+        "signal_price": (_exact_decimal(signal_price) if signal_price is not None else None),
+        "arrival_midpoint": None,
         "planned_risk": None, "source_event_time": at, "received_at": received,
         "strategy_id": strategy_id, "strategy_revision": strategy_revision,
         "setup": setup, "exit_reason": exit_reason,

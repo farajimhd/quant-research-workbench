@@ -83,6 +83,7 @@ class BacktestTypedJournalPublisher:
         # This is a performance index of already fenced source revisions, not
         # recovery authority. Cold resume must reload and verify ClickHouse.
         self._committed_strategy_intents: dict[str, tuple[TypedJournalBatch, object]] = {}
+        self._committed_order_lineage: dict[str, tuple] = {}
 
     @property
     def fenced_sequence(self) -> int:
@@ -129,6 +130,7 @@ class BacktestTypedJournalPublisher:
                 fixed_market_execution_plan=self.fixed_market_execution_plan,
                 expected_market_start=self.expected_market_start,
                 published_sources=dict(self._committed_strategy_intents),
+                committed_order_lineage=dict(self._committed_order_lineage),
                 through_sequence=through_sequence)
         if self.writer.journal_profile == "backtest_v3":
             from src.backend.backtest_squeeze_episode_v3 import coalesce_squeeze_units_v3
@@ -221,6 +223,23 @@ class BacktestTypedJournalPublisher:
                         if intent is not None:
                             self._committed_strategy_intents[intent.intent_id] = (
                                 batch, intent)
+                    if (self.writer.journal_profile == "backtest_v4"
+                            and len(batch.events) == 1
+                            and batch.events[0]["entity_type"] == "order_group_state"):
+                        from src.backend.backtest_typed_projection import (
+                            committed_oms_order_lineage,
+                        )
+                        event = batch.events[0]
+                        group = self.journal.oms_group_for_record(event["record_id"])
+                        if group is None:
+                            raise RuntimeError("Committed OMS order lost its frozen lineage")
+                        for key, lineage in committed_oms_order_lineage(
+                                group, run_id=batch.run_id,
+                                strategy_id=batch.oms_group_states[0]["strategy_id"],
+                                strategy_revision=batch.oms_group_states[0]["strategy_revision"]).items():
+                            if key in self._committed_order_lineage and self._committed_order_lineage[key] != lineage:
+                                raise RuntimeError("Committed OMS order lineage changed")
+                            self._committed_order_lineage[key] = lineage
                     self.journal.mark_fenced(batch.last_sequence)
                     self._sequence = batch.last_sequence
                     self._batch_id = batch.batch_id

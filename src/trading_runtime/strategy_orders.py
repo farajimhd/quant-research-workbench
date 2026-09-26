@@ -292,7 +292,6 @@ class RuntimeIbkrStrategyOrderPlanner:
         )
         enriched_by_identity = {}
         for order in planned.orders:
-            execution_role = _planned_execution_role(order, intent.action)
             enriched_by_identity[id(order)] = replace(
                 order,
                 raw={
@@ -300,21 +299,7 @@ class RuntimeIbkrStrategyOrderPlanner:
                     "canonical_run_id": self.run_id,
                     "canonical_strategy_id": self.strategy_id,
                     "canonical_strategy_revision": self.strategy_revision,
-                    "canonical_metadata": {
-                        **dict(intent.metadata),
-                        "action": intent.action,
-                        # The simulator may still hold a raw quote/trade whose
-                        # timestamp precedes a completed derived frame.  Carry
-                        # the decision clock explicitly so broker submission
-                        # can never be projected before the intent that created
-                        # the order.
-                        "decision_event_time": intent.event_time.isoformat(),
-                        "execution_role": execution_role,
-                        "reason": _execution_reason(execution_role, intent.reason, intent.metadata),
-                        **({'exit_reason':_execution_reason(execution_role, intent.reason, intent.metadata)}
-                           if intent.metadata.get('momentum_target') and execution_role != 'entry' else {}),
-                        "signal_price": intent.reference_price,
-                    },
+                    "canonical_metadata": canonical_runtime_metadata(order, intent),
                 },
             )
         return replace(
@@ -348,6 +333,49 @@ def _planned_execution_role(order: OrderRequest, intent_action: str) -> str:
     if order_type in {"TRAIL", "TRAILLMT"}:
         return "trailing_stop"
     return "protective_exit"
+
+
+def canonical_runtime_metadata(order: OrderRequest, intent: StrategyIntent) -> dict:
+    """Reconstruct non-persisted order lineage from its typed intent and leg."""
+    if "repair-target-" in order.cOID:
+        base = dict(intent.metadata)
+        return {
+            **base, "action": intent.action,
+            "decision_event_time": intent.event_time.isoformat(),
+            "execution_role": "profit_target",
+            "reason": "restore_position_profit_target",
+            "signal_price": intent.reference_price,
+            **({"exit_reason": base["momentum_target"].get(
+                "exit_reason", f"momentum_target_{base['momentum_target']['multiplier']}x"),
+                "momentum_target": base["momentum_target"],
+                "momentum_fill_average": base.get("momentum_fill_average")}
+               if base.get("momentum_target") else {}),
+        }
+    if "-repair-" in order.cOID and order.orderType.upper() in {"STP", "STOP_LIMIT"}:
+        base = dict(intent.metadata)
+        reason = _execution_reason("protective_stop", intent.reason, base)
+        return {
+            **base, "action": intent.action,
+            "decision_event_time": intent.event_time.isoformat(),
+            "execution_role": "protective_stop", "reason": reason,
+            **({"exit_reason": reason} if base.get("momentum_target") else {}),
+            "signal_price": intent.reference_price,
+        }
+    execution_role = _planned_execution_role(order, intent.action)
+    reason = _execution_reason(execution_role, intent.reason, intent.metadata)
+    return {
+        **dict(intent.metadata),
+        "action": intent.action,
+        # The decision clock prevents a simulator's older quote from moving
+        # broker submission before the intent that created the order.
+        "decision_event_time": intent.event_time.isoformat(),
+        "execution_role": execution_role,
+        "reason": reason,
+        **({"exit_reason": reason}
+           if intent.metadata.get("momentum_target") and execution_role != "entry"
+           else {}),
+        "signal_price": intent.reference_price,
+    }
 
 
 def _execution_reason(execution_role: str, intent_reason: str, metadata=None) -> str:
