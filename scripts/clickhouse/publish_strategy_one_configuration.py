@@ -86,7 +86,14 @@ def main() -> None:
     if args.receive_stdin:
         if args.apply:
             raise ValueError("Receiver has one explicit invocation mode")
-        _receive()
+        try:
+            _receive()
+        except Exception as exc:
+            # Preserve the diagnostic class without exposing an HTTP request,
+            # ClickHouse response, transfer payload, or workstation secret.
+            print(f"Strategy 1 receiver failed: {type(exc).__name__}",
+                  file=sys.stderr, flush=True)
+            raise SystemExit(1) from None
         return
     if platform.node().upper() == WORKSTATION:
         raise RuntimeError("The Candidate 350 source must be read on the laptop")
@@ -111,10 +118,10 @@ def main() -> None:
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         timeout=180, check=False)
     if result.returncode:
-        # Do not echo remote stderr: an unexpected ClickHouse exception may
-        # contain credential-bearing request metadata on some installations.
-        raise RuntimeError("Workstation Strategy 1 publication failed; "
-                           "inspect the workstation terminal securely")
+        diagnostic = result.stderr.decode("utf-8", errors="replace").strip()
+        if not diagnostic.startswith("Strategy 1 receiver failed: "):
+            diagnostic = "workstation transport or pre-receiver failure"
+        raise RuntimeError(f"Workstation Strategy 1 publication failed: {diagnostic}")
     print(result.stdout.decode("utf-8", errors="replace").strip(), flush=True)
 
 
