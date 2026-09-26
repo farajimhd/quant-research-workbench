@@ -3730,7 +3730,16 @@ class ReplayRunController:
             raise
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
-            await self._finish("failed")
+            try:
+                await self._finish("failed")
+            except Exception as terminal_exc:
+                # A typed run context can exist before runtime initialization.
+                # Its terminal account capture is then impossible; retain the
+                # original execution failure and expose the incomplete journal
+                # for cold operator recovery instead of masking its cause.
+                self.error += ("; V4 terminal incomplete: "
+                               f"{type(terminal_exc).__name__}: {terminal_exc}")
+                self.status = "failed"
         finally:
             if self._journal_writer is not None:
                 await self._close_fixed_journal()

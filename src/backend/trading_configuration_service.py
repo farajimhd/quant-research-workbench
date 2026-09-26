@@ -5967,6 +5967,18 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
 def merged_assignment_parameters(configuration: dict[str, Any], assignment: dict[str, Any]) -> dict[str, Any]:
     base = deepcopy(dict(configuration["strategy"].get("parameters") or {}))
     _deep_merge(base, dict(assignment.get("parameters") or {}))
+    identity = dict(configuration.get("strategy") or {})
+    if identity.get("strategy_number") == 1:
+        from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+
+        if (identity.get("strategy_id") != STRATEGY_ID
+                or identity.get("revision") != STRATEGY_NUMBER
+                or dict(base.get("execution") or {}).get("tick_size")
+                != dict(dict(identity.get("parameters") or {}).get("execution") or {}).get("tick_size")):
+            raise ValueError("Numbered Strategy 1 parameters differ from its sealed inputs")
+        # The fixed-bar coordinator owns these numbered rules. Do not invoke
+        # a legacy event executor or overwrite the sealed tick with OMS defaults.
+        return base
     campaign_policy = dict(configuration.get("campaign_policy") or {})
     reentry = base.setdefault("reentry", {})
     if campaign_policy:
