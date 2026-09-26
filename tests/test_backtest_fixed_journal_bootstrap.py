@@ -253,10 +253,15 @@ def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(mo
         configuration_hash="c" * 64, market_plan_token="b" * 64,
         projection_certifier=lambda: "a" * 64)
     from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+    from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 
-    assert len(checked) == 7
+    assert len(checked) == 11
     assert checked[2] == (read, (ENTRY_EVIDENCE,))
-    assert checked[5] == (terminal, (ENTRY_EVIDENCE,))
+    assert checked[3] == (read, (ACKNOWLEDGEMENT,))
+    assert checked[4] == (read, bootstrap.PROTECTION_CHANGE_TABLES)
+    assert checked[7] == (terminal, (ENTRY_EVIDENCE,))
+    assert checked[8] == (terminal, (ACKNOWLEDGEMENT,))
+    assert checked[9] == (terminal, bootstrap.PROTECTION_CHANGE_TABLES)
     class Writer:
         run_id = RUN
         run_mode = "backtest"
