@@ -40,6 +40,9 @@ from src.trading_runtime.arte_journal_writer import (
 )
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
+from src.trading_runtime.arte_protection_reconciliation_v4 import (
+    TABLES as PROTECTION_RECONCILIATION_TABLES,
+)
 from src.backend.backtest_protection_change_v3 import TABLES as PROTECTION_CHANGE_TABLES
 
 
@@ -55,13 +58,15 @@ def desired_plan() -> PrincipalPlan:
         table.name for table in V4_COMMIT_TABLES) | {
             ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
             *(table.name for table in PROTECTION_CHANGE_TABLES),
+            *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
             "trading_backtest_account_snapshot_v2",
             "trading_backtest_position_snapshot_v2"}
     return PrincipalPlan(
         "running", PRINCIPAL,
         frozenset(table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES,
                                           ENTRY_EVIDENCE, ACKNOWLEDGEMENT,
-                                          *PROTECTION_CHANGE_TABLES))
+                                          *PROTECTION_CHANGE_TABLES,
+                                          *PROTECTION_RECONCILIATION_TABLES))
         | MARKET_READ_TABLES,
         writable, frozenset(SYSTEM_READ_TABLES),
     )

@@ -76,7 +76,8 @@ def test_v4_commit_install_is_opt_in_and_has_no_row_writes(monkeypatch):
                         lambda *_args, **_kwargs: None)
     assert install.install_missing(client, apply=False, profile="commit-v4") == (0, 0)
     assert all(sql.startswith("SELECT ") for sql in client.statements)
-    assert install.install_missing(client, apply=True, profile="commit-v4") == (0, 2)
+    assert install.install_missing(client, apply=True, profile="commit-v4") == (
+        0, len(contracts))
     assert sum(sql.startswith("CREATE TABLE IF NOT EXISTS arte.trading_commit_")
                for sql in client.statements) == 2
 

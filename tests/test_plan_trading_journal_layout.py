@@ -10,6 +10,9 @@ from src.backend.backtest_squeeze_episode_schema import (
     ENTRY_REPRICE_REJECTED, PROTECTED_EXIT_SATISFIED, PROTECTION_CHANGE_TABLES,
     PROTECTED_EXIT_SNAPSHOT,
 )
+from src.trading_runtime.arte_protection_reconciliation_v4 import (
+    TABLES as PROTECTION_RECONCILIATION_TABLES,
+)
 
 
 def test_missing_plan_checks_installed_contracts_and_emits_only_missing_ddl(
@@ -88,7 +91,8 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
     from src.backend.backtest_protection_change_v3 import TABLES as PROTECTION_CHANGE_TABLES
 
     assert plan.profile_contracts("commit-v4") == V4_COMMIT_TABLES + (
-        ENTRY_EVIDENCE, ACKNOWLEDGEMENT, *PROTECTION_CHANGE_TABLES)
+        ENTRY_EVIDENCE, ACKNOWLEDGEMENT, *PROTECTION_CHANGE_TABLES,
+        *PROTECTION_RECONCILIATION_TABLES)
     present = V4_COMMIT_TABLES[0].name
 
     class Client:
@@ -103,5 +107,7 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
     assert [table.name for table in checked] == [present]
     assert missing == (V4_COMMIT_TABLES[1].name, ENTRY_EVIDENCE.name,
                        ACKNOWLEDGEMENT.name,
-                       *(table.name for table in PROTECTION_CHANGE_TABLES))
-    assert len(ddl) == 5 and all("live_market_ssd" in statement for statement in ddl)
+                       *(table.name for table in PROTECTION_CHANGE_TABLES),
+                       *(table.name for table in PROTECTION_RECONCILIATION_TABLES))
+    assert len(ddl) == len(missing) and all(
+        "live_market_ssd" in statement for statement in ddl)

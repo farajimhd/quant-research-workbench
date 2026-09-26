@@ -25,6 +25,9 @@ from src.trading_runtime.arte_journal_schema import (
 )
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
+from src.trading_runtime.arte_protection_reconciliation_v4 import (
+    TABLES as PROTECTION_RECONCILIATION_TABLES,
+)
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
     PROTECTED_EXIT_SATISFIED, PROTECTION_CHANGE_TABLES,
@@ -42,7 +45,8 @@ from src.trading_runtime.arte_journal_writer import journal_client_from_env
 def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
     if profile == "commit-v4":
         return V4_COMMIT_TABLES + (ENTRY_EVIDENCE, ACKNOWLEDGEMENT,
-                                   *PROTECTION_CHANGE_TABLES)
+                                   *PROTECTION_CHANGE_TABLES,
+                                   *PROTECTION_RECONCILIATION_TABLES)
     if profile == "fixed-v2":
         return fixed_backtest_v2_contracts()
     if profile == "fixed-v3":

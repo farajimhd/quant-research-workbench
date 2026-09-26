@@ -16,11 +16,15 @@ from src.trading_runtime.arte_journal_commit_v4 import (
     load_verified_v4_prefix, publish_base_typed_batch_v4,
     publish_broker_acknowledgement_batch_v4,
     publish_protection_change_batch_v4,
+    publish_protection_reconciliation_batch_v4,
     publish_strategy_one_entry_batch_v4,
 )
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_broker_acknowledgement_v4 import project_broker_acknowledgement_v4
 from src.trading_runtime.arte_protection_change_v4 import protection_change_batch_v4
+from src.trading_runtime.arte_protection_reconciliation_v4 import (
+    project_protection_reconciliation_v4,
+)
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
 from src.trading_runtime.arte_oms_projection import oms_group_state_batch
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary
@@ -354,6 +358,12 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
                         self.client, unit.base, change=unit.change,
                         entry_orders=unit.entry_orders))
 
+                def submit_protection_reconciliation_v4(self, unit):
+                    return self._receipt(unit, lambda: publish_protection_reconciliation_batch_v4(
+                        self.client, unit.base,
+                        reconciliation=unit.reconciliation,
+                        actions=unit.actions, replies=unit.replies))
+
             writer = FencedV4Writer()
             publisher = BacktestTypedJournalPublisher(
                 journal, writer, attempt_id=str(UUID(int=14)),
@@ -423,6 +433,37 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
                     source_cursor=publisher._source_cursor,
                     expected_mode="backtest",
                     committed_order_lineage=publisher._committed_order_lineage)
+            full_suffix = project_pending_backtest_v4_prefix(
+                journal, attempt_id=str(UUID(int=14)),
+                run_month=date(2026, 8, 1),
+                prior_sequence=records[-1].sequence,
+                prior_batch_id=publisher._batch_id,
+                source_cursor=publisher._source_cursor,
+                expected_config={"strategy_id": "strategy-1",
+                                 "strategy_revision": 1},
+                published_sources=publisher._committed_strategy_intents,
+                committed_order_lineage=publisher._committed_order_lineage,
+                through_sequence=fill_records[-1].sequence)
+            assert sum(len((unit.base if hasattr(unit, "base") else unit).events)
+                       for unit in full_suffix) == len(fill_records)
+            reconciliation = next(row for row in fill_records
+                                  if row.entity_type == "protection_reconciliation")
+            bad_action = {**reconciliation.payload["actions"][0], "opaque": {"x": 1}}
+            with pytest.raises(ValueError, match="unmodeled fields"):
+                project_protection_reconciliation_v4(
+                    replace(reconciliation, payload={
+                        **reconciliation.payload, "actions": [bad_action]}),
+                    attempt_id=str(UUID(int=14)), batch_id=str(UUID(int=101)))
+            suffix_receipt = await publisher.enqueue_pending()
+            assert suffix_receipt.last_sequence == fill_records[-1].sequence
+            assert journal.pending_record_count == 0
+            assert load_verified_v4_prefix(
+                writer.client, run_id).last_sequence == fill_records[-1].sequence
+            replies = writer.client.tables["trading_protection_reconciliation_reply_v4"]
+            assert len(replies) == 2
+            replies[0]["order_status"] = "Tampered"
+            with pytest.raises(RuntimeError, match="typed detail differs"):
+                load_verified_v4_prefix(writer.client, run_id)
             return group, records, frozen
         finally:
             await manager.close()

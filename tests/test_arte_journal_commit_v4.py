@@ -27,6 +27,9 @@ from src.trading_runtime.arte_broker_acknowledgement_v4 import (
 )
 from src.trading_runtime.arte_protection_change_v4 import protection_change_batch_v4
 from src.backend.backtest_protection_change_v3 import TABLES as PROTECTION_CHANGE_TABLES
+from src.trading_runtime.arte_protection_reconciliation_v4 import (
+    TABLES as PROTECTION_RECONCILIATION_TABLES,
+)
 from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.arte_journal_reader import load_typed_event_page
 from src.backend.backtest_typed_activity import load_fixed_typed_activity_page
@@ -660,12 +663,14 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     assert {table.name for table in observed[0]} == {
         table.name for table in (*fixed_backtest_v2_contracts(),
                                  *V4_COMMIT_TABLES, ENTRY_EVIDENCE,
-                                 ACKNOWLEDGEMENT, *PROTECTION_CHANGE_TABLES)}
+                                 ACKNOWLEDGEMENT, *PROTECTION_CHANGE_TABLES,
+                                 *PROTECTION_RECONCILIATION_TABLES)}
     writable = frozenset(writer_module._v4_family_table(table)
                          for table, _, _, _ in writer_module._FAMILIES) | \
         frozenset(table.name for table in V4_COMMIT_TABLES) | {
             ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
             *(table.name for table in PROTECTION_CHANGE_TABLES),
+            *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
             "trading_backtest_account_snapshot_v2",
             "trading_backtest_position_snapshot_v2"}
     assert observed[1] == (

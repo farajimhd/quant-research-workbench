@@ -22,6 +22,9 @@ from src.trading_runtime.arte_journal_writer import (
     V4ProtectionChangeBatch, _coalesce_unpublished,
 )
 from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
+from src.trading_runtime.arte_protection_reconciliation_v4 import (
+    V4ProtectionReconciliationBatch,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,7 +119,8 @@ class BacktestTypedJournalPublisher:
 
     def _prepare_batches(self, through_sequence: int) -> tuple[
             TypedJournalBatch | V3SqueezeBatch | V4StrategyOneEntryBatch
-            | V4BrokerAcknowledgementBatch | V4ProtectionChangeBatch, ...]:
+            | V4BrokerAcknowledgementBatch | V4ProtectionChangeBatch
+            | V4ProtectionReconciliationBatch, ...]:
         """Project at most one commit-sized prefix outside the event loop."""
         if not self._sequence < through_sequence <= self._sequence + self.batch_size:
             raise ValueError("Typed Backtest projection exceeds one commit budget")
@@ -183,7 +187,8 @@ class BacktestTypedJournalPublisher:
                     batch = unit.base if isinstance(
                         unit, (V3SqueezeBatch, V4StrategyOneEntryBatch,
                                V4BrokerAcknowledgementBatch,
-                               V4ProtectionChangeBatch)) else unit
+                               V4ProtectionChangeBatch,
+                               V4ProtectionReconciliationBatch)) else unit
                     if (batch.first_sequence != self._sequence + 1
                             or batch.prior_batch_id != self._batch_id):
                         raise RuntimeError("Typed Backtest batch chain is not contiguous")
@@ -193,6 +198,8 @@ class BacktestTypedJournalPublisher:
                                if isinstance(unit, V4BrokerAcknowledgementBatch)
                                else self.writer.submit_protection_change_v4(unit)
                                if isinstance(unit, V4ProtectionChangeBatch)
+                               else self.writer.submit_protection_reconciliation_v4(unit)
+                               if isinstance(unit, V4ProtectionReconciliationBatch)
                                else self.writer.submit_squeeze_v3(unit)
                                if isinstance(unit, V3SqueezeBatch)
                                else self.writer.submit_base_v4(batch)

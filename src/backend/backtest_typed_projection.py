@@ -18,6 +18,9 @@ from src.trading_runtime.arte_journal_writer import (
     V4BrokerAcknowledgementBatch, V4ProtectionChangeBatch,
     V4StrategyOneEntryBatch, _coalesce_unpublished,
 )
+from src.trading_runtime.arte_protection_reconciliation_v4 import (
+    V4ProtectionReconciliationBatch,
+)
 from src.trading_runtime.journal_contract import canonical_json
 
 
@@ -65,13 +68,17 @@ def project_pending_backtest_v4_prefix(
     committed_order_lineage: Mapping[str, tuple] | None = None,
     through_sequence: int,
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
-           | V4BrokerAcknowledgementBatch | V4ProtectionChangeBatch, ...]:
+           | V4BrokerAcknowledgementBatch | V4ProtectionChangeBatch
+           | V4ProtectionReconciliationBatch, ...]:
     """Project one bounded V4 prefix; special families never enter a base batch."""
     from src.trading_runtime.arte_broker_acknowledgement_v4 import (
         broker_acknowledgement_batch_v4,
     )
     from src.trading_runtime.arte_protection_change_v4 import (
         protection_change_batch_v4,
+    )
+    from src.trading_runtime.arte_protection_reconciliation_v4 import (
+        protection_reconciliation_batch_v4,
     )
     from src.trading_runtime.arte_strategy_one_entry_journal import (
         project_strategy_one_entry_evidence,
@@ -113,6 +120,11 @@ def project_pending_backtest_v4_prefix(
                 source_cursor=cursor)
         elif kind == ("protection", "protection_change"):
             unit = protection_change_batch_v4(
+                record, run_month=run_month, attempt_id=attempt,
+                batch_id=batch_id, prior_batch_id=previous,
+                source_cursor=cursor)
+        elif kind == ("order_management", "protection_reconciliation"):
+            unit = protection_reconciliation_batch_v4(
                 record, run_month=run_month, attempt_id=attempt,
                 batch_id=batch_id, prior_batch_id=previous,
                 source_cursor=cursor)

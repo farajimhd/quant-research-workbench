@@ -18,6 +18,11 @@ from zoneinfo import ZoneInfo
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
+from src.trading_runtime.arte_protection_reconciliation_v4 import (
+    RECONCILIATION as PROTECTION_RECONCILIATION,
+    ACTION as RECONCILIATION_ACTION, REPLY as RECONCILIATION_REPLY,
+    seal_protection_reconciliation_v4,
+)
 from src.backend.backtest_protection_change_v3 import (
     CHANGE as PROTECTION_CHANGE, ENTRY_ORDER as PROTECTION_ENTRY_ORDER,
     seal_protection_changes_v3,
@@ -312,6 +317,8 @@ def _load_verified_details_v4(
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
                     ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
                     PROTECTION_CHANGE.name, PROTECTION_ENTRY_ORDER.name,
+                    PROTECTION_RECONCILIATION.name,
+                    RECONCILIATION_ACTION.name, RECONCILIATION_REPLY.name,
                     "trading_backtest_account_snapshot_v2",
                     "trading_backtest_position_snapshot_v2"}:
             related_rows[name] = rows
@@ -360,6 +367,14 @@ def _load_verified_details_v4(
             tuple(events.values()), run_id=run_id, batch_id=batch_id)
     except ValueError as exc:
         raise RuntimeError("V4 protection change differs from its typed children") from exc
+    try:
+        seal_protection_reconciliation_v4(
+            related_rows.get(PROTECTION_RECONCILIATION.name, ()),
+            related_rows.get(RECONCILIATION_ACTION.name, ()),
+            related_rows.get(RECONCILIATION_REPLY.name, ()),
+            tuple(events.values()), run_id=run_id, batch_id=batch_id)
+    except ValueError as exc:
+        raise RuntimeError("V4 reconciliation differs from its typed children") from exc
     accounts = related_rows.get("trading_backtest_account_snapshot_v2", ())
     positions = related_rows.get("trading_backtest_position_snapshot_v2", ())
     if accounts or positions:
@@ -504,6 +519,15 @@ def publish_protection_change_batch_v4(client, batch, *, change,
         protection_entry_order_rows=entry_orders)
 
 
+def publish_protection_reconciliation_batch_v4(
+    client, batch, *, reconciliation, actions, replies,
+) -> str:
+    return _publish_typed_batch_v4(
+        client, batch, protection_reconciliation_row=reconciliation,
+        protection_reconciliation_actions=actions,
+        protection_reconciliation_replies=replies)
+
+
 def publish_terminal_typed_batch_v4(
     client, batch, *, captures, broker_snapshots=None,
 ) -> V4CommittedPrefix:
@@ -640,6 +664,9 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                             broker_acknowledgement_row=None,
                             protection_change_row=None,
                             protection_entry_order_rows=(),
+                            protection_reconciliation_row=None,
+                            protection_reconciliation_actions=(),
+                            protection_reconciliation_replies=(),
                             broker_snapshot_rows=None) -> str:
     from src.trading_runtime.arte_journal_writer import (
         TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
@@ -659,7 +686,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
             strategy_one_entry_rows, broker_acknowledgement_row,
-            protection_change_row, broker_snapshot_rows)) > 1:
+            protection_change_row, protection_reconciliation_row,
+            broker_snapshot_rows)) > 1:
         raise ValueError("V4 batch cannot mix independent typed supplements")
     snapshot_accounts = ()
     snapshot_positions = ()
@@ -762,9 +790,37 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         seal_protection_changes_v3(
             protection_rows, protection_children, batch.events,
             run_id=batch.run_id, batch_id=batch.batch_id)
+    reconciliation_rows = ()
+    reconciliation_actions = ()
+    reconciliation_replies = ()
+    if protection_reconciliation_row is not None:
+        if (len(batch.events) != 1 or not isinstance(protection_reconciliation_row, Mapping)
+                or (batch.events[0]["category"], batch.events[0]["entity_type"])
+                != ("order_management", "protection_reconciliation")):
+            raise ValueError("V4 protection reconciliation has an invalid parent")
+        def seal_row(name, source):
+            if not isinstance(source, Mapping):
+                raise ValueError("V4 reconciliation child is not a typed row")
+            row = typed_row(name, {key: value for key, value in source.items()
+                                   if key != "content_hash"})
+            if "content_hash" in source and source["content_hash"] != row["content_hash"]:
+                raise ValueError("V4 reconciliation child differs from its seal")
+            return row
+        reconciliation_rows = (seal_row(PROTECTION_RECONCILIATION.name,
+                                         protection_reconciliation_row),)
+        reconciliation_actions = tuple(seal_row(RECONCILIATION_ACTION.name, row)
+                                       for row in protection_reconciliation_actions)
+        reconciliation_replies = tuple(seal_row(RECONCILIATION_REPLY.name, row)
+                                       for row in protection_reconciliation_replies)
+        seal_protection_reconciliation_v4(
+            reconciliation_rows, reconciliation_actions, reconciliation_replies,
+            batch.events, run_id=batch.run_id, batch_id=batch.batch_id)
+    elif protection_reconciliation_actions or protection_reconciliation_replies:
+        raise ValueError("V4 reconciliation children lack their typed parent")
     base_families = _sealed_families(
         batch, v4_broker_ack_ids=tuple(row["record_id"] for row in ack_rows),
         v4_protection_ids=tuple(row["record_id"] for row in protection_rows),
+        v4_reconciliation_ids=tuple(row["record_id"] for row in reconciliation_rows),
         v4_snapshot_account_ids=tuple(row["record_id"] for row in snapshot_accounts),
         v4_snapshot_position_ids=tuple(row["record_id"] for row in snapshot_positions))
     entry_rows = _sealed_strategy_one_entry_rows(
@@ -779,6 +835,12 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         families += ((PROTECTION_CHANGE.name, protection_rows),)
     if protection_children:
         families += ((PROTECTION_ENTRY_ORDER.name, protection_children),)
+    if reconciliation_rows:
+        families += ((PROTECTION_RECONCILIATION.name, reconciliation_rows),)
+    if reconciliation_actions:
+        families += ((RECONCILIATION_ACTION.name, reconciliation_actions),)
+    if reconciliation_replies:
+        families += ((RECONCILIATION_REPLY.name, reconciliation_replies),)
     if snapshot_accounts:
         families += (("trading_backtest_account_snapshot_v2", snapshot_accounts),)
     if snapshot_positions:

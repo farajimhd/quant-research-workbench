@@ -32,6 +32,10 @@ from src.trading_runtime.arte_journal_schema import (
 )
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
+from src.trading_runtime.arte_protection_reconciliation_v4 import (
+    TABLES as PROTECTION_RECONCILIATION_TABLES,
+    V4ProtectionReconciliationBatch,
+)
 from src.backend.backtest_squeeze_episode_schema import (
     RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
@@ -57,6 +61,7 @@ if TYPE_CHECKING:
 _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
 _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
+_CONTRACTS.update({table.name: table for table in PROTECTION_RECONCILIATION_TABLES})
 _CONTRACTS.update({table.name: table for table in V4_COMMIT_TABLES})
 _CONTRACTS.update({table.name: table for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES})
 _CONTRACTS.update({table.name: table for table in VERSIONED_JOURNAL_V2_TABLES})
@@ -449,6 +454,7 @@ def _sealed_families(
     v3_reconciliation: bool = False,
     v4_broker_ack_ids: tuple[str, ...] = (),
     v4_protection_ids: tuple[str, ...] = (),
+    v4_reconciliation_ids: tuple[str, ...] = (),
     v4_snapshot_account_ids: tuple[str, ...] = (),
     v4_snapshot_position_ids: tuple[str, ...] = (),
 ) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
@@ -624,6 +630,15 @@ def _sealed_families(
             if identity in details_by_record:
                 raise ValueError("Journal event has multiple typed detail families")
             details_by_record[identity] = PROTECTION_CHANGE_TABLES[0].name
+    if v4_reconciliation_ids:
+        expected_details = {**expected_details,
+            ("order_management", "protection_reconciliation"):
+                PROTECTION_RECONCILIATION_TABLES[0].name}
+        for record_id in v4_reconciliation_ids:
+            identity = str(UUID(str(record_id)))
+            if identity in details_by_record:
+                raise ValueError("Journal event has multiple typed detail families")
+            details_by_record[identity] = PROTECTION_RECONCILIATION_TABLES[0].name
     if v4_snapshot_account_ids or v4_snapshot_position_ids:
         expected_details = {**expected_details,
             ("snapshot", "portfolio"):
@@ -1649,7 +1664,8 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     """One exact, deduplicated V4 catalog for every principal's storage audit."""
     installed = fixed_backtest_v2_contracts()
     contracts = (*installed, *V4_COMMIT_TABLES, ENTRY_EVIDENCE,
-                 ACKNOWLEDGEMENT, *PROTECTION_CHANGE_TABLES)
+                 ACKNOWLEDGEMENT, *PROTECTION_CHANGE_TABLES,
+                 *PROTECTION_RECONCILIATION_TABLES)
     by_name = {}
     for contract in contracts:
         previous = by_name.setdefault(contract.name, contract)
@@ -1670,6 +1686,7 @@ def _v4_preflight(client: Any) -> None:
     ) | frozenset(table.name for table in V4_COMMIT_TABLES) | {
         ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
         *(table.name for table in PROTECTION_CHANGE_TABLES),
+        *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
         "trading_backtest_account_snapshot_v2",
         "trading_backtest_position_snapshot_v2"}
     readonly = frozenset(table.name for table in installed) - writable
@@ -3167,6 +3184,7 @@ class ArteJournalWriter:
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
                   | V4StrategyOneEntryBatch | V4BrokerAcknowledgementBatch
                   | V4ProtectionChangeBatch
+                  | V4ProtectionReconciliationBatch
                   | _DurabilityBarrier | _AdmissionUnit
                   | _PortfolioSyncUnit | _TerminalBacktestUnit,
                   Future[str]] | None
@@ -3303,6 +3321,25 @@ class ArteJournalWriter:
         if (self._journal_profile != "backtest_v4"
                 or not isinstance(unit, V4ProtectionChangeBatch)):
             raise ValueError("V4 protection change requires its typed writer profile")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            if unit.base.run_id != self._run_id:
+                raise ValueError("V4 writer cannot mix runs")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_protection_reconciliation_v4(
+            self, unit: V4ProtectionReconciliationBatch) -> Future[str]:
+        """Queue normalized repair actions without blocking the engine."""
+        if (self._journal_profile != "backtest_v4"
+                or not isinstance(unit, V4ProtectionReconciliationBatch)):
+            raise ValueError("V4 reconciliation requires its typed writer profile")
         with self._submission_lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("V4 writer is closed or failed")
@@ -3558,11 +3595,21 @@ class ArteJournalWriter:
                                             V4StrategyOneEntryBatch,
                                             V4BrokerAcknowledgementBatch,
                                             V4ProtectionChangeBatch,
+                                            V4ProtectionReconciliationBatch,
                                             _DurabilityBarrier))
                         and not (self._journal_profile == "backtest_v4"
                                  and isinstance(group[0][0], _TerminalBacktestUnit))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
-                if isinstance(group[0][0], V4ProtectionChangeBatch):
+                if isinstance(group[0][0], V4ProtectionReconciliationBatch):
+                    from src.trading_runtime.arte_journal_commit_v4 import (
+                        publish_protection_reconciliation_batch_v4,
+                    )
+                    unit = group[0][0]
+                    committed_id = publish_protection_reconciliation_batch_v4(
+                        self._client, unit.base,
+                        reconciliation=unit.reconciliation,
+                        actions=unit.actions, replies=unit.replies)
+                elif isinstance(group[0][0], V4ProtectionChangeBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_protection_change_batch_v4,
                     )
