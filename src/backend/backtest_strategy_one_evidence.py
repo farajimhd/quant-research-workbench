@@ -33,7 +33,12 @@ from src.trading_runtime.strategy_one_activation_state import (
 from src.trading_runtime.strategy_one_bos import (
     BosSupport, supported_completed_bos,
 )
-from src.trading_runtime.strategy_one_position import ProtectionTransition
+from src.trading_runtime.strategy_one_position import (
+    ProtectionTransition, ResistanceBreak,
+)
+from src.trading_runtime.strategy_one_resistance import (
+    ResistanceObservation, observe_completed_resistance_second,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +80,10 @@ class StrategyOneCausalEvidence:
             observe_completed_second=self.bos.observe_second,
             prefetch_horizon_ms=300_000)
         self.activations = ActivationCatalog()
+        self._resistance: dict[str, ResistanceObservation] = {}
+        self._completed_breaks: dict[str, tuple[ResistanceBreak, ...]] = {}
+        self._break_boundary_ms = 0
+        self._completed_30s: dict[str, Mapping[str, Any]] = {}
 
     async def observe_completed_seconds(self, work: StrategyOneBoundaryWork) -> None:
         """Advance loaded V7/BOS books from the same certified market tape.
@@ -86,8 +95,20 @@ class StrategyOneCausalEvidence:
         """
         if not isinstance(work, StrategyOneBoundaryWork):
             raise TypeError("Strategy 1 V7 observation needs typed boundary work")
+        if work.boundary_ms <= self._break_boundary_ms:
+            raise ValueError("Strategy 1 resistance clock did not advance")
+        self._break_boundary_ms = work.boundary_ms
+        self._completed_breaks = {}
         rows = []
         for ticker, resolutions in work.broker_rows:
+            low_row = resolutions.get(30_000)
+            if low_row is not None:
+                if (low_row.get("session_date") != self.session.isoformat()
+                        or low_row.get("ticker") != ticker
+                        or low_row.get("resolution_ms") != 30_000
+                        or low_row.get("boundary_ms") != work.boundary_ms):
+                    raise ValueError("Strategy 1 completed 30s low differs from boundary")
+                self._completed_30s[ticker] = low_row
             row = resolutions.get(1_000)
             if row is None or not self.v7.has_stream(ticker):
                 continue
@@ -105,6 +126,41 @@ class StrategyOneCausalEvidence:
                     tuple(str(row["ticker"]) for row in rows), at=at)
             else:
                 await asyncio.to_thread(self.v7.advance_seconds, rows, at=at)
+            # Acceptance uses the just-completed 1s close against geometry
+            # known before that second. No intrabucket trade ordering exists.
+            for row in rows:
+                ticker = str(row["ticker"])
+                levels = self.v7.strategy_one_levels(ticker, as_of=at)
+                state, breaks = observe_completed_resistance_second(
+                    self._resistance.get(ticker, ResistanceObservation()),
+                    row, admitted_levels=levels)
+                self._resistance[ticker] = state
+                self._completed_breaks[ticker] = breaks
+
+    def completed_resistance_breaks(
+        self, ticker: str, *, boundary_ms: int,
+    ) -> tuple[ResistanceBreak, ...]:
+        """Expose only witnesses from the exact completed global boundary."""
+        if (not ticker or type(boundary_ms) is not int
+                or boundary_ms != self._break_boundary_ms):
+            raise ValueError("Strategy 1 break request differs from completed clock")
+        return self._completed_breaks.get(ticker, ())
+
+    def completed_30s_low(
+        self, ticker: str, *, boundary_ms: int,
+    ) -> Mapping[str, Any] | None:
+        """Return only the last valid, still-current completed 30s source row."""
+        if (not ticker or type(boundary_ms) is not int
+                or boundary_ms != self._break_boundary_ms):
+            raise ValueError("Strategy 1 30s low request differs from completed clock")
+        row = self._completed_30s.get(ticker)
+        if (row is None or row.get("price_valid") != 1
+                or row.get("extremes_valid") != 1
+                or type(row.get("low_int")) is not int
+                or row["low_int"] <= 0
+                or not 0 <= boundary_ms - row["boundary_ms"] < 30_000):
+            return None
+        return row
 
     async def _levels(self, ticker: str, boundary_ms: int) -> tuple[Mapping, ...]:
         at = market_day_boundary(self.session, boundary_ms)
@@ -117,6 +173,13 @@ class StrategyOneCausalEvidence:
         if not isinstance(activation, StrategyOneActivation):
             raise ValueError("Strategy 1 activation is not certified")
         levels = await self._levels(activation.ticker, activation.boundary_ms)
+        prior = self.v7.last_completed_price_second(activation.ticker)
+        if prior is not None and activation.ticker not in self._resistance:
+            state, breaks = observe_completed_resistance_second(
+                ResistanceObservation(), prior, admitted_levels=levels)
+            if breaks:
+                raise RuntimeError("Strategy 1 first resistance observation broke a level")
+            self._resistance[activation.ticker] = state
         frozen = freeze_strategy_one_activation(
             session_date=self.session.isoformat(), ticker=activation.ticker,
             boundary_ms=activation.boundary_ms, price_int=activation.price_int,

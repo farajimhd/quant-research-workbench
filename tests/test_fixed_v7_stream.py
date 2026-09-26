@@ -151,11 +151,13 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
     assert cache.context("TEST", as_of=before, price=10.0)["qmd_structure_unified_levels"] == []
     assert cache.has_stream("TEST")
     assert cache._streams["TEST"].engine.bars_processed == 0
+    assert cache.last_completed_price_second("TEST") is None
     completed = datetime(2026, 8, 18, 4, 5, 1, tzinfo=NY)
     cache.advance_seconds([bar], at=completed)
     assert observed_seconds == [("TEST", 14700, 301_000)]
     assert cache.context("TEST", as_of=completed, price=10.0)["qmd_structure_session_high"] == 10.01
     assert cache._streams["TEST"].engine.bars_processed == 1
+    assert cache.last_completed_price_second("TEST")["boundary_ms"] == 301_000
     assert all(sql.startswith("SELECT") for sql in client.queries)
     later = datetime(2026, 8, 18, 4, 5, 2, tzinfo=NY)
     cache.strategy_one_levels("TEST", as_of=later)
@@ -236,6 +238,7 @@ def test_strategy_one_prefetch_never_consumes_future_second():
         snapshots.append(cache._streams["TEST"].engine.hod)
         assert cache._streams["TEST"].engine.bars_processed == 1
         assert cache._last_loaded_second_ms["TEST"] == 301_000
+        assert cache.last_completed_price_second("TEST")["close_int"] == 100050
         assert len([sql for sql in client.queries if "arte.bars_v1" in sql]) == 1
         assert cache._prefetched_through_ms["TEST"] == 601_000
         with pytest.raises(RuntimeError, match="pinned buffer"):

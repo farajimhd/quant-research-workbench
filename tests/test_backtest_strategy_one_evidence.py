@@ -92,6 +92,8 @@ def test_activation_and_later_candidate_use_same_completed_second_stream():
             StrategyOneActivation(301_000, "TEST", 100_000))
         assert frozen.boundary_ms == 301_000
         assert frozen.average_gap is None
+        assert evidence._resistance["TEST"].boundary_ms == 301_000
+        assert evidence._resistance["TEST"].close_int == 100_000
         boundary = 302_000
         at = market_day_boundary(session, boundary)
         await evidence.observe_completed_seconds(StrategyOneBoundaryWork(
@@ -118,3 +120,83 @@ def test_activation_and_later_candidate_use_same_completed_second_stream():
 
     asyncio.run(run())
     assert client.bar_reads == 1
+
+
+def test_management_breaks_use_only_prior_known_completed_second():
+    session = date(2026, 8, 18)
+    level = {"unified_level_id": "r1", "lower": 10., "upper": 10.2,
+             "role": "resistance"}
+
+    class ReadyV7:
+        prefetches_seconds = False
+
+        def has_stream(self, ticker):
+            return ticker == "TEST"
+
+        def advance_seconds(self, rows, *, at):
+            assert len(rows) == 1 and at.tzinfo is not None
+
+        def strategy_one_levels(self, ticker, *, as_of):
+            assert ticker == "TEST" and as_of.tzinfo is not None
+            return (level,)
+
+    evidence = object.__new__(StrategyOneCausalEvidence)
+    evidence.session = session
+    evidence.v7 = ReadyV7()
+    evidence._resistance = {}
+    evidence._completed_breaks = {}
+    evidence._break_boundary_ms = 0
+    evidence._completed_30s = {}
+
+    async def observe(boundary, opened=None, closed=None):
+        resolutions = ({1_000: {
+            "session_date": session.isoformat(), "ticker": "TEST",
+            "boundary_ms": boundary, "resolution_ms": 1_000,
+            "open_int": opened, "close_int": closed, "price_valid": 1}}
+            if opened is not None else {})
+        await evidence.observe_completed_seconds(StrategyOneBoundaryWork(
+            boundary, (("TEST", resolutions),) if resolutions else (), ()))
+
+    async def run():
+        await observe(1_000, 100_000, 100_500)
+        assert evidence.completed_resistance_breaks("TEST", boundary_ms=1_000) == ()
+        await observe(2_000, 100_500, 101_500)
+        breaks = evidence.completed_resistance_breaks("TEST", boundary_ms=2_000)
+        assert len(breaks) == 1
+        assert breaks[0].level["unified_level_id"] == "r1"
+        await observe(2_100)
+        assert evidence.completed_resistance_breaks("TEST", boundary_ms=2_100) == ()
+
+    asyncio.run(run())
+
+
+def test_management_low_expires_and_invalid_completed_bucket_revokes_it():
+    session = date(2026, 8, 18)
+    evidence = object.__new__(StrategyOneCausalEvidence)
+    evidence.session = session
+    evidence.v7 = type("NoLoadedBooks", (), {"has_stream": lambda _self, _ticker: False})()
+    evidence._resistance = {}
+    evidence._completed_breaks = {}
+    evidence._break_boundary_ms = 0
+    evidence._completed_30s = {}
+
+    async def observe(boundary, low=None, *, valid=True):
+        rows = ({30_000: {"session_date": session.isoformat(),
+                           "ticker": "TEST", "boundary_ms": boundary,
+                           "resolution_ms": 30_000, "low_int": low,
+                           "price_valid": int(valid),
+                           "extremes_valid": int(valid)}} if low is not None else {})
+        await evidence.observe_completed_seconds(StrategyOneBoundaryWork(
+            boundary, (("TEST", rows),) if rows else (), ()))
+
+    async def run():
+        await observe(30_000, 98_000)
+        assert evidence.completed_30s_low("TEST", boundary_ms=30_000)["low_int"] == 98_000
+        await observe(59_900)
+        assert evidence.completed_30s_low("TEST", boundary_ms=59_900)["low_int"] == 98_000
+        await observe(60_000, 95_000, valid=False)
+        assert evidence.completed_30s_low("TEST", boundary_ms=60_000) is None
+        await observe(60_100)
+        assert evidence.completed_30s_low("TEST", boundary_ms=60_100) is None
+
+    asyncio.run(run())

@@ -141,12 +141,23 @@ class FixedV7Cache:
         self._streams: dict[str, FixedV7Stream] = {}
         self._last_loaded_second_ms: dict[str, int] = {}
         self._last_observed_second_ms: dict[str, int] = {}
+        self._last_completed_second_rows: dict[str, Mapping[str, Any]] = {}
         self._prefetched: dict[str, deque[Mapping[str, Any]]] = {}
         self._prefetched_through_ms: dict[str, int] = {}
 
     def has_stream(self, ticker: str) -> bool:
         """True after this session's private book has been loaded and caught up."""
         return ticker in self._streams
+
+    def last_completed_price_second(self, ticker: str) -> Mapping[str, Any] | None:
+        """Return the already-consumed 1s row, never a prefetched future bar."""
+        if ticker not in self._coverage:
+            raise ValueError("V7 ticker is outside the certified seed population")
+        row = self._last_completed_second_rows.get(ticker)
+        if row is None or not (int(row.get("price_valid") or 0)
+                               and int(row.get("extremes_valid") or 0)):
+            return None
+        return row
 
     @property
     def prefetches_seconds(self) -> bool:
@@ -192,6 +203,8 @@ class FixedV7Cache:
             raise ValueError("V7 completed second duplicated or moved backward")
         if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
             stream.update_second(row, at=at)
+        self._last_completed_second_rows[ticker] = {
+            **row, "boundary_ms": boundary_ms, "session_date": self.session.isoformat()}
         if self._observe_completed_second is not None:
             self._observe_completed_second(ticker, row, boundary_ms)
         self._last_observed_second_ms[ticker] = boundary_ms
@@ -239,6 +252,9 @@ class FixedV7Cache:
             bar_at = market_day_boundary(self.session, second_ms)
             if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
                 stream.update_second(row, at=bar_at)
+            self._last_completed_second_rows[ticker] = {
+                **row, "boundary_ms": second_ms,
+                "session_date": self.session.isoformat()}
             if self._observe_completed_second is not None:
                 self._observe_completed_second(ticker, row, second_ms)
             self._last_observed_second_ms[ticker] = second_ms
