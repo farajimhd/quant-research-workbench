@@ -311,7 +311,6 @@ def verify_source_archive(source: Path, *, supplement_parent: Path | None = None
     source_plan = read(source / "plan.json")
     if recovery_parent is not None:
         from scripts.prepare_level_book_v7_solver_recovery import OLD_SOLVER_HASH, SOLVER_FILE
-        from src.market_engine.reaction_center import SOLVER_VERSION
         parent = read(recovery_parent / "plan.json")
         prefix = source_plan.get("inherited_prefix") or {}
         rows = source_plan.get("rows") or []
@@ -331,7 +330,7 @@ def verify_source_archive(source: Path, *, supplement_parent: Path | None = None
                     if source_plan["source_files"].get(key) != parent["source_files"].get(key)}
                     != {SOLVER_FILE}
                 or parent["source_files"].get(SOLVER_FILE) != OLD_SOLVER_HASH
-                or prefix.get("solver_version") != SOLVER_VERSION
+                or prefix.get("solver_version") != "student-t-analytic-gradient-1"
                 or prefix.get("parent_plan_hash") != parent["plan_hash"]
                 or prefix.get("parent_source_files") != parent["source_files"]
                 or prefix.get("policy") != "Verified old-solver prefix retained byte-for-byte; analytic solver applies only to subsequent sessions"):
@@ -341,10 +340,14 @@ def verify_source_archive(source: Path, *, supplement_parent: Path | None = None
         historical_file = "research/level_book/v7/campaign_source.py"
         historical_code = subprocess.check_output(
             ["git", "show", f"{parent['git_commit']}:{historical_file}"], cwd=REPO)
+        recovery_solver = subprocess.check_output(
+            ["git", "show", f"{source_plan['git_commit']}:{SOLVER_FILE}"], cwd=REPO)
         if (sha256(historical_code).hexdigest() != parent["source_files"][historical_file]
                 or b"return digest(dict(policy=HISTORICAL_POLICY,metadata=metadata,rules=rules))"
-                   not in historical_code):
-            raise ValueError("Original V7 source-hash implementation is not pinned")
+                   not in historical_code
+                or sha256(recovery_solver).hexdigest() != source_plan["source_files"][SOLVER_FILE]
+                or b"SOLVER_VERSION = 'student-t-analytic-gradient-1'" not in recovery_solver):
+            raise ValueError("Original or recovery V7 implementation is not pinned")
         original_root = recovery_parent / "tickers" / "URG"
         original_source = read(original_root / "source-plan.json")
         if original_source.get("plan_hash") != parent["plan_hash"]:
