@@ -81,6 +81,30 @@ def approved_oms_lineage_intent(group: FrozenOmsGroup) -> StrategyIntent:
     return group.intent
 
 
+def _target_proof_failures(
+    group: FrozenOmsGroup, order: OrderRequest,
+    proof: JournalRecord | None,
+) -> tuple[str, ...]:
+    if proof is None:
+        return ("missing_proof",)
+    checks = {
+        "category": proof.category == "protection",
+        "entity_type": proof.entity_type == "protection_change",
+        "account_id": proof.account_id == group.account_id,
+        "group_id": proof.payload.get("order_group_id") == group.group_id,
+        "source_intent_id": proof.payload.get("source_intent_id") == group.intent.intent_id,
+        "phase": proof.payload.get("phase") == "effective",
+        "kind": proof.payload.get("kind") == "target",
+        "action": proof.payload.get("action") == "replace_profit_target",
+        "client_order_id": proof.payload.get("client_order_id") == order.cOID,
+        "order_price": proof.payload.get("price") == order.price,
+        "intent_target": proof.payload.get("price") == group.intent.profit_target_price,
+        "amendment_intent_id": isinstance(proof.payload.get("intent_id"), str)
+                               and bool(proof.payload.get("intent_id")),
+    }
+    return tuple(name for name, passed in checks.items() if not passed)
+
+
 def canonical_oms_order_metadata(
     group: FrozenOmsGroup, order: OrderRequest,
     authorized_protection: Mapping[str, JournalRecord] | None = None,
@@ -90,20 +114,7 @@ def canonical_oms_order_metadata(
 
     metadata = canonical_runtime_metadata(order, approved_oms_lineage_intent(group))
     proof = (authorized_protection or {}).get("target")
-    if (proof is not None
-            and proof.category == "protection"
-            and proof.entity_type == "protection_change"
-            and proof.account_id == group.account_id
-            and proof.payload.get("order_group_id") == group.group_id
-            and proof.payload.get("source_intent_id") == group.intent.intent_id
-            and proof.payload.get("phase") == "effective"
-            and proof.payload.get("kind") == "target"
-            and proof.payload.get("action") == "replace_profit_target"
-            and proof.payload.get("client_order_id") == order.cOID
-            and proof.payload.get("price") == order.price
-            and proof.payload.get("price") == group.intent.profit_target_price
-            and isinstance(proof.payload.get("intent_id"), str)
-            and proof.payload["intent_id"]):
+    if proof is not None and not _target_proof_failures(group, order, proof):
         metadata = {**metadata, "reason": "structural_profit_target_advanced",
                     "replacement_intent_id": proof.payload["intent_id"],
                     "target_price": proof.payload["price"]}
@@ -300,7 +311,10 @@ def oms_group_state_batch(
                     "OMS order has unmodeled raw lineage differing from its typed intent: "
                     + ",".join(changed)
                     + (" [metadata: " + ",".join(meta_changed) + "]"
-                       if meta_changed else ""))
+                       if meta_changed else "")
+                    + (" [target proof: " + ",".join(_target_proof_failures(
+                        group, order, (authorized_protection or {}).get("target")))
+                       + "]" if "replacement_intent_id" in meta_changed else ""))
     lengths = tuple(len(batch) for batch in group.plan.broker_batches)
     if not lengths or any(length < 1 for length in lengths) or sum(lengths) != len(group.orders):
         raise ValueError("OMS plan batches do not cover every order")
