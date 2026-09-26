@@ -28,9 +28,34 @@ class MemoryV4Dispatch(TypedInsertDispatch):
 
     def __init__(self):
         super().__init__(object())
+        self.reserved = []
+        self.sealed = []
+        self.compacted = []
+        self.timeline = []
+        self.ambiguous_tokens = set()
+
+    def assert_next_batch(self, **kwargs):
+        self.reserved.append(kwargs)
+        self.timeline.append("reserve")
 
     def execute_typed_insert(self, client, **kwargs):
-        client.execute(kwargs["sql"])
+        token = kwargs["token"]
+        if token in self.ambiguous_tokens:
+            raise RuntimeError("ambiguous pending Keeper INSERT")
+        self.timeline.append("insert:" + kwargs["table"])
+        try:
+            client.execute(kwargs["sql"])
+        except OSError:
+            self.ambiguous_tokens.add(token)
+            raise
+
+    def seal_verified_operation(self, **kwargs):
+        self.sealed.append(kwargs)
+        self.timeline.append("seal:" + kwargs["table"])
+
+    def compact_verified_batch(self, **kwargs):
+        self.compacted.append(kwargs)
+        self.timeline.append("compact")
 
 
 def attached_v4_client(client=None):
@@ -152,6 +177,11 @@ def test_v4_publication_is_detail_first_commit_last_and_idempotent():
     assert publish_base_typed_batch_v4(client, item) == item.batch_id
     assert client.inserts == ["trading_event_v1", "trading_commit_family_v4",
                               "trading_commit_v4"]
+    assert client.typed_insert_dispatch.timeline == [
+        "reserve", "insert:trading_event_v1",
+        "insert:trading_commit_family_v4", "insert:trading_commit_v4",
+        "seal:trading_event_v1", "seal:trading_commit_family_v4",
+        "seal:trading_commit_v4", "compact"]
     count = len(client.inserts)
     assert publish_base_typed_batch_v4(client, item) == item.batch_id
     assert len(client.inserts) == count
@@ -182,7 +212,7 @@ def test_v4_base_publisher_cannot_write_terminal_without_account_capture():
     assert client.inserts == []
 
 
-def test_v4_publication_recovers_partial_family_prefix_without_duplicate_rows():
+def test_v4_publication_keeps_ambiguous_commit_pending_without_duplicate_rows():
     class InterruptedClient(MemoryClient):
         fail_commit_once = True
 
@@ -198,9 +228,9 @@ def test_v4_publication_recovers_partial_family_prefix_without_duplicate_rows():
     with pytest.raises(OSError, match="transport failure"):
         publish_base_typed_batch_v4(client, item)
     assert client.inserts == ["trading_event_v1", "trading_commit_family_v4"]
-    assert publish_base_typed_batch_v4(client, item) == item.batch_id
-    assert client.inserts == ["trading_event_v1", "trading_commit_family_v4",
-                              "trading_commit_v4"]
+    with pytest.raises(RuntimeError, match="ambiguous pending Keeper INSERT"):
+        publish_base_typed_batch_v4(client, item)
+    assert client.inserts == ["trading_event_v1", "trading_commit_family_v4"]
     assert len(client.tables["trading_event_v1"]) == 1
     assert len(client.tables["trading_commit_family_v4"]) == 1
 

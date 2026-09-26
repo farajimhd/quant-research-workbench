@@ -299,8 +299,8 @@ def _load_verified_details_v4(
 def _verify_prior_commit_v4(client, batch) -> None:
     """Reject stale/forked prefixes before writes; Keeper still owns exclusion.
 
-    These SELECTs are not an atomic claim. Production must additionally fence
-    the writer through Keeper before V4 publication can be enabled.
+    These SELECTs are not an atomic claim. The publisher separately reserves
+    the exact batch in Keeper before issuing its first INSERT.
     """
     from src.trading_runtime.arte_journal_writer import _CONTRACTS, _literal, _rows
 
@@ -341,6 +341,29 @@ def _verify_prior_commit_v4(client, batch) -> None:
         raise RuntimeError("V4 predecessor does not seal the contiguous run prefix")
 
 
+def _compact_verified_v4_batch(dispatch, batch, families, family_rows, commit) -> None:
+    """Seal exact acknowledged INSERTs and advance the Keeper watermark."""
+    operations = tuple(
+        (name, f"{batch.batch_id}:{name}:v4")
+        for name, rows in families if rows
+    ) + tuple(
+        ("trading_commit_family_v4",
+         f"{batch.batch_id}:family:{row['family_name']}")
+        for row in family_rows
+    ) + (("trading_commit_v4", f"{batch.batch_id}:commit:v4"),)
+    for table, token in operations:
+        dispatch.seal_verified_operation(
+            run_id=batch.run_id, table=table, token=token, required=True,
+            batch_id=batch.batch_id, batch_last_sequence=batch.last_sequence)
+    dispatch.compact_verified_batch(
+        run_id=batch.run_id, batch_id=batch.batch_id,
+        prior_batch_id=batch.prior_batch_id,
+        first_sequence=batch.first_sequence,
+        last_sequence=batch.last_sequence,
+        commit_hash=sha256(canonical_json(commit).encode()).hexdigest(),
+        operations=operations)
+
+
 def publish_base_typed_batch_v4(client, batch) -> str:
     """Publish a base typed batch with detail-first, commit-last V4 fencing.
 
@@ -363,6 +386,7 @@ def publish_base_typed_batch_v4(client, batch) -> str:
             or not isinstance(getattr(client, "typed_insert_dispatch", None),
                               TypedInsertDispatch)):
         raise RuntimeError("V4 publication requires a strict Keeper-fenced insert dispatch")
+    dispatch = client.typed_insert_dispatch
     base_families = _sealed_families(batch)
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families)
@@ -385,6 +409,13 @@ def publish_base_typed_batch_v4(client, batch) -> str:
             client, run_id=batch.run_id, batch_id=batch.batch_id)
         if existing["content_hash"] != commit["content_hash"]:
             raise RuntimeError("V4 batch conflicts with a committed cursor")
+        dispatch.assert_next_batch(
+            run_id=batch.run_id, batch_id=batch.batch_id,
+            prior_batch_id=batch.prior_batch_id,
+            first_sequence=batch.first_sequence,
+            last_sequence=batch.last_sequence)
+        _compact_verified_v4_batch(
+            dispatch, batch, families, family_rows, existing)
         return batch.batch_id
 
     _verify_prior_commit_v4(client, batch)
@@ -398,6 +429,11 @@ def publish_base_typed_batch_v4(client, batch) -> str:
         client, batch, base_families, journal_profile="backtest_v4")
     _verify_order_context_links(
         client, batch, base_families, journal_profile="backtest_v4")
+    dispatch.assert_next_batch(
+        run_id=batch.run_id, batch_id=batch.batch_id,
+        prior_batch_id=batch.prior_batch_id,
+        first_sequence=batch.first_sequence,
+        last_sequence=batch.last_sequence)
 
     for name, rows in families:
         if not rows:
@@ -453,4 +489,6 @@ def publish_base_typed_batch_v4(client, batch) -> str:
         client, run_id=batch.run_id, batch_id=batch.batch_id)
     if loaded["content_hash"] != commit["content_hash"]:
         raise RuntimeError("V4 committed cursor differs from the intended batch")
+    _compact_verified_v4_batch(
+        dispatch, batch, families, family_rows, loaded)
     return batch.batch_id
