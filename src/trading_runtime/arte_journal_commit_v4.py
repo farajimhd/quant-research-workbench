@@ -234,14 +234,16 @@ def publish_base_typed_batch_v4(client, batch) -> str:
     """
     from src.trading_runtime.arte_journal_writer import (
         TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
-        _sealed_families, _v4_family_table,
+        _sealed_families, _v4_family_table, _verify_commission_links,
+        _verify_exact_intent_uses, _verify_order_context_links,
     )
 
     if (not isinstance(batch, TypedJournalBatch)
             or not 1 <= len(batch.events) <= 512):
         raise ValueError("V4 publication needs one bounded typed event batch")
+    base_families = _sealed_families(batch)
     families = tuple((_v4_family_table(name), rows)
-                     for name, rows in _sealed_families(batch))
+                     for name, rows in base_families)
     commit, family_rows = prepare_commit_v4(
         run_id=batch.run_id, run_month=batch.run_month,
         attempt_id=batch.attempt_id, batch_id=batch.batch_id,
@@ -262,6 +264,16 @@ def publish_base_typed_batch_v4(client, batch) -> str:
         if existing["content_hash"] != commit["content_hash"]:
             raise RuntimeError("V4 batch conflicts with a committed cursor")
         return batch.batch_id
+
+    # Relationships to earlier records must be checked against a committed
+    # V4 prefix before any detail row is inserted. An uncommitted orphan detail
+    # is never sufficient evidence for a fill, fee, or OMS command.
+    _verify_commission_links(
+        client, batch, base_families, journal_profile="backtest_v4")
+    _verify_exact_intent_uses(
+        client, batch, base_families, journal_profile="backtest_v4")
+    _verify_order_context_links(
+        client, batch, base_families, journal_profile="backtest_v4")
 
     for name, rows in families:
         if not rows:

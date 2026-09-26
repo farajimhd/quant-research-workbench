@@ -1,6 +1,7 @@
 """Strategy 1 commit family authority stays tabular and exact."""
 from dataclasses import replace
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 import pytest
 
@@ -15,6 +16,8 @@ from src.trading_runtime.arte_journal_writer import _sealed_families
 from src.trading_runtime.arte_journal_writer import ArteJournalWriter
 from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_journal_writer import typed_row
+from src.trading_runtime.arte_journal_projection import commission_revision_batch
+from src.trading_runtime.domain import CommissionEvent
 from tests.test_arte_journal_writer import MemoryClient, batch
 
 
@@ -159,6 +162,30 @@ def test_v4_publication_recovers_partial_family_prefix_without_duplicate_rows():
                               "trading_commit_v4"]
     assert len(client.tables["trading_event_v1"]) == 1
     assert len(client.tables["trading_commit_family_v4"]) == 1
+
+
+def test_v4_late_commission_requires_v4_committed_execution_before_insert():
+    base = batch()
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    fee = CommissionEvent("execution-1", "DU1", Decimal("1.25"), "USD",
+                          source_event_time=at, received_at=at)
+    item = commission_revision_batch(
+        fee, run_id=base.run_id, run_month=base.run_month,
+        attempt_id=base.attempt_id, batch_id=base.batch_id,
+        prior_batch_id=base.prior_batch_id, sequence=base.first_sequence,
+        source_cursor="fee-1", run_status="running",
+        time_authority="observation")
+    client = MemoryClient()
+    source_batch = "00000000-0000-0000-0000-000000000099"
+    client.tables["trading_execution_v1"] = [{
+        "record_id": "00000000-0000-0000-0000-000000000098",
+        "batch_id": source_batch, "run_id": item.run_id,
+        "account_id": "DU1", "execution_id": "execution-1"}]
+    client.tables["trading_commit_v3"] = [{
+        "batch_id": source_batch, "run_id": item.run_id}]
+    with pytest.raises(RuntimeError, match="requires one committed execution"):
+        publish_base_typed_batch_v4(client, item)
+    assert client.inserts == []
 
 
 def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(monkeypatch):

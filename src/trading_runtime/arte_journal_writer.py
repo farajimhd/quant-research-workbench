@@ -1027,6 +1027,9 @@ def _profile_table(name: str, journal_profile: str) -> str:
     if journal_profile == "backtest_v3":
         return {"trading_strategy_signal_v1": "trading_strategy_signal_v2",
                 "trading_commit_v1": "trading_commit_v3"}.get(name, name)
+    if journal_profile == "backtest_v4":
+        return {"trading_strategy_signal_v1": "trading_strategy_signal_v2",
+                "trading_commit_v1": "trading_commit_v4"}.get(name, name)
     raise ValueError("Unknown typed journal profile")
 
 
