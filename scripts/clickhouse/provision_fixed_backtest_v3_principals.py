@@ -34,6 +34,7 @@ from src.backend.backtest_fixed_v3_preflight import (
 from src.trading_runtime.arte_journal_schema import MARKET_READ_TABLES, storage_preflight
 from src.trading_runtime.arte_market_day_certification import TABLES as MARKET_DAY_CERTIFICATE_TABLES
 from src.backend.backtest_liquidity_price import PRICE_READ_TABLES
+from src.trading_runtime.strategy_one_candidate_schema import CANDIDATE_TABLE, COVERAGE_TABLE
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES, ENTRY_REPRICE_REJECTED,
@@ -106,7 +107,9 @@ def desired_plan() -> tuple[PrincipalPlan, PrincipalPlan, PrincipalPlan]:
         PrincipalPlan("read", PRINCIPALS["read"],
                       terminal | MARKET_READ_TABLES |
                       frozenset(table.name for table in MARKET_DAY_CERTIFICATE_TABLES) |
-                      PRICE_READ_TABLES,
+                      PRICE_READ_TABLES |
+                      frozenset(table.split(".", 1)[1] for table in (
+                          CANDIDATE_TABLE, COVERAGE_TABLE)),
                       frozenset(), system,
                       frozenset({("q_live", "market_stock_split_v1")})),
         PrincipalPlan("running", PRINCIPALS["running"], running | MARKET_READ_TABLES,

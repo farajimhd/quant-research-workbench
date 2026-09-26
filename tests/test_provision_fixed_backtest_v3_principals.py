@@ -97,6 +97,12 @@ def test_exact_three_role_plan_matches_v3_preflight_tables():
     assert PRICE_READ_TABLES <= read.select_arte
     assert not PRICE_READ_TABLES & (read.insert_arte | running.insert_arte |
                                     terminal.insert_arte)
+    from src.trading_runtime.strategy_one_candidate_schema import CANDIDATE_TABLE, COVERAGE_TABLE
+    candidate_tables = {name.split(".", 1)[1] for name in (
+        CANDIDATE_TABLE, COVERAGE_TABLE)}
+    assert candidate_tables <= read.select_arte
+    assert not candidate_tables & (read.insert_arte | running.insert_arte |
+                                   terminal.insert_arte)
     assert running.select_arte >= {table.name for table in running_v3_contracts()}
     assert terminal.select_arte >= {table.name for table in terminal_v3_contracts()}
     assert running.insert_arte <= running.select_arte

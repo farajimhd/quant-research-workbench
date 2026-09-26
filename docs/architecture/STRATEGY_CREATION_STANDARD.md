@@ -114,9 +114,12 @@ portfolio mutation, or a runnable Backtest controller.
 For a single flat-start session, V7 prior seed coverage is required only for
 tickers with at least one surviving columnar candidate boundary. This is a
 necessary-condition reduction, not permission to skip an eligible ticker or
-synthesize a missing seed. Preflight and execution recompute the same pinned
-scan and candidate projection and reject any mismatch. A multi-session or
-position-carrying Strategy must define a broader V7 dependency contract.
+synthesize a missing seed. A producer-owned normalized candidate and coverage
+product has been drafted in `arte`; Backtest now requires complete, exact
+coverage and pins its content token at preflight, then rechecks that token at
+execution. The producer campaign, table grants, and published release seal
+are not yet installed, so this path currently fails closed. A multi-session
+or position-carrying Strategy must define a broader V7 dependency contract.
 `src/trading_runtime/strategy_one_position.py` now owns a pure, deterministic
 active-position protection reducer: entry requires the completed 30s stop and
 third overhead target; accepted 1s resistance breaks are deduplicated and
