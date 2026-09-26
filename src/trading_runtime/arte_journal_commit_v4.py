@@ -6,6 +6,7 @@ unique commit, its complete child-family set, and the detail-row readback.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import re
@@ -13,6 +14,76 @@ from typing import Mapping, Sequence
 from uuid import UUID
 
 from src.trading_runtime.journal_contract import canonical_json
+
+
+@dataclass(frozen=True, slots=True)
+class V4CommittedPrefix:
+    """Cold-verified normalized run chain, not an admission or write lease."""
+
+    run_id: str
+    last_sequence: int
+    last_batch_id: str
+    source_cursor: str
+    status: str
+    batch_ids: tuple[str, ...]
+
+
+def load_verified_v4_prefix(client, run_id: str, *,
+                            max_commits: int = 100_000) -> V4CommittedPrefix | None:
+    """Recompute every detail seal and require one complete contiguous chain.
+
+    This SELECT-only cold path is intentionally outside the execution loop.
+    It never treats an unfenced detail row as recovery authority.
+    """
+    from src.trading_runtime.arte_journal_writer import _CONTRACTS, _literal, _rows
+
+    if (not isinstance(run_id, str) or not run_id
+            or type(max_commits) is not int or not 1 <= max_commits <= 100_000):
+        raise ValueError("V4 recovery needs a bounded run identity")
+    columns = ",".join(name for name, _ in
+                       _CONTRACTS["trading_commit_v4"].columns)
+    commits = _rows(client,
+        f"SELECT {columns} FROM arte.trading_commit_v4 "
+        f"WHERE run_id={_literal(run_id)} "
+        "ORDER BY first_sequence,batch_id "
+        f"LIMIT {max_commits + 1} FORMAT JSONEachRow")
+    if len(commits) > max_commits:
+        raise RuntimeError("V4 recovery commit count exceeds its memory bound")
+    if not commits:
+        return None
+    prior_id = str(UUID(int=0))
+    last_sequence = 0
+    status = "running"
+    run_month = commits[0]["run_month"]
+    batch_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for row in commits:
+        batch_id = str(UUID(str(row["batch_id"])))
+        cursor = row["source_cursor"]
+        if (row["run_id"] != run_id or row["run_month"] != run_month
+                or str(UUID(str(row["prior_batch_id"]))) != prior_id
+                or row["first_sequence"] != last_sequence + 1
+                or row["last_sequence"] < row["first_sequence"]
+                or row["event_count"] !=
+                   row["last_sequence"] - row["first_sequence"] + 1
+                or status != "running"
+                or row["status"] not in {"running", "completed", "stopped", "failed"}
+                or not isinstance(cursor, str) or not cursor
+                or cursor.lstrip("\ufeff \t\r\n").startswith(("{", "["))
+                or batch_id in seen_ids):
+            raise RuntimeError("V4 committed run chain is forked or not contiguous")
+        verified, _ = load_verified_commit_v4(
+            client, run_id=run_id, batch_id=batch_id)
+        if verified != row:
+            raise RuntimeError("V4 cold commit differs from ordered run inventory")
+        prior_id = batch_id
+        last_sequence = row["last_sequence"]
+        status = row["status"]
+        batch_ids.append(batch_id)
+        seen_ids.add(batch_id)
+    return V4CommittedPrefix(
+        run_id, last_sequence, prior_id, commits[-1]["source_cursor"],
+        status, tuple(batch_ids))
 
 
 def _family_set_hash(rows: Sequence[Mapping]) -> str:
@@ -285,8 +356,9 @@ def publish_base_typed_batch_v4(client, batch) -> str:
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 
     if (not isinstance(batch, TypedJournalBatch)
-            or not 1 <= len(batch.events) <= 512):
-        raise ValueError("V4 publication needs one bounded typed event batch")
+            or not 1 <= len(batch.events) <= 512
+            or batch.status != "running"):
+        raise ValueError("V4 base publication needs one bounded running event batch")
     if (getattr(client, "typed_insert_strict", False) is not True
             or not isinstance(getattr(client, "typed_insert_dispatch", None),
                               TypedInsertDispatch)):

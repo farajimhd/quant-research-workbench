@@ -2,11 +2,12 @@
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from uuid import UUID
 
 import pytest
 
 from src.trading_runtime.arte_journal_commit_v4 import (
-    load_verified_commit_v4, prepare_commit_v4,
+    load_verified_commit_v4, load_verified_v4_prefix, prepare_commit_v4,
     publish_base_typed_batch_v4, verify_commit_v4,
 )
 from src.trading_runtime.arte_journal_schema import (
@@ -174,6 +175,13 @@ def test_v4_rejects_unfenced_client_before_any_write(monkeypatch):
     assert client.inserts == []
 
 
+def test_v4_base_publisher_cannot_write_terminal_without_account_capture():
+    client = attached_v4_client()
+    with pytest.raises(ValueError, match="running event batch"):
+        publish_base_typed_batch_v4(client, replace(batch(), status="completed"))
+    assert client.inserts == []
+
+
 def test_v4_publication_recovers_partial_family_prefix_without_duplicate_rows():
     class InterruptedClient(MemoryClient):
         fail_commit_once = True
@@ -247,6 +255,12 @@ def test_v4_continuation_requires_exact_sealed_predecessor():
     client.tables["trading_commit_v4"][0]["source_cursor"] = first.source_cursor
     assert publish_base_typed_batch_v4(client, continued) == next_batch_id
     assert len(client.tables["trading_commit_v4"]) == 2
+    prefix = load_verified_v4_prefix(client, first.run_id)
+    assert prefix.last_sequence == 2
+    assert prefix.last_batch_id == next_batch_id
+    assert prefix.batch_ids == (first.batch_id, next_batch_id)
+    with pytest.raises(RuntimeError, match="memory bound"):
+        load_verified_v4_prefix(client, first.run_id, max_commits=1)
 
     fork_batch_id = "00000000-0000-0000-0000-000000000026"
     fork_event = typed_row("trading_event_v1", {
@@ -258,6 +272,9 @@ def test_v4_continuation_requires_exact_sealed_predecessor():
     with pytest.raises(RuntimeError, match="already has a committed batch"):
         publish_base_typed_batch_v4(client, fork)
     assert len(client.tables["trading_commit_v4"]) == 2
+    client.tables["trading_commit_v4"][1]["prior_batch_id"] = str(UUID(int=0))
+    with pytest.raises(RuntimeError, match="forked or not contiguous"):
+        load_verified_v4_prefix(client, first.run_id)
 
 
 def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(monkeypatch):

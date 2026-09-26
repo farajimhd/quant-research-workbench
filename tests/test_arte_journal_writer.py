@@ -585,7 +585,9 @@ class MemoryClient:
                 matching = [row for row in matching
                             if int(row["first_sequence"]) == int(first_sequence.group(1))]
             descending = "ORDER BY last_sequence DESC" in sql
-            if "ORDER BY last_sequence" in sql:
+            if "ORDER BY first_sequence,batch_id" in sql:
+                matching.sort(key=lambda row: (row["first_sequence"], row["batch_id"]))
+            elif "ORDER BY last_sequence" in sql:
                 matching.sort(key=lambda row: row["last_sequence"], reverse=descending)
             elif "ORDER BY sequence" in sql:
                 matching.sort(key=lambda row: row["sequence"])
