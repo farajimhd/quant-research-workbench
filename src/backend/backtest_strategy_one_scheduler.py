@@ -374,7 +374,7 @@ class StrategyOneBoundaryScheduler:
 
 async def run_strategy_one_boundaries(
     scheduler: StrategyOneBoundaryScheduler, *,
-    process_broker_row: Callable[[str, Mapping[int, Mapping], int], Awaitable[None]],
+    process_broker_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     evaluate_ticker: Callable[[str, Mapping[int, Mapping],
                                StrategyOneDecisionCandidate | None], Awaitable[None]],
     financially_active_tickers: Callable[[], tuple[str, ...]],
@@ -392,7 +392,7 @@ async def run_strategy_one_boundaries(
     """
     if not isinstance(scheduler, StrategyOneBoundaryScheduler) or any(
             not callable(callback) for callback in (
-                process_broker_row, evaluate_ticker,
+                process_broker_boundary, evaluate_ticker,
                 financially_active_tickers, finish_boundary)):
         raise TypeError("Strategy 1 coordinator needs typed scheduler callbacks")
     if observe_completed_seconds is not None and not callable(observe_completed_seconds):
@@ -438,8 +438,10 @@ async def run_strategy_one_boundaries(
                     if key not in pending_gate:
                         raise ValueError("Strategy 1 candidate lacks static gate evidence")
                     candidate_rejections[ticker] = pending_gate.pop(key)
-            for ticker, resolutions in work.broker_rows:
-                await process_broker_row(ticker, resolutions, work.boundary_ms)
+            if work.broker_rows:
+                # All completed ticker rows reach the broker together. OMS
+                # may wake once on this causal boundary, never once per symbol.
+                await process_broker_boundary(work)
             # The broker first consumes this completed boundary. V7 and BOS
             # then see its persisted 1s bar before activation/entry decisions.
             if observe_completed_seconds is not None:

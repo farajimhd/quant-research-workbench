@@ -94,8 +94,11 @@ def test_coordinator_applies_all_broker_rows_before_decisions_and_tracks_orders(
         return iter((group(ticker, boundary) for boundary in (200, 300)
                      if boundary > after))
 
-    async def broker(ticker, rows, boundary):
-        actions.append((boundary, "broker", ticker))
+    broker_calls = []
+    async def broker(work):
+        broker_calls.append(work.boundary_ms)
+        for ticker, _rows in work.broker_rows:
+            actions.append((work.boundary_ms, "broker", ticker))
 
     async def decision(ticker, rows, candidate_row):
         boundary = rows[100]["boundary_ms"]
@@ -113,10 +116,11 @@ def test_coordinator_applies_all_broker_rows_before_decisions_and_tracks_orders(
         candidate_rows=iter((candidate("AAA", 100), candidate("BBB", 200))),
         active_source=source)
     count = asyncio.run(run_strategy_one_boundaries(
-        scheduler, process_broker_row=broker, evaluate_ticker=decision,
+        scheduler, process_broker_boundary=broker, evaluate_ticker=decision,
         financially_active_tickers=lambda: tuple(sorted(active)),
         finish_boundary=finish))
     assert count == 2
+    assert broker_calls == [100, 200]
     assert actions == [
         (100, "broker", "AAA"), (100, "candidate", "AAA"), (100, "finish", ""),
         (200, "broker", "AAA"), (200, "broker", "BBB"),
@@ -142,7 +146,7 @@ def test_candidate_only_coordinator_has_no_per_boundary_thread_handoff(monkeypat
         candidate_rows=iter((candidate("AAA", 100), candidate("BBB", 200))),
         active_source=lambda ticker, after: iter(()))
     assert asyncio.run(run_strategy_one_boundaries(
-        scheduler, process_broker_row=noop, evaluate_ticker=noop,
+        scheduler, process_broker_boundary=noop, evaluate_ticker=noop,
         financially_active_tickers=lambda: (),
         finish_boundary=noop)) == 2
 
@@ -159,8 +163,9 @@ def _gate(*rows):
 def test_static_gate_skips_only_rejected_inactive_candidate_decisions():
     seen = []
 
-    async def broker(ticker, _rows, boundary):
-        seen.append(("broker", ticker, boundary))
+    async def broker(work):
+        for ticker, _rows in work.broker_rows:
+            seen.append(("broker", ticker, work.boundary_ms))
 
     async def decision(ticker, rows, _candidate):
         seen.append(("decision", ticker, rows[100]["boundary_ms"]))
@@ -173,7 +178,7 @@ def test_static_gate_skips_only_rejected_inactive_candidate_decisions():
         candidate_rows=iter((candidate("AAA", 100), candidate("BBB", 200))),
         active_source=lambda _ticker, _after: iter(()))
     assert asyncio.run(run_strategy_one_boundaries(
-        scheduler, process_broker_row=broker, evaluate_ticker=decision,
+        scheduler, process_broker_boundary=broker, evaluate_ticker=decision,
         financially_active_tickers=lambda: (), finish_boundary=finish,
         static_gate=_gate(("AAA", 100, 1), ("BBB", 200, 0)))) == 2
     assert seen == [("broker", "AAA", 100), ("broker", "BBB", 200),
@@ -198,7 +203,7 @@ def test_static_gate_reject_does_not_suppress_active_financial_evaluation():
         session_date=DAY, candidate_rows=iter((candidate("AAA", 100),)),
         active_source=lambda _ticker, _after: iter(()))
     assert asyncio.run(run_strategy_one_boundaries(
-        scheduler, process_broker_row=broker, evaluate_ticker=decision,
+        scheduler, process_broker_boundary=broker, evaluate_ticker=decision,
         financially_active_tickers=lambda: tuple(sorted(active)),
         finish_boundary=finish, static_gate=_gate(("AAA", 100, 1)))) == 1
     assert seen == [("AAA", 100, None)]
@@ -217,7 +222,7 @@ def test_static_gate_and_sparse_tape_must_cover_same_candidates(gate_rows, messa
         active_source=lambda _ticker, _after: iter(()))
     with pytest.raises(ValueError, match=message):
         asyncio.run(run_strategy_one_boundaries(
-            scheduler, process_broker_row=noop, evaluate_ticker=noop,
+            scheduler, process_broker_boundary=noop, evaluate_ticker=noop,
             financially_active_tickers=lambda: (), finish_boundary=noop,
             static_gate=_gate(*gate_rows)))
 
@@ -231,7 +236,7 @@ def test_active_stream_exhaustion_cannot_complete_with_open_financial_state():
         active_source=lambda ticker, after: iter(()))
     with pytest.raises(RuntimeError, match="ended with financially active tickers: AAA"):
         asyncio.run(run_strategy_one_boundaries(
-            scheduler, process_broker_row=noop, evaluate_ticker=noop,
+            scheduler, process_broker_boundary=noop, evaluate_ticker=noop,
             financially_active_tickers=lambda: ("AAA",),
             finish_boundary=noop))
 
@@ -295,8 +300,9 @@ def test_pruned_scheduler_preserves_activation_when_no_entry_survives(monkeypatc
 
 def test_activation_follows_broker_and_precedes_same_boundary_candidate():
     actions = []
-    async def broker(ticker, _rows, boundary):
-        actions.append((boundary, "broker", ticker))
+    async def broker(work):
+        for ticker, _rows in work.broker_rows:
+            actions.append((work.boundary_ms, "broker", ticker))
     async def activated(row):
         actions.append((row.boundary_ms, "activation", row.ticker))
     async def decision(ticker, rows, _candidate):
@@ -310,7 +316,7 @@ def test_activation_follows_broker_and_precedes_same_boundary_candidate():
         activation_rows=iter((StrategyOneActivation(100, "AAA", 100_000),)),
         active_source=lambda _ticker, _after: iter(()))
     assert asyncio.run(run_strategy_one_boundaries(
-        scheduler, process_broker_row=broker, evaluate_ticker=decision,
+        scheduler, process_broker_boundary=broker, evaluate_ticker=decision,
         financially_active_tickers=lambda: (), finish_boundary=finished,
         observe_activation=activated)) == 1
     assert actions == [(100, "broker", "AAA"),
@@ -321,8 +327,9 @@ def test_activation_follows_broker_and_precedes_same_boundary_candidate():
 def test_completed_second_observer_follows_broker_and_precedes_activation():
     actions = []
 
-    async def broker(ticker, _rows, boundary):
-        actions.append((boundary, "broker", ticker))
+    async def broker(work):
+        for ticker, _rows in work.broker_rows:
+            actions.append((work.boundary_ms, "broker", ticker))
 
     async def second(work):
         actions.append((work.boundary_ms, "second", ""))
@@ -341,7 +348,7 @@ def test_completed_second_observer_follows_broker_and_precedes_activation():
         activation_rows=iter((StrategyOneActivation(1_000, "AAA", 100_000),)),
         active_source=lambda _ticker, _after: iter(()))
     assert asyncio.run(run_strategy_one_boundaries(
-        scheduler, process_broker_row=broker, evaluate_ticker=decision,
+        scheduler, process_broker_boundary=broker, evaluate_ticker=decision,
         financially_active_tickers=lambda: (), finish_boundary=finished,
         observe_activation=activated, observe_completed_seconds=second)) == 1
     assert actions == [(1_000, "broker", "AAA"), (1_000, "second", ""),

@@ -33,7 +33,7 @@ class StrategyOneProposalCounts:
 async def run_strategy_one_proposals(
     scheduler: StrategyOneBoundaryScheduler,
     entry: CertifiedEntryEvidencePlan, *,
-    process_broker_row: Callable[[str, Mapping[int, Mapping], int], Awaitable[None]],
+    process_broker_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     financial_view: Callable[[str, int], StrategyOneFinancialView],
     on_entry_proposal: Callable[[StrategyOneEntryProposal], Awaitable[None]],
     on_management: Callable[[str, Mapping[int, Mapping], int], Awaitable[None]],
@@ -47,7 +47,7 @@ async def run_strategy_one_proposals(
             or not isinstance(entry, CertifiedEntryEvidencePlan)
             or scheduler.session_date != entry.session_date
             or any(not callable(callback) for callback in (
-                process_broker_row, financial_view, on_entry_proposal,
+                process_broker_boundary, financial_view, on_entry_proposal,
                 on_management, financially_active_tickers, finish_boundary,
                 observe_activation, observe_completed_seconds))):
         raise ValueError("Strategy 1 proposal lane lacks pinned causal callbacks")
@@ -84,7 +84,7 @@ async def run_strategy_one_proposals(
             await on_management(ticker, resolutions, boundary)
 
     completed = await run_strategy_one_boundaries(
-        scheduler, process_broker_row=process_broker_row,
+        scheduler, process_broker_boundary=process_broker_boundary,
         evaluate_ticker=evaluate,
         financially_active_tickers=financially_active_tickers,
         finish_boundary=finish_boundary,

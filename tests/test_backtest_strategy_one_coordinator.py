@@ -15,8 +15,9 @@ def test_proposal_lane_uses_broker_before_financial_entry_without_order():
         "b" * 16, "2026-08-18", (), (activation,), (fact,), "e" * 64)
     actions = []
 
-    async def broker(ticker, _rows, boundary):
-        actions.append(("broker", ticker, boundary))
+    async def broker(work):
+        for ticker, _rows in work.broker_rows:
+            actions.append(("broker", ticker, work.boundary_ms))
 
     async def activated(row):
         actions.append(("activation", row.ticker, row.boundary_ms))
@@ -38,7 +39,7 @@ def test_proposal_lane_uses_broker_before_financial_entry_without_order():
         activation_rows=iter((StrategyOneActivation(30_000, "AAA", 100_000),)),
         active_source=lambda _ticker, _after: iter(()))
     counts = asyncio.run(run_strategy_one_proposals(
-        scheduler, entry, process_broker_row=broker,
+        scheduler, entry, process_broker_boundary=broker,
         financial_view=lambda _ticker, _boundary: financial,
         on_entry_proposal=proposal, on_management=management,
         financially_active_tickers=lambda: (), finish_boundary=finished,
@@ -72,7 +73,7 @@ def test_held_candidate_routes_to_management_not_another_entry():
         activation_rows=iter((StrategyOneActivation(30_000, "AAA", 100_000),)),
         active_source=lambda _ticker, _after: iter(()))
     counts = asyncio.run(run_strategy_one_proposals(
-        scheduler, entry, process_broker_row=noop,
+        scheduler, entry, process_broker_boundary=noop,
         financial_view=lambda _ticker, _boundary: replace(
             financial, position_quantity=10.),
         on_entry_proposal=proposal, on_management=management,
