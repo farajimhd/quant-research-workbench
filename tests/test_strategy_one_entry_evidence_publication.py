@@ -98,6 +98,12 @@ def test_causal_producer_uses_candidate_only_scheduler_and_completed_evidence(
     from test_backtest_strategy_one_entry_store import _plans
 
     plans = _plans()
+    market, candidates, activations, pivots, hod, seeds = plans
+    plans = (market, candidates, activations,
+             replace(pivots, intervals=pivots.intervals + (("BBB", ()),)),
+             replace(hod, contexts=hod.contexts + (("BBB", ()),)),
+             replace(seeds, units=seeds.units + ({
+                 "ticker": "BBB", "backtest_session": "2026-08-18"},)))
     value = evidence()
     value = replace(value, candidate=replace(
         value.candidate, market_row={**value.candidate.market_row,
@@ -110,8 +116,10 @@ def test_causal_producer_uses_candidate_only_scheduler_and_completed_evidence(
             pass
 
     class Evidence:
-        def __init__(self, **_kwargs):
-            pass
+        def __init__(self, **kwargs):
+            assert tuple(ticker for ticker, _ in kwargs["pivot_plan"].intervals) == ("AAA",)
+            assert tuple(ticker for ticker, _ in kwargs["hod_plan"].contexts) == ("AAA",)
+            assert tuple(row["ticker"] for row in kwargs["seed_plan"].units) == ("AAA",)
 
         async def observe_activation(self, _value):
             return value.activation

@@ -93,6 +93,19 @@ async def derive_unit(
     projected = project_market_day_plan(market, (scope.ticker,))
     projected_candidates = replace(candidates, prepared=tuple(selected))
     projected_activations = replace(activations, rows=activation_rows)
+    # These immutable parent plans were certified for the complete candidate
+    # population. The per-ticker V7 cache requires an exact matching subset;
+    # keep the parent tokens in the publication scope, never recertify here.
+    projected_pivots = replace(
+        pivots, intervals=tuple(row for row in pivots.intervals
+                                if row[0] == scope.ticker))
+    projected_hod = replace(
+        hod, contexts=tuple(row for row in hod.contexts
+                            if row[0] == scope.ticker))
+    projected_seeds = replace(
+        seeds, units=tuple(row for row in seeds.units
+                           if row["ticker"] == scope.ticker
+                           and row["backtest_session"] == scope.session_date))
     scheduler = build_certified_strategy_one_scheduler(
         projected, projected_candidates, activations=projected_activations,
         price_plan=prices.projected(projected),
@@ -103,8 +116,9 @@ async def derive_unit(
     candidate_facts: list[CandidateFact] = []
     with closing(client_factory()) as reader:
         evidence = StrategyOneCausalEvidence(
-            market_plan=projected, seed_plan=seeds, pivot_plan=pivots,
-            hod_plan=hod, session=date.fromisoformat(scope.session_date),
+            market_plan=projected, seed_plan=projected_seeds,
+            pivot_plan=projected_pivots, hod_plan=projected_hod,
+            session=date.fromisoformat(scope.session_date),
             client=reader)
 
         async def no_broker(ticker: str, rows: Mapping,
