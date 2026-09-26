@@ -3744,6 +3744,8 @@ class ReplayRunController:
                     boundary_validator.validate(day, boundary_ms, ticker_groups)
                     if self._runtime is None:
                         raise RuntimeError("Fixed Backtest runtime is not initialized")
+                    liquidity_rows = []
+                    vwap_updates = {}
                     for _ticker_value, by_resolution in ticker_groups:
                         liquidity_row = by_resolution.get(100)
                         if liquidity_row is not None:
@@ -3752,9 +3754,14 @@ class ReplayRunController:
                             if not math.isfinite(execution_vwap) or execution_vwap < 0:
                                 raise ValueError("Persisted liquidity bar has an invalid execution VWAP")
                             if execution_vwap > 0:
-                                self._fixed_vwap_by_ticker[ticker] = execution_vwap
-                            completed_quote = await self._runtime.process_liquidity_bar(
-                                liquidity_row, at=at)
+                                vwap_updates[ticker] = execution_vwap
+                            liquidity_rows.append(liquidity_row)
+                    if liquidity_rows:
+                        liquidity_rows.sort(key=lambda row: str(row["ticker"]).upper())
+                        completed_quotes = await self._runtime.process_liquidity_boundary(
+                            liquidity_rows, at=at)
+                        self._fixed_vwap_by_ticker.update(vwap_updates)
+                        for ticker, completed_quote in completed_quotes.items():
                             if completed_quote is None:
                                 self._quotes.pop(ticker, None)
                             else:

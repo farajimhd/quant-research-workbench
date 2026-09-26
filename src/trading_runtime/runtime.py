@@ -364,64 +364,84 @@ class TradingRuntime:
     async def process_liquidity_bar(
         self, row: Mapping[str, Any], *, at: datetime,
     ) -> QuoteEvent | None:
-        """Advance broker execution from one completed persisted liquidity bucket.
+        """Compatibility entry point for one completed liquidity bucket."""
+        ticker = str(row.get("ticker") or "").upper()
+        quotes = await self.process_liquidity_boundary((row,), at=at)
+        return quotes[ticker]
 
-        Strategy evaluation is a separate, later step at the configured bar
-        boundary. This method never invents quote/trade event ordering.
+    async def process_liquidity_boundary(
+        self, rows: Sequence[Mapping[str, Any]], *, at: datetime,
+    ) -> dict[str, QuoteEvent | None]:
+        """Validate a global boundary, then advance OMS once and match by ticker.
+
+        All completed quote snapshots become visible together. The broker
+        retains deterministic row order for fills; no within-bucket event
+        sequence is invented. A malformed later row cannot partially advance
+        the broker or OMS state of an earlier ticker.
         """
         if self.config.mode != TradingMode.BACKTEST or at.tzinfo is None:
             raise ValueError("Liquidity-bar execution is restricted to Backtest")
         if self.last_event_time is not None and at < self.last_event_time:
             raise ValueError("Liquidity bars must be processed in non-decreasing time")
+        if not rows:
+            return {}
         matcher = getattr(self.broker, "on_liquidity_bar", None)
         validator = getattr(self.broker, "validate_liquidity_bar", None)
         if matcher is None or validator is None:
             raise RuntimeError("Backtest broker lacks validated liquidity-bar execution")
-        validator(row, at=at)
-        # The runtime validates before it wakes OMS. Avoid repeating that
-        # full per-row validation inside the simulated broker hot path.
         validated_matcher = getattr(self.broker, "_on_validated_liquidity_bar", None)
-        ticker = str(row.get("ticker") or "").upper()
-        bid = float(row.get("bid_int") or 0) / 10_000
-        ask = float(row.get("ask_int") or 0) / 10_000
-        if int(row.get("quote_valid") or 0) and 0 < bid <= ask:
-            quote_us = int(row.get("quote_timestamp_us") or 0)
-            boundary_us = int(at.timestamp() * 1_000_000)
-            if 0 < quote_us <= boundary_us and boundary_us - quote_us <= 1_000_000:
-                snapshot = ExecutionMarketSnapshot(
-                    ticker=ticker, bid=bid, ask=ask, tick_size=0.01,
-                    observed_at=utc_from_epoch_microseconds(quote_us),
-                    source="arte.liquidity_100ms_v1",
-                )
-                # A carried NBBO is not a new quote observation. Replaying it
-                # at every trade-bearing bucket would spuriously wake OMS
-                # protection tasks and inflate the quote's effective age.
-                if self.execution_market_data.snapshot(ticker) != snapshot:
-                    self.execution_market_data.update(snapshot)
-                    if self.order_manager is not None:
-                        self.order_manager.on_market_snapshot(snapshot)
+        seen: set[str] = set()
+        for row in rows:
+            ticker = str(row.get("ticker") or "").upper()
+            if ticker in seen:
+                raise ValueError("Liquidity boundary repeated a ticker")
+            seen.add(ticker)
+            validator(row, at=at)
+        for row in rows:
+            ticker = str(row["ticker"]).upper()
+            bid = float(row.get("bid_int") or 0) / 10_000
+            ask = float(row.get("ask_int") or 0) / 10_000
+            if int(row.get("quote_valid") or 0) and 0 < bid <= ask:
+                quote_us = int(row.get("quote_timestamp_us") or 0)
+                boundary_us = int(at.timestamp() * 1_000_000)
+                if 0 < quote_us <= boundary_us and boundary_us - quote_us <= 1_000_000:
+                    snapshot = ExecutionMarketSnapshot(
+                        ticker=ticker, bid=bid, ask=ask, tick_size=0.01,
+                        observed_at=utc_from_epoch_microseconds(quote_us),
+                        source="arte.liquidity_100ms_v1",
+                    )
+                    # A carried NBBO is not a new quote observation.
+                    if self.execution_market_data.snapshot(ticker) != snapshot:
+                        self.execution_market_data.update(snapshot)
+                        if self.order_manager is not None:
+                            self.order_manager.on_market_snapshot(snapshot)
         if (self.order_manager is not None
                 and bool(getattr(self.order_manager, "has_managed_groups", True))):
             await self.order_manager.enforce_entry_body_triggers(at)
             await self.order_manager.advance_adaptive_execution(at)
             await self.order_manager.expire_entry_deadlines(at)
-        executions = await (validated_matcher or matcher)(row, at=at)
-        self._record_executions(executions)
-        if executions and self.order_manager is not None:
-            await self.order_manager.reconcile()
-        if executions and self._canonical_session is not None:
-            await self._canonical_session.reconcile_executions(executions)
-            self.portfolio.synchronize_canonical(
-                self._canonical_session.projector.snapshot(),
-                persist=not self._review_only,
+        quotes: dict[str, QuoteEvent | None] = {}
+        for row in rows:
+            ticker = str(row["ticker"]).upper()
+            # Validation completed for the entire boundary before any match.
+            executions = await (validated_matcher or matcher)(row, at=at)
+            self._record_executions(executions)
+            if executions and self.order_manager is not None:
+                await self.order_manager.reconcile()
+            if executions and self._canonical_session is not None:
+                await self._canonical_session.reconcile_executions(executions)
+                self.portfolio.synchronize_canonical(
+                    self._canonical_session.projector.snapshot(),
+                    persist=not self._review_only,
+                )
+            self.processed_events += 1
+            self._latest_checkpoint_cursor = (
+                f"{at.astimezone(timezone.utc).isoformat()}|"
+                f"{ticker}|{int(row.get('bucket_index') or 0)}|liquidity_bar"
             )
+            quotes[ticker] = self.broker.completed_liquidity_quote(ticker)
         self.last_event_time = at
-        self.processed_events += 1
-        self._latest_checkpoint_cursor = (
-            f"{at.astimezone(timezone.utc).isoformat()}|"
-            f"{ticker}|{int(row.get('bucket_index') or 0)}|liquidity_bar"
-        )
-        return self.broker.completed_liquidity_quote(ticker)
+        return quotes
 
     def _record_executions(self, executions: Sequence[Any]) -> None:
         """Keep broker fills and known fees as separate ordered journal facts."""

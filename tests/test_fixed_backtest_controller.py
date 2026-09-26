@@ -1052,9 +1052,10 @@ def test_fixed_controller_applies_all_liquidity_before_any_strategy_frame(monkey
     events = []
 
     class Runtime:
-        async def process_liquidity_bar(self, row, *, at):
-            events.append(("liquidity", row["boundary_ms"], row["ticker"]))
-            return SimpleNamespace(ts=at)
+        async def process_liquidity_boundary(self, rows, *, at):
+            for row in rows:
+                events.append(("liquidity", row["boundary_ms"], row["ticker"]))
+            return {row["ticker"]: SimpleNamespace(ts=at) for row in rows}
 
     controller._runtime = Runtime()
     controller._record_data_authority = lambda *_args: None
@@ -1237,8 +1238,8 @@ def test_fixed_resume_does_not_redeliver_committed_source_signals(monkeypatch):
     delivered = []
 
     class Runtime:
-        async def process_liquidity_bar(self, _row, *, at):
-            return SimpleNamespace(ts=at)
+        async def process_liquidity_boundary(self, rows, *, at):
+            return {row["ticker"]: SimpleNamespace(ts=at) for row in rows}
 
     async def no_op(*_args, **_kwargs):
         return None

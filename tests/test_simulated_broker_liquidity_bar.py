@@ -460,3 +460,43 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         assert runtime.processed_events == 3
         assert self.broker._bar_boundaries["AAPL"] == next_boundary
         journal.close()
+
+    async def test_boundary_validates_all_tickers_and_wakes_oms_once(self):
+        class NoopStrategy:
+            strategy_id = "bar-test"
+            revision = 1
+            automatic = True
+
+        run_id = "00000000-0000-0000-0000-000000000125"
+        journal = BacktestMemoryJournal(run_id=run_id)
+        runtime = TradingRuntime(
+            RunConfig(RunMode.BACKTEST, "bar-test", 1, ("TEST",), START.date(),
+                      run_id=run_id, safety_supervisor_enabled=False,
+                      write_progress_checkpoints=False),
+            self.broker, NoopStrategy(), journal,
+        )
+        await runtime.initialize()
+        from types import SimpleNamespace
+        runtime.order_manager = SimpleNamespace(
+            has_managed_groups=True, on_market_snapshot=Mock(),
+            enforce_entry_body_triggers=AsyncMock(),
+            advance_adaptive_execution=AsyncMock(),
+            expire_entry_deadlines=AsyncMock(),
+        )
+        at = START + timedelta(milliseconds=100)
+        first, second = bar(at), {**bar(at), "ticker": "MSFT"}
+        invalid = {**second, "quote_timestamp_us": second["last_event_us"] + 1}
+        with self.assertRaisesRegex(ValueError, "invalid quote provenance"):
+            await runtime.process_liquidity_boundary((first, invalid), at=at)
+        self.assertEqual(runtime.processed_events, 0)
+        self.assertIsNone(runtime.execution_market_data.snapshot("AAPL"))
+        self.assertEqual(runtime.order_manager.on_market_snapshot.call_count, 0)
+        self.assertNotIn("AAPL", self.broker._bar_boundaries)
+        quotes = await runtime.process_liquidity_boundary((first, second), at=at)
+        self.assertEqual(set(quotes), {"AAPL", "MSFT"})
+        self.assertEqual(runtime.processed_events, 2)
+        self.assertEqual(runtime.order_manager.on_market_snapshot.call_count, 2)
+        runtime.order_manager.enforce_entry_body_triggers.assert_awaited_once_with(at)
+        runtime.order_manager.advance_adaptive_execution.assert_awaited_once_with(at)
+        runtime.order_manager.expire_entry_deadlines.assert_awaited_once_with(at)
+        journal.close()
