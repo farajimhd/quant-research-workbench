@@ -50,6 +50,7 @@ REQUIRED_INPUTS = (
     "arte.liquidity_100ms_v1.execution_vwap@100ms",
     "arte.indicators_v1.previous_close@session",
     "arte.structural_levels_v7@as_of_1s",
+    "arte.strategy_one_pivot_interval_v1@as_of_1s",
 )
 
 

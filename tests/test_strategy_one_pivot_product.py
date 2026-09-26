@@ -4,7 +4,8 @@ import pytest
 from src.market_engine.structural_detector import StructuralDetector, VERSION
 from src.trading_runtime.early_squeeze_momentum import confirmed_pivots
 from src.trading_runtime.strategy_one_pivot_product import (
-    PivotIntervalBuilder, snapshot_confirmed_pivots,
+    PivotInterval, PivotIntervalBuilder, interval_content_hash,
+    snapshot_confirmed_pivots,
 )
 
 
@@ -75,3 +76,16 @@ def test_real_detector_snapshots_match_legacy_confirmed_pivot_visibility():
         assert actual == expected
         matched += len(actual)
     assert matched > 0
+
+
+def test_content_hash_rejects_duplicate_or_overlapping_pivot_intervals():
+    first = PivotInterval("high", 100_000, 1_000_000, 2_000_000,
+                          2_000, 4_000)
+    later = PivotInterval("high", 100_000, 1_000_000, 2_000_000,
+                          4_000, None)
+    assert len(interval_content_hash((first, later))) == 64
+    with pytest.raises(ValueError, match="overlapping"):
+        interval_content_hash((first, PivotInterval(
+            "high", 100_000, 1_000_000, 2_000_000, 3_000, None)))
+    with pytest.raises(ValueError, match="duplicate"):
+        interval_content_hash((first, first))

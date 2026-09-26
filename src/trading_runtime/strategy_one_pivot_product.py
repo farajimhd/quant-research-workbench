@@ -8,6 +8,7 @@ certified completed one-second ARTE bars and publish coverage last.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from math import isfinite
 from typing import Mapping, Sequence
 
@@ -124,3 +125,41 @@ class PivotIntervalBuilder:
         return tuple(sorted(result, key=lambda item: (
             item.valid_from_boundary_ms, item.key,
             item.valid_to_boundary_ms or 0)))
+
+
+def interval_content_hash(intervals: Sequence[PivotInterval]) -> str:
+    """Validate normalized intervals and hash scalar columns in canonical order."""
+    previous: tuple | None = None
+    by_pivot: dict[tuple[str, int, int, int], int] = {}
+    digest = sha256(b"strategy-one-pivot-interval-content-v1\0")
+    for item in intervals:
+        if not isinstance(item, PivotInterval):
+            raise ValueError("Pivot product contains a non-interval row")
+        if (item.side not in ("low", "high")
+                or any(type(value) is not int or value <= 0 for value in (
+                    item.price_int, item.pivot_at_us, item.confirmed_at_us,
+                    item.valid_from_boundary_ms))
+                or item.pivot_at_us >= item.confirmed_at_us
+                or item.valid_from_boundary_ms > 57_600_000
+                or item.valid_from_boundary_ms % 1_000
+                or item.valid_to_boundary_ms is not None and (
+                    type(item.valid_to_boundary_ms) is not int
+                    or item.valid_to_boundary_ms <= item.valid_from_boundary_ms
+                    or item.valid_to_boundary_ms > 57_600_000
+                    or item.valid_to_boundary_ms % 1_000)):
+            raise ValueError("Pivot product interval is invalid")
+        ordered = (item.valid_from_boundary_ms, item.key,
+                   item.valid_to_boundary_ms or 0)
+        if previous is not None and ordered <= previous:
+            raise ValueError("Pivot product intervals are unordered or duplicate")
+        previous = ordered
+        last_end = by_pivot.get(item.key)
+        if last_end is not None and last_end > item.valid_from_boundary_ms:
+            raise ValueError("Pivot product has overlapping identity intervals")
+        by_pivot[item.key] = item.valid_to_boundary_ms or 57_600_001
+        for value in (*item.key, item.valid_from_boundary_ms,
+                      item.valid_to_boundary_ms or 0):
+            encoded = str(value).encode()
+            digest.update(len(encoded).to_bytes(4, "big"))
+            digest.update(encoded)
+    return digest.hexdigest()
