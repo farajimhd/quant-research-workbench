@@ -2973,6 +2973,11 @@ class ArteJournalWriter:
         elif journal_profile == "backtest_v4":
             if coalesce_batches:
                 raise ValueError("V4 batches require explicit uncoalesced commits")
+            from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+            if (getattr(client, "typed_insert_strict", False) is not True
+                    or not isinstance(getattr(client, "typed_insert_dispatch", None),
+                                      TypedInsertDispatch)):
+                raise RuntimeError("V4 writer requires a strict Keeper-fenced insert dispatch")
             _v4_preflight(client)
         else:
             raise ValueError("Unknown typed journal profile")

@@ -282,10 +282,15 @@ def publish_base_typed_batch_v4(client, batch) -> str:
         _sealed_families, _v4_family_table, _verify_commission_links,
         _verify_exact_intent_uses, _verify_order_context_links,
     )
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 
     if (not isinstance(batch, TypedJournalBatch)
             or not 1 <= len(batch.events) <= 512):
         raise ValueError("V4 publication needs one bounded typed event batch")
+    if (getattr(client, "typed_insert_strict", False) is not True
+            or not isinstance(getattr(client, "typed_insert_dispatch", None),
+                              TypedInsertDispatch)):
+        raise RuntimeError("V4 publication requires a strict Keeper-fenced insert dispatch")
     base_families = _sealed_families(batch)
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families)

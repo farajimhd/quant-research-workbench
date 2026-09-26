@@ -16,9 +16,27 @@ from src.trading_runtime.arte_journal_writer import _sealed_families
 from src.trading_runtime.arte_journal_writer import ArteJournalWriter
 from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_journal_writer import typed_row
+from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from src.trading_runtime.arte_journal_projection import commission_revision_batch
 from src.trading_runtime.domain import CommissionEvent
 from tests.test_arte_journal_writer import MemoryClient, batch
+
+
+class MemoryV4Dispatch(TypedInsertDispatch):
+    """Test transport only; production uses the real Keeper CAS dispatch."""
+
+    def __init__(self):
+        super().__init__(object())
+
+    def execute_typed_insert(self, client, **kwargs):
+        client.execute(kwargs["sql"])
+
+
+def attached_v4_client(client=None):
+    client = client or MemoryClient()
+    client.typed_insert_dispatch = MemoryV4Dispatch()
+    client.typed_insert_strict = True
+    return client
 
 
 def source():
@@ -128,7 +146,7 @@ def test_v4_cold_readback_recomputes_each_typed_row_hash():
 
 
 def test_v4_publication_is_detail_first_commit_last_and_idempotent():
-    client = MemoryClient()
+    client = attached_v4_client()
     item = batch()
     assert publish_base_typed_batch_v4(client, item) == item.batch_id
     assert client.inserts == ["trading_event_v1", "trading_commit_family_v4",
@@ -139,6 +157,21 @@ def test_v4_publication_is_detail_first_commit_last_and_idempotent():
     client.tables["trading_event_v1"][0]["entity_id"] = "tampered"
     with pytest.raises(RuntimeError, match="row hash"):
         publish_base_typed_batch_v4(client, item)
+
+
+def test_v4_rejects_unfenced_client_before_any_write(monkeypatch):
+    client = MemoryClient()
+    item = batch()
+    with pytest.raises(RuntimeError, match="Keeper-fenced insert dispatch"):
+        publish_base_typed_batch_v4(client, item)
+    assert client.inserts == []
+    monkeypatch.setattr(writer_module, "storage_preflight", lambda *_, **__: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight",
+                        lambda *_, **__: None)
+    with pytest.raises(RuntimeError, match="Keeper-fenced insert dispatch"):
+        ArteJournalWriter(client, run_id=item.run_id,
+                          journal_profile="backtest_v4", coalesce_batches=False)
+    assert client.inserts == []
 
 
 def test_v4_publication_recovers_partial_family_prefix_without_duplicate_rows():
@@ -152,7 +185,7 @@ def test_v4_publication_recovers_partial_family_prefix_without_duplicate_rows():
                 raise OSError("simulated commit transport failure")
             return super().execute(sql)
 
-    client = InterruptedClient()
+    client = attached_v4_client(InterruptedClient())
     item = batch()
     with pytest.raises(OSError, match="transport failure"):
         publish_base_typed_batch_v4(client, item)
@@ -175,7 +208,7 @@ def test_v4_late_commission_requires_v4_committed_execution_before_insert():
         prior_batch_id=base.prior_batch_id, sequence=base.first_sequence,
         source_cursor="fee-1", run_status="running",
         time_authority="observation")
-    client = MemoryClient()
+    client = attached_v4_client()
     source_batch = "00000000-0000-0000-0000-000000000099"
     client.tables["trading_execution_v1"] = [{
         "record_id": "00000000-0000-0000-0000-000000000098",
@@ -201,7 +234,7 @@ def test_v4_continuation_requires_exact_sealed_predecessor():
     continued = replace(
         first, batch_id=next_batch_id, prior_batch_id=first.batch_id,
         first_sequence=2, last_sequence=2, events=(event,))
-    client = MemoryClient()
+    client = attached_v4_client()
     with pytest.raises(RuntimeError, match="committed predecessor"):
         publish_base_typed_batch_v4(client, continued)
     assert client.inserts == []
@@ -228,7 +261,7 @@ def test_v4_continuation_requires_exact_sealed_predecessor():
 
 
 def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(monkeypatch):
-    client = MemoryClient()
+    client = attached_v4_client()
     observed = []
     monkeypatch.setattr(
         writer_module, "storage_preflight",
@@ -282,7 +315,7 @@ def test_v4_strategy_signal_uses_installed_v2_table_and_readback():
         "source_event_time": event["event_time"],
     })
     item = replace(item, events=(event,), signals=(signal,))
-    client = MemoryClient()
+    client = attached_v4_client()
     assert publish_base_typed_batch_v4(client, item) == item.batch_id
     assert "trading_strategy_signal_v1" not in client.inserts
     assert "trading_strategy_signal_v2" in client.inserts
