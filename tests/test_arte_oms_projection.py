@@ -58,11 +58,15 @@ def test_cold_oms_admission_joins_only_one_fenced_normalized_reservation() -> No
     group = RecoveredOmsGroupState(
         2, None, {"account_id": "DU1", "strategy_intent_id": intent_id,
                   "group_id": "group-1"}, (), (), (), (), (), ())
-    result = load_committed_oms_admission_page(client, prefix, (group,))
-    assert result["group-1"]["assignment_id"] == "assignment-1"
+    later = replace(group, sequence=3)
+    prefix = replace(prefix, last_sequence=3)
+    result = load_committed_oms_admission_page(client, prefix, (group, later))
+    assert set(result) == {2, 3}
+    assert result[2]["assignment_id"] == "assignment-1"
+    assert result[3]["reservation_id"] == "reservation-1"
     client.tables[name][0]["quantity"] = "5.000000000000000000"
     with pytest.raises(RuntimeError, match="differs from its hash"):
-        load_committed_oms_admission_page(client, prefix, (group,))
+        load_committed_oms_admission_page(client, prefix, (group, later))
 
 
 def test_oms_projection_uses_original_intent_and_normalized_admission() -> None:

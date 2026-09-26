@@ -303,7 +303,7 @@ def _verified_rows(name: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]
 def load_committed_oms_admission_page(
     client: Any, prefix: VerifiedPrefix,
     groups: tuple[RecoveredOmsGroupState, ...], *, max_rows: int = 500,
-) -> dict[str, dict[str, Any]]:
+) -> dict[int, dict[str, Any]]:
     """Join OMS revisions to one earlier normalized reservation per intent.
 
     This is a cold read only. The reservation is the sole authority for the
@@ -361,9 +361,9 @@ def load_committed_oms_admission_page(
                 or not reservation["assignment_id"]
                 or float(reservation["quantity"]) <= 0):
             raise RuntimeError("Committed OMS admission differs from its event or order")
-        if state["group_id"] in result:
-            raise RuntimeError("Committed OMS admission page repeats a group")
-        result[str(state["group_id"])] = reservation
+        if group.sequence in result:
+            raise RuntimeError("Committed OMS admission page repeats a transition")
+        result[group.sequence] = reservation
     return result
 
 
