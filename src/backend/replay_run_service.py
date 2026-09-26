@@ -2878,7 +2878,8 @@ class ReplayRunController:
                 or assembly.publisher.journal is not assembly.journal
                 or assembly.publisher.writer is not assembly.writer
                 or (v4 and (assembly.terminal_authority is not None
-                            or token.account_ids != self._fixed_v4_account_ids))
+                            or token.account_ids != getattr(
+                                self, "_fixed_v4_account_ids", None)))
                 or (not v4 and (assembly.terminal_authority is None
                     or assembly.terminal_authority.run_id != self.run_id
                     or tuple(assembly.terminal_authority.account_ids) != token.account_ids))):
@@ -3176,7 +3177,7 @@ class ReplayRunController:
         self._journal_writer = None
         self._journal_publisher = None
         self._fixed_terminal_authority = None
-        keeper = self._fixed_keeper_session
+        keeper = getattr(self, "_fixed_keeper_session", None)
         self._fixed_keeper_session = None
         try:
             if writer is not None:

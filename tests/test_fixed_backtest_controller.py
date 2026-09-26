@@ -137,8 +137,11 @@ def test_strategy_one_controller_uses_sparse_boundary_not_legacy_frame(
 
     monkeypatch.setattr(backtest_strategy_one_execution,
                         "run_certified_strategy_one_session", sparse_session)
+    market = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "build-1", "a" * 64,
+        (DAY,), ("AAA",), (), (100, 1000, 30000), "b" * 64)
     asyncio.run(controller._run_strategy_one_fixed_days(
-        market=SimpleNamespace(sessions=(DAY,), payload=lambda: {"token": "pinned"}),
+        market=market, execution_market=market,
         candidates=object(),
         activations=object(), pivots=object(), hod=object(), seeds=object(),
         entry=object(), prices=object()))
@@ -462,32 +465,24 @@ def test_inactive_fixed_terminal_handoff_orders_cursor_finish_capture_worker_aud
 
 def test_fixed_journal_refuses_retired_bt_resume_even_after_typed_preflight(monkeypatch):
     from src.backend import backtest_journal_clickhouse
-    from src.backend import backtest_terminal_v2_preflight
     from src.trading_runtime import arte_journal_writer
 
-    class Client:
-        closed = False
-        def close(self):
-            self.closed = True
-
-    client = Client()
-    checked = []
-    monkeypatch.setattr(arte_journal_writer, "journal_client_from_env", lambda: client)
-    monkeypatch.setattr(backtest_terminal_v2_preflight, "terminal_v2_operator_preflight",
-                        lambda value: checked.append(("v2_storage_and_grants", value)))
+    monkeypatch.setattr(arte_journal_writer, "journal_client_from_env", lambda:
+                        pytest.fail("journal client opened for unsupported Backtest"))
     monkeypatch.setattr(backtest_journal_clickhouse, "load_fenced_checkpoint",
                         lambda *_a: (_ for _ in ()).throw(AssertionError("retired bt_* read")))
     controller = object.__new__(ReplayRunController)
     controller.run_id = RUN
-    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST,
+        configuration_revision={"payload": {"strategy": {"strategy_number": 47}}})
     controller._journal = None
     controller._journal_writer = None
     controller._journal_publisher = None
+    controller._resume_state = None
 
-    with pytest.raises(RuntimeError, match="typed journal publication and cold recovery"):
+    with pytest.raises(RuntimeError, match="new Backtest run"):
         asyncio.run(controller._open_fixed_journal())
-    assert checked == [("v2_storage_and_grants", client)]
-    assert client.closed
 
 
 def test_fixed_journal_attaches_only_pinned_memory_v2_assembly_without_disk_or_sqlite(
@@ -665,6 +660,7 @@ def test_fixed_controller_prepares_inactive_v4_without_disk_or_v2_terminal(monke
     controller._account_map = {"account": "DU1"}
     controller._resume_state = None
     controller._journal = None
+    controller._fixed_v4_account_ids = ("DU1",)
     read, terminal = object(), object()
     running = SimpleNamespace(
         typed_insert_dispatch=bootstrap.TypedInsertDispatch(object()),
@@ -902,23 +898,16 @@ def test_fixed_v3_assembly_requires_pinned_query_before_inactive_attach(tmp_path
     journal.close()
 
 
-def test_fixed_open_remains_blocked_even_with_prepared_assembly(monkeypatch):
-    from src.backend import backtest_terminal_v2_preflight
-    from src.trading_runtime import arte_journal_writer
-
-    class Client:
-        def close(self):
-            pass
-
-    monkeypatch.setattr(arte_journal_writer, "journal_client_from_env", Client)
-    monkeypatch.setattr(backtest_terminal_v2_preflight,
-                        "terminal_v2_operator_preflight", lambda client: None)
+def test_fixed_open_rejects_resume_even_with_prepared_assembly():
     controller = object.__new__(ReplayRunController)
     controller.run_id = RUN
-    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller.definition = SimpleNamespace(
+        mode=RunMode.BACKTEST,
+        configuration_revision={"payload": {"strategy": {"strategy_number": 1}}})
     controller._journal = None
+    controller._resume_state = {"old": "checkpoint"}
     controller._fixed_journal_assembly = object()
-    with pytest.raises(RuntimeError, match="typed journal publication and cold recovery"):
+    with pytest.raises(RuntimeError, match="new Backtest run"):
         asyncio.run(controller._open_fixed_journal())
     assert controller._journal is None
 
