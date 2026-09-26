@@ -196,6 +196,16 @@ $py = 'C:\Users\g835l\miniconda3\envs\ml4t\python.exe'
 & $py -B research/rl_trading/v2/evaluate.py --run <v2-run-root> --test-sessions <strictly-later-v2-session-roots> --device cpu
 ```
 
+For a laptop GPU campaign with regular W&B uploads, use `--device cuda
+--wandb-mode online --wandb-project rl-trading-v2`. The launcher discovers a
+local W&B credential from the configured environment/secrets locations and
+fails before training if it is absent. After each committed iteration it logs
+losses, completed-episode return/drawdown/fees and scheduled validation
+return/drawdown/fees. Each iteration remains in `metrics/*.json`; a durable sync
+cursor replays metrics missed by W&B after a checkpointed crash. Resuming uses
+the same W&B run ID and requires the original run contract. W&B files stay under
+the run's external `wandb/` directory, and the API key is not stored in manifests.
+
 Training defaults to 1,000 iterations, four bounded environments, 256 rollout seconds, four PPO
 epochs, 32-row minibatches, and a small 64-wide encoder. Capital varies across
 0.5x/1x/2x the configured initial balance in training. Use `--capital-multipliers`

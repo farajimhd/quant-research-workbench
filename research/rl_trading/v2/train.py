@@ -21,6 +21,8 @@ from research.rl_trading.v2.environment import TradingEnv
 from research.rl_trading.v2.model import PortfolioPolicy, collate
 from research.rl_trading.v2.objectives import advantages, ppo_loss
 from research.rl_trading.v2.io import code_identity, digest, exclusive, file_hash, output_root, read, write
+from research.mlops.env import discover_env_files, load_env_files
+from research.mlops.wandb_utils import init_wandb
 
 
 def config_arguments(p):
@@ -52,6 +54,9 @@ def parser():
     p.add_argument('--capital-multipliers',type=float,nargs='+',default=[.5,1.,2.])
     p.add_argument('--resume',action='store_true')
     p.add_argument('--allow-segment',action='store_true')
+    p.add_argument('--wandb-mode',choices=('disabled','offline','online'),default='disabled')
+    p.add_argument('--wandb-project',default='rl-trading-v2')
+    p.add_argument('--wandb-entity',default='')
     config_arguments(p)
     return p
 
@@ -82,6 +87,24 @@ def _save(path, payload):
     temporary = path.with_suffix('.tmp')
     torch.save(payload,temporary)
     os.replace(temporary,path)
+
+
+def wandb_metrics(result):
+    """Project durable per-iteration evidence to scalar W&B metrics."""
+    summaries = result['episodes']
+    report = dict(iteration=result['iteration'],episodes_completed=result['completed_episodes'],
+        updates=result['updates'],rollout_steps=result['rollout_steps'],
+        elapsed_seconds=result['elapsed_seconds'],kl_early_stop=int(result['kl_early_stop']))
+    report.update({'loss/'+k:v for k,v in result['losses'].items()})
+    if summaries:
+        report['train/net_return_mean'] = float(np.mean([x['net_return'] for x in summaries]))
+        report['train/max_drawdown_mean'] = float(np.mean([x['max_drawdown'] for x in summaries]))
+        report['train/fees_mean'] = float(np.mean([x['fees'] for x in summaries]))
+    if 'validation_mean_return' in result:
+        report['validation/net_return_mean'] = result['validation_mean_return']
+        report['validation/max_drawdown_mean'] = float(np.mean([x['max_drawdown'] for x in result['validation']]))
+        report['validation/fees_mean'] = float(np.mean([x['fees'] for x in result['validation']]))
+    return report
 
 
 def train(args):
@@ -120,7 +143,8 @@ def _train_locked(args, config, root):
         feature_names=sessions[0].plan['feature_names'],code=code_identity(),
         train=[dict(root=str(x.root),plan_hash=x.plan['plan_hash'],complete_hash=file_hash(x.root/'complete.json'),date=x.plan['date']) for x in sessions],
         validation=[dict(root=str(x.root),plan_hash=x.plan['plan_hash'],complete_hash=file_hash(x.root/'complete.json'),date=x.plan['date']) for x in validation],
-        output_root=str(root),wandb=None,teacher_supervision=False,
+        output_root=str(root),wandb=dict(mode=args.wandb_mode,project=args.wandb_project,
+                                         entity=args.wandb_entity),teacher_supervision=False,
         torch_version=torch.__version__,numpy_version=np.__version__)
     manifest['contract_hash'] = digest(manifest)
     path = root/'run_manifest.json'
@@ -182,6 +206,25 @@ def _train_locked(args, config, root):
     if start >= args.iterations:
         print(f'Checkpoint already reached iteration {start}',flush=True)
         return 0
+    wandb_run = None
+    if args.wandb_mode != 'disabled':
+        load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)
+        wandb_id = manifest['contract_hash'][:12]
+        (root/'wandb').mkdir(exist_ok=True)
+        wandb_run = init_wandb(entity=args.wandb_entity,project=args.wandb_project,
+            run_name=args.run_name,config=manifest,run_dir=root/'wandb',mode=args.wandb_mode,
+            timeout_seconds=60,run_id=wandb_id,
+            resume_mode='must' if args.resume else 'never',capture_console=False)
+        write(root/'wandb_run.json',dict(id=wandb_id,project=args.wandb_project,
+            entity=args.wandb_entity,url=getattr(wandb_run,'url',None),mode=args.wandb_mode))
+        synced_path = root/'wandb_synced.json'
+        synced = read(synced_path)['iteration'] if synced_path.exists() else 0
+        if synced > start:
+            raise ValueError('W&B sync cursor is ahead of the training checkpoint')
+        for completed in range(synced+1,start+1):
+            saved = read(root/'metrics'/f'{completed:06d}.json')
+            wandb_run.log(wandb_metrics(saved),step=completed)
+            write(synced_path,dict(iteration=completed,run_id=wandb_id))
     print(f'V2 PPO device={args.device} train_sessions={len(sessions)} validation_sessions={len(validation)} root={root}',flush=True)
     print('Execution contract (IBKR fee scenario; slippage remains uncalibrated): '+json.dumps(config.manifest()),flush=True)
     try:
@@ -271,6 +314,9 @@ def _train_locked(args, config, root):
             if improved:
                 _save(root/'checkpoint_best.pt',payload)
             write(root/'metrics'/f'{iteration:06d}.json',result)
+            if wandb_run is not None:
+                wandb_run.log(wandb_metrics(result),step=iteration)
+                write(root/'wandb_synced.json',dict(iteration=iteration,run_id=wandb_id))
             write(root/'status.json',dict(status='running',iteration=iteration,active=len(envs),
                 queued_iterations=args.iterations-iteration,completed_episodes=completed_episodes,
                 failed=0,retried=0,skipped=0))
@@ -281,6 +327,9 @@ def _train_locked(args, config, root):
     except Exception:
         write(root/'status.json',dict(status='failed',active=0,failed=1,resume='last committed iteration'))
         raise
+    finally:
+        if wandb_run is not None:
+            wandb_run.finish()
     write(root/'status.json',dict(status='complete',iteration=args.iterations,active=0,failed=0))
     return 0
 

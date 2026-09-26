@@ -391,3 +391,33 @@ def test_actual_launcher_with_1000_candidates(tmp_path,monkeypatch,device):
     manifest = read(run/'run_manifest.json')
     assert manifest['config']['entry_rank'] == 900 and manifest['config']['hold_rank'] == 1000
     assert read(run/'metrics/000001.json')['updates'] > 0
+
+
+def test_wandb_logs_completed_iterations_and_recovers_missing_upload(tmp_path,monkeypatch):
+    monkeypatch.setenv('QW_RUNTIME_ROOT',str(tmp_path))
+    training = save_market(tmp_path/'training',market(n=1,seconds=8))
+    validation = save_market(tmp_path/'validation',market(n=1,seconds=8,day='2026-08-21'))
+    uploaded,finished,resume_modes = [],[],[]
+    class FakeRun:
+        url = 'https://wandb.ai/fixture/rl-trading-v2/runs/fixture'
+        def log(self,values,step):
+            uploaded.append((step,values))
+        def finish(self):
+            finished.append(True)
+    def connect(**kwargs):
+        resume_modes.append(kwargs['resume_mode'])
+        return FakeRun()
+    monkeypatch.setattr(train,'init_wandb',connect)
+    common = ['--train-sessions',str(training),'--val-sessions',str(validation),
+        '--run-name','wandb-fixture','--allow-segment','--iterations','1',
+        '--rollout-steps','4','--environments','1','--epochs','1','--batch-size','4',
+        '--width','16','--heads','2','--history-seconds','4',
+        '--liquidation-buffer-seconds','2','--wandb-mode','online']
+    assert train.main(common) == 0
+    run = tmp_path/'rl-trading/v2/train/wandb-fixture'
+    assert uploaded[0][0] == 1 and 'validation/net_return_mean' in uploaded[0][1]
+    (run/'wandb_synced.json').unlink()  # Simulate a crash after checkpoint publication.
+    assert train.main(common+['--resume','--iterations','2']) == 0
+    assert [step for step,_ in uploaded] == [1,1,2]
+    assert resume_modes == ['never','must'] and len(finished) == 2
+    assert read(run/'wandb_synced.json')['iteration'] == 2

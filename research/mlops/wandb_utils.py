@@ -27,8 +27,11 @@ def init_wandb(
     mode: str,
     timeout_seconds: int,
     run_id: str | None = None,
+    resume_mode: str | None = None,
     capture_console: bool = True,
 ) -> Any | None:
+    if resume_mode is not None and resume_mode not in ("never", "must", "allow"):
+        raise ValueError("Invalid W&B resume mode")
     if not project or project.lower() in {"off", "none", "disabled"}:
         print("*** WANDB project disabled; writing metrics locally only.", flush=True)
         return None
@@ -67,7 +70,7 @@ def init_wandb(
                 dir=str(run_dir),
                 # A resumed checkpoint must append to its original W&B run;
                 # a fresh run must never attach to an unrelated same-name run.
-                resume="must" if run_id else "never",
+                resume=resume_mode or ("must" if run_id else "never"),
                 mode=resolved_mode,
                 settings=wandb.Settings(
                     init_timeout=max(1, int(timeout_seconds)),
