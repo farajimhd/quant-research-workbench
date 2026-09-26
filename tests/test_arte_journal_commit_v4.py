@@ -36,6 +36,24 @@ from src.trading_runtime.domain import CommissionEvent
 from tests.test_arte_journal_writer import MemoryClient, batch, captured
 
 
+def test_v4_preflight_audits_one_exact_storage_union(monkeypatch):
+    scans = []
+    permissions = []
+    monkeypatch.setattr(writer_module, "storage_preflight",
+                        lambda client, *, tables: scans.append(tuple(tables)))
+    monkeypatch.setattr(writer_module, "journal_permission_preflight",
+                        lambda client, **kwargs: permissions.append(kwargs))
+    client = object()
+    writer_module._v4_preflight(client)
+    assert len(scans) == len(permissions) == 1
+    names = [table.name for table in scans[0]]
+    assert len(names) == len(set(names))
+    assert {table.name for table in (*fixed_backtest_v2_contracts(),
+                                    *V4_COMMIT_TABLES, ACKNOWLEDGEMENT,
+                                    *PROTECTION_CHANGE_TABLES)} <= set(names)
+    assert set(permissions[0]["journal_tables"]) <= set(names)
+
+
 def terminal_batch():
     item = batch()
     event = dict(item.events[0])
@@ -523,18 +541,19 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
                                   "trading_commit_v4"]
     finally:
         journal.close()
-    assert observed[:2] == [fixed_backtest_v2_contracts(), V4_COMMIT_TABLES]
     from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 
-    assert observed[2] == (ENTRY_EVIDENCE,)
-    assert observed[3] == (ACKNOWLEDGEMENT,)
-    assert observed[4] == PROTECTION_CHANGE_TABLES
+    assert len(observed) == 2
+    assert {table.name for table in observed[0]} == {
+        table.name for table in (*fixed_backtest_v2_contracts(),
+                                 *V4_COMMIT_TABLES, ENTRY_EVIDENCE,
+                                 ACKNOWLEDGEMENT, *PROTECTION_CHANGE_TABLES)}
     writable = frozenset(writer_module._v4_family_table(table)
                          for table, _, _, _ in writer_module._FAMILIES) | \
         frozenset(table.name for table in V4_COMMIT_TABLES) | {
             ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
             *(table.name for table in PROTECTION_CHANGE_TABLES)}
-    assert observed[5] == (
+    assert observed[1] == (
         writable, frozenset(table.name for table in fixed_backtest_v2_contracts()) - writable)
 
 
