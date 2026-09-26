@@ -8,10 +8,11 @@ decision; the broker still enforces new-order activation delay.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from contextlib import closing
 from heapq import heappop, heappush
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Awaitable, Callable, Iterator, Mapping
 
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, iter_market_boundary_groups,
@@ -267,3 +268,43 @@ class StrategyOneBoundaryScheduler:
         if close is not None:
             close()
         self._closed = True
+
+
+async def run_strategy_one_boundaries(
+    scheduler: StrategyOneBoundaryScheduler, *,
+    process_broker_row: Callable[[str, Mapping[int, Mapping], int], Awaitable[None]],
+    evaluate_ticker: Callable[[str, Mapping[int, Mapping],
+                               StrategyOneDecisionCandidate | None], Awaitable[None]],
+    financially_active_tickers: Callable[[], tuple[str, ...]],
+    finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
+) -> int:
+    """One causal coordinator; market I/O cannot block the asyncio engine.
+
+    All completed broker rows are applied before any candidate/active
+    strategy evaluation at that boundary. Only broker-owned financial state
+    keeps a ticker on the subsequent active tape. The caller owns portfolio,
+    OMS, journal, and decisions; this function never manufactures events.
+    """
+    if not isinstance(scheduler, StrategyOneBoundaryScheduler) or any(
+            not callable(callback) for callback in (
+                process_broker_row, evaluate_ticker,
+                financially_active_tickers, finish_boundary)):
+        raise TypeError("Strategy 1 coordinator needs typed scheduler callbacks")
+    count = 0
+    try:
+        scheduler.reconcile_financial_tickers(financially_active_tickers())
+        while True:
+            work = await asyncio.to_thread(scheduler.pop_next)
+            if work is None:
+                return count
+            candidates = {row.market_row["ticker"]: row
+                          for row in work.candidate_rows}
+            for ticker, resolutions in work.broker_rows:
+                await process_broker_row(ticker, resolutions, work.boundary_ms)
+            for ticker, resolutions in work.broker_rows:
+                await evaluate_ticker(ticker, resolutions, candidates.get(ticker))
+            await finish_boundary(work)
+            scheduler.reconcile_financial_tickers(financially_active_tickers())
+            count += 1
+    finally:
+        scheduler.close()

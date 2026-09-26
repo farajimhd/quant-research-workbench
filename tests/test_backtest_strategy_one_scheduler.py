@@ -1,10 +1,12 @@
 """Sparse entry plus active liquidity scheduling remains causal and exact."""
+import asyncio
 import numpy as np
 import pytest
 from types import SimpleNamespace
 
 from src.backend.backtest_strategy_one_scheduler import (
     StrategyOneBoundaryScheduler, persisted_active_market_source,
+    run_strategy_one_boundaries,
 )
 from src.backend.backtest_strategy_one_market import (
     StrategyOneDecisionCandidate, attach_sparse_candidate_evidence,
@@ -76,6 +78,46 @@ def test_failed_financial_reconciliation_preserves_existing_active_ticker():
         clock.reconcile_financial_tickers(("BBB",))
     assert clock.active_tickers == ("AAA",)
     clock.close()
+
+
+def test_coordinator_applies_all_broker_rows_before_decisions_and_tracks_orders():
+    actions = []
+    active = set()
+
+    def source(ticker, after):
+        return iter((group(ticker, boundary) for boundary in (200, 300)
+                     if boundary > after))
+
+    async def broker(ticker, rows, boundary):
+        actions.append((boundary, "broker", ticker))
+
+    async def decision(ticker, rows, candidate_row):
+        boundary = rows[100]["boundary_ms"]
+        actions.append((boundary, "candidate" if candidate_row else "active", ticker))
+        if ticker == "AAA" and boundary == 100:
+            active.add(ticker)
+        if ticker == "AAA" and boundary == 200:
+            active.remove(ticker)
+
+    async def finish(work):
+        actions.append((work.boundary_ms, "finish", ""))
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date=DAY,
+        candidate_rows=iter((candidate("AAA", 100), candidate("BBB", 200))),
+        active_source=source)
+    count = asyncio.run(run_strategy_one_boundaries(
+        scheduler, process_broker_row=broker, evaluate_ticker=decision,
+        financially_active_tickers=lambda: tuple(sorted(active)),
+        finish_boundary=finish))
+    assert count == 2
+    assert actions == [
+        (100, "broker", "AAA"), (100, "candidate", "AAA"), (100, "finish", ""),
+        (200, "broker", "AAA"), (200, "broker", "BBB"),
+        (200, "active", "AAA"), (200, "candidate", "BBB"), (200, "finish", ""),
+    ]
+    with pytest.raises(RuntimeError, match="closed"):
+        scheduler.pop_next()
 
 
 def shared_row(ticker, boundary):
