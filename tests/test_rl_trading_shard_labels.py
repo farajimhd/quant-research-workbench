@@ -19,12 +19,12 @@ def test_teacher_actions_align_with_changing_market_and_held_slot():
     left = 10_000_000
     lot = dict(ticker='A',quantity=5.,entry_price=10.,capital_per_share=10.,entry_us=left)
     trajectory = [
-        dict(time_us=left,cash_before=100.,equity_before=100.,reward=0.,
+            dict(time_us=left,cash_before=100.,cash_after=50.,equity_before=100.,reward=0.,
             return_to_go=5.,done=False,
             action_legs_json=json.dumps([dict(action='buy',ticker='A',quantity=5.,
                 price=10.,capital=50.,entry_us=left)]),
             positions_after_json=json.dumps([lot])),
-        dict(time_us=left+1_000_000,cash_before=50.,equity_before=105.,reward=5.,
+            dict(time_us=left+1_000_000,cash_before=50.,cash_after=105.,equity_before=105.,reward=5.,
             return_to_go=0.,done=True,
             action_legs_json=json.dumps([dict(action='sell',ticker='A',quantity=5.,
                 price=11.,capital=0.,entry_us=left)]),

@@ -11,6 +11,16 @@ from research.rl_trading.v1 import train, evaluate_supervised, evaluate_replay
 from src.market_engine.level_book_store import write
 
 
+@pytest.fixture
+def allow_cuda_pooling():
+    previous = torch.are_deterministic_algorithms_enabled()
+    torch.use_deterministic_algorithms(False)
+    try:
+        yield
+    finally:
+        torch.use_deterministic_algorithms(previous)
+
+
 def _shard(root: Path, day: date):
     root.mkdir()
     left,_ = bounds(day)
@@ -53,7 +63,8 @@ def test_flat_or_losing_replay_cannot_be_selected_as_profitable():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required by training contract')
-def test_cuda_training_launcher_reads_disk_shards_and_checkpoints(tmp_path,monkeypatch):
+def test_cuda_training_launcher_reads_disk_shards_and_checkpoints(tmp_path,monkeypatch,
+                                                                   allow_cuda_pooling):
     train_root = _shard(tmp_path/'train',date(2026,8,20))
     val_root = _shard(tmp_path/'val',date(2026,8,21))
     monkeypatch.setenv('QW_RUNTIME_ROOT',str(tmp_path))

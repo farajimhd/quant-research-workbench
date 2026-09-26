@@ -7,7 +7,7 @@ The Phase 2 root winner tables are not used. Missing opening rows forbid a new
 entry; they do not forbid holding or closing an existing position.
 
 ```powershell
-python -B research/rl_trading/v1/build_phase3.py --phase2 <completed-phase2-root>
+python -B research/rl_trading/v1/build_phase3.py --phase2 <completed-phase2-root> --order-cost-model ibkr-pro-tiered-us-base-2026-09-v1
 ```
 
 The default search is **long-only**, starts with $10,000, buys fixed $2,500
@@ -17,16 +17,25 @@ return to cash and may fund later purchases, subject to the four-lot cap.
 `--initial-cash`, `--allocation-step`, `--max-lots`, and
 `--max-orders-per-second` change the grid. A buy requires Phase 2 `can_open`
 and `open_value_available`; a sale requires `can_close`. Both entry and sale
-use Phase 2's current completed-price reference with its configured per-share
-cost. No quoted spread, fill probability, slippage, or broker margin is
-inferred. At 19:58 ET all lots must be sold, including losing lots. A bounded
+use Phase 2's current completed-price reference. With `--order-cost-model`,
+each buy, sale, and 19:58 liquidation also charges the same order-level fee
+calculator used by closed-loop replay. The declared model uses the first IBKR
+Pro Tiered US stock volume tier ($0.0035/share), $0.35 order minimum and 1%
+commission cap, plus published clearing, regulatory, and pass-through rates.
+It charges the published fractional-share minimum and 1% of only the fractional
+component of an order; this component split is an explicit research assumption.
+The route and fill are unknown, so venue fees, quoted spread, slippage, partial
+fills, and broker margin are not inferred. The policy is a fee proxy, not an
+executable-return claim. [IBKR stock pricing](https://www.interactivebrokers.com/en/pricing/commissions-stocks.php).
+At 19:58 ET all lots must be sold, including losing lots. A bounded
 canary may use `--start-second` and `--end-second`; its last second is forced
 flat and is explicitly recorded as a segment rather than the full session.
 
 The full-session objective is maximum terminal cash within the declared action
 grid. Immediate reward is the change in marked account equity, including
 transaction costs. Summed rewards equal terminal cash minus initial cash.
-Phase 2's discounted local future values are used **only to order the search**;
+Phase 2's discounted local future values, reduced by an estimated round-trip
+fee when enabled, are used **only to order the search**;
 they are never summed as realized rewards. The default search retains 16
 portfolio states and the top three opening tickers per second, so its result
 is labeled `approximate_beam`. Set `--beam-width 0 --max-candidates 0` to

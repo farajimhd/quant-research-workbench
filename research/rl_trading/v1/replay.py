@@ -13,6 +13,7 @@ import numpy as np
 
 from research.rl_trading.v1.data import SessionShard
 from research.rl_trading.v1.common import bounds
+from research.rl_trading.v1.costs import from_plan
 from research.rl_trading.v1.features import FEATURE_NAMES
 
 TRADES = FEATURE_NAMES.index('log_trades_60s')
@@ -24,6 +25,7 @@ class Lot:
     quantity: float
     entry_price: float
     entry_us: int
+    entry_fee: float = 0.
 
 
 def _rank_chunk(volumes: np.ndarray, tickers: list[str], positions: np.ndarray) -> np.ndarray:
@@ -44,6 +46,7 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
     """
     arrays = shard.arrays
     plan = shard.plan
+    costs = from_plan(plan.get('order_costs'))
     tickers = plan['tickers']
     top_n = int(plan['top_n'])
     max_lots = int(plan['max_lots'])
@@ -59,6 +62,7 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
     peak = initial
     max_drawdown = 0.
     buys = sells = forced = 0
+    fees_paid = 0.
     rows = shard.complete['rows'] if not max_seconds else min(max_seconds,shard.complete['rows'])
     if rows < 1:
         raise ValueError('Replay has no decision seconds')
@@ -89,7 +93,9 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
         can_close = arrays['closeable'][:,second]
         if any(not can_close[lot.ticker_index] for lot in lots):
             raise ValueError('Open lot has no certified current liquidation price')
-        equity_before = cash+sum(lot.quantity*float(prices[lot.ticker_index,1]) for lot in lots)
+        equity_before = cash+sum(lot.quantity*float(prices[lot.ticker_index,1])-
+            (costs.fee(lot.quantity,float(prices[lot.ticker_index,1]),side='sell') if costs else 0.)
+            for lot in lots)
         state = dict(index=index,time_us=time_us,second=second,visible=visible,
             rank=[ranks[i] for i in visible],held=[i in held for i in visible],
             starting_lots=tuple(lots),cash=cash,equity=equity_before,terminal=terminal)
@@ -100,7 +106,10 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
             if len(starting) > max_orders:
                 raise ValueError('Terminal liquidation exceeds the action grid')
             for lot in starting:
-                cash += lot.quantity*float(prices[lot.ticker_index,1])
+                close_price = float(prices[lot.ticker_index,1])
+                fee = costs.fee(lot.quantity,close_price,side='sell') if costs else 0.
+                cash += lot.quantity*close_price-fee
+                fees_paid += fee
                 sells += 1
                 forced += 1
             lots.clear()
@@ -126,9 +135,13 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
                 if token <= top_n:
                     ticker = visible[token-1]
                     current = prices[ticker]
-                    quantity = step_cash/float(current[2])
-                    cash -= step_cash
-                    lots.append(Lot(ticker,quantity,float(current[0]),time_us))
+                    price = float(current[0])
+                    quantity,fee = (costs.buy_for_budget(price,step_cash) if costs else
+                        (step_cash/float(current[2]),0.))
+                    debit = quantity*price+fee if costs else step_cash
+                    cash -= debit
+                    fees_paid += fee
+                    lots.append(Lot(ticker,quantity,price,time_us,fee))
                     lots.sort(key=lambda lot:(tickers[lot.ticker_index],lot.entry_us,
                         lot.entry_price,lot.quantity))
                     buys += 1
@@ -136,11 +149,16 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
                     lot_index = token-top_n-1
                     lot = starting[lot_index]
                     lots.remove(lot)
-                    cash += lot.quantity*float(prices[lot.ticker_index,1])
+                    close_price = float(prices[lot.ticker_index,1])
+                    fee = costs.fee(lot.quantity,close_price,side='sell') if costs else 0.
+                    cash += lot.quantity*close_price-fee
+                    fees_paid += fee
                     used_sells.add(lot_index)
                     sells += 1
                 previous_token = token
-        equity = cash+sum(lot.quantity*float(prices[lot.ticker_index,1]) for lot in lots)
+        equity = cash+sum(lot.quantity*float(prices[lot.ticker_index,1])-
+            (costs.fee(lot.quantity,float(prices[lot.ticker_index,1]),side='sell') if costs else 0.)
+            for lot in lots)
         if not np.isfinite(equity) or cash < -1e-5:
             raise ValueError('Replay account became invalid')
         peak = max(peak,equity)
@@ -153,4 +171,5 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
         terminal_cash=cash if complete else None,terminal_equity=previous_equity,
         profit=previous_equity-initial,profit_to_cash=(previous_equity-initial)/initial,
         max_drawdown=max_drawdown,buys=buys,sells=sells,forced_liquidations=forced,
-        open_lots=len(lots))
+        open_lots=len(lots),fees_paid=fees_paid,
+        gross_profit_before_fees=previous_equity-initial+fees_paid)

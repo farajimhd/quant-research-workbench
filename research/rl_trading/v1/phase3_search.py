@@ -2,9 +2,10 @@
 from dataclasses import dataclass, replace
 from itertools import combinations, combinations_with_replacement
 import math
+from research.rl_trading.v1.costs import OrderCosts, VERSION as COST_VERSION
 from research.rl_trading.v1.universe import volume_order, slots
 
-VERSION = 'hindsight-phase3-long-grid-v2'
+VERSION = 'hindsight-phase3-long-grid-v3'
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,6 +15,7 @@ class Lot:
     entry_price: float
     capital_per_share: float
     entry_us: int
+    entry_fee: float = 0.
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +41,7 @@ class SearchConfig:
     beam_width: int = 16  # 0 means no beam pruning.
     max_frontier: int = 100_000
     top_n: int = 0  # 0 preserves the V1 unrestricted reference search.
+    order_cost_version: str = 'none'
 
     def validate(self):
         if not math.isfinite(self.initial_cash) or self.initial_cash <= 0:
@@ -54,6 +57,8 @@ class SearchConfig:
             raise ValueError('top_n must reserve enough slots for all allowed lots')
         if self.top_n and self.max_orders_per_second < self.max_lots:
             raise ValueError('Top-N teacher must encode every possible terminal liquidation order')
+        if self.order_cost_version not in ('none',COST_VERSION):
+            raise ValueError('Unknown order-cost model')
 
 
 def _finite_positive(value):
@@ -74,6 +79,7 @@ def advance(frontier: list[Node], market_rows: list[dict], time_us: int,
     are heuristic and must be recorded as approximation in the output plan.
     """
     config.validate()
+    costs = OrderCosts() if config.order_cost_version == COST_VERSION else None
     long_rows = {r['ticker']:r for r in market_rows if r['side'] == 'long'}
     if len(long_rows) != sum(r['side'] == 'long' for r in market_rows):
         raise ValueError('Duplicate long market candidate')
@@ -85,7 +91,16 @@ def advance(frontier: list[Node], market_rows: list[dict], time_us: int,
         and _finite_positive(r['capital_per_share']) and
         isinstance(r['open_value_per_dollar'],(int,float)) and
         math.isfinite(r['open_value_per_dollar'])]
-    eligible.sort(key=lambda r:(-r['open_value_per_dollar'],r['ticker']))
+    def entry_rank(row):
+        score = float(row['open_value_per_dollar'])
+        if costs:
+            price = float(row['entry_price'])
+            approximate_quantity = config.allocation_step/price
+            roundtrip = (costs.fee(approximate_quantity,price,side='buy')+
+                costs.fee(approximate_quantity,price,side='sell'))
+            score -= roundtrip/config.allocation_step
+        return (-score,row['ticker'])
+    eligible.sort(key=entry_rank)
     if full_eligible_count is not None and (type(full_eligible_count) is not int or
             full_eligible_count < len(eligible)):
         raise ValueError('Full eligible count is smaller than the visible opening population')
@@ -119,11 +134,12 @@ def advance(frontier: list[Node], market_rows: list[dict], time_us: int,
             for i in sold:
                 lot = parent.lots[i]
                 price = float(long_rows[lot.ticker]['close_price'])
-                cash += lot.quantity*price
-                profit = lot.quantity*(price-lot.entry_price)
+                fee = costs.fee(lot.quantity,price,side='sell') if costs else 0.
+                cash += lot.quantity*price-fee
+                profit = lot.quantity*(price-lot.entry_price)-lot.entry_fee-fee
                 realized += profit
                 sells.append(dict(action='sell',ticker=lot.ticker,quantity=lot.quantity,
-                    price=price,capital=0.,realized_pnl=profit,entry_us=lot.entry_us))
+                    price=price,fee=fee,capital=0.,realized_pnl=profit,entry_us=lot.entry_us))
             room = min(config.max_lots-len(remaining),
                 max(0,config.max_orders_per_second-len(sold)),
                 max(0,int((cash+1e-8)//config.allocation_step)))
@@ -136,12 +152,15 @@ def advance(frontier: list[Node], market_rows: list[dict], time_us: int,
                 for j in bought:
                     row = openings[j]
                     amount = config.allocation_step
-                    quantity = amount/float(row['capital_per_share'])
-                    new_cash -= amount
+                    price = float(row['entry_price'])
+                    quantity,fee = (costs.buy_for_budget(price,amount) if costs else
+                        (amount/float(row['capital_per_share']),0.))
+                    debit = quantity*price+fee if costs else amount
+                    new_cash -= debit
                     current_lots.append(Lot(row['ticker'],quantity,float(row['entry_price']),
-                        float(row['capital_per_share']),time_us))
+                        debit/quantity,time_us,fee))
                     actions.append(dict(action='buy',ticker=row['ticker'],quantity=quantity,
-                        price=float(row['entry_price']),capital=amount,realized_pnl=0.,entry_us=time_us))
+                        price=price,fee=fee,capital=debit,realized_pnl=0.,entry_us=time_us))
                 if new_cash < -1e-7:
                     continue
                 current_lots.sort(key=lambda x:(x.ticker,x.entry_us,x.entry_price,x.quantity))
@@ -152,13 +171,15 @@ def advance(frontier: list[Node], market_rows: list[dict], time_us: int,
                     if row is None or not _finite_positive(row['close_price']):
                         valid = False
                         break
-                    equity += lot.quantity*float(row['close_price'])
+                    close_price = float(row['close_price'])
+                    close_fee = costs.fee(lot.quantity,close_price,side='sell') if costs else 0.
+                    equity += lot.quantity*close_price-close_fee
                     future = row['hold_value_per_share'] if row['hold_value_available'] else (
                         float(row['close_price'])-lot.entry_price)
                     if future is None or not math.isfinite(future):
                         valid = False
                         break
-                    score += lot.quantity*(float(row['close_price'])+future)
+                    score += lot.quantity*(close_price+future)-close_fee
                 if not valid:
                     continue
                 candidate = Node(None,parent.id,new_cash,tuple(current_lots),tuple(actions),

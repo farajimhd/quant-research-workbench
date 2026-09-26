@@ -32,12 +32,29 @@ class SessionShard:
         base_root = self.plan.get('base_shard_root')
         if base_root:
             base = SessionShard(Path(base_root),verify=verify)
+            overlay = self.plan.get('overlay_kind','current_account')
+            required = ({'account.npy'} if overlay == 'current_account' else
+                {name+'.npy' for name in ('slots','rank','held_slots','actions',
+                    'action_mask','lots','lot_slots','account','reward','return_to_go','done')}
+                if overlay == 'cost_labels' else set())
             if (base.plan['plan_hash'] != self.plan['base_plan_hash'] or
                     file_hash(base.root/'complete.json') != self.plan['base_complete_hash'] or
-                    set(self.complete['files']) != {'account.npy'}):
+                    not required or set(self.complete['files']) != required or
+                    base.plan['date'] != self.plan['date'] or
+                    base.plan['tickers'] != self.plan['tickers']):
                 raise ValueError('Account overlay source certificate changed')
+            if overlay == 'cost_labels':
+                parity_path = self.root/'teacher_replay_parity.json'
+                if (not parity_path.is_file() or
+                        file_hash(parity_path) != self.complete.get('teacher_replay_parity_hash')):
+                    raise ValueError('Cost label replay certificate changed')
+                parity = read(parity_path)
+                if (parity.get('mask_and_state_parity') is not True or
+                        not math.isclose(float(parity['profit']),
+                            float(self.complete['teacher_profit']),abs_tol=.1)):
+                    raise ValueError('Cost label replay parity failed')
             self.arrays = dict(base.arrays)
-            names = ('account',)
+            names = tuple(name[:-4] for name in self.complete['files'])
         else:
             if set(self.complete['files']) != {name+'.npy' for name in ARRAYS}:
                 raise ValueError('Training shard file certificate is incomplete')

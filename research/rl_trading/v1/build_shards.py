@@ -36,9 +36,9 @@ from research.rl_trading.v1.shard_labels import pack
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
 
-VERSION = 'rl-trading-structural-shards-v4'
+VERSION = 'rl-trading-structural-shards-v5'
 SOURCES = ('build_shards.py','features.py','shard_labels.py','universe.py',
-    'phase3_search.py','arte_source.py','arte_sql.py','reference_features.py')
+    'phase3_search.py','costs.py','arte_source.py','arte_sql.py','reference_features.py')
 ENGINE_SOURCES = ('src/backend/fixed_v7_stream.py','src/backend/structural_v7_seed.py',
     'src/market_engine/streaming_level_book.py','src/market_engine/v7_qmd.py')
 _WORKER_CLIENT = None
@@ -106,7 +106,7 @@ def _source(phase3: Path):
     if (teacher.get('version') != PHASE3_VERSION or not teacher['config'].get('top_n')
             or teacher.get('plan_hash') != digest({k:v for k,v in teacher.items() if k != 'plan_hash'})
             or complete.get('plan_hash') != teacher['plan_hash']):
-        raise ValueError('Require complete Phase 3 V2 with causal top-N membership')
+        raise ValueError('Require complete Phase 3 V3 with causal top-N membership')
     for name,certificate in complete['files'].items():
         _verified(phase3/name,certificate['file_hash'])
     phase2 = Path(teacher['phase2_root']).resolve()
@@ -200,6 +200,7 @@ def run(args,console):
             segment=teacher['end_us'] != teacher['true_session_cutoff_us'],
             max_lots=teacher['config']['max_lots'],max_orders=teacher['config']['max_orders_per_second'],
             allocation_step=teacher['config']['allocation_step'],initial_cash=teacher['config']['initial_cash'],
+            order_costs=teacher.get('order_costs'),
             liquidity_filter=p2['liquidity_filter'],
             code_hashes={**{name:file_hash(REPO/'research/rl_trading/v1'/name) for name in SOURCES},
                          **{name:file_hash(REPO/name) for name in ENGINE_SOURCES}})
@@ -293,7 +294,8 @@ def run(args,console):
             top_n=plan['top_n'],max_lots=plan['max_lots'],max_orders=plan['max_orders'],
             allocation_step=plan['allocation_step'],initial_cash=plan['initial_cash'],
             min_volume=float(p2['liquidity_filter']['min_volume_60s']),
-            min_trades=int(p2['liquidity_filter']['min_trades_60s']))
+            min_trades=int(p2['liquidity_filter']['min_trades_60s']),
+            order_costs=plan['order_costs'])
         hashes = {name:file_hash(root/name) for name in (
             'features.npy','volume_60s.npy','execution.npy','closeable.npy')}
         for name,value in packed.items():

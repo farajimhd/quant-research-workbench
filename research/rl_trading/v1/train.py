@@ -92,7 +92,8 @@ def _run_closed_loop(model, shards, sessions, device):
             reports.append(dict(date=shard.plan['date'],profit=result['profit'],
                 profit_to_cash=result['profit_to_cash'],max_drawdown=result['max_drawdown'],
                 buys=result['buys'],voluntary_sells=result['sells']-result['forced_liquidations'],
-                forced_liquidations=result['forced_liquidations']))
+                forced_liquidations=result['forced_liquidations'],
+                fees_paid=result['fees_paid'],gross_profit_before_fees=result['gross_profit_before_fees']))
     model.train()
     return reports
 
@@ -137,7 +138,7 @@ def run(args):
             replay_every=args.replay_every,unknown_ticker_dropout=args.unknown_ticker_dropout),
         code_hashes={name:file_hash(Path(__file__).with_name(name)) for name in
             ('train.py','data.py','model.py','objectives.py','features.py',
-             'replay.py','evaluate_replay.py','shard_labels.py')})
+             'replay.py','evaluate_replay.py','shard_labels.py','costs.py')})
     config['config_hash'] = digest(config)
     runtime = runtime_root().resolve()
     if not runtime.is_dir():
@@ -292,11 +293,15 @@ def run(args):
                     train=train_replays,validation=val_replays,
                     train_profit=sum(item['profit'] for item in train_replays),
                     val_profit=sum(item['profit'] for item in val_replays),
+                    train_fees=sum(item['fees_paid'] for item in train_replays),
+                    val_fees=sum(item['fees_paid'] for item in val_replays),
                     val_max_drawdown=max(item['max_drawdown'] for item in val_replays),
                     wall_seconds=perf_counter()-replay_start)
                 write(paths.run_root/f'closed_loop_epoch_{epoch+1:03d}.json',replay_report)
                 report.update({'replay/train_profit':replay_report['train_profit'],
                     'replay/val_profit':replay_report['val_profit'],
+                    'replay/train_fees':replay_report['train_fees'],
+                    'replay/val_fees':replay_report['val_fees'],
                     'replay/val_max_drawdown':replay_report['val_max_drawdown'],
                     'replay/wall_seconds':replay_report['wall_seconds'],
                     **{f'replay/train/{item["date"]}/profit':item['profit'] for item in train_replays}})

@@ -21,6 +21,7 @@ import polars as pl
 from rich.console import Console
 
 from research.rl_trading.v1.common import bounds, digest
+from research.rl_trading.v1.costs import OrderCosts, VERSION as COST_VERSION
 from research.rl_trading.v1.arte_sql import ArteReader
 from research.rl_trading.v1.market_values import MarketValues
 from research.rl_trading.v1.reference_features import nonempty_v7_population, storage_check
@@ -168,8 +169,11 @@ def run(args,console):
     if source_plan.get('liquidation_us') is None:
         raise ValueError('Phase 2 lacks the 19:58 liquidation boundary')
     config = SearchConfig(args.initial_cash,args.allocation_step,args.max_lots,
-        args.max_orders_per_second,args.max_candidates,args.beam_width,args.max_frontier,args.top_n)
+        args.max_orders_per_second,args.max_candidates,args.beam_width,args.max_frontier,args.top_n,
+        getattr(args,'order_cost_model','none'))
     config.validate()
+    if config.order_cost_version != 'none' and source_plan['cost_per_share_per_transaction'] != 0:
+        raise ValueError('Order-level fees require zero-cost Phase 2 prices to avoid double charging')
     left,_ = bounds(date.fromisoformat(source_plan['date']))
     cutoff = source_plan['liquidation_us']
     if cutoff-left != 57_480_000_000:
@@ -202,12 +206,14 @@ def run(args,console):
             source_complete['tensor']['holding']['file'],source_complete['tensor']['opening']['file'])},
         scope=source_plan['scope'],mode='long',first_us=first_us,end_us=left+end_second*1_000_000,
         true_session_cutoff_us=cutoff,config=asdict(config),v7_population=v7_population,
+        order_costs=OrderCosts().plan() if config.order_cost_version == COST_VERSION else None,
         optimality='proven_within_grid' if not config.beam_width and not config.max_candidates else 'approximate_beam',
         observation_contract='Join only causal current-time market features; never use Phase 2 targets or values as model observations',
         reward_contract='Change in marked portfolio equity, including costs; terminal cash minus initial cash',
         code_hashes={p:file_hash(REPO/p) for p in (
             'research/rl_trading/v1/build_phase3.py','research/rl_trading/v1/phase3_search.py',
             'research/rl_trading/v1/market_values.py','research/rl_trading/v1/common.py',
+            'research/rl_trading/v1/costs.py',
             'research/rl_trading/v1/universe.py','research/rl_trading/v1/reference_features.py',
             'research/rl_trading/v1/arte_sql.py')})
     plan['plan_hash'] = digest(plan)
@@ -320,6 +326,8 @@ def main(argv=None):
         help='Maximum visible tickers including all holdings; ranked by completed 60s volume')
     parser.add_argument('--require-v7-levels',action='store_true',
         help='Exclude tickers without certified nonempty prior ARTE V7 levels before search')
+    parser.add_argument('--order-cost-model',choices=('none',COST_VERSION),default='none',
+        help='Order-level IBKR Pro Tiered first-volume-tier fee proxy; default none')
     parser.add_argument('--start-second',type=int,default=0,help='Offset from 04:00 ET; for bounded canaries')
     parser.add_argument('--end-second',type=int,default=None,help='Offset from 04:00 ET; default 19:58')
     return run(parser.parse_args(argv),Console())

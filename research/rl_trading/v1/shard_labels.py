@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import math
 
 import numpy as np
 
 from research.rl_trading.v1.features import FEATURE_NAMES, SECONDS
+from research.rl_trading.v1.costs import from_plan
 
 PRICE_AVAILABLE = FEATURE_NAMES.index('price_available')
 TRADES_60S = FEATURE_NAMES.index('log_trades_60s')
@@ -15,7 +17,8 @@ def pack(trajectory: list[dict], bank: np.ndarray, volumes: np.ndarray,
          execution: np.ndarray,
          tickers: list[str], *, left_us: int, top_n: int, max_lots: int,
          max_orders: int, allocation_step: float, initial_cash: float,
-         min_volume: float, min_trades: int) -> dict[str,np.ndarray]:
+         min_volume: float, min_trades: int,
+         order_costs: dict | None = None) -> dict[str,np.ndarray]:
     """Use original ticker identity for history; encode each order as a slot or lot.
 
     Action token 0 stops. 1..N buys one allocation unit in a ticker slot.
@@ -29,6 +32,7 @@ def pack(trajectory: list[dict], bank: np.ndarray, volumes: np.ndarray,
             or len(tickers) != len(set(tickers)) or max_orders < 1):
         raise ValueError('Teacher packing requires a complete identified feature bank')
     lookup = {ticker:i for i,ticker in enumerate(tickers)}
+    costs = from_plan(order_costs)
     lexical = np.argsort(np.asarray(tickers,dtype='U'),kind='stable')
     action_count = 1+top_n+max_lots
     result = dict(
@@ -78,7 +82,9 @@ def pack(trajectory: list[dict], bank: np.ndarray, volumes: np.ndarray,
             for slot,value in enumerate(visible):
                 result['held_slots'][index,slot] = value in held
             current_equity = float(row['cash_before'])+sum(
-                float(lot['quantity'])*float(execution[lookup[lot['ticker']],second,1])
+                float(lot['quantity'])*float(execution[lookup[lot['ticker']],second,1])-
+                (costs.fee(float(lot['quantity']),
+                    float(execution[lookup[lot['ticker']],second,1]),side='sell') if costs else 0.)
                 for lot in prior)
             if not np.isfinite(current_equity) or current_equity < 0:
                 raise ValueError('Teacher has no valid current account mark')
@@ -117,7 +123,8 @@ def pack(trajectory: list[dict], bank: np.ndarray, volumes: np.ndarray,
                 if leg['action'] == 'buy':
                     token = 1+location[ticker]
                     working.append(dict(ticker=ticker,quantity=leg['quantity'],
-                        entry_price=leg['price'],entry_us=time_us))
+                        entry_price=leg['price'],entry_us=time_us,
+                        **({'entry_fee':leg['fee']} if costs else {})))
                     cash -= float(leg['capital'])
                 elif leg['action'] == 'sell':
                     matches = [j for j,lot in enumerate(prior) if j not in used_sell_lots
@@ -129,7 +136,7 @@ def pack(trajectory: list[dict], bank: np.ndarray, volumes: np.ndarray,
                     used_sell_lots.add(lot_index)
                     token = 1+top_n+lot_index
                     working.remove(prior[lot_index])
-                    cash += float(leg['quantity'])*float(leg['price'])
+                    cash += float(leg['quantity'])*float(leg['price'])-float(leg.get('fee',0.))
                 else:
                     raise ValueError('Unknown teacher action')
                 if not mask[token]:
@@ -140,6 +147,8 @@ def pack(trajectory: list[dict], bank: np.ndarray, volumes: np.ndarray,
                     sorted((x['ticker'],int(x['entry_us']),round(float(x['quantity']),8)) for x in after)
                     != sorted((x['ticker'],int(x['entry_us']),round(float(x['quantity']),8)) for x in working)):
                 raise ValueError('Teacher actions do not reproduce held positions')
+            if not math.isclose(cash,float(row['cash_after']),rel_tol=1e-9,abs_tol=1e-4):
+                raise ValueError('Teacher order fees do not reproduce cash')
             prior = after
             result['reward'][index] = float(row['reward'])/initial_cash
             result['return_to_go'][index] = float(row['return_to_go'])/initial_cash
