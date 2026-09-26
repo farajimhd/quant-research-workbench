@@ -34,6 +34,7 @@ async def run_strategy_one_fixed_session(
     manager: StrategyOneManagementRunner, *, runtime: Any,
     static_gate: StrategyOneStaticGate,
     assignments: Sequence[StrategyAssignment],
+    before_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
 ) -> StrategyOneProposalCounts:
     """Run one causal 100 ms session with broker-first global boundaries.
@@ -60,6 +61,7 @@ async def run_strategy_one_fixed_session(
             or not callable(getattr(broker, "positions", None))
             or not callable(getattr(order_manager, "snapshots", None))
             or not callable(finish_boundary)
+            or not callable(before_boundary)
             or not isinstance(assignments, (tuple, list)) or not assignments
             or any(not isinstance(row, StrategyAssignment)
                    or (row.strategy_id, row.strategy_revision)
@@ -104,6 +106,7 @@ async def run_strategy_one_fixed_session(
 
     return await run_strategy_one_proposals(
         scheduler, entry, process_broker_boundary=process_broker,
+        before_boundary=before_boundary,
         financial_views=financial_views,
         on_entry_proposal=manager.on_entry_proposal,
         on_management=manager.on_management,

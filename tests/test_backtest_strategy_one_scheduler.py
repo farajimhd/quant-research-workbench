@@ -69,6 +69,35 @@ def test_reconcile_financial_tickers_adds_after_boundary_and_removes_flat():
     clock.close()
 
 
+def test_boundary_control_stops_before_broker_and_closes_sparse_source():
+    actions = []
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter((candidate("AAA", 100),)),
+        active_source=lambda _ticker, _after: iter(()))
+
+    async def before(work):
+        actions.append(("before", work.boundary_ms))
+        raise RuntimeError("operator stopped")
+
+    async def broker(_work):
+        actions.append(("broker",))
+
+    async def evaluate(*_args):
+        actions.append(("evaluate",))
+
+    async def finish(_work):
+        actions.append(("finish",))
+
+    with pytest.raises(RuntimeError, match="operator stopped"):
+        asyncio.run(run_strategy_one_boundaries(
+            clock, before_boundary=before, process_broker_boundary=broker,
+            evaluate_ticker=evaluate, financially_active_tickers=lambda: (),
+            finish_boundary=finish))
+    assert actions == [("before", 100)]
+    with pytest.raises(RuntimeError, match="closed"):
+        clock.pop_next()
+
+
 def test_failed_financial_reconciliation_preserves_existing_active_ticker():
     def source(ticker, after):
         if ticker == "BBB":

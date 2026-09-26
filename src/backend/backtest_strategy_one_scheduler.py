@@ -374,6 +374,7 @@ class StrategyOneBoundaryScheduler:
 
 async def run_strategy_one_boundaries(
     scheduler: StrategyOneBoundaryScheduler, *,
+    before_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]] | None = None,
     process_broker_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     evaluate_ticker: Callable[[str, Mapping[int, Mapping],
                                StrategyOneDecisionCandidate | None], Awaitable[None]],
@@ -397,6 +398,8 @@ async def run_strategy_one_boundaries(
         raise TypeError("Strategy 1 coordinator needs typed scheduler callbacks")
     if observe_completed_seconds is not None and not callable(observe_completed_seconds):
         raise TypeError("Strategy 1 completed-second observer must be callable")
+    if before_boundary is not None and not callable(before_boundary):
+        raise TypeError("Strategy 1 boundary control must be callable")
     from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
     if static_gate is not None and not isinstance(static_gate, StrategyOneStaticGate):
         raise TypeError("Strategy 1 coordinator needs a typed static gate")
@@ -429,6 +432,8 @@ async def run_strategy_one_boundaries(
                         "Strategy 1 market stream ended with financially active tickers: "
                         + ", ".join(remaining))
                 return count
+            if before_boundary is not None:
+                await before_boundary(work)
             candidates = {row.market_row["ticker"]: row
                           for row in work.candidate_rows}
             candidate_rejections = {}

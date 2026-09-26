@@ -95,6 +95,9 @@ def test_fixed_adapter_clears_position_after_broker_exit_on_same_boundary():
     async def finish(work):
         actions.append(("finish", work.boundary_ms))
 
+    async def before(work):
+        actions.append(("before", work.boundary_ms))
+
     async def run():
         await manager.on_entry_proposal(proposal)
         counts = await run_strategy_one_fixed_session(
@@ -102,12 +105,15 @@ def test_fixed_adapter_clears_position_after_broker_exit_on_same_boundary():
             static_gate=StrategyOneStaticGate(
                 (), np.array([], dtype=np.uint8),
                 np.array([], dtype=np.int64)),
-            assignments=(assignment,), finish_boundary=finish)
+            assignments=(assignment,), before_boundary=before,
+            finish_boundary=finish)
         assert (counts.completed_boundaries, counts.management_evaluations) == (2, 2)
 
     asyncio.run(run())
     assert actions == [
-        ("broker", 31_000), ("seconds", 31_000), ("finish", 31_000),
-        ("broker", 31_100), ("seconds", 31_100), ("finish", 31_100)]
+        ("before", 31_000), ("broker", 31_000),
+        ("seconds", 31_000), ("finish", 31_000),
+        ("before", 31_100), ("broker", 31_100),
+        ("seconds", 31_100), ("finish", 31_100)]
     assert manager._submitted == {}
     assert manager._positions == {}
