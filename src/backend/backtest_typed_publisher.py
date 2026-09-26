@@ -16,7 +16,8 @@ from src.backend.backtest_typed_projection import (
     NIL_BATCH_ID, project_pending_backtest_prefix, project_pending_backtest_v3_prefix,
 )
 from src.trading_runtime.arte_journal_writer import (
-    ArteJournalWriter, TypedJournalBatch, V3SqueezeBatch, _coalesce_unpublished,
+    ArteJournalWriter, TypedJournalBatch, V3SqueezeBatch,
+    V4StrategyOneEntryBatch, _coalesce_unpublished,
 )
 from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
 
@@ -107,7 +108,8 @@ class BacktestTypedJournalPublisher:
         self._task = asyncio.create_task(self._drain(target_sequence=target_sequence))
         return self._task
 
-    def _prepare_batches(self, through_sequence: int) -> tuple[TypedJournalBatch | V3SqueezeBatch, ...]:
+    def _prepare_batches(self, through_sequence: int) -> tuple[
+            TypedJournalBatch | V3SqueezeBatch | V4StrategyOneEntryBatch, ...]:
         """Project at most one commit-sized prefix outside the event loop."""
         if not self._sequence < through_sequence <= self._sequence + self.batch_size:
             raise ValueError("Typed Backtest projection exceeds one commit budget")
@@ -137,8 +139,39 @@ class BacktestTypedJournalPublisher:
             expected_market_start=self.expected_market_start,
             through_sequence=through_sequence,
         )
-        return tuple(_coalesce_unpublished(prefix.batches[offset:offset + self.batch_size])
-                     for offset in range(0, len(prefix.batches), self.batch_size))
+        batches = tuple(_coalesce_unpublished(
+            prefix.batches[offset:offset + self.batch_size])
+            for offset in range(0, len(prefix.batches), self.batch_size))
+        if self.writer.journal_profile != "backtest_v4":
+            return batches
+        from src.trading_runtime.arte_strategy_one_entry_journal import (
+            project_strategy_one_entry_evidence,
+        )
+        from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+
+        units = []
+        for batch in batches:
+            children = []
+            records = self.journal.unfenced_records(
+                after_sequence=batch.first_sequence - 1,
+                through_sequence=batch.last_sequence)
+            for record in records:
+                sidecar = self.journal.strategy_one_entry_for_record(record.record_id)
+                if sidecar is None:
+                    if ((record.category, record.entity_type)
+                            == ("strategy", "strategy_intent")
+                            and record.payload.get("reason") == "strategy_one_entry"):
+                        raise RuntimeError("Strategy 1 journal intent lacks normalized evidence")
+                    continue
+                proposal, session_date = sidecar
+                intent = strategy_one_entry_intent(proposal, session_date=session_date)
+                children.append(project_strategy_one_entry_evidence(
+                    proposal, intent, session_date=session_date,
+                    run_id=batch.run_id, batch_id=batch.batch_id,
+                    parent_record_id=record.record_id))
+            units.append(V4StrategyOneEntryBatch(batch, tuple(children))
+                         if children else batch)
+        return tuple(units)
 
     async def _drain(self, *, target_sequence: int | None = None) -> TypedBacktestReceipt:
         try:
@@ -156,8 +189,11 @@ class BacktestTypedJournalPublisher:
                 if len(batches) != 1:
                     raise RuntimeError("Typed Backtest projector changed the bounded prefix")
                 unit = batches[0]
-                batch = unit.base if isinstance(unit, V3SqueezeBatch) else unit
-                receipt = (self.writer.submit_squeeze_v3(unit)
+                batch = unit.base if isinstance(
+                    unit, (V3SqueezeBatch, V4StrategyOneEntryBatch)) else unit
+                receipt = (self.writer.submit_strategy_one_entry_v4(unit)
+                           if isinstance(unit, V4StrategyOneEntryBatch)
+                           else self.writer.submit_squeeze_v3(unit)
                            if isinstance(unit, V3SqueezeBatch)
                            else self.writer.submit_base_v4(batch)
                            if self.writer.journal_profile == "backtest_v4"

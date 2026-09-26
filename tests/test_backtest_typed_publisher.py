@@ -96,6 +96,89 @@ def test_v4_publisher_routes_running_prefix_only_to_v4_queue():
     asyncio.run(exercise())
 
 
+def test_v4_publisher_routes_numbered_entry_with_exact_child_off_hot_path():
+    from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
+    from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+        def submit_base_v4(self, _batch):
+            pytest.fail("Numbered entry lost its normalized child")
+
+        def submit_strategy_one_entry_v4(self, unit):
+            self.entry_unit = unit
+            return FakeWriter.submit(self, unit.base)
+
+    async def exercise():
+        proposal = StrategyOneEntryProposal(
+            "assignment-1", "DU1", "AAA", 31_000, 30_000,
+            10.01, 9.89, 12., "R4", .5, 30_000, "S1")
+        intent = strategy_one_entry_intent(proposal, session_date=DAY)
+        journal = BacktestMemoryJournal(run_id=RUN)
+        record = journal.append_strategy_one_intent(
+            intent=intent, proposal=proposal, session_date=DAY,
+            account_id="DU1", strategy_id="early-squeeze-strategy",
+            strategy_revision=0)
+        writer = V4Writer(automatic=False)
+        publisher = BacktestTypedJournalPublisher(
+            journal, writer, attempt_id=ATTEMPT, run_month=DAY.replace(day=1),
+            expected_config={"mode": "backtest",
+                             "strategy_id": "early-squeeze-strategy",
+                             "strategy_revision": 0})
+        task = publisher.enqueue_pending()
+        for _ in range(100):
+            if writer.receipts:
+                break
+            await asyncio.sleep(.01)
+        assert writer.receipts and not task.done()
+        assert journal.pending_record_count == 1
+        writer.receipts[0].set_result(writer.submitted[0].batch_id)
+        receipt = await task
+        assert receipt.last_sequence == 1
+        assert writer.entry_unit.entry_evidence[0]["parent_record_id"] == record.record_id
+        assert writer.entry_unit.entry_evidence[0]["target_level_id"] == "R4"
+        assert journal.strategy_one_entry_for_record(record.record_id) is None
+        assert journal.pending_record_count == 0
+
+    asyncio.run(exercise())
+
+
+def test_v4_publisher_refuses_numbered_intent_without_atomic_sidecar():
+    from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
+    from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+        def submit_base_v4(self, _batch):
+            pytest.fail("Unpaired Strategy 1 intent reached the writer")
+
+    async def exercise():
+        proposal = StrategyOneEntryProposal(
+            "assignment-1", "DU1", "AAA", 31_000, 30_000,
+            10.01, 9.89, 12., "R4", .5, 30_000, "S1")
+        intent = strategy_one_entry_intent(proposal, session_date=DAY)
+        journal = BacktestMemoryJournal(run_id=RUN)
+        journal.append(
+            run_id=RUN, category="strategy", entity_type="strategy_intent",
+            entity_id=intent.intent_id, account_id="DU1", event_time=intent.event_time,
+            payload={**intent.payload(), "strategy_id": "early-squeeze-strategy",
+                     "strategy_revision": 0})
+        writer = V4Writer()
+        publisher = BacktestTypedJournalPublisher(
+            journal, writer, attempt_id=ATTEMPT, run_month=DAY.replace(day=1),
+            expected_config={"mode": "backtest",
+                             "strategy_id": "early-squeeze-strategy",
+                             "strategy_revision": 0})
+        with pytest.raises(RuntimeError, match="lacks normalized evidence"):
+            await publisher.enqueue_pending()
+        assert journal.pending_record_count == 1
+        assert not writer.submitted
+
+    asyncio.run(exercise())
+
+
 def test_v4_terminal_queues_after_predecessor_and_fences_only_after_receipt():
     class V4Writer(FakeWriter):
         journal_profile = "backtest_v4"

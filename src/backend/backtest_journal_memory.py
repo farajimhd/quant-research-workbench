@@ -7,7 +7,7 @@ fenced ClickHouse adapter; this buffer is not itself a durability authority.
 from __future__ import annotations
 
 from bisect import bisect_right
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from copy import deepcopy
 from itertools import chain
 from threading import RLock
@@ -29,6 +29,7 @@ class BacktestMemoryJournal:
         self.run_id = run_id
         self.max_pending_records = max_pending_records
         self._records: list[JournalRecord] = []
+        self._strategy_one_entries: dict[str, tuple[Any, date]] = {}
         self._base_sequence = initial_sequence
         self._next_sequence = initial_sequence
         self._fenced_sequence = initial_sequence
@@ -54,6 +55,36 @@ class BacktestMemoryJournal:
         return self.append_many([dict(run_id=run_id, category=category,
             entity_type=entity_type, entity_id=entity_id, payload=payload,
             account_id=account_id, event_time=event_time)])[0]
+
+    def append_strategy_one_intent(
+        self, *, intent: Any, proposal: Any, session_date: date,
+        account_id: str, strategy_id: str, strategy_revision: int,
+    ) -> JournalRecord:
+        """Atomically retain one typed intent and its bounded causal sidecar.
+
+        The sidecar is in-memory only until the V4 writer seals its named
+        columns. It is never serialized as metadata or written to disk.
+        """
+        from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+
+        if (intent != strategy_one_entry_intent(proposal, session_date=session_date)
+                or account_id != proposal.account_id or not strategy_id
+                or type(strategy_revision) is not int or strategy_revision < 0):
+            raise ValueError("Strategy 1 journal intent differs from its numbered proposal")
+        with self._lock:
+            record = self.append(
+                run_id=self.run_id, category="strategy", entity_type="strategy_intent",
+                entity_id=intent.intent_id, account_id=account_id,
+                event_time=intent.event_time,
+                payload={**intent.payload(), "strategy_id": strategy_id,
+                         "strategy_revision": strategy_revision})
+            self._strategy_one_entries[record.record_id] = (proposal, session_date)
+            return record
+
+    def strategy_one_entry_for_record(self, record_id: str) -> tuple[Any, date] | None:
+        """Return only a still-unfenced proposal for the projection worker."""
+        with self._lock:
+            return self._strategy_one_entries.get(record_id)
 
     def append_many(self, entries: Iterable[dict[str, Any]]) -> list[JournalRecord]:
         pending = [dict(entry) for entry in entries]
@@ -132,6 +163,8 @@ class BacktestMemoryJournal:
                 raise ValueError("Journal fence sequence is outside the current prefix")
             discard = sequence - self._base_sequence
             if discard:
+                for record in self._records[:discard]:
+                    self._strategy_one_entries.pop(record.record_id, None)
                 del self._records[:discard]
                 self._base_sequence = sequence
             self._fenced_sequence = sequence
@@ -459,7 +492,9 @@ class BacktestMemoryJournal:
         raise RuntimeError("Backtest journal durability requires an explicit async fence")
 
     def close(self) -> None:
-        self._closed = True
+        with self._lock:
+            self._closed = True
+            self._strategy_one_entries.clear()
 
 
 class BacktestJournalPublisher:
