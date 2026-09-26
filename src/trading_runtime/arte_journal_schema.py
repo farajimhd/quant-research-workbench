@@ -1121,6 +1121,28 @@ TABLES = (
         ),
         "toYYYYMM(run_month)", "run_id, attempt_id, last_sequence, batch_id",
     ),
+    # Strategy 1 uses a versioned, narrow fence. One child row per nonempty
+    # typed family replaces another count/hash column for every new event kind.
+    TableContract(
+        "trading_commit_v4",
+        (("run_id", "String"), ("run_month", "Date"),
+         ("attempt_id", "UUID"), ("batch_id", "UUID"),
+         ("prior_batch_id", "UUID"), ("first_sequence", "UInt64"),
+         ("last_sequence", "UInt64"), ("event_count", "UInt32"),
+         ("family_count", "UInt16"),
+         ("family_set_hash", "FixedString(64)"),
+         ("source_cursor", "String"),
+         ("status", "LowCardinality(String)"),
+         ("committed_at", "DateTime64(6, 'UTC')")),
+        "toYYYYMM(run_month)", "run_id, attempt_id, last_sequence, batch_id",
+    ),
+    TableContract(
+        "trading_commit_family_v4",
+        (("run_id", "String"), ("run_month", "Date"),
+         ("batch_id", "UUID"), ("family_name", "LowCardinality(String)"),
+         ("row_count", "UInt32"), ("row_hash", "FixedString(64)")),
+        "toYYYYMM(run_month)", "run_id, batch_id, family_name",
+    ),
 )
 
 # Activation watch-set authority is normalized separately from execution
