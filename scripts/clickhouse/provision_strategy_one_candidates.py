@@ -1,4 +1,4 @@
-"""Install and verify producer-owned Strategy 1 candidate tables.
+"""Install and verify producer-owned Strategy 1 derived-product tables.
 
 Dry-run by default. This operator command never writes market bars, indicators,
 or liquidity and never grants a Backtest principal write authority.
@@ -23,6 +23,10 @@ from src.trading_runtime.strategy_one_candidate_schema import (
     CANDIDATE_TABLE, COVERAGE_TABLE, STORAGE_POLICY, install_tables,
     rename_empty_legacy_rule_column,
 )
+from src.trading_runtime.strategy_one_pivot_schema import (
+    PIVOT_TABLE, COVERAGE_TABLE as PIVOT_COVERAGE_TABLE,
+    install_tables as install_pivot_tables,
+)
 
 
 URL = "http://DESKTOP-SAAI85T:18123"
@@ -32,7 +36,7 @@ WORKSTATION_IPV4 = "192.168.1.218"
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true",
-                        help="create the two new app-owned tables")
+                        help="create the four Strategy 1 app-owned tables")
     parser.add_argument("--confirm-strategy-one-candidates", action="store_true",
                         help="required second confirmation for --apply")
     parser.add_argument("--rename-empty-rule-column", action="store_true",
@@ -41,7 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.apply:
         if args.rename_empty_rule_column:
             parser.error("--rename-empty-rule-column requires --apply")
-        print(f"DRY RUN: {CANDIDATE_TABLE}, {COVERAGE_TABLE}; "
+        print(f"DRY RUN: {CANDIDATE_TABLE}, {COVERAGE_TABLE}, "
+              f"{PIVOT_TABLE}, {PIVOT_COVERAGE_TABLE}; "
               f"storage={STORAGE_POLICY}; no connection or database change.")
         print("Apply on DESKTOP-SAAI85T with --apply "
               "--confirm-strategy-one-candidates.")
@@ -69,15 +74,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.rename_empty_rule_column:
             rename_empty_legacy_rule_column(client)
         install_tables(client)
+        install_pivot_tables(client)
     except Exception as exc:
         # Driver errors can embed SQL or credentials. Keep terminal output safe.
-        print(f"Strategy 1 candidate installation stopped: {type(exc).__name__}. "
+        print(f"Strategy 1 product installation stopped: {type(exc).__name__}. "
               "Inspect private operator diagnostics before retry.", file=sys.stderr)
         return 1
     finally:
         if client is not None:
             client.close()
-    print("Strategy 1 candidate tables verified: exact schema and SSD placement.")
+    print("Strategy 1 derived-product tables verified: exact schema and SSD placement.")
     return 0
 
 

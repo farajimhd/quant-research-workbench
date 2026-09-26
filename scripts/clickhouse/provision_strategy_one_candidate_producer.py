@@ -1,4 +1,4 @@
-"""Provision a narrow writer for the producer-owned Strategy 1 candidates.
+"""Provision a narrow writer for producer-owned Strategy 1 derived products.
 
 Dry-run by default. The credential stays on the managed workstation; this
 principal has no INSERT authority on bars, indicators, liquidity, or journals.
@@ -28,13 +28,18 @@ from scripts.clickhouse.provision_trading_journal import (
 from src.trading_runtime.strategy_one_candidate_schema import (
     CANDIDATE_TABLE, COVERAGE_TABLE, verify_tables,
 )
+from src.trading_runtime.strategy_one_pivot_schema import (
+    PIVOT_TABLE, COVERAGE_TABLE as PIVOT_COVERAGE_TABLE,
+    verify_tables as verify_pivot_tables,
+)
 
 
 URL = "http://DESKTOP-SAAI85T:18123"
 WORKSTATION_IPV4 = "192.168.1.218"
 PRINCIPAL = "strategy_one_candidate_producer"
 SECRET_PATH = SECRET_ROOT / "strategy_one_candidate_producer.env"
-_TABLES = (CANDIDATE_TABLE, COVERAGE_TABLE)
+_TABLES = (CANDIDATE_TABLE, COVERAGE_TABLE,
+           PIVOT_TABLE, PIVOT_COVERAGE_TABLE)
 _GRANTS = frozenset((privilege, table) for privilege in ("SELECT", "INSERT")
                     for table in _TABLES)
 _GRANT_PATTERN = re.compile(
@@ -86,13 +91,14 @@ def _grant_set(client) -> frozenset[tuple[str, str]]:
                 raise RuntimeError("Candidate producer has unauthorized privilege")
             grants.add((privilege, match.group(2)))
     if not grants <= _GRANTS:
-        raise RuntimeError("Candidate producer has grants outside its two tables")
+        raise RuntimeError("Strategy 1 producer has grants outside its four tables")
     return frozenset(grants)
 
 
 def provision(admin, *, credential, client_factory) -> None:
     """Reconcile exact table grants without rotating an existing identity."""
     verify_tables(admin)
+    verify_pivot_tables(admin)
     present = admin.execute(
         "SELECT count() FROM system.users "
         f"WHERE name='{PRINCIPAL}' FORMAT TabSeparated").strip()
@@ -127,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="required second confirmation for --apply")
     args = parser.parse_args(argv)
     if not args.apply:
-        print(f"DRY RUN: {PRINCIPAL}; SELECT and INSERT on two candidate tables only.")
+        print(f"DRY RUN: {PRINCIPAL}; SELECT and INSERT on four derived-product tables only.")
         print("No connection, credential, account, or grant change was made.")
         print("Apply on DESKTOP-SAAI85T with --apply --confirm-candidate-producer.")
         return 0
@@ -162,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if admin is not None:
             admin.close()
-    print("Candidate producer authenticated with exactly two SELECT/INSERT table grants.")
+    print("Strategy 1 producer authenticated with exactly four SELECT/INSERT table grants.")
     return 0
 
 

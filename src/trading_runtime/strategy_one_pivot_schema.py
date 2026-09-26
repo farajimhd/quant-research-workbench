@@ -121,3 +121,16 @@ def verify_tables(client: Any) -> None:
         f"AND disk_name!='{STORAGE_POLICY}' LIMIT 1 FORMAT JSONEachRow")
     if misplaced.strip():
         raise RuntimeError("Strategy 1 pivot parts are outside SSD")
+
+
+def install_tables(admin_client: Any) -> None:
+    """Explicit operator setup; never callable from the Backtest reader."""
+    policies = [json.loads(line) for line in admin_client.execute(
+        "SELECT disks FROM system.storage_policies "
+        f"WHERE policy_name='{STORAGE_POLICY}' FORMAT JSONEachRow").splitlines()
+        if line.strip()]
+    if len(policies) != 1 or policies[0].get("disks") != [STORAGE_POLICY]:
+        raise RuntimeError("Strategy 1 pivot product needs SSD-only policy")
+    for statement in ddl():
+        admin_client.execute(statement)
+    verify_tables(admin_client)

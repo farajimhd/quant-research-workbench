@@ -30,11 +30,13 @@ def test_apply_requires_workstation_and_installs_exactly_once(capsys, monkeypatc
                         client if url == "http://192.168.1.218:18123" else
                         pytest.fail("wrong endpoint"))
     monkeypatch.setattr(command, "install_tables", lambda value: installed.append(value))
+    monkeypatch.setattr(command, "install_pivot_tables",
+                        lambda value: installed.append(value))
     monkeypatch.setattr(command, "rename_empty_legacy_rule_column",
                         lambda value: renamed.append(value))
     assert command.main(["--apply", "--confirm-strategy-one-candidates",
                          "--rename-empty-rule-column"]) == 0
-    assert installed == [client] and client.closed
+    assert installed == [client, client] and client.closed
     assert renamed == [client]
     assert "verified" in capsys.readouterr().out
 

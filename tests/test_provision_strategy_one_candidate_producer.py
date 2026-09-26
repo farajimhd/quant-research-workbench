@@ -39,8 +39,9 @@ def test_dry_run_is_nonconnecting(capsys, monkeypatch):
     assert "DRY RUN" in text and "No connection" in text
 
 
-def test_new_producer_grants_only_two_owned_tables(monkeypatch):
+def test_new_producer_grants_only_four_owned_tables(monkeypatch):
     monkeypatch.setattr(subject, "verify_tables", lambda _admin: None)
+    monkeypatch.setattr(subject, "verify_pivot_tables", lambda _admin: None)
     admin = Admin()
     producer = Producer()
     def apply_grant(query):
@@ -53,16 +54,17 @@ def test_new_producer_grants_only_two_owned_tables(monkeypatch):
     subject.provision(admin, credential=lambda **_kwargs: "p" * 40,
                       client_factory=lambda _user, _password: producer)
     assert producer.closed
-    assert len([sql for sql in admin.sql if sql.startswith("GRANT ")]) == 4
+    assert len([sql for sql in admin.sql if sql.startswith("GRANT ")]) == 8
     assert not any("bars_v1" in sql or "indicators_v1" in sql or
                    "liquidity_100ms_v1" in sql for sql in admin.sql)
 
 
 def test_existing_broad_grant_fails_before_new_grant(monkeypatch):
     monkeypatch.setattr(subject, "verify_tables", lambda _admin: None)
+    monkeypatch.setattr(subject, "verify_pivot_tables", lambda _admin: None)
     admin = Admin(present="1")
     producer = Producer((f"GRANT INSERT ON arte.bars_v1 TO {subject.PRINCIPAL}",))
-    with pytest.raises(RuntimeError, match="outside its two tables"):
+    with pytest.raises(RuntimeError, match="outside its four tables"):
         subject.provision(admin, credential=lambda **_kwargs: "p" * 40,
                           client_factory=lambda _user, _password: producer)
     assert producer.closed
@@ -72,7 +74,7 @@ def test_existing_broad_grant_fails_before_new_grant(monkeypatch):
 def test_clickhouse_combined_grant_line_is_exactly_parsed():
     producer = Producer((
         f"GRANT SELECT, INSERT ON {table} TO {subject.PRINCIPAL}"
-        for table in (subject.CANDIDATE_TABLE, subject.COVERAGE_TABLE)))
+        for table in subject._TABLES))
     assert subject._grant_set(producer) == subject._GRANTS
 
 
