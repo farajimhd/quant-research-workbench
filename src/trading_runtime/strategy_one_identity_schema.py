@@ -21,6 +21,7 @@ IDENTITY_COLUMNS = (
     ("symbol_id", "String"), ("listing_id", "String"),
     ("security_id", "String"), ("ibkr_conid", "UInt64"),
     ("source_run_id", "String"),
+    ("source_inserted_at", "DateTime64(3,'UTC')"),
 )
 COVERAGE_COLUMNS = (
     ("source_build_id", "String"), ("session_date", "Date"),
@@ -35,7 +36,8 @@ def ddl() -> tuple[str, str]:
         f"""CREATE TABLE IF NOT EXISTS {IDENTITY_TABLE} (
           source_build_id String, session_date Date, identity_attempt_id UUID,
           ticker LowCardinality(String), symbol_id String, listing_id String,
-          security_id String, ibkr_conid UInt64, source_run_id String
+          security_id String, ibkr_conid UInt64, source_run_id String,
+          source_inserted_at DateTime64(3,'UTC')
         ) ENGINE=MergeTree PARTITION BY toYYYYMM(session_date)
           ORDER BY (source_build_id,session_date,identity_attempt_id,ticker)
           SETTINGS storage_policy='{STORAGE_POLICY}'""",
@@ -103,4 +105,20 @@ def install_tables(admin_client: Any) -> None:
     """Explicit producer/operator setup only; never call from Backtest."""
     for statement in ddl():
         admin_client.execute(statement)
+    # The first draft was installed empty before its source-time field was
+    # added. Upgrade only that exact empty draft; never alter populated data.
+    columns = [json.loads(line) for line in admin_client.execute(
+        "SELECT name,type FROM system.columns WHERE database='arte' "
+        "AND table='strategy_one_identity_v1' "
+        "ORDER BY position FORMAT JSONEachRow").splitlines() if line.strip()]
+    observed = tuple((row.get("name"),
+                      str(row.get("type") or "").replace(" ", ""))
+                     for row in columns)
+    if observed == IDENTITY_COLUMNS[:-1]:
+        if admin_client.execute(
+                f"SELECT count() FROM {IDENTITY_TABLE} FORMAT TabSeparated").strip() != "0":
+            raise RuntimeError("Dated identity schema upgrade requires an empty table")
+        admin_client.execute(
+            f"ALTER TABLE {IDENTITY_TABLE} ADD COLUMN source_inserted_at "
+            "DateTime64(3,'UTC') AFTER source_run_id")
     verify_tables(admin_client)

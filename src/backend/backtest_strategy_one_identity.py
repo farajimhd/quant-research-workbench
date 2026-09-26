@@ -6,10 +6,12 @@ never become candidates.  Backtest cannot repair missing or changed identities.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, time, timezone
 from hashlib import sha256
 import json
 import re
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan
 from src.trading_runtime.strategy_one_identity_schema import (
@@ -40,7 +42,7 @@ def identity_content_hash(rows: list[dict[str, Any]]) -> str:
     canonical = [
         [str(row[key]) for key in (
             "ticker", "symbol_id", "listing_id", "security_id",
-            "ibkr_conid", "source_run_id")]
+            "ibkr_conid", "source_run_id", "source_inserted_at")]
         for row in sorted(rows, key=lambda value: str(value["ticker"]))
     ]
     return sha256(json.dumps(canonical, separators=(",", ":"),
@@ -72,12 +74,24 @@ def certify_identity_plan(
             or not _HEX.fullmatch(str(seal.get("content_hash") or ""))):
         raise RuntimeError("Strategy 1 dated identity coverage is invalid")
     rows = [json.loads(line) for line in client.execute(
-        "SELECT ticker,symbol_id,listing_id,security_id,ibkr_conid,source_run_id "
+        "SELECT ticker,symbol_id,listing_id,security_id,ibkr_conid,source_run_id,"
+        "source_inserted_at "
         f"FROM {IDENTITY_TABLE} WHERE source_build_id='{build_id}' "
         f"AND session_date='{session_date}' AND identity_attempt_id='{attempt}' "
         "ORDER BY ticker FORMAT JSONEachRow").splitlines() if line.strip()]
     tickers = tuple(str(row.get("ticker") or "") for row in rows)
+    cutoff = datetime.combine(date.fromisoformat(session_date), time(4),
+                              ZoneInfo("America/New_York")).astimezone(timezone.utc)
+    try:
+        stamps = [datetime.fromisoformat(
+            str(row["source_inserted_at"]).replace(" ", "T")) for row in rows]
+        causal = all(stamp.tzinfo is None
+                     and stamp.replace(tzinfo=timezone.utc) <= cutoff
+                     for stamp in stamps)
+    except (KeyError, TypeError, ValueError):
+        causal = False
     if (tickers != market.tickers or len(set(tickers)) != len(tickers)
+            or not causal
             or any(not str(row.get(field) or "")
                    for row in rows for field in (
                        "symbol_id", "listing_id", "security_id", "source_run_id"))

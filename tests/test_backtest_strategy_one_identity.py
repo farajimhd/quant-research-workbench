@@ -15,9 +15,11 @@ BUILD = "a" * 64
 ATTEMPT = "00000000-0000-0000-0000-000000000001"
 ROWS = [
     {"ticker": "AAA", "symbol_id": "s1", "listing_id": "l1",
-     "security_id": "x1", "ibkr_conid": 101, "source_run_id": "u1"},
+     "security_id": "x1", "ibkr_conid": 101, "source_run_id": "u1",
+     "source_inserted_at": "2026-08-18 07:56:11.600"},
     {"ticker": "BBB", "symbol_id": "s2", "listing_id": "l2",
-     "security_id": "x2", "ibkr_conid": 102, "source_run_id": "u1"},
+     "security_id": "x2", "ibkr_conid": 102, "source_run_id": "u1",
+     "source_inserted_at": "2026-08-18 07:56:11.600"},
 ]
 
 
@@ -63,6 +65,7 @@ def test_identity_certifies_exact_market_population():
     Client(rows=ROWS[:1]),
     Client(rows=[ROWS[0], ROWS[0]]),
     Client(rows=[{**ROWS[0], "ibkr_conid": 0}, ROWS[1]]),
+    Client(rows=[{**ROWS[0], "source_inserted_at": "2026-08-18 08:01:00.000"}, ROWS[1]]),
     Client(coverage=[]),
     Client(coverage=[{"identity_attempt_id": ATTEMPT,
                       "universe_date": "2026-08-18", "ticker_count": 2,
