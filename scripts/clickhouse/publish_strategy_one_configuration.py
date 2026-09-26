@@ -92,8 +92,10 @@ def main() -> None:
         except Exception as exc:
             # Preserve the diagnostic class without exposing an HTTP request,
             # ClickHouse response, transfer payload, or workstation secret.
+            safe = getattr(exc, "safe_diagnostic", None)
             status = getattr(exc, "status_code", None)
-            suffix = f":HTTP{status}" if type(status) is int else ""
+            suffix = (f":{safe}" if isinstance(safe, str) else
+                      f":HTTP{status}" if type(status) is int else "")
             print(f"Strategy 1 receiver failed: {type(exc).__name__}{suffix}",
                   file=sys.stderr, flush=True)
             raise SystemExit(1) from None
@@ -124,7 +126,8 @@ def main() -> None:
     if result.returncode:
         diagnostic = result.stderr.decode("utf-8", errors="replace").strip()
         match = re.search(
-            r"Strategy 1 receiver failed: ([A-Za-z]+)(:HTTP[0-9]{3})?",
+            r"Strategy 1 receiver failed: ([A-Za-z]+)"
+            r"(:[a-z_]+:HTTP(?:[0-9]{3}|unknown):CH(?:[0-9]{1,4}|unknown)|:HTTP[0-9]{3})?",
             diagnostic)
         if match is not None:
             diagnostic = "".join(part or "" for part in match.groups())

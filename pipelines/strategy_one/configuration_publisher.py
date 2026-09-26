@@ -101,7 +101,10 @@ def publish_configuration(client: Any, keeper: Any,
     release INSERT must be resolved by the release reader, never blind retry.
     """
     payload, nodes = _verified_envelope(envelope)
-    verify_tables(client)
+    try:
+        verify_tables(client)
+    except Exception as exc:
+        raise PublicationStageError("layout", exc) from exc
     lock_path = "/trading/ownership/v1/strategy_one_configuration/1"
     try:
         keeper.create(lock_path, uuid4().hex.encode("ascii"),
@@ -110,6 +113,7 @@ def publish_configuration(client: Any, keeper: Any,
         if type(exc).__name__ == "NodeExistsError":
             raise RuntimeError("Another Strategy 1 configuration publisher owns the release") from exc
         raise
+    stage = "existing_release"
     try:
         existing = _rows(client, "SELECT release_attempt_id,payload_hash "
                          f"FROM {RELEASE_TABLE} WHERE strategy_number=1")
@@ -125,12 +129,14 @@ def publish_configuration(client: Any, keeper: Any,
                    "parent_node_id", "child_key", "child_ordinal", "value_kind",
                    "text_value", "int_value", "float_value", "bool_value")
         for start in range(0, len(nodes), 500):
+            stage = "node_insert"
             if not keeper.connected:
                 raise RuntimeError("Strategy 1 Keeper claim was lost")
             batch = [dict(strategy_number=STRATEGY_NUMBER,
                           release_attempt_id=attempt, **row)
                      for row in nodes[start:start + 500]]
             _insert_rows(client, NODE_TABLE, columns, batch)
+        stage = "node_readback"
         readback = _rows(client,
             "SELECT node_id,parent_node_id,child_key,child_ordinal,value_kind,"
             "text_value,int_value,float_value,bool_value "
@@ -152,13 +158,31 @@ def publish_configuration(client: Any, keeper: Any,
             "node_count": len(nodes), "node_hash": envelope["node_hash"],
             "published_at": datetime.now(timezone.utc).isoformat(),
         }
+        stage = "release_insert"
         _insert_rows(client, RELEASE_TABLE, tuple(release), [release])
+        stage = "release_readback"
         certified = certify_strategy_one_configuration(client)
         if certified.attempt_id != attempt or certified.payload != payload:
             raise RuntimeError("Strategy 1 released rows differ from typed transfer")
         return certified.token
+    except Exception as exc:
+        if isinstance(exc, PublicationStageError):
+            raise
+        raise PublicationStageError(stage, exc) from exc
     finally:
         try:
             keeper.delete(lock_path)
         except Exception:
             pass
+
+
+class PublicationStageError(RuntimeError):
+    """Sanitized stage and numeric server codes; never retain response text."""
+
+    def __init__(self, stage: str, cause: Exception) -> None:
+        status = getattr(cause, "status_code", None)
+        code_match = re.search(r"Code: ([0-9]{1,4})\b", str(cause))
+        code = code_match.group(1) if code_match else "unknown"
+        self.safe_diagnostic = (
+            f"{stage}:HTTP{status if type(status) is int else 'unknown'}:CH{code}")
+        super().__init__(self.safe_diagnostic)
