@@ -4029,19 +4029,35 @@ class ReplayRunController:
                 assignments,
             )
         elif strategy_enabled:
-            self._strategy_registration = strategy_executor(
-                str(strategy_configuration["strategy_id"]),
-                int(strategy_configuration["revision"]),
-            )
             assignment_identities = {
                 (assignment.strategy_id, assignment.strategy_revision)
                 for assignment in assignments
             }
-            if assignment_identities - {self._strategy_registration.key}:
-                raise ValueError(
-                    "Historical Run Plan contains assignments for a different Strategy executor"
+            if (self.definition.mode == RunMode.BACKTEST
+                    and strategy_configuration.get("strategy_number") == 1):
+                from src.trading_runtime.strategy_one_runtime import AssignedStrategyOne
+                from src.trading_runtime.strategy_one_contract import (
+                    STRATEGY_ID, STRATEGY_NUMBER,
                 )
-            self._strategy = self._strategy_registration.strategy_factory(assignments)
+                if ((str(strategy_configuration.get("strategy_id") or ""),
+                     int(strategy_configuration.get("revision") or 0))
+                        != (STRATEGY_ID, STRATEGY_NUMBER)
+                        or assignment_identities != {(STRATEGY_ID, STRATEGY_NUMBER)}):
+                    raise ValueError("Strategy 1 assignments differ from numbered runtime")
+                # This is a fixed-bar runtime identity, not a published legacy
+                # event executor. The sparse coordinator owns its decisions.
+                self._strategy_registration = None
+                self._strategy = AssignedStrategyOne(assignments)
+            else:
+                self._strategy_registration = strategy_executor(
+                    str(strategy_configuration["strategy_id"]),
+                    int(strategy_configuration["revision"]),
+                )
+                if assignment_identities - {self._strategy_registration.key}:
+                    raise ValueError(
+                        "Historical Run Plan contains assignments for a different Strategy executor"
+                    )
+                self._strategy = self._strategy_registration.strategy_factory(assignments)
         else:
             self._strategy_registration = None
             self._strategy = None
