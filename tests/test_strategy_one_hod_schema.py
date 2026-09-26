@@ -5,7 +5,7 @@ import json
 import pytest
 
 from src.trading_runtime.strategy_one_hod_schema import (
-    PRODUCT_DIGEST, ddl, verify_tables,
+    PRODUCT_DIGEST, ddl, install_tables, verify_tables,
 )
 
 
@@ -55,3 +55,42 @@ def test_hod_schema_rejects_misplaced_parts():
 
     with pytest.raises(RuntimeError, match="outside SSD"):
         verify_tables(Client())
+
+
+def test_install_checks_policy_before_creating_tables():
+    class Client:
+        def __init__(self):
+            self.created = []
+
+        def execute(self, sql):
+            if "system.storage_policies" in sql:
+                return json.dumps({"disks": ["default"]})
+            if sql.startswith("CREATE TABLE"):
+                self.created.append(sql)
+                return ""
+            raise AssertionError(sql)
+
+    client = Client()
+    with pytest.raises(RuntimeError, match="SSD-only policy"):
+        install_tables(client)
+    assert client.created == []
+
+
+def test_install_creates_exact_two_tables_after_ssd_policy(monkeypatch):
+    class Client:
+        def __init__(self):
+            self.created = []
+
+        def execute(self, sql):
+            if "system.storage_policies" in sql:
+                return json.dumps({"disks": ["live_market_ssd"]})
+            if sql.startswith("CREATE TABLE"):
+                self.created.append(sql)
+                return ""
+            raise AssertionError(sql)
+
+    monkeypatch.setattr("src.trading_runtime.strategy_one_hod_schema.verify_tables",
+                        lambda _client: None)
+    client = Client()
+    install_tables(client)
+    assert client.created == list(ddl())

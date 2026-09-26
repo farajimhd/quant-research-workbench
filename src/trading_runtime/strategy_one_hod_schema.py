@@ -137,7 +137,7 @@ def install_tables(admin_client: Any) -> None:
     policies = [json.loads(line) for line in admin_client.execute(
         "SELECT disks FROM system.storage_policies "
         f"WHERE policy_name='{STORAGE_POLICY}' FORMAT JSONEachRow").splitlines()
-        if len(policies) == 1 and line.strip()]
+        if line.strip()]
     if len(policies) != 1 or policies[0].get("disks") != [STORAGE_POLICY]:
         raise RuntimeError("Strategy 1 HOD product needs SSD-only policy")
     for statement in ddl():
