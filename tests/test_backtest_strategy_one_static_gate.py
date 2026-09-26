@@ -82,6 +82,7 @@ def test_static_survivors_remove_unneeded_market_reads_not_parent_seals():
     assert visible.prepared[0].boundary_ms.tolist() == [31_100]
     assert visible.prepared[0].row_index.tolist() == [1]
     assert activations.rows == plans[2].rows
+    assert activations is plans[2]
     assert visible.token != candidates.token
     repeated, repeated_activations = project_static_survivors(
         candidates, plans[2], gate)
@@ -98,3 +99,28 @@ def test_static_survivors_reject_cross_plan_or_missing_activation():
     with pytest.raises(ValueError, match="differs"):
         project_static_survivors(plans[1], plans[2], replace(
             gate, facts=(replace(gate.facts[0], boundary_ms=31_100),)))
+
+
+def test_static_survivors_keep_rejected_episode_activation_for_active_state():
+    plans = _plans()
+    row = plans[1].prepared[0]
+    extended = replace(
+        row, source_rows=2, row_index=np.array([0, 1]),
+        boundary_ms=np.array([31_000, 41_000]),
+        episode_start_ms=np.array([30_000, 40_000]),
+        macd_boundary_ms=np.array([[31_000] * 4, [41_000] * 4]),
+        stop_bar_boundary_ms=np.array([30_000, 30_000]),
+        stop_low_int=np.array([99_000, 99_000]))
+    candidates = replace(plans[1], prepared=(extended,))
+    first = Reader(plans).candidate
+    gate = StrategyOneStaticGate(
+        (first, replace(first, boundary_ms=41_000, episode_start_ms=40_000)),
+        np.array([0, MISSING_INITIAL_PROTECTION], dtype=np.uint8),
+        np.array([0], dtype=np.int64))
+    all_activations = replace(plans[2], rows=(
+        plans[2].rows[0], replace(plans[2].rows[0], boundary_ms=40_000)))
+    pruned, preserved = project_static_survivors(
+        candidates, all_activations, gate)
+    assert pruned.prepared[0].boundary_ms.tolist() == [31_000]
+    assert preserved is all_activations
+    assert [row.boundary_ms for row in preserved.rows] == [30_000, 40_000]

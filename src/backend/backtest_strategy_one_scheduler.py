@@ -42,6 +42,7 @@ def build_certified_strategy_one_scheduler(
     price_plan: PriceLevelPlan, through_boundary_ms: int,
     client_factory: Callable[[], Any], max_workers: int = 4,
     max_candidate_rows: int = 250_000,
+    activation_source_candidates: CertifiedCandidatePlan | None = None,
 ) -> StrategyOneBoundaryScheduler:
     """Build the sparse causal tape solely from certified arte products."""
     if (len(plan.sessions) != 1 or plan.execution_interval.kind != "fixed"
@@ -53,9 +54,21 @@ def build_certified_strategy_one_scheduler(
             or not 0 < through_boundary_ms <= 57_600_000
             or through_boundary_ms % 100):
         raise ValueError("Strategy 1 scheduler needs one pinned 100ms session")
+    source_candidates = activation_source_candidates or candidates
+    if (source_candidates.source_build_id != candidates.source_build_id
+            or (activation_source_candidates is not None
+                and not {(prepared.ticker, int(boundary), int(start))
+                         for prepared in candidates.prepared
+                         for boundary, start in zip(prepared.boundary_ms,
+                                                    prepared.episode_start_ms)}
+                <= {(prepared.ticker, int(boundary), int(start))
+                    for prepared in source_candidates.prepared
+                    for boundary, start in zip(prepared.boundary_ms,
+                                               prepared.episode_start_ms)})):
+        raise ValueError("Strategy 1 pruned candidates differ from activation source")
     expected_activations = {
         (int(start), prepared.ticker)
-        for prepared in candidates.prepared
+        for prepared in source_candidates.prepared
         for start in prepared.episode_start_ms
     }
     actual_activations = {

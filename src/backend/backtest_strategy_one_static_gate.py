@@ -104,8 +104,9 @@ def project_static_survivors(
 
     A rejected boundary has no new entry/add authority. Financially active
     tickers still receive every required broker/management boundary through
-    the independent active stream. An episode with no survivors needs no V7
-    activation read. The derived tokens are in-memory projection identities,
+    the independent active stream. All certified episode activations remain
+    visible because an already-active position may depend on a later episode.
+    The derived token is an in-memory projection identity,
     not replacements for the producer's full-session coverage seals.
     """
     if (not isinstance(candidates, CertifiedCandidatePlan)
@@ -150,12 +151,6 @@ def project_static_survivors(
             row.boundary_ms[mask], row.episode_start_ms[mask],
             row.macd_boundary_ms[mask], row.stop_bar_boundary_ms[mask],
             row.stop_low_int[mask]))
-    selected_starts = {(row.ticker, int(start)) for row in prepared
-                       for start in row.episode_start_ms}
-    selected_activations = tuple(row for row in activations.rows
-                                 if (row.ticker, row.boundary_ms) in selected_starts)
-    if len(selected_activations) != len(selected_starts):
-        raise ValueError("Strategy 1 survivor activation is incomplete")
     digest = sha256(b"strategy-one-static-survivors-v1\0")
     digest.update(candidates.token.encode())
     digest.update(activations.token.encode())
@@ -166,6 +161,5 @@ def project_static_survivors(
             candidates.source_build_id, candidates.candidate_rule_digest,
             candidates.scan_query_sha256, candidates.coverage,
             tuple(prepared), token),
-        CertifiedActivationPlan(selected_activations,
-                                sha256((activations.token + token).encode()).hexdigest()),
+        activations,
     )

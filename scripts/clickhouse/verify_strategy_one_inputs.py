@@ -165,7 +165,9 @@ def verify(*, session_date: str, build_id: str,
                 market_stream=True, v3_read_principal=True),
             max_workers=4,
             max_candidate_rows=sum(len(row.boundary_ms)
-                                   for row in tape_candidates.prepared))
+                                   for row in tape_candidates.prepared),
+            activation_source_candidates=(visible_candidates
+                if profile_pruned_tape else None))
         opened_seconds = perf_counter() - started
         boundary_count = candidate_count = activation_count = 0
         try:
