@@ -12,6 +12,7 @@ from src.backend.backtest_market_data import (
 from src.backend.backtest_strategy_one_activation import StrategyOneActivation
 from src.backend.backtest_strategy_one_evidence import StrategyOneCausalEvidence
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
+from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryWork
 from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
 from src.backend.backtest_strategy_one_pivot_store import (
     CertifiedPivotCoverage, CertifiedPivotPlan,
@@ -93,6 +94,10 @@ def test_activation_and_later_candidate_use_same_completed_second_stream():
         assert frozen.average_gap is None
         boundary = 302_000
         at = market_day_boundary(session, boundary)
+        await evidence.observe_completed_seconds(StrategyOneBoundaryWork(
+            boundary,
+            (("TEST", {1_000: {**bars[1], "session_date": session.isoformat(),
+                               "boundary_ms": boundary}}),), ()))
         candidate = StrategyOneDecisionCandidate(
             {"session_date": session.isoformat(), "ticker": "TEST",
              "boundary_ms": boundary, "resolution_ms": 100,
@@ -104,7 +109,7 @@ def test_activation_and_later_candidate_use_same_completed_second_stream():
                                    300_000, 99_000))
         result = await evidence.entry_evidence(candidate, tick=.01)
         assert result.activation == frozen
-        assert client.bar_reads == 2
+        assert client.bar_reads == 1
         assert evidence.bos._states["TEST"].boundary_ms == 302_000
         assert result.bos.open_break is not None
         assert result.bos.open_break.boundary_ms == boundary
@@ -112,4 +117,4 @@ def test_activation_and_later_candidate_use_same_completed_second_stream():
         assert result.protection is None
 
     asyncio.run(run())
-    assert client.bar_reads == 2
+    assert client.bar_reads == 1

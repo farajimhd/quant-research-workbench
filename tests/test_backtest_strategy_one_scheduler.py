@@ -214,6 +214,37 @@ def test_activation_follows_broker_and_precedes_same_boundary_candidate():
                        (100, "decision", "AAA"), (100, "finish", "")]
 
 
+def test_completed_second_observer_follows_broker_and_precedes_activation():
+    actions = []
+
+    async def broker(ticker, _rows, boundary):
+        actions.append((boundary, "broker", ticker))
+
+    async def second(work):
+        actions.append((work.boundary_ms, "second", ""))
+
+    async def activated(row):
+        actions.append((row.boundary_ms, "activation", row.ticker))
+
+    async def decision(ticker, rows, _candidate):
+        actions.append((rows[100]["boundary_ms"], "decision", ticker))
+
+    async def finished(work):
+        actions.append((work.boundary_ms, "finish", ""))
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter((candidate("AAA", 1_000),)),
+        activation_rows=iter((StrategyOneActivation(1_000, "AAA", 100_000),)),
+        active_source=lambda _ticker, _after: iter(()))
+    assert asyncio.run(run_strategy_one_boundaries(
+        scheduler, process_broker_row=broker, evaluate_ticker=decision,
+        financially_active_tickers=lambda: (), finish_boundary=finished,
+        observe_activation=activated, observe_completed_seconds=second)) == 1
+    assert actions == [(1_000, "broker", "AAA"), (1_000, "second", ""),
+                       (1_000, "activation", "AAA"),
+                       (1_000, "decision", "AAA"), (1_000, "finish", "")]
+
+
 def shared_row(ticker, boundary):
     return {"session_date": DAY, "ticker": ticker, "boundary_ms": boundary,
             "resolution_ms": 100, "close_int": 100_000,

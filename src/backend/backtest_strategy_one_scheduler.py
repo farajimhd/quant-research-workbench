@@ -364,6 +364,7 @@ async def run_strategy_one_boundaries(
     financially_active_tickers: Callable[[], tuple[str, ...]],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     observe_activation: Callable[[StrategyOneActivation], Awaitable[None]] | None = None,
+    observe_completed_seconds: Callable[[StrategyOneBoundaryWork], Awaitable[None]] | None = None,
 ) -> int:
     """One causal coordinator; market I/O cannot block the asyncio engine.
 
@@ -377,6 +378,8 @@ async def run_strategy_one_boundaries(
                 process_broker_row, evaluate_ticker,
                 financially_active_tickers, finish_boundary)):
         raise TypeError("Strategy 1 coordinator needs typed scheduler callbacks")
+    if observe_completed_seconds is not None and not callable(observe_completed_seconds):
+        raise TypeError("Strategy 1 completed-second observer must be callable")
     count = 0
     try:
         initial = financially_active_tickers()
@@ -403,6 +406,10 @@ async def run_strategy_one_boundaries(
                           for row in work.candidate_rows}
             for ticker, resolutions in work.broker_rows:
                 await process_broker_row(ticker, resolutions, work.boundary_ms)
+            # The broker first consumes this completed boundary. V7 and BOS
+            # then see its persisted 1s bar before activation/entry decisions.
+            if observe_completed_seconds is not None:
+                await observe_completed_seconds(work)
             if work.activation_rows and observe_activation is None:
                 raise RuntimeError("Strategy 1 activation callback is required")
             for activation in work.activation_rows:

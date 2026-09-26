@@ -23,6 +23,7 @@ from src.backend.backtest_strategy_one_bos import (
 from src.backend.backtest_strategy_one_decision import candidate_entry_protection
 from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
+from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryWork
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
 from src.backend.fixed_v7_stream import FixedV7Cache
 from src.backend.structural_v7_seed import CertifiedSeedPlan
@@ -73,6 +74,32 @@ class StrategyOneCausalEvidence:
             session=session, client=client,
             observe_completed_second=self.bos.observe_second)
         self.activations = ActivationCatalog()
+
+    async def observe_completed_seconds(self, work: StrategyOneBoundaryWork) -> None:
+        """Advance loaded V7/BOS books from the same certified market tape.
+
+        Books first reached at this boundary still use their pinned catch-up
+        read. Existing books consume each present 1s bar exactly once, without
+        a redundant per-candidate ClickHouse request. Missing seconds are not
+        fabricated; a later candidate performs the normal certified catch-up.
+        """
+        if not isinstance(work, StrategyOneBoundaryWork):
+            raise TypeError("Strategy 1 V7 observation needs typed boundary work")
+        rows = []
+        for ticker, resolutions in work.broker_rows:
+            row = resolutions.get(1_000)
+            if row is None or not self.v7.has_stream(ticker):
+                continue
+            if (row.get("session_date") != self.session.isoformat()
+                    or row.get("ticker") != ticker
+                    or row.get("resolution_ms") != 1_000
+                    or row.get("boundary_ms") != work.boundary_ms):
+                raise ValueError("Strategy 1 V7 second differs from boundary")
+            rows.append(row)
+        if rows:
+            await asyncio.to_thread(
+                self.v7.advance_seconds, rows,
+                at=market_day_boundary(self.session, work.boundary_ms))
 
     async def _levels(self, ticker: str, boundary_ms: int) -> tuple[Mapping, ...]:
         at = market_day_boundary(self.session, boundary_ms)
