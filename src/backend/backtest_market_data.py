@@ -415,6 +415,10 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
     )
     from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
     from src.trading_runtime.keeper_session import open_workstation_keeper_session
+    from src.backend.backtest_market_plan_cache import (
+        MARKET_PLAN_CACHE, market_inventory_fingerprint,
+    )
+    from research.mlops.clickhouse import ClickHouseHttpClient
 
     with closing(readonly_clickhouse_client(v3_read_principal=True)) as raw_reader:
         reader = _MarketCertificateReader(raw_reader)
@@ -422,11 +426,29 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
         with closing(open_workstation_keeper_session()) as session:
             keeper = MarketDayKeeperReader(session.client)
             proofs = {build_id: keeper.load(build_id) for build_id in build_ids}
-        return discover_cold_certified_market_day_plan(
+        days = tuple(str(day) for day in sessions)
+        symbols = tuple(tickers)
+        cacheable = isinstance(raw_reader, ClickHouseHttpClient)
+        if cacheable:
+            interval = effective_execution_interval(configuration)
+            resolutions = compile_required_resolutions(configuration, interval)
+            key = (build_ids, days, symbols, interval.kind,
+                   interval.milliseconds, resolutions)
+            before = market_inventory_fingerprint(reader)
+            cached = MARKET_PLAN_CACHE.get(key, proofs, before)
+            if cached is not None and market_inventory_fingerprint(reader) == before:
+                return cached
+        plan = discover_cold_certified_market_day_plan(
             reader, _MarketCertificateProofs(proofs),
-            sessions=tuple(str(day) for day in sessions),
-            tickers=tuple(tickers), configuration=configuration,
+            sessions=days,
+            tickers=symbols, configuration=configuration,
             expected_build_ids=build_ids)
+        if cacheable:
+            after = market_inventory_fingerprint(reader)
+            if after != before:
+                raise RuntimeError("ARTE market inventory changed during cold preflight")
+            MARKET_PLAN_CACHE.put(key, proofs, after, plan)
+        return plan
 
 
 class _MarketCertificateProofs:
