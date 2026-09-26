@@ -181,16 +181,17 @@ class BacktestMemoryJournal:
                     continue
                 payload = prior.payload
                 kind = payload.get("kind")
-                if (kind in {"stop", "target"} and kind not in result
+                if (kind in {"stop", "target"}
                         and payload.get("phase") == "effective"
                         and payload.get("order_group_id") == record.entity_id
                         and payload.get("source_intent_id") == record.payload.get("intent_id")
                         and prior.account_id == record.account_id
                         and payload.get("action") in {
                             "replace_protective_stop", "replace_profit_target"}):
-                    result[kind] = prior
-                    if len(result) == 2:
-                        break
+                    result.setdefault(kind, prior)
+                    client_order_id = payload.get("client_order_id")
+                    if isinstance(client_order_id, str) and client_order_id:
+                        result.setdefault(f"{kind}:{client_order_id}", prior)
             return result
 
     def append_many(self, entries: Iterable[dict[str, Any]]) -> list[JournalRecord]:

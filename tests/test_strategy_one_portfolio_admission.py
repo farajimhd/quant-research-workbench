@@ -80,6 +80,28 @@ def test_oms_admission_retains_creation_after_reservation_changes_and_fence():
                  "phase": "effective", "kind": "stop",
                  "action": "replace_protective_stop", "price": 10.0})
     assert journal.oms_effective_protection_for_record(group) == {"stop": first}
+    target_one = journal.append(
+        run_id=run_id, category="protection", entity_type="protection_change",
+        entity_id="target-1", account_id="DU1", event_time=at,
+        payload={"order_group_id": "group-1", "source_intent_id": "intent-1",
+                 "phase": "effective", "kind": "target",
+                 "action": "replace_profit_target", "price": 12.,
+                 "client_order_id": "child-1"})
+    target_two = journal.append(
+        run_id=run_id, category="protection", entity_type="protection_change",
+        entity_id="target-2", account_id="DU1", event_time=at,
+        payload={"order_group_id": "group-1", "source_intent_id": "intent-1",
+                 "phase": "effective", "kind": "target",
+                 "action": "replace_profit_target", "price": 12.,
+                 "client_order_id": "child-2"})
+    later = journal.append(
+        run_id=run_id, category="order_management", entity_type="order_group_state",
+        entity_id="group-1", account_id="DU1", event_time=at,
+        payload={"intent_id": "intent-1"})
+    proofs = journal.oms_effective_protection_for_record(later)
+    assert proofs["target"] == target_two
+    assert proofs["target:child-1"] == target_one
+    assert proofs["target:child-2"] == target_two
 from src.trading_runtime.risk import RiskAuthority
 from src.trading_runtime.runtime import RunMode, TradingRuntime
 

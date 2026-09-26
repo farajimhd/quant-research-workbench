@@ -113,7 +113,8 @@ def canonical_oms_order_metadata(
     from src.trading_runtime.strategy_orders import canonical_runtime_metadata
 
     metadata = canonical_runtime_metadata(order, approved_oms_lineage_intent(group))
-    proof = (authorized_protection or {}).get("target")
+    proofs = authorized_protection or {}
+    proof = proofs.get(f"target:{order.cOID}") or proofs.get("target")
     if proof is not None and not _target_proof_failures(group, order, proof):
         metadata = {**metadata, "reason": "structural_profit_target_advanced",
                     "replacement_intent_id": proof.payload["intent_id"],
@@ -313,7 +314,9 @@ def oms_group_state_batch(
                     + (" [metadata: " + ",".join(meta_changed) + "]"
                        if meta_changed else "")
                     + (" [target proof: " + ",".join(_target_proof_failures(
-                        group, order, (authorized_protection or {}).get("target")))
+                        group, order, (authorized_protection or {}).get(
+                            f"target:{order.cOID}") or
+                        (authorized_protection or {}).get("target")))
                        + "]" if "replacement_intent_id" in meta_changed else ""))
     lengths = tuple(len(batch) for batch in group.plan.broker_batches)
     if not lengths or any(length < 1 for length in lengths) or sum(lengths) != len(group.orders):
