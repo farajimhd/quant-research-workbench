@@ -7,18 +7,20 @@ It must be added to the V4 commit seal and cold recovery before publication.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
+import re
 from uuid import NAMESPACE_URL, UUID, uuid5
 from zoneinfo import ZoneInfo
 
 from .arte_intent_projection import _number
 from .arte_intent_projection import load_committed_strategy_intent_page
 from .arte_journal_writer import (
-    _canonical_typed_content, _literal, _rows, typed_row,
+    _CONTRACTS, _canonical_typed_content, _literal, _rows,
+    _sealed_families, typed_row,
 )
-from .arte_journal_commit_v4 import V4CommittedPrefix
+from .arte_journal_commit_v4 import V4CommittedPrefix, load_verified_commit_v4
 from .journal_contract import canonical_json
 from .arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from .signals import StrategyIntent
@@ -79,6 +81,7 @@ def seal_strategy_one_entry_evidence(row: dict[str, str | int]) -> dict[str, str
 class RecoveredStrategyOneEntry:
     sequence: int
     parent_record_id: str
+    batch_id: str
     proposal: StrategyOneEntryProposal
     intent: StrategyIntent
 
@@ -161,6 +164,76 @@ def load_committed_strategy_one_entry_page(
         if strategy_one_entry_intent(proposal, session_date=session_date) != intent:
             raise RuntimeError("Committed Strategy 1 proposal differs from its intent")
         result.append(RecoveredStrategyOneEntry(
-            recovered.sequence, parent, proposal, intent))
+            recovered.sequence, parent, recovered.batch_id, proposal, intent))
     return RecoveredStrategyOneEntryPage(
         tuple(sorted(result, key=lambda item: item.sequence)), scanned, exhausted)
+
+
+def load_committed_strategy_one_source(
+    client, prefix: V4CommittedPrefix, entry: RecoveredStrategyOneEntry,
+):
+    """Rebuild an exact OMS source revision from a cold-verified typed entry.
+
+    This is a SELECT-only, per-source recovery operation, not a hot-path scan.
+    The caller obtains `entry` through the bounded verified page above.
+    """
+    from .arte_intent_projection import strategy_intent_batch
+
+    if (not isinstance(prefix, V4CommittedPrefix)
+            or not isinstance(entry, RecoveredStrategyOneEntry)
+            or entry.batch_id not in prefix.batch_ids
+            or not 1 <= entry.sequence <= prefix.last_sequence):
+        raise ValueError("Strategy 1 source is outside the verified V4 prefix")
+    commit, family_rows = load_verified_commit_v4(
+        client, run_id=prefix.run_id, batch_id=entry.batch_id)
+    if (commit["first_sequence"] != entry.sequence
+            or commit["last_sequence"] != entry.sequence
+            or commit["event_count"] != 1):
+        raise RuntimeError("Strategy 1 source is not its exclusive committed batch")
+    columns = ",".join(name for name, _ in _CONTRACTS["trading_event_v1"].columns)
+    events = _rows(client,
+        f"SELECT {columns} FROM arte.trading_event_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND batch_id=toUUID({_literal(entry.batch_id)}) "
+        f"LIMIT 2 FORMAT JSONEachRow")
+    if len(events) != 1:
+        raise RuntimeError("Strategy 1 source event is missing or ambiguous")
+    event = events[0]
+    if (str(UUID(str(event["record_id"]))) != entry.parent_record_id
+            or event["sequence"] != entry.sequence
+            or event["attempt_id"] != commit["attempt_id"]
+            or event["category"] != "strategy"
+            or event["entity_type"] != "strategy_intent"
+            or event["entity_id"] != entry.intent.intent_id
+            or event["account_id"] != entry.proposal.account_id):
+        raise RuntimeError("Strategy 1 source event differs from recovered intent")
+    recorded = str(event["recorded_at"])
+    if re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{6}", recorded) is None:
+        raise RuntimeError("Strategy 1 source receipt clock is not canonical UTC")
+    rebuilt = strategy_intent_batch(
+        entry.intent, run_id=prefix.run_id,
+        run_month=date.fromisoformat(str(commit["run_month"])),
+        account_id=str(event["account_id"]),
+        attempt_id=str(event["attempt_id"]), batch_id=entry.batch_id,
+        prior_batch_id=str(commit["prior_batch_id"]),
+        sequence=entry.sequence, source_cursor=str(commit["source_cursor"]),
+        run_status=str(commit["status"]),
+        recorded_at=datetime.fromisoformat(recorded).replace(tzinfo=timezone.utc),
+        record_id=entry.parent_record_id,
+        correlation_id=str(event["correlation_id"]),
+        causation_id=str(event["causation_id"]),
+    )
+    if typed_row("trading_event_v1", rebuilt.events[0])["content_hash"] != event["content_hash"]:
+        raise RuntimeError("Strategy 1 source revision differs from its committed event")
+    inventory = {row["family_name"]: row for row in family_rows}
+    for name, rows in _sealed_families(rebuilt):
+        if not rows:
+            continue
+        expected = inventory.get(name)
+        identities = sorted((str(UUID(str(row["record_id"]))), row["content_hash"])
+                            for row in rows)
+        row_hash = sha256(canonical_json(identities).encode()).hexdigest()
+        if (expected is None or expected["row_count"] != len(rows)
+                or expected["row_hash"] != row_hash):
+            raise RuntimeError("Strategy 1 source revision differs from its committed detail")
+    return rebuilt, entry.intent

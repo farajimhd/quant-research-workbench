@@ -7,6 +7,7 @@ import pytest
 
 from src.trading_runtime.arte_strategy_one_entry_journal import (
     ENTRY_EVIDENCE, load_committed_strategy_one_entry_page,
+    load_committed_strategy_one_source,
     project_strategy_one_entry_evidence,
     seal_strategy_one_entry_evidence,
 )
@@ -115,6 +116,14 @@ def test_v4_commit_seals_exact_one_entry_child_to_the_typed_parent(monkeypatch):
     assert len(page.entries) == 1
     assert page.entries[0].proposal == proposal
     assert page.entries[0].intent == intent
+    recovered_batch, recovered_intent = load_committed_strategy_one_source(
+        client, prefix, page.entries[0])
+    assert recovered_intent == intent
+    assert recovered_batch == item
+    changed = replace(page.entries[0], intent=replace(
+        intent, profit_target_price=13.0))
+    with pytest.raises(RuntimeError, match="committed detail"):
+        load_committed_strategy_one_source(client, prefix, changed)
     from src.trading_runtime import arte_strategy_one_entry_journal as entry_module
     original_load = entry_module.load_committed_strategy_intent_page
     with monkeypatch.context() as patch:
