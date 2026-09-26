@@ -4110,6 +4110,7 @@ class OrderManagementEngine:
                 "ticker": group.intent.ticker,
                 "policy_version": self.policy.version,
             },
+            group_snapshot=group,
         )
         self.journal.save_order_management_state(
             group.group_id,
@@ -4160,6 +4161,8 @@ class OrderManagementEngine:
         account_id: str,
         event_time: datetime,
         payload: dict[str, Any],
+        *,
+        group_snapshot: _ManagedOrderGroup | None = None,
     ) -> None:
         enriched = dict(payload)
         group_id = str(enriched.get("order_group_id") or "")
@@ -4193,7 +4196,12 @@ class OrderManagementEngine:
                 )
                 or lineage["causation_id"],
             )
-        self.journal.append(
+        append = self.journal.append
+        if group_snapshot is not None:
+            append_oms = getattr(self.journal, "append_oms_group_transition", None)
+            if append_oms is not None:
+                append = lambda **kwargs: append_oms(group=group_snapshot, **kwargs)
+        append(
             run_id=self.run_id,
             category=category,
             entity_type=entity_type,

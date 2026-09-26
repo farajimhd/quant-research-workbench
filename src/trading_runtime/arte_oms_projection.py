@@ -7,6 +7,7 @@ Tactic and broker-state-fingerprint recovery also remain outside this stage.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 from datetime import date, datetime, timezone
 from hashlib import sha256
 from typing import Any
@@ -20,6 +21,63 @@ from src.trading_runtime.arte_journal_writer import (
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.journal_contract import canonical_json
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenOmsGroup:
+    """Immutable-to-the-actor snapshot for asynchronous typed projection."""
+
+    group_id: str
+    intent: Any
+    account_id: str
+    plan: Any
+    state: Any
+    created_at: datetime
+    updated_at: datetime
+    orders: tuple[OrderRequest, ...]
+    broker_order_ids: tuple[str, ...]
+    broker_order_roles: dict[str, str]
+    broker_order_slices: dict[str, str]
+    broker_order_request_indexes: dict[str, int]
+    filled_by_broker_order: dict[str, float]
+    terminal_broker_order_ids: frozenset[str]
+    warning_message_ids: tuple[str, ...]
+    rejection_reason: str
+    submitted_at: datetime | None
+    filled_quantity: float
+    remaining_quantity: float
+    decision_to_submit_ms: float | None
+    reprice_count: int
+    last_reprice_at: datetime | None
+    current_limit_price: float | None
+    deferred_reprice: tuple[float, float] | None
+    failed_reprice_at: datetime | None
+    internal_reaction_ms: float | None
+    high_water_price: float
+    low_water_price: float
+    protection_required_quantity: float
+    protection_coverage_quantity: float
+    protection_delegated: bool
+
+
+def freeze_oms_group(group: Any) -> FrozenOmsGroup:
+    """Copy only financial/order facts; never copy asyncio tasks or events."""
+    return FrozenOmsGroup(
+        group.group_id, deepcopy(group.intent), group.account_id,
+        deepcopy(group.plan), group.state, group.created_at, group.updated_at,
+        tuple(deepcopy(order) for order in group.orders),
+        tuple(group.broker_order_ids), dict(group.broker_order_roles),
+        dict(group.broker_order_slices), dict(group.broker_order_request_indexes),
+        dict(group.filled_by_broker_order), frozenset(group.terminal_broker_order_ids),
+        tuple(group.warning_message_ids), group.rejection_reason,
+        group.submitted_at, group.filled_quantity, group.remaining_quantity,
+        group.decision_to_submit_ms, group.reprice_count, group.last_reprice_at,
+        group.current_limit_price, group.deferred_reprice,
+        group.failed_reprice_at, group.internal_reaction_ms,
+        group.high_water_price, group.low_water_price,
+        group.protection_required_quantity, group.protection_coverage_quantity,
+        group.protection_delegated,
+    )
 
 
 def oms_group_state_batch(

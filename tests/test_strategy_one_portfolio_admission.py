@@ -134,14 +134,27 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
         try:
             group = await asyncio.wait_for(manager.submit_intent(
                 approved, account_id="DU1", event=None), 5)
-            return group, journal.records(run_id)
+            records = journal.records(run_id)
+            frozen = tuple(journal.oms_group_for_record(record.record_id)
+                           for record in records
+                           if record.entity_type == "order_group_state")
+            latest = frozen[-1]
+            assert latest is not None
+            manager._groups[group.group_id].broker_order_ids.append("later-mutation")
+            assert "later-mutation" not in latest.broker_order_ids
+            journal.mark_fenced(records[-1].sequence)
+            assert all(journal.oms_group_for_record(record.record_id) is None
+                       for record in records)
+            return group, records, frozen
         finally:
             await manager.close()
             journal.close()
 
-    group, records = asyncio.run(exercise())
+    group, records, frozen = asyncio.run(exercise())
     assert group.assignment_id == "assignment-1"
     assert group.broker_order_ids, group
+    assert frozen and all(item is not None and item.group_id == group.group_id
+                          for item in frozen)
     assert any(record.category == "command" and record.entity_type == "order"
                for record in records)
     group_transition = next(record for record in records

@@ -30,6 +30,7 @@ class BacktestMemoryJournal:
         self.max_pending_records = max_pending_records
         self._records: list[JournalRecord] = []
         self._strategy_one_entries: dict[str, tuple[Any, date]] = {}
+        self._oms_groups: dict[str, Any] = {}
         self._base_sequence = initial_sequence
         self._next_sequence = initial_sequence
         self._fenced_sequence = initial_sequence
@@ -85,6 +86,32 @@ class BacktestMemoryJournal:
         """Return only a still-unfenced proposal for the projection worker."""
         with self._lock:
             return self._strategy_one_entries.get(record_id)
+
+    def append_oms_group_transition(
+        self, *, group: Any, run_id: str, category: str, entity_type: str,
+        entity_id: str, payload: dict[str, Any], account_id: str,
+        event_time: datetime,
+    ) -> JournalRecord:
+        """Atomically pair a transition with its immutable projection snapshot."""
+        from src.trading_runtime.arte_oms_projection import freeze_oms_group
+
+        if (run_id != self.run_id or category != "order_management"
+                or entity_type != "order_group_state"
+                or group.group_id != entity_id or group.account_id != account_id
+                or group.updated_at != event_time):
+            raise ValueError("OMS transition and snapshot identities differ")
+        frozen = freeze_oms_group(group)
+        with self._lock:
+            record = self.append(
+                run_id=run_id, category=category, entity_type=entity_type,
+                entity_id=entity_id, payload=payload, account_id=account_id,
+                event_time=event_time)
+            self._oms_groups[record.record_id] = frozen
+            return record
+
+    def oms_group_for_record(self, record_id: str) -> Any | None:
+        with self._lock:
+            return self._oms_groups.get(record_id)
 
     def append_many(self, entries: Iterable[dict[str, Any]]) -> list[JournalRecord]:
         pending = [dict(entry) for entry in entries]
@@ -165,6 +192,7 @@ class BacktestMemoryJournal:
             if discard:
                 for record in self._records[:discard]:
                     self._strategy_one_entries.pop(record.record_id, None)
+                    self._oms_groups.pop(record.record_id, None)
                 del self._records[:discard]
                 self._base_sequence = sequence
             self._fenced_sequence = sequence
