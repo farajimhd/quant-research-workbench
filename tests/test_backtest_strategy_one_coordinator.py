@@ -119,3 +119,38 @@ def test_one_ticker_evaluates_all_accounts_in_stable_financial_order():
     assert counts.candidate_decisions == counts.entry_proposals == 2
     assert submitted == [("DU1", "assignment-1"),
                          ("DU2", "assignment-2")]
+
+
+def test_second_assignment_sees_post_submission_financial_state():
+    candidate, fact, activation, first = _facts()
+    second = replace(first, assignment_id="assignment-2")
+    entry = CertifiedEntryEvidencePlan(
+        "b" * 16, "2026-08-18", (), (activation,), (fact,), "e" * 64)
+    submitted = []
+    snapshots = []
+
+    async def noop(*_args):
+        pass
+
+    async def views(_ticker, _boundary):
+        snapshots.append(len(submitted))
+        if submitted:
+            return (replace(second, pending_entry=True), first)
+        return (second, first)
+
+    async def proposal(value):
+        submitted.append(value.assignment_id)
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date="2026-08-18", candidate_rows=iter((candidate,)),
+        activation_rows=iter((StrategyOneActivation(30_000, "AAA", 100_000),)),
+        active_source=lambda _ticker, _after: iter(()))
+    counts = asyncio.run(run_strategy_one_proposals(
+        scheduler, entry, process_broker_boundary=noop,
+        financial_views=views, on_entry_proposal=proposal,
+        on_management=noop, financially_active_tickers=lambda: (),
+        finish_boundary=noop, observe_activation=noop,
+        observe_completed_seconds=noop))
+    assert submitted == ["assignment-1"]
+    assert snapshots == [0, 1]
+    assert counts.candidate_decisions == 2

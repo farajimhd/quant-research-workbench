@@ -64,21 +64,30 @@ async def run_strategy_one_proposals(
         # One market row can serve several account assignments. The broker
         # runs once globally; financial decisions serialize by stable account
         # and assignment identity so shared cash cannot race across workers.
-        views = await financial_views(ticker, boundary)
-        if (not isinstance(views, tuple) or not views
-                or any(not isinstance(view, StrategyOneFinancialView)
-                       or view.ticker != ticker for view in views)
-                or len({(view.account_id, view.assignment_id) for view in views})
-                   != len(views)):
-            raise ValueError("Strategy 1 ticker lacks distinct typed financial views")
-        ordered = sorted(views, key=lambda view: (view.account_id,
-                                                  view.assignment_id))
+        async def current_views() -> dict[tuple[str, str], StrategyOneFinancialView]:
+            views = await financial_views(ticker, boundary)
+            if (not isinstance(views, tuple) or not views
+                    or any(not isinstance(view, StrategyOneFinancialView)
+                           or view.ticker != ticker for view in views)
+                    or len({(view.account_id, view.assignment_id) for view in views})
+                       != len(views)):
+                raise ValueError("Strategy 1 ticker lacks distinct typed financial views")
+            return {(view.account_id, view.assignment_id): view for view in views}
+
+        current_by_id = await current_views()
+        ordered_ids = tuple(sorted(current_by_id))
         if candidate is None:
-            for current in ordered:
+            for index, identity in enumerate(ordered_ids):
+                current = current_by_id[identity]
                 if (current.position_quantity > 0 or current.pending_entry
                         or current.pending_exit or current.pending_capital_request):
                     management_count += 1
                     await on_management(current, resolutions, boundary)
+                    if index + 1 < len(ordered_ids):
+                        refreshed = await current_views()
+                        if set(refreshed) != set(ordered_ids):
+                            raise ValueError("Strategy 1 assignment roster changed within boundary")
+                        current_by_id = refreshed
             return
         row = candidate.market_row
         if row.get("ticker") != ticker or row.get("boundary_ms") != boundary:
@@ -87,7 +96,8 @@ async def run_strategy_one_proposals(
         activation = activations.get((ticker, fact.episode_start_ms))
         if activation is None:
             raise ValueError("Strategy 1 proposal lacks frozen activation")
-        for current in ordered:
+        for index, identity in enumerate(ordered_ids):
+            current = current_by_id[identity]
             decision = propose_certified_strategy_one_entry(
                 candidate, fact, activation, current)
             candidate_count += 1
@@ -97,6 +107,13 @@ async def run_strategy_one_proposals(
             elif current.position_quantity > 0:
                 management_count += 1
                 await on_management(current, resolutions, boundary)
+            else:
+                continue
+            if index + 1 < len(ordered_ids):
+                refreshed = await current_views()
+                if set(refreshed) != set(ordered_ids):
+                    raise ValueError("Strategy 1 assignment roster changed within boundary")
+                current_by_id = refreshed
 
     completed = await run_strategy_one_boundaries(
         scheduler, process_broker_boundary=process_broker_boundary,
