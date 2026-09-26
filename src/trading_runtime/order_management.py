@@ -1679,7 +1679,12 @@ class OrderManagementEngine:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    def _record_protection(self, group, request, *, phase, broker_order_id="", active=True, event_time=None):
+    def _record_protection(self, group, request, *, phase, broker_order_id="",
+                           active=True, event_time=None,
+                           amendment_intent: StrategyIntent | None = None):
+        if amendment_intent is not None and amendment_intent.action not in {
+                "replace_protective_stop", "replace_profit_target"}:
+            raise ValueError("Protection amendment has an invalid source action")
         role = (group.broker_order_roles.get(str(broker_order_id))
                 or dict(request.raw.get('canonical_metadata') or {}).get('execution_role')
                 or _order_role(request, str(group.intent.action)))
@@ -1706,7 +1711,10 @@ class OrderManagementEngine:
                  order_id=str(broker_order_id or request.cOID), client_order_id=request.cOID,
                  kind="target" if role == "profit_target" else "stop", phase=phase,
                  price=float(price), active=bool(active), ticker=group.intent.ticker,
-                 source_intent_id=group.intent.intent_id))
+                 source_intent_id=group.intent.intent_id,
+                 **({"action": amendment_intent.action,
+                     "intent_id": amendment_intent.intent_id}
+                    if amendment_intent is not None else {})))
         cache[identity] = value
 
     async def _submit(self, group: _ManagedOrderGroup) -> None:
@@ -1901,7 +1909,10 @@ class OrderManagementEngine:
                         },
                     },
                 )
-                self._record_protection(group, replacement, phase="requested", broker_order_id=broker_order_id, event_time=intent.event_time)
+                self._record_protection(
+                    group, replacement, phase="requested",
+                    broker_order_id=broker_order_id, event_time=intent.event_time,
+                    amendment_intent=intent)
                 response = await self.broker.modify_order(
                     account_id,
                     broker_order_id,
@@ -1912,7 +1923,10 @@ class OrderManagementEngine:
                         response = await self._resolve_warning_chain_locked(group, response)
                 _require_modify_acknowledgement(response)
                 responses.extend(response)
-                self._record_protection(group, replacement, phase="effective", broker_order_id=broker_order_id, event_time=intent.event_time)
+                self._record_protection(
+                    group, replacement, phase="effective",
+                    broker_order_id=broker_order_id, event_time=intent.event_time,
+                    amendment_intent=intent)
                 group.orders[request_index] = replacement
                 profile = group.intent.resolved_protection_profile()
                 if profile is not None:
@@ -2698,13 +2712,19 @@ class OrderManagementEngine:
                     'canonical_metadata':{**replacement.raw.get('canonical_metadata', {}),
                         'exit_reason':reason, 'stop_exit_reason':reason}})
             async with self._command_lane(account_id):
-                self._record_protection(group, replacement, phase="requested", broker_order_id=str(order.orderId), event_time=intent.event_time)
+                self._record_protection(
+                    group, replacement, phase="requested",
+                    broker_order_id=str(order.orderId),
+                    event_time=intent.event_time, amendment_intent=intent)
                 response = await self.broker.modify_order(account_id, str(order.orderId), replacement)
             if _warning_response(response):
                 async with self._warning_lane:
                     response = await self._resolve_warning_chain_locked(group, response)
             _require_modify_acknowledgement(response)
-            self._record_protection(group, replacement, phase="effective", broker_order_id=str(order.orderId), event_time=intent.event_time)
+            self._record_protection(
+                group, replacement, phase="effective",
+                broker_order_id=str(order.orderId),
+                event_time=intent.event_time, amendment_intent=intent)
             group.orders[index] = replacement
             profile = group.intent.resolved_protection_profile()
             if profile is not None:
