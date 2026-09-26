@@ -38,12 +38,16 @@ from src.backend.backtest_strategy_one_entry_store import certify_entry_evidence
 from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
 from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
 from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
+from src.backend.backtest_strategy_one_scheduler import (
+    build_certified_strategy_one_scheduler,
+)
 from src.backend.structural_v7_seed import certified_seed_plan
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 
 
 def verify(*, session_date: str, build_id: str,
            through_boundary_ms: int = FULL_SESSION_BOUNDARY_MS,
+           profile_sparse_tape: bool = False,
            ) -> dict[str, int | float | str]:
     started = perf_counter()
     market = _certified_plan(session_date=session_date, build_id=build_id)
@@ -88,7 +92,7 @@ def verify(*, session_date: str, build_id: str,
         visible_activations = project_activation_plan(
             activations, candidates, through_boundary_ms=through_boundary_ms)
         projection_seconds = perf_counter() - started
-    return {
+    result = {
         "population": len(market.tickers),
         "candidate_tickers": len(selected),
         "candidate_boundaries": sum(len(item.boundary_ms)
@@ -119,6 +123,45 @@ def verify(*, session_date: str, build_id: str,
         "activation_token": activations.token,
         "entry_token": entry.token,
     }
+    if profile_sparse_tape:
+        if not visible_candidates.prepared:
+            raise RuntimeError("Sparse tape cannot open without a causal candidate")
+        projected_market = project_market_day_plan(
+            market, tuple(row.ticker for row in visible_candidates.prepared))
+        started = perf_counter()
+        scheduler = build_certified_strategy_one_scheduler(
+            projected_market, visible_candidates,
+            activations=visible_activations,
+            price_plan=prices.projected(projected_market),
+            through_boundary_ms=through_boundary_ms,
+            client_factory=lambda: readonly_clickhouse_client(
+                market_stream=True, v3_read_principal=True),
+            max_workers=4,
+            max_candidate_rows=sum(len(row.boundary_ms)
+                                   for row in visible_candidates.prepared))
+        opened_seconds = perf_counter() - started
+        boundary_count = candidate_count = activation_count = 0
+        try:
+            while (work := scheduler.pop_next()) is not None:
+                boundary_count += 1
+                candidate_count += len(work.candidate_rows)
+                activation_count += len(work.activation_rows)
+                if len(work.broker_rows) != len(work.candidate_rows):
+                    raise RuntimeError("Sparse tape contains unexpected financial activity")
+                for candidate in work.candidate_rows:
+                    row = candidate.market_row
+                    fact = entry.lookup(str(row["ticker"]), int(row["boundary_ms"]))
+                    if fact.episode_start_ms != candidate.evidence.episode_start_ms:
+                        raise RuntimeError("Sparse entry evidence differs from candidate")
+        finally:
+            scheduler.close()
+        if (candidate_count != result["visible_candidate_boundaries"]
+                or activation_count != result["visible_activations"]):
+            raise RuntimeError("Sparse tape omitted certified candidate or activation")
+        result.update(sparse_tape_open_seconds=opened_seconds,
+                      sparse_tape_total_seconds=perf_counter() - started,
+                      sparse_tape_boundaries=boundary_count)
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -128,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--through-boundary-ms", type=int,
                         default=FULL_SESSION_BOUNDARY_MS,
                         help="completed cutoff after 04:00 New York; default 20:00")
+    parser.add_argument("--profile-sparse-tape", action="store_true",
+                        help="read exact candidate liquidity rows and verify the causal tape")
     args = parser.parse_args(argv)
     try:
         day = date.fromisoformat(args.session_date).isoformat()
@@ -142,7 +187,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         result = verify(session_date=day, build_id=args.build_id,
-                        through_boundary_ms=args.through_boundary_ms)
+                        through_boundary_ms=args.through_boundary_ms,
+                        profile_sparse_tape=args.profile_sparse_tape)
     except Exception as exc:
         # Driver exceptions can embed credentials or SQL; do not print them.
         print(f"Strategy 1 input verification failed: {type(exc).__name__}.",
@@ -169,6 +215,11 @@ def main(argv: list[str] | None = None) -> int:
           f"{result['visible_candidate_tickers']} tickers, "
           f"{result['visible_activations']} activations "
           f"in {result['projection_seconds']:.3f}s; no market reread")
+    if args.profile_sparse_tape:
+        print(f"Sparse tape: {result['sparse_tape_boundaries']} completed boundaries, "
+              f"{result['sparse_tape_open_seconds']:.3f}s load, "
+              f"{result['sparse_tape_total_seconds']:.3f}s total; "
+              "no orders or fills were simulated")
     print(f"Candidate token {result['candidate_token']}")
     print(f"Pivot token {result['pivot_token']}")
     print(f"Activation token {result['activation_token']}")

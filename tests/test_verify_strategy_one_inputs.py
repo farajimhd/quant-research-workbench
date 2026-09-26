@@ -16,10 +16,13 @@ def test_workstation_one_shot_prints_counts_without_claiming_backtest(monkeypatc
         "hod_seconds": 7.0, "hod_tickers": 957,
         "entry_seconds": 8.0, "entry_tickers": 957,
         "entry_candidates": 62072, "entry_token": "d" * 64,
-        "through_boundary_ms": 57_600_000,
+        "through_boundary_ms": _kwargs["through_boundary_ms"],
         "visible_candidate_tickers": 957,
         "visible_candidate_boundaries": 62072,
         "visible_activations": 1234, "projection_seconds": .01,
+        "sparse_tape_open_seconds": .5,
+        "sparse_tape_total_seconds": .7,
+        "sparse_tape_boundaries": 1234,
     })
     assert command.main(["--session-date", "2026-08-18"]) == 0
     output = capsys.readouterr().out
@@ -28,3 +31,10 @@ def test_workstation_one_shot_prints_counts_without_claiming_backtest(monkeypatc
     assert "entry seal 8.000s / 62072 candidates" in output
     assert "projection through 20:00 NY" in output
     assert "no Backtest was run or data written" in output
+    assert command.main(["--session-date", "2026-08-18",
+                         "--through-boundary-ms", "19800000",
+                         "--profile-sparse-tape"]) == 0
+    profiled = capsys.readouterr().out
+    assert "through 09:30 NY" in profiled
+    assert "Sparse tape: 1234 completed boundaries" in profiled
+    assert "no orders or fills were simulated" in profiled
