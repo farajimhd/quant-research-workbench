@@ -4140,37 +4140,12 @@ class ReplayRunController:
             if not isinstance(broker_state, dict):
                 raise ValueError("Restart checkpoint omitted simulated broker state")
             broker.restore_checkpoint_state(broker_state)
+        from src.backend.backtest_v4_run_context import historical_runtime_config
         self._runtime = TradingRuntime(
-            RunConfig(
-                mode=self.definition.mode,
-                strategy_id=str(strategy_configuration.get("strategy_id") or ""),
-                strategy_revision=int(strategy_configuration.get("revision") or 0),
+            historical_runtime_config(
+                mode=self.definition.mode, configuration=configuration,
                 account_ids=self.account_ids,
-                anchor_date=self.definition.session_date,
-                run_id=self.run_id,
-                run_plan_id=str(
-                    dict(configuration.get("run_plan") or {}).get("run_plan_id")
-                    or dict(configuration.get("deployment") or {}).get("deployment_id")
-                    or dict(configuration.get("session_profile") or {}).get("session_profile_id")
-                    or ""
-                ),
-                safety_supervisor_enabled=bool(
-                    dict(
-                        dict(
-                            dict(configuration.get("run_plan") or {}).get(
-                                "safety_supervisor"
-                            )
-                            or {}
-                        ).get("enabled_by_environment")
-                        or {}
-                    ).get(self.definition.mode.value, True)
-                ),
-                # ReplayRunController owns the complete restart checkpoint.
-                # Prevent the inner runtime's processed-count-only checkpoint
-                # from overwriting that state in the shared journal row.
-                checkpoint_interval_events=2**63 - 1,
-                write_progress_checkpoints=False,
-            ),
+                anchor_date=self.definition.session_date, run_id=self.run_id),
             broker,
             self._strategy,
             self._journal,
