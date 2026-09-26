@@ -79,7 +79,8 @@ async def run_strategy_one_proposals(
         if candidate is None:
             for index, identity in enumerate(ordered_ids):
                 current = current_by_id[identity]
-                if (current.position_quantity > 0 or current.pending_entry
+                if (ticker in scheduler.active_tickers
+                        or current.position_quantity > 0 or current.pending_entry
                         or current.pending_exit or current.pending_capital_request):
                     management_count += 1
                     await on_management(current, resolutions, boundary)
@@ -104,7 +105,7 @@ async def run_strategy_one_proposals(
             if decision.proposal is not None:
                 proposal_count += 1
                 await on_entry_proposal(decision.proposal)
-            elif current.position_quantity > 0:
+            elif current.position_quantity > 0 or ticker in scheduler.active_tickers:
                 management_count += 1
                 await on_management(current, resolutions, boundary)
             else:

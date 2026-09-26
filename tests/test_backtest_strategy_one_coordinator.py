@@ -6,6 +6,7 @@ from src.backend.backtest_strategy_one_activation import StrategyOneActivation
 from src.backend.backtest_strategy_one_coordinator import run_strategy_one_proposals
 from src.backend.backtest_strategy_one_entry_store import CertifiedEntryEvidencePlan
 from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryScheduler
+from src.trading_runtime.strategy_engine import AssignmentStatus
 from test_strategy_one_stateful import _facts
 
 
@@ -88,6 +89,42 @@ def test_held_candidate_routes_to_management_not_another_entry():
     assert counts.entry_proposals == 0
     assert counts.management_evaluations == 1
     assert actions == ["management"]
+
+
+def test_broker_flattened_active_ticker_still_clears_position_management():
+    candidate, fact, activation, financial = _facts()
+    entry = CertifiedEntryEvidencePlan(
+        "b" * 16, "2026-08-18", (), (activation,), (fact,), "e" * 64)
+    active = {"AAA"}
+    managed = []
+
+    async def broker(work):
+        if work.boundary_ms == 31_000:
+            active.clear()  # A protective broker fill flattened the position.
+
+    async def noop(*_args):
+        pass
+
+    async def view(_ticker, _boundary):
+        return (replace(financial, status=AssignmentStatus.MANAGING,
+                        completed_entries=1),)
+
+    async def management(current, _rows, boundary):
+        managed.append((current.position_quantity, boundary))
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date="2026-08-18", candidate_rows=iter((candidate,)),
+        activation_rows=iter((StrategyOneActivation(30_000, "AAA", 100_000),)),
+        active_source=lambda _ticker, _after: iter(()))
+    counts = asyncio.run(run_strategy_one_proposals(
+        scheduler, entry, process_broker_boundary=broker,
+        financial_views=view, on_entry_proposal=noop,
+        on_management=management,
+        financially_active_tickers=lambda: tuple(sorted(active)),
+        finish_boundary=noop, observe_activation=noop,
+        observe_completed_seconds=noop))
+    assert managed == [(0., 31_000)]
+    assert counts.entry_proposals == 0
 
 
 def test_one_ticker_evaluates_all_accounts_in_stable_financial_order():
