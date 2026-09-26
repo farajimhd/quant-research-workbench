@@ -9,7 +9,8 @@ import pytest
 
 from src.trading_runtime.arte_journal_commit_v4 import (
     load_verified_commit_v4, load_verified_v4_prefix, prepare_commit_v4,
-    publish_base_typed_batch_v4, publish_terminal_typed_batch_v4,
+    publish_base_typed_batch_v4, publish_broker_acknowledgement_batch_v4,
+    publish_terminal_typed_batch_v4,
     verify_commit_v4,
 )
 from src.trading_runtime.arte_journal_schema import (
@@ -21,6 +22,10 @@ from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_journal_writer import typed_row
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from src.trading_runtime.arte_journal_projection import commission_revision_batch
+from src.trading_runtime.arte_broker_acknowledgement_v4 import (
+    ACKNOWLEDGEMENT, broker_acknowledgement_batch_v4,
+)
+from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.arte_journal_reader import load_typed_event_page
 from src.backend.backtest_typed_activity import load_fixed_typed_activity_page
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -238,6 +243,72 @@ def test_v4_publication_is_detail_first_commit_last_and_idempotent():
         publish_base_typed_batch_v4(client, item)
 
 
+def test_v4_broker_acknowledgement_is_fenced_and_cold_verified():
+    at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
+    source = JournalRecord(
+        str(UUID(int=181)), "run-ack", 1, at, at,
+        "broker", "order_acknowledgement", "1001", "DU1",
+        {"order_id": "1001", "order_status": "Submitted",
+         "local_order_id": "coid-1", "order_group_id": "group-1",
+         "decision_to_submit_ms": 1.25, "ticker": "AAA",
+         "action": "enter_long", "intent_id": "intent-1",
+         "correlation_id": "correlation-1", "causation_id": "causation-1",
+         "strategy_id": "early-squeeze-strategy", "strategy_revision": 1})
+    unit = broker_acknowledgement_batch_v4(
+        source, run_month=date(2026, 8, 1), attempt_id=str(UUID(int=182)),
+        batch_id=str(UUID(int=183)), prior_batch_id=str(UUID(int=0)),
+        source_cursor="2026-08-18:31000")
+    client = attached_v4_client()
+    assert publish_broker_acknowledgement_batch_v4(
+        client, unit.base, acknowledgement=unit.acknowledgement) == unit.base.batch_id
+    assert client.inserts == ["trading_event_v1", ACKNOWLEDGEMENT.name,
+                              "trading_commit_family_v4", "trading_commit_family_v4",
+                              "trading_commit_v4"]
+    verified, families = load_verified_commit_v4(
+        client, run_id=source.run_id, batch_id=unit.base.batch_id)
+    assert verified["family_count"] == 2
+    assert {row["family_name"] for row in families} == {
+        "trading_event_v1", ACKNOWLEDGEMENT.name}
+    client.tables[ACKNOWLEDGEMENT.name][0]["order_status"] = "Inactive"
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_verified_commit_v4(
+            client, run_id=source.run_id, batch_id=unit.base.batch_id)
+
+
+def test_v4_broker_acknowledgement_uses_nonblocking_writer_lane(monkeypatch):
+    at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
+    source = JournalRecord(
+        str(UUID(int=191)), "run-ack-writer", 1, at, at,
+        "broker", "order_acknowledgement", "1002", "DU1",
+        {"order_id": "1002", "order_status": "Submitted",
+         "local_order_id": "coid-2", "order_group_id": "group-2",
+         "decision_to_submit_ms": None, "ticker": "AAA",
+         "action": "enter_long", "intent_id": "intent-2",
+         "correlation_id": "correlation-2", "causation_id": "causation-2",
+         "strategy_id": "early-squeeze-strategy", "strategy_revision": 1})
+    unit = broker_acknowledgement_batch_v4(
+        source, run_month=date(2026, 8, 1), attempt_id=str(UUID(int=192)),
+        batch_id=str(UUID(int=193)), prior_batch_id=str(UUID(int=0)),
+        source_cursor="2026-08-18:31000")
+    client = attached_v4_client()
+    monkeypatch.setattr(writer_module, "storage_preflight",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity",
+                        lambda _client, _run: {
+                            "mode": "backtest", "account_ids": ("DU1",)})
+    writer = ArteJournalWriter(
+        client, run_id=source.run_id, journal_profile="backtest_v4",
+        coalesce_batches=False)
+    try:
+        receipt = writer.submit_broker_acknowledgement_v4(unit)
+        assert receipt.result(timeout=5) == unit.base.batch_id
+        assert load_verified_v4_prefix(client, source.run_id).last_sequence == 1
+    finally:
+        writer.close()
+
+
 def test_v4_terminal_is_lifecycle_last_and_anchors_all_accounts(monkeypatch):
     from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
 
@@ -415,10 +486,12 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
     from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 
     assert observed[2] == (ENTRY_EVIDENCE,)
+    assert observed[3] == (ACKNOWLEDGEMENT,)
     writable = frozenset(writer_module._v4_family_table(table)
                          for table, _, _, _ in writer_module._FAMILIES) | \
-        frozenset(table.name for table in V4_COMMIT_TABLES) | {ENTRY_EVIDENCE.name}
-    assert observed[3] == (
+        frozenset(table.name for table in V4_COMMIT_TABLES) | {
+            ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name}
+    assert observed[4] == (
         writable, frozenset(table.name for table in fixed_backtest_v2_contracts()) - writable)
 
 

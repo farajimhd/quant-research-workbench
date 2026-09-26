@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,7 +299,7 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name}:
+                    ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name}:
             related_rows[name] = rows
     parents = {str(UUID(str(row["record_id"]))): row for row in
                related_rows.get("trading_strategy_intent_v1", ())
@@ -319,6 +320,25 @@ def _load_verified_details_v4(
                                               events[parent_id], run_id, batch_id)
         except ValueError as exc:
             raise RuntimeError("V4 Strategy 1 entry evidence differs from its parent") from exc
+    acknowledgements = related_rows.get(ACKNOWLEDGEMENT.name, ())
+    seen_ack = set()
+    for row in acknowledgements:
+        record_id = str(UUID(str(row["record_id"])))
+        parent = events.get(record_id)
+        if (record_id in seen_ack or parent is None
+                or (parent["category"], parent["entity_type"])
+                   != ("broker", "order_acknowledgement")
+                or parent["entity_id"] != row["broker_order_id"]
+                or parent["run_id"] != row["run_id"]
+                or parent["event_month"] != row["event_month"]
+                or str(UUID(str(parent["batch_id"])))
+                   != str(UUID(str(row["batch_id"])))):
+            raise RuntimeError("V4 broker acknowledgement differs from its event")
+        seen_ack.add(record_id)
+    if {record_id for record_id, row in events.items()
+        if (row["category"], row["entity_type"])
+           == ("broker", "order_acknowledgement")} != seen_ack:
+        raise RuntimeError("V4 broker acknowledgement has missing typed detail")
     return details
 
 
@@ -406,6 +426,12 @@ def publish_strategy_one_entry_batch_v4(client, batch, *, entry_evidence) -> str
     """Commit a numbered entry and its scalar child on the writer lane."""
     return _publish_typed_batch_v4(
         client, batch, strategy_one_entry_rows=entry_evidence)
+
+
+def publish_broker_acknowledgement_batch_v4(client, batch, *, acknowledgement) -> str:
+    """Commit the exact broker reply and its event in one V4 family fence."""
+    return _publish_typed_batch_v4(
+        client, batch, broker_acknowledgement_row=acknowledgement)
 
 
 def publish_terminal_typed_batch_v4(client, batch, *, captures) -> V4CommittedPrefix:
@@ -525,10 +551,11 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
         raise ValueError("V4 Strategy 1 entry evidence differs from its typed parent")
 
 
-def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=()) -> str:
+def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
+                            broker_acknowledgement_row=None) -> str:
     from src.trading_runtime.arte_journal_writer import (
         TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
-        _sealed_families, _v4_family_table, _verify_commission_links,
+        _sealed_families, _v4_family_table, _verify_commission_links, typed_row,
         _verify_exact_intent_uses, _verify_order_context_links,
     )
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
@@ -542,13 +569,38 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=()) -> str
                               TypedInsertDispatch)):
         raise RuntimeError("V4 publication requires a strict Keeper-fenced insert dispatch")
     dispatch = client.typed_insert_dispatch
-    base_families = _sealed_families(batch)
+    ack_rows = ()
+    if broker_acknowledgement_row is not None:
+        if (strategy_one_entry_rows or len(batch.events) != 1
+                or (batch.events[0]["category"], batch.events[0]["entity_type"])
+                != ("broker", "order_acknowledgement")
+                or not isinstance(broker_acknowledgement_row, Mapping)):
+            raise ValueError("V4 broker acknowledgement has an invalid event envelope")
+        ack = typed_row(ACKNOWLEDGEMENT.name, {
+            key: value for key, value in broker_acknowledgement_row.items()
+            if key != "content_hash"})
+        if ("content_hash" in broker_acknowledgement_row
+                and ack["content_hash"] != broker_acknowledgement_row["content_hash"]):
+            raise ValueError("V4 broker acknowledgement content differs from its seal")
+        event = batch.events[0]
+        if (str(UUID(str(ack["record_id"]))) != str(UUID(str(event["record_id"])))
+                or ack["run_id"] != batch.run_id
+                or str(UUID(str(ack["batch_id"]))) != batch.batch_id
+                or ack["event_month"] != event["event_month"]
+                or ack["broker_order_id"] != event["entity_id"]
+                or ack["ticker"] != ack["ticker"].upper()):
+            raise ValueError("V4 broker acknowledgement differs from its parent")
+        ack_rows = (ack,)
+    base_families = _sealed_families(
+        batch, v4_broker_ack_ids=tuple(row["record_id"] for row in ack_rows))
     entry_rows = _sealed_strategy_one_entry_rows(
         batch, base_families, strategy_one_entry_rows)
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families)
     if entry_rows:
         families += ((ENTRY_EVIDENCE.name, entry_rows),)
+    if ack_rows:
+        families += ((ACKNOWLEDGEMENT.name, ack_rows),)
     commit, family_rows = prepare_commit_v4(
         run_id=batch.run_id, run_month=batch.run_month,
         attempt_id=batch.attempt_id, batch_id=batch.batch_id,

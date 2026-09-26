@@ -6,7 +6,8 @@ from uuid import UUID
 import pytest
 
 from src.trading_runtime.arte_broker_acknowledgement_v4 import (
-    ACKNOWLEDGEMENT, project_broker_acknowledgement_v4,
+    ACKNOWLEDGEMENT, broker_acknowledgement_batch_v4,
+    project_broker_acknowledgement_v4,
 )
 from src.trading_runtime.arte_journal_writer import _canonical_typed_content
 from src.trading_runtime.journal_contract import JournalRecord
@@ -30,7 +31,7 @@ def _record():
 
 def test_acknowledgement_is_normalized_and_exactly_sealed():
     projected = project_broker_acknowledgement_v4(
-        _record(), batch_id=str(UUID(int=2)))
+        _record(), attempt_id=str(UUID(int=3)), batch_id=str(UUID(int=2)))
     assert projected.event["entity_id"] == projected.detail["broker_order_id"]
     assert projected.detail["decision_to_submit_ms"] == "1.2345678901"
     assert projected.detail["event_month"] == "2026-08-01"
@@ -42,6 +43,12 @@ def test_acknowledgement_is_normalized_and_exactly_sealed():
         {key: value for key, value in projected.detail.items()
          if key != "content_hash"},
     )["broker_order_id"] == "1001"
+    unit = broker_acknowledgement_batch_v4(
+        _record(), run_month=datetime(2026, 8, 1).date(),
+        attempt_id=str(UUID(int=3)), batch_id=str(UUID(int=2)),
+        prior_batch_id=str(UUID(int=0)), source_cursor="2026-08-18:31000")
+    assert unit.base.events[0]["attempt_id"] == str(UUID(int=3))
+    assert unit.acknowledgement["content_hash"] == projected.detail["content_hash"]
 
 
 @pytest.mark.parametrize("change", [
@@ -54,4 +61,4 @@ def test_acknowledgement_rejects_unmodelled_or_inconsistent_reply(change):
     with pytest.raises(ValueError):
         project_broker_acknowledgement_v4(
             replace(record, payload={**record.payload, **change}),
-            batch_id=str(UUID(int=2)))
+            attempt_id=str(UUID(int=3)), batch_id=str(UUID(int=2)))

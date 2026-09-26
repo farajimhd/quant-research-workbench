@@ -84,8 +84,10 @@ def test_v3_plan_includes_only_missing_normalized_squeeze_and_terminal_tables(mo
 
 def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
     from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+    from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 
-    assert plan.profile_contracts("commit-v4") == V4_COMMIT_TABLES + (ENTRY_EVIDENCE,)
+    assert plan.profile_contracts("commit-v4") == V4_COMMIT_TABLES + (
+        ENTRY_EVIDENCE, ACKNOWLEDGEMENT)
     present = V4_COMMIT_TABLES[0].name
 
     class Client:
@@ -98,5 +100,6 @@ def test_v4_commit_plan_is_separate_from_existing_live_layout(monkeypatch):
                         lambda _client, *, tables: checked.extend(tables))
     missing, ddl = plan.plan_missing(Client(), profile="commit-v4")
     assert [table.name for table in checked] == [present]
-    assert missing == (V4_COMMIT_TABLES[1].name, ENTRY_EVIDENCE.name)
-    assert len(ddl) == 2 and all("live_market_ssd" in statement for statement in ddl)
+    assert missing == (V4_COMMIT_TABLES[1].name, ENTRY_EVIDENCE.name,
+                       ACKNOWLEDGEMENT.name)
+    assert len(ddl) == 3 and all("live_market_ssd" in statement for statement in ddl)

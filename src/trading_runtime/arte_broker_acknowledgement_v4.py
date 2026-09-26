@@ -1,12 +1,13 @@
-"""Normalized broker submission acknowledgement shared by Backtest and Live.
+"""Normalized broker submission acknowledgement for the V4 Backtest journal.
 
-Project on the bounded journal lane. Broker-specific fields require a new
-versioned contract; neither runtime may persist an opaque response fallback.
+Project on the bounded journal lane. Live broker-specific fields require a
+versioned extension before they may use this same scalar contract. Neither
+runtime may persist an opaque response fallback.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 from typing import Any
 from uuid import UUID
@@ -52,12 +53,13 @@ def _duration(value: object) -> str | None:
 
 
 def project_broker_acknowledgement_v4(
-    record: JournalRecord, *, batch_id: str,
+    record: JournalRecord, *, attempt_id: str, batch_id: str,
 ) -> BrokerAcknowledgementProjection:
     """Accept precisely the simulated submission reply and OMS scalar lineage."""
     from .arte_journal_writer import typed_row
 
     UUID(record.record_id)
+    UUID(attempt_id)
     UUID(batch_id)
     fields = {
         "order_id", "order_status", "local_order_id", "order_group_id",
@@ -81,7 +83,7 @@ def project_broker_acknowledgement_v4(
     month = record.event_time.astimezone(timezone.utc).date().replace(day=1).isoformat()
     event = {
         "record_id": record.record_id, "run_id": record.run_id,
-        "event_month": month, "batch_id": batch_id,
+        "event_month": month, "attempt_id": attempt_id, "batch_id": batch_id,
         "sequence": record.sequence, "account_id": record.account_id,
         "event_time": record.event_time.astimezone(timezone.utc).isoformat(),
         "recorded_at": record.recorded_at.astimezone(timezone.utc).isoformat(),
@@ -104,3 +106,24 @@ def project_broker_acknowledgement_v4(
         "strategy_revision": payload["strategy_revision"],
     })
     return BrokerAcknowledgementProjection(event, detail)
+
+
+def broker_acknowledgement_batch_v4(
+    record: JournalRecord, *, run_month: date, attempt_id: str,
+    batch_id: str, prior_batch_id: str, source_cursor: str,
+):
+    """Wrap one exact reply for the asynchronous V4 commit publisher."""
+    from .arte_journal_writer import (
+        TypedJournalBatch, V4BrokerAcknowledgementBatch,
+    )
+
+    projected = project_broker_acknowledgement_v4(
+        record, attempt_id=attempt_id, batch_id=batch_id)
+    if run_month.isoformat() != projected.event["event_month"]:
+        raise ValueError("Broker acknowledgement differs from the run month")
+    base = TypedJournalBatch(
+        record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        record.sequence, record.sequence, source_cursor, "running",
+        (projected.event,),
+    )
+    return V4BrokerAcknowledgementBatch(base, projected.detail)

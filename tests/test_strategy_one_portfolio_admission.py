@@ -202,7 +202,7 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
     assert acknowledgements
     for record in acknowledgements:
         projected_ack = project_broker_acknowledgement_v4(
-            record, batch_id=str(UUID(int=14)))
+            record, attempt_id=str(UUID(int=15)), batch_id=str(UUID(int=14)))
         assert projected_ack.detail["broker_order_id"] in group.broker_order_ids
     assert frozen and all(item is not None and item.group_id == group.group_id
                           for item in frozen)

@@ -396,6 +396,23 @@ class V4StrategyOneEntryBatch:
             MappingProxyType(dict(row)) for row in self.entry_evidence))
 
 
+@dataclass(frozen=True, slots=True)
+class V4BrokerAcknowledgementBatch:
+    """One broker reply and its exact scalar detail on the V4 writer lane."""
+
+    base: TypedJournalBatch
+    acknowledgement: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.base, TypedJournalBatch)
+                or self.base.status != "running"
+                or len(self.base.events) != 1
+                or not isinstance(self.acknowledgement, Mapping)):
+            raise ValueError("V4 broker acknowledgement requires one running event")
+        object.__setattr__(self, "acknowledgement",
+                           MappingProxyType(dict(self.acknowledgement)))
+
+
 def _sealed_families(
     batch: TypedJournalBatch, *, v3_episode_ids: tuple[str, ...] = (),
     v3_control_ids: tuple[str, ...] = (),
@@ -410,6 +427,7 @@ def _sealed_families(
     v3_protected_exit_snapshot_ids: tuple[str, ...] = (),
     v3_portfolio_allocation_fill_ids: tuple[str, ...] = (),
     v3_reconciliation: bool = False,
+    v4_broker_ack_ids: tuple[str, ...] = (),
 ) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
     """Validate and hash the immutable snapshot on the persistence lane."""
     if len(batch.events) != batch.last_sequence - batch.first_sequence + 1:
@@ -566,6 +584,14 @@ def _sealed_families(
                 if identity in details_by_record:
                     raise ValueError("Journal event has multiple typed detail families")
                 details_by_record[identity] = table
+    if v4_broker_ack_ids:
+        expected_details = {**expected_details,
+                            ("broker", "order_acknowledgement"): ACKNOWLEDGEMENT.name}
+        for record_id in v4_broker_ack_ids:
+            identity = str(UUID(str(record_id)))
+            if identity in details_by_record:
+                raise ValueError("Journal event has multiple typed detail families")
+            details_by_record[identity] = ACKNOWLEDGEMENT.name
     for event in by_family["trading_event_v1"]:
         key = (str(event["category"]), str(event["entity_type"]))
         if key not in expected_details:
@@ -1578,9 +1604,11 @@ def _v4_preflight(client: Any) -> None:
     storage_preflight(client, tables=installed)
     storage_preflight(client, tables=V4_COMMIT_TABLES)
     storage_preflight(client, tables=(ENTRY_EVIDENCE,))
+    storage_preflight(client, tables=(ACKNOWLEDGEMENT,))
     writable = frozenset(
         _v4_family_table(table) for table, _, _, _ in _FAMILIES
-    ) | frozenset(table.name for table in V4_COMMIT_TABLES) | {ENTRY_EVIDENCE.name}
+    ) | frozenset(table.name for table in V4_COMMIT_TABLES) | {
+        ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name}
     readonly = frozenset(table.name for table in installed) - writable
     journal_permission_preflight(
         client, journal_tables=writable, read_only_tables=readonly)
@@ -3073,7 +3101,8 @@ class ArteJournalWriter:
         self._coalesce_batches = coalesce_batches
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
-                  | V4StrategyOneEntryBatch | _DurabilityBarrier | _AdmissionUnit
+                  | V4StrategyOneEntryBatch | V4BrokerAcknowledgementBatch
+                  | _DurabilityBarrier | _AdmissionUnit
                   | _PortfolioSyncUnit | _TerminalBacktestUnit,
                   Future[str]] | None
         ] = Queue(maxsize=capacity)
@@ -3171,6 +3200,25 @@ class ArteJournalWriter:
         if self._journal_profile != "backtest_v4" or not isinstance(
                 unit, V4StrategyOneEntryBatch):
             raise ValueError("Strategy 1 entry requires the V4 writer profile")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            if unit.base.run_id != self._run_id:
+                raise ValueError("V4 writer cannot mix runs")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_broker_acknowledgement_v4(
+            self, unit: V4BrokerAcknowledgementBatch) -> Future[str]:
+        """Queue one sealed broker reply without network I/O on the caller."""
+        if (self._journal_profile != "backtest_v4"
+                or not isinstance(unit, V4BrokerAcknowledgementBatch)):
+            raise ValueError("V4 broker reply requires its typed writer profile")
         with self._submission_lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("V4 writer is closed or failed")
@@ -3413,11 +3461,20 @@ class ArteJournalWriter:
                         and not isinstance(group[0][0],
                                            (TypedJournalBatch, V3SqueezeBatch,
                                             V4StrategyOneEntryBatch,
+                                            V4BrokerAcknowledgementBatch,
                                             _DurabilityBarrier))
                         and not (self._journal_profile == "backtest_v4"
                                  and isinstance(group[0][0], _TerminalBacktestUnit))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
-                if isinstance(group[0][0], V4StrategyOneEntryBatch):
+                if isinstance(group[0][0], V4BrokerAcknowledgementBatch):
+                    from src.trading_runtime.arte_journal_commit_v4 import (
+                        publish_broker_acknowledgement_batch_v4,
+                    )
+                    unit = group[0][0]
+                    committed_id = publish_broker_acknowledgement_batch_v4(
+                        self._client, unit.base,
+                        acknowledgement=unit.acknowledgement)
+                elif isinstance(group[0][0], V4StrategyOneEntryBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_strategy_one_entry_batch_v4,
                     )
