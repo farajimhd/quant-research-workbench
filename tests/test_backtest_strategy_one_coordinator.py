@@ -34,13 +34,16 @@ def test_proposal_lane_uses_broker_before_financial_entry_without_order():
     async def finished(_work):
         pass
 
+    async def view(_ticker, _boundary):
+        return financial
+
     scheduler = StrategyOneBoundaryScheduler(
         session_date="2026-08-18", candidate_rows=iter((candidate,)),
         activation_rows=iter((StrategyOneActivation(30_000, "AAA", 100_000),)),
         active_source=lambda _ticker, _after: iter(()))
     counts = asyncio.run(run_strategy_one_proposals(
         scheduler, entry, process_broker_boundary=broker,
-        financial_view=lambda _ticker, _boundary: financial,
+        financial_view=view,
         on_entry_proposal=proposal, on_management=management,
         financially_active_tickers=lambda: (), finish_boundary=finished,
         observe_activation=activated, observe_completed_seconds=seconds))
@@ -68,14 +71,16 @@ def test_held_candidate_routes_to_management_not_another_entry():
         actions.append("management")
         active.clear()
 
+    async def view(_ticker, _boundary):
+        return replace(financial, position_quantity=10.)
+
     scheduler = StrategyOneBoundaryScheduler(
         session_date="2026-08-18", candidate_rows=iter((candidate,)),
         activation_rows=iter((StrategyOneActivation(30_000, "AAA", 100_000),)),
         active_source=lambda _ticker, _after: iter(()))
     counts = asyncio.run(run_strategy_one_proposals(
         scheduler, entry, process_broker_boundary=noop,
-        financial_view=lambda _ticker, _boundary: replace(
-            financial, position_quantity=10.),
+        financial_view=view,
         on_entry_proposal=proposal, on_management=management,
         financially_active_tickers=lambda: tuple(sorted(active)),
         finish_boundary=noop, observe_activation=noop,

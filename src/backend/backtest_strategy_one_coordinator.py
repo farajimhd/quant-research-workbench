@@ -34,7 +34,7 @@ async def run_strategy_one_proposals(
     scheduler: StrategyOneBoundaryScheduler,
     entry: CertifiedEntryEvidencePlan, *,
     process_broker_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
-    financial_view: Callable[[str, int], StrategyOneFinancialView],
+    financial_view: Callable[[str, int], Awaitable[StrategyOneFinancialView]],
     on_entry_proposal: Callable[[StrategyOneEntryProposal], Awaitable[None]],
     on_management: Callable[[str, Mapping[int, Mapping], int], Awaitable[None]],
     financially_active_tickers: Callable[[], tuple[str, ...]],
@@ -72,7 +72,11 @@ async def run_strategy_one_proposals(
         activation = activations.get((ticker, fact.episode_start_ms))
         if activation is None:
             raise ValueError("Strategy 1 proposal lacks frozen activation")
-        current = financial_view(ticker, boundary)
+        # Fills for this completed boundary have already reconciled. Read
+        # the broker-owned position and OMS state only after that fence.
+        current = await financial_view(ticker, boundary)
+        if not isinstance(current, StrategyOneFinancialView):
+            raise TypeError("Strategy 1 financial view must be typed")
         decision = propose_certified_strategy_one_entry(
             candidate, fact, activation, current)
         candidate_count += 1
