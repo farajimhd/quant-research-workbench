@@ -20,8 +20,9 @@ from src.backend.backtest_strategy_one_candidate_contract import (
     VALUE_FIELDS, validate_candidate_rows,
 )
 from src.backend.backtest_strategy_one_preparation import PreparedStrategyOneTicker
+from src.backend.fixed_bar_signal import first_squeeze_sql
 from src.trading_runtime.strategy_one_candidate_schema import (
-    CANDIDATE_TABLE, COVERAGE_TABLE, STORAGE_POLICY,
+    CANDIDATE_TABLE, COVERAGE_TABLE, RULE_DIGEST, STORAGE_POLICY,
 )
 
 
@@ -42,7 +43,8 @@ class CandidateCoverage:
 @dataclass(frozen=True, slots=True)
 class CertifiedCandidatePlan:
     source_build_id: str
-    strategy_digest: str
+    candidate_rule_digest: str
+    scan_query_sha256: str
     coverage: tuple[CandidateCoverage, ...]
     prepared: tuple[PreparedStrategyOneTicker, ...]
     token: str
@@ -53,11 +55,12 @@ def _rows(client: Any, query: str) -> list[dict[str, Any]]:
         query + " FORMAT JSONEachRow").splitlines() if line.strip()]
 
 
-def _token(build_id: str, digest: str,
+def _token(build_id: str, digest: str, scan_query_sha256: str,
            coverage: tuple[CandidateCoverage, ...]) -> str:
     result = sha256(b"strategy-one-candidate-plan-v1\0")
     result.update(build_id.encode())
     result.update(digest.encode())
+    result.update(scan_query_sha256.encode())
     for item in coverage:
         for value in (item.session_date, item.ticker, item.derivation_attempt_id,
                       *item.source_attempts, str(item.candidate_count),
@@ -69,15 +72,19 @@ def _token(build_id: str, digest: str,
 
 
 def certify_candidate_plan(market: CertifiedMarketDayPlan, *,
-                           strategy_digest: str, client: Any,
+                           candidate_rule_digest: str,
+                           through_boundary_ms: int, client: Any,
                            batch_size: int = 512) -> CertifiedCandidatePlan:
     """Verify every ticker-day, including certified empty candidate sets."""
     if (market.execution_interval.kind != "fixed"
             or market.execution_interval.milliseconds != 100
             or len(market.sessions) != 1
-            or not market.units or _HASH.fullmatch(strategy_digest) is None
+            or not market.units or candidate_rule_digest != RULE_DIGEST
+            or type(through_boundary_ms) is not int
             or type(batch_size) is not int or not 1 <= batch_size <= 512):
         raise ValueError("Strategy 1 candidate plan lacks pinned fixed authority")
+    scan_query_sha256 = sha256(first_squeeze_sql(
+        market, through_boundary_ms=through_boundary_ms).encode()).hexdigest()
     names = tuple(table.split(".", 1)[1] for table in (CANDIDATE_TABLE, COVERAGE_TABLE))
     catalog = _rows(client, "SELECT name,storage_policy FROM system.tables "
                     "WHERE database='arte' AND name IN "
@@ -115,9 +122,10 @@ def certify_candidate_plan(market: CertifiedMarketDayPlan, *,
           toString(bars_attempt_id) AS bars_attempt_text,
           toString(technical_attempt_id) AS technical_attempt_text,
           toString(liquidity_attempt_id) AS liquidity_attempt_text,
-          strategy_digest,candidate_count,content_hash
+          candidate_rule_digest,scan_query_sha256,candidate_count,content_hash
           FROM {COVERAGE_TABLE}
           WHERE source_build_id={_literal(market.build_id)}
+          AND scan_query_sha256={_literal(scan_query_sha256)}
           AND (session_date,ticker) IN ({scopes})""")
         if len(facts) != len(batch):
             raise RuntimeError("Strategy 1 candidate coverage is missing or duplicate")
@@ -128,7 +136,8 @@ def certify_candidate_plan(market: CertifiedMarketDayPlan, *,
             attempts = tuple(fact[f"{stage}_attempt_text"] for stage in (
                 "bars", "technical", "liquidity"))
             if (key not in batch or key in covered or source is None
-                    or fact["strategy_digest"] != strategy_digest
+                    or fact["candidate_rule_digest"] != candidate_rule_digest
+                    or fact["scan_query_sha256"] != scan_query_sha256
                     or attempts != tuple(source[stage].attempt_id
                                          for stage in _STAGES)
                     or not 0 <= int(fact["candidate_count"]) <=
@@ -184,6 +193,8 @@ def certify_candidate_plan(market: CertifiedMarketDayPlan, *,
                     values["boundary_ms"], values["episode_start_ms"], macd,
                     values["stop_30s_boundary_ms"], values["stop_low_int"]))
     coverage = tuple(all_coverage)
-    return CertifiedCandidatePlan(market.build_id, strategy_digest, coverage,
+    return CertifiedCandidatePlan(market.build_id, candidate_rule_digest,
+                                  scan_query_sha256, coverage,
                                   tuple(all_prepared),
-                                  _token(market.build_id, strategy_digest, coverage))
+                                  _token(market.build_id, candidate_rule_digest,
+                                         scan_query_sha256, coverage))

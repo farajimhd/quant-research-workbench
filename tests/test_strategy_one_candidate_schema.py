@@ -5,7 +5,8 @@ import pytest
 
 from src.trading_runtime.strategy_one_candidate_schema import (
     CANDIDATE_TABLE, COVERAGE_TABLE, _CANDIDATE_COLUMNS,
-    _COVERAGE_COLUMNS, ddl, install_tables, verify_tables,
+    _COVERAGE_COLUMNS, ddl, install_tables, rename_empty_legacy_rule_column,
+    verify_tables,
 )
 
 
@@ -20,6 +21,9 @@ def test_candidate_layout_is_typed_ssd_and_coverage_last():
     assert "macd_30s_boundary_ms UInt32" in candidate
     assert "stop_low_int UInt64" in candidate
     assert "candidate_count UInt32" in coverage
+    assert "candidate_rule_digest FixedString(64)" in coverage
+    assert "scan_query_sha256 FixedString(64)" in coverage
+    assert "strategy_digest" not in coverage
     assert "bars_attempt_id UUID" in coverage
     assert "technical_attempt_id UUID" in coverage
     assert "liquidity_attempt_id UUID" in coverage
@@ -76,3 +80,29 @@ def test_install_verifies_exact_layout_and_part_placement():
 def test_candidate_catalog_fails_closed(fault):
     with pytest.raises(RuntimeError):
         verify_tables(Catalog(**{fault: True}))
+
+
+def test_one_time_column_repair_requires_empty_exact_draft(monkeypatch):
+    from src.trading_runtime import strategy_one_candidate_schema as schema
+    checked = []
+    monkeypatch.setattr(schema, "verify_tables", lambda client: checked.append(client))
+    class Draft:
+        def __init__(self, count="0"):
+            self.count, self.sql = count, []
+        def execute(self, query):
+            self.sql.append(query)
+            if query.startswith("SELECT count()"):
+                return self.count
+            if "FROM system.columns" in query:
+                return '{"name":"strategy_digest","type":"FixedString(64)"}'
+            if query.startswith("ALTER TABLE"):
+                return ""
+            raise AssertionError(query)
+    empty = Draft()
+    rename_empty_legacy_rule_column(empty)
+    assert checked == [empty]
+    assert sum(query.startswith("ALTER TABLE") for query in empty.sql) == 2
+    occupied = Draft(count="1")
+    with pytest.raises(RuntimeError, match="requires empty"):
+        rename_empty_legacy_rule_column(occupied)
+    assert not any(query.startswith("ALTER TABLE") for query in occupied.sql)

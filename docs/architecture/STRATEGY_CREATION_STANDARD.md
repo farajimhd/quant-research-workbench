@@ -117,8 +117,13 @@ necessary-condition reduction, not permission to skip an eligible ticker or
 synthesize a missing seed. A producer-owned normalized candidate and coverage
 product has been drafted in `arte`; Backtest now requires complete, exact
 coverage and pins its content token at preflight, then rechecks that token at
-execution. The producer campaign, table grants, and published release seal
-are not yet installed, so this path currently fails closed. A multi-session
+execution. The candidate rule has its own technical digest, distinct from the
+unpublished complete Strategy 1 release seal; this lets the producer certify
+the expensive reusable mask without falsely claiming that Strategy 1 is live.
+Coverage also pins the exact squeeze SQL hash for the requested session end,
+so premarket and full-session products cannot be confused.
+The producer campaign and published release seal are not yet complete, so this
+path currently fails closed. A multi-session
 or position-carrying Strategy must define a broader V7 dependency contract.
 `src/trading_runtime/strategy_one_position.py` now owns a pure, deterministic
 active-position protection reducer: entry requires the completed 30s stop and

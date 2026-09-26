@@ -8,12 +8,27 @@ An unreferenced attempt is invisible to Backtest and safe to abandon.
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from typing import Any
+
+from .momentum_session_policy import DEFAULTS as PURCHASE_DEFAULTS
+from .strategy_one_columnar import MACD_RESOLUTIONS_MS
 
 
 CANDIDATE_TABLE = "arte.strategy_one_candidate_v1"
 COVERAGE_TABLE = "arte.strategy_one_candidate_coverage_v1"
 STORAGE_POLICY = "live_market_ssd"
+RULE_CONTRACT = (
+    "strategy-one-candidate-v1:completed-100ms-squeeze:closed-macd-1s-5s-10s-30s:"
+    "eligible-liquidity-spread-vwap-prior-close:completed-30s-low:one-dollar-floor"
+)
+RULE_DIGEST = sha256(json.dumps({
+    "contract": RULE_CONTRACT,
+    "macd_resolutions_ms": MACD_RESOLUTIONS_MS,
+    "purchase_defaults": PURCHASE_DEFAULTS,
+    "quote_freshness_us": 1_000_000,
+    "stop_source_resolution_ms": 30_000,
+}, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 _CANDIDATE_COLUMNS = (
@@ -29,7 +44,8 @@ _COVERAGE_COLUMNS = (
     ("source_build_id", "String"), ("session_date", "Date"),
     ("ticker", "LowCardinality(String)"), ("derivation_attempt_id", "UUID"),
     ("bars_attempt_id", "UUID"), ("technical_attempt_id", "UUID"),
-    ("liquidity_attempt_id", "UUID"), ("strategy_digest", "FixedString(64)"),
+    ("liquidity_attempt_id", "UUID"), ("candidate_rule_digest", "FixedString(64)"),
+    ("scan_query_sha256", "FixedString(64)"),
     ("candidate_count", "UInt32"), ("content_hash", "FixedString(64)"),
     ("certified_at", "DateTime64(6,'UTC')"),
 )
@@ -63,7 +79,8 @@ def ddl() -> tuple[str, str]:
           bars_attempt_id UUID,
           technical_attempt_id UUID,
           liquidity_attempt_id UUID,
-          strategy_digest FixedString(64),
+          candidate_rule_digest FixedString(64),
+          scan_query_sha256 FixedString(64),
           candidate_count UInt32,
           content_hash FixedString(64),
           certified_at DateTime64(6,'UTC')
@@ -127,4 +144,26 @@ def install_tables(admin_client: Any) -> None:
     """Explicit operator-owned setup; never give this client to Backtest."""
     for statement in ddl():
         admin_client.execute(statement)
+    verify_tables(admin_client)
+
+
+def rename_empty_legacy_rule_column(admin_client: Any) -> None:
+    """One-time repair of our unused draft column, with exact empty proof."""
+    for table in (CANDIDATE_TABLE, COVERAGE_TABLE):
+        count = admin_client.execute(f"SELECT count() FROM {table}").strip()
+        if count != "0":
+            raise RuntimeError("Strategy 1 candidate column repair requires empty tables")
+    columns = [json.loads(line) for line in admin_client.execute(
+        "SELECT name,type FROM system.columns WHERE database='arte' "
+        "AND table='strategy_one_candidate_coverage_v1' "
+        "AND name IN ('strategy_digest','candidate_rule_digest') "
+        "FORMAT JSONEachRow").splitlines() if line.strip()]
+    if columns != [{"name": "strategy_digest", "type": "FixedString(64)"}]:
+        raise RuntimeError("Strategy 1 draft column differs from exact repair scope")
+    admin_client.execute(
+        f"ALTER TABLE {COVERAGE_TABLE} RENAME COLUMN strategy_digest "
+        "TO candidate_rule_digest")
+    admin_client.execute(
+        f"ALTER TABLE {COVERAGE_TABLE} ADD COLUMN scan_query_sha256 "
+        "FixedString(64) AFTER candidate_rule_digest")
     verify_tables(admin_client)

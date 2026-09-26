@@ -11,12 +11,13 @@ from src.backend.backtest_market_data import (
 )
 from src.backend.backtest_strategy_one_candidate_contract import candidate_content_hash
 from src.backend.backtest_strategy_one_preparation import PreparedStrategyOneTicker
+from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 
 
 DAY = "2026-08-18"
 SOURCE = "00000000-0000-0000-0000-000000000001"
 DERIVED = "00000000-0000-0000-0000-000000000002"
-STRATEGY = "a" * 64
+THROUGH = 57_600_000
 
 
 def _market():
@@ -26,6 +27,10 @@ def _market():
     return CertifiedMarketDayPlan(ExecutionInterval.fixed(100), "build",
                                   "definition", (DAY,), ("ABCD",), units,
                                   (100, 1000, 5000, 10000, 30000), "token")
+
+
+SCAN_AUTHORITY = producer.candidate_scan_authority(
+    _market(), through_boundary_ms=THROUGH)
 
 
 def _prepared():
@@ -56,7 +61,8 @@ class Client:
                              bars_attempt_text=SOURCE,
                              technical_attempt_text=SOURCE,
                              liquidity_attempt_text=SOURCE,
-                             strategy_digest=STRATEGY,
+                             candidate_rule_digest=RULE_DIGEST,
+                             scan_query_sha256=SCAN_AUTHORITY.query_sha256,
                              candidate_count=len(self.children),
                              content_hash=candidate_content_hash(self.children))
             return ""
@@ -71,7 +77,8 @@ def test_producer_publishes_child_then_coverage_and_skips_exact_retry(monkeypatc
         client.children = rows
         client.queries.append("INSERT child")
     monkeypatch.setattr(producer, "_insert_rows", inserted)
-    kwargs = dict(session_date=DAY, ticker="ABCD", strategy_digest=STRATEGY,
+    kwargs = dict(session_date=DAY, ticker="ABCD", candidate_rule_digest=RULE_DIGEST,
+                  scan_authority=SCAN_AUTHORITY,
                   has_episode=True, prepared=_prepared())
     assert producer.publish_unit(client, _market(), **kwargs) == "published"
     assert client.queries.index("INSERT child") < next(index for index, query
@@ -86,7 +93,8 @@ def test_zero_candidates_publish_coverage_without_fabricated_child(monkeypatch):
     monkeypatch.setattr(producer, "_insert_rows", lambda *_: pytest.fail(
         "empty candidate scope must not write child rows"))
     assert producer.publish_unit(client, _market(), session_date=DAY,
-        ticker="ABCD", strategy_digest=STRATEGY,
+        ticker="ABCD", candidate_rule_digest=RULE_DIGEST,
+        scan_authority=SCAN_AUTHORITY,
         has_episode=False, prepared=None) == "published"
     assert client.fact["candidate_count"] == 0
 
@@ -97,6 +105,20 @@ def test_uncertain_child_attempt_cannot_publish_bad_coverage(monkeypatch):
     monkeypatch.setattr(producer, "_insert_rows", lambda *_: None)
     with pytest.raises(RuntimeError, match="child INSERT failed"):
         producer.publish_unit(client, _market(), session_date=DAY,
-            ticker="ABCD", strategy_digest=STRATEGY,
+            ticker="ABCD", candidate_rule_digest=RULE_DIGEST,
+            scan_authority=SCAN_AUTHORITY,
             has_episode=True, prepared=_prepared())
     assert client.fact is None
+
+
+def test_candidate_producer_rejects_unsealed_rule_or_scan():
+    with pytest.raises(ValueError, match="certified fixed source scope"):
+        producer.publish_unit(Client(), _market(), session_date=DAY,
+            ticker="ABCD", candidate_rule_digest="a" * 64,
+            scan_authority=SCAN_AUTHORITY, has_episode=False, prepared=None)
+    with pytest.raises(ValueError, match="certified fixed source scope"):
+        producer.publish_unit(Client(), _market(), session_date=DAY,
+            ticker="ABCD", candidate_rule_digest=RULE_DIGEST,
+            scan_authority=producer.CandidateScanAuthority(
+                "wrong-market", THROUGH, SCAN_AUTHORITY.query_sha256),
+            has_episode=False, prepared=None)

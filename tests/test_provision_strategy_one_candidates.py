@@ -22,6 +22,7 @@ def test_apply_requires_workstation_and_installs_exactly_once(capsys, monkeypatc
             self.closed = True
     client = Client()
     installed = []
+    renamed = []
     monkeypatch.setattr(command.platform, "node", lambda: "DESKTOP-SAAI85T")
     monkeypatch.setattr(command.socket, "getaddrinfo", lambda *_a, **_k:
                         [(None, None, None, None, (command.WORKSTATION_IPV4, 18123))])
@@ -29,8 +30,12 @@ def test_apply_requires_workstation_and_installs_exactly_once(capsys, monkeypatc
                         client if url == "http://192.168.1.218:18123" else
                         pytest.fail("wrong endpoint"))
     monkeypatch.setattr(command, "install_tables", lambda value: installed.append(value))
-    assert command.main(["--apply", "--confirm-strategy-one-candidates"]) == 0
+    monkeypatch.setattr(command, "rename_empty_legacy_rule_column",
+                        lambda value: renamed.append(value))
+    assert command.main(["--apply", "--confirm-strategy-one-candidates",
+                         "--rename-empty-rule-column"]) == 0
     assert installed == [client] and client.closed
+    assert renamed == [client]
     assert "verified" in capsys.readouterr().out
 
 

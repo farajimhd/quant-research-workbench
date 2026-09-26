@@ -21,6 +21,7 @@ sys.dont_write_bytecode = True
 from scripts.clickhouse.provision_trading_journal import _admin_client
 from src.trading_runtime.strategy_one_candidate_schema import (
     CANDIDATE_TABLE, COVERAGE_TABLE, STORAGE_POLICY, install_tables,
+    rename_empty_legacy_rule_column,
 )
 
 
@@ -34,8 +35,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="create the two new app-owned tables")
     parser.add_argument("--confirm-strategy-one-candidates", action="store_true",
                         help="required second confirmation for --apply")
+    parser.add_argument("--rename-empty-rule-column", action="store_true",
+                        help="one-time repair of the empty draft coverage table")
     args = parser.parse_args(argv)
     if not args.apply:
+        if args.rename_empty_rule_column:
+            parser.error("--rename-empty-rule-column requires --apply")
         print(f"DRY RUN: {CANDIDATE_TABLE}, {COVERAGE_TABLE}; "
               f"storage={STORAGE_POLICY}; no connection or database change.")
         print("Apply on DESKTOP-SAAI85T with --apply "
@@ -61,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         if WORKSTATION_IPV4 not in addresses:
             raise RuntimeError("Pinned workstation IPv4 is not in hostname resolution")
         client = _admin_client(f"http://{WORKSTATION_IPV4}:{parsed.port}")
+        if args.rename_empty_rule_column:
+            rename_empty_legacy_rule_column(client)
         install_tables(client)
     except Exception as exc:
         # Driver errors can embed SQL or credentials. Keep terminal output safe.

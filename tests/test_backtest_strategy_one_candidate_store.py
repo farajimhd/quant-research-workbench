@@ -1,5 +1,6 @@
 """Backtest SELECTs only exact certified Strategy 1 candidate attempts."""
 import json
+from hashlib import sha256
 
 import pytest
 
@@ -8,14 +9,16 @@ from src.backend.backtest_market_data import (
 )
 from src.backend.backtest_strategy_one_candidate_contract import candidate_content_hash
 from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+from src.backend.fixed_bar_signal import first_squeeze_sql
+from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 
 
 DAY = "2026-08-18"
 BUILD = "build"
-STRATEGY = "a" * 64
 ATTEMPT = "00000000-0000-0000-0000-000000000001"
 DERIVED = "00000000-0000-0000-0000-000000000002"
 EMPTY_HASH = candidate_content_hash(())
+THROUGH = 57_600_000
 CHILD = dict(
     source_build_id=BUILD, session_date=DAY, ticker="ABCD",
     derivation_attempt_id=DERIVED, boundary_ms=30_000,
@@ -35,6 +38,9 @@ def _market():
                                   "definition", (DAY,), ("ABCD", "EFGH"),
                                   units, (100, 1000, 5000, 10000, 30000),
                                   "market-token")
+
+
+SCAN = sha256(first_squeeze_sql(_market(), through_boundary_ms=THROUGH).encode()).hexdigest()
 
 
 class Reader:
@@ -61,7 +67,8 @@ class Reader:
                 bars_attempt_text=ATTEMPT,
                 technical_attempt_text=ATTEMPT,
                 liquidity_attempt_text=ATTEMPT,
-                strategy_digest=STRATEGY,
+                candidate_rule_digest=RULE_DIGEST,
+                scan_query_sha256=SCAN,
                 candidate_count=1 if ticker == "ABCD" else 0,
                 content_hash=(candidate_content_hash((CHILD,))
                               if ticker == "ABCD" else EMPTY_HASH)))
@@ -78,7 +85,8 @@ class Reader:
 
 def test_candidate_reader_seals_positive_and_empty_ticker():
     reader = Reader()
-    result = certify_candidate_plan(_market(), strategy_digest=STRATEGY,
+    result = certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
+                                    through_boundary_ms=THROUGH,
                                     client=reader)
     assert len(result.coverage) == 2
     assert len(result.prepared) == 1
@@ -91,11 +99,18 @@ def test_candidate_reader_seals_positive_and_empty_ticker():
 
 def test_missing_tampered_or_misplaced_candidates_fail_closed():
     with pytest.raises(RuntimeError, match="missing or duplicate"):
-        certify_candidate_plan(_market(), strategy_digest=STRATEGY,
+        certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
+                               through_boundary_ms=THROUGH,
                                client=Reader(missing=True))
     with pytest.raises(RuntimeError, match="differ from coverage"):
-        certify_candidate_plan(_market(), strategy_digest=STRATEGY,
+        certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
+                               through_boundary_ms=THROUGH,
                                client=Reader(changed=True))
     with pytest.raises(RuntimeError, match="outside SSD"):
-        certify_candidate_plan(_market(), strategy_digest=STRATEGY,
+        certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
+                               through_boundary_ms=THROUGH,
                                client=Reader(misplaced=True))
+    with pytest.raises(RuntimeError, match="pinned authority"):
+        certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
+                               through_boundary_ms=30_000,
+                               client=Reader())

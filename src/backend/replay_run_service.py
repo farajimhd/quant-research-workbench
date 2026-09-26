@@ -3483,14 +3483,15 @@ class ReplayRunController:
         if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
             from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
             from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
-            from src.trading_runtime.strategy_registry import numbered_strategy
-            release = numbered_strategy(1)
+            from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
             if len(plan.sessions) != 1:
                 raise ValueError("Strategy 1 execution needs one flat-start session")
             def recheck_candidates():
                 with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
                     return certify_candidate_plan(
-                        plan, strategy_digest=release.approved_digest, client=reader)
+                        plan, candidate_rule_digest=RULE_DIGEST,
+                        through_boundary_ms=self._fixed_through_boundary_ms(),
+                        client=reader)
             candidate_plan = await asyncio.to_thread(recheck_candidates)
             if candidate_plan.token != str(
                     self.definition.market_data_plan.get("strategy_one_candidate_token") or ""):
@@ -10909,14 +10910,14 @@ def backtest_preflight(
                     # regenerate a missing strategy input inside Backtest.
                     from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
                     from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
-                    from src.trading_runtime.strategy_registry import numbered_strategy
+                    from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
                     if len(certified.sessions) != 1:
                         raise ValueError("Strategy 1 V7 candidate scope requires one flat-start session")
-                    release = numbered_strategy(1)
                     with closing(readonly_clickhouse_client(
                             v3_read_principal=True)) as candidate_reader:
                         candidate_plan = certify_candidate_plan(
-                            certified, strategy_digest=release.approved_digest,
+                            certified, candidate_rule_digest=RULE_DIGEST,
+                            through_boundary_ms=through_boundary_ms,
                             client=candidate_reader)
                     market_data_plan["strategy_one_candidate_token"] = candidate_plan.token
                     projection_tickers = strategy_one_v7_tickers(candidate_plan.prepared)
