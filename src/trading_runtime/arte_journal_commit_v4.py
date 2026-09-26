@@ -18,6 +18,13 @@ from zoneinfo import ZoneInfo
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
+from src.backend.backtest_protection_change_v3 import (
+    CHANGE as PROTECTION_CHANGE, ENTRY_ORDER as PROTECTION_ENTRY_ORDER,
+    seal_protection_changes_v3,
+)
+
+
+_MULTIROW_FAMILIES = frozenset({PROTECTION_ENTRY_ORDER.name})
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +137,9 @@ def prepare_commit_v4(
                     or re.fullmatch(r"[0-9a-f]{64}", content_hash) is None):
                 raise ValueError("V4 family row differs from its batch authority")
             identities.append((record_id, content_hash))
-        if len({record_id for record_id, _ in identities}) != len(identities):
+        key = (identities if name in _MULTIROW_FAMILIES
+               else [record_id for record_id, _ in identities])
+        if len(set(key)) != len(identities):
             raise ValueError("V4 family repeated a typed row identity")
         family_rows.append({
             "run_id": run_id, "run_month": run_month.isoformat(),
@@ -200,8 +209,10 @@ def verify_commit_v4(
             identities = detail_identities[name]
             normalized = [(str(UUID(str(record_id))), str(digest))
                           for record_id, digest in identities]
+            key = (normalized if name in _MULTIROW_FAMILIES
+                   else [record_id for record_id, _ in normalized])
             if (len(normalized) != row["row_count"]
-                    or len({record_id for record_id, _ in normalized}) != len(normalized)
+                    or len(set(key)) != len(normalized)
                     or any(re.fullmatch(r"[0-9a-f]{64}", digest) is None
                            for _, digest in normalized)
                     or sha256(canonical_json(sorted(normalized)).encode()).hexdigest()
@@ -299,7 +310,8 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name}:
+                    ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
+                    PROTECTION_CHANGE.name, PROTECTION_ENTRY_ORDER.name}:
             related_rows[name] = rows
     parents = {str(UUID(str(row["record_id"]))): row for row in
                related_rows.get("trading_strategy_intent_v1", ())
@@ -339,6 +351,13 @@ def _load_verified_details_v4(
         if (row["category"], row["entity_type"])
            == ("broker", "order_acknowledgement")} != seen_ack:
         raise RuntimeError("V4 broker acknowledgement has missing typed detail")
+    try:
+        seal_protection_changes_v3(
+            related_rows.get(PROTECTION_CHANGE.name, ()),
+            related_rows.get(PROTECTION_ENTRY_ORDER.name, ()),
+            tuple(events.values()), run_id=run_id, batch_id=batch_id)
+    except ValueError as exc:
+        raise RuntimeError("V4 protection change differs from its typed children") from exc
     return details
 
 
@@ -432,6 +451,14 @@ def publish_broker_acknowledgement_batch_v4(client, batch, *, acknowledgement) -
     """Commit the exact broker reply and its event in one V4 family fence."""
     return _publish_typed_batch_v4(
         client, batch, broker_acknowledgement_row=acknowledgement)
+
+
+def publish_protection_change_batch_v4(client, batch, *, change,
+                                       entry_orders) -> str:
+    """Fence one protection revision and all of its normalized entry links."""
+    return _publish_typed_batch_v4(
+        client, batch, protection_change_row=change,
+        protection_entry_order_rows=entry_orders)
 
 
 def publish_terminal_typed_batch_v4(client, batch, *, captures) -> V4CommittedPrefix:
@@ -552,7 +579,9 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
 
 
 def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
-                            broker_acknowledgement_row=None) -> str:
+                            broker_acknowledgement_row=None,
+                            protection_change_row=None,
+                            protection_entry_order_rows=()) -> str:
     from src.trading_runtime.arte_journal_writer import (
         TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
         _sealed_families, _v4_family_table, _verify_commission_links, typed_row,
@@ -569,6 +598,10 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                               TypedInsertDispatch)):
         raise RuntimeError("V4 publication requires a strict Keeper-fenced insert dispatch")
     dispatch = client.typed_insert_dispatch
+    if sum(bool(value) for value in (
+            strategy_one_entry_rows, broker_acknowledgement_row,
+            protection_change_row)) > 1:
+        raise ValueError("V4 batch cannot mix independent typed supplements")
     ack_rows = ()
     if broker_acknowledgement_row is not None:
         if (strategy_one_entry_rows or len(batch.events) != 1
@@ -591,8 +624,35 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                 or ack["ticker"] != ack["ticker"].upper()):
             raise ValueError("V4 broker acknowledgement differs from its parent")
         ack_rows = (ack,)
+    protection_rows = ()
+    protection_children = ()
+    if protection_change_row is not None:
+        if (len(batch.events) != 1
+                or (batch.events[0]["category"], batch.events[0]["entity_type"])
+                   != ("protection", "protection_change")
+                or not isinstance(protection_change_row, Mapping)):
+            raise ValueError("V4 protection change has an invalid parent event")
+        protection_rows = (typed_row(PROTECTION_CHANGE.name, {
+            key: value for key, value in protection_change_row.items()
+            if key != "content_hash"}),)
+        if ("content_hash" in protection_change_row
+                and protection_change_row["content_hash"]
+                    != protection_rows[0]["content_hash"]):
+            raise ValueError("V4 protection change content differs from its seal")
+        protection_children = tuple(typed_row(PROTECTION_ENTRY_ORDER.name, {
+            key: value for key, value in source.items()
+            if key != "content_hash"}) for source in protection_entry_order_rows)
+        if any("content_hash" in source
+               and source["content_hash"] != child["content_hash"]
+               for source, child in zip(protection_entry_order_rows,
+                                        protection_children)):
+            raise ValueError("V4 protection entry order differs from its seal")
+        seal_protection_changes_v3(
+            protection_rows, protection_children, batch.events,
+            run_id=batch.run_id, batch_id=batch.batch_id)
     base_families = _sealed_families(
-        batch, v4_broker_ack_ids=tuple(row["record_id"] for row in ack_rows))
+        batch, v4_broker_ack_ids=tuple(row["record_id"] for row in ack_rows),
+        v4_protection_ids=tuple(row["record_id"] for row in protection_rows))
     entry_rows = _sealed_strategy_one_entry_rows(
         batch, base_families, strategy_one_entry_rows)
     families = tuple((_v4_family_table(name), rows)
@@ -601,6 +661,10 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         families += ((ENTRY_EVIDENCE.name, entry_rows),)
     if ack_rows:
         families += ((ACKNOWLEDGEMENT.name, ack_rows),)
+    if protection_rows:
+        families += ((PROTECTION_CHANGE.name, protection_rows),)
+    if protection_children:
+        families += ((PROTECTION_ENTRY_ORDER.name, protection_children),)
     commit, family_rows = prepare_commit_v4(
         run_id=batch.run_id, run_month=batch.run_month,
         attempt_id=batch.attempt_id, batch_id=batch.batch_id,

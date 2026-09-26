@@ -8,6 +8,7 @@ import pytest
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_broker_acknowledgement_v4 import project_broker_acknowledgement_v4
+from src.trading_runtime.arte_protection_change_v4 import protection_change_batch_v4
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
 from src.trading_runtime.arte_oms_projection import oms_group_state_batch
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary
@@ -204,6 +205,16 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
         projected_ack = project_broker_acknowledgement_v4(
             record, attempt_id=str(UUID(int=15)), batch_id=str(UUID(int=14)))
         assert projected_ack.detail["broker_order_id"] in group.broker_order_ids
+    protection_records = [record for record in records
+                          if (record.category, record.entity_type)
+                          == ("protection", "protection_change")]
+    assert protection_records
+    for record in protection_records:
+        projected_protection = protection_change_batch_v4(
+            record, run_month=date(2026, 8, 1),
+            attempt_id=str(UUID(int=16)), batch_id=str(UUID(int=17)),
+            prior_batch_id=str(UUID(int=0)), source_cursor="2026-08-18:31000")
+        assert projected_protection.change["order_group_id"] == group.group_id
     assert frozen and all(item is not None and item.group_id == group.group_id
                           for item in frozen)
     assert any(record.category == "command" and record.entity_type == "order"

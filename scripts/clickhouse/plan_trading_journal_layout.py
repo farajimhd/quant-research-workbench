@@ -41,7 +41,8 @@ from src.trading_runtime.arte_journal_writer import journal_client_from_env
 
 def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
     if profile == "commit-v4":
-        return V4_COMMIT_TABLES + (ENTRY_EVIDENCE, ACKNOWLEDGEMENT)
+        return V4_COMMIT_TABLES + (ENTRY_EVIDENCE, ACKNOWLEDGEMENT,
+                                   *PROTECTION_CHANGE_TABLES)
     if profile == "fixed-v2":
         return fixed_backtest_v2_contracts()
     if profile == "fixed-v3":

@@ -25,6 +25,8 @@ from src.trading_runtime.arte_journal_projection import commission_revision_batc
 from src.trading_runtime.arte_broker_acknowledgement_v4 import (
     ACKNOWLEDGEMENT, broker_acknowledgement_batch_v4,
 )
+from src.trading_runtime.arte_protection_change_v4 import protection_change_batch_v4
+from src.backend.backtest_protection_change_v3 import TABLES as PROTECTION_CHANGE_TABLES
 from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.arte_journal_reader import load_typed_event_page
 from src.backend.backtest_typed_activity import load_fixed_typed_activity_page
@@ -309,6 +311,45 @@ def test_v4_broker_acknowledgement_uses_nonblocking_writer_lane(monkeypatch):
         writer.close()
 
 
+def test_v4_protection_change_fences_numbered_children_and_cold_readback():
+    from src.trading_runtime.arte_journal_commit_v4 import (
+        publish_protection_change_batch_v4,
+    )
+
+    at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
+    record = JournalRecord(
+        str(UUID(int=194)), "run-protection", 1, at, at,
+        "protection", "protection_change", "broker-1", "DU1",
+        {"schema_version": 1, "order_group_id": "group-1",
+         "entry_order_ids": ["entry-1", "entry-2"],
+         "order_id": "broker-1", "client_order_id": "client-1",
+         "kind": "stop", "phase": "effective", "price": 5.75,
+         "active": True, "ticker": "AAA", "source_intent_id": "intent-1",
+         "strategy_id": "early-squeeze-strategy", "strategy_revision": 1,
+         "action": "enter_long", "intent_id": "intent-1",
+         "correlation_id": "correlation-1", "causation_id": "causation-1"})
+    unit = protection_change_batch_v4(
+        record, run_month=date(2026, 8, 1), attempt_id=str(UUID(int=195)),
+        batch_id=str(UUID(int=196)), prior_batch_id=str(UUID(int=0)),
+        source_cursor="2026-08-18:31000")
+    client = attached_v4_client()
+    assert publish_protection_change_batch_v4(
+        client, unit.base, change=unit.change,
+        entry_orders=unit.entry_orders) == unit.base.batch_id
+    assert client.inserts[:3] == ["trading_event_v1",
+                                 PROTECTION_CHANGE_TABLES[0].name,
+                                 PROTECTION_CHANGE_TABLES[1].name]
+    verified, families = load_verified_commit_v4(
+        client, run_id=record.run_id, batch_id=unit.base.batch_id)
+    assert verified["family_count"] == 3
+    assert {row["family_name"] for row in families} == {
+        "trading_event_v1", *(table.name for table in PROTECTION_CHANGE_TABLES)}
+    client.tables[PROTECTION_CHANGE_TABLES[1].name][0]["entry_order_id"] = "tampered"
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_verified_commit_v4(
+            client, run_id=record.run_id, batch_id=unit.base.batch_id)
+
+
 def test_v4_terminal_is_lifecycle_last_and_anchors_all_accounts(monkeypatch):
     from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
 
@@ -487,11 +528,13 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
 
     assert observed[2] == (ENTRY_EVIDENCE,)
     assert observed[3] == (ACKNOWLEDGEMENT,)
+    assert observed[4] == PROTECTION_CHANGE_TABLES
     writable = frozenset(writer_module._v4_family_table(table)
                          for table, _, _, _ in writer_module._FAMILIES) | \
         frozenset(table.name for table in V4_COMMIT_TABLES) | {
-            ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name}
-    assert observed[4] == (
+            ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
+            *(table.name for table in PROTECTION_CHANGE_TABLES)}
+    assert observed[5] == (
         writable, frozenset(table.name for table in fixed_backtest_v2_contracts()) - writable)
 
 
