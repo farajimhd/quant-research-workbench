@@ -24,6 +24,13 @@ from .strategy_one_stateful import StrategyOneEntryProposal
 _NEW_YORK = ZoneInfo("America/New_York")
 
 
+def require_no_replacement_capital(intents: tuple[StrategyIntent, ...]) -> None:
+    """Strategy 1 never replaces another position to fund an entry."""
+    if any(intent.capital_request is not None
+           and intent.capital_request.allow_replacement for intent in intents):
+        raise ValueError("Strategy 1 cannot request replacement capital")
+
+
 def strategy_one_entry_intent(
     proposal: StrategyOneEntryProposal, *, session_date: date,
 ) -> StrategyIntent:

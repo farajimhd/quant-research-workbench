@@ -42,6 +42,63 @@ _V4_ADDITIONS = frozenset({
     ("snapshot", "position"),
 })
 _SIMULATED_BROKER = Path(__file__).parents[1] / "trading_runtime" / "simulated_broker.py"
+_STRATEGY_ONE_INTENT = Path(__file__).parents[1] / "trading_runtime" / "strategy_one_intent.py"
+
+
+def certify_fixed_rebalance_unreachable(
+    *, runtime_path: Path, portfolio_path: Path,
+    intent_path: Path = _STRATEGY_ONE_INTENT,
+) -> str:
+    """Bind the Strategy 1 capital guard to Portfolio's rebalance condition."""
+    paths = (runtime_path, portfolio_path, intent_path)
+    sources = tuple(path.read_text(encoding="utf-8") for path in paths)
+    runtime, portfolio, intent = (ast.parse(source) for source in sources)
+
+    def method(tree: ast.AST, owner: str, name: str, kind: type) -> ast.AST:
+        classes = [node for node in getattr(tree, "body", ())
+                   if isinstance(node, ast.ClassDef) and node.name == owner]
+        matches = [node for node in classes[0].body
+                   if isinstance(node, kind) and node.name == name] if len(classes) == 1 else []
+        if len(matches) != 1:
+            raise ValueError("Strategy 1 rebalance exclusion source changed")
+        return matches[0]
+
+    execute = method(runtime, "TradingRuntime", "_execute_intents", ast.AsyncFunctionDef)
+    expected_guard = (
+        "if self.config.mode == RunMode.BACKTEST and "
+        "self.config.strategy_id == STRATEGY_ID and "
+        "(self.config.strategy_revision == STRATEGY_NUMBER):\n"
+        "    from .strategy_one_intent import require_no_replacement_capital\n"
+        "    require_no_replacement_capital(evaluation.intents)"
+    )
+    if (len(execute.body) < 2
+            or ast.unparse(execute.body[0]) !=
+            "from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER"
+            or ast.unparse(execute.body[1]) != expected_guard):
+        raise ValueError("Strategy 1 replacement guard is not before Portfolio routing")
+    helpers = [node for node in intent.body if isinstance(node, ast.FunctionDef)
+               and node.name == "require_no_replacement_capital"]
+    if (len(helpers) != 1 or len(helpers[0].body) != 2
+            or ast.unparse(helpers[0].body[1]) !=
+            "if any((intent.capital_request is not None and "
+            "intent.capital_request.allow_replacement for intent in intents)):\n"
+            "    raise ValueError('Strategy 1 cannot request replacement capital')"):
+        raise ValueError("Strategy 1 replacement guard no longer rejects replacement")
+    rebalance = method(portfolio, "PortfolioManagementEngine", "_propose_rebalance",
+                       ast.FunctionDef)
+    if (len(rebalance.body) < 3
+            or ast.unparse(rebalance.body[0]) != "request = intent.capital_request"
+            or ast.unparse(rebalance.body[2]) !=
+            "if request is None or not request.allow_replacement or "
+            "(not bool(mandate.get('allow_replacement', False))):\n"
+            "    return None"
+            or sum(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                   and node.func.attr == "_propose_rebalance"
+                   for node in ast.walk(portfolio)) != 1):
+        raise ValueError("Portfolio rebalance has another or unguarded route")
+    return sha256(json.dumps({"version": 1, "sources": tuple(
+        sha256(source.encode()).hexdigest() for source in sources)},
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def certify_fixed_broker_stream_unreachable(
@@ -156,6 +213,16 @@ def certify_strategy_one_v4_projection(
             oms_path=sources_by_name["order_management.py"])
         unreachable_proof += websocket_proof
         unreachable.add(("execution", "broker_execution"))
+    if ("portfolio_management", "portfolio_rebalance") in families:
+        sources_by_name = {path.name: path for path in indirect_sources}
+        if (len(sources_by_name) != len(indirect_sources)
+                or "portfolio.py" not in sources_by_name
+                or "runtime.py" not in sources_by_name):
+            raise ValueError("V4 rebalance lacks fixed-runtime source authority")
+        unreachable_proof += certify_fixed_rebalance_unreachable(
+            runtime_path=sources_by_name["runtime.py"],
+            portfolio_path=sources_by_name["portfolio.py"])
+        unreachable.add(("portfolio_management", "portfolio_rebalance"))
     supported = _V3_PROJECTED | _COMMON_TYPED | _V4_ADDITIONS
     unsupported = sorted(set(families) - supported - unreachable)
     if unsupported:

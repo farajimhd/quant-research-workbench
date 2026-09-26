@@ -5,6 +5,7 @@ import pytest
 
 from src.backend.backtest_fixed_v4_certification import (
     certify_fixed_broker_stream_unreachable,
+    certify_fixed_rebalance_unreachable,
     certify_strategy_one_v4_projection,
 )
 
@@ -72,3 +73,55 @@ def test_simulated_broker_websocket_exclusion_fails_on_source_change(tmp_path):
         "    def stream_broker_messages(self): pass", 1), encoding="utf-8")
     with pytest.raises(ValueError, match="transport absence"):
         certify_fixed_broker_stream_unreachable(**copies)
+
+
+def test_rebalance_exclusion_requires_both_runtime_and_portfolio_guards(tmp_path):
+    from pathlib import Path
+    from src.backend import backtest_fixed_v4_certification as cert
+
+    sources = {
+        "runtime_path": Path(__file__).parents[1] / "src/trading_runtime/runtime.py",
+        "portfolio_path": Path(__file__).parents[1] / "src/trading_runtime/portfolio.py",
+        "intent_path": cert._STRATEGY_ONE_INTENT,
+    }
+    copies = {}
+    for key, source in sources.items():
+        target = tmp_path / source.name
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        copies[key] = target
+    assert len(certify_fixed_rebalance_unreachable(**copies)) == 64
+    runtime = copies["runtime_path"]
+    runtime.write_text(runtime.read_text(encoding="utf-8").replace(
+        "require_no_replacement_capital(evaluation.intents)",
+        "pass", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="replacement guard"):
+        certify_fixed_rebalance_unreachable(**copies)
+    runtime.write_text(sources["runtime_path"].read_text(encoding="utf-8"),
+                       encoding="utf-8")
+    portfolio = copies["portfolio_path"]
+    portfolio.write_text(portfolio.read_text(encoding="utf-8").replace(
+        "or not request.allow_replacement", "", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="rebalance has another or unguarded"):
+        certify_fixed_rebalance_unreachable(**copies)
+    portfolio.write_text(sources["portfolio_path"].read_text(encoding="utf-8"),
+                         encoding="utf-8")
+    intent = copies["intent_path"]
+    intent.write_text(intent.read_text(encoding="utf-8").replace(
+        "and intent.capital_request.allow_replacement for intent in intents",
+        "and False for intent in intents", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="no longer rejects replacement"):
+        certify_fixed_rebalance_unreachable(**copies)
+
+
+def test_strategy_one_rejects_replacement_capital():
+    from types import SimpleNamespace
+    from src.trading_runtime.signals import CapitalRequest
+    from src.trading_runtime.strategy_one_intent import require_no_replacement_capital
+
+    request = SimpleNamespace(capital_request=CapitalRequest(
+        mode="mandate_fraction", value=1 / 3))
+    require_no_replacement_capital((request,))
+    replacement = SimpleNamespace(capital_request=CapitalRequest(
+        mode="mandate_fraction", value=1 / 3, allow_replacement=True))
+    with pytest.raises(ValueError, match="replacement capital"):
+        require_no_replacement_capital((replacement,))

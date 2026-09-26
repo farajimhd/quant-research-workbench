@@ -842,6 +842,12 @@ class TradingRuntime:
         *, strategy_one_proposal: Any | None = None,
         strategy_one_assignment_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+        if (self.config.mode == RunMode.BACKTEST
+                and self.config.strategy_id == STRATEGY_ID
+                and self.config.strategy_revision == STRATEGY_NUMBER):
+            from .strategy_one_intent import require_no_replacement_capital
+            require_no_replacement_capital(evaluation.intents)
         if strategy_one_assignment_id is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
 
