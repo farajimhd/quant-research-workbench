@@ -345,42 +345,28 @@ class BacktestTypedJournalPublisher:
                 pending[snapshot_start - 1].entity_type,
             ) in {("snapshot", "portfolio"), ("snapshot", "position")}:
                 snapshot_start -= 1
+            if snapshot_start == len(pending) - 1:
+                raise RuntimeError(
+                    "V4 terminal lacks normalized broker account snapshots")
             first_terminal_sequence = pending[snapshot_start].sequence
             if self._sequence < first_terminal_sequence - 1:
                 await self._drain(target_sequence=first_terminal_sequence - 1)
             if self._sequence != first_terminal_sequence - 1:
                 raise RuntimeError("V4 terminal predecessor is not fully fenced")
-            if snapshot_start < len(pending) - 1:
-                from src.backend.backtest_terminal_broker_snapshot_v4 import (
-                    project_v4_terminal_broker_batch,
-                )
+            from src.backend.backtest_terminal_broker_snapshot_v4 import (
+                project_v4_terminal_broker_batch,
+            )
 
-                unit = await asyncio.to_thread(
-                    project_v4_terminal_broker_batch,
-                    tuple(pending[snapshot_start:]), run_id=self.journal.run_id,
-                    account_ids=tuple(row.account_id for row in captures),
-                    attempt_id=self.attempt_id, run_month=self.run_month,
-                    prior_batch_id=self._batch_id,
-                    source_cursor=self._source_cursor)
-                batch = unit.base
-                submitted = self.writer.submit_terminal_backtest(
-                    batch, captures, unit.broker_snapshots)
-            else:
-                units = await asyncio.to_thread(
-                    project_pending_backtest_v4_prefix, self.journal,
-                    attempt_id=self.attempt_id, run_month=self.run_month,
-                    prior_sequence=self._sequence, prior_batch_id=self._batch_id,
-                    source_cursor=self._source_cursor,
-                    expected_config=self.expected_config,
-                    fixed_market_parent_plan=self.fixed_market_parent_plan,
-                    fixed_market_execution_plan=self.fixed_market_execution_plan,
-                    expected_market_start=self.expected_market_start,
-                    through_sequence=sequence)
-                if (len(units) != 1 or not isinstance(units[0], TypedJournalBatch)
-                        or units[0].status not in {"completed", "stopped", "failed"}):
-                    raise RuntimeError("V4 terminal projection is not one lifecycle batch")
-                batch = units[0]
-                submitted = self.writer.submit_terminal_backtest(batch, captures)
+            unit = await asyncio.to_thread(
+                project_v4_terminal_broker_batch,
+                tuple(pending[snapshot_start:]), run_id=self.journal.run_id,
+                account_ids=tuple(row.account_id for row in captures),
+                attempt_id=self.attempt_id, run_month=self.run_month,
+                prior_batch_id=self._batch_id,
+                source_cursor=self._source_cursor)
+            batch = unit.base
+            submitted = self.writer.submit_terminal_backtest(
+                batch, captures, unit.broker_snapshots)
             committed = await asyncio.wrap_future(submitted)
             if str(UUID(str(committed))) != batch.batch_id:
                 raise RuntimeError("V4 terminal writer changed the batch ID")

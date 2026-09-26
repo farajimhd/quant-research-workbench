@@ -3,6 +3,7 @@ from concurrent.futures import Future
 from datetime import date, timezone
 from threading import Event
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -58,6 +59,21 @@ def _journal():
                             "frame_ticker": None, "frame_timeframe": None,
                             "frame_sequence": None})
     return journal
+
+
+def _append_broker_snapshot(journal):
+    from src.backend.backtest_terminal_snapshot_v2 import (
+        ACCOUNT_METRICS, position_set_sha256,
+    )
+
+    payload = {name: {"amount": 1000.0, "currency": "USD",
+                      "timestamp": 123} for name, _ in ACCOUNT_METRICS}
+    journal.append(
+        run_id=RUN, category="snapshot", entity_type="portfolio",
+        entity_id="DU1", account_id="DU1", event_time=AT,
+        payload={**payload, "snapshot_id": str(uuid4()),
+                 "expected_position_count": 0,
+                 "position_set_sha256": position_set_sha256(())})
 
 
 def _publisher(journal, writer, *, batch_size=512):
@@ -250,8 +266,9 @@ def test_v4_terminal_queues_after_predecessor_and_fences_only_after_receipt(monk
         def submit_base_v4(self, batch):
             return FakeWriter.submit(self, batch)
 
-        def submit_terminal_backtest(self, batch, captures):
+        def submit_terminal_backtest(self, batch, captures, broker_snapshots):
             assert len(captures) == 1 and captures[0].run_id == RUN
+            assert len(broker_snapshots.accounts) == 1
             return FakeWriter.submit(self, batch)
 
     async def exercise():
@@ -260,11 +277,12 @@ def test_v4_terminal_queues_after_predecessor_and_fences_only_after_receipt(monk
         publisher = _publisher(journal, writer)
         running = publisher.enqueue_pending()
         await _wait_for_submission(writer)
+        _append_broker_snapshot(journal)
         journal.append(run_id=RUN, category="lifecycle", entity_type="run",
                        entity_id=RUN, event_time=AT,
                        payload={"status": "completed", "processed_events": 2})
         capture = CapturedPortfolioSnapshot(
-            RUN, "DU1", 1, AT, "primary", "enabled", "synchronized",
+            RUN, "DU1", 4, AT, "primary", "enabled", "synchronized",
             "broker-snapshot-1", AT, "", 1000.0, None, None,
             (), (), (), (), (), (),
         )
@@ -280,9 +298,9 @@ def test_v4_terminal_queues_after_predecessor_and_fences_only_after_receipt(monk
             await asyncio.sleep(0.001)
         assert len(writer.submitted) == 2
         assert writer.submitted[1].status == "completed"
-        assert publisher.fenced_sequence == 2 and journal.pending_record_count == 1
+        assert publisher.fenced_sequence == 2 and journal.pending_record_count == 2
         writer.receipts[1].set_result(writer.submitted[1].batch_id)
-        assert (await terminal).last_sequence == 3
+        assert (await terminal).last_sequence == 4
         assert journal.pending_record_count == 0
 
     asyncio.run(exercise())
@@ -296,8 +314,9 @@ def test_v4_terminal_appended_before_running_task_starts_stays_out_of_base_queue
             assert batch.status == "running"
             return FakeWriter.submit(self, batch)
 
-        def submit_terminal_backtest(self, batch, captures):
+        def submit_terminal_backtest(self, batch, captures, broker_snapshots):
             assert batch.status == "completed"
+            assert len(broker_snapshots.accounts) == 1
             return FakeWriter.submit(self, batch)
 
     async def exercise():
@@ -305,17 +324,18 @@ def test_v4_terminal_appended_before_running_task_starts_stays_out_of_base_queue
         writer = V4Writer()
         publisher = _publisher(journal, writer)
         running = publisher.enqueue_pending()
+        _append_broker_snapshot(journal)
         journal.append(run_id=RUN, category="lifecycle", entity_type="run",
                        entity_id=RUN, event_time=AT,
                        payload={"status": "completed", "processed_events": 2})
         capture = CapturedPortfolioSnapshot(
-            RUN, "DU1", 1, AT, "primary", "enabled", "synchronized",
+            RUN, "DU1", 4, AT, "primary", "enabled", "synchronized",
             "broker-snapshot-1", AT, "", 1000.0, None, None,
             (), (), (), (), (), (),
         )
         terminal = publisher.enqueue_terminal((capture,))
         assert (await running).last_sequence == 2
-        assert (await terminal).last_sequence == 3
+        assert (await terminal).last_sequence == 4
         assert [batch.status for batch in writer.submitted] == ["running", "completed"]
 
     asyncio.run(exercise())
@@ -371,6 +391,32 @@ def test_v4_terminal_queues_broker_snapshot_suffix_as_one_typed_commit():
     asyncio.run(exercise())
 
 
+def test_v4_terminal_refuses_lifecycle_without_broker_snapshot():
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+        def submit_terminal_backtest(self, *_args):
+            pytest.fail("Terminal without broker evidence reached writer")
+
+    async def exercise():
+        journal = BacktestMemoryJournal(run_id=RUN)
+        journal.append(run_id=RUN, category="lifecycle", entity_type="run",
+                       entity_id=RUN, event_time=AT,
+                       payload={"status": "completed", "processed_events": 0})
+        writer = V4Writer()
+        publisher = _publisher(journal, writer)
+        capture = CapturedPortfolioSnapshot(
+            RUN, "DU1", 1, AT, "primary", "enabled", "synchronized",
+            "broker-snapshot-1", AT, "", 1000.0, None, None,
+            (), (), (), (), (), (),
+        )
+        with pytest.raises(RuntimeError, match="lacks normalized broker"):
+            await publisher.enqueue_terminal((capture,))
+        assert journal.pending_record_count == 1
+
+    asyncio.run(exercise())
+
+
 def test_fixed_controller_v4_finish_captures_exact_terminal_actor_state():
     class V4Writer(FakeWriter):
         journal_profile = "backtest_v4"
@@ -378,14 +424,15 @@ def test_fixed_controller_v4_finish_captures_exact_terminal_actor_state():
         def submit_base_v4(self, batch):
             return FakeWriter.submit(self, batch)
 
-        def submit_terminal_backtest(self, batch, captures):
+        def submit_terminal_backtest(self, batch, captures, broker_snapshots):
             assert batch.last_sequence == captures[0].state_revision
             assert captures[0].snapshot_at == AT
+            assert len(broker_snapshots.accounts) == 1
             return FakeWriter.submit(self, batch)
 
     class Portfolio:
         def capture_recovery_snapshot(self, account_id, *, state_revision, snapshot_at):
-            assert account_id == "DU1" and state_revision == 3
+            assert account_id == "DU1" and state_revision == 4
             return CapturedPortfolioSnapshot(
                 RUN, account_id, state_revision, snapshot_at, "primary",
                 "enabled", "synchronized", "broker-snapshot-1", AT,
@@ -405,6 +452,7 @@ def test_fixed_controller_v4_finish_captures_exact_terminal_actor_state():
         controller._runtime_finished = False
 
         async def finish(*, status):
+            _append_broker_snapshot(journal)
             journal.append(run_id=RUN, category="lifecycle", entity_type="run",
                            entity_id=RUN, event_time=AT,
                            payload={"status": status, "processed_events": 2})
@@ -413,7 +461,7 @@ def test_fixed_controller_v4_finish_captures_exact_terminal_actor_state():
             finish=finish, portfolio=Portfolio())
         await controller._finish_fixed_v4("completed")
         assert controller._runtime_finished
-        assert publisher.fenced_sequence == 3
+        assert publisher.fenced_sequence == 4
         assert journal.pending_record_count == 0
         assert [batch.status for batch in writer.submitted] == ["running", "completed"]
 
