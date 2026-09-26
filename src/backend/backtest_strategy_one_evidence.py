@@ -209,7 +209,12 @@ class StrategyOneCausalEvidence:
                     self.session, boundary_ms).timestamp() * 1_000_000)
                 if 0 <= now_us - quote_at <= 1_000_000:
                     bid, ask = bid_int / 10_000, ask_int / 10_000
-                    levels = await self._levels(ticker, boundary_ms)
+                    # The ordinal target may rerank only after a completed
+                    # price-bearing bar. Quote-only buckets still carry the
+                    # executable quote and last completed 30s swing low, but
+                    # must not load or use V7 overhead geometry.
+                    if price_bearing:
+                        levels = await self._levels(ticker, boundary_ms)
         return StrategyOneManagementEvidence(
             ticker, boundary_ms, bid, ask, price_bearing,
             int(low["boundary_ms"]) if low is not None else None,

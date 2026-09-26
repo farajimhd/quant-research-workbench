@@ -180,7 +180,10 @@ def test_management_low_expires_and_invalid_completed_bucket_revokes_it():
     evidence._break_boundary_ms = 0
     evidence._completed_30s = {}
 
+    level_reads = []
+
     async def levels(_ticker, _boundary):
+        level_reads.append((_ticker, _boundary))
         return ({"unified_level_id": "r1", "lower": 11., "upper": 11.1,
                  "role": "resistance"},)
 
@@ -209,6 +212,13 @@ def test_management_low_expires_and_invalid_completed_bucket_revokes_it():
         assert (joined.bid, joined.ask, joined.low_boundary_ms,
                 joined.low_int) == (10., 10.01, 30_000, 98_000)
         assert len(joined.overhead_levels) == 1
+        assert level_reads == [("TEST", 30_000)]
+        quote_only = await evidence.management_evidence(
+            "TEST", {100: {**quote, "price_valid": 0}}, boundary_ms=30_000)
+        assert (quote_only.bid, quote_only.ask, quote_only.low_int) == (
+            10., 10.01, 98_000)
+        assert quote_only.overhead_levels == ()
+        assert level_reads == [("TEST", 30_000)]
         await observe(59_900)
         assert evidence.completed_30s_low("TEST", boundary_ms=59_900)["low_int"] == 98_000
         stale = await evidence.management_evidence(
