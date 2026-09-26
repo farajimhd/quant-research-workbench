@@ -1,12 +1,13 @@
 """V4 terminal cannot substitute portfolio recovery for broker snapshots."""
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_terminal_broker_snapshot_v4 import (
+    project_v4_terminal_broker_batch,
     project_v4_terminal_broker_snapshots,
 )
 from src.backend.backtest_terminal_snapshot_v2 import (
@@ -42,6 +43,31 @@ def test_terminal_broker_snapshot_group_is_normalized_and_complete():
     assert len(rows.accounts) == 1 and rows.positions == ()
     assert rows.accounts[0]["net_liquidation"] == 1000.0
     assert rows.first_sequence == 1 and rows.last_sequence == 2
+
+
+def test_terminal_broker_batch_keeps_full_event_span_and_float64_families():
+    records = _records()
+    kwargs = dict(run_id="run-v4", account_ids=("DU1",),
+                  attempt_id=str(uuid4()), run_month=date(2026, 8, 1),
+                  prior_batch_id=str(uuid4()), source_cursor="2026-08-18:34200000")
+    unit = project_v4_terminal_broker_batch(records, **kwargs)
+    assert unit.base.first_sequence == 1
+    assert unit.base.last_sequence == 2
+    assert [row["record_id"] for row in unit.base.events] == [
+        record.record_id for record in records]
+    assert len(unit.base.run_transitions) == 1
+    assert unit.base.account_snapshots == ()
+    assert unit.broker_snapshots.accounts[0]["batch_id"] == unit.base.batch_id
+    assert unit.broker_snapshots.accounts[0]["net_liquidation"] == 1000.0
+    assert project_v4_terminal_broker_batch(records, **kwargs) == unit
+
+
+def test_terminal_broker_batch_rejects_foreign_month_before_projection():
+    with pytest.raises(ValueError, match="clock or month"):
+        project_v4_terminal_broker_batch(
+            _records(), run_id="run-v4", account_ids=("DU1",),
+            attempt_id=str(uuid4()), run_month=date(2026, 9, 1),
+            prior_batch_id=str(uuid4()), source_cursor="2026-08-18:34200000")
 
 
 def test_terminal_broker_snapshot_rejects_missing_account_and_clock():
