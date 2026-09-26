@@ -284,3 +284,71 @@ def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(mo
             read, writer_client, terminal, run_id=RUN, account_ids=("DU1",),
             configuration_hash="c" * 64, market_plan_token="b" * 64,
             projection_certifier=lambda: "a" * 64)
+
+
+def test_v4_publication_preflights_before_keeper_gate(monkeypatch):
+    from src.backend import backtest_fixed_market_authority
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+
+    calls = []
+    keeper = object()
+    context = SimpleNamespace(typed_insert_strict=True,
+        typed_insert_dispatch=TypedInsertDispatch(keeper))
+    writer = SimpleNamespace(typed_insert_strict=True,
+        typed_insert_dispatch=TypedInsertDispatch(keeper))
+    read, terminal = object(), object()
+    market = SimpleNamespace(token="b" * 64)
+    run = dict(run_id=RUN, run_month="2026-08-01", mode="backtest",
+        evaluation_interval_ms=100, session_date="2026-08-18",
+        configuration_hash="c" * 64, code_hash="d" * 64,
+        market_plan_token=market.token, started_at="2026-08-18T08:00:00+00:00")
+    config = dict(strategy_id="S", strategy_revision=1,
+        anchor_date="2026-08-18", run_plan_id="plan-1",
+        safety_supervisor_enabled=True, checkpoint_interval_events=100,
+        write_progress_checkpoints=True)
+    monkeypatch.setattr(backtest_fixed_market_authority, "_validate_plans",
+                        lambda *_: calls.append("market"))
+    for name in ("fixed_backtest_v2_preflight", "read_v3_preflight",
+                 "terminal_v3_preflight", "_v4_preflight"):
+        monkeypatch.setattr(bootstrap, name,
+                            lambda _client, name=name: calls.append(name))
+    monkeypatch.setattr(bootstrap, "publish_fixed_run_context",
+                        lambda *_args, **_kwargs: calls.append("gate"))
+    monkeypatch.setattr(bootstrap, "prepare_fixed_v4_journal_token",
+                        lambda *_args, **_kwargs: calls.append("token") or object())
+    assembly = object()
+    monkeypatch.setattr(bootstrap, "assemble_fixed_v4_journal",
+                        lambda *_args, **_kwargs: calls.append("assembly") or assembly)
+    kwargs = dict(run=run, config=config, account_ids=("DU1",),
+        attempt_id=ATTEMPT, expected_config={"strategy": {"strategy_number": 1}},
+        fixed_market_parent_plan=market, fixed_market_execution_plan=market,
+        expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
+        writer_factory=lambda *_args, **_kwargs: None)
+    assert bootstrap.publish_and_assemble_fixed_v4_journal(
+        context, read, writer, terminal,
+        projection_certifier=lambda: calls.append("certificate") or "a" * 64,
+        **kwargs) is assembly
+    assert calls == ["market", "fixed_backtest_v2_preflight",
+                     "read_v3_preflight", "terminal_v3_preflight",
+                     "_v4_preflight", "certificate", "gate", "token", "assembly"]
+    calls.clear()
+    with pytest.raises(RuntimeError, match="projector"):
+        bootstrap.publish_and_assemble_fixed_v4_journal(
+            context, read, writer, terminal,
+            projection_certifier=lambda: "invalid", **kwargs)
+    assert "gate" not in calls
+    different = SimpleNamespace(typed_insert_strict=True,
+        typed_insert_dispatch=TypedInsertDispatch(object()))
+    calls.clear()
+    with pytest.raises(ValueError, match="shared-Keeper"):
+        bootstrap.publish_and_assemble_fixed_v4_journal(
+            context, read, different, terminal,
+            projection_certifier=lambda: "a" * 64, **kwargs)
+    assert calls == []
+    calls.clear()
+    with pytest.raises(ValueError, match="Strategy 1"):
+        bootstrap.publish_and_assemble_fixed_v4_journal(
+            context, read, writer, terminal,
+            projection_certifier=lambda: "a" * 64,
+            **{**kwargs, "expected_config": {"strategy": {"strategy_number": 350}}})
+    assert calls == ["market"]

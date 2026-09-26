@@ -19,7 +19,10 @@ from src.backend.backtest_squeeze_episode_schema import (
 )
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
-from src.backend.backtest_fixed_run_context import verify_fixed_run_context
+from src.backend.backtest_fixed_run_context import (
+    _validate_local_context, publish_fixed_run_context,
+    verify_fixed_run_context,
+)
 from src.backend.backtest_fixed_v3_preflight import (
     read_v3_preflight, running_v3_preflight, terminal_v3_preflight,
     terminal_v3_keeper_namespace_preflight,
@@ -31,7 +34,7 @@ from src.backend.backtest_terminal_v2_preflight import (
 from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
 from src.trading_runtime.arte_journal_schema import (
     V4_COMMIT_TABLES, fixed_backtest_v2_contracts, missing_fixed_backtest_v2_tables,
-    storage_preflight,
+    fixed_backtest_v2_preflight, storage_preflight,
 )
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, _v4_preflight, load_typed_run_context,
@@ -387,3 +390,73 @@ def assemble_fixed_v4_journal(
             writer.close()
         journal.close()
         raise
+
+
+def publish_and_assemble_fixed_v4_journal(
+    context_client: Any, read_client: Any, writer_client: Any,
+    terminal_client: Any, *, run: dict[str, Any], config: dict[str, Any],
+    account_ids: tuple[str, ...], attempt_id: str,
+    expected_config: dict[str, Any], fixed_market_parent_plan: object,
+    fixed_market_execution_plan: object,
+    expected_market_start: datetime,
+    projection_certifier: Callable[[], str],
+    writer_factory: Callable[..., ArteJournalWriter],
+    batch_size: int = 512, queue_capacity: int = 8,
+) -> FixedJournalAssembly:
+    """Publish a new fenced context and assemble V4 with no local persistence.
+
+    The caller owns four distinct clients and their shared Keeper session.
+    Do not retry a failed or ambiguous publication with the same run ID; cold
+    verification must resolve its Keeper operation before any continuation.
+    """
+    from src.backend.backtest_fixed_market_authority import _validate_plans
+
+    dispatch = getattr(context_client, "typed_insert_dispatch", None)
+    runner_dispatch = getattr(writer_client, "typed_insert_dispatch", None)
+    if (len({id(context_client), id(read_client), id(writer_client),
+             id(terminal_client)}) != 4
+            or getattr(context_client, "typed_insert_strict", False) is not True
+            or getattr(writer_client, "typed_insert_strict", False) is not True
+            or not isinstance(dispatch, TypedInsertDispatch)
+            or not isinstance(runner_dispatch, TypedInsertDispatch)
+            or dispatch.keeper is not runner_dispatch.keeper
+            or not callable(projection_certifier)
+            or not callable(writer_factory)):
+        raise ValueError("V4 launch lacks distinct strict shared-Keeper authorities")
+    run_id = _validate_local_context(run, config, account_ids)
+    _validate_plans(fixed_market_parent_plan, fixed_market_execution_plan)
+    if (dict(expected_config.get("strategy") or {}).get("strategy_number") != 1
+            or run["evaluation_interval_ms"] != 100
+            or run["market_plan_token"] != fixed_market_parent_plan.token
+            or expected_market_start.tzinfo is None):
+        raise ValueError("V4 launch requires pinned Strategy 1 at 100 ms")
+    UUID(attempt_id)
+    if not 1 <= batch_size <= 4096 or not 1 <= queue_capacity <= 64:
+        raise ValueError("V4 launch journal bounds are invalid")
+    # Every reversible check runs before the first Keeper gate or ClickHouse
+    # INSERT. Once publication starts, failures remain cold-recovery work.
+    fixed_backtest_v2_preflight(context_client)
+    read_v3_preflight(read_client)
+    terminal_v3_preflight(terminal_client)
+    _v4_preflight(writer_client)
+    certificate = projection_certifier()
+    if (not isinstance(certificate, str)
+            or re.fullmatch(r"[0-9a-f]{64}", certificate) is None):
+        raise RuntimeError("V4 launch projector cannot certify emitted families")
+    publish_fixed_run_context(
+        context_client, read_client, terminal_client, dispatch,
+        run=run, config=config, account_ids=account_ids)
+    token = prepare_fixed_v4_journal_token(
+        read_client, writer_client, terminal_client,
+        run_id=run_id, account_ids=account_ids,
+        configuration_hash=run["configuration_hash"],
+        market_plan_token=run["market_plan_token"],
+        projection_certifier=lambda: certificate)
+    return assemble_fixed_v4_journal(
+        read_client, writer_client, terminal_client, token,
+        attempt_id=attempt_id, expected_config=expected_config,
+        fixed_market_parent_plan=fixed_market_parent_plan,
+        fixed_market_execution_plan=fixed_market_execution_plan,
+        expected_market_start=expected_market_start,
+        writer_factory=writer_factory, batch_size=batch_size,
+        queue_capacity=queue_capacity)
