@@ -134,8 +134,11 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
                            ({**coverage, "backtest_session": "2026-08-18"},),
                            "v7-token", True)
     client = Client()
+    observed_seconds = []
     cache = FixedV7Cache(market_plan=market, seed_plan=v7,
-                         session=date(2026, 8, 18), client=client)
+                         session=date(2026, 8, 18), client=client,
+                         observe_completed_second=lambda ticker, row, boundary:
+                         observed_seconds.append((ticker, row["bucket_index"], boundary)))
     assert not cache.has_stream("TEST")
     before = datetime(2026, 8, 18, 4, 5, 0, 100000, tzinfo=NY)
     from src.backend import experimental_structure_book
@@ -149,11 +152,14 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
     assert cache._streams["TEST"].engine.bars_processed == 0
     completed = datetime(2026, 8, 18, 4, 5, 1, tzinfo=NY)
     cache.advance_seconds([bar], at=completed)
+    assert observed_seconds == [("TEST", 14700, 301_000)]
     assert cache.context("TEST", as_of=completed, price=10.0)["qmd_structure_session_high"] == 10.01
     assert cache._streams["TEST"].engine.bars_processed == 1
     assert all(sql.startswith("SELECT") for sql in client.queries)
     later = datetime(2026, 8, 18, 4, 5, 2, tzinfo=NY)
     cache.strategy_one_levels("TEST", as_of=later)
+    assert observed_seconds == [("TEST", 14700, 301_000),
+                                ("TEST", 14701, 302_000)]
     assert cache._streams["TEST"].engine.bars_processed == 2
     assert any("bucket_index>=14701" in sql and "bucket_index<14702" in sql
                for sql in client.queries)

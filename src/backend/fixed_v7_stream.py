@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from math import prod
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from src.backend.swing_book_source import session_bounds
 from src.backend.backtest_market_data import (
@@ -115,12 +115,16 @@ class FixedV7Cache:
     """Lazily catch up only ticker books that reach strategy evaluation."""
 
     def __init__(self, *, market_plan: CertifiedMarketDayPlan,
-                 seed_plan: CertifiedSeedPlan, session: date, client: Any) -> None:
+                 seed_plan: CertifiedSeedPlan, session: date, client: Any,
+                 observe_completed_second: Callable[[str, Mapping[str, Any], int], None] | None = None) -> None:
         if session.isoformat() not in market_plan.sessions or seed_plan.build_id != market_plan.build_id:
             raise ValueError("V7 seed and bar plans do not share the requested session/build")
         self.market_plan = market_plan
         self.session = session
         self.client = client
+        if observe_completed_second is not None and not callable(observe_completed_second):
+            raise TypeError("V7 completed-second observer must be callable")
+        self._observe_completed_second = observe_completed_second
         self._coverage = {row["ticker"]: row for row in seed_plan.units
                           if row["backtest_session"] == session.isoformat()}
         expected_tickers = {unit.ticker for unit in market_plan.units
@@ -172,6 +176,8 @@ class FixedV7Cache:
             raise ValueError("V7 completed second duplicated or moved backward")
         if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
             stream.update_second(row, at=at)
+        if self._observe_completed_second is not None:
+            self._observe_completed_second(ticker, row, boundary_ms)
         self._last_loaded_second_ms[ticker] = boundary_ms
 
     def advance_seconds(self, rows: Sequence[Mapping[str, Any]], *, at: datetime) -> None:
@@ -202,12 +208,15 @@ class FixedV7Cache:
                 after_boundary_ms=after_ms, through_boundary_ms=completed_ms,
                 client=self.client,
             ):
+                if str(row.get("ticker") or "") != ticker:
+                    raise ValueError("V7 catch-up changed ticker scope")
+                second_ms = ((int(row["bucket_index"]) + 1) * 1_000
+                             - SESSION_OPEN_OFFSET_MS)
+                bar_at = market_day_boundary(self.session, second_ms)
                 if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
-                    bar_at = market_day_boundary(
-                        self.session,
-                        (int(row["bucket_index"]) + 1) * 1_000 - SESSION_OPEN_OFFSET_MS,
-                    )
                     stream.update_second(row, at=bar_at)
+                if self._observe_completed_second is not None:
+                    self._observe_completed_second(ticker, row, second_ms)
         self._streams[ticker] = stream
         self._last_loaded_second_ms[ticker] = completed_ms
         return stream
