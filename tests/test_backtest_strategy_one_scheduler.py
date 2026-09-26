@@ -13,15 +13,23 @@ from src.backend.backtest_liquidity_price import PriceLevelPlan, PriceLevelUnit
 DAY = "2026-08-18"
 
 
-def candidate(ticker, boundary):
+def shared_row(ticker, boundary):
     return {"session_date": DAY, "ticker": ticker, "boundary_ms": boundary,
-            "resolution_ms": 100, "price_valid": 1,
-            "indicator_resolution_ms": 100}
+            "resolution_ms": 100, "close_int": 100_000,
+            "low_int": 99_000, "price_valid": 1, "extremes_valid": 1,
+            "bid_int": 99_900, "ask_int": 100_100, "quote_valid": 1,
+            "quote_timestamp_us": 1, "execution_vwap": 10.,
+            "cumulative_volume": 25_000., "cumulative_notional": 250_000.,
+            "indicator_resolution_ms": 100, "macd_line": .2,
+            "macd_signal": .1, "previous_close": 9.}
+
+
+def candidate(ticker, boundary):
+    return {**shared_row(ticker, boundary), "trade_count": 3}
 
 
 def group(ticker, boundary):
-    row = {"session_date": DAY, "ticker": ticker,
-           "boundary_ms": boundary, "resolution_ms": 100}
+    row = {**shared_row(ticker, boundary), "trade_count": 3}
     return boundary, {100: row}
 
 
@@ -167,7 +175,7 @@ def test_active_candidate_rejects_any_shared_entry_evidence_divergence(
     clock.close()
 
 
-def test_active_candidate_rejects_trade_count_alias_divergence():
+def test_active_candidate_rejects_trade_count_divergence():
     def source(ticker, after):
         boundary, rows = group(ticker, 300)
         rows[100]["trade_count"] = 3
@@ -176,7 +184,29 @@ def test_active_candidate_rejects_trade_count_alias_divergence():
     clock = StrategyOneBoundaryScheduler(
         session_date=DAY,
         candidate_rows=iter((candidate("AAA", 100),
-                             {**candidate("AAA", 300), "volume_trade_count": 4})),
+                             {**candidate("AAA", 300), "trade_count": 4})),
+        active_source=source)
+    clock.pop_next()
+    clock.activate("AAA")
+    with pytest.raises(ValueError, match="market rows disagree"):
+        clock.pop_next()
+    clock.close()
+
+
+@pytest.mark.parametrize("missing_from", ["active", "candidate"])
+def test_active_candidate_rejects_missing_shared_evidence(missing_from):
+    def source(ticker, after):
+        boundary, rows = group(ticker, 300)
+        if missing_from == "active":
+            del rows[100]["quote_timestamp_us"]
+        return iter(((boundary, rows),))
+
+    later = candidate("AAA", 300)
+    if missing_from == "candidate":
+        del later["quote_timestamp_us"]
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY,
+        candidate_rows=iter((candidate("AAA", 100), later)),
         active_source=source)
     clock.pop_next()
     clock.activate("AAA")

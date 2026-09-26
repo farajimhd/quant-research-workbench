@@ -31,6 +31,7 @@ _SHARED_CANDIDATE_FIELDS = (
     "close_int", "low_int", "price_valid", "extremes_valid",
     "bid_int", "ask_int", "quote_valid", "quote_timestamp_us",
     "execution_vwap", "cumulative_volume", "cumulative_notional",
+    "trade_count",
     "indicator_resolution_ms", "macd_line", "macd_signal",
     "previous_close",
 )
@@ -220,12 +221,9 @@ class StrategyOneBoundaryScheduler:
                 # liquidity row. The broker must see its quote before OMS
                 # evaluates an order at this same boundary.
                 by_resolution[100] = row
-            elif any(key in existing and key in row
-                     and existing[key] != row[key]
-                     for key in _SHARED_CANDIDATE_FIELDS) or (
-                         "trade_count" in existing
-                         and "volume_trade_count" in row
-                         and existing["trade_count"] != row["volume_trade_count"]):
+            elif any((key in existing) != (key in row)
+                     or (key in existing and existing[key] != row[key])
+                     for key in _SHARED_CANDIDATE_FIELDS):
                 raise ValueError("Active and candidate market rows disagree at boundary")
         return StrategyOneBoundaryWork(
             boundary, tuple(sorted(broker.items())), tuple(candidates))
