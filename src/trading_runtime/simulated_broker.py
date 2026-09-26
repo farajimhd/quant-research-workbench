@@ -101,6 +101,20 @@ class SimulationConfig:
     new_order_activation_delay_ms: float = 0.0
 
     def __post_init__(self) -> None:
+        # Callers may pass an integer initial balance (for example 100_000).
+        # Normalize it once before any snapshot: a positive int otherwise
+        # survives max(0.0, cash) and violates the typed Float64 journal.
+        cash = self.initial_cash
+        if type(cash) not in (int, float):
+            raise ValueError("initial_cash must be a finite Float64 balance")
+        try:
+            normalized_cash = float(cash)
+        except OverflowError as exc:
+            raise ValueError("initial_cash exceeds Float64") from exc
+        if (not isfinite(normalized_cash)
+                or (type(cash) is int and int(normalized_cash) != cash)):
+            raise ValueError("initial_cash must be exactly representable as Float64")
+        object.__setattr__(self, "initial_cash", normalized_cash)
         if (not isfinite(self.new_order_activation_delay_ms)
                 or not 0 <= self.new_order_activation_delay_ms <= 60_000):
             raise ValueError('New order activation delay must be finite and in [0,60000] ms')
