@@ -2,6 +2,7 @@ from research.rl_trading.v1.universe import slots, volume_order
 from research.rl_trading.v1.phase3_search import SearchConfig, advance, initial_node, with_id
 from research.rl_trading.v1.market_values import MarketValues
 import polars as pl
+import pytest
 
 
 def _row(ticker, volume, time_us, price=10.):
@@ -70,3 +71,13 @@ def test_phase3_subset_preserves_full_market_search_with_held_outside_top_n():
     filtered,filtered_count = market.at_subset(1,2,set(),{'B','C','D'})
     assert set(filtered['ticker']) == {'B','C'}
     assert filtered_count == 3
+    market.holding.frame = market.holding.frame.with_columns(
+        pl.when(pl.col('ticker') == 'D').then(-4.656612873077393e-10)
+        .otherwise(pl.col('volume_60s')).alias('volume_60s'))
+    rounded,_ = market.at_subset(1,4,set())
+    assert rounded.filter(pl.col('ticker') == 'D')['volume_60s'].item() == 0
+    market.holding.frame = market.holding.frame.with_columns(
+        pl.when(pl.col('ticker') == 'D').then(-.001)
+        .otherwise(pl.col('volume_60s')).alias('volume_60s'))
+    with pytest.raises(ValueError,match='finite completed 60s volume'):
+        market.at_subset(1,4,set())

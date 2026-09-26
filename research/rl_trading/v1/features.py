@@ -47,7 +47,10 @@ def _carry(indices: np.ndarray, values: np.ndarray, default: float = 0.) -> tupl
 def _rolling(values: np.ndarray, window: int) -> np.ndarray:
     cumulative = np.concatenate(([0.], np.cumsum(values, dtype=np.float64)))
     index = np.arange(len(values))
-    return cumulative[index+1]-cumulative[np.maximum(0,index-window+1)]
+    result = cumulative[index+1]-cumulative[np.maximum(0,index-window+1)]
+    if not np.isfinite(result).all() or (result < -1e-6).any():
+        raise ValueError('Invalid completed rolling activity')
+    return np.maximum(result,0.)
 
 
 def _v7_features(seed: dict, splits: list[dict], bars: pl.DataFrame,

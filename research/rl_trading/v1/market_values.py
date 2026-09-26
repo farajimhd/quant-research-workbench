@@ -136,8 +136,12 @@ class MarketValues:
             if longs.is_empty():
                 raise ValueError('No V7-eligible market rows')
         volumes = longs['volume_60s'].to_numpy()
-        if not np.isfinite(volumes).all() or (volumes < 0).any():
+        if not np.isfinite(volumes).all() or (volumes < -1e-6).any():
             raise ValueError('Top-N selection requires finite completed 60s volume')
+        # Rolling floating sums can leave sub-microshare negative cancellation
+        # after a 60-second window of zero activity. Treat only that residue as 0.
+        if (volumes < 0).any():
+            longs = longs.with_columns(pl.col('volume_60s').clip(lower_bound=0))
         held = set(held_tickers)
         if not held <= set(longs['ticker'].to_list()):
             raise ValueError('Frontier holding is absent from the market')
