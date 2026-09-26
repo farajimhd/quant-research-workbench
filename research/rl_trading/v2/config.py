@@ -2,7 +2,7 @@
 from dataclasses import asdict, dataclass
 import math
 
-VERSION = 'rl-trading-v2-ppo-1'
+VERSION = 'rl-trading-v2-ppo-brackets-2'
 # Upper bounds are inclusive, except the first band which excludes $1.
 SHARE_CAPS = ((1., 40000), (5., 35000), (10., 30000), (20., 25000),
               (50., 20000), (None, 15000))
@@ -27,8 +27,15 @@ class Config:
     min_trades_60s: int = 11
     max_price_age_seconds: int = 5
     liquidation_buffer_seconds: int = 120
+    commission_model: str = 'ibkr_us_fixed_20260926'
+    extra_venue_fee_per_share: float = 0.
+    # Broad parameterization bounds, not preferred durations or exit labels.
+    minimum_stop_ratio: float = .001
+    maximum_stop_ratio: float = .5
+    minimum_target_ratio: float = .001
+    maximum_target_ratio: float = 2.
     # Uncalibrated price-only execution assumptions; replace with measured values.
-    fee_ratio: float = .0001
+    fee_ratio: float = 0.
     fee_per_share: float = 0.
     minimum_fee: float = 0.
     base_slippage_ratio: float = .0005  # Includes assumed half-spread; no extra spread fee.
@@ -38,6 +45,10 @@ class Config:
 
     def __post_init__(self):
         for name, value in asdict(self).items():
+            if name == 'commission_model':
+                if value not in ('research','ibkr_us_fixed_20260926'):
+                    raise ValueError('Unknown commission model')
+                continue
             if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
                 raise ValueError(f'Invalid configuration: {name}')
         for name in ('entry_rank', 'hold_rank', 'history_seconds', 'min_trades_60s',
@@ -49,8 +60,18 @@ class Config:
                 or not 0 < self.max_volume_participation <= 1
                 or self.fee_ratio >= 1 or self.base_slippage_ratio >= 1):
             raise ValueError('Invalid account, universe, or execution configuration')
+        if not (0 < self.minimum_stop_ratio < self.maximum_stop_ratio < 1
+                and 0 < self.minimum_target_ratio < self.maximum_target_ratio):
+            raise ValueError('Invalid learned bracket distance bounds')
+        if self.commission_model != 'research' and any((self.fee_ratio,self.fee_per_share,self.minimum_fee)):
+            raise ValueError('Generic fee parameters require commission_model=research; IBKR fees are pinned')
 
     def manifest(self):
+        from research.rl_trading.v2.fees import SCHEDULE
         return dict(version=VERSION, **asdict(self), share_caps=SHARE_CAPS,
+                    fee_schedule=SCHEDULE if self.commission_model != 'research' else None,
+                    bracket_trigger='completed_second_close_then_next_second_IOC',
+                    bracket_update='sample_on_entry_only; adds_preserve_existing_prices',
+                    duration_preference='none; gamma=1; session_only',
                     execution_assumptions='uncalibrated_price_only', latency_seconds=1,
                     order_type='next_second_IOC', reward='delta_equity_over_initial_equity')

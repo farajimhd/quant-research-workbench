@@ -21,6 +21,7 @@ from research.mlops.env import load_env_files
 from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.rl_trading.v2.data import ARRAYS, DATA_VERSION, MarketSession
 from research.rl_trading.v2.io import output_root, read, write, code_identity
+from research.rl_trading.v2.market_status import StatusSidecar
 
 
 def bank_hash(array):
@@ -59,6 +60,8 @@ def main(argv=None):
     p.add_argument('--ledger',type=Path,required=True)
     p.add_argument('--date',type=date.fromisoformat,required=True)
     p.add_argument('--query-threads',type=int,default=2)
+    p.add_argument('--status-sidecar',type=Path,required=True,
+                   help='Certified canonical-ingestion halt/resumption sidecar; never inferred from bars')
     args = p.parse_args(argv)
     if args.query_threads < 1:
         p.error('query threads must be positive')
@@ -72,6 +75,8 @@ def main(argv=None):
         listings,population = arte_source.population(client,source,args.date)
         if len(listings) != int(population['certificate']['tradable_count']):
             raise ValueError('V2 requires the entire certified tradable population, not a build subset')
+        status = StatusSidecar(args.status_sidecar,day=str(args.date),listings=listings,
+                               first_us=bounds(args.date)[0],seconds=SECONDS)
         missing = missing_seeds(client,args.date,[x['ticker'] for x in listings])
         if missing:
             raise ValueError(f'Missing certified V7 for {len(missing)} listings; no silent universe exclusion: {missing[:12]}')
@@ -80,6 +85,7 @@ def main(argv=None):
             source_units=source['units'][str(args.date)],feature_names=list(FEATURE_NAMES),
             clock='completed_second',step_us=1000000,first_us=bounds(args.date)[0],rows=SECONDS,
             segment=False,teacher_dependency=False,source_manifest_hash=file_hash(args.manifest),
+            market_status=status.certificate,
             code=code_identity())
         plan['plan_hash'] = digest(plan)
         root = runtime/'market'/str(args.date)/plan['plan_hash'][:20]
@@ -93,7 +99,7 @@ def main(argv=None):
             arrays = {}
             for name in ARRAYS:
                 shape = (len(listings),SECONDS,len(FEATURE_NAMES)) if name == 'features' else (len(listings),SECONDS)
-                dtype = np.float32 if name == 'features' else np.bool_ if name == 'fresh' else np.float64
+                dtype = np.float32 if name == 'features' else np.bool_ if name == 'fresh' else np.uint8 if name in ('status','execution_status') else np.float64
                 path = root/(name+'.npy')
                 arrays[name] = np.load(path,mmap_mode='r+') if path.exists() else np.lib.format.open_memmap(path,mode='w+',dtype=dtype,shape=shape)
                 if arrays[name].shape != shape or arrays[name].dtype != dtype:
@@ -113,6 +119,8 @@ def main(argv=None):
                     write(root/'progress.json',dict(**counts,active=1,queued=len(listings)-index-1,ticker=listing['ticker']))
                     try:
                         values,reference = extract(client,source,args.date,listing)
+                        values['status'] = status.states(listing['listing_id'])
+                        values['execution_status'] = status.states(listing['listing_id'],execution=True)
                         for name,value in values.items():
                             arrays[name][index] = value
                             arrays[name].flush()

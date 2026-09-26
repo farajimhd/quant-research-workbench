@@ -183,7 +183,7 @@ def _train_locked(args, config, root):
         print(f'Checkpoint already reached iteration {start}',flush=True)
         return 0
     print(f'V2 PPO device={args.device} train_sessions={len(sessions)} validation_sessions={len(validation)} root={root}',flush=True)
-    print('Costs/slippage are uncalibrated price-only assumptions: '+json.dumps(config.manifest()),flush=True)
+    print('Execution contract (IBKR fee scenario; slippage remains uncalibrated): '+json.dumps(config.manifest()),flush=True)
     try:
         for iteration in range(start+1,args.iterations+1):
             if (root/'STOP').exists():
@@ -234,7 +234,7 @@ def _train_locked(args, config, root):
                     batch = collate([x['obs'] for x in batch_rows],args.device)
                     width = batch['valid'].shape[1]
                     mode = np.zeros((len(batch_rows),width),dtype=np.int64)
-                    size = np.full((len(batch_rows),width),.5,dtype=np.float32)
+                    size = np.full((len(batch_rows),width,3),.5,dtype=np.float32)
                     for i,row in enumerate(batch_rows):
                         mode[i,:len(row['modes'])] = row['modes']
                         size[i,:len(row['sizes'])] = row['sizes']

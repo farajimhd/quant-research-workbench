@@ -20,7 +20,9 @@ def market(n=3, seconds=12, day='2026-08-20', prices=None):
     arrays = dict(features=np.zeros((n,seconds,3),dtype=np.float32),prices=price,
         volume=np.full((n,seconds),100000.,dtype=np.float64),
         volume_60s=np.broadcast_to(np.arange(n,0,-1)[:,None]*100000.,(n,seconds)).copy(),
-        trades_60s=np.full((n,seconds),100.),fresh=np.ones((n,seconds),dtype=bool))
+        trades_60s=np.full((n,seconds),100.),fresh=np.ones((n,seconds),dtype=bool),
+        status=np.ones((n,seconds),dtype=np.uint8),
+        execution_status=np.ones((n,seconds),dtype=np.uint8))
     arrays['features'][:,:,0] = np.log(price)
     plan = dict(version=DATA_VERSION,date=day,clock='completed_second',step_us=1000000,
         first_us=bounds(date.fromisoformat(day))[0],rows=seconds,segment=True,
@@ -32,6 +34,7 @@ def market(n=3, seconds=12, day='2026-08-20', prices=None):
 
 def config(**overrides):
     return replace(Config(),entry_rank=overrides.pop('entry_rank',2),hold_rank=overrides.pop('hold_rank',3),
+        commission_model=overrides.pop('commission_model','research'),
         history_seconds=4,liquidation_buffer_seconds=2,min_volume_60s=0,min_trades_60s=0,
         fee_ratio=overrides.pop('fee_ratio',0),base_slippage_ratio=overrides.pop('base_slippage_ratio',0),
         impact_ratio=overrides.pop('impact_ratio',0),volatility_slippage_ratio=0,
@@ -41,7 +44,8 @@ def config(**overrides):
 def act(env, ticker=None, mode=0, size=1.):
     obs = env.observe()
     modes = np.zeros(len(obs['ids']),dtype=np.int64)
-    sizes = np.full(len(modes),size)
+    sizes = np.full((len(modes),3),.5)
+    sizes[:,0] = size
     if ticker is not None:
         modes[list(obs['ids']).index(ticker)] = mode
     return env.step(modes,sizes)
@@ -121,7 +125,7 @@ def test_share_cap_and_consecutive_impact():
 
 def test_budget_and_percentage_cap_joint_demands():
     env = TradingEnv(market(),config(max_ticker_weight=.6))
-    env.step(np.array([1,1,0]),np.ones(3))
+    env.step(np.array([1,1,0]),np.ones((3,3)))
     assert env.cash >= 0
     assert np.all(env.quantity*5/env.equity <= .6)
     assert env.quantity[:2].tolist() == [1000,1000]
@@ -253,7 +257,7 @@ def test_cpu_training_resume_and_heldout_cli(tmp_path,monkeypatch):
     with pytest.raises(ValueError,match='strictly later'):
         evaluate.main(['--run',str(run),'--test-sessions',str(val_root),'--allow-segment'])
     with pytest.raises(ValueError,match='Resume contract'):
-        train.main(common+['--run-name','resume','--iterations','3','--resume','--fee-ratio','.02'])
+        train.main(common+['--run-name','resume','--iterations','3','--resume','--extra-venue-fee-per-share','.02'])
     assert read(run/'status.json')['status'] == 'complete'
 
 
@@ -310,7 +314,20 @@ def test_direct_builder_restart_and_certificate_without_teacher(tmp_path,monkeyp
                   for name in ARRAYS}
         return arrays,{'certificate':'test'}
     monkeypatch.setattr(build_data,'extract',extraction)
-    args = ['--manifest',str(manifest),'--ledger',str(tmp_path/'unused.db'),'--date','2026-08-20']
+    sidecar = tmp_path/'status'
+    from research.rl_trading.v2.market_status import VERSION as STATUS_VERSION
+    sidecar.mkdir()
+    import json
+    start = bounds(date(2026,8,20))[0]
+    (sidecar/'events.jsonl').write_text('\n'.join(json.dumps(dict(listing_id=x['listing_id'],
+        effective_us=start,available_us=start,state=1)) for x in listings),encoding='utf-8')
+    write(sidecar/'complete.json',dict(version=STATUS_VERSION,state='complete',date='2026-08-20',
+        authority_table='market_sip_compact.events_2026',producer_owner='canonical_ingestion',
+        source_certificate_hash='test-source',first_us=start,end_us=start+(seconds-1)*1000000,
+        listing_ids=[x['listing_id'] for x in listings],clock='provider_effective_and_first_available',
+        event_count=3,events_hash=file_hash(sidecar/'events.jsonl')))
+    args = ['--manifest',str(manifest),'--ledger',str(tmp_path/'unused.db'),'--date','2026-08-20',
+            '--status-sidecar',str(sidecar)]
     assert build_data.main(args) == 0
     assert calls == [x['ticker'] for x in listings]
     assert build_data.main(args) == 0

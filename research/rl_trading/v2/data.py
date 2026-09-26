@@ -6,8 +6,8 @@ import numpy as np
 from research.rl_trading.v1.common import bounds, digest, file_hash
 from research.rl_trading.v2.io import read
 
-DATA_VERSION = 'rl-trading-v2-market-1'
-ARRAYS = ('features', 'prices', 'volume', 'volume_60s', 'trades_60s', 'fresh')
+DATA_VERSION = 'rl-trading-v2-market-status-2'
+ARRAYS = ('features', 'prices', 'volume', 'volume_60s', 'trades_60s', 'fresh', 'status', 'execution_status')
 
 
 class MarketSession:
@@ -34,6 +34,9 @@ class MarketSession:
                     raise ValueError('Fresh observations require a positive price')
         if arrays['fresh'].dtype != np.bool_:
             raise ValueError('Fresh price contract is invalid')
+        for name in ('status','execution_status'):
+            if arrays[name].dtype != np.uint8 or np.any(arrays[name] > 2):
+                raise ValueError('Market status must be UNKNOWN=0, TRADING=1, or HALTED=2')
         self.lexical = np.argsort(np.asarray(self.ids), kind='stable')
 
     @classmethod
@@ -50,6 +53,8 @@ class MarketSession:
         if plan['segment'] and not allow_segment:
             raise ValueError('Segment data requires explicit --allow-segment')
         if not plan['segment']:
+            if not plan.get('market_status',{}).get('source_certificate_hash'):
+                raise ValueError('Full sessions require certified causal market status')
             left, right = bounds(date.fromisoformat(plan['date']))
             if plan['first_us'] != left or plan['rows'] != (right-left)//1000000+1:
                 raise ValueError('Full session must cover 04:00 through 20:00 ET')
@@ -70,6 +75,7 @@ class MarketSession:
         for lag in range(1, min(second, config.max_price_age_seconds)+1):
             observed |= a['fresh'][:,second-lag]
         eligible = (observed & (a['prices'][:,second] > 0)
+                    & (a['status'][:,second] == 1)
                     & (a['volume_60s'][:,second] >= config.min_volume_60s)
                     & (a['trades_60s'][:,second] >= config.min_trades_60s))
         indices = self.lexical[eligible[self.lexical]]

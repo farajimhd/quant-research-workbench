@@ -37,7 +37,7 @@ class PortfolioPolicy(nn.Module):
         layer = nn.TransformerEncoderLayer(width,heads,width*2,dropout=0.,batch_first=True)
         self.market = nn.TransformerEncoder(layer,1,enable_nested_tensor=False)
         self.actor = nn.Linear(width,4)
-        self.size = nn.Linear(width,2)
+        self.size = nn.Linear(width,6)  # allocation, stop distance, target distance
         self.critic = nn.Sequential(nn.Linear(width,width),nn.Tanh(),nn.Linear(width,1))
 
     def forward(self, batch):
@@ -50,7 +50,7 @@ class PortfolioPolicy(nn.Module):
         mask = torch.cat((torch.zeros((b,1),dtype=torch.bool,device=x.device),~batch['valid']),dim=1)
         context = self.market(torch.cat((account,encoded),dim=1),src_key_padding_mask=mask)
         logits = self.actor(context[:,1:]).masked_fill(~batch['action_mask'],-1e9)
-        parameters = torch.nn.functional.softplus(self.size(context[:,1:]))+1.01
+        parameters = torch.nn.functional.softplus(self.size(context[:,1:])).reshape(b,n,3,2)+1.01
         return Categorical(logits=logits), Beta(parameters[...,0],parameters[...,1]), self.critic(context[:,0]).squeeze(-1)
 
     def action(self, batch, modes=None, sizes=None, *, deterministic=False):
@@ -61,6 +61,8 @@ class PortfolioPolicy(nn.Module):
             sizes = sizing.mean if deterministic else sizing.sample()
         sizes = sizes.clamp(1e-6,1-1e-6)
         active_size = ((modes == 1) | (modes == 2)) & batch['valid']
-        logprob = (category.log_prob(modes)*batch['valid'] + sizing.log_prob(sizes)*active_size).sum(dim=1)
-        entropy = (category.entropy()*batch['valid']+sizing.entropy()*active_size).sum(dim=1)
+        entry = (modes == 1) & (batch['position'][...,0] == 0) & batch['valid']
+        active = torch.stack((active_size,entry,entry),dim=-1)
+        logprob = (category.log_prob(modes)*batch['valid'] + (sizing.log_prob(sizes)*active).sum(dim=-1)).sum(dim=1)
+        entropy = (category.entropy()*batch['valid']+(sizing.entropy()*active).sum(dim=-1)).sum(dim=1)
         return modes,sizes,logprob,entropy,value

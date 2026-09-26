@@ -35,7 +35,8 @@ capacity ratios (shares/recent volume and equity/recent dollar volume).
 ## Sizing, caps, and action probabilities
 
 Each listing has categorical probabilities for hold/buy/reduce/close and a Beta
-distribution for continuous size. A buy proposes a fraction of remaining
+distribution for continuous size, plus two Beta distributions for stop and
+profit-target distances on new entries. A buy proposes a fraction of remaining
 per-ticker allocation capacity; a reduction proposes a fraction of held shares.
 Joint buy demands are proportionally scaled to available cash. Sell proceeds
 are not assumed available at decision time. Whole-share execution rounds down.
@@ -62,11 +63,20 @@ probability ratio.
 ## Costs, slippage, latency, and liquidation
 
 Ratios are decimal fractions: `0.001 = 0.1% = 10 basis points`.
-Defaults are **uncalibrated price-only research assumptions**, not broker quotes:
+The default commission profile is IBKR Pro Fixed US SmartRouting, pinned to
+2026-09-26: $0.005/share, $1 minimum, capped at 1% of notional (the cap overrides
+the minimum). Add SEC sell fees of 0.0000206 of notional, FINRA TAF sell fees of
+$0.000195/share capped at $9.79 per simulated execution, and CAT $0.000003/share
+on both sides. Source: [IBKR published schedule](https://www.interactivebrokers.com/en/pricing/commissions-stocks.php).
+This is a current-cost replay scenario, not historical invoice reconstruction.
+Components are unrounded; invoice aggregation, taxes and routing-specific extras
+are not reconstructed. `--extra-venue-fee-per-share` supports explicit stress costs.
+The generic fee options below require `--commission-model research` and cannot
+silently add to the IBKR profile. Slippage remains **uncalibrated**:
 
 | Setting | Default | Meaning |
 |---|---:|---|
-| `--fee-ratio` | 0.0001 | 1 bp of fill notional, each side |
+| `--fee-ratio` | 0 | Research-only notional fee, each side |
 | `--fee-per-share` | 0 | Optional additional per-share fee |
 | `--minimum-fee` | 0 | Optional per-filled-order fee floor |
 | `--base-slippage-ratio` | 0.0005 | 5 bps each side, including assumed half-spread |
@@ -81,7 +91,7 @@ participation = (own filled shares in prior 60 seconds + q) / max(completed trai
 slippage_ratio = base + impact_coefficient * sqrt(participation) + volatility_coefficient * recent_volatility
 buy_price  = P * (1 + slippage_ratio)
 sell_price = P * (1 - slippage_ratio)
-fee = max(minimum_fee, q * fill_price * fee_ratio + q * fee_per_share)
+research_fee = max(minimum_fee, q * fill_price * fee_ratio + q * fee_per_share)
 ```
 
 An order chosen after second t executes against a fresh completed price at t+1;
@@ -109,6 +119,38 @@ rollout chunks bootstrap the critic and do not reset account state. Both trainin
 and validation report fees, slippage dollars/ratios, partial/unfilled orders,
 forced fills, turnover notional, net return, and drawdown.
 
+## Learned exits and halt data
+
+On entry the policy samples stop distance (default range 0.1%–50%) and target
+distance (0.1%–200%) relative to actual entry fill. These configurable bounds
+parameterize the action; they are not trained optimal settings. Adding shares
+preserves the original prices and entry clock. Completed one-second closes
+trigger a sticky exit, attempted on the next second with ordinary caps, costs,
+and partial fills. These are sampled-price triggers, not broker-native stop or
+limit orders; intrasecond crossings are not modeled. Gaps can exceed the stop
+and target-triggered sales may fill below the target. PPO learns both distances
+from net account rewards. No holding-age penalty is applied; gamma remains 1.
+A smaller gamma discounts future rewards but cannot enforce a maximum hold.
+
+Market datasets now require `--status-sidecar`, a certified ingestion-owned
+`ingestion-market-status-asof-v1` directory with `complete.json` and `events.jsonl`.
+The certificate must cover the exact session/population, identify the canonical
+SIP table and source certificate, and hash/count its events. Each event contains
+listing_id, effective_us, available_us and state (0 unknown, 1 trading, 2 halted).
+Policy observations use first-available time; execution uses effective time so
+delayed notifications cannot create impossible fills. Only the former enters
+features. Unknown status blocks new exposure; halted markets cannot fill orders.
+Time since an observed halt and existing price/liquidity features support learning
+avoidance, but future halts are not predictable with certainty.
+
+**Upstream dependency:** this change implements and tests the sidecar consumer,
+not its canonical-ingestion producer. Certified historical status data must be
+provided before building real V2 sessions; old datasets/checkpoints are rejected.
+Missing trades are never treated as evidence of a halt or permission to trade.
+A halt lasting through the session can prevent liquidation; such an episode
+fails explicitly rather than pretending the account is flat. Production handling
+of that residual exposure is outside this research implementation.
+
 ## Laptop commands
 
 Use the configured Python environment with NumPy, Polars, PyTorch, and repository
@@ -120,7 +162,7 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 $py = 'C:\Users\g835l\miniconda3\envs\ml4t\python.exe'
 # These extraction commands query the configured ARTE endpoint: do not run them
 # against the busy workstation during V1 training. Use certified local sessions.
-& $py -B research/rl_trading/v2/build_data.py --date 2026-08-20 --manifest <local-build-manifest> --ledger <local-build-ledger>
+& $py -B research/rl_trading/v2/build_data.py --date 2026-08-20 --manifest <local-build-manifest> --ledger <local-build-ledger> --status-sidecar <certified-local-status-directory>
 & $py -B research/rl_trading/v2/run_train.py --train-sessions <earlier-v2-session-roots> --val-sessions <later-v2-session-roots> --run-name ppo-v2-seed17 --device cpu
 & $py -B research/rl_trading/v2/evaluate.py --run <v2-run-root> --test-sessions <strictly-later-v2-session-roots> --device cpu
 ```
