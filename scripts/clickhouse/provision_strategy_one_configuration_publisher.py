@@ -1,8 +1,9 @@
 """Provision the sole publisher of immutable Strategy 1 configuration rows.
 
 Dry-run by default. The private credential stays on the managed workstation.
-The principal has SELECT/INSERT on exactly the two typed configuration tables;
-it cannot modify bars, indicators, liquidity, journals, or other strategies.
+The principal has SELECT/INSERT on exactly the two typed configuration tables
+and SELECT on four system layout catalogs. It cannot modify bars, indicators,
+liquidity, journals, or other strategies.
 """
 from __future__ import annotations
 
@@ -34,10 +35,13 @@ PRINCIPAL = "strategy_one_configuration_publisher"
 SECRET_PATH = SECRET_ROOT / "strategy_one_configuration_publisher.env"
 WORKSTATION_IPV4 = "192.168.1.218"
 _TABLES = (NODE_TABLE, RELEASE_TABLE)
-_GRANTS = frozenset((privilege, table) for privilege in ("SELECT", "INSERT")
-                    for table in _TABLES)
+_CATALOGS = ("system.storage_policies", "system.tables",
+             "system.columns", "system.parts")
+_GRANTS = (frozenset((privilege, table)
+                     for privilege in ("SELECT", "INSERT") for table in _TABLES)
+           | frozenset(("SELECT", table) for table in _CATALOGS))
 _GRANT_PATTERN = re.compile(
-    rf"GRANT ([A-Z ,]+) ON (arte\.[A-Za-z_][A-Za-z0-9_]*) TO {PRINCIPAL}\Z")
+    rf"GRANT ([A-Z ,]+) ON ((?:arte|system)\.[A-Za-z_][A-Za-z0-9_]*) TO {PRINCIPAL}\Z")
 
 
 def _credential(*, account_exists: bool) -> str:
@@ -117,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--confirm-configuration-publisher", action="store_true")
     args = parser.parse_args(argv)
     if not args.apply:
-        print(f"DRY RUN: {PRINCIPAL}; SELECT/INSERT on two typed ARTE tables only.")
+        print(f"DRY RUN: {PRINCIPAL}; two typed ARTE tables plus four read-only catalogs.")
         return 0
     if not args.confirm_configuration_publisher:
         parser.error("--apply requires --confirm-configuration-publisher")
@@ -141,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if admin is not None:
             admin.close()
-    print("Strategy 1 configuration publisher authenticated with four exact grants.")
+    print("Strategy 1 configuration publisher authenticated with eight exact grants.")
     return 0
 
 

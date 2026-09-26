@@ -42,7 +42,7 @@ def test_dry_run_never_connects(capsys, monkeypatch):
     assert "DRY RUN" in capsys.readouterr().out
 
 
-def test_publisher_grants_exactly_two_typed_tables(monkeypatch):
+def test_publisher_grants_exactly_two_typed_tables_and_four_catalogs(monkeypatch):
     monkeypatch.setattr(subject, "install_tables", lambda _admin: None)
     admin = Admin()
     publisher = Publisher()
@@ -50,7 +50,8 @@ def test_publisher_grants_exactly_two_typed_tables(monkeypatch):
     subject.provision(admin, credential=lambda **_kw: "p" * 40,
                       client_factory=lambda _u, _p: publisher)
     assert publisher.closed
-    assert len([sql for sql in admin.sql if sql.startswith("GRANT ")]) == 4
+    assert len([sql for sql in admin.sql if sql.startswith("GRANT ")]) == 8
+    assert all(("INSERT ON system." not in sql) for sql in admin.sql)
     assert not any("bars_v1" in sql or "indicators_v1" in sql
                    or "liquidity_100ms_v1" in sql for sql in admin.sql)
 
