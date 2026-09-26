@@ -16,9 +16,13 @@ DAY = "2026-08-18"
 def shared_row(ticker, boundary):
     return {"session_date": DAY, "ticker": ticker, "boundary_ms": boundary,
             "resolution_ms": 100, "close_int": 100_000,
-            "low_int": 99_000, "price_valid": 1, "extremes_valid": 1,
+            "low_int": 99_000, "high_int": 101_000,
+            "price_valid": 1, "extremes_valid": 1,
             "bid_int": 99_900, "ask_int": 100_100, "quote_valid": 1,
             "quote_timestamp_us": 1, "execution_vwap": 10.,
+            "bid_size": 500., "ask_size": 600.,
+            "execution_volume": 100.,
+            "execution_price_levels": ({"price_int": 100_000, "volume": 100.},),
             "cumulative_volume": 25_000., "cumulative_notional": 250_000.,
             "indicator_resolution_ms": 100, "macd_line": .2,
             "macd_signal": .1, "previous_close": 9.}
@@ -152,6 +156,10 @@ def test_active_candidate_uses_one_broker_row_and_rejects_conflicting_quote():
 
 @pytest.mark.parametrize("field,active,candidate_value", [
     ("low_int", 99_000, 98_000),
+    ("high_int", 101_000, 102_000),
+    ("ask_size", 600., 400.),
+    ("execution_price_levels", ({"price_int": 100_000, "volume": 100.},),
+     ({"price_int": 100_100, "volume": 100.},)),
     ("cumulative_volume", 25_000, 26_000),
     ("macd_line", .2, .3),
     ("previous_close", 9., 10.),
@@ -251,7 +259,9 @@ def test_active_source_reads_persisted_window_and_closes_on_deactivation():
         def iter_json_each_row(self, sql):
             self.queries.append(sql)
             if "SELECT l.session_date" in sql:
-                return iter((dict(group("AAA", 200)[1][100]),))
+                row = dict(group("AAA", 200)[1][100])
+                row["execution_price_levels"] = [[100_000, 100.]]
+                return iter((row,))
             return iter(({"session_date": DAY, "ticker": "AAA",
                           "boundary_ms": 1_000, "resolution_ms": 1_000},))
 
