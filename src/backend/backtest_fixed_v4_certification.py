@@ -45,6 +45,8 @@ _V4_ADDITIONS = frozenset({
 _SIMULATED_BROKER = Path(__file__).parents[1] / "trading_runtime" / "simulated_broker.py"
 _STRATEGY_ONE_INTENT = Path(__file__).parents[1] / "trading_runtime" / "strategy_one_intent.py"
 _STRATEGY_ONE_CONTRACT = Path(__file__).parents[1] / "trading_runtime" / "strategy_one_contract.py"
+_STRATEGY_ONE_RUNTIME = Path(__file__).parents[1] / "trading_runtime" / "strategy_one_runtime.py"
+_STRATEGY_ONE_EXECUTION = Path(__file__).with_name("backtest_strategy_one_execution.py")
 _LEGACY_PROTECTION_FAMILIES = {
     ("order_management", "partial_target_completion"): "_complete_partial_target",
     ("order_management", "profit_pocket_transition"): "apply_profit_pocket_transition",
@@ -58,6 +60,79 @@ _REDUNDANT_MODIFY_SUMMARIES = {
     ("broker", "profit_target_replaced"): "_replace_existing_profit_targets",
     ("broker", "protective_stop_replaced"): "_replace_protective_stop",
 }
+
+
+def certify_strategy_one_assignment_event_unreachable(
+    *, controller_path: Path, runtime_path: Path,
+    strategy_path: Path = _STRATEGY_ONE_RUNTIME,
+    execution_path: Path = _STRATEGY_ONE_EXECUTION,
+) -> str:
+    """Bind the event-free fixed assignment save to the sparse-only call path.
+
+    This excludes the legacy activity event, not the need to cold-recover the
+    initial numbered assignment and its configuration from typed storage.
+    """
+    paths = (controller_path, runtime_path, strategy_path, execution_path)
+    sources = tuple(path.read_text(encoding="utf-8") for path in paths)
+    controller, runtime, strategy, execution = map(ast.parse, sources)
+
+    def method(tree: ast.Module, cls: str, name: str) -> ast.AST:
+        owners = [node for node in tree.body if isinstance(node, ast.ClassDef)
+                  and node.name == cls]
+        matches = [node for node in owners[0].body
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and node.name == name] if len(owners) == 1 else []
+        if len(matches) != 1:
+            raise ValueError(f"Strategy 1 assignment event route changed: {name}")
+        return matches[0]
+
+    assigned = [node for node in strategy.body if isinstance(node, ast.ClassDef)
+                and node.name == "AssignedStrategyOne"]
+    if (len(assigned) != 1 or any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in {"on_order_group_update", "on_market_signal"}
+            for node in assigned[0].body)):
+        raise ValueError("Strategy 1 gained a legacy assignment update handler")
+    fixed = method(controller, "ReplayRunController", "_run_strategy_one_fixed_days")
+    initialise = method(controller, "ReplayRunController", "_initialize_runtime")
+    initial_saves = [node for node in ast.walk(initialise)
+                     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                     and node.func.attr == "persist_strategy_assignments"]
+    if (len(initial_saves) != 1 or not any(keyword.arg == "record_events"
+            and isinstance(keyword.value, ast.Constant) and keyword.value.value is False
+            for keyword in initial_saves[0].keywords)):
+        raise ValueError("Strategy 1 initial assignment save can emit activity")
+    runner = [node for node in ast.walk(fixed) if isinstance(node, ast.Call)
+              and isinstance(node.func, ast.Name)
+              and node.func.id == "run_certified_strategy_one_session"]
+    session = [node for node in execution.body
+               if isinstance(node, ast.AsyncFunctionDef)
+               and node.name == "run_certified_strategy_one_session"]
+    if (len(runner) != 1 or len(session) != 1
+            or any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                   and node.func.attr in {"process_market_signal",
+                                          "process_strategy_observation",
+                                          "process_account_strategy_observation",
+                                          "persist_strategy_assignments"}
+                   for node in ast.walk(session[0]))):
+        raise ValueError("Strategy 1 sparse runner can reach assignment activity")
+    emitter = method(runtime, "TradingRuntime", "persist_strategy_assignments")
+    if not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+               and node.func.attr == "append_many" for node in ast.walk(emitter)):
+        raise ValueError("Assignment activity emitter changed")
+    # Fill/state callbacks persist only if the strategy supplies this legacy
+    # handler. The numbered strategy above deliberately does not.
+    for name in ("_on_order_group_fill", "_on_order_group_state"):
+        callback = method(runtime, "TradingRuntime", name)
+        saves = [node for node in ast.walk(callback)
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                 and node.func.attr == "_persist_strategy_assignments"]
+        if len(saves) != 1 or not any(isinstance(node, ast.If)
+                and ast.unparse(node.test) == "handler is not None"
+                and saves[0] in ast.walk(node) for node in ast.walk(callback)):
+            raise ValueError("Strategy 1 fill callback can emit assignment activity")
+    return sha256(json.dumps({"version": 1, "sources": tuple(
+        sha256(source.encode()).hexdigest() for source in sources)},
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def certify_strategy_one_portfolio_request_unreachable(
@@ -418,6 +493,16 @@ def certify_strategy_one_v4_projection(
             runtime_path=sources_by_name["runtime.py"],
             portfolio_path=sources_by_name["portfolio.py"])
         unreachable.add(("portfolio_management", "portfolio_request"))
+    if ("strategy", "strategy_assignment_state") in families:
+        sources_by_name = {path.name: path for path in indirect_sources}
+        if (len(sources_by_name) != len(indirect_sources)
+                or "runtime.py" not in sources_by_name):
+            raise ValueError("Strategy 1 assignment event lacks runtime source authority")
+        unreachable_proof += certify_strategy_one_assignment_event_unreachable(
+            controller_path=controller_source or Path(__file__).with_name(
+                "replay_run_service.py"),
+            runtime_path=sources_by_name["runtime.py"])
+        unreachable.add(("strategy", "strategy_assignment_state"))
     supported = _V3_PROJECTED | _COMMON_TYPED | _V4_ADDITIONS
     unsupported = sorted(set(families) - supported - unreachable)
     if unsupported:
