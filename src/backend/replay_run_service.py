@@ -10966,6 +10966,17 @@ def backtest_preflight(
         if bool(row.get("enabled", True))
         and str(row.get("signal_stream_id") or "") in selected_signal_stream_ids
     ]
+    strategy_one_fixed = (execution_interval.kind == "fixed"
+                          and dict(configuration.get("strategy") or {}).get(
+                              "strategy_number") == 1)
+    if strategy_one_fixed:
+        # STRATEGY CREATION RULE: the numbered scanner is code-owned and its
+        # materialized candidate seal is the signal authority. A historical
+        # UI/QMD catalog cannot silently change or regenerate that rule.
+        from src.backend.fixed_bar_signal import canonical_stream_activation
+        stream, _activation = canonical_stream_activation()
+        activated_signal_streams = [{
+            **stream, "occurrence_source": "arte.strategy_one_candidate_v1"}]
     source_native_activation = bool(activated_signal_streams) and all(
         str(row.get("occurrence_source") or "").strip()
         for row in activated_signal_streams
@@ -10974,6 +10985,8 @@ def backtest_preflight(
         dict(run_plan.get("activation") or {}).get("watchlist_policy")
         or "any_selected"
     )
+    if strategy_one_fixed:
+        watchlist_policy = "not_required"
     sessions = [date.fromisoformat(value) for value in base["window"]["sessions"]]
     market_data_plan: dict[str, Any] = {}
     market_data_error = ""
@@ -11212,9 +11225,6 @@ def backtest_preflight(
             "summary": EVENT_EXECUTION_BLOCKER,
             "evidence": "run_local_frame_spool_still_present",
         })
-    strategy_one_fixed = (execution_interval.kind == "fixed"
-                          and dict(configuration.get("strategy") or {}).get(
-                              "strategy_number") == 1)
     if strategy_one_fixed:
         # Strategy 1 certifies completed-bar episode starts below. Legacy
         # signal artifacts on disk are neither its authority nor a fallback.
@@ -11233,7 +11243,37 @@ def backtest_preflight(
         ) if sessions else {"id": "historical_signal_coverage", "label": "Historical signal coverage",
                             "status": "blocked", "required": True, "summary": "No sessions selected"}
     bar_signals = None
-    if execution_interval.kind == "fixed" and activated_signal_streams:
+    precertified_candidate_plan = None
+    if strategy_one_fixed:
+        try:
+            if not market_data_plan:
+                raise ValueError("Certified persisted market plan is unavailable")
+            from src.backend.backtest_market_data import readonly_clickhouse_client
+            from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+            from src.backend.backtest_strategy_one_identity import certify_identity_plan
+            from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
+            with closing(readonly_clickhouse_client(
+                    market_stream=True, v3_read_principal=True)) as reader:
+                identity_plan = certify_identity_plan(certified, client=reader)
+                precertified_candidate_plan = certify_candidate_plan(
+                    certified, candidate_rule_digest=RULE_DIGEST,
+                    through_boundary_ms=57_600_000, client=reader)
+            bar_signals = {"occurrences": (), "authority": {
+                "candidate_token": precertified_candidate_plan.token,
+                "identity_token": identity_plan.token,
+            }}
+            signal_check = {
+                **signal_check, "status": "ready",
+                "summary": "Normalized Strategy 1 candidate and dated identity products "
+                           "certify the complete tradable population; no bar rescan or signal build.",
+                "evidence": bar_signals["authority"],
+            }
+        except Exception as exc:
+            signal_check = {
+                **signal_check, "summary": f"Strategy 1 candidate/identity certification failed: {exc}",
+                "evidence": str(exc),
+            }
+    elif execution_interval.kind == "fixed" and activated_signal_streams:
         from src.backend.fixed_bar_signal import (
             STREAM_ID as FIXED_BAR_STREAM_ID, load_first_squeeze_occurrences,
         )
@@ -11288,23 +11328,14 @@ def backtest_preflight(
                     # immutable, and certified before Backtest launch. Never
                     # regenerate a missing strategy input inside Backtest.
                     from src.backend.backtest_strategy_one_activation import load_strategy_one_activations
-                    from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
-                    from src.backend.backtest_strategy_one_identity import certify_identity_plan
                     from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
                     from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
-                    from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
                     from src.trading_runtime.strategy_one_pivot_schema import PRODUCT_DIGEST
                     if len(certified.sessions) != 1:
                         raise ValueError("Strategy 1 V7 candidate scope requires one flat-start session")
-                    with closing(readonly_clickhouse_client(
-                            market_stream=True,
-                            v3_read_principal=True)) as candidate_reader:
-                        identity_plan = certify_identity_plan(
-                            certified, client=candidate_reader)
-                        candidate_plan = certify_candidate_plan(
-                            certified, candidate_rule_digest=RULE_DIGEST,
-                            through_boundary_ms=57_600_000,
-                            client=candidate_reader)
+                    if precertified_candidate_plan is None:
+                        raise ValueError("Strategy 1 candidate certificate was not pinned")
+                    candidate_plan = precertified_candidate_plan
                     market_data_plan["strategy_one_identity_token"] = identity_plan.token
                     market_data_plan["strategy_one_candidate_token"] = candidate_plan.token
                     market_data_plan["strategy_one_candidate_rule_digest"] = (
@@ -11493,7 +11524,8 @@ def backtest_preflight(
             "required": True,
         }
     )
-    source_native_identity_ready = bool(watchlists)
+    source_native_identity_ready = bool(watchlists) or (
+        strategy_one_fixed and bool(market_data_plan.get("strategy_one_identity_token")))
     source_native_ready = bool(
         source_native_activation
         and watchlist_policy == "not_required"
