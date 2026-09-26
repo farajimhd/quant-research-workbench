@@ -96,6 +96,62 @@ def test_v4_publisher_routes_running_prefix_only_to_v4_queue():
     asyncio.run(exercise())
 
 
+def test_v4_publisher_routes_broker_and_protection_in_sequence():
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+        def submit_base_v4(self, batch):
+            self.kinds.append("base")
+            return FakeWriter.submit(self, batch)
+
+        def submit_broker_acknowledgement_v4(self, unit):
+            self.kinds.append("broker")
+            return FakeWriter.submit(self, unit.base)
+
+        def submit_protection_change_v4(self, unit):
+            self.kinds.append("protection")
+            return FakeWriter.submit(self, unit.base)
+
+    async def exercise():
+        journal = _journal()
+        journal.append(
+            run_id=RUN, category="broker", entity_type="order_acknowledgement",
+            entity_id="1001", account_id="DU1", event_time=AT,
+            payload={"order_id": "1001", "order_status": "Submitted",
+                     "local_order_id": "coid-1", "order_group_id": "group-1",
+                     "decision_to_submit_ms": 1.25, "ticker": "AAA",
+                     "action": "enter_long", "intent_id": "intent-1",
+                     "correlation_id": "correlation-1",
+                     "causation_id": "causation-1",
+                     "strategy_id": "early-squeeze-strategy", "strategy_revision": 1})
+        journal.append(
+            run_id=RUN, category="protection", entity_type="protection_change",
+            entity_id="1002", account_id="DU1", event_time=AT,
+            payload={"schema_version": 1, "order_group_id": "group-1",
+                     "entry_order_ids": ["coid-1"], "order_id": "1002",
+                     "client_order_id": "coid-2", "kind": "stop",
+                     "phase": "effective", "price": 9.89, "active": True,
+                     "ticker": "AAA", "source_intent_id": "intent-1",
+                     "strategy_id": "early-squeeze-strategy",
+                     "strategy_revision": 1, "action": "enter_long",
+                     "intent_id": "intent-1",
+                     "correlation_id": "correlation-1",
+                     "causation_id": "causation-1"})
+        writer = V4Writer()
+        writer.kinds = []
+        publisher = _publisher(journal, writer)
+        receipt = await publisher.enqueue_pending()
+        assert receipt.last_sequence == 4
+        assert writer.kinds == ["base", "broker", "protection"]
+        assert [(batch.first_sequence, batch.last_sequence)
+                for batch in writer.submitted] == [(1, 2), (3, 3), (4, 4)]
+        assert writer.submitted[1].prior_batch_id == writer.submitted[0].batch_id
+        assert writer.submitted[2].prior_batch_id == writer.submitted[1].batch_id
+        assert journal.pending_record_count == 0
+
+    asyncio.run(exercise())
+
+
 def test_v4_publisher_routes_numbered_entry_with_exact_child_off_hot_path():
     from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
     from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent

@@ -13,6 +13,10 @@ from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.arte_journal_writer import V3SqueezeBatch
+from src.trading_runtime.arte_journal_writer import (
+    V4BrokerAcknowledgementBatch, V4ProtectionChangeBatch,
+    V4StrategyOneEntryBatch, _coalesce_unpublished,
+)
 from src.trading_runtime.journal_contract import canonical_json
 
 
@@ -25,6 +29,105 @@ class ProjectedBacktestPrefix:
     last_sequence: int
     last_batch_id: str
     source_cursor: str
+
+
+def project_pending_backtest_v4_prefix(
+    journal: BacktestMemoryJournal, *, attempt_id: str, run_month: date,
+    prior_sequence: int, prior_batch_id: str = NIL_BATCH_ID,
+    source_cursor: str = "start", expected_config: dict | None = None,
+    fixed_market_parent_plan: object | None = None,
+    fixed_market_execution_plan: object | None = None,
+    expected_market_start: datetime | None = None,
+    through_sequence: int,
+) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
+           | V4BrokerAcknowledgementBatch | V4ProtectionChangeBatch, ...]:
+    """Project one bounded V4 prefix; special families never enter a base batch."""
+    from src.trading_runtime.arte_broker_acknowledgement_v4 import (
+        broker_acknowledgement_batch_v4,
+    )
+    from src.trading_runtime.arte_protection_change_v4 import (
+        protection_change_batch_v4,
+    )
+    from src.trading_runtime.arte_strategy_one_entry_journal import (
+        project_strategy_one_entry_evidence,
+    )
+    from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+
+    attempt = str(UUID(attempt_id))
+    previous = str(UUID(prior_batch_id))
+    if (run_month.day != 1 or type(prior_sequence) is not int
+            or prior_sequence < 0 or not source_cursor
+            or (prior_sequence == 0) != (previous == NIL_BATCH_ID)
+            or type(through_sequence) is not int
+            or not prior_sequence < through_sequence
+                   <= journal.latest_sequence(journal.run_id)):
+        raise ValueError("V4 projection prefix identity is invalid")
+    records = journal.unfenced_records(
+        after_sequence=prior_sequence, through_sequence=through_sequence)
+    if len(records) != through_sequence - prior_sequence:
+        raise ValueError("V4 projection prefix is not contiguous")
+    units = []
+    ordinary: list[TypedJournalBatch] = []
+    cursor = source_cursor
+    for sequence, record in enumerate(records, start=prior_sequence + 1):
+        if record.run_id != journal.run_id or record.sequence != sequence:
+            raise ValueError("V4 projection changed its run or event sequence")
+        canonical_json(record.payload)
+        batch_id = str(uuid5(NAMESPACE_URL,
+            f"arte-backtest-v1:{record.run_id}:{attempt}:{sequence}:{record.record_id}"))
+        kind = (record.category, record.entity_type)
+        if kind == ("checkpoint", "market_boundary"):
+            cursor = record.entity_id
+        if kind == ("broker", "order_acknowledgement"):
+            unit = broker_acknowledgement_batch_v4(
+                record, run_month=run_month, attempt_id=attempt,
+                batch_id=batch_id, prior_batch_id=previous,
+                source_cursor=cursor)
+        elif kind == ("protection", "protection_change"):
+            unit = protection_change_batch_v4(
+                record, run_month=run_month, attempt_id=attempt,
+                batch_id=batch_id, prior_batch_id=previous,
+                source_cursor=cursor)
+        else:
+            batch = project_journal_record(
+                record, run_month=run_month, attempt_id=attempt,
+                batch_id=batch_id, prior_batch_id=previous,
+                source_cursor=cursor, expected_config=expected_config,
+                expected_mode="backtest",
+                fixed_market_parent_plan=fixed_market_parent_plan,
+                fixed_market_execution_plan=fixed_market_execution_plan,
+                expected_market_start=expected_market_start)
+            sidecar = journal.strategy_one_entry_for_record(record.record_id)
+            if sidecar is None:
+                if (kind == ("strategy", "strategy_intent")
+                        and record.payload.get("reason") == "strategy_one_entry"):
+                    raise RuntimeError("Strategy 1 journal intent lacks normalized evidence")
+                unit = batch
+            else:
+                proposal, session_date = sidecar
+                intent = strategy_one_entry_intent(
+                    proposal, session_date=session_date)
+                evidence = project_strategy_one_entry_evidence(
+                    proposal, intent, session_date=session_date,
+                    run_id=batch.run_id, batch_id=batch.batch_id,
+                    parent_record_id=record.record_id)
+                unit = V4StrategyOneEntryBatch(batch, (evidence,))
+        base = unit.base if not isinstance(unit, TypedJournalBatch) else unit
+        if (base.first_sequence != sequence or base.last_sequence != sequence
+                or len(base.events) != 1 or base.batch_id != batch_id
+                or base.prior_batch_id != previous):
+            raise ValueError("V4 projector changed the exclusive batch identity")
+        if isinstance(unit, TypedJournalBatch):
+            ordinary.append(unit)
+        else:
+            if ordinary:
+                units.append(_coalesce_unpublished(tuple(ordinary)))
+                ordinary.clear()
+            units.append(unit)
+        previous = batch_id
+    if ordinary:
+        units.append(_coalesce_unpublished(tuple(ordinary)))
+    return tuple(units)
 
 
 def project_pending_backtest_prefix(

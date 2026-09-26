@@ -14,10 +14,12 @@ from uuid import UUID
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_typed_projection import (
     NIL_BATCH_ID, project_pending_backtest_prefix, project_pending_backtest_v3_prefix,
+    project_pending_backtest_v4_prefix,
 )
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, TypedJournalBatch, V3SqueezeBatch,
-    V4StrategyOneEntryBatch, _coalesce_unpublished,
+    V4StrategyOneEntryBatch, V4BrokerAcknowledgementBatch,
+    V4ProtectionChangeBatch, _coalesce_unpublished,
 )
 from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
 
@@ -109,10 +111,21 @@ class BacktestTypedJournalPublisher:
         return self._task
 
     def _prepare_batches(self, through_sequence: int) -> tuple[
-            TypedJournalBatch | V3SqueezeBatch | V4StrategyOneEntryBatch, ...]:
+            TypedJournalBatch | V3SqueezeBatch | V4StrategyOneEntryBatch
+            | V4BrokerAcknowledgementBatch | V4ProtectionChangeBatch, ...]:
         """Project at most one commit-sized prefix outside the event loop."""
         if not self._sequence < through_sequence <= self._sequence + self.batch_size:
             raise ValueError("Typed Backtest projection exceeds one commit budget")
+        if self.writer.journal_profile == "backtest_v4":
+            return project_pending_backtest_v4_prefix(
+                self.journal, attempt_id=self.attempt_id,
+                run_month=self.run_month, prior_sequence=self._sequence,
+                prior_batch_id=self._batch_id, source_cursor=self._source_cursor,
+                expected_config=self.expected_config,
+                fixed_market_parent_plan=self.fixed_market_parent_plan,
+                fixed_market_execution_plan=self.fixed_market_execution_plan,
+                expected_market_start=self.expected_market_start,
+                through_sequence=through_sequence)
         if self.writer.journal_profile == "backtest_v3":
             from src.backend.backtest_squeeze_episode_v3 import coalesce_squeeze_units_v3
             units = project_pending_backtest_v3_prefix(
@@ -142,36 +155,7 @@ class BacktestTypedJournalPublisher:
         batches = tuple(_coalesce_unpublished(
             prefix.batches[offset:offset + self.batch_size])
             for offset in range(0, len(prefix.batches), self.batch_size))
-        if self.writer.journal_profile != "backtest_v4":
-            return batches
-        from src.trading_runtime.arte_strategy_one_entry_journal import (
-            project_strategy_one_entry_evidence,
-        )
-        from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
-
-        units = []
-        for batch in batches:
-            children = []
-            records = self.journal.unfenced_records(
-                after_sequence=batch.first_sequence - 1,
-                through_sequence=batch.last_sequence)
-            for record in records:
-                sidecar = self.journal.strategy_one_entry_for_record(record.record_id)
-                if sidecar is None:
-                    if ((record.category, record.entity_type)
-                            == ("strategy", "strategy_intent")
-                            and record.payload.get("reason") == "strategy_one_entry"):
-                        raise RuntimeError("Strategy 1 journal intent lacks normalized evidence")
-                    continue
-                proposal, session_date = sidecar
-                intent = strategy_one_entry_intent(proposal, session_date=session_date)
-                children.append(project_strategy_one_entry_evidence(
-                    proposal, intent, session_date=session_date,
-                    run_id=batch.run_id, batch_id=batch.batch_id,
-                    parent_record_id=record.record_id))
-            units.append(V4StrategyOneEntryBatch(batch, tuple(children))
-                         if children else batch)
-        return tuple(units)
+        return batches
 
     async def _drain(self, *, target_sequence: int | None = None) -> TypedBacktestReceipt:
         try:
@@ -186,39 +170,50 @@ class BacktestTypedJournalPublisher:
                                        self._sequence + self.batch_size)
                 batches = await asyncio.to_thread(self._prepare_batches,
                                                   through_sequence)
-                if len(batches) != 1:
+                if (not batches or (self.writer.journal_profile != "backtest_v4"
+                                   and len(batches) != 1)):
                     raise RuntimeError("Typed Backtest projector changed the bounded prefix")
-                unit = batches[0]
-                batch = unit.base if isinstance(
-                    unit, (V3SqueezeBatch, V4StrategyOneEntryBatch)) else unit
-                receipt = (self.writer.submit_strategy_one_entry_v4(unit)
-                           if isinstance(unit, V4StrategyOneEntryBatch)
-                           else self.writer.submit_squeeze_v3(unit)
-                           if isinstance(unit, V3SqueezeBatch)
-                           else self.writer.submit_base_v4(batch)
-                           if self.writer.journal_profile == "backtest_v4"
-                           else self.writer.submit(batch))
-                committed = await asyncio.wrap_future(receipt)
-                if str(UUID(str(committed))) != batch.batch_id:
-                    raise RuntimeError("Typed Backtest writer changed an exclusive batch ID")
-                self.journal.mark_fenced(batch.last_sequence)
-                self._sequence = batch.last_sequence
-                self._batch_id = batch.batch_id
-                self._source_cursor = batch.source_cursor
-                current = TypedBacktestReceipt(self._sequence, self._batch_id,
-                                               self._source_cursor)
-                remaining = []
-                for sequence, cursor, waiter in self._checkpoint_waiters:
-                    if sequence <= self._sequence:
-                        if not waiter.done():
-                            if (sequence != self._sequence or cursor != self._source_cursor):
-                                waiter.set_exception(RuntimeError(
-                                    "Typed Backtest checkpoint cursor differs from committed prefix"))
-                            else:
-                                waiter.set_result(current)
-                    else:
-                        remaining.append((sequence, cursor, waiter))
-                self._checkpoint_waiters = remaining
+                for unit in batches:
+                    batch = unit.base if isinstance(
+                        unit, (V3SqueezeBatch, V4StrategyOneEntryBatch,
+                               V4BrokerAcknowledgementBatch,
+                               V4ProtectionChangeBatch)) else unit
+                    if (batch.first_sequence != self._sequence + 1
+                            or batch.prior_batch_id != self._batch_id):
+                        raise RuntimeError("Typed Backtest batch chain is not contiguous")
+                    receipt = (self.writer.submit_strategy_one_entry_v4(unit)
+                               if isinstance(unit, V4StrategyOneEntryBatch)
+                               else self.writer.submit_broker_acknowledgement_v4(unit)
+                               if isinstance(unit, V4BrokerAcknowledgementBatch)
+                               else self.writer.submit_protection_change_v4(unit)
+                               if isinstance(unit, V4ProtectionChangeBatch)
+                               else self.writer.submit_squeeze_v3(unit)
+                               if isinstance(unit, V3SqueezeBatch)
+                               else self.writer.submit_base_v4(batch)
+                               if self.writer.journal_profile == "backtest_v4"
+                               else self.writer.submit(batch))
+                    committed = await asyncio.wrap_future(receipt)
+                    if str(UUID(str(committed))) != batch.batch_id:
+                        raise RuntimeError("Typed Backtest writer changed an exclusive batch ID")
+                    self.journal.mark_fenced(batch.last_sequence)
+                    self._sequence = batch.last_sequence
+                    self._batch_id = batch.batch_id
+                    self._source_cursor = batch.source_cursor
+                    current = TypedBacktestReceipt(self._sequence, self._batch_id,
+                                                   self._source_cursor)
+                    remaining = []
+                    for sequence, cursor, waiter in self._checkpoint_waiters:
+                        if sequence <= self._sequence:
+                            if not waiter.done():
+                                if (sequence != self._sequence
+                                        or cursor != self._source_cursor):
+                                    waiter.set_exception(RuntimeError(
+                                        "Typed Backtest checkpoint cursor differs from committed prefix"))
+                                else:
+                                    waiter.set_result(current)
+                        else:
+                            remaining.append((sequence, cursor, waiter))
+                    self._checkpoint_waiters = remaining
             return TypedBacktestReceipt(self._sequence, self._batch_id,
                                         self._source_cursor)
         except BaseException as exc:
