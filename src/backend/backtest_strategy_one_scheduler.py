@@ -178,6 +178,34 @@ class StrategyOneBoundaryScheduler:
         # Invalidate a prefetched head without disturbing another ticker.
         # pop_next ignores stale heads by checking active membership.
 
+    def reconcile_financial_tickers(self, tickers: tuple[str, ...]) -> None:
+        """Follow broker-owned open orders and positions after a boundary.
+
+        A failed new SELECT leaves the prior active set intact. Terminal
+        broker orders alone must not keep a ticker on the market tape.
+        """
+        if (self._closed or not isinstance(tickers, tuple)
+                or len(set(tickers)) != len(tickers)
+                or any(not isinstance(ticker, str) or not ticker
+                       or ticker != ticker.upper() for ticker in tickers)):
+            raise ValueError("Active Strategy 1 financial ticker set is invalid")
+        desired = set(tickers)
+        added: list[str] = []
+        try:
+            for ticker in sorted(desired - self._active.keys()):
+                self.activate(ticker)
+                added.append(ticker)
+        except BaseException:
+            for ticker in reversed(added):
+                self.deactivate(ticker)
+            raise
+        for ticker in sorted(self._active.keys() - desired):
+            self.deactivate(ticker)
+
+    @property
+    def active_tickers(self) -> tuple[str, ...]:
+        return tuple(sorted(self._active))
+
     def pop_next(self) -> StrategyOneBoundaryWork | None:
         if self._closed:
             raise RuntimeError("Strategy 1 scheduler is closed")

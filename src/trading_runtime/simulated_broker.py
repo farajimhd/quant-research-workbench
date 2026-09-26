@@ -738,6 +738,25 @@ class SimulatedBrokerAdapter:
     def has_orders(self) -> bool:
         return bool(self._orders)
 
+    def financially_active_tickers(self) -> tuple[str, ...]:
+        """Exact symbols needing continued sparse Backtest liquidity.
+
+        Terminal orders remain in the audit store, so ``has_orders`` cannot
+        drive active-ticker scheduling. Include every open parent/child order
+        and non-flat position across accounts; this is a read-only snapshot.
+        """
+        tickers = {
+            ticker for ticker, states in self._orders_by_ticker.items()
+            if any(state.status in OPEN_ORDER_STATUSES for state in states)
+        }
+        tickers.update(
+            position.ticker.upper()
+            for positions in self._positions.values()
+            for position in positions.values()
+            if abs(position.quantity) >= 1e-12
+        )
+        return tuple(sorted(tickers))
+
     def performance_extrema(self) -> dict[str, Any]:
         return dict(self._performance)
 

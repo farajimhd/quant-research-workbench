@@ -1,6 +1,7 @@
 """Sparse entry plus active liquidity scheduling remains causal and exact."""
 import numpy as np
 import pytest
+from types import SimpleNamespace
 
 from src.backend.backtest_strategy_one_scheduler import (
     StrategyOneBoundaryScheduler, persisted_active_market_source,
@@ -15,9 +16,66 @@ from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
 )
 from src.backend.backtest_liquidity_price import PriceLevelPlan, PriceLevelUnit
+from src.trading_runtime.ibkr_schema import OrderStatus
+from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
 
 
 DAY = "2026-08-18"
+
+
+def test_financially_active_symbols_include_open_orders_and_nonflat_positions():
+    broker = SimulatedBrokerAdapter(["DU1", "DU2"])
+    broker._orders_by_ticker = {
+        "AAA": [SimpleNamespace(status=OrderStatus.SUBMITTED)],
+        "BBB": [SimpleNamespace(status=OrderStatus.CANCELLED)],
+        "CCC": [SimpleNamespace(status=OrderStatus.INACTIVE)],
+    }
+    broker._positions["DU1"][1] = SimpleNamespace(
+        ticker="DDD", quantity=5.0)
+    broker._positions["DU2"][2] = SimpleNamespace(
+        ticker="eee", quantity=-2.0)
+    broker._positions["DU2"][3] = SimpleNamespace(
+        ticker="FFF", quantity=0.0)
+    assert broker.financially_active_tickers() == (
+        "AAA", "CCC", "DDD", "EEE")
+
+
+def test_reconcile_financial_tickers_adds_after_boundary_and_removes_flat():
+    requests = []
+
+    def source(ticker, after):
+        requests.append((ticker, after))
+        return iter((group(ticker, 200),))
+
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter((candidate("AAA", 100),)),
+        active_source=source)
+    assert clock.pop_next().boundary_ms == 100
+    clock.reconcile_financial_tickers(("AAA",))
+    assert clock.active_tickers == ("AAA",)
+    assert clock.pop_next().boundary_ms == 200
+    clock.reconcile_financial_tickers(())
+    assert clock.active_tickers == ()
+    assert clock.pop_next() is None
+    assert requests == [("AAA", 100)]
+    clock.close()
+
+
+def test_failed_financial_reconciliation_preserves_existing_active_ticker():
+    def source(ticker, after):
+        if ticker == "BBB":
+            raise RuntimeError("missing active liquidity")
+        return iter((group(ticker, 300),))
+
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter((candidate("AAA", 100),)),
+        active_source=source)
+    clock.pop_next()
+    clock.reconcile_financial_tickers(("AAA",))
+    with pytest.raises(RuntimeError, match="missing active liquidity"):
+        clock.reconcile_financial_tickers(("BBB",))
+    assert clock.active_tickers == ("AAA",)
+    clock.close()
 
 
 def shared_row(ticker, boundary):
