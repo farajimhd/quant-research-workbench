@@ -172,6 +172,16 @@ class BacktestTypedJournalPublisher:
             self._checkpoint_waiters.clear()
             raise
 
+    async def _drain_after_active(
+        self, active: asyncio.Task[TypedBacktestReceipt],
+        waiter: asyncio.Future[TypedBacktestReceipt],
+    ) -> TypedBacktestReceipt:
+        """Chain a checkpoint after an in-flight prefix without waiting in engine."""
+        await asyncio.shield(active)
+        if waiter.done():
+            return waiter.result()
+        return await self._drain()
+
     def enqueue_checkpoint(self, *, boundary_id: str,
                            status: str = "running") -> asyncio.Future[TypedBacktestReceipt]:
         """Return immediately; resolve only after this exact cursor is durable."""
@@ -179,8 +189,7 @@ class BacktestTypedJournalPublisher:
             raise ValueError("Terminal Backtest needs lifecycle-last typed account captures")
         if self._checkpoint_waiters:
             raise RuntimeError("A typed Backtest checkpoint is already pending")
-        if self._task is not None and not self._task.done():
-            raise RuntimeError("A non-checkpoint typed prefix is already publishing")
+        active = self._task if self._task is not None and not self._task.done() else None
         pending = self.journal.unfenced_records()
         if (not pending or not boundary_id
                 or (pending[-1].category, pending[-1].entity_type,
@@ -190,7 +199,11 @@ class BacktestTypedJournalPublisher:
         waiter: asyncio.Future[TypedBacktestReceipt] = asyncio.get_running_loop().create_future()
         self._checkpoint_waiters.append((pending[-1].sequence, boundary_id, waiter))
         try:
-            self.enqueue_pending()
+            if active is None:
+                self.enqueue_pending()
+            else:
+                self._task = asyncio.create_task(
+                    self._drain_after_active(active, waiter))
         except BaseException:
             self._checkpoint_waiters.pop()
             waiter.cancel()

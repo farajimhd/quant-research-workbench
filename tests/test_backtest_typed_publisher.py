@@ -149,6 +149,73 @@ def test_checkpoint_enqueue_does_not_wait_for_clickhouse_receipt():
     asyncio.run(exercise())
 
 
+def test_checkpoint_queues_behind_inflight_prefix_without_blocking_engine():
+    async def exercise():
+        journal = BacktestMemoryJournal(run_id=RUN)
+        journal.append(run_id=RUN, category="lifecycle", entity_type="run",
+                       entity_id=RUN, event_time=AT,
+                       payload={"status": "running", "config": {"mode": "backtest"}})
+        writer = FakeWriter(automatic=False)
+        publisher = _publisher(journal, writer)
+        publisher.enqueue_pending()
+        await _wait_for_submission(writer)
+        journal.append(run_id=RUN, category="checkpoint",
+                       entity_type="market_boundary",
+                       entity_id=f"{DAY.isoformat()}:300000", event_time=AT,
+                       payload={"session_date": DAY.isoformat(), "boundary_ms": 300_000,
+                                "market_sequence": 2, "frame_as_of": None,
+                                "frame_ticker": None, "frame_timeframe": None,
+                                "frame_sequence": None})
+        receipt = publisher.enqueue_checkpoint(
+            boundary_id=f"{DAY.isoformat()}:300000")
+        assert not receipt.done()
+        assert len(writer.submitted) == 1
+        writer.receipts[0].set_result(writer.submitted[0].batch_id)
+        for _ in range(100):
+            if len(writer.submitted) == 2:
+                break
+            await asyncio.sleep(0.001)
+        assert len(writer.submitted) == 2
+        assert not receipt.done()
+        assert publisher.fenced_sequence == 1
+        writer.receipts[1].set_result(writer.submitted[1].batch_id)
+        committed = await receipt
+        assert committed.last_sequence == 2
+        assert committed.source_cursor == f"{DAY.isoformat()}:300000"
+        assert journal.pending_record_count == 0
+
+    asyncio.run(exercise())
+
+
+def test_queued_checkpoint_fails_if_prior_clickhouse_receipt_fails():
+    async def exercise():
+        journal = BacktestMemoryJournal(run_id=RUN)
+        journal.append(run_id=RUN, category="lifecycle", entity_type="run",
+                       entity_id=RUN, event_time=AT,
+                       payload={"status": "running", "config": {"mode": "backtest"}})
+        writer = FakeWriter(automatic=False)
+        publisher = _publisher(journal, writer)
+        publisher.enqueue_pending()
+        await _wait_for_submission(writer)
+        journal.append(run_id=RUN, category="checkpoint",
+                       entity_type="market_boundary",
+                       entity_id=f"{DAY.isoformat()}:300000", event_time=AT,
+                       payload={"session_date": DAY.isoformat(), "boundary_ms": 300_000,
+                                "market_sequence": 2, "frame_as_of": None,
+                                "frame_ticker": None, "frame_timeframe": None,
+                                "frame_sequence": None})
+        receipt = publisher.enqueue_checkpoint(
+            boundary_id=f"{DAY.isoformat()}:300000")
+        writer.receipts[0].set_exception(RuntimeError("prior insert failed"))
+        with pytest.raises(RuntimeError, match="prior insert failed"):
+            await receipt
+        assert publisher.fenced_sequence == 0
+        assert journal.pending_record_count == 2
+        assert len(writer.submitted) == 1
+
+    asyncio.run(exercise())
+
+
 def test_async_checkpoint_does_not_absorb_later_unfenced_records(monkeypatch):
     import src.backend.backtest_typed_publisher as publisher_module
 
