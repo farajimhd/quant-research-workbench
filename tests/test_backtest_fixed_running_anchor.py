@@ -7,6 +7,7 @@ import pytest
 
 from src.backend import backtest_fixed_running_anchor as anchor_module
 from src.backend.backtest_squeeze_episode_v3 import V3CommittedPrefix
+from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from src.backend.backtest_fixed_running_anchor import load_fixed_running_prefix_anchor
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
 from src.backend.replay_run_service import ReplayRunController, RunMode
@@ -93,6 +94,27 @@ def test_v3_anchor_uses_attested_prefix_and_only_v3_commit_batches(monkeypatch):
     assert result.batch_id == BATCH and result.journal_sequence == 17
     assert "arte.trading_commit_v3" in _committed_batch_filter(prefix)
     assert "arte.trading_commit_v2" not in _committed_batch_filter(prefix)
+
+
+def test_v4_anchor_uses_verified_v4_batches_only(monkeypatch):
+    context, old_prefix, cursor = _fixture()
+    prefix = V4CommittedPrefix(
+        old_prefix.run_id, old_prefix.last_sequence, old_prefix.last_batch_id,
+        old_prefix.source_cursor, old_prefix.status, old_prefix.batch_ids)
+    monkeypatch.setattr(anchor_module, "load_typed_run_context",
+                        lambda _client, _run_id: context)
+    monkeypatch.setattr(anchor_module, "load_verified_v4_prefix",
+                        lambda _client, _run_id: prefix)
+    monkeypatch.setattr(anchor_module, "load_committed_prefix",
+                        lambda *_a, **_k: pytest.fail("legacy fence used for V4"))
+    monkeypatch.setattr(anchor_module, "load_latest_backtest_cursor",
+                        lambda _client, verified: cursor if verified is prefix else None)
+    result = load_fixed_running_prefix_anchor(
+        object(), run_id=RUN, plan=_plan(), configuration_hash=CONFIG,
+        account_ids=("DU1",), journal_profile="backtest_v4")
+    assert result.batch_id == BATCH and result.journal_sequence == 17
+    assert "arte.trading_commit_v4" in _committed_batch_filter(prefix)
+    assert "arte.trading_commit_v3" not in _committed_batch_filter(prefix)
 
 
 def test_v3_anchor_requires_query_certificate_before_read(monkeypatch):

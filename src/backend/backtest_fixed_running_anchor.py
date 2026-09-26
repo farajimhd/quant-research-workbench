@@ -18,6 +18,9 @@ from src.backend.backtest_squeeze_episode_v3 import (
     V3CommittedPrefix, load_verified_squeeze_v3_prefix,
 )
 from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+from src.trading_runtime.arte_journal_commit_v4 import (
+    V4CommittedPrefix, load_verified_v4_prefix,
+)
 from src.trading_runtime.arte_journal_writer import (
     V2CommittedPrefix, load_committed_prefix, load_typed_run_context,
 )
@@ -42,7 +45,7 @@ def load_fixed_running_prefix_anchor(
     journal_profile: str = "backtest_v2",
     expected_query_sha256: str | None = None,
 ) -> FixedRunningPrefixAnchor:
-    """Cold-verify a V2/V3 journal prefix and its exact pinned market cursor.
+    """Cold-verify a V2/V3/V4 journal prefix and its exact pinned market cursor.
 
     A caller must separately recover every mutable runtime family before using
     this anchor. No disk, SQLite, or retired Backtest journal path is consulted.
@@ -54,23 +57,28 @@ def load_fixed_running_prefix_anchor(
         raise ValueError("Fixed running anchor lacks pinned run and market identity")
     if journal_profile == "backtest_v3" and expected_query_sha256 is None:
         raise ValueError("V3 running anchor needs its pinned squeeze query")
-    if journal_profile not in {"backtest_v2", "backtest_v3"} or (
+    if journal_profile not in {"backtest_v2", "backtest_v3", "backtest_v4"} or (
             journal_profile == "backtest_v2" and expected_query_sha256 is not None):
         raise ValueError("Fixed running anchor has an invalid journal profile")
+    if journal_profile == "backtest_v4" and expected_query_sha256 is not None:
+        raise ValueError("V4 running anchor cannot use the retired V3 query certificate")
     context = load_typed_run_context(client, run_id)
     if (context.get("mode") != "backtest"
             or context.get("configuration_hash") != configuration_hash
             or context.get("market_plan_token") != plan.token
             or tuple(context.get("account_ids") or ()) != account_ids):
         raise RuntimeError("Fixed running anchor differs from typed run context")
-    if journal_profile == "backtest_v3":
+    if journal_profile == "backtest_v4":
+        prefix = load_verified_v4_prefix(client, run_id)
+    elif journal_profile == "backtest_v3":
         prefix = load_verified_squeeze_v3_prefix(
             client, run_id, expected_market_plan_token=plan.token,
             expected_query_sha256=expected_query_sha256)
     else:
         prefix = load_committed_prefix(client, run_id,
                                        journal_profile="backtest_v2")
-    if (not isinstance(prefix, (V2CommittedPrefix, V3CommittedPrefix))
+    if (not isinstance(prefix, (V2CommittedPrefix, V3CommittedPrefix,
+                                V4CommittedPrefix))
             or prefix.run_id != run_id or prefix.status != "running"
             or prefix.last_sequence < 1 or not prefix.batch_ids
             or prefix.last_batch_id != prefix.batch_ids[-1]):
