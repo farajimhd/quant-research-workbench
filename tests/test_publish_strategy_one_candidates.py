@@ -24,6 +24,22 @@ def test_apply_rejects_non_workstation_before_market_read(capsys, monkeypatch):
     assert "managed workstation" in capsys.readouterr().err
 
 
+def test_reader_uses_existing_private_file_without_copying_secret(tmp_path, monkeypatch):
+    path = tmp_path / "reader.env"
+    path.write_text("credential-stays-here", encoding="utf-8")
+    monkeypatch.setattr(subject, "_secret_path", lambda _role: path)
+    checked = []
+    monkeypatch.setattr(subject, "_restrict_secret_file", lambda value: checked.append(value))
+    for key in ("BACKTEST_V3_READ_CREDENTIAL_FILE",
+                "BACKTEST_V3_READ_CLICKHOUSE_URL",
+                "BACKTEST_V3_READ_CLICKHOUSE_USER",
+                "BACKTEST_V3_READ_CLICKHOUSE_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    subject._bootstrap_reader_credential()
+    assert checked == [path]
+    assert subject.os.environ["BACKTEST_V3_READ_CREDENTIAL_FILE"] == str(path)
+
+
 @pytest.mark.parametrize("args", [
     ["--through-boundary-ms", "101"],
     ["--through-boundary-ms", "57600100"],

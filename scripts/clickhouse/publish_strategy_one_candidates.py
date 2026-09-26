@@ -31,6 +31,8 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 from scripts.clickhouse.provision_strategy_one_candidate_producer import (
     PRINCIPAL, WORKSTATION_IPV4, _GRANTS, _credential, _grant_set,
 )
+from scripts.clickhouse.provision_fixed_backtest_v3_principals import _secret_path
+from scripts.clickhouse.provision_trading_journal import _restrict_secret_file
 from src.backend.backtest_market_data import (
     certified_market_plan_from_arte, readonly_clickhouse_client,
 )
@@ -44,6 +46,21 @@ from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST, verif
 
 DEFAULT_DAY = "2026-08-18"
 FULL_SESSION_BOUNDARY_MS = 57_600_000
+
+
+def _bootstrap_reader_credential() -> None:
+    """Use the workstation's existing private V3 reader file, never copy it."""
+    keys = ("BACKTEST_V3_READ_CREDENTIAL_FILE",
+            "BACKTEST_V3_READ_CLICKHOUSE_URL",
+            "BACKTEST_V3_READ_CLICKHOUSE_USER",
+            "BACKTEST_V3_READ_CLICKHOUSE_PASSWORD")
+    if any(os.environ.get(key) for key in keys):
+        return
+    path = _secret_path("read")
+    if not path.is_file():
+        raise RuntimeError("Private V3 read credential is unavailable")
+    _restrict_secret_file(path)
+    os.environ[keys[0]] = str(path)
 
 
 def _writer_client(password: str):
@@ -62,6 +79,7 @@ def publish_session(*, session_date: str, through_boundary_ms: int,
     }
     print(f"Certifying arte 100ms source: {session_date}, all planned tickers...",
           flush=True)
+    _bootstrap_reader_credential()
     plan = certified_market_plan_from_arte(
         sessions=(session_date,), tickers=(), configuration=configuration)
     stream, activation = canonical_stream_activation()
