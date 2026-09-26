@@ -38,6 +38,19 @@ def finite_float64(value: Any) -> float:
     return value
 
 
+def _readback_float64(value: Any) -> float:
+    """Decode JSONEachRow's integral spelling of a stored Float64 exactly."""
+    if type(value) is int:
+        try:
+            decoded = float(value)
+        except OverflowError as exc:
+            raise ValueError("Terminal Float64 readback exceeds binary64") from exc
+        if not math.isfinite(decoded) or int(decoded) != value:
+            raise ValueError("Terminal Float64 readback loses integer precision")
+        return decoded
+    return finite_float64(value)
+
+
 def assert_float64_readback(expected: float, observed: Any) -> None:
     """Guard the exact binary64 bits after a future client readback."""
     finite_float64(expected)
@@ -180,14 +193,16 @@ def recover_snapshot_group(
                    or row.get("run_id") != parent.get("run_id")
                    for row in children)):
         raise ValueError("Terminal snapshot recovery group is incomplete")
-    normalized = tuple({name: row[name] for name in (
-        "conid", "ticker", "currency", "asset_class",
-        *(column for _, column in POSITION_FIELDS))}
-        for row in sorted(children, key=lambda row: row["ordinal"]))
+    normalized = tuple({
+        **{name: row[name] for name in (
+            "conid", "ticker", "currency", "asset_class")},
+        **{column: _readback_float64(row[column])
+           for _, column in POSITION_FIELDS},
+    } for row in sorted(children, key=lambda row: row["ordinal"]))
     if position_set_sha256(normalized) != parent.get("position_set_sha256"):
         raise ValueError("Terminal snapshot recovery hash differs")
     account = {source: {
-        "amount": finite_float64(parent[column]),
+        "amount": _readback_float64(parent[column]),
         "currency": parent["currency"],
         "timestamp": parent["source_timestamp_ms"],
     } for source, column in ACCOUNT_METRICS}
@@ -195,11 +210,13 @@ def recover_snapshot_group(
         "acctId": parent["account_id"], "conid": row["conid"],
         "contractDesc": row["ticker"], "currency": row["currency"],
         "assetClass": row["asset_class"],
-        **{source: finite_float64(row[column]) for source, column in POSITION_FIELDS},
+        **{source: _readback_float64(row[column])
+           for source, column in POSITION_FIELDS},
     } for row in normalized)
     if project_account_scalars(account) != {
             "currency": parent["currency"],
             "source_timestamp_ms": parent["source_timestamp_ms"],
-            **{column: parent[column] for _, column in ACCOUNT_METRICS}}:
+            **{column: _readback_float64(parent[column])
+               for _, column in ACCOUNT_METRICS}}:
         raise ValueError("Terminal account recovery changed typed scalars")
     return account, positions

@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from src.backend.backtest_terminal_snapshot_v2 import (
+    ACCOUNT_METRICS, POSITION_FIELDS,
     assert_float64_readback, finite_float64, position_set_sha256,
     project_account_scalars, project_position_scalars,
     project_snapshot_group, recover_snapshot_group,
@@ -127,6 +128,15 @@ def test_fixed_runtime_emits_atomic_account_manifest_and_bound_positions() -> No
     recovered_account, recovered_positions = recover_snapshot_group(parent, children)
     assert recovered_account == summary.to_cpapi()
     assert recovered_positions == (positions[0].to_cpapi(),)
+    # ClickHouse JSONEachRow spells integral Float64 values as JSON integers.
+    wire_parent = {**parent, **{
+        column: int(parent[column]) for _, column in ACCOUNT_METRICS
+        if parent[column].is_integer()}}
+    wire_children = tuple({**row, **{
+        column: int(row[column]) for _, column in POSITION_FIELDS
+        if row[column].is_integer()}} for row in children)
+    assert recover_snapshot_group(wire_parent, wire_children) == (
+        summary.to_cpapi(), (positions[0].to_cpapi(),))
     with pytest.raises(ValueError, match="incomplete"):
         project_snapshot_group(manifest, (), batch_id=batch_id)
     with pytest.raises(ValueError, match="hash differs"):
