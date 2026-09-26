@@ -6,11 +6,11 @@ Tactic and broker-state-fingerprint recovery also remain outside this stage.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from copy import deepcopy
 from datetime import date, datetime, timezone
 from hashlib import sha256
-from typing import Any
+from typing import Any, Mapping
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
@@ -21,6 +21,7 @@ from src.trading_runtime.arte_journal_writer import (
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.signals import StrategyIntent
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +87,8 @@ def oms_group_state_batch(
     run_status: str, strategy_id: str, strategy_revision: int,
     recorded_at: datetime, published_intent_batch: TypedJournalBatch,
     committed_intent_batch_id: str,
+    admission_source_intent: StrategyIntent | None = None,
+    admission_reservation: Mapping[str, Any] | None = None,
 ) -> TypedJournalBatch:
     """Project the represented group revision and its keyed recovery components."""
     if not run_id or not group.group_id or not group.account_id or not group.intent.intent_id:
@@ -96,8 +99,31 @@ def oms_group_state_batch(
         raise ValueError("OMS requires one pinned typed intent revision")
     original = published_intent_batch.events[0]
     original_detail = published_intent_batch.intents[0]
+    if (admission_source_intent is None) != (admission_reservation is None):
+        raise ValueError("OMS admission source and reservation must be paired")
+    source_intent = admission_source_intent or group.intent
+    if admission_reservation is not None:
+        meta = group.intent.metadata
+        required = {
+            "assignment_id", "portfolio_account_key", "portfolio_decision_id",
+            "unprotected_backtest_authorized", "portfolio_policy",
+            "portfolio_reservation_id", "requested_quantity",
+            "portfolio_fx_to_base", "correlation_id", "causation_id",
+        }
+        if (set(meta) != required or source_intent.metadata
+                or replace(group.intent, quantity=source_intent.quantity,
+                           metadata={}) != source_intent
+                or admission_reservation.get("intent_id") != group.intent.intent_id
+                or admission_reservation.get("account_id") != group.account_id
+                or admission_reservation.get("reservation_id") != meta["portfolio_reservation_id"]
+                or admission_reservation.get("decision_id") != meta["portfolio_decision_id"]
+                or admission_reservation.get("assignment_id") != meta["assignment_id"]
+                or admission_reservation.get("status") != "reserved"
+                or float(admission_reservation.get("quantity") or 0) != group.intent.quantity
+                or not meta["assignment_id"]):
+            raise ValueError("OMS approved intent differs from its normalized admission")
     rebuilt = strategy_intent_batch(
-        group.intent, run_id=published_intent_batch.run_id,
+        source_intent, run_id=published_intent_batch.run_id,
         run_month=published_intent_batch.run_month,
         account_id=str(original_detail["account_id"]),
         attempt_id=published_intent_batch.attempt_id,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import fields, replace
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -12,13 +13,65 @@ from src.trading_runtime.arte_journal_writer import (
     publish_typed_batch,
 )
 from src.trading_runtime.arte_oms_projection import (
-    load_committed_oms_group_state_page, oms_group_state_batch,
+    freeze_oms_group, load_committed_oms_group_state_page, oms_group_state_batch,
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.order_management import _ManagedOrderGroup, OrderManagementState
+from src.trading_runtime.signals import CapitalRequest
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 from tests.test_arte_intent_projection import intent
 from tests.test_arte_journal_writer import MemoryClient
+
+
+def test_oms_projection_uses_original_intent_and_normalized_admission() -> None:
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    original = intent(quantity=0., capital_request=CapitalRequest("fixed_quantity", 5))
+    metadata = {
+        "assignment_id": "assignment-1", "portfolio_account_key": "cash",
+        "portfolio_decision_id": "decision-1", "unprotected_backtest_authorized": False,
+        "portfolio_policy": "policy-1", "portfolio_reservation_id": "reservation-1",
+        "requested_quantity": 5., "portfolio_fx_to_base": 1.,
+        "correlation_id": "corr-1", "causation_id": "decision-1",
+    }
+    approved = replace(original, quantity=4., metadata=metadata)
+    reservation = {
+        "intent_id": original.intent_id, "account_id": "DU1",
+        "reservation_id": "reservation-1", "decision_id": "decision-1",
+        "assignment_id": "assignment-1", "status": "reserved", "quantity": 4.,
+    }
+    run_id, attempt_id = "backtest:oms-admission", str(uuid4())
+    first_id, second_id = str(uuid4()), str(uuid4())
+    first = strategy_intent_batch(
+        original, run_id=run_id, run_month=date(2026, 8, 1),
+        account_id="DU1", attempt_id=attempt_id, batch_id=first_id,
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        sequence=1, source_cursor="intent", run_status="running", recorded_at=at)
+    order = OrderRequest(acctId="DU1", conid=123, cOID="entry-1", ticker="test",
+                         orderType="LMT", side="BUY", quantity=4, price=12.5)
+    group = _ManagedOrderGroup(
+        "group-1", approved, "DU1", StrategyOrderPlan((order,)),
+        OrderManagementState.CREATED, at, at, [order], remaining_quantity=4.)
+    frozen = freeze_oms_group(group)
+    group.orders.clear()
+    assert len(frozen.orders) == 1
+    batch = oms_group_state_batch(
+        frozen, run_id=run_id, run_month=date(2026, 8, 1),
+        attempt_id=attempt_id, batch_id=second_id, prior_batch_id=first_id,
+        sequence=2, source_cursor="oms", run_status="running",
+        strategy_id="strategy-1", strategy_revision=1, recorded_at=at,
+        published_intent_batch=first, committed_intent_batch_id=first_id,
+        admission_source_intent=original, admission_reservation=reservation)
+    assert batch.oms_group_states[0]["strategy_intent_id"] == original.intent_id
+    assert Decimal(batch.oms_order_states[0]["quantity"]) == 4
+    with pytest.raises(ValueError, match="normalized admission"):
+        oms_group_state_batch(
+            frozen, run_id=run_id, run_month=date(2026, 8, 1),
+            attempt_id=attempt_id, batch_id=second_id, prior_batch_id=first_id,
+            sequence=2, source_cursor="oms", run_status="running",
+            strategy_id="strategy-1", strategy_revision=1, recorded_at=at,
+            published_intent_batch=first, committed_intent_batch_id=first_id,
+            admission_source_intent=original,
+            admission_reservation={**reservation, "assignment_id": "wrong"})
 
 
 def test_oms_projection_inventory_exposes_unmodeled_runtime_state() -> None:
