@@ -23,6 +23,7 @@ from src.backend.backtest_market_data import (
 from src.trading_runtime.strategy_one_columnar import (
     CompletedMacd, CompletedThirtySecondLow, MACD_RESOLUTIONS_MS,
     StrategyOneCandidateBatch, prepare_strategy_one_entries,
+    strict_numeric_array,
 )
 
 
@@ -77,7 +78,8 @@ def _numpy(table: pa.Table, name: str, *, fill: int | float,
     if name not in table.column_names:
         raise ValueError(f"Strategy 1 source lacks {name}")
     column = pc.fill_null(table[name], fill)
-    return np.asarray(column.to_numpy(zero_copy_only=False), dtype=dtype)
+    return strict_numeric_array(
+        column.to_numpy(zero_copy_only=False), name=f"source {name}", dtype=dtype)
 
 
 def _resolution(table: pa.Table, milliseconds: int) -> pa.Table:

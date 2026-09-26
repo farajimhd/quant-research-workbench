@@ -105,8 +105,23 @@ def _clock(values, *, resolution: int, name: str) -> np.ndarray:
     return result.astype(np.int64, copy=False)
 
 
+def strict_numeric_array(values, *, name: str, dtype) -> np.ndarray:
+    """Project typed market values without integer truncation or wraparound."""
+    source = np.asarray(values)
+    expected = np.dtype(dtype)
+    if source.dtype.kind not in "biuf" or (
+        expected.kind in "iu" and source.dtype.kind not in "iu"
+    ) or (expected.kind == "b" and source.dtype.kind != "b"):
+        raise ValueError(f"Strategy 1 {name} has a lossy or nonnumeric type")
+    if expected.kind in "iu" and source.size:
+        bounds = np.iinfo(expected)
+        if np.any(source < bounds.min) or np.any(source > bounds.max):
+            raise ValueError(f"Strategy 1 {name} has a lossy or nonnumeric type")
+    return source.astype(expected, copy=False)
+
+
 def _aligned(values, count: int, *, name: str, dtype) -> np.ndarray:
-    result = np.asarray(values, dtype=dtype)
+    result = strict_numeric_array(values, name=name, dtype=dtype)
     if result.shape != (count,):
         raise ValueError(f"Strategy 1 {name} differs from evaluation boundaries")
     return result

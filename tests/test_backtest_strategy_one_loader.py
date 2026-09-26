@@ -8,7 +8,7 @@ from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit, market_day_boundary,
 )
 from src.backend.backtest_strategy_one_loader import (
-    _table, load_strategy_one_entry_batch, load_strategy_one_entry_batches,
+    _numpy, _table, load_strategy_one_entry_batch, load_strategy_one_entry_batches,
 )
 
 
@@ -50,6 +50,16 @@ def source_tables():
         "price_valid": [1] * 4, "extremes_valid": [1] * 4,
         "indicator_resolution_ms": [1_000, 5_000, 10_000, 30_000]})
     return low, higher
+
+
+@pytest.mark.parametrize("values,dtype", [
+    ([100_000.5], "int64"),
+    ([-1], "uint8"),
+    ([256], "uint8"),
+])
+def test_arrow_integer_projection_rejects_lossy_casts(values, dtype):
+    with pytest.raises(ValueError, match="lossy or nonnumeric"):
+        _numpy(pa.table({"value": values}), "value", fill=0, dtype=dtype)
 
 
 def test_arrow_market_rows_feed_vectorized_candidate_gate():

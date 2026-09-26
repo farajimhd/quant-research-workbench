@@ -18,9 +18,9 @@ def inputs():
         np.array([30_000, 60_000]), np.array([.2, .2]), np.array([.1, .1]))
         for resolution in (1_000, 5_000, 10_000, 30_000)}
     return dict(evaluation_boundary_ms=boundaries, evaluation_epoch_us=epochs,
-                close_int=np.full(6, 100_000), price_valid=np.ones(6),
+                close_int=np.full(6, 100_000), price_valid=np.ones(6, dtype=np.uint8),
                 bid_int=np.full(6, 99_900), ask_int=np.full(6, 100_100),
-                quote_valid=np.ones(6), quote_timestamp_us=epochs - 100_000,
+                quote_valid=np.ones(6, dtype=np.uint8), quote_timestamp_us=epochs - 100_000,
                 execution_vwap=np.full(6, 9.5), previous_close=np.full(6, 9.),
                 cumulative_volume=np.full(6, 30_000.),
                 cumulative_notional=np.full(6, 300_000.),
@@ -82,6 +82,20 @@ def test_missing_macd_and_misaligned_source_fail_closed():
         prepare_strategy_one_entries(**data)
 
 
+@pytest.mark.parametrize("field,value", [
+    ("close_int", 100_000.5),
+    ("bid_int", 99_900.25),
+    ("volume_trade_count", 1.5),
+    ("price_valid", -1),
+])
+def test_persisted_integer_evidence_never_truncates_or_wraps(field, value):
+    data = inputs()
+    data[field] = np.asarray(data[field], dtype=np.float64)
+    data[field][1] = value
+    with pytest.raises(ValueError, match="lossy or nonnumeric"):
+        prepare_strategy_one_entries(**data)
+
+
 def test_squeeze_episode_schedule_is_causal_inclusive_and_compact():
     data = inputs()
     data["evaluation_boundary_ms"] = np.array(
@@ -99,7 +113,7 @@ def test_squeeze_episode_schedule_is_causal_inclusive_and_compact():
         for resolution in (1_000, 5_000, 10_000, 30_000)}
     data["thirty_second_low"] = CompletedThirtySecondLow(
         np.arange(30_000, 630_001, 30_000), np.full(21, 97_000),
-        np.ones(21), np.ones(21))
+        np.ones(21, dtype=np.uint8), np.ones(21, dtype=np.uint8))
     batch = prepare_strategy_one_entries(**data)
     schedule = schedule_strategy_one_entries(batch, [30_000, 630_000])
     assert schedule.evaluation_boundary_ms.tolist() == [30_000, 30_100, 330_000, 630_000]
