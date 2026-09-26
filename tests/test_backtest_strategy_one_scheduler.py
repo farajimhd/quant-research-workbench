@@ -120,6 +120,27 @@ def test_coordinator_applies_all_broker_rows_before_decisions_and_tracks_orders(
         scheduler.pop_next()
 
 
+def test_candidate_only_coordinator_has_no_per_boundary_thread_handoff(monkeypatch):
+    from src.backend import backtest_strategy_one_scheduler as subject
+
+    async def unexpected_thread(*_args, **_kwargs):
+        pytest.fail("in-memory candidate scheduling used a worker thread")
+
+    monkeypatch.setattr(subject.asyncio, "to_thread", unexpected_thread)
+
+    async def noop(*_args):
+        pass
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date=DAY,
+        candidate_rows=iter((candidate("AAA", 100), candidate("BBB", 200))),
+        active_source=lambda ticker, after: iter(()))
+    assert asyncio.run(run_strategy_one_boundaries(
+        scheduler, process_broker_row=noop, evaluate_ticker=noop,
+        financially_active_tickers=lambda: (),
+        finish_boundary=noop)) == 2
+
+
 def shared_row(ticker, boundary):
     return {"session_date": DAY, "ticker": ticker, "boundary_ms": boundary,
             "resolution_ms": 100, "close_int": 100_000,

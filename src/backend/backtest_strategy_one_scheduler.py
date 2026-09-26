@@ -292,9 +292,19 @@ async def run_strategy_one_boundaries(
         raise TypeError("Strategy 1 coordinator needs typed scheduler callbacks")
     count = 0
     try:
-        scheduler.reconcile_financial_tickers(financially_active_tickers())
+        initial = financially_active_tickers()
+        if initial != scheduler.active_tickers:
+            await asyncio.to_thread(scheduler.reconcile_financial_tickers, initial)
         while True:
-            work = await asyncio.to_thread(scheduler.pop_next)
+            # Candidate-only boundaries are already resident typed rows. A
+            # thread round-trip per 100 ms candidate would erase much of the
+            # vectorized preparation gain. Active streams alone can perform
+            # a ClickHouse fetch while advancing their prefetched head.
+            active = scheduler.active_tickers
+            if set(active) - set(scheduler.exhausted_tickers):
+                work = await asyncio.to_thread(scheduler.pop_next)
+            else:
+                work = scheduler.pop_next()
             if work is None:
                 return count
             candidates = {row.market_row["ticker"]: row
@@ -304,7 +314,12 @@ async def run_strategy_one_boundaries(
             for ticker, resolutions in work.broker_rows:
                 await evaluate_ticker(ticker, resolutions, candidates.get(ticker))
             await finish_boundary(work)
-            scheduler.reconcile_financial_tickers(financially_active_tickers())
+            desired = financially_active_tickers()
+            if desired != scheduler.active_tickers:
+                await asyncio.to_thread(scheduler.reconcile_financial_tickers,
+                                        desired)
             count += 1
+            if count % 256 == 0:
+                await asyncio.sleep(0)
     finally:
         scheduler.close()
