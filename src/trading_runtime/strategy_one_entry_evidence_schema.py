@@ -26,6 +26,7 @@ PRODUCT_DIGEST = sha256(json.dumps({
     "evaluation_interval_ms": 100,
     "tick_size": TICK_SIZE,
     "source": "certified-candidate-pivot-hod-v7-seed-and-completed-bars",
+    "coverage": "exact-candidate-activation-pivot-hod-v7-seed-plan-tokens",
     "activation": "one-frozen-gap-per-episode-with-ordinal-resistance-children",
     "bos": "completed-one-second-confirmed-and-supported-break",
     "protection": "completed-thirty-second-low-and-third-overhead-v7-target",
@@ -62,6 +63,8 @@ _EVIDENCE_COLUMNS = _IDENTITY + (
 _COVERAGE_COLUMNS = _IDENTITY + (
     ("bars_attempt_id", "UUID"), ("candidate_attempt_id", "UUID"),
     ("candidate_content_hash", "FixedString(64)"),
+    ("candidate_plan_token", "FixedString(64)"),
+    ("activation_plan_token", "FixedString(64)"),
     ("pivot_plan_token", "FixedString(64)"),
     ("hod_plan_token", "FixedString(64)"),
     ("v7_seed_plan_token", "FixedString(64)"),
