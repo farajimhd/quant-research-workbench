@@ -20,6 +20,9 @@ from src.trading_runtime.arte_portfolio_snapshot import (
     prepare_captured_portfolio_snapshot, publish_prepared_portfolio_snapshot,
 )
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.arte_journal_commit_v4 import (
+    V4CommittedPrefix, load_verified_v4_prefix,
+)
 
 
 _TABLE = "trading_backtest_snapshot_anchor_v1"
@@ -41,10 +44,10 @@ def _stored(client: Any, run_id: str, account_id: str) -> list[dict[str, Any]]:
 
 
 def load_terminal_backtest_snapshot(
-    client: Any, prefix: CommittedPrefix, *, account_id: str,
+    client: Any, prefix: CommittedPrefix | V4CommittedPrefix, *, account_id: str,
 ) -> dict[str, Any]:
     """Require one anchor to this exact terminal prefix and verified snapshot."""
-    if (not isinstance(prefix, CommittedPrefix) or not account_id
+    if (not isinstance(prefix, (CommittedPrefix, V4CommittedPrefix)) or not account_id
             or prefix.status not in {"completed", "stopped", "failed"}
             or not prefix.batch_ids):
         raise ValueError("Backtest snapshot requires a terminal committed prefix")
@@ -66,7 +69,8 @@ def load_terminal_backtest_snapshot(
 
 
 def publish_terminal_backtest_snapshot(
-    client: Any, prefix: CommittedPrefix, captured: CapturedPortfolioSnapshot,
+    client: Any, prefix: CommittedPrefix | V4CommittedPrefix,
+    captured: CapturedPortfolioSnapshot,
 ) -> str:
     """Worker-only, idempotent publication; the typed anchor commits last."""
     if not isinstance(captured, CapturedPortfolioSnapshot):
@@ -78,7 +82,7 @@ def publish_terminal_backtest_snapshot(
 
 
 def publish_terminal_backtest_snapshots(
-    client: Any, prefix: CommittedPrefix,
+    client: Any, prefix: CommittedPrefix | V4CommittedPrefix,
     captures: tuple[CapturedPortfolioSnapshot, ...],
 ) -> tuple[str, ...]:
     """Verify the terminal prefix once, then anchor every pinned account."""
@@ -92,10 +96,14 @@ def publish_terminal_backtest_snapshots(
     return tuple(_publish_verified_snapshot(client, prefix, row) for row in captures)
 
 
-def _verify_current_prefix(client: Any, prefix: CommittedPrefix) -> dict[str, Any]:
-    if not isinstance(prefix, CommittedPrefix):
+def _verify_current_prefix(
+    client: Any, prefix: CommittedPrefix | V4CommittedPrefix,
+) -> dict[str, Any]:
+    if not isinstance(prefix, (CommittedPrefix, V4CommittedPrefix)):
         raise ValueError("Backtest snapshot requires a committed prefix")
-    verified = load_committed_prefix(client, prefix.run_id)
+    verified = (load_verified_v4_prefix(client, prefix.run_id)
+                if isinstance(prefix, V4CommittedPrefix) else
+                load_committed_prefix(client, prefix.run_id))
     if verified != prefix or verified.status not in {"completed", "stopped", "failed"}:
         raise RuntimeError("Backtest snapshot needs the current terminal prefix")
     context = load_typed_run_context(client, prefix.run_id)
@@ -105,9 +113,10 @@ def _verify_current_prefix(client: Any, prefix: CommittedPrefix) -> dict[str, An
 
 
 def _publish_verified_snapshot(
-    client: Any, prefix: CommittedPrefix, captured: CapturedPortfolioSnapshot,
+    client: Any, prefix: CommittedPrefix | V4CommittedPrefix,
+    captured: CapturedPortfolioSnapshot,
 ) -> str:
-    if (not isinstance(prefix, CommittedPrefix)
+    if (not isinstance(prefix, (CommittedPrefix, V4CommittedPrefix))
             or not isinstance(captured, CapturedPortfolioSnapshot)
             or captured.run_id != prefix.run_id):
         raise ValueError("Backtest snapshot capture differs from its run")

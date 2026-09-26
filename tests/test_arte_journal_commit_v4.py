@@ -8,7 +8,8 @@ import pytest
 
 from src.trading_runtime.arte_journal_commit_v4 import (
     load_verified_commit_v4, load_verified_v4_prefix, prepare_commit_v4,
-    publish_base_typed_batch_v4, verify_commit_v4,
+    publish_base_typed_batch_v4, publish_terminal_typed_batch_v4,
+    verify_commit_v4,
 )
 from src.trading_runtime.arte_journal_schema import (
     TABLES, V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
@@ -20,7 +21,24 @@ from src.trading_runtime.arte_journal_writer import typed_row
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from src.trading_runtime.arte_journal_projection import commission_revision_batch
 from src.trading_runtime.domain import CommissionEvent
-from tests.test_arte_journal_writer import MemoryClient, batch
+from tests.test_arte_journal_writer import MemoryClient, batch, captured
+
+
+def terminal_batch():
+    item = batch()
+    event = dict(item.events[0])
+    event.update(category="lifecycle", entity_type="run", entity_id=item.run_id,
+                 account_id="")
+    event.pop("content_hash")
+    event = typed_row("trading_event_v1", event)
+    transition = typed_row("trading_run_transition_v1", {
+        "record_id": event["record_id"], "run_id": item.run_id,
+        "event_month": event["event_month"], "batch_id": item.batch_id,
+        "account_id": "", "status": "completed", "processed_events": 1,
+        "source_event_time": event["event_time"],
+    })
+    return replace(item, status="completed", events=(event,),
+                   run_transitions=(transition,))
 
 
 class MemoryV4Dispatch(TypedInsertDispatch):
@@ -188,6 +206,37 @@ def test_v4_publication_is_detail_first_commit_last_and_idempotent():
     client.tables["trading_event_v1"][0]["entity_id"] = "tampered"
     with pytest.raises(RuntimeError, match="row hash"):
         publish_base_typed_batch_v4(client, item)
+
+
+def test_v4_terminal_is_lifecycle_last_and_anchors_all_accounts(monkeypatch):
+    from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
+
+    client = attached_v4_client()
+    item = terminal_batch()
+    monkeypatch.setattr(writer_module, "load_typed_run_context",
+                        lambda _client, _run: {
+                            "mode": "backtest", "account_ids": ("DU1",)})
+    anchored = []
+    monkeypatch.setattr(anchors, "publish_terminal_backtest_snapshots",
+                        lambda _client, prefix, captures: anchored.append(
+                            (prefix, captures)))
+    prefix = publish_terminal_typed_batch_v4(
+        client, item, captures=(captured(),))
+    assert prefix.status == "completed" and prefix.last_batch_id == item.batch_id
+    assert len(anchored) == 1 and anchored[0][1] == (captured(),)
+    assert client.inserts[-1] == "trading_commit_v4"
+    assert publish_terminal_typed_batch_v4(
+        client, item, captures=(captured(),)) == prefix
+    assert len(client.tables["trading_commit_v4"]) == 1
+    with pytest.raises(ValueError, match="running event batch"):
+        publish_base_typed_batch_v4(client, item)
+
+
+def test_v4_terminal_rejects_missing_capture_before_insert(monkeypatch):
+    client = attached_v4_client()
+    with pytest.raises(ValueError, match="captures are incomplete"):
+        publish_terminal_typed_batch_v4(client, terminal_batch(), captures=())
+    assert client.inserts == []
 
 
 def test_v4_rejects_unfenced_client_before_any_write(monkeypatch):

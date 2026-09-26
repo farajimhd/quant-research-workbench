@@ -6,6 +6,7 @@ import pytest
 
 from src.trading_runtime import arte_backtest_snapshot_anchor as anchor
 from src.trading_runtime.arte_journal_writer import CommittedPrefix
+from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from tests.test_arte_admission_fence import BATCH, RUN, captured
 
 
@@ -65,6 +66,24 @@ def test_terminal_anchor_rejects_changed_prefix_before_snapshot_write(monkeypatc
     with pytest.raises(RuntimeError, match="current terminal prefix"):
         anchor.publish_terminal_backtest_snapshot(client, PREFIX, captured())
     assert client.inserts == 0
+
+
+def test_v4_terminal_anchor_requires_verified_v4_chain(monkeypatch) -> None:
+    _install(monkeypatch)
+    v4 = V4CommittedPrefix(RUN, 1, BATCH, "terminal", "completed", (BATCH,))
+    monkeypatch.setattr(anchor, "load_verified_v4_prefix",
+                        lambda _client, _run: v4)
+    monkeypatch.setattr(anchor, "load_committed_prefix",
+                        lambda *_args: pytest.fail("V1 fence used for V4"))
+    client = Client()
+    assert anchor.publish_terminal_backtest_snapshot(
+        client, v4, captured()) == HASH
+    assert anchor.load_terminal_backtest_snapshot(
+        client, v4, account_id="DU1") == {"state_hash": HASH}
+    monkeypatch.setattr(anchor, "load_verified_v4_prefix",
+                        lambda _client, _run: None)
+    with pytest.raises(RuntimeError, match="current terminal prefix"):
+        anchor.publish_terminal_backtest_snapshot(client, v4, captured())
 
 
 def test_strict_terminal_anchor_receipt_is_bounded_and_retry_safe(monkeypatch) -> None:

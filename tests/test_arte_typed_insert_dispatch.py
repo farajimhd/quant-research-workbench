@@ -514,6 +514,40 @@ def test_v4_cold_barrier_matches_nonempty_keeper_watermark() -> None:
     assert not barrier.prefix_verified
 
 
+def test_v4_terminal_commit_compacts_real_keeper_dispatch(monkeypatch) -> None:
+    from test_arte_journal_writer import MemoryClient, captured
+    from test_arte_journal_commit_v4 import terminal_batch
+    from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
+    from src.trading_runtime import arte_journal_writer as journal_writer
+    from src.trading_runtime.arte_journal_commit_v4 import (
+        publish_terminal_typed_batch_v4,
+    )
+
+    item = terminal_batch()
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run(item.run_id)
+    attest_direct(authority, item.run_id)
+
+    class WriterClient(MemoryClient):
+        typed_insert_strict = True
+        typed_insert_dispatch = authority
+
+        def execute(self, sql, *, query_id=None):
+            return super().execute(sql)
+
+    monkeypatch.setattr(journal_writer, "load_typed_run_context",
+                        lambda _client, _run: {
+                            "mode": "backtest", "account_ids": ("DU1",)})
+    monkeypatch.setattr(anchors, "publish_terminal_backtest_snapshots",
+                        lambda *_args: ("anchored",))
+    client = WriterClient()
+    prefix = publish_terminal_typed_batch_v4(
+        client, item, captures=(captured(),))
+    barrier = authority.acquire_cold_barrier(item.run_id)
+    assert barrier.verify_committed_prefix(
+        client, journal_profile="backtest_v4") == prefix
+
+
 def test_operation_cap_fails_closed_without_unbounded_keeper_nodes() -> None:
     authority = TypedInsertDispatch(Keeper(), max_operations=1)
     authority.initialize_new_run("run-1")

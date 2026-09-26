@@ -371,6 +371,69 @@ def publish_base_typed_batch_v4(client, batch) -> str:
     this base path cannot silently omit them. The execution thread must invoke
     this on a bounded writer lane, never inline with market-data processing.
     """
+    if getattr(batch, "status", None) != "running":
+        raise ValueError("V4 base publication needs one bounded running event batch")
+    return _publish_typed_batch_v4(client, batch)
+
+
+def publish_terminal_typed_batch_v4(client, batch, *, captures) -> V4CommittedPrefix:
+    """Commit one lifecycle-last suffix, then anchor every account recovery.
+
+    An interrupted anchor leaves a terminal V4 commit but no certified
+    terminal recovery; retrying the same batch publishes only missing rows.
+    This function belongs on the bounded writer lane, never the market loop.
+    """
+    from src.trading_runtime.arte_backtest_snapshot_anchor import (
+        publish_terminal_backtest_snapshots,
+    )
+    from src.trading_runtime.arte_journal_writer import load_typed_run_context
+    from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
+
+    if (getattr(batch, "status", None) not in {"completed", "stopped", "failed"}
+            or len(batch.events) != 1 or len(batch.run_transitions) != 1):
+        raise ValueError("V4 terminal needs one lifecycle-last typed event")
+    event, transition = batch.events[0], batch.run_transitions[0]
+    try:
+        terminal_at = datetime.fromisoformat(
+            str(event["event_time"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError) as exc:
+        raise ValueError("V4 terminal lifecycle clock is invalid") from exc
+    if (event.get("category") != "lifecycle"
+            or event.get("entity_type") != "run"
+            or event.get("entity_id") != batch.run_id
+            or event.get("account_id") != ""
+            or event.get("sequence") != batch.last_sequence
+            or transition.get("record_id") != event.get("record_id")
+            or transition.get("status") != batch.status
+            or transition.get("account_id") != ""
+            or transition.get("source_event_time") != event.get("event_time")
+            or terminal_at.tzinfo is None):
+        raise ValueError("V4 terminal lifecycle differs from its batch")
+    if (not isinstance(captures, tuple) or not captures
+            or any(type(row) is not CapturedPortfolioSnapshot for row in captures)
+            or len({row.account_id for row in captures}) != len(captures)
+            or any(row.run_id != batch.run_id
+                   or row.state_revision != batch.last_sequence
+                   or row.snapshot_at.tzinfo is None
+                   or row.snapshot_at.astimezone(timezone.utc)
+                   != terminal_at.astimezone(timezone.utc)
+                   for row in captures)):
+        raise ValueError("V4 terminal account captures are incomplete")
+    context = load_typed_run_context(client, batch.run_id)
+    if (context["mode"] != "backtest"
+            or set(context["account_ids"]) != {row.account_id for row in captures}):
+        raise ValueError("V4 terminal account membership differs from run context")
+    _publish_typed_batch_v4(client, batch)
+    prefix = load_verified_v4_prefix(client, batch.run_id)
+    if (prefix is None or prefix.status != batch.status
+            or prefix.last_batch_id != batch.batch_id
+            or prefix.last_sequence != batch.last_sequence):
+        raise RuntimeError("V4 terminal commit lacks exact cold readback")
+    publish_terminal_backtest_snapshots(client, prefix, captures)
+    return prefix
+
+
+def _publish_typed_batch_v4(client, batch) -> str:
     from src.trading_runtime.arte_journal_writer import (
         TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
         _sealed_families, _v4_family_table, _verify_commission_links,
@@ -380,8 +443,8 @@ def publish_base_typed_batch_v4(client, batch) -> str:
 
     if (not isinstance(batch, TypedJournalBatch)
             or not 1 <= len(batch.events) <= 512
-            or batch.status != "running"):
-        raise ValueError("V4 base publication needs one bounded running event batch")
+            or batch.status not in {"running", "completed", "stopped", "failed"}):
+        raise ValueError("V4 publication needs one bounded typed event batch")
     if (getattr(client, "typed_insert_strict", False) is not True
             or not isinstance(getattr(client, "typed_insert_dispatch", None),
                               TypedInsertDispatch)):
