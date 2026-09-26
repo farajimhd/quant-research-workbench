@@ -101,7 +101,10 @@ class BacktestTypedJournalPublisher:
             return self._task
         if self._task is not None:
             self._task.result()  # Surface an earlier failed receipt.
-        self._task = asyncio.create_task(self._drain())
+        target_sequence = (self._checkpoint_waiters[0][0]
+                           if self._checkpoint_waiters else
+                           self.journal.latest_sequence(self.journal.run_id))
+        self._task = asyncio.create_task(self._drain(target_sequence=target_sequence))
         return self._task
 
     def _prepare_batches(self, through_sequence: int) -> tuple[TypedJournalBatch | V3SqueezeBatch, ...]:

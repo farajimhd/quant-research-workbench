@@ -141,6 +141,39 @@ def test_v4_terminal_queues_after_predecessor_and_fences_only_after_receipt():
     asyncio.run(exercise())
 
 
+def test_v4_terminal_appended_before_running_task_starts_stays_out_of_base_queue():
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+        def submit_base_v4(self, batch):
+            assert batch.status == "running"
+            return FakeWriter.submit(self, batch)
+
+        def submit_terminal_backtest(self, batch, captures):
+            assert batch.status == "completed"
+            return FakeWriter.submit(self, batch)
+
+    async def exercise():
+        journal = _journal()
+        writer = V4Writer()
+        publisher = _publisher(journal, writer)
+        running = publisher.enqueue_pending()
+        journal.append(run_id=RUN, category="lifecycle", entity_type="run",
+                       entity_id=RUN, event_time=AT,
+                       payload={"status": "completed", "processed_events": 2})
+        capture = CapturedPortfolioSnapshot(
+            RUN, "DU1", 1, AT, "primary", "enabled", "synchronized",
+            "broker-snapshot-1", AT, "", 1000.0, None, None,
+            (), (), (), (), (), (),
+        )
+        terminal = publisher.enqueue_terminal((capture,))
+        assert (await running).last_sequence == 2
+        assert (await terminal).last_sequence == 3
+        assert [batch.status for batch in writer.submitted] == ["running", "completed"]
+
+    asyncio.run(exercise())
+
+
 def test_invalid_evidence_fails_projection_before_writer_submission():
     async def exercise():
         journal = BacktestMemoryJournal(run_id=RUN)
