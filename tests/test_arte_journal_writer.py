@@ -196,6 +196,61 @@ def test_v4_client_requires_isolated_runner_identity(monkeypatch) -> None:
         session.close()
 
 
+def test_v4_context_client_requires_keeper_and_audits_journal_grants(monkeypatch):
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+
+    class KeeperClient:
+        connected = True
+        client_state = "CONNECTED"
+
+        def add_listener(self, callback):
+            self.listener = callback
+
+        def remove_listener(self, callback):
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    class Client:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    session = ManagedKeeperSession(KeeperClient())
+    with pytest.raises(RuntimeError, match="writable Keeper"):
+        writer_module.backtest_v4_context_client_from_env(keeper_session=session)
+    session._on_state("CONNECTED")
+    client = Client()
+    monkeypatch.setattr(writer_module, "journal_client_from_env", lambda: client)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight",
+                        lambda _client: None)
+    result = writer_module.backtest_v4_context_client_from_env(
+        keeper_session=session)
+    assert result is client and result.typed_insert_strict is True
+    assert isinstance(result.typed_insert_dispatch, TypedInsertDispatch)
+    assert result.typed_insert_dispatch.keeper is session.client
+    assert not client.closed
+    client.close()
+
+    bad = Client()
+    monkeypatch.setattr(writer_module, "journal_client_from_env", lambda: bad)
+    def reject(_client):
+        raise RuntimeError("journal grant mismatch")
+    monkeypatch.setattr(writer_module, "journal_permission_preflight", reject)
+    with pytest.raises(RuntimeError, match="grant mismatch"):
+        writer_module.backtest_v4_context_client_from_env(
+            keeper_session=session)
+    assert bad.closed
+    session.close()
+
+
 def batch() -> TypedJournalBatch:
     event = typed_row("trading_event_v1", {
         "run_id": RUN, "event_month": "2026-08-01", "attempt_id": ATTEMPT,

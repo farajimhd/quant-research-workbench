@@ -226,6 +226,30 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
     return client
 
 
+def backtest_v4_context_client_from_env(*, keeper_session=None) -> Any:
+    """Fence new run-context rows with Keeper using the journal-only principal.
+
+    This control-plane client is separate from the V4 batch runner. It cannot
+    write market products, and an unverified or read-only Keeper session never
+    gains typed INSERT authority.
+    """
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+
+    if (not isinstance(keeper_session, ManagedKeeperSession)
+            or not keeper_session.writable):
+        raise RuntimeError("V4 run context needs a caller-owned writable Keeper session")
+    client = journal_client_from_env()
+    try:
+        journal_permission_preflight(client)
+        client.typed_insert_dispatch = TypedInsertDispatch(keeper_session.client)
+        client.typed_insert_strict = True
+        return client
+    except BaseException:
+        client.close()
+        raise
+
+
 @dataclass(frozen=True, slots=True)
 class TypedJournalBatch:
     run_id: str
