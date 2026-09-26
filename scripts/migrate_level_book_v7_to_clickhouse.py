@@ -481,9 +481,16 @@ def run_locked(args: argparse.Namespace) -> int:
         if existing and existing != wanted:
             raise ValueError("Existing supplement lineage differs from verified coverage")
         if not existing:
-            insert(c, LINEAGE_TABLE, lineage,
-                   f"v7-supplement-lineage-{plan_hash}",
-                   batch_rows=args.batch_rows, batch_bytes=args.batch_bytes)
+            # The controller connection was opened before all ticker workers.
+            # A long idle socket may be closed by ClickHouse or WSL. Open a
+            # fresh, one-use publisher for this final coverage fence.
+            lineage_writer = client()
+            try:
+                insert(lineage_writer, LINEAGE_TABLE, lineage,
+                       f"v7-supplement-lineage-{plan_hash}",
+                       batch_rows=args.batch_rows, batch_bytes=args.batch_bytes)
+            finally:
+                lineage_writer.close()
         actual_lineage = query(client(readonly=True),
             f"SELECT parent_source_plan_hash,supplement_source_plan_hash,ticker "
             f"FROM {LINEAGE_TABLE} ORDER BY ticker")
