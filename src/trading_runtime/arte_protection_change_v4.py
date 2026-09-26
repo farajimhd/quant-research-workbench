@@ -17,8 +17,8 @@ def protection_change_batch_v4(
     """Project an OMS protection record without recalculation or opaque data."""
     projected = project_protection_change_v3(
         record, attempt_id=attempt_id, batch_id=batch_id)
-    if run_month.isoformat() != projected.event["event_month"]:
-        raise ValueError("Protection change differs from the run month")
+    if run_month.day != 1:
+        raise ValueError("Run month must start on day one")
     base = TypedJournalBatch(
         record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
         record.sequence, record.sequence, source_cursor, "running",

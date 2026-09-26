@@ -62,12 +62,14 @@ def test_terminal_broker_batch_keeps_full_event_span_and_float64_families():
     assert project_v4_terminal_broker_batch(records, **kwargs) == unit
 
 
-def test_terminal_broker_batch_rejects_foreign_month_before_projection():
-    with pytest.raises(ValueError, match="clock or month"):
-        project_v4_terminal_broker_batch(
-            _records(), run_id="run-v4", account_ids=("DU1",),
-            attempt_id=str(uuid4()), run_month=date(2026, 9, 1),
-            prior_batch_id=str(uuid4()), source_cursor="2026-08-18:34200000")
+def test_terminal_broker_batch_separates_launch_and_historical_month():
+    unit = project_v4_terminal_broker_batch(
+        _records(), run_id="run-v4", account_ids=("DU1",),
+        attempt_id=str(uuid4()), run_month=date(2026, 9, 1),
+        prior_batch_id=str(uuid4()), source_cursor="2026-08-18:34200000")
+    assert unit.base.run_month == date(2026, 9, 1)
+    assert {row["event_month"] for row in unit.base.events} == {"2026-08-01"}
+    assert unit.broker_snapshots.accounts[0]["event_month"] == "2026-08-01"
 
 
 def test_terminal_broker_snapshot_rejects_missing_account_and_clock():

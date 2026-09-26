@@ -313,7 +313,7 @@ def test_v4_broker_acknowledgement_is_fenced_and_cold_verified():
          "correlation_id": "correlation-1", "causation_id": "causation-1",
          "strategy_id": "early-squeeze-strategy", "strategy_revision": 1})
     unit = broker_acknowledgement_batch_v4(
-        source, run_month=date(2026, 8, 1), attempt_id=str(UUID(int=182)),
+        source, run_month=date(2026, 9, 1), attempt_id=str(UUID(int=182)),
         batch_id=str(UUID(int=183)), prior_batch_id=str(UUID(int=0)),
         source_cursor="2026-08-18:31000")
     client = attached_v4_client()
@@ -325,6 +325,7 @@ def test_v4_broker_acknowledgement_is_fenced_and_cold_verified():
     verified, families = load_verified_commit_v4(
         client, run_id=source.run_id, batch_id=unit.base.batch_id)
     assert verified["family_count"] == 2
+    assert verified["run_month"] == "2026-09-01"
     assert {row["family_name"] for row in families} == {
         "trading_event_v1", ACKNOWLEDGEMENT.name}
     client.tables[ACKNOWLEDGEMENT.name][0]["order_status"] = "Inactive"

@@ -48,8 +48,7 @@ def project_v4_terminal_broker_batch(
             or records[0].sequence < 1
             or any(record.event_time.tzinfo is None
                    or record.recorded_at.tzinfo is None
-                   or record.event_time.astimezone(timezone.utc).date().replace(day=1)
-                   != run_month for record in records)):
+                   for record in records)):
         raise ValueError("V4 terminal broker batch has an invalid clock or month")
     attempt = str(UUID(attempt_id))
     prior = str(UUID(prior_batch_id))
@@ -61,7 +60,7 @@ def project_v4_terminal_broker_batch(
         records, run_id=run_id, account_ids=account_ids, batch_id=batch_id)
     events = tuple(typed_row("trading_event_v1", {
         "run_id": record.run_id,
-        "event_month": run_month.isoformat(),
+        "event_month": record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01"),
         "attempt_id": attempt, "batch_id": batch_id,
         "record_id": record.record_id, "sequence": record.sequence,
         "event_time": record.event_time.astimezone(timezone.utc).isoformat(),

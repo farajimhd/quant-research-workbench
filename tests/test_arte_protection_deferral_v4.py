@@ -34,10 +34,10 @@ def _source():
     return intent, source, record
 
 
-def _project(intent, source, record):
+def _project(intent, source, record, *, run_month=date(2026, 8, 1)):
     return protection_deferral_batch_v4(
         record, source_batch=source, source_intent=intent,
-        run_month=date(2026, 8, 1), attempt_id=str(uuid4()),
+        run_month=run_month, attempt_id=str(uuid4()),
         batch_id=str(uuid4()), prior_batch_id=str(uuid4()),
         source_cursor="boundary:100ms:1", strategy_id=STRATEGY_ID,
         strategy_revision=STRATEGY_NUMBER)
@@ -51,6 +51,13 @@ def test_failed_protection_uses_existing_typed_intent_decision_family():
     assert batch.intent_decisions[0]["reason_detail"] == "broker rejected amendment"
     assert batch.intent_decisions[0]["ticker"] == "AAA"
     assert batch.intent_decisions[0]["reason_count"] == 0
+
+
+def test_historical_protection_deferral_keeps_run_and_event_month_separate():
+    intent, source, record = _source()
+    batch = _project(intent, source, record, run_month=date(2026, 9, 1))
+    assert batch.run_month == date(2026, 9, 1)
+    assert batch.events[0]["event_month"] == "2026-08-01"
 
 
 def test_failed_protection_rejects_wrong_source_or_unmodeled_payload():

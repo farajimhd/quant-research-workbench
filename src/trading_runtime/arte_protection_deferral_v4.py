@@ -48,8 +48,8 @@ def protection_deferral_batch_v4(
             or strategy_revision != STRATEGY_NUMBER):
         raise ValueError("Strategy 1 protection deferral lacks its typed intent")
     month = record.event_time.astimezone(timezone.utc).date().replace(day=1)
-    if run_month != month:
-        raise ValueError("Strategy 1 protection deferral differs from run month")
+    if run_month.day != 1:
+        raise ValueError("Run month must start on day one")
     at = record.event_time.astimezone(timezone.utc).isoformat()
     event = {
         "record_id": record.record_id, "run_id": record.run_id,

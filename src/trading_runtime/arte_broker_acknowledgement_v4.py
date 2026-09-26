@@ -119,8 +119,8 @@ def broker_acknowledgement_batch_v4(
 
     projected = project_broker_acknowledgement_v4(
         record, attempt_id=attempt_id, batch_id=batch_id)
-    if run_month.isoformat() != projected.event["event_month"]:
-        raise ValueError("Broker acknowledgement differs from the run month")
+    if run_month.day != 1:
+        raise ValueError("Run month must start on day one")
     base = TypedJournalBatch(
         record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
         record.sequence, record.sequence, source_cursor, "running",

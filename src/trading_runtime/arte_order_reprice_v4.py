@@ -153,8 +153,8 @@ def order_reprice_batch_v4(
 
     event, detail = project_order_reprice_v4(
         record, attempt_id=attempt_id, batch_id=batch_id)
-    if event["event_month"] != run_month.isoformat():
-        raise ValueError("Repricing event differs from the run month")
+    if run_month.day != 1:
+        raise ValueError("Run month must start on day one")
     base = TypedJournalBatch(
         record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
         record.sequence, record.sequence, source_cursor, "running", (event,),

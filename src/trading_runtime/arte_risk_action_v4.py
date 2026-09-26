@@ -236,8 +236,8 @@ def risk_action_batch_v4(record: JournalRecord, *, run_month: date,
 
     event, parent, replies = project_risk_action_v4(
         record, attempt_id=attempt_id, batch_id=batch_id)
-    if event["event_month"] != run_month.isoformat():
-        raise ValueError("Risk action differs from the run month")
+    if run_month.day != 1:
+        raise ValueError("Run month must start on day one")
     base = TypedJournalBatch(
         record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
         record.sequence, record.sequence, source_cursor, "running", (event,),
