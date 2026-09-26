@@ -12,7 +12,7 @@ import asyncio
 from dataclasses import dataclass
 from contextlib import closing
 from heapq import heappop, heappush
-from typing import Any, Awaitable, Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterator, Mapping
 
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, iter_market_boundary_groups,
@@ -27,6 +27,9 @@ from src.backend.backtest_strategy_one_candidate_store import CertifiedCandidate
 from src.backend.backtest_strategy_one_activation import (
     CertifiedActivationPlan, StrategyOneActivation,
 )
+
+if TYPE_CHECKING:
+    from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
 
 
 MarketGroup = tuple[int, Mapping[int, Mapping]]
@@ -365,6 +368,7 @@ async def run_strategy_one_boundaries(
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     observe_activation: Callable[[StrategyOneActivation], Awaitable[None]] | None = None,
     observe_completed_seconds: Callable[[StrategyOneBoundaryWork], Awaitable[None]] | None = None,
+    static_gate: StrategyOneStaticGate | None = None,
 ) -> int:
     """One causal coordinator; market I/O cannot block the asyncio engine.
 
@@ -380,6 +384,14 @@ async def run_strategy_one_boundaries(
         raise TypeError("Strategy 1 coordinator needs typed scheduler callbacks")
     if observe_completed_seconds is not None and not callable(observe_completed_seconds):
         raise TypeError("Strategy 1 completed-second observer must be callable")
+    from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
+    if static_gate is not None and not isinstance(static_gate, StrategyOneStaticGate):
+        raise TypeError("Strategy 1 coordinator needs a typed static gate")
+    pending_gate = ({(fact.ticker, fact.boundary_ms): int(mask)
+                     for fact, mask in zip(static_gate.facts, static_gate.rejection_mask)}
+                    if static_gate is not None else None)
+    if pending_gate is not None and len(pending_gate) != len(static_gate.facts):
+        raise ValueError("Strategy 1 static gate repeats a candidate")
     count = 0
     try:
         initial = financially_active_tickers()
@@ -396,6 +408,8 @@ async def run_strategy_one_boundaries(
             else:
                 work = scheduler.pop_next()
             if work is None:
+                if pending_gate:
+                    raise ValueError("Strategy 1 static gate contains unseen candidates")
                 remaining = financially_active_tickers()
                 if remaining:
                     raise RuntimeError(
@@ -404,6 +418,13 @@ async def run_strategy_one_boundaries(
                 return count
             candidates = {row.market_row["ticker"]: row
                           for row in work.candidate_rows}
+            candidate_rejections = {}
+            if pending_gate is not None:
+                for ticker in candidates:
+                    key = (ticker, work.boundary_ms)
+                    if key not in pending_gate:
+                        raise ValueError("Strategy 1 candidate lacks static gate evidence")
+                    candidate_rejections[ticker] = pending_gate.pop(key)
             for ticker, resolutions in work.broker_rows:
                 await process_broker_row(ticker, resolutions, work.boundary_ms)
             # The broker first consumes this completed boundary. V7 and BOS
@@ -415,6 +436,10 @@ async def run_strategy_one_boundaries(
             for activation in work.activation_rows:
                 await observe_activation(activation)
             for ticker, resolutions in work.broker_rows:
+                if (ticker in candidate_rejections
+                        and candidate_rejections[ticker] != 0
+                        and ticker not in active):
+                    continue
                 await evaluate_ticker(ticker, resolutions, candidates.get(ticker))
             await finish_boundary(work)
             desired = financially_active_tickers()

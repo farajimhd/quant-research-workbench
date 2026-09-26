@@ -17,6 +17,8 @@ from src.backend.backtest_strategy_one_preparation import (
 from src.backend.backtest_strategy_one_activation import (
     CertifiedActivationPlan, StrategyOneActivation,
 )
+from src.backend.backtest_strategy_one_entry_product import CandidateFact
+from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
 )
@@ -142,6 +144,81 @@ def test_candidate_only_coordinator_has_no_per_boundary_thread_handoff(monkeypat
         scheduler, process_broker_row=noop, evaluate_ticker=noop,
         financially_active_tickers=lambda: (),
         finish_boundary=noop)) == 2
+
+
+def _gate(*rows):
+    facts = tuple(CandidateFact(ticker, boundary, boundary, None, "", None,
+                                "", "", "", False, None, None, "", None)
+                  for ticker, boundary, _mask in rows)
+    masks = np.array([mask for _, _, mask in rows], dtype=np.uint8)
+    return StrategyOneStaticGate(facts, masks,
+                                 np.flatnonzero(masks == 0).astype(np.int64))
+
+
+def test_static_gate_skips_only_rejected_inactive_candidate_decisions():
+    seen = []
+
+    async def broker(ticker, _rows, boundary):
+        seen.append(("broker", ticker, boundary))
+
+    async def decision(ticker, rows, _candidate):
+        seen.append(("decision", ticker, rows[100]["boundary_ms"]))
+
+    async def finish(_work):
+        pass
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date=DAY,
+        candidate_rows=iter((candidate("AAA", 100), candidate("BBB", 200))),
+        active_source=lambda _ticker, _after: iter(()))
+    assert asyncio.run(run_strategy_one_boundaries(
+        scheduler, process_broker_row=broker, evaluate_ticker=decision,
+        financially_active_tickers=lambda: (), finish_boundary=finish,
+        static_gate=_gate(("AAA", 100, 1), ("BBB", 200, 0)))) == 2
+    assert seen == [("broker", "AAA", 100), ("broker", "BBB", 200),
+                    ("decision", "BBB", 200)]
+
+
+def test_static_gate_reject_does_not_suppress_active_financial_evaluation():
+    seen = []
+    active = {"AAA"}
+
+    async def broker(*_args):
+        pass
+
+    async def decision(ticker, rows, _candidate):
+        seen.append((ticker, rows[100]["boundary_ms"]))
+        active.clear()
+
+    async def finish(_work):
+        pass
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter((candidate("AAA", 100),)),
+        active_source=lambda _ticker, _after: iter(()))
+    assert asyncio.run(run_strategy_one_boundaries(
+        scheduler, process_broker_row=broker, evaluate_ticker=decision,
+        financially_active_tickers=lambda: tuple(sorted(active)),
+        finish_boundary=finish, static_gate=_gate(("AAA", 100, 1)))) == 1
+    assert seen == [("AAA", 100)]
+
+
+@pytest.mark.parametrize("gate_rows, message", [
+    ((("BBB", 100, 1),), "candidate lacks static gate evidence"),
+    ((("AAA", 100, 1), ("BBB", 200, 0)), "static gate contains unseen candidates"),
+])
+def test_static_gate_and_sparse_tape_must_cover_same_candidates(gate_rows, message):
+    async def noop(*_args):
+        pass
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter((candidate("AAA", 100),)),
+        active_source=lambda _ticker, _after: iter(()))
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(run_strategy_one_boundaries(
+            scheduler, process_broker_row=noop, evaluate_ticker=noop,
+            financially_active_tickers=lambda: (), finish_boundary=noop,
+            static_gate=_gate(*gate_rows)))
 
 
 def test_active_stream_exhaustion_cannot_complete_with_open_financial_state():

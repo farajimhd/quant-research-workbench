@@ -30,12 +30,17 @@ class StrategyOneStaticGate:
     eligible_indices: np.ndarray
 
     def __post_init__(self) -> None:
+        known_bits = (MISSING_FROZEN_GAP | MISSING_COMPLETED_BOS
+                      | MISSING_BOS_SUPPORT | MISSING_INITIAL_PROTECTION)
         if (self.rejection_mask.dtype != np.uint8
                 or self.eligible_indices.dtype != np.int64
                 or self.rejection_mask.shape != (len(self.facts),)
+                or self.eligible_indices.ndim != 1
+                or np.any(self.rejection_mask & np.uint8(255 ^ known_bits))
                 or np.any(self.eligible_indices < 0)
                 or np.any(self.eligible_indices >= len(self.facts))
-                or np.any(self.rejection_mask[self.eligible_indices] != 0)):
+                or not np.array_equal(
+                    self.eligible_indices, np.flatnonzero(self.rejection_mask == 0))):
             raise ValueError("Strategy 1 static gate arrays differ")
         self.rejection_mask.setflags(write=False)
         self.eligible_indices.setflags(write=False)
