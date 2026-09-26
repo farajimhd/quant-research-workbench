@@ -15,6 +15,7 @@ from src.backend.fixed_bar_signal import first_squeeze_sql, validate_stream
 
 
 _CONTROLLER = Path(__file__).with_name("replay_run_service.py")
+_RUN_CONTEXT = Path(__file__).with_name("backtest_v4_run_context.py")
 _RUNTIME_ROOT = Path(__file__).parents[1] / "trading_runtime"
 _INDIRECT_SOURCES = (_RUNTIME_ROOT / "runtime.py",
                      _RUNTIME_ROOT / "portfolio.py",
@@ -390,6 +391,7 @@ def certify_fixed_adaptive_reprice_unreachable(
     *, oms_path: Path = _RUNTIME_ROOT / "order_management.py",
     runtime_path: Path = _RUNTIME_ROOT / "runtime.py",
     controller_path: Path = _CONTROLLER,
+    run_context_path: Path = _RUN_CONTEXT,
 ) -> str:
     """Prove the sole adaptive skip is wall-clock-only and fixed mode forwards unchanged.
 
@@ -397,11 +399,13 @@ def certify_fixed_adaptive_reprice_unreachable(
     observation. Any emitter, constructor, or controller drift needs review.
     """
     sources = tuple(path.read_text(encoding="utf-8") for path in
-                    (oms_path, runtime_path, controller_path))
-    oms, runtime, controller = (ast.parse(source) for source in sources)
+                    (oms_path, runtime_path, controller_path, run_context_path))
+    oms, runtime, controller, run_context = (
+        ast.parse(source) for source in sources)
     if sum(isinstance(node, ast.Constant)
            and node.value == "adaptive_reprice_skipped"
-           for tree in (oms, runtime, controller) for node in ast.walk(tree)) != 1:
+           for tree in (oms, runtime, controller, run_context)
+           for node in ast.walk(tree)) != 1:
         raise ValueError("Adaptive skip has another or missing source emitter")
     emitters = [node for node in ast.walk(oms) if isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
@@ -456,14 +460,36 @@ def certify_fixed_adaptive_reprice_unreachable(
     if len(calls) != 1 or not calls[0].args or not isinstance(calls[0].args[0], ast.Call):
         raise ValueError("Backtest TradingRuntime construction is unproven")
     config = calls[0].args[0]
-    if not isinstance(config.func, ast.Name) or config.func.id != "RunConfig":
-        raise ValueError("Backtest RunConfig construction is unproven")
+    if (not isinstance(config.func, ast.Name)
+            or config.func.id != "historical_runtime_config"):
+        raise ValueError("Backtest shared RunConfig construction is unproven")
+    imports = [node for node in ast.walk(initializers[0])
+               if isinstance(node, ast.ImportFrom)
+               and node.module == "src.backend.backtest_v4_run_context"
+               and [(alias.name, alias.asname) for alias in node.names]
+               == [("historical_runtime_config", None)]]
+    helpers = [node for node in run_context.body
+               if isinstance(node, ast.FunctionDef)
+               and node.name == "historical_runtime_config"]
+    if len(imports) != 1 or len(helpers) != 1:
+        raise ValueError("Backtest shared RunConfig authority is unproven")
+    returns = [node for node in ast.walk(helpers[0])
+               if isinstance(node, ast.Return)]
+    if (len(returns) != 1 or not isinstance(returns[0].value, ast.Call)
+            or not isinstance(returns[0].value.func, ast.Name)
+            or returns[0].value.func.id != "RunConfig"):
+        raise ValueError("Backtest shared RunConfig constructor is unproven")
     modes = [keyword.value for keyword in config.keywords if keyword.arg == "mode"]
     expected_mode = ast.parse("self.definition.mode", mode="eval").body
     if len(modes) != 1 or ast.dump(modes[0]) != ast.dump(expected_mode):
         raise ValueError("Backtest mode is not forwarded to OMS")
+    helper_modes = [keyword.value for keyword in returns[0].value.keywords
+                    if keyword.arg == "mode"]
+    if (len(helper_modes) != 1 or not isinstance(helper_modes[0], ast.Name)
+            or helper_modes[0].id != "mode"):
+        raise ValueError("Backtest shared mode is not forwarded to OMS")
     return hashlib.sha256(json.dumps({
-        "version": 1,
+        "version": 2,
         "family": _FIXED_UNREACHABLE_ADAPTIVE_REPRICE,
         "sources": tuple(hashlib.sha256(source.encode()).hexdigest()
                          for source in sources),

@@ -146,8 +146,8 @@ def test_fixed_adaptive_reprice_is_excluded_only_with_three_source_proof(tmp_pat
          "config.mode in {RunMode.LIVE, RunMode.PAPER, RunMode.BACKTEST}",
          "wall-clock freshness exclusion"),
         (controller, controller_source,
-         "self._runtime = TradingRuntime(\n            RunConfig(\n                mode=self.definition.mode,",
-         "self._runtime = TradingRuntime(\n            RunConfig(\n                mode=RunMode.LIVE,",
+         "historical_runtime_config(\n                mode=self.definition.mode,",
+         "historical_runtime_config(\n                mode=RunMode.LIVE,",
          "mode is not forwarded"),
     ):
         assert old in before
@@ -156,6 +156,16 @@ def test_fixed_adaptive_reprice_is_excluded_only_with_three_source_proof(tmp_pat
             cert.certify_fixed_adaptive_reprice_unreachable(
                 oms_path=oms, runtime_path=runtime, controller_path=controller)
         path.write_text(before, encoding="utf-8")
+
+    context = tmp_path / "backtest_v4_run_context.py"
+    context_source = cert._RUN_CONTEXT.read_text(encoding="utf-8")
+    context.write_text(context_source.replace(
+        "        mode=mode,", "        mode=RunMode.LIVE,", 1),
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="shared mode is not forwarded"):
+        cert.certify_fixed_adaptive_reprice_unreachable(
+            oms_path=oms, runtime_path=runtime, controller_path=controller,
+            run_context_path=context)
 
 
 def test_adaptive_skip_cannot_be_excluded_without_fixed_runtime_source(tmp_path):
