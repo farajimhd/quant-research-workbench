@@ -106,6 +106,15 @@ ticker/session through bounded Arrow batches into this mask, including exact
 indicator-row checks. Its candidates must still pass Candidate 350's
 surviving stateful entry/lifecycle rules. No path yet dispatches this draft
 from the application.
+Do not dispatch a sparse candidate into
+`early_squeeze_momentum.evaluate`: that legacy evaluator authorizes its BOS
+and resistance state from event-time `market_data_update` trades and computes
+forming MACD previews, while Strategy 1 has completed-bar clocks and no
+fictional trade ordering within a liquidity bucket. Port the surviving
+activation, confirmed/supported BOS, late-HOD, frozen-gap, entry/add/reentry,
+pending-order, and permission gates into a numbered Strategy 1 state machine
+with explicit completed-bar and V7 inputs. The columnar mask is only a
+necessary condition; its survivor must never submit an order by itself.
 `src/backend/backtest_strategy_one_preparation.py` now scans the full certified
 universe for completed-bar Early Squeeze starts, loads only episode-bearing
 tickers in bounded read-only lanes, and merges compact candidate cursors in
