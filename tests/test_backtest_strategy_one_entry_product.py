@@ -5,7 +5,7 @@ import pytest
 
 from src.backend.backtest_strategy_one_bos import BosSnapshot
 from src.backend.backtest_strategy_one_entry_product import (
-    canonical_price, content_hash, project_activation, project_candidate,
+    canonical_price, content_hash, exact_float64, project_activation, project_candidate,
 )
 from src.backend.backtest_strategy_one_evidence import StrategyOneEntryEvidence
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
@@ -71,6 +71,9 @@ def test_absent_protection_is_explicit_nullable_and_not_a_fabricated_target():
 
 
 def test_arte_price_grid_removes_binary_tick_tail_but_rejects_real_price_shift():
+    from struct import pack, unpack
+    value = .12345678912345678
+    assert exact_float64(unpack("<Q", pack("<d", value))[0]) == value
     assert canonical_price(9.889999999999999) == 9.89
     with pytest.raises(ValueError, match="outside the ARTE"):
         canonical_price(9.89001)

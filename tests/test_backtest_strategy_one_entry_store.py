@@ -1,6 +1,7 @@
 """The Backtest entry reader accepts only fully sealed, exact source rows."""
 from dataclasses import replace
 import json
+from struct import pack, unpack
 from uuid import uuid4
 
 import numpy as np
@@ -83,11 +84,19 @@ class Reader:
         elif "FROM arte.strategy_one_entry_activation_resistance_v1" in query:
             rows = [dict(ticker="AAA", **self.activation.resistance_rows()[0])]
         elif "FROM arte.strategy_one_entry_activation_v1" in query:
-            rows = [dict(ticker="AAA", **self.activation.row())]
+            row = dict(ticker="AAA", **self.activation.row())
+            gap = row.pop("average_gap")
+            row["average_gap_is_null"] = int(gap is None)
+            row["average_gap_bits"] = unpack("<Q", pack("<d", gap or 0.))[0]
+            rows = [row]
         elif "FROM arte.strategy_one_entry_evidence_v1" in query:
             row = dict(ticker="AAA", **self.candidate.row())
             if self.readback_stop_tail:
                 row["stop_price"] = 9.889999999999999
+            for name in ("stop_price", "target_price"):
+                price = row.pop(name)
+                row[name + "_is_null"] = int(price is None)
+                row[name + "_bits"] = unpack("<Q", pack("<d", price or 0.))[0]
             rows = [row]
         else:
             raise AssertionError(query)

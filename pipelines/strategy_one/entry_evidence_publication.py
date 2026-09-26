@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 from pipelines.market_sip.events.market_day_sql import literal
 from src.backend.backtest_strategy_one_entry_product import (
-    ActivationFact, CandidateFact, canonical_price, content_hash,
+    ActivationFact, CandidateFact, canonical_price, content_hash, exact_float64,
 )
 from src.trading_runtime.strategy_one_entry_evidence_schema import (
     ACTIVATION_TABLE, ACTIVATION_RESISTANCE_TABLE, EVIDENCE_TABLE,
@@ -88,15 +88,21 @@ def _covered(client: Any, scope: EntryPublicationScope) -> list[dict]:
 def _read_children(client: Any, scope: EntryPublicationScope, attempt: str,
                    ) -> tuple[tuple[ActivationFact, ...], tuple[CandidateFact, ...], int]:
     activation_rows = _rows(client, f"""SELECT episode_start_ms,price_int,
-      average_gap,resistance_count FROM {ACTIVATION_TABLE}
+      isNull(average_gap) AS average_gap_is_null,
+      reinterpretAsUInt64(ifNull(average_gap,toFloat64(0))) AS average_gap_bits,
+      resistance_count FROM {ACTIVATION_TABLE}
       WHERE {_where(scope, attempt)} ORDER BY episode_start_ms""")
     resistance_rows = _rows(client, f"""SELECT episode_start_ms,ordinal,level_id
       FROM {ACTIVATION_RESISTANCE_TABLE} WHERE {_where(scope, attempt)}
       ORDER BY episode_start_ms,ordinal""")
     evidence_rows = _rows(client, f"""SELECT boundary_ms,episode_start_ms,
       bos_break_boundary_ms,bos_pivot_id,bos_break_close_int,bos_support_kind,
-      bos_support_level_id,bos_support_pivot_id,protection_valid,stop_price,
-      target_price,target_level_id,target_ordinal FROM {EVIDENCE_TABLE}
+      bos_support_level_id,bos_support_pivot_id,protection_valid,
+      isNull(stop_price) AS stop_price_is_null,
+      reinterpretAsUInt64(ifNull(stop_price,toFloat64(0))) AS stop_price_bits,
+      isNull(target_price) AS target_price_is_null,
+      reinterpretAsUInt64(ifNull(target_price,toFloat64(0))) AS target_price_bits,
+      target_level_id,target_ordinal FROM {EVIDENCE_TABLE}
       WHERE {_where(scope, attempt)} ORDER BY boundary_ms""")
     activations = []
     cursor = 0
@@ -111,7 +117,8 @@ def _read_children(client: Any, scope: EntryPublicationScope, attempt: str,
             raise RuntimeError("Strategy 1 entry resistance read-back is incomplete")
         activations.append(ActivationFact(
             scope.ticker, start, int(row["price_int"]),
-            float(row["average_gap"]) if row["average_gap"] is not None else None,
+            exact_float64(row["average_gap_bits"])
+            if not int(row["average_gap_is_null"]) else None,
             tuple(str(child["level_id"]) for child in children)))
         cursor += count
     if cursor != len(resistance_rows):
@@ -129,10 +136,10 @@ def _read_children(client: Any, scope: EntryPublicationScope, attempt: str,
             if row["bos_break_close_int"] is not None else None,
             str(row["bos_support_kind"]), str(row["bos_support_level_id"]),
             str(row["bos_support_pivot_id"]), bool(valid),
-            canonical_price(float(row["stop_price"]))
-            if row["stop_price"] is not None else None,
-            canonical_price(float(row["target_price"]))
-            if row["target_price"] is not None else None,
+            canonical_price(exact_float64(row["stop_price_bits"]))
+            if not int(row["stop_price_is_null"]) else None,
+            canonical_price(exact_float64(row["target_price_bits"]))
+            if not int(row["target_price_is_null"]) else None,
             str(row["target_level_id"]), int(row["target_ordinal"])
             if row["target_ordinal"] is not None else None))
     return tuple(activations), tuple(candidates), len(resistance_rows)

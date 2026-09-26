@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
 from math import isfinite
+from struct import pack, unpack
 from typing import Mapping, Sequence
 
 from src.backend.backtest_strategy_one_evidence import StrategyOneEntryEvidence
@@ -33,6 +34,17 @@ def canonical_price(value: float) -> float:
     if abs(source - rounded) > Decimal("0.000000005"):
         raise ValueError("Strategy 1 price is outside the ARTE 1/10000 grid")
     return float(rounded)
+
+
+def exact_float64(bits: object) -> float:
+    """Restore exact stored Float64 bits; JSONEachRow rounds decimal display."""
+    value = int(bits)
+    if not 0 <= value < 2**64:
+        raise ValueError("Strategy 1 Float64 bits are invalid")
+    result = unpack("<d", pack("<Q", value))[0]
+    if not isfinite(result):
+        raise ValueError("Strategy 1 Float64 value is not finite")
+    return result
 
 
 @dataclass(frozen=True, slots=True)

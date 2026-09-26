@@ -17,7 +17,7 @@ from src.backend.backtest_market_data import CertifiedMarketDayPlan, _literal
 from src.backend.backtest_strategy_one_activation import CertifiedActivationPlan
 from src.backend.backtest_strategy_one_candidate_store import CertifiedCandidatePlan
 from src.backend.backtest_strategy_one_entry_product import (
-    ActivationFact, CandidateFact, canonical_price, content_hash,
+    ActivationFact, CandidateFact, canonical_price, content_hash, exact_float64,
 )
 from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
@@ -191,13 +191,19 @@ def certify_entry_evidence_plan(
         for ticker in tickers}
     queries = (
         ("activation", ACTIVATION_TABLE,
-         "episode_start_ms,price_int,average_gap,resistance_count"),
+         "episode_start_ms,price_int,isNull(average_gap) AS average_gap_is_null,"
+         "reinterpretAsUInt64(ifNull(average_gap,toFloat64(0))) AS average_gap_bits,"
+         "resistance_count"),
         ("resistance", ACTIVATION_RESISTANCE_TABLE,
          "episode_start_ms,ordinal,level_id"),
         ("evidence", EVIDENCE_TABLE,
          "boundary_ms,episode_start_ms,bos_break_boundary_ms,bos_pivot_id,"
          "bos_break_close_int,bos_support_kind,bos_support_level_id,"
-         "bos_support_pivot_id,protection_valid,stop_price,target_price,"
+         "bos_support_pivot_id,protection_valid,"
+         "isNull(stop_price) AS stop_price_is_null,"
+         "reinterpretAsUInt64(ifNull(stop_price,toFloat64(0))) AS stop_price_bits,"
+         "isNull(target_price) AS target_price_is_null,"
+         "reinterpretAsUInt64(ifNull(target_price,toFloat64(0))) AS target_price_bits,"
          "target_level_id,target_ordinal"),
     )
     for offset in range(0, len(tickers), batch_size):
@@ -241,7 +247,8 @@ def certify_entry_evidence_plan(
             index += count
             fact_activations.append(ActivationFact(
                 ticker, start, int(row["price_int"]),
-                float(row["average_gap"]) if row["average_gap"] is not None else None,
+                exact_float64(row["average_gap_bits"])
+                if not int(row["average_gap_is_null"]) else None,
                 tuple(str(item["level_id"]) for item in child)))
         if index != len(resistance_rows):
             raise RuntimeError("Strategy 1 activation has orphan resistance rows")
@@ -261,10 +268,10 @@ def certify_entry_evidence_plan(
                 if row["bos_break_close_int"] is not None else None,
                 str(row["bos_support_kind"]), str(row["bos_support_level_id"]),
                 str(row["bos_support_pivot_id"]), bool(validity),
-                canonical_price(float(row["stop_price"]))
-                if row["stop_price"] is not None else None,
-                canonical_price(float(row["target_price"]))
-                if row["target_price"] is not None else None,
+                canonical_price(exact_float64(row["stop_price_bits"]))
+                if not int(row["stop_price_is_null"]) else None,
+                canonical_price(exact_float64(row["target_price_bits"]))
+                if not int(row["target_price_is_null"]) else None,
                 str(row["target_level_id"]),
                 int(row["target_ordinal"])
                 if row["target_ordinal"] is not None else None))
