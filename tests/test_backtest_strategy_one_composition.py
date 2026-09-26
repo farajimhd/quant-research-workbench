@@ -102,3 +102,41 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch):
         finish_boundary=boundary))
     assert result == "complete"
     assert calls == ["scheduler_built", "executed", "scheduler_closed", "reader_closed"]
+
+
+@pytest.mark.parametrize("active", [(), ("AAA",)])
+def test_empty_causal_horizon_never_reads_market_or_invents_boundary(monkeypatch, active):
+    market = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "build", "d" * 64,
+        ("2026-08-18",), ("AAA",), (), (100,), "m" * 64)
+    candidates = CertifiedCandidatePlan(
+        "build", "r" * 64, "s" * 64, (), (), "c" * 64)
+    monkeypatch.setattr(subject, "project_candidate_plan",
+                        lambda *_args, **_kwargs: candidates)
+    runtime = SimpleNamespace(broker=SimpleNamespace(
+        financially_active_tickers=lambda: active))
+
+    async def boundary(_work):
+        pytest.fail("Empty candidate horizon fabricated a market boundary")
+
+    args = dict(
+        market=market, candidates=candidates,
+        activations=CertifiedActivationPlan((), "a" * 64),
+        pivots=CertifiedPivotPlan("build", "2026-08-18", (), (), "i" * 64),
+        hod=CertifiedHodPlan("build", "2026-08-18", (), "h" * 64),
+        seeds=CertifiedSeedPlan("build", "v" * 64, (), "z" * 64, True),
+        entry=CertifiedEntryEvidencePlan("build", "2026-08-18", (), (), (), "e" * 64),
+        prices=PriceLevelPlan("build", (), "p" * 64),
+        through_boundary_ms=60_000, runtime=runtime,
+        assignments=(StrategyAssignment(
+            "A1", "early-squeeze-strategy", 1, "DU1", "AAA", 123,
+            AssignmentStatus.WATCHING, StrategyPermissions(enter=True),
+            {"execution": {"tick_size": .01}}),),
+        client_factory=lambda: pytest.fail("Empty horizon opened a market reader"),
+        before_boundary=boundary, finish_boundary=boundary)
+    if active:
+        with pytest.raises(RuntimeError, match="active broker state"):
+            asyncio.run(subject.run_certified_strategy_one_session(**args))
+    else:
+        result = asyncio.run(subject.run_certified_strategy_one_session(**args))
+        assert result == subject.StrategyOneProposalCounts(0, 0, 0, 0)

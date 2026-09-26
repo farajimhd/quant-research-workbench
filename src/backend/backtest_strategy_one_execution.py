@@ -109,7 +109,16 @@ async def run_certified_strategy_one_session(
     visible = project_candidate_plan(
         candidates, through_boundary_ms=through_boundary_ms)
     if not visible.prepared:
-        raise RuntimeError("Strategy 1 zero-candidate terminal authority is not typed")
+        # The full product and its empty causal prefix have both been sealed.
+        # At a flat start there is no broker boundary to replay, but runtime
+        # still owns the typed terminal lifecycle/account snapshot. Never
+        # turn an empty prefix into a full-universe market read.
+        broker = getattr(runtime, "broker", None)
+        active = getattr(broker, "financially_active_tickers", None)
+        if not callable(active) or active() != ():
+            raise RuntimeError(
+                "Strategy 1 empty candidate horizon has active broker state")
+        return StrategyOneProposalCounts(0, 0, 0, 0)
     visible_activations = project_activation_plan(
         activations, candidates, through_boundary_ms=through_boundary_ms)
     full_gate = compile_static_entry_gate(visible, entry)
