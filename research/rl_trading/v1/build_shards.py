@@ -193,7 +193,7 @@ def run(args,console):
             phase1_plan_hash=p1['plan_hash'],market_build_id=p1['source_build_id'],
             reference_contract=REFERENCE_VERSION,
             tickers=tickers,top_n=int(teacher['config']['top_n']),
-            history_seconds=args.history_seconds,feature_names=list(FEATURE_NAMES),
+            history_seconds=args.history_seconds,feature_names=FEATURE_NAMES,
             account_clock='current_completed_second',
             feature_dtype='float32',volume_dtype='float64',
             teacher_first_us=teacher['first_us'],teacher_end_us=teacher['end_us'],

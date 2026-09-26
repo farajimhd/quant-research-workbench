@@ -16,10 +16,10 @@ def read(path):
 
 def write(path,value,*,immutable=True):
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
-    if immutable and path.exists():
-        if read(path)!=value:raise ValueError(f'Immutable artifact differs: {path}')
-        return
     raw=json.dumps(value,separators=(',',':'),allow_nan=False).encode()
+    if immutable and path.exists():
+        if read(path)!=json.loads(raw):raise ValueError(f'Immutable artifact differs: {path}')
+        return
     if path.suffix=='.gz':raw=gzip.compress(raw,compresslevel=1,mtime=0)
     temp=path.with_suffix(path.suffix+'.tmp')
     with temp.open('wb') as f:f.write(raw);f.flush();os.fsync(f.fileno())
