@@ -25,6 +25,7 @@ from uuid import UUID
 
 from src.trading_runtime.arte_journal_schema import (
     POLICY_ALLOWED_TABLES, TABLES, V4_COMMIT_TABLES,
+    BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES,
     VERSIONED_JOURNAL_V2_TABLES, fixed_backtest_v2_contracts,
     journal_permission_preflight, storage_preflight,
     versioned_journal_v2_contracts, versioned_journal_v2_preflight,
@@ -57,6 +58,7 @@ _CONTRACTS = {table.name: table for table in TABLES}
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
 _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
 _CONTRACTS.update({table.name: table for table in V4_COMMIT_TABLES})
+_CONTRACTS.update({table.name: table for table in BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES})
 _CONTRACTS.update({table.name: table for table in VERSIONED_JOURNAL_V2_TABLES})
 _CONTRACTS.update({table.name: table for table in (
     SQUEEZE_EPISODE, RESERVATION_REASON, RECONCILIATION_DIFFERENCE,
@@ -447,6 +449,8 @@ def _sealed_families(
     v3_reconciliation: bool = False,
     v4_broker_ack_ids: tuple[str, ...] = (),
     v4_protection_ids: tuple[str, ...] = (),
+    v4_snapshot_account_ids: tuple[str, ...] = (),
+    v4_snapshot_position_ids: tuple[str, ...] = (),
 ) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
     """Validate and hash the immutable snapshot on the persistence lane."""
     if len(batch.events) != batch.last_sequence - batch.first_sequence + 1:
@@ -620,6 +624,21 @@ def _sealed_families(
             if identity in details_by_record:
                 raise ValueError("Journal event has multiple typed detail families")
             details_by_record[identity] = PROTECTION_CHANGE_TABLES[0].name
+    if v4_snapshot_account_ids or v4_snapshot_position_ids:
+        expected_details = {**expected_details,
+            ("snapshot", "portfolio"):
+                "trading_backtest_account_snapshot_v2",
+            ("snapshot", "position"):
+                "trading_backtest_position_snapshot_v2"}
+        for record_ids, table in (
+            (v4_snapshot_account_ids, "trading_backtest_account_snapshot_v2"),
+            (v4_snapshot_position_ids, "trading_backtest_position_snapshot_v2"),
+        ):
+            for record_id in record_ids:
+                identity = str(UUID(str(record_id)))
+                if identity in details_by_record:
+                    raise ValueError("Journal event has multiple typed detail families")
+                details_by_record[identity] = table
     for event in by_family["trading_event_v1"]:
         key = (str(event["category"]), str(event["entity_type"]))
         if key not in expected_details:
@@ -1650,7 +1669,9 @@ def _v4_preflight(client: Any) -> None:
         _v4_family_table(table) for table, _, _, _ in _FAMILIES
     ) | frozenset(table.name for table in V4_COMMIT_TABLES) | {
         ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
-        *(table.name for table in PROTECTION_CHANGE_TABLES)}
+        *(table.name for table in PROTECTION_CHANGE_TABLES),
+        "trading_backtest_account_snapshot_v2",
+        "trading_backtest_position_snapshot_v2"}
     readonly = frozenset(table.name for table in installed) - writable
     journal_permission_preflight(
         client, journal_tables=writable, read_only_tables=readonly)
@@ -3081,6 +3102,7 @@ class _PortfolioSyncUnit:
 class _TerminalBacktestUnit:
     batch: TypedJournalBatch
     captured: tuple[CapturedPortfolioSnapshot, ...]
+    broker_snapshots: Any | None = None
 
 
 class ArteJournalWriter:
@@ -3449,6 +3471,7 @@ class ArteJournalWriter:
     def submit_terminal_backtest(
         self, batch: TypedJournalBatch,
         captured: tuple[CapturedPortfolioSnapshot, ...],
+        broker_snapshots: Any | None = None,
     ) -> Future[str]:
         """Enqueue terminal events and every account recovery image as one unit.
 
@@ -3457,9 +3480,15 @@ class ArteJournalWriter:
         prefix-to-snapshot anchor. A receipt resolves only after all anchors.
         """
         from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
+        from src.backend.backtest_terminal_broker_snapshot_v4 import V4BrokerSnapshotRows
 
         if self._journal_profile == "backtest_v2":
             raise RuntimeError("V2 terminal publication requires the staged separate fence")
+
+        if (broker_snapshots is not None
+                and (self._journal_profile != "backtest_v4"
+                     or type(broker_snapshots) is not V4BrokerSnapshotRows)):
+            raise ValueError("V4 terminal needs typed broker snapshot rows")
 
         if (not isinstance(batch, TypedJournalBatch)
                 or self._run_mode != "backtest"
@@ -3477,7 +3506,9 @@ class ArteJournalWriter:
                 raise RuntimeError("Typed journal writer failed") from self._error
             receipt: Future[str] = Future()
             try:
-                self._queue.put_nowait((_TerminalBacktestUnit(batch, tuple(captured)), receipt))
+                self._queue.put_nowait((
+                    _TerminalBacktestUnit(batch, tuple(captured), broker_snapshots),
+                    receipt))
             except Full as exc:
                 raise JournalQueueFull("Terminal Backtest queue is full; stop execution") from exc
             self._accepted_writes = True
@@ -3609,7 +3640,8 @@ class ArteJournalWriter:
                             publish_terminal_typed_batch_v4,
                         )
                         prefix = publish_terminal_typed_batch_v4(
-                            self._client, unit.batch, captures=unit.captured)
+                            self._client, unit.batch, captures=unit.captured,
+                            broker_snapshots=unit.broker_snapshots)
                         committed_id = prefix.last_batch_id
                     else:
                         from src.trading_runtime.arte_backtest_snapshot_anchor import (

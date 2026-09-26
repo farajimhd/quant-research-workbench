@@ -321,6 +321,56 @@ def test_v4_terminal_appended_before_running_task_starts_stays_out_of_base_queue
     asyncio.run(exercise())
 
 
+def test_v4_terminal_queues_broker_snapshot_suffix_as_one_typed_commit():
+    from uuid import uuid4
+    from src.backend.backtest_terminal_snapshot_v2 import (
+        ACCOUNT_METRICS, position_set_sha256,
+    )
+
+    class V4Writer(FakeWriter):
+        journal_profile = "backtest_v4"
+
+        def submit_base_v4(self, batch):
+            return FakeWriter.submit(self, batch)
+
+        def submit_terminal_backtest(self, batch, captures, broker_snapshots):
+            assert len(captures) == 1
+            assert len(broker_snapshots.accounts) == 1
+            assert broker_snapshots.positions == ()
+            assert [row["category"] for row in batch.events] == [
+                "snapshot", "lifecycle"]
+            return FakeWriter.submit(self, batch)
+
+    async def exercise():
+        journal = _journal()
+        payload = {name: {"amount": 1000.0, "currency": "USD",
+                          "timestamp": 123} for name, _ in ACCOUNT_METRICS}
+        journal.append(
+            run_id=RUN, category="snapshot", entity_type="portfolio",
+            entity_id="DU1", account_id="DU1", event_time=AT,
+            payload={**payload, "snapshot_id": str(uuid4()),
+                     "expected_position_count": 0,
+                     "position_set_sha256": position_set_sha256(())})
+        journal.append(
+            run_id=RUN, category="lifecycle", entity_type="run",
+            entity_id=RUN, event_time=AT,
+            payload={"status": "completed", "processed_events": 2})
+        writer = V4Writer()
+        publisher = _publisher(journal, writer)
+        capture = CapturedPortfolioSnapshot(
+            RUN, "DU1", 4, AT, "primary", "enabled", "synchronized",
+            "broker-snapshot-1", AT, "", 1000.0, None, None,
+            (), (), (), (), (), (),
+        )
+        receipt = await publisher.enqueue_terminal((capture,))
+        assert receipt.last_sequence == 4
+        assert [(batch.first_sequence, batch.last_sequence)
+                for batch in writer.submitted] == [(1, 2), (3, 4)]
+        assert journal.pending_record_count == 0
+
+    asyncio.run(exercise())
+
+
 def test_fixed_controller_v4_finish_captures_exact_terminal_actor_state():
     class V4Writer(FakeWriter):
         journal_profile = "backtest_v4"

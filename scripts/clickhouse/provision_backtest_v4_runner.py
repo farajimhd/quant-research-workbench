@@ -54,7 +54,9 @@ def desired_plan() -> PrincipalPlan:
     writable = frozenset(_v4_family_table(table) for table, _, _, _ in _FAMILIES) | frozenset(
         table.name for table in V4_COMMIT_TABLES) | {
             ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
-            *(table.name for table in PROTECTION_CHANGE_TABLES)}
+            *(table.name for table in PROTECTION_CHANGE_TABLES),
+            "trading_backtest_account_snapshot_v2",
+            "trading_backtest_position_snapshot_v2"}
     return PrincipalPlan(
         "running", PRINCIPAL,
         frozenset(table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES,

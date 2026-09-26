@@ -392,6 +392,64 @@ def test_v4_terminal_is_lifecycle_last_and_anchors_all_accounts(monkeypatch):
         publish_base_typed_batch_v4(client, item)
 
 
+def test_v4_terminal_broker_snapshots_share_commit_and_cold_readback(monkeypatch):
+    from uuid import uuid4
+    from src.backend.backtest_terminal_broker_snapshot_v4 import (
+        project_v4_terminal_broker_batch,
+    )
+    from src.backend.backtest_terminal_snapshot_v2 import (
+        ACCOUNT_METRICS, position_set_sha256,
+    )
+    from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
+
+    run_id = "run-v4-broker-snapshot"
+    at = datetime(2026, 8, 18, 13, 30, tzinfo=timezone.utc)
+    journal = BacktestMemoryJournal(run_id=run_id)
+    account = {name: {"amount": 1000.0, "currency": "USD", "timestamp": 123}
+               for name, _ in ACCOUNT_METRICS}
+    journal.append(
+        run_id=run_id, category="snapshot", entity_type="portfolio",
+        entity_id="DU1", account_id="DU1", event_time=at,
+        payload={**account, "snapshot_id": str(uuid4()),
+                 "expected_position_count": 0,
+                 "position_set_sha256": position_set_sha256(())})
+    journal.append(
+        run_id=run_id, category="lifecycle", entity_type="run",
+        entity_id=run_id, event_time=at,
+        payload={"status": "completed", "processed_events": 2})
+    unit = project_v4_terminal_broker_batch(
+        tuple(journal.unfenced_records()), run_id=run_id,
+        account_ids=("DU1",), attempt_id=str(uuid4()),
+        run_month=date(2026, 8, 1), prior_batch_id=str(UUID(int=0)),
+        source_cursor="2026-08-18:34200000")
+    client = attached_v4_client()
+    monkeypatch.setattr(writer_module, "load_typed_run_context",
+                        lambda _client, _run: {
+                            "mode": "backtest", "account_ids": ("DU1",)})
+    monkeypatch.setattr(anchors, "publish_terminal_backtest_snapshots",
+                        lambda *_args: None)
+    capture = replace(captured(), run_id=run_id, state_revision=2,
+                      snapshot_at=at)
+    prefix = publish_terminal_typed_batch_v4(
+        client, unit.base, captures=(capture,),
+        broker_snapshots=unit.broker_snapshots)
+    assert prefix.last_sequence == 2
+    assert {row["family_name"] for row in client.tables["trading_commit_family_v4"]} == {
+        "trading_event_v1", "trading_run_transition_v1",
+        "trading_backtest_account_snapshot_v2"}
+    assert len(client.tables["trading_backtest_account_snapshot_v2"]) == 1
+    assert load_verified_commit_v4(
+        client, run_id=run_id, batch_id=unit.base.batch_id)[0]["status"] == "completed"
+    assert publish_terminal_typed_batch_v4(
+        client, unit.base, captures=(capture,),
+        broker_snapshots=unit.broker_snapshots) == prefix
+    assert len(client.tables["trading_backtest_account_snapshot_v2"]) == 1
+    client.tables["trading_backtest_account_snapshot_v2"][0]["net_liquidation"] = 999.0
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_verified_commit_v4(client, run_id=run_id, batch_id=unit.base.batch_id)
+    journal.close()
+
+
 def test_v4_terminal_rejects_missing_capture_before_insert(monkeypatch):
     client = attached_v4_client()
     with pytest.raises(ValueError, match="captures are incomplete"):
@@ -552,7 +610,9 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
                          for table, _, _, _ in writer_module._FAMILIES) | \
         frozenset(table.name for table in V4_COMMIT_TABLES) | {
             ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
-            *(table.name for table in PROTECTION_CHANGE_TABLES)}
+            *(table.name for table in PROTECTION_CHANGE_TABLES),
+            "trading_backtest_account_snapshot_v2",
+            "trading_backtest_position_snapshot_v2"}
     assert observed[1] == (
         writable, frozenset(table.name for table in fixed_backtest_v2_contracts()) - writable)
 

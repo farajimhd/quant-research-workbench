@@ -15,7 +15,9 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
         for table, _, _, _ in provision._FAMILIES) | frozenset(
             table.name for table in V4_COMMIT_TABLES) | {
                 ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
-                *(table.name for table in PROTECTION_CHANGE_TABLES)}
+                *(table.name for table in PROTECTION_CHANGE_TABLES),
+                "trading_backtest_account_snapshot_v2",
+                "trading_backtest_position_snapshot_v2"}
     assert "trading_strategy_signal_v1" not in plan.insert_arte
     assert "trading_strategy_signal_v2" in plan.insert_arte
     assert not plan.insert_arte & MARKET_READ_TABLES

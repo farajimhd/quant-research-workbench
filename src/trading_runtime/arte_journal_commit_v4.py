@@ -311,7 +311,9 @@ def _load_verified_details_v4(
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
                     ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
-                    PROTECTION_CHANGE.name, PROTECTION_ENTRY_ORDER.name}:
+                    PROTECTION_CHANGE.name, PROTECTION_ENTRY_ORDER.name,
+                    "trading_backtest_account_snapshot_v2",
+                    "trading_backtest_position_snapshot_v2"}:
             related_rows[name] = rows
     parents = {str(UUID(str(row["record_id"]))): row for row in
                related_rows.get("trading_strategy_intent_v1", ())
@@ -358,6 +360,47 @@ def _load_verified_details_v4(
             tuple(events.values()), run_id=run_id, batch_id=batch_id)
     except ValueError as exc:
         raise RuntimeError("V4 protection change differs from its typed children") from exc
+    accounts = related_rows.get("trading_backtest_account_snapshot_v2", ())
+    positions = related_rows.get("trading_backtest_position_snapshot_v2", ())
+    if accounts or positions:
+        from src.backend.backtest_terminal_snapshot_v2 import recover_snapshot_group
+
+        account_ids = set()
+        covered = set()
+        for row in accounts:
+            record_id = str(UUID(str(row["record_id"])))
+            event = events.get(record_id)
+            if (event is None or record_id in covered
+                    or (event["category"], event["entity_type"])
+                    != ("snapshot", "portfolio")
+                    or event["entity_id"] != row["account_id"]
+                    or event["account_id"] != row["account_id"]
+                    or row["account_id"] in account_ids):
+                raise RuntimeError("V4 broker account readback lacks its event")
+            account_ids.add(row["account_id"])
+            covered.add(record_id)
+            children = tuple(child for child in positions
+                             if child["parent_snapshot_id"] == row["snapshot_id"])
+            try:
+                recover_snapshot_group(row, children)
+            except ValueError as exc:
+                raise RuntimeError("V4 broker account readback has incomplete positions") from exc
+        for row in positions:
+            record_id = str(UUID(str(row["record_id"])))
+            event = events.get(record_id)
+            if (event is None or record_id in covered
+                    or (event["category"], event["entity_type"])
+                    != ("snapshot", "position")
+                    or event["entity_id"] != str(row["conid"])
+                    or event["account_id"] != row["account_id"]
+                    or row["account_id"] not in account_ids):
+                raise RuntimeError("V4 broker position readback lacks its event")
+            covered.add(record_id)
+        snapshot_events = {record_id for record_id, row in events.items()
+                           if row["category"] == "snapshot"
+                           and row["entity_type"] in {"portfolio", "position"}}
+        if covered != snapshot_events:
+            raise RuntimeError("V4 broker snapshot readback lacks complete coverage")
     return details
 
 
@@ -461,7 +504,9 @@ def publish_protection_change_batch_v4(client, batch, *, change,
         protection_entry_order_rows=entry_orders)
 
 
-def publish_terminal_typed_batch_v4(client, batch, *, captures) -> V4CommittedPrefix:
+def publish_terminal_typed_batch_v4(
+    client, batch, *, captures, broker_snapshots=None,
+) -> V4CommittedPrefix:
     """Commit one lifecycle-last suffix, then anchor every account recovery.
 
     An interrupted anchor leaves a terminal V4 commit but no certified
@@ -473,11 +518,18 @@ def publish_terminal_typed_batch_v4(client, batch, *, captures) -> V4CommittedPr
     )
     from src.trading_runtime.arte_journal_writer import load_typed_run_context
     from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
+    from src.backend.backtest_terminal_broker_snapshot_v4 import V4BrokerSnapshotRows
 
+    if (broker_snapshots is not None
+            and type(broker_snapshots) is not V4BrokerSnapshotRows):
+        raise ValueError("V4 terminal broker snapshots are not typed")
     if (getattr(batch, "status", None) not in {"completed", "stopped", "failed"}
-            or len(batch.events) != 1 or len(batch.run_transitions) != 1):
-        raise ValueError("V4 terminal needs one lifecycle-last typed event")
-    event, transition = batch.events[0], batch.run_transitions[0]
+            or len(batch.events) != (1 if broker_snapshots is None
+                                     else broker_snapshots.last_sequence
+                                          - broker_snapshots.first_sequence + 1)
+            or len(batch.run_transitions) != 1):
+        raise ValueError("V4 terminal needs a lifecycle-last typed suffix")
+    event, transition = batch.events[-1], batch.run_transitions[0]
     try:
         terminal_at = datetime.fromisoformat(
             str(event["event_time"]).replace("Z", "+00:00"))
@@ -508,7 +560,13 @@ def publish_terminal_typed_batch_v4(client, batch, *, captures) -> V4CommittedPr
     if (context["mode"] != "backtest"
             or set(context["account_ids"]) != {row.account_id for row in captures}):
         raise ValueError("V4 terminal account membership differs from run context")
-    _publish_typed_batch_v4(client, batch)
+    if (broker_snapshots is not None
+            and (len(broker_snapshots.accounts) != len(context["account_ids"])
+                 or {row["account_id"] for row in broker_snapshots.accounts}
+                    != set(context["account_ids"]))):
+        raise ValueError("V4 terminal broker evidence differs from run accounts")
+    _publish_typed_batch_v4(client, batch,
+                            broker_snapshot_rows=broker_snapshots)
     prefix = load_verified_v4_prefix(client, batch.run_id)
     if (prefix is None or prefix.status != batch.status
             or prefix.last_batch_id != batch.batch_id
@@ -581,7 +639,8 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
 def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                             broker_acknowledgement_row=None,
                             protection_change_row=None,
-                            protection_entry_order_rows=()) -> str:
+                            protection_entry_order_rows=(),
+                            broker_snapshot_rows=None) -> str:
     from src.trading_runtime.arte_journal_writer import (
         TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
         _sealed_families, _v4_family_table, _verify_commission_links, typed_row,
@@ -600,8 +659,61 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
             strategy_one_entry_rows, broker_acknowledgement_row,
-            protection_change_row)) > 1:
+            protection_change_row, broker_snapshot_rows)) > 1:
         raise ValueError("V4 batch cannot mix independent typed supplements")
+    snapshot_accounts = ()
+    snapshot_positions = ()
+    if broker_snapshot_rows is not None:
+        from src.backend.backtest_terminal_broker_snapshot_v4 import V4BrokerSnapshotRows
+        from src.backend.backtest_terminal_snapshot_v2 import recover_snapshot_group
+
+        if (type(broker_snapshot_rows) is not V4BrokerSnapshotRows
+                or batch.status not in {"completed", "stopped", "failed"}
+                or broker_snapshot_rows.first_sequence != batch.first_sequence
+                or broker_snapshot_rows.last_sequence != batch.last_sequence
+                or len(batch.events) < 2):
+            raise ValueError("V4 broker snapshots require the full terminal suffix")
+        snapshot_accounts = tuple(typed_row(
+            "trading_backtest_account_snapshot_v2",
+            {key: value for key, value in row.items() if key != "content_hash"})
+            for row in broker_snapshot_rows.accounts)
+        snapshot_positions = tuple(typed_row(
+            "trading_backtest_position_snapshot_v2",
+            {key: value for key, value in row.items() if key != "content_hash"})
+            for row in broker_snapshot_rows.positions)
+        if (not snapshot_accounts
+                or any(source["content_hash"] != sealed["content_hash"]
+                       for source, sealed in zip(broker_snapshot_rows.accounts,
+                                                 snapshot_accounts))
+                or any(source["content_hash"] != sealed["content_hash"]
+                       for source, sealed in zip(broker_snapshot_rows.positions,
+                                                 snapshot_positions))):
+            raise ValueError("V4 broker snapshot row differs from its Float64 seal")
+        events = {str(UUID(str(row["record_id"]))): row for row in batch.events}
+        if (len(events) != len(batch.events)
+                or set(events) != {str(UUID(str(row["record_id"]))) for row in
+                                    (*snapshot_accounts, *snapshot_positions,
+                                     *batch.run_transitions)}):
+            raise ValueError("V4 broker snapshot events lack exact typed coverage")
+        for row in snapshot_accounts:
+            event = events.get(str(UUID(str(row["record_id"]))))
+            if (event is None or (event["category"], event["entity_type"])
+                    != ("snapshot", "portfolio")
+                    or event["entity_id"] != row["account_id"]
+                    or event["account_id"] != row["account_id"]):
+                raise ValueError("V4 broker account differs from its event")
+            children = tuple(child for child in snapshot_positions
+                             if child["parent_snapshot_id"] == row["snapshot_id"])
+            recover_snapshot_group(row, children)
+        for row in snapshot_positions:
+            event = events.get(str(UUID(str(row["record_id"]))))
+            if (event is None or (event["category"], event["entity_type"])
+                    != ("snapshot", "position")
+                    or event["entity_id"] != str(row["conid"])
+                    or event["account_id"] != row["account_id"]
+                    or row["parent_snapshot_id"] not in {
+                        account["snapshot_id"] for account in snapshot_accounts}):
+                raise ValueError("V4 broker position differs from its event")
     ack_rows = ()
     if broker_acknowledgement_row is not None:
         if (strategy_one_entry_rows or len(batch.events) != 1
@@ -652,7 +764,9 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
             run_id=batch.run_id, batch_id=batch.batch_id)
     base_families = _sealed_families(
         batch, v4_broker_ack_ids=tuple(row["record_id"] for row in ack_rows),
-        v4_protection_ids=tuple(row["record_id"] for row in protection_rows))
+        v4_protection_ids=tuple(row["record_id"] for row in protection_rows),
+        v4_snapshot_account_ids=tuple(row["record_id"] for row in snapshot_accounts),
+        v4_snapshot_position_ids=tuple(row["record_id"] for row in snapshot_positions))
     entry_rows = _sealed_strategy_one_entry_rows(
         batch, base_families, strategy_one_entry_rows)
     families = tuple((_v4_family_table(name), rows)
@@ -665,6 +779,10 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         families += ((PROTECTION_CHANGE.name, protection_rows),)
     if protection_children:
         families += ((PROTECTION_ENTRY_ORDER.name, protection_children),)
+    if snapshot_accounts:
+        families += (("trading_backtest_account_snapshot_v2", snapshot_accounts),)
+    if snapshot_positions:
+        families += (("trading_backtest_position_snapshot_v2", snapshot_positions),)
     commit, family_rows = prepare_commit_v4(
         run_id=batch.run_id, run_month=batch.run_month,
         attempt_id=batch.attempt_id, batch_id=batch.batch_id,
