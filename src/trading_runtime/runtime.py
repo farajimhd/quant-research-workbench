@@ -386,9 +386,8 @@ class TradingRuntime:
         ask = float(row.get("ask_int") or 0) / 10_000
         if int(row.get("quote_valid") or 0) and 0 < bid <= ask:
             quote_us = int(row.get("quote_timestamp_us") or 0)
-            if 0 < quote_us <= int(at.timestamp() * 1_000_000) and (
-                int(at.timestamp() * 1_000_000) - quote_us <= 1_000_000
-            ):
+            boundary_us = int(at.timestamp() * 1_000_000)
+            if 0 < quote_us <= boundary_us and boundary_us - quote_us <= 1_000_000:
                 snapshot = ExecutionMarketSnapshot(
                     ticker=ticker, bid=bid, ask=ask, tick_size=0.01,
                     observed_at=utc_from_epoch_microseconds(quote_us),
