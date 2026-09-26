@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 from uuid import uuid4
 
 from src.request_context import causal_identity, normalize_request_identity
@@ -367,10 +367,14 @@ class PortfolioManagementEngine:
         control_plane: TradingControlPlane | None = None,
         allocation_identity: str = "",
         typed_recovery: PortfolioRecovery | None = None,
+        event_clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not profiles:
             raise ValueError("Portfolio management requires at least one account profile")
         self.journal = journal
+        # Backtest supplies its completed-boundary clock. Live defaults to UTC
+        # wall time; journal event time must never be inferred by the writer.
+        self._event_clock = event_clock or (lambda: datetime.now(timezone.utc))
         self.run_id = run_id
         self.strategy_id = strategy_id
         self.strategy_revision = strategy_revision
@@ -1183,7 +1187,7 @@ class PortfolioManagementEngine:
         intent: StrategyIntent,
         state: PortfolioAccountState,
     ) -> tuple[PortfolioDecision, StrategyIntent | None]:
-        now = datetime.now(timezone.utc)
+        now = self._event_time()
         policy = self._policy(state)
         requested = float(intent.quantity)
         reasons: list[str] = []
@@ -2251,7 +2255,14 @@ class PortfolioManagementEngine:
             entity_id=entity_id,
             account_id=account_id,
             payload=payload,
+            event_time=self._event_time(),
         )
+
+    def _event_time(self) -> datetime:
+        at = self._event_clock()
+        if not isinstance(at, datetime) or at.tzinfo is None:
+            raise ValueError("Portfolio event clock must return an aware datetime")
+        return at.astimezone(timezone.utc)
 
     def _persist_state(self, state: PortfolioAccountState) -> None:
         if self._typed_admission_stage is not None:

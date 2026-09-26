@@ -1,8 +1,10 @@
 """Strategy 1 uses the shared Portfolio with a disk-free Backtest journal."""
 import asyncio
 from datetime import date, datetime, timezone
+from uuid import UUID
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
+from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary
 from src.trading_runtime.portfolio import (
     PortfolioAccountProfile, PortfolioManagementEngine, PortfolioPolicy,
@@ -12,9 +14,11 @@ from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
 
 
 def test_strategy_one_initial_admission_uses_no_sqlite_or_disk():
+    at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
+
     async def exercise():
-        at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
-        journal = BacktestMemoryJournal(run_id="strategy-one-test")
+        run_id = str(UUID(int=1))
+        journal = BacktestMemoryJournal(run_id=run_id)
         profile = PortfolioAccountProfile(
             "cash", "DU1", "backtest", "simulated",
             PortfolioPolicy(maximum_position_fraction=1.,
@@ -24,8 +28,9 @@ def test_strategy_one_initial_admission_uses_no_sqlite_or_disk():
                             entry_fee_buffer_bps=0.,
                             allow_outside_rth=True))
         portfolio = PortfolioManagementEngine(
-            [profile], journal=journal, run_id="strategy-one-test",
-            strategy_id="early-squeeze-strategy", strategy_revision=1)
+            [profile], journal=journal, run_id=run_id,
+            strategy_id="early-squeeze-strategy", strategy_revision=1,
+            event_clock=lambda: at)
         portfolio.synchronize_snapshot(
             "DU1", summary=AccountSummary(
                 account_id="DU1", netliquidation=9000, totalcashvalue=9000,
@@ -47,4 +52,18 @@ def test_strategy_one_initial_admission_uses_no_sqlite_or_disk():
     assert approved is not None, decision.reasons
     assert approved.quantity > 0
     assert records
+    assert decision.decided_at == at
+    assert all(record.event_time == at for record in records)
     assert all(record.category == "portfolio_management" for record in records)
+    assert {record.entity_type for record in records} == {
+        "portfolio_decision", "portfolio_reservation",
+    }
+    for index, record in enumerate(records, start=1):
+        projected = project_journal_record(
+            record, run_month=date(2026, 8, 1), attempt_id=str(UUID(int=2)),
+            batch_id=str(UUID(int=index + 2)),
+            prior_batch_id=str(UUID(int=index + 1)) if index > 1 else str(UUID(int=0)),
+            source_cursor="2026-08-18:30000", expected_mode="backtest",
+        )
+        assert len(projected.events) == 1
+        assert projected.events[0]["event_month"] == "2026-08-01"

@@ -4120,6 +4120,7 @@ class ReplayRunController:
             strategy_id=str(strategy_configuration.get("strategy_id") or "manual"),
             strategy_revision=int(strategy_configuration.get("revision") or 0),
             groups=groups,
+            event_clock=lambda: self.current_time or self.definition.session_start,
         )
         broker = SimulatedBrokerAdapter(
             list(self.account_ids),
