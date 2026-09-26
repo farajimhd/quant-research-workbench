@@ -203,8 +203,10 @@ class JournalQueueFull(RuntimeError):
 def journal_client_from_env() -> Any:
     """Open the dedicated typed-journal principal, never market credentials."""
     from research.mlops.clickhouse import ClickHouseHttpClient
+    from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
 
-    url = os.environ.get("TRADING_JOURNAL_CLICKHOUSE_URL", "").strip()
+    url = workstation_ipv4_transport(
+        os.environ.get("TRADING_JOURNAL_CLICKHOUSE_URL", "").strip())
     user = os.environ.get("TRADING_JOURNAL_CLICKHOUSE_USER", "").strip()
     password = os.environ.get("TRADING_JOURNAL_CLICKHOUSE_PASSWORD", "")
     if not url or not user or not password:
@@ -250,7 +252,10 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
 
 
 def _v4_runner_credentials() -> tuple[str, str, str]:
-    url = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_URL", "").strip()
+    from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
+
+    url = workstation_ipv4_transport(
+        os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_URL", "").strip())
     user = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", "").strip()
     password = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD", "")
     if not url or user != "backtest_v4_runner" or not password:

@@ -143,6 +143,34 @@ def test_typed_journal_client_requires_a_separate_complete_identity(monkeypatch)
         client.close()
 
 
+def test_v4_and_journal_clients_use_private_workstation_ipv4(monkeypatch) -> None:
+    from src.trading_runtime import clickhouse_transport
+
+    monkeypatch.setattr(clickhouse_transport.platform, "node",
+                        lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(clickhouse_transport.socket, "gethostbyname",
+                        lambda _host: "192.168.1.218")
+    monkeypatch.setenv("BACKTEST_V4_RUNNER_CLICKHOUSE_URL",
+                       "http://DESKTOP-SAAI85T:18123")
+    monkeypatch.setenv("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", "backtest_v4_runner")
+    monkeypatch.setenv("BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD", "test-only")
+    monkeypatch.setenv("TRADING_JOURNAL_CLICKHOUSE_URL",
+                       "http://DESKTOP-SAAI85T:18123")
+    monkeypatch.setenv("TRADING_JOURNAL_CLICKHOUSE_USER", "journal-only")
+    monkeypatch.setenv("TRADING_JOURNAL_CLICKHOUSE_PASSWORD", "test-only")
+    monkeypatch.setenv("BACKTEST_CLICKHOUSE_USER", "market-reader")
+    monkeypatch.setenv("REAL_LIVE_CLICKHOUSE_READ_USER", "market-reader")
+    monkeypatch.setenv("REAL_LIVE_CLICKHOUSE_USER", "live-writer")
+    clients = (writer_module.backtest_v4_operator_client_from_env(),
+               writer_module.journal_client_from_env())
+    try:
+        assert all(client.base_url == "http://192.168.1.218:18123"
+                   for client in clients)
+    finally:
+        for client in clients:
+            client.close()
+
+
 def test_v4_client_requires_isolated_runner_identity(monkeypatch) -> None:
     from src.trading_runtime.keeper_session import ManagedKeeperSession
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch

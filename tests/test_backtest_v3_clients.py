@@ -79,10 +79,10 @@ def test_market_reader_opt_in_uses_only_v3_read_principal(monkeypatch):
 
 def test_managed_workstation_uses_ipv4_transport_without_changing_credentials(
         monkeypatch):
-    from src.backend import backtest_v3_clients
-    monkeypatch.setattr(backtest_v3_clients.platform, "node",
+    from src.trading_runtime import clickhouse_transport
+    monkeypatch.setattr(clickhouse_transport.platform, "node",
                         lambda: "DESKTOP-SAAI85T")
-    monkeypatch.setattr(backtest_v3_clients.socket, "gethostbyname",
+    monkeypatch.setattr(clickhouse_transport.socket, "gethostbyname",
                         lambda host: "192.168.1.218")
     env = _env()
     env["BACKTEST_V3_READ_CLICKHOUSE_URL"] = "http://DESKTOP-SAAI85T:18123"
@@ -94,13 +94,24 @@ def test_managed_workstation_uses_ipv4_transport_without_changing_credentials(
 
 
 def test_nonprivate_workstation_resolution_fails_closed(monkeypatch):
-    from src.backend import backtest_v3_clients
-    monkeypatch.setattr(backtest_v3_clients.platform, "node",
+    from src.trading_runtime import clickhouse_transport
+    monkeypatch.setattr(clickhouse_transport.platform, "node",
                         lambda: "DESKTOP-SAAI85T")
-    monkeypatch.setattr(backtest_v3_clients.socket, "gethostbyname",
+    monkeypatch.setattr(clickhouse_transport.socket, "gethostbyname",
                         lambda host: "8.8.8.8")
     env = _env()
     env["BACKTEST_V3_READ_CLICKHOUSE_URL"] = "http://DESKTOP-SAAI85T:18123"
-    with pytest.raises(RuntimeError, match="outside the private network"):
+    with pytest.raises(RuntimeError, match="outside the private LAN"):
         v3_client("read", environment=env,
                   client_factory=lambda *args, **kwargs: object())
+
+
+def test_workstation_transport_never_rewrites_tls_or_other_endpoints(monkeypatch):
+    from src.trading_runtime import clickhouse_transport
+
+    monkeypatch.setattr(clickhouse_transport.platform, "node",
+                        lambda: "DESKTOP-SAAI85T")
+    for url in ("https://DESKTOP-SAAI85T:18123",
+                "http://other-host:18123",
+                "http://DESKTOP-SAAI85T:18123/custom"):
+        assert clickhouse_transport.workstation_ipv4_transport(url) == url
