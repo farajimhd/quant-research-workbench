@@ -1,5 +1,6 @@
 """Sparse entry plus active liquidity scheduling remains causal and exact."""
 import asyncio
+from dataclasses import replace
 import numpy as np
 import pytest
 from types import SimpleNamespace
@@ -262,6 +263,32 @@ def test_certified_scheduler_factory_joins_sparse_rows_before_financial_stream(m
     assert work.boundary_ms == 31_000
     assert work.candidate_rows[0].evidence.stop_low_int == 99_000
     assert work.broker_rows[0][1][100] is row
+    assert scheduler.pop_next() is None
+    scheduler.close()
+
+
+def test_pruned_scheduler_preserves_activation_when_no_entry_survives(monkeypatch):
+    from src.backend import backtest_strategy_one_scheduler as subject
+    from tests.test_backtest_strategy_one_market import authority
+
+    prepared = PreparedStrategyOneTicker(
+        "AAA", 1, np.array([0]), np.array([31_000]),
+        np.array([30_000]), np.array([[31_000, 30_000, 30_000, 30_000]]),
+        np.array([30_000]), np.array([99_000]))
+    market, prices, full = authority((prepared,))
+    pruned = replace(full, prepared=(), token="f" * 64)
+    activations = CertifiedActivationPlan(
+        (StrategyOneActivation(30_000, "AAA", 100_000),), "a" * 64)
+    monkeypatch.setattr(subject, "load_sparse_candidate_market",
+                        lambda *_args, **_kwargs: ())
+    scheduler = subject.build_certified_strategy_one_scheduler(
+        market, pruned, activations=activations, price_plan=prices,
+        through_boundary_ms=60_000, client_factory=lambda: None,
+        max_candidate_rows=1, activation_source_candidates=full)
+    work = scheduler.pop_next()
+    assert work.boundary_ms == 30_000
+    assert work.activation_rows == activations.rows
+    assert work.broker_rows == work.candidate_rows == ()
     assert scheduler.pop_next() is None
     scheduler.close()
 

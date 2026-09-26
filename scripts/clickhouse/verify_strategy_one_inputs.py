@@ -151,10 +151,10 @@ def verify(*, session_date: str, build_id: str,
                            else visible_candidates)
         tape_activations = (pruned_activations if profile_pruned_tape
                             else visible_activations)
-        if not tape_candidates.prepared:
-            raise RuntimeError("Sparse tape cannot open without a causal candidate")
+        if not visible_candidates.prepared:
+            raise RuntimeError("Sparse tape cannot open without a certified episode")
         projected_market = project_market_day_plan(
-            market, tuple(row.ticker for row in tape_candidates.prepared))
+            market, tuple(row.ticker for row in visible_candidates.prepared))
         started = perf_counter()
         scheduler = build_certified_strategy_one_scheduler(
             projected_market, tape_candidates,
@@ -164,8 +164,8 @@ def verify(*, session_date: str, build_id: str,
             client_factory=lambda: readonly_clickhouse_client(
                 market_stream=True, v3_read_principal=True),
             max_workers=4,
-            max_candidate_rows=sum(len(row.boundary_ms)
-                                   for row in tape_candidates.prepared),
+            max_candidate_rows=max(1, sum(len(row.boundary_ms)
+                                          for row in tape_candidates.prepared)),
             activation_source_candidates=(visible_candidates
                 if profile_pruned_tape else None))
         opened_seconds = perf_counter() - started
