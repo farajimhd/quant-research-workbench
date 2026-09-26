@@ -3345,8 +3345,10 @@ class ArteJournalWriter:
                 if (self._journal_profile in {"backtest_v2", "backtest_v3", "backtest_v4"}
                         and not isinstance(group[0][0],
                                            (TypedJournalBatch, V3SqueezeBatch,
-                                            _DurabilityBarrier))):
-                    raise RuntimeError("V2 profile cannot route V1 snapshot or admission units")
+                                            _DurabilityBarrier))
+                        and not (self._journal_profile == "backtest_v4"
+                                 and isinstance(group[0][0], _TerminalBacktestUnit))):
+                    raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
                 if isinstance(group[0][0], V3SqueezeBatch):
                     unit = group[0][0]
                     committed_id = _publish_typed_batch(
@@ -3398,22 +3400,30 @@ class ArteJournalWriter:
                     committed_id = publish_fenced_portfolio_sync(
                         self._client, unit.batch, unit.captured)
                 elif isinstance(group[0][0], _TerminalBacktestUnit):
-                    from src.trading_runtime.arte_backtest_snapshot_anchor import (
-                        publish_terminal_backtest_snapshots,
-                    )
                     unit = group[0][0]
-                    context = load_typed_run_context(self._client, unit.batch.run_id)
-                    if (context["mode"] != "backtest"
-                            or set(context["account_ids"]) != {
-                                row.account_id for row in unit.captured}):
-                        raise RuntimeError("Terminal Backtest captures differ from run accounts")
-                    committed_id = publish_typed_batch(self._client, unit.batch)
-                    prefix = load_committed_prefix(self._client, unit.batch.run_id)
-                    if (prefix is None or prefix.last_batch_id != committed_id
-                            or prefix.last_sequence != unit.batch.last_sequence):
-                        raise RuntimeError("Terminal Backtest event prefix is not committed")
-                    publish_terminal_backtest_snapshots(
-                        self._client, prefix, unit.captured)
+                    if self._journal_profile == "backtest_v4":
+                        from src.trading_runtime.arte_journal_commit_v4 import (
+                            publish_terminal_typed_batch_v4,
+                        )
+                        prefix = publish_terminal_typed_batch_v4(
+                            self._client, unit.batch, captures=unit.captured)
+                        committed_id = prefix.last_batch_id
+                    else:
+                        from src.trading_runtime.arte_backtest_snapshot_anchor import (
+                            publish_terminal_backtest_snapshots,
+                        )
+                        context = load_typed_run_context(self._client, unit.batch.run_id)
+                        if (context["mode"] != "backtest"
+                                or set(context["account_ids"]) != {
+                                    row.account_id for row in unit.captured}):
+                            raise RuntimeError("Terminal Backtest captures differ from run accounts")
+                        committed_id = publish_typed_batch(self._client, unit.batch)
+                        prefix = load_committed_prefix(self._client, unit.batch.run_id)
+                        if (prefix is None or prefix.last_batch_id != committed_id
+                                or prefix.last_sequence != unit.batch.last_sequence):
+                            raise RuntimeError("Terminal Backtest event prefix is not committed")
+                        publish_terminal_backtest_snapshots(
+                            self._client, prefix, unit.captured)
                 else:
                     from src.trading_runtime.arte_portfolio_snapshot import (
                         CapturedPortfolioSnapshot, prepare_captured_portfolio_snapshot,

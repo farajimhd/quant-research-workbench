@@ -389,6 +389,47 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
         writable, frozenset(table.name for table in fixed_backtest_v2_contracts()) - writable)
 
 
+def test_v4_terminal_writer_queue_waits_for_anchor_before_receipt(monkeypatch):
+    from threading import Event
+    from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
+
+    client = attached_v4_client()
+    item = terminal_batch()
+    entered, release = Event(), Event()
+    monkeypatch.setattr(writer_module, "storage_preflight",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(writer_module, "journal_permission_preflight",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity",
+                        lambda _client, _run: {
+                            "mode": "backtest", "account_ids": ("DU1",)})
+    monkeypatch.setattr(writer_module, "load_typed_run_context",
+                        lambda _client, _run: {
+                            "mode": "backtest", "account_ids": ("DU1",)})
+
+    def anchors_after_commit(_client, prefix, captures):
+        assert client.tables["trading_commit_v4"][0]["status"] == "completed"
+        entered.set()
+        assert release.wait(5)
+        return ("anchored",)
+
+    monkeypatch.setattr(anchors, "publish_terminal_backtest_snapshots",
+                        anchors_after_commit)
+    journal = ArteJournalWriter(
+        client, run_id=item.run_id, journal_profile="backtest_v4",
+        coalesce_batches=False)
+    try:
+        receipt = journal.submit_terminal_backtest(item, (captured(),))
+        assert entered.wait(5)
+        assert not receipt.done()
+        release.set()
+        assert receipt.result(timeout=5) == item.batch_id
+        assert journal.metrics()["committed_units"] == 1
+    finally:
+        release.set()
+        journal.close()
+
+
 def test_v4_strategy_signal_uses_installed_v2_table_and_readback():
     item = batch()
     event = typed_row("trading_event_v1", {
