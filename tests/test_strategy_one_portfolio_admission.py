@@ -23,7 +23,7 @@ from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_broker_acknowledgement_v4 import project_broker_acknowledgement_v4
 from src.trading_runtime.arte_protection_change_v4 import protection_change_batch_v4
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
-    project_protection_reconciliation_v4,
+    V4ProtectionReconciliationBatch, project_protection_reconciliation_v4,
 )
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
 from src.trading_runtime.arte_oms_projection import oms_group_state_batch
@@ -448,6 +448,16 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
                        for unit in full_suffix) == len(fill_records)
             reconciliation = next(row for row in fill_records
                                   if row.entity_type == "protection_reconciliation")
+            frozen_reconciliation = next(
+                unit for unit in full_suffix
+                if isinstance(unit, V4ProtectionReconciliationBatch))
+            with pytest.raises(TypeError):
+                frozen_reconciliation.replies[0]["order_status"] = "Mutated"
+            original_reply = frozen_reconciliation.replies[0]["order_status"]
+            mutable_reply = dict(frozen_reconciliation.replies[0])
+            copied = replace(frozen_reconciliation, replies=(mutable_reply,))
+            mutable_reply["order_status"] = "Mutated"
+            assert copied.replies[0]["order_status"] == original_reply
             bad_action = {**reconciliation.payload["actions"][0], "opaque": {"x": 1}}
             with pytest.raises(ValueError, match="unmodeled fields"):
                 project_protection_reconciliation_v4(

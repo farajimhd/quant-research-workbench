@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timezone
 from decimal import Decimal, InvalidOperation
+from types import MappingProxyType
 from typing import Any, Mapping
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -111,6 +112,19 @@ class V4ProtectionReconciliationBatch:
     reconciliation: Mapping[str, Any]
     actions: tuple[Mapping[str, Any], ...]
     replies: tuple[Mapping[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        def freeze(row: Mapping[str, Any]) -> Mapping[str, Any]:
+            if (not isinstance(row, Mapping)
+                    or any(isinstance(value, (Mapping, list, tuple, set,
+                                               bytearray, memoryview))
+                           for value in row.values())):
+                raise ValueError("V4 reconciliation supplement is not a scalar typed row")
+            return MappingProxyType(dict(row))
+
+        object.__setattr__(self, "reconciliation", freeze(self.reconciliation))
+        object.__setattr__(self, "actions", tuple(freeze(row) for row in self.actions))
+        object.__setattr__(self, "replies", tuple(freeze(row) for row in self.replies))
 
 
 def _number(value: object, *, optional: bool = False) -> str | None:
