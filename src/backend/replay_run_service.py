@@ -455,6 +455,9 @@ class ReplayRunDefinition:
                 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
                 from src.trading_runtime.strategy_one_hod_schema import PRODUCT_DIGEST as HOD_DIGEST
                 from src.trading_runtime.strategy_one_pivot_schema import PRODUCT_DIGEST
+                from src.trading_runtime.strategy_one_entry_evidence_schema import (
+                    PRODUCT_DIGEST as ENTRY_DIGEST,
+                )
                 if (resolved_interval.milliseconds != 100
                         or re.fullmatch(r"[0-9a-f]{64}", str(
                             self.market_data_plan.get("strategy_one_candidate_token") or "")) is None
@@ -467,9 +470,12 @@ class ReplayRunDefinition:
                             self.market_data_plan.get("strategy_one_activation_token") or "")) is None
                         or re.fullmatch(r"[0-9a-f]{64}", str(
                             self.market_data_plan.get("strategy_one_hod_token") or "")) is None
+                        or re.fullmatch(r"[0-9a-f]{64}", str(
+                            self.market_data_plan.get("strategy_one_entry_token") or "")) is None
+                        or self.market_data_plan.get("strategy_one_entry_digest") != ENTRY_DIGEST
                         or self.market_data_plan.get("strategy_one_hod_digest") != HOD_DIGEST
                         or self.market_data_plan.get("strategy_one_pivot_digest") != PRODUCT_DIGEST):
-                    raise ValueError("Strategy 1 requires pinned candidates, activations, pivots, and HOD context")
+                    raise ValueError("Strategy 1 requires pinned candidates, activations, pivots, HOD, and entry evidence")
         if type(self.prepare_frames_only) is not bool or (self.prepare_frames_only and self.mode != RunMode.BACKTEST):
             raise ValueError('Frame preparation only requires Backtest mode and a boolean flag')
         if not 0 <= self.minimum_p_norm <= 1:
@@ -3640,6 +3646,17 @@ class ReplayRunController:
                     if hod_plan.token != self.definition.market_data_plan.get(
                             "strategy_one_hod_token"):
                         raise ValueError("Certified Strategy 1 HOD context changed after preflight")
+                    from src.backend.backtest_strategy_one_entry_store import certify_entry_evidence_plan
+                    def recheck_entries():
+                        with closing(readonly_clickhouse_client(
+                                market_stream=True, v3_read_principal=True)) as reader:
+                            return certify_entry_evidence_plan(
+                                plan, candidate_plan, activation_plan, pivot_plan,
+                                hod_plan, v7_seeds, client=reader)
+                    entry_plan = await asyncio.to_thread(recheck_entries)
+                    if entry_plan.token != self.definition.market_data_plan.get(
+                            "strategy_one_entry_token"):
+                        raise ValueError("Certified Strategy 1 entry evidence changed after preflight")
             except BaseException:
                 v7_reader.close()
                 raise
@@ -11121,6 +11138,18 @@ def backtest_preflight(
                             certified, candidate_plan, seed_plan, client=hod_reader)
                     market_data_plan["strategy_one_hod_token"] = hod_plan.token
                     market_data_plan["strategy_one_hod_digest"] = HOD_DIGEST
+                    from src.backend.backtest_strategy_one_entry_store import certify_entry_evidence_plan
+                    from src.trading_runtime.strategy_one_entry_evidence_schema import (
+                        PRODUCT_DIGEST as ENTRY_DIGEST,
+                    )
+                    with closing(readonly_clickhouse_client(
+                            market_stream=True, v3_read_principal=True)) as entry_reader:
+                        entry_plan = certify_entry_evidence_plan(
+                            certified, candidate_plan, activation_plan,
+                            pivot_plan, hod_plan, seed_plan,
+                            client=entry_reader)
+                    market_data_plan["strategy_one_entry_token"] = entry_plan.token
+                    market_data_plan["strategy_one_entry_digest"] = ENTRY_DIGEST
                 causal_v7_plan["market_projection_token"] = projected.token
                 causal_v7_plan["parent_market_plan_token"] = certified.token
                 causal_v7_error = ""
@@ -11182,6 +11211,20 @@ def backtest_preflight(
                 (causal_v7_error or "candidate or market-data certification did not complete")
             ),
             "evidence": activation_token or causal_v7_error,
+        })
+        entry_token = str((market_data_plan or {}).get(
+            "strategy_one_entry_token") or "")
+        checks.append({
+            "id": "strategy_one_entry_evidence",
+            "label": "Certified causal entry evidence",
+            "status": "ready" if re.fullmatch(r"[0-9a-f]{64}", entry_token) else "blocked",
+            "required": True,
+            "summary": (
+                "Every candidate has normalized, source-pinned V7/BOS and initial protection evidence."
+                if entry_token else "Strategy 1 entry evidence is unavailable: " +
+                (causal_v7_error or "candidate or source certification did not complete")
+            ),
+            "evidence": entry_token or causal_v7_error,
         })
     signal_evidence = signal_check.get("evidence")
     if (execution_interval.kind == "fixed"

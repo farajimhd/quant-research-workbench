@@ -19,6 +19,10 @@ from src.trading_runtime.keeper_ownership import (
 )
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 from src.trading_runtime.strategy_one_pivot_schema import PRODUCT_DIGEST
+from src.trading_runtime.strategy_one_hod_schema import PRODUCT_DIGEST as HOD_DIGEST
+from src.trading_runtime.strategy_one_entry_evidence_schema import (
+    PRODUCT_DIGEST as ENTRY_DIGEST,
+)
 
 
 RUN_MONTH = date(2026, 9, 1)  # September execution of an August market session.
@@ -44,7 +48,7 @@ def _definition(**changes):
     return ReplayRunDefinition(**values)
 
 
-def test_strategy_one_definition_pins_candidate_rule_scan_and_pivots():
+def test_strategy_one_definition_pins_all_certified_entry_dependencies():
     config = {"revision_id": "revision-1", "content_hash": "a" * 64,
               "payload": {"strategy": {"strategy_number": 1}}}
     market = {"token": "certified-plan", "build_id": "build-1",
@@ -54,7 +58,11 @@ def test_strategy_one_definition_pins_candidate_rule_scan_and_pivots():
               "strategy_one_scan_query_sha256": "d" * 64,
               "strategy_one_pivot_token": "e" * 64,
               "strategy_one_activation_token": "f" * 64,
-              "strategy_one_pivot_digest": PRODUCT_DIGEST}
+              "strategy_one_hod_token": "1" * 64,
+              "strategy_one_entry_token": "2" * 64,
+              "strategy_one_pivot_digest": PRODUCT_DIGEST,
+              "strategy_one_hod_digest": HOD_DIGEST,
+              "strategy_one_entry_digest": ENTRY_DIGEST}
     assert _definition(configuration_revision=config,
                        market_data_plan=market).market_data_plan == market
     for missing in ("strategy_one_candidate_token",
@@ -62,8 +70,12 @@ def test_strategy_one_definition_pins_candidate_rule_scan_and_pivots():
                     "strategy_one_scan_query_sha256",
                     "strategy_one_pivot_token",
                     "strategy_one_activation_token",
-                    "strategy_one_pivot_digest"):
-        with pytest.raises(ValueError, match="pinned candidates, activations, and pivots"):
+                    "strategy_one_hod_token",
+                    "strategy_one_entry_token",
+                    "strategy_one_pivot_digest",
+                    "strategy_one_hod_digest",
+                    "strategy_one_entry_digest"):
+        with pytest.raises(ValueError, match="pinned candidates, activations, pivots, HOD, and entry evidence"):
             _definition(configuration_revision=config,
                         market_data_plan={key: value for key, value in market.items()
                                           if key != missing})
