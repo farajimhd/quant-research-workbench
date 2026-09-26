@@ -450,6 +450,16 @@ class ReplayRunDefinition:
                 raise ValueError("Fixed-interval Backtest requires a certified read-only market-data plan")
             if plan_interval != str(resolved_interval.milliseconds):
                 raise ValueError("Backtest market-data plan does not match execution_interval")
+            strategy = dict(self.configuration_revision.get("payload", {}).get("strategy") or {})
+            if strategy.get("strategy_number") == 1:
+                from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
+                if (resolved_interval.milliseconds != 100
+                        or re.fullmatch(r"[0-9a-f]{64}", str(
+                            self.market_data_plan.get("strategy_one_candidate_token") or "")) is None
+                        or self.market_data_plan.get("strategy_one_candidate_rule_digest") != RULE_DIGEST
+                        or re.fullmatch(r"[0-9a-f]{64}", str(
+                            self.market_data_plan.get("strategy_one_scan_query_sha256") or "")) is None):
+                    raise ValueError("Strategy 1 requires a pinned certified candidate rule and scan")
         if type(self.prepare_frames_only) is not bool or (self.prepare_frames_only and self.mode != RunMode.BACKTEST):
             raise ValueError('Frame preparation only requires Backtest mode and a boolean flag')
         if not 0 <= self.minimum_p_norm <= 1:
@@ -3497,6 +3507,11 @@ class ReplayRunController:
             if candidate_plan.token != str(
                     self.definition.market_data_plan.get("strategy_one_candidate_token") or ""):
                 raise ValueError("Certified Strategy 1 candidates changed after preflight")
+            if (candidate_plan.candidate_rule_digest != self.definition.market_data_plan.get(
+                    "strategy_one_candidate_rule_digest")
+                    or candidate_plan.scan_query_sha256 != self.definition.market_data_plan.get(
+                        "strategy_one_scan_query_sha256")):
+                raise ValueError("Strategy 1 candidate rule or scan changed after preflight")
             projection_tickers = strategy_one_v7_tickers(candidate_plan.prepared)
         if projection_tickers == ():
             # The scanner certified no possible participant. An empty tuple
@@ -10922,6 +10937,10 @@ def backtest_preflight(
                             through_boundary_ms=through_boundary_ms,
                             client=candidate_reader)
                     market_data_plan["strategy_one_candidate_token"] = candidate_plan.token
+                    market_data_plan["strategy_one_candidate_rule_digest"] = (
+                        candidate_plan.candidate_rule_digest)
+                    market_data_plan["strategy_one_scan_query_sha256"] = (
+                        candidate_plan.scan_query_sha256)
                     projection_tickers = strategy_one_v7_tickers(candidate_plan.prepared)
                     if not projection_tickers:
                         raise ValueError("Strategy 1 has no candidate; zero-candidate terminal authority is not typed")
