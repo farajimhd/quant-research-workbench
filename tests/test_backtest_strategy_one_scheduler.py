@@ -83,12 +83,28 @@ def test_reactivation_cannot_replay_stale_prefetched_liquidity():
 
 
 def test_source_exhaustion_does_not_implicitly_close_financial_state():
+    closed = []
+
+    class EmptySource:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise StopIteration
+
+        def close(self):
+            closed.append("AAA")
+
+    def source(ticker, after):
+        return EmptySource()
+
     clock = StrategyOneBoundaryScheduler(
         session_date=DAY, candidate_rows=iter((candidate("AAA", 100),)),
-        active_source=lambda ticker, after: iter(()))
+        active_source=source)
     clock.pop_next()
     clock.activate("AAA")
     assert clock.exhausted_tickers == ("AAA",)
+    assert closed == ["AAA"]
     assert clock.pop_next() is None
     clock.deactivate("AAA")
     assert clock.exhausted_tickers == ()

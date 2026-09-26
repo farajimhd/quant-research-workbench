@@ -120,6 +120,9 @@ class StrategyOneBoundaryScheduler:
             # Source exhaustion is not a financial close. The coordinator
             # must still account for working orders and session-end policy.
             self._exhausted.add(ticker)
+            close = getattr(source, "close", None)
+            if close is not None:
+                close()
             return
         if (type(boundary) is not int or boundary <= self._active_prior[ticker]
                 or boundary > 57_600_000 or boundary % 100
