@@ -13,16 +13,13 @@ import hashlib
 from http.client import RemoteDisconnected
 import json
 import os
-from pathlib import Path
 import re
-import sqlite3
 from types import MappingProxyType
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 
 ARTE_DATABASE = "arte"
-MARKET_DAY_VERSION = "market-day-core-v5"
 MARKET_DAY_TABLES = ("bars_v1", "indicators_v1", "liquidity_100ms_v1")
 MARKET_DAY_STAGES = ("bars", "technical", "broker_100ms")
 FIXED_EXECUTION_BLOCKER = (
@@ -33,9 +30,6 @@ FIXED_EXECUTION_BLOCKER = (
 EVENT_EXECUTION_BLOCKER = (
     "Event-interval Backtest still prepares a run-local strategy frame spool; "
     "Backtest must fetch persisted strategy inputs without generating them."
-)
-DEFAULT_LEDGER = Path(
-    r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\build-ledger-v2.sqlite3"
 )
 FIXED_RESOLUTIONS_MS = (100, 1_000, 5_000, 10_000, 30_000, 60_000, 300_000, 3_600_000)
 SESSION_OPEN_OFFSET_MS = 14_400_000  # Producer buckets start at New York midnight.
@@ -242,129 +236,6 @@ def configuration_tickers(configuration: Mapping[str, Any], requested: Iterable[
     if invalid:
         raise ValueError(f"Invalid Backtest tickers: {invalid}")
     return tuple(sorted(values))
-
-
-class MarketDayLedger:
-    def __init__(self, path: Path | None = None) -> None:
-        configured = os.environ.get("BACKTEST_MARKET_DAY_LEDGER", "").strip()
-        self.path = path or (Path(configured) if configured else DEFAULT_LEDGER)
-
-    def _connect(self) -> sqlite3.Connection:
-        if not self.path.is_file():
-            raise ValueError(f"Certified market-day ledger is unavailable: {self.path}")
-        raw_path = str(self.path)
-        uri = f"file:{raw_path}?mode=ro" if raw_path.startswith("\\\\") else f"{self.path.resolve().as_uri()}?mode=ro"
-        connection = sqlite3.connect(uri, uri=True)
-        connection.execute("PRAGMA query_only=ON")
-        return connection
-
-    def _planned_scopes(self, build_id: str, definition_hash: str, days: tuple[str, ...]) -> set[tuple[str, str]]:
-        """Read the producer's immutable population, not its completed subset."""
-        manifest = self.path.parent / "market-day" / f"{build_id}.json"
-        if not manifest.is_file():
-            raise ValueError(f"Certified market-day population manifest is unavailable: {manifest}")
-        report = json.loads(manifest.read_text(encoding="utf-8"))
-        definition = report.get("definition")
-        if (report.get("build_id") != build_id or not isinstance(definition, dict)
-                or _stable_hash(definition) != definition_hash):
-            raise ValueError("Market-day population manifest does not match the certified build")
-        plan = definition.get("plan") or {}
-        requested = set(plan.get("requested") or ())
-        if not set(days).issubset(requested):
-            raise ValueError("Backtest sessions are outside the certified market-day population")
-        scopes = {
-            (str(row["source_date"]), str(row["ticker"]))
-            for row in plan.get("units") or ()
-            if str(row.get("source_date")) in days
-        }
-        if not scopes or any(not any(day == scope_day for scope_day, _ in scopes) for day in days):
-            raise ValueError("Certified market-day population has an empty requested session")
-        return scopes
-
-    def certified_plan(
-        self,
-        *,
-        sessions: Sequence[date | str],
-        tickers: Sequence[str],
-        configuration: Mapping[str, Any],
-    ) -> CertifiedMarketDayPlan:
-        interval = effective_execution_interval(configuration)
-        if interval.kind == "events":
-            raise ValueError("Event execution does not use the fixed market-day catalogue")
-        days = tuple(str(value) for value in sessions)
-        if not days:
-            raise ValueError("Backtest market-day plan requires at least one session")
-        resolutions = compile_required_resolutions(configuration, interval)
-        with closing(self._connect()) as connection:
-            builds = connection.execute(
-                "SELECT build_id,definition_hash,updated_at FROM builds "
-                "WHERE database_name=? AND version=? AND status IN ('building','core_complete') "
-                "ORDER BY updated_at DESC,build_id DESC",
-                (ARTE_DATABASE, MARKET_DAY_VERSION),
-            ).fetchall()
-            if not builds:
-                raise ValueError("No market-day-core-v5 build with certifiable sessions is available")
-            errors: list[str] = []
-            for build_id, definition_hash, _ in builds:
-                try:
-                    population = self._planned_scopes(str(build_id), str(definition_hash), days)
-                except (OSError, ValueError, KeyError, TypeError) as exc:
-                    errors.append(f"{build_id}: {exc}")
-                    continue
-                selected = set(population)
-                if tickers:
-                    selected = {(day, ticker) for day in days for ticker in tickers}
-                    outside = selected.difference(population)
-                    if outside:
-                        errors.append(f"{build_id}: {len(outside)} ticker-days outside certified population")
-                        continue
-                params: list[Any] = [build_id, *days]
-                where_ticker = ""
-                selected_tickers = sorted({ticker for _, ticker in selected})
-                where_ticker = f" AND ticker IN ({','.join('?' for _ in selected_tickers)})"
-                params.extend(selected_tickers)
-                rows = connection.execute(
-                    f"SELECT build_id,session_date,ticker,stage,attempt_id,source_hash,"
-                    f"output_rows,output_hash FROM units WHERE build_id=? "
-                    f"AND session_date IN ({','.join('?' for _ in days)}){where_ticker} "
-                    "AND status='complete' AND stage IN ('bars','technical','broker_100ms') "
-                    "ORDER BY session_date,ticker,stage",
-                    params,
-                ).fetchall()
-                units = tuple(MarketDayUnit(*row) for row in rows)
-                scopes: dict[tuple[str, str], set[str]] = {}
-                for unit in units:
-                    scopes.setdefault((unit.session_date, unit.ticker), set()).add(unit.stage)
-                expected = selected
-                missing = sorted(scope for scope in expected if scopes.get(scope) != set(MARKET_DAY_STAGES))
-                if not expected:
-                    errors.append(f"{build_id}: no completed ticker-day products")
-                    continue
-                if missing:
-                    errors.append(f"{build_id}: {len(missing)} ticker-day product gaps")
-                    continue
-                payload = {
-                    "build_id": build_id,
-                    "definition_hash": definition_hash,
-                    "sessions": days,
-                    "tickers": tuple(sorted({ticker for _, ticker in expected})),
-                    "resolutions": resolutions,
-                    "units": [unit.__dict__ if hasattr(unit, "__dict__") else [
-                        unit.build_id, unit.session_date, unit.ticker, unit.stage, unit.attempt_id,
-                        unit.source_hash, unit.output_rows, unit.output_hash,
-                    ] for unit in units],
-                }
-                return CertifiedMarketDayPlan(
-                    execution_interval=interval,
-                    build_id=str(build_id),
-                    definition_hash=str(definition_hash),
-                    sessions=days,
-                    tickers=tuple(payload["tickers"]),
-                    units=units,
-                    required_resolutions_ms=resolutions,
-                    token=_stable_hash(payload),
-                )
-        raise ValueError("No complete compatible market-day build: " + "; ".join(errors[:3]))
 
 
 def readonly_clickhouse_client(*, market_stream: bool = False,

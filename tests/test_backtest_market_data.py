@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-import tempfile
 import unittest
 from datetime import date, time
-from pathlib import Path
 from unittest.mock import patch
 
 from src.backend.backtest_market_data import (
+    CertifiedMarketDayPlan,
     ExecutionInterval,
-    MarketDayLedger,
+    MarketDayUnit,
     assert_select_only,
     market_day_boundary,
     market_day_source_sqls,
@@ -21,7 +19,6 @@ from src.backend.backtest_market_data import (
     iter_persisted_v7_seconds,
     readonly_clickhouse_client,
     verify_market_day_plan,
-    _stable_hash,
 )
 
 
@@ -73,11 +70,7 @@ class _QuoteOnlyReadClient(_ReadClient):
 
 class BacktestMarketDataTests(unittest.TestCase):
     def test_projection_preserves_parent_attempts_and_changes_token(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
+        plan = self._plan()
         projected = project_market_day_plan(plan, ["SUGP"])
         self.assertEqual(projected.units, plan.units)
         self.assertNotEqual(projected.token, plan.token)
@@ -106,40 +99,18 @@ class BacktestMarketDataTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "04:00-20:00"):
             market_day_boundary("2026-08-18", 57_600_100)
 
-    def _ledger(self, root: Path) -> MarketDayLedger:
-        definition = {"plan": {"requested": ["2026-08-18"], "units": [
-            {"source_date": "2026-08-18", "ticker": "SUGP"},
-        ]}}
-        manifest_dir = root / "market-day"
-        manifest_dir.mkdir()
-        (manifest_dir / "build-1.json").write_text(json.dumps({
-            "build_id": "build-1", "definition": definition,
-        }), encoding="utf-8")
-        path = root / "build-ledger-v2.sqlite3"
-        connection = sqlite3.connect(path)
-        connection.executescript("""
-          CREATE TABLE builds (build_id TEXT PRIMARY KEY, definition_hash TEXT,
-            version TEXT, calculation_source TEXT, rules_hash TEXT,
-            database_name TEXT, status TEXT, updated_at TEXT);
-          CREATE TABLE units (build_id TEXT, session_date TEXT, ticker TEXT,
-            stage TEXT, attempt_id TEXT, source_hash TEXT, output_rows INTEGER,
-            output_hash TEXT, status TEXT, updated_at TEXT);
-        """)
-        connection.execute(
-            "INSERT INTO builds VALUES (?,?,?,?,?,?,?,?)",
-            ("build-1", _stable_hash(definition), "market-day-core-v5", "events", "rules",
-             "arte", "core_complete", "2026-09-23T00:00:00Z"),
+    def _plan(self, *, technical_rows: int = 10,
+              technical_hash: str = "42") -> CertifiedMarketDayPlan:
+        units = tuple(MarketDayUnit(
+            "build-1", "2026-08-18", "SUGP", stage,
+            "00000000-0000-0000-0000-000000000001", "source",
+            technical_rows if stage == "technical" else 10,
+            technical_hash if stage == "technical" else "42",
+        ) for stage in ("bars", "technical", "broker_100ms"))
+        return CertifiedMarketDayPlan(
+            ExecutionInterval.parse("100ms"), "build-1", "definition",
+            ("2026-08-18",), ("SUGP",), units, (100, 1_000), "token",
         )
-        for stage in ("bars", "technical", "broker_100ms"):
-            connection.execute(
-                "INSERT INTO units VALUES (?,?,?,?,?,?,?,?,?,?)",
-                ("build-1", "2026-08-18", "SUGP", stage,
-                 "00000000-0000-0000-0000-000000000001", "source", 10,
-                 "42", "complete", "2026-09-23T00:00:00Z"),
-            )
-        connection.commit()
-        connection.close()
-        return MarketDayLedger(path)
 
     def test_execution_interval_is_events_or_100ms_multiple(self) -> None:
         self.assertEqual(ExecutionInterval.parse("realtime").label, "events")
@@ -232,11 +203,7 @@ class BacktestMarketDataTests(unittest.TestCase):
             ExecutionInterval.parse("100ms")), (100, 1_000))
 
     def test_catalogue_pins_all_three_read_only_products(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
+        plan = self._plan()
         client = _ReadClient()
         verify_market_day_plan(plan, client)
         self.assertEqual(len(client.queries), 3)
@@ -267,11 +234,7 @@ class BacktestMarketDataTests(unittest.TestCase):
             market_day_source_sqls(plan, through_boundary_ms=19_800_001)
 
     def test_liquidity_bucket_upper_bound_is_exact_completed_boundary(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
+        plan = self._plan()
         for boundary_ms in (100, 200, 300_000, 57_600_000):
             source = market_day_source_sqls(
                 plan, through_boundary_ms=boundary_ms)[0]
@@ -283,11 +246,7 @@ class BacktestMarketDataTests(unittest.TestCase):
                                  boundary_ms + 14_400_000)
 
     def test_bar_resolution_bounds_are_exact_completed_boundaries(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
+        plan = self._plan()
         for boundary_ms in (100, 900, 1_000, 300_000, 57_600_000):
             source = market_day_source_sqls(
                 plan, through_boundary_ms=boundary_ms)[1]
@@ -302,11 +261,7 @@ class BacktestMarketDataTests(unittest.TestCase):
                                      boundary_ms + 14_400_000)
 
     def test_window_excludes_completed_start_and_includes_completed_end(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
+        plan = self._plan()
         for start, end in ((0, 100), (100, 1_000), (1_000, 1_100),
                            (29_900, 30_000), (30_000, 30_100)):
             sources = market_day_source_sqls(
@@ -329,11 +284,7 @@ class BacktestMarketDataTests(unittest.TestCase):
     def test_window_prunes_certified_fill_price_children_too(self) -> None:
         from src.backend.backtest_liquidity_price import PriceLevelPlan, PriceLevelUnit
 
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
+        plan = self._plan()
         unit = next(unit for unit in plan.units if unit.stage == "broker_100ms")
         prices = PriceLevelPlan(plan.build_id, (PriceLevelUnit(
             unit.session_date, unit.ticker, unit.attempt_id,
@@ -346,11 +297,7 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertIn("FROM arte.liquidity_execution_price_100ms_v1", source)
 
     def test_sparse_candidate_query_reads_only_pinned_100ms_keys(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
+        plan = self._plan()
         queries = market_day_source_sqls(
             plan, through_boundary_ms=1_000,
             candidate_boundaries={"SUGP": (100, 1_000)})
@@ -373,11 +320,7 @@ class BacktestMarketDataTests(unittest.TestCase):
     def test_sparse_candidate_reader_requires_every_exact_source_row(self) -> None:
         from src.backend.backtest_market_data import iter_candidate_market_rows
 
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
+        plan = self._plan()
         rows = [{"session_date": "2026-08-18", "ticker": "SUGP",
                  "boundary_ms": boundary, "resolution_ms": 100,
                  "price_valid": 1, "indicator_resolution_ms": 100}
@@ -417,11 +360,7 @@ class BacktestMarketDataTests(unittest.TestCase):
             list(iter_market_boundary_groups([rows[1], rows[0]]))
 
     def test_separate_market_sources_merge_at_completed_boundaries(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
+        plan = self._plan()
         class Sources:
             def iter_json_each_row(self, sql):
                 if "SELECT l.session_date" in sql:
@@ -458,11 +397,7 @@ class BacktestMarketDataTests(unittest.TestCase):
             ]))
 
     def test_v7_catch_up_reads_only_completed_pinned_seconds(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
+        plan = self._plan()
         client = _ReadClient()
         rows = list(iter_persisted_v7_seconds(plan, session_date="2026-08-18",
                                               ticker="SUGP", through_boundary_ms=300_100,
@@ -490,11 +425,7 @@ class BacktestMarketDataTests(unittest.TestCase):
                                             client=client))
 
     def test_v7_catch_up_closes_stream_when_consumer_stops_early(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
+        plan = self._plan()
         closed = []
 
         class StreamingClient(_ReadClient):
@@ -514,82 +445,21 @@ class BacktestMarketDataTests(unittest.TestCase):
         source.close()
         self.assertEqual(closed, [True])
 
-    def test_missing_stage_fails_catalogue_preflight(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            ledger = self._ledger(Path(directory))
-            connection = sqlite3.connect(ledger.path)
-            connection.execute("DELETE FROM units WHERE stage='broker_100ms'")
-            connection.commit()
-            connection.close()
-            with self.assertRaisesRegex(ValueError, "product gaps"):
-                ledger.certified_plan(
-                    sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                    configuration={"strategy": {"execution_interval": "100ms"}},
-                )
-
-    def test_day_can_certify_before_entire_campaign_finishes(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            ledger = self._ledger(Path(directory))
-            connection = sqlite3.connect(ledger.path)
-            connection.execute("UPDATE builds SET status='building'")
-            connection.commit()
-            connection.close()
-            plan = ledger.certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=[],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
-            self.assertEqual(plan.tickers, ("SUGP",))
-
     def test_changed_persisted_hash_fails_preflight(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
-            with self.assertRaisesRegex(ValueError, "integrity changed"):
-                verify_market_day_plan(plan, _CorruptReadClient())
+        plan = self._plan()
+        with self.assertRaisesRegex(ValueError, "integrity changed"):
+            verify_market_day_plan(plan, _CorruptReadClient())
 
     def test_replaced_indicator_key_fails_preflight_even_with_matching_counts(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            plan = self._ledger(Path(directory)).certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
-            with self.assertRaisesRegex(ValueError, "indicator.*key coverage"):
-                verify_market_day_plan(plan, _MisalignedIndicatorClient())
+        plan = self._plan()
+        with self.assertRaisesRegex(ValueError, "indicator.*key coverage"):
+            verify_market_day_plan(plan, _MisalignedIndicatorClient())
 
     def test_quote_only_session_allows_zero_indicators(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            ledger = self._ledger(Path(directory))
-            connection = sqlite3.connect(ledger.path)
-            connection.execute(
-                "UPDATE units SET output_rows=0,output_hash='0' WHERE stage='technical'")
-            connection.commit()
-            connection.close()
-            plan = ledger.certified_plan(
-                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
-                configuration={"strategy": {"execution_interval": "100ms"}},
-            )
-            verify_market_day_plan(plan, _QuoteOnlyReadClient())
-
-    def test_incomplete_full_population_fails_instead_of_shrinking(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            ledger = self._ledger(Path(directory))
-            manifest = ledger.path.parent / "market-day" / "build-1.json"
-            report = json.loads(manifest.read_text(encoding="utf-8"))
-            report["definition"]["plan"]["units"].append(
-                {"source_date": "2026-08-18", "ticker": "OTHER"}
-            )
-            manifest.write_text(json.dumps(report), encoding="utf-8")
-            connection = sqlite3.connect(ledger.path)
-            connection.execute("UPDATE builds SET definition_hash=?", (_stable_hash(report["definition"]),))
-            connection.commit()
-            connection.close()
-            with self.assertRaisesRegex(ValueError, "product gaps"):
-                ledger.certified_plan(
-                    sessions=[date(2026, 8, 18)], tickers=[],
-                    configuration={"strategy": {"execution_interval": "100ms"}},
-                )
+        verify_market_day_plan(
+            self._plan(technical_rows=0, technical_hash="0"),
+            _QuoteOnlyReadClient(),
+        )
 
     def test_select_only_guard_rejects_mutation(self) -> None:
         self.assertEqual(assert_select_only("SELECT 1"), "SELECT 1")
