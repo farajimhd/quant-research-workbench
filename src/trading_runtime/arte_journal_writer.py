@@ -225,11 +225,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
     from src.trading_runtime.keeper_session import ManagedKeeperSession
 
-    url = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_URL", "").strip()
-    user = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", "").strip()
-    password = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD", "")
-    if not url or user != "backtest_v4_runner" or not password:
-        raise ValueError("V4 Backtest requires its dedicated runner credential")
+    url, user, password = _v4_runner_credentials()
     if user in {os.environ.get(key, "").strip() for key in (
         "BACKTEST_CLICKHOUSE_USER", "REAL_LIVE_CLICKHOUSE_READ_USER",
         "REAL_LIVE_CLICKHOUSE_USER", "TRADING_JOURNAL_CLICKHOUSE_USER",
@@ -245,6 +241,26 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
     client.typed_insert_dispatch = TypedInsertDispatch(keeper_session.client)
     client.typed_insert_strict = True
     return client
+
+
+def _v4_runner_credentials() -> tuple[str, str, str]:
+    url = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_URL", "").strip()
+    user = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", "").strip()
+    password = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD", "")
+    if not url or user != "backtest_v4_runner" or not password:
+        raise ValueError("V4 Backtest requires its dedicated runner credential")
+    return url, user, password
+
+
+def backtest_v4_operator_client_from_env() -> Any:
+    """SELECT-only catalog/grant audit before any Keeper claim or run write."""
+    from research.mlops.clickhouse import ClickHouseHttpClient
+
+    url, user, password = _v4_runner_credentials()
+    return ClickHouseHttpClient(
+        url, user, password, timeout_seconds=60, persistent=True,
+        default_query_params={"readonly": 1, "max_threads": 2,
+                              "max_execution_time": 60})
 
 
 def backtest_v4_context_client_from_env(*, keeper_session=None) -> Any:
