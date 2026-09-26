@@ -9,6 +9,8 @@ import multiprocessing
 import os
 from pathlib import Path
 import signal
+import subprocess
+from hashlib import sha256
 import sys
 import threading
 import time
@@ -302,8 +304,88 @@ def run(args: argparse.Namespace) -> int:
         return run_locked(args)
 
 
-def verify_source_archive(source: Path, *, supplement_parent: Path | None = None) -> dict:
+def verify_source_archive(source: Path, *, supplement_parent: Path | None = None,
+                          recovery_parent: Path | None = None) -> dict:
+    if supplement_parent is not None and recovery_parent is not None:
+        raise ValueError("Choose exactly one supplement provenance contract")
     source_plan = read(source / "plan.json")
+    if recovery_parent is not None:
+        from scripts.prepare_level_book_v7_solver_recovery import OLD_SOLVER_HASH, SOLVER_FILE
+        from src.market_engine.reaction_center import SOLVER_VERSION
+        parent = read(recovery_parent / "plan.json")
+        prefix = source_plan.get("inherited_prefix") or {}
+        rows = source_plan.get("rows") or []
+        if (source_plan.get("plan_hash") != digest({k: v for k, v in source_plan.items()
+                                                    if k != "plan_hash"})
+                or parent.get("plan_hash") != digest({k: v for k, v in parent.items()
+                                                     if k != "plan_hash"})
+                or source_plan.get("parent_plan_hash") != parent["plan_hash"]
+                or len(rows) != 1 or rows[0].get("ticker") != "URG"
+                or rows[0].get("status") != "queued"
+                or len([row for row in parent["rows"] if row["ticker"] == "URG"
+                        and {k: v for k, v in rows[0].items() if k not in ("status", "reason")}
+                        == {k: v for k, v in row.items() if k not in ("status", "reason")}]) != 1
+                or any(source_plan.get(key) != parent.get(key) for key in (
+                    "band_config", "extraction_version", "rules", "source_policy", "software"))
+                or {key for key in set(source_plan["source_files"]) | set(parent["source_files"])
+                    if source_plan["source_files"].get(key) != parent["source_files"].get(key)}
+                    != {SOLVER_FILE}
+                or parent["source_files"].get(SOLVER_FILE) != OLD_SOLVER_HASH
+                or prefix.get("solver_version") != SOLVER_VERSION
+                or prefix.get("parent_plan_hash") != parent["plan_hash"]
+                or prefix.get("parent_source_files") != parent["source_files"]
+                or prefix.get("policy") != "Verified old-solver prefix retained byte-for-byte; analytic solver applies only to subsequent sessions"):
+            raise ValueError("Recovery is not a verified solver-only child of the frozen V1 campaign")
+        # The parent predates the reporting-policy revision. Verify its pinned
+        # historical hash algorithm, not today's changed source_hash function.
+        historical_file = "research/level_book/v7/campaign_source.py"
+        historical_code = subprocess.check_output(
+            ["git", "show", f"{parent['git_commit']}:{historical_file}"], cwd=REPO)
+        if (sha256(historical_code).hexdigest() != parent["source_files"][historical_file]
+                or b"return digest(dict(policy=HISTORICAL_POLICY,metadata=metadata,rules=rules))"
+                   not in historical_code):
+            raise ValueError("Original V7 source-hash implementation is not pinned")
+        original_root = recovery_parent / "tickers" / "URG"
+        original_source = read(original_root / "source-plan.json")
+        if original_source.get("plan_hash") != parent["plan_hash"]:
+            raise ValueError("Original URG source plan differs from its campaign")
+        files, sessions, last_hash = [], [], None
+        for metadata in original_source["days"]:
+            day = metadata["source_date"]
+            receipt_path = original_root / "receipts" / f"{day}.json"
+            if not receipt_path.exists():
+                break
+            receipt = read(receipt_path)
+            expected_hash = digest(dict(policy=parent["source_policy"],
+                                        metadata=metadata, rules=parent["rules"]))
+            if (receipt.get("source_hash") != expected_hash
+                    or receipt.get("parent_hash") != last_hash):
+                raise ValueError(f"Original URG receipt chain differs at {day}")
+            if receipt.get("state") == "complete":
+                book_path = original_root / "books" / f"{day}.json.gz"
+                book = verified_book(book_path)
+                if (book.get("checkpoint_hash") != receipt.get("checkpoint_hash")
+                        or book.get("ticker") != "URG" or book.get("session") != day):
+                    raise ValueError(f"Original URG book differs at {day}")
+                last_hash = book["checkpoint_hash"]
+                files.append(book_path)
+            elif receipt.get("state") != "empty":
+                raise ValueError(f"Original URG receipt state differs at {day}")
+            files.append(receipt_path)
+            sessions.append(day)
+        if (not sessions or len(sessions) == len(original_source["days"])
+                or {path.stem for path in (original_root / "receipts").glob("*.json")}
+                   != set(sessions)):
+            raise ValueError("Original URG prefix is incomplete or noncontiguous")
+        recovered_root = source / "tickers" / "URG"
+        if (prefix.get("inherited_sessions") != sessions
+                or prefix.get("last_inherited_checkpoint_hash") != last_hash
+                or any((recovered_root / path.relative_to(recovery_parent / "tickers" / "URG")).read_bytes()
+                       != path.read_bytes() for path in files)
+                or read(recovered_root / "source-plan.json")
+                    != dict(original_source, plan_hash=source_plan["plan_hash"])):
+            raise ValueError("Recovery inherited prefix differs from verified original")
+        return source_plan
     if supplement_parent is not None:
         parent = read(supplement_parent / "plan.json")
         repair_root = source.parent
@@ -344,14 +426,17 @@ def verify_source_archive(source: Path, *, supplement_parent: Path | None = None
 
 
 def run_locked(args: argparse.Namespace) -> int:
-    verify_source_archive(args.source, supplement_parent=args.supplement_parent)
+    supplement_parent = getattr(args, "supplement_parent", None)
+    recovery_parent = getattr(args, "recovery_parent", None)
+    verify_source_archive(args.source, supplement_parent=supplement_parent,
+                          recovery_parent=recovery_parent)
     budget = worker_budget(args.workers)
     if not 1 <= args.insert_workers <= budget["workers"]:
         raise ValueError(f"insert-workers must be 1..{budget['workers']}")
     budget["insert_workers"] = args.insert_workers
     plan_hash = source_plan_digest(args.source / "plan.json")
     paths = ticker_directories(args.source)
-    if args.supplement_parent is not None:
+    if args.supplement_parent is not None or args.recovery_parent is not None:
         source_plan = read(args.source / "plan.json")
         planned = {row["ticker"] for row in source_plan["rows"]}
         if ({path.name for path in paths} != planned
@@ -368,8 +453,8 @@ def run_locked(args: argparse.Namespace) -> int:
                 raise ValueError(f"Supplement receipt is not ready: {path.name}")
     c = client()
     preflight(c)
-    if args.supplement_parent is not None:
-        parent_hash = source_plan_digest(args.supplement_parent / "plan.json")
+    if args.supplement_parent is not None or args.recovery_parent is not None:
+        parent_hash = source_plan_digest((args.supplement_parent or args.recovery_parent) / "plan.json")
         source_names = {row["ticker"] for row in read(args.source / "plan.json")["rows"]}
         names = ",".join(repr(name) for name in sorted(source_names))
         overlapping = query(client(readonly=True),
@@ -386,11 +471,16 @@ def run_locked(args: argparse.Namespace) -> int:
         verify_lineage_table(c)
     other_plans = query(client(readonly=True),
         f"SELECT DISTINCT source_plan_hash FROM {COVERAGE_TABLE} WHERE source_plan_hash!='{plan_hash}' LIMIT 3")
-    if other_plans and args.supplement_parent is None:
+    if other_plans and args.supplement_parent is None and args.recovery_parent is None:
         raise ValueError("V7 arte tables already contain another source plan; mixing campaigns is forbidden")
-    if args.supplement_parent is not None and {row["source_plan_hash"]
-            for row in other_plans} != {parent_hash}:
-        raise ValueError("V7 arte tables contain an unrelated campaign")
+    if args.supplement_parent is not None or args.recovery_parent is not None:
+        certified = query(client(readonly=True),
+            f"SELECT DISTINCT supplement_source_plan_hash FROM {LINEAGE_TABLE} "
+            f"WHERE parent_source_plan_hash='{parent_hash}'")
+        allowed = {parent_hash} | {row["supplement_source_plan_hash"] for row in certified}
+        if (parent_hash not in {row["source_plan_hash"] for row in other_plans}
+                or {row["source_plan_hash"] for row in other_plans} - allowed):
+            raise ValueError("V7 arte tables contain an uncertified source campaign")
     prior = {row["ticker"]: row for row in query(client(readonly=True),
         f"SELECT ticker,min(session_date) AS first_session,max(session_date) AS last_session,"
         f"count() AS sessions FROM {COVERAGE_TABLE} FINAL "
@@ -466,7 +556,7 @@ def run_locked(args: argparse.Namespace) -> int:
     audit = {"expected_tickers": len(expected), "published_tickers": len(actual), "coverage_mismatches": len(mismatches),
         "mismatch_examples": mismatches[:20], "unexpected_tickers": unexpected[:20], "misplaced_parts": misplaced}
     failed = bool(failures or mismatches or unexpected or misplaced)
-    if not failed and not STOP.is_set() and args.supplement_parent is not None:
+    if not failed and not STOP.is_set() and (args.supplement_parent is not None or args.recovery_parent is not None):
         stamp = datetime64_ns(time.time_ns())
         lineage = [dict(parent_source_plan_hash=parent_hash,
                         supplement_source_plan_hash=plan_hash,
@@ -474,7 +564,7 @@ def run_locked(args: argparse.Namespace) -> int:
                    for ticker in sorted(expected)]
         existing = query(client(readonly=True),
             f"SELECT parent_source_plan_hash,supplement_source_plan_hash,ticker "
-            f"FROM {LINEAGE_TABLE} ORDER BY ticker")
+            f"FROM {LINEAGE_TABLE} WHERE supplement_source_plan_hash='{plan_hash}' ORDER BY ticker")
         wanted = [{key: row[key] for key in (
             "parent_source_plan_hash", "supplement_source_plan_hash", "ticker")}
                   for row in lineage]
@@ -493,7 +583,7 @@ def run_locked(args: argparse.Namespace) -> int:
                 lineage_writer.close()
         actual_lineage = query(client(readonly=True),
             f"SELECT parent_source_plan_hash,supplement_source_plan_hash,ticker "
-            f"FROM {LINEAGE_TABLE} ORDER BY ticker")
+            f"FROM {LINEAGE_TABLE} WHERE supplement_source_plan_hash='{plan_hash}' ORDER BY ticker")
         if actual_lineage != wanted:
             raise ValueError("Supplement lineage readback differs from published rows")
     result = {"state": "interrupted" if STOP.is_set() else "failed" if failed else "complete", "source_plan_hash": plan_hash,
@@ -510,6 +600,8 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--supplement-parent", type=Path, default=None,
         help="frozen primary V1 archive; enables only verified disjoint supplement publication")
+    parser.add_argument("--recovery-parent", type=Path, default=None,
+        help="frozen primary V1 archive; enables only verified URG analytic-solver recovery")
     parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME)
     parser.add_argument("--workers", type=int, default=None,
         help="processes (default: fastest current CPU/RAM-safe budget)")
@@ -527,7 +619,8 @@ def parse() -> argparse.Namespace:
 def main() -> int:
     args = parse()
     if args.command == "preflight":
-        verify_source_archive(args.source, supplement_parent=args.supplement_parent)
+        verify_source_archive(args.source, supplement_parent=args.supplement_parent,
+                              recovery_parent=args.recovery_parent)
         load_env_files(discover_clickhouse_env_files()); preflight(client())
         print(f"ready: {DATABASE} tables use {POLICY}; source={args.source}")
         return 0

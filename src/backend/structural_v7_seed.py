@@ -128,7 +128,7 @@ def certified_seed_plan(market: Any, client: Any) -> CertifiedSeedPlan:
         )
     if len(plan_hashes) == 1:
         catalog_hash = next(iter(plan_hashes))
-    elif len(plan_hashes) == 2:
+    else:
         from src.trading_runtime.structural_v7_lineage import certified_ticker_lineage
         sources: dict[str, str] = {}
         for unit in units:
@@ -137,23 +137,20 @@ def certified_seed_plan(market: Any, client: Any) -> CertifiedSeedPlan:
                 raise ValueError("V7 ticker changes source campaigns across sessions")
             sources[ticker] = source
         lineage = certified_ticker_lineage(client, tickers=tuple(sorted(sources)))
-        pairs = {(str(row["parent_source_plan_hash"]),
-                  str(row["supplement_source_plan_hash"])) for row in lineage}
-        if len(pairs) != 1:
+        parents = {str(row["parent_source_plan_hash"]) for row in lineage}
+        if len(parents) != 1:
             raise ValueError("V7 supplement lineage has no single certified parent")
-        parent, supplement = next(iter(pairs))
-        supplement_tickers = {ticker for ticker, source in sources.items()
-                              if source == supplement}
-        if ({parent, supplement} != plan_hashes
-                or parent == supplement
-                or supplement_tickers != {str(row["ticker"]) for row in lineage}):
+        parent = next(iter(parents))
+        expected = {ticker: source for ticker, source in sources.items()
+                    if source != parent}
+        actual = {str(row["ticker"]): str(row["supplement_source_plan_hash"])
+                  for row in lineage}
+        if (parent not in plan_hashes or not expected or actual != expected
+                or set(actual.values()) | {parent} != plan_hashes):
             raise ValueError("V7 supplement ticker membership differs from coverage")
         catalog_hash = sha256(json.dumps({
-            "parent": parent, "supplement": supplement,
-            "supplement_tickers": sorted(supplement_tickers),
+            "parent": parent, "supplements": sorted(actual.items()),
         }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    else:
-        raise ValueError("V7 prior seeds mix source campaigns")
     if len(catalog_hash) != 64 or any(len(value) != 64 for value in plan_hashes):
         raise ValueError("V7 source campaign hash is invalid")
     if len(policies) > 1:
