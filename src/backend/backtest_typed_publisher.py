@@ -213,6 +213,14 @@ class BacktestTypedJournalPublisher:
                             proposal, session_date=session_date)
                         self._committed_strategy_intents[intent.intent_id] = (
                             unit.base, intent)
+                    elif (self.writer.journal_profile == "backtest_v4"
+                          and batch.first_sequence == batch.last_sequence
+                          and len(batch.events) == 1):
+                        intent = self.journal.strategy_one_protection_for_record(
+                            batch.events[0]["record_id"])
+                        if intent is not None:
+                            self._committed_strategy_intents[intent.intent_id] = (
+                                batch, intent)
                     self.journal.mark_fenced(batch.last_sequence)
                     self._sequence = batch.last_sequence
                     self._batch_id = batch.batch_id

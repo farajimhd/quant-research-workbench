@@ -30,6 +30,7 @@ class BacktestMemoryJournal:
         self.max_pending_records = max_pending_records
         self._records: list[JournalRecord] = []
         self._strategy_one_entries: dict[str, tuple[Any, date]] = {}
+        self._strategy_one_protection: dict[str, Any] = {}
         self._oms_groups: dict[str, Any] = {}
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
         self._base_sequence = initial_sequence
@@ -87,6 +88,44 @@ class BacktestMemoryJournal:
         """Return only a still-unfenced proposal for the projection worker."""
         with self._lock:
             return self._strategy_one_entries.get(record_id)
+
+    def append_strategy_one_protection_intent(
+        self, *, intent: Any, account_id: str, strategy_id: str,
+        strategy_revision: int,
+    ) -> JournalRecord:
+        """Retain the exact scalar amendment source until its V4 fence."""
+        from src.trading_runtime.signals import StrategyIntent
+        from src.trading_runtime.strategy_one_contract import STRATEGY_ID
+
+        if (not isinstance(intent, StrategyIntent)
+                or intent.action not in {
+                    "replace_protective_stop", "replace_profit_target"}
+                or intent.metadata or not account_id
+                or strategy_id != STRATEGY_ID
+                or type(strategy_revision) is not int or strategy_revision != 1
+                or (intent.action == "replace_profit_target"
+                    and (intent.reason != "ordinal_resistance_target"
+                         or intent.profit_target_price is None
+                         or intent.invalidation_price is not None))
+                or (intent.action == "replace_protective_stop"
+                    and (intent.reason not in {
+                        "completed_30s_bar_low", "three_resistance_step_stop"}
+                         or intent.invalidation_price is None
+                         or intent.profit_target_price is not None))):
+            raise ValueError("Strategy 1 protection source is not normalized")
+        with self._lock:
+            record = self.append(
+                run_id=self.run_id, category="strategy",
+                entity_type="strategy_intent", entity_id=intent.intent_id,
+                account_id=account_id, event_time=intent.event_time,
+                payload={**intent.payload(), "strategy_id": strategy_id,
+                         "strategy_revision": strategy_revision})
+            self._strategy_one_protection[record.record_id] = intent
+            return record
+
+    def strategy_one_protection_for_record(self, record_id: str) -> Any | None:
+        with self._lock:
+            return self._strategy_one_protection.get(record_id)
 
     def append_oms_group_transition(
         self, *, group: Any, run_id: str, category: str, entity_type: str,
@@ -204,6 +243,7 @@ class BacktestMemoryJournal:
             if discard:
                 for record in self._records[:discard]:
                     self._strategy_one_entries.pop(record.record_id, None)
+                    self._strategy_one_protection.pop(record.record_id, None)
                     self._oms_groups.pop(record.record_id, None)
                     self._oms_admissions.pop(record.record_id, None)
                 del self._records[:discard]

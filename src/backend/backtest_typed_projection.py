@@ -137,11 +137,36 @@ def project_pending_backtest_v4_prefix(
                 fixed_market_execution_plan=fixed_market_execution_plan,
                 expected_market_start=expected_market_start)
             sidecar = journal.strategy_one_entry_for_record(record.record_id)
+            protection_source = journal.strategy_one_protection_for_record(
+                record.record_id)
+            if sidecar is not None and protection_source is not None:
+                raise RuntimeError("Strategy 1 intent has two source authorities")
             if sidecar is None:
                 if (kind == ("strategy", "strategy_intent")
                         and record.payload.get("reason") == "strategy_one_entry"):
                     raise RuntimeError("Strategy 1 journal intent lacks normalized evidence")
+                if (kind == ("strategy", "strategy_intent")
+                        and record.payload.get("strategy_id") == "early-squeeze-strategy"
+                        and record.payload.get("strategy_revision") == 1
+                        and record.payload.get("action") in {
+                            "replace_protective_stop", "replace_profit_target"}
+                        and protection_source is None):
+                    raise RuntimeError("Strategy 1 protection intent lacks typed source")
                 unit = batch
+                if protection_source is not None:
+                    if (kind != ("strategy", "strategy_intent")
+                            or record.entity_id != protection_source.intent_id
+                            or record.account_id == ""
+                            or protection_source.payload() != {
+                                key: value for key, value in record.payload.items()
+                                if key not in {"strategy_id", "strategy_revision",
+                                               "correlation_id", "causation_id"}}):
+                        raise RuntimeError("Strategy 1 protection source differs from typed intent")
+                    prior_source = sources.get(protection_source.intent_id)
+                    if prior_source is not None and prior_source != (
+                            batch, protection_source):
+                        raise RuntimeError("V4 Strategy 1 protection identity was reused")
+                    sources[protection_source.intent_id] = (batch, protection_source)
             else:
                 proposal, session_date = sidecar
                 intent = strategy_one_entry_intent(
@@ -161,7 +186,13 @@ def project_pending_backtest_v4_prefix(
                 or base.prior_batch_id != previous):
             raise ValueError("V4 projector changed the exclusive batch identity")
         if isinstance(unit, TypedJournalBatch):
-            ordinary.append(unit)
+            if journal.strategy_one_protection_for_record(record.record_id) is not None:
+                if ordinary:
+                    units.append(_coalesce_unpublished(tuple(ordinary)))
+                    ordinary.clear()
+                units.append(unit)
+            else:
+                ordinary.append(unit)
         else:
             if ordinary:
                 units.append(_coalesce_unpublished(tuple(ordinary)))

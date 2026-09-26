@@ -31,6 +31,11 @@ from src.trading_runtime.portfolio import (
     PortfolioAccountProfile, PortfolioManagementEngine, PortfolioPolicy,
 )
 from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+from src.trading_runtime.strategy_one_protection_intent import strategy_one_protection_intents
+from test_strategy_one_protection_intent import (
+    financial as protection_financial, previous as previous_protection,
+    transition as protection_transition,
+)
 from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
 from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
@@ -86,6 +91,63 @@ def test_numbered_proposal_uses_shared_runtime_portfolio_and_oms_path():
     with pytest.raises(ValueError, match="numbered Backtest runtime"):
         asyncio.run(runtime.submit_strategy_one_proposal(proposal))
     assert len(runtime.journal.records(runtime.run_id)) == 2
+    runtime.journal.close()
+
+
+def test_numbered_protection_routes_target_then_stop_and_confirms_state():
+    session = date(2026, 8, 18)
+    financial = protection_financial()
+    previous = previous_protection()
+    transition = protection_transition()
+    intents = strategy_one_protection_intents(
+        previous, transition, financial, session_date=session,
+        bid=10., ask=10.01)
+    submitted = []
+
+    @dataclass
+    class Submitted:
+        filled_quantity: float = 0.
+
+    async def approve(intent, *, account_id, assignment_id):
+        assert account_id == "DU1" and assignment_id == "assignment-1"
+        return (SimpleNamespace(payload=lambda: {"status": "approved"}),
+                replace(intent, metadata={"assignment_id": assignment_id}))
+
+    async def submit(intent, *, account_id, event):
+        submitted.append(intent.action)
+        return Submitted()
+
+    runtime = object.__new__(TradingRuntime)
+    runtime.config = SimpleNamespace(
+        mode=RunMode.BACKTEST, strategy_id="early-squeeze-strategy",
+        strategy_revision=1, account_ids=("DU1",), anchor_date=session)
+    runtime.run_id = str(UUID(int=121))
+    runtime.journal = BacktestMemoryJournal(run_id=runtime.run_id)
+    runtime.intent_planner = object()
+    runtime.order_manager = SimpleNamespace(submit_intent=submit)
+    runtime.portfolio = SimpleNamespace(
+        approve=approve, release_intent=lambda *_a, **_k: None,
+        _typed_recovery=False)
+    runtime.strategy = SimpleNamespace(assignments=lambda: ())
+    runtime.last_event_time = intents[0].event_time
+    runtime._refresh_portfolio_from_broker = AsyncMock()
+    state = asyncio.run(runtime.submit_strategy_one_protection(
+        previous, transition, financial, bid=10., ask=10.01))
+    assert state == transition.state
+    assert submitted == ["replace_profit_target", "replace_protective_stop"]
+    records = runtime.journal.records(runtime.run_id)
+    assert [record.entity_id for record in records] == [
+        intent.intent_id for intent in intents]
+    assert all(record.payload["metadata"] == {} for record in records)
+    runtime.portfolio.approve = AsyncMock(return_value=(
+        SimpleNamespace(reasons=("no_broker_position_to_protect",),
+                        payload=lambda: {"status": "rejected"}), None))
+    runtime._fund_momentum_request = AsyncMock()
+    runtime._record_intent_rejection = AsyncMock()
+    with pytest.raises(RuntimeError, match="was not confirmed"):
+        asyncio.run(runtime.submit_strategy_one_protection(
+            previous, transition, financial, bid=10., ask=10.01))
+    assert submitted == ["replace_profit_target", "replace_protective_stop"]
     runtime.journal.close()
 
 

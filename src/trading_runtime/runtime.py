@@ -840,7 +840,20 @@ class TradingRuntime:
         account_id: str,
         event: MarketEvent | None,
         *, strategy_one_proposal: Any | None = None,
+        strategy_one_assignment_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        if strategy_one_assignment_id is not None:
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+
+            if (strategy_one_proposal is not None
+                    or self.config.mode != RunMode.BACKTEST
+                    or not isinstance(self.journal, BacktestMemoryJournal)
+                    or not strategy_one_assignment_id or event is not None
+                    or not evaluation.intents
+                    or any(intent.action not in {
+                        "replace_protective_stop", "replace_profit_target"}
+                        or intent.metadata for intent in evaluation.intents)):
+                raise ValueError("Strategy 1 protection needs a typed disk-free source")
         if strategy_one_proposal is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
             from .strategy_one_intent import strategy_one_entry_intent
@@ -874,6 +887,11 @@ class TradingRuntime:
                     intent=intent, proposal=strategy_one_proposal,
                     session_date=self.config.anchor_date,
                     account_id=account_id,
+                    strategy_id=self.config.strategy_id,
+                    strategy_revision=self.config.strategy_revision)
+            elif strategy_one_assignment_id is not None:
+                self.journal.append_strategy_one_protection_intent(
+                    intent=intent, account_id=account_id,
                     strategy_id=self.config.strategy_id,
                     strategy_revision=self.config.strategy_revision)
             else:
@@ -927,13 +945,16 @@ class TradingRuntime:
                 # health/reconciliation mechanism, not sizing authority for a
                 # new exposure-increasing order.
                 await self._refresh_portfolio_from_broker()
-            if strategy_one_proposal is None:
+            assignment_id = (strategy_one_proposal.assignment_id
+                             if strategy_one_proposal is not None
+                             else strategy_one_assignment_id)
+            if assignment_id is None:
                 decision, approved_intent = await self.portfolio.approve(
                     intent, account_id=account_id)
             else:
                 decision, approved_intent = await self.portfolio.approve(
                     intent, account_id=account_id,
-                    assignment_id=strategy_one_proposal.assignment_id)
+                    assignment_id=assignment_id)
             if approved_intent is None:
                 await self._fund_momentum_request(intent, account_id, decision)
                 from .momentum_session_policy import cash_shortfall
@@ -944,9 +965,9 @@ class TradingRuntime:
                     await self._record_intent_rejection(intent, account_id, decision)
                 results.append({"decision": decision.payload(), "order_group": None})
                 continue
-            if (strategy_one_proposal is not None
+            if (assignment_id is not None
                     and approved_intent.metadata.get("assignment_id")
-                    != strategy_one_proposal.assignment_id):
+                    != assignment_id):
                 raise RuntimeError(
                     "Strategy 1 Portfolio approval lost its normalized assignment")
             if getattr(self.portfolio, "_typed_recovery", False):
@@ -1070,6 +1091,44 @@ class TradingRuntime:
         return await self._execute_intents(
             StrategyEvaluation(intents=(intent,)), proposal.account_id, None,
             strategy_one_proposal=proposal)
+
+    async def submit_strategy_one_protection(
+        self, previous: Any, transition: Any, financial: Any, *,
+        bid: float, ask: float,
+    ) -> Any:
+        """Confirm numbered OMS amendments before advancing protection state."""
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+        from .strategy_one_position import confirm_protection_transition
+        from .strategy_one_protection_intent import strategy_one_protection_intents
+
+        if (self.config.mode != RunMode.BACKTEST
+                or self.config.strategy_id != STRATEGY_ID
+                or self.config.strategy_revision != STRATEGY_NUMBER
+                or not isinstance(self.journal, BacktestMemoryJournal)
+                or getattr(financial, "account_id", None) not in self.config.account_ids):
+            raise ValueError("Strategy 1 protection needs its numbered Backtest runtime")
+        intents = strategy_one_protection_intents(
+            previous, transition, financial,
+            session_date=self.config.anchor_date, bid=bid, ask=ask)
+        target_confirmed = stop_confirmed = False
+        for intent in intents:
+            if self.last_event_time is not None and intent.event_time < self.last_event_time:
+                raise ValueError("Strategy 1 protection precedes completed broker boundary")
+            results = await self._execute_intents(
+                StrategyEvaluation(intents=(intent,)), financial.account_id,
+                None, strategy_one_assignment_id=financial.assignment_id)
+            if (len(results) != 1 or results[0].get("order_group") is None
+                    or results[0].get("decision", {}).get("status")
+                    not in {"approved", "resized"}):
+                raise RuntimeError("Strategy 1 OMS protection amendment was not confirmed")
+            if intent.action == "replace_profit_target":
+                target_confirmed = True
+            else:
+                stop_confirmed = True
+        return confirm_protection_transition(
+            previous, transition, target_confirmed=target_confirmed,
+            stop_confirmed=stop_confirmed)
 
     async def _record_intent_rejection(
         self,
