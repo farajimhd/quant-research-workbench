@@ -38,7 +38,7 @@ _TABLES = (CANDIDATE_TABLE, COVERAGE_TABLE)
 _GRANTS = frozenset((privilege, table) for privilege in ("SELECT", "INSERT")
                     for table in _TABLES)
 _GRANT_PATTERN = re.compile(
-    rf"GRANT (SELECT|INSERT) ON (arte\.[A-Za-z_][A-Za-z0-9_]*) TO {PRINCIPAL}\Z")
+    rf"GRANT ([A-Z ,]+) ON (arte\.[A-Za-z_][A-Za-z0-9_]*) TO {PRINCIPAL}\Z")
 
 
 def _credential(*, account_exists: bool) -> str:
@@ -81,7 +81,10 @@ def _grant_set(client) -> frozenset[tuple[str, str]]:
         match = _GRANT_PATTERN.fullmatch(line.strip())
         if match is None:
             raise RuntimeError("Candidate producer has broad or unrecognized grants")
-        grants.add((match.group(1), match.group(2)))
+        for privilege in (value.strip() for value in match.group(1).split(",")):
+            if privilege not in {"SELECT", "INSERT"}:
+                raise RuntimeError("Candidate producer has unauthorized privilege")
+            grants.add((privilege, match.group(2)))
     if not grants <= _GRANTS:
         raise RuntimeError("Candidate producer has grants outside its two tables")
     return frozenset(grants)

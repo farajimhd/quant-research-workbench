@@ -69,6 +69,13 @@ def test_existing_broad_grant_fails_before_new_grant(monkeypatch):
     assert not any(sql.startswith("GRANT ") for sql in admin.sql)
 
 
+def test_clickhouse_combined_grant_line_is_exactly_parsed():
+    producer = Producer((
+        f"GRANT SELECT, INSERT ON {table} TO {subject.PRINCIPAL}"
+        for table in (subject.CANDIDATE_TABLE, subject.COVERAGE_TABLE)))
+    assert subject._grant_set(producer) == subject._GRANTS
+
+
 def test_empty_private_credential_can_resume_only_before_account_creation(tmp_path, monkeypatch):
     path = tmp_path / "producer.env"
     path.touch()
