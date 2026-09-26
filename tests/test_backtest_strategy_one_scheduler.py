@@ -1,8 +1,15 @@
 """Sparse entry plus active liquidity scheduling remains causal and exact."""
+import numpy as np
 import pytest
 
 from src.backend.backtest_strategy_one_scheduler import (
     StrategyOneBoundaryScheduler, persisted_active_market_source,
+)
+from src.backend.backtest_strategy_one_market import (
+    StrategyOneDecisionCandidate, attach_sparse_candidate_evidence,
+)
+from src.backend.backtest_strategy_one_preparation import (
+    PreparedStrategyOneTicker, StrategyOneEntryCursor,
 )
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
@@ -28,8 +35,11 @@ def shared_row(ticker, boundary):
             "macd_signal": .1, "previous_close": 9.}
 
 
-def candidate(ticker, boundary):
-    return {**shared_row(ticker, boundary), "trade_count": 3}
+def candidate(ticker, boundary, **overrides):
+    row = {**shared_row(ticker, boundary), "trade_count": 3, **overrides}
+    evidence = StrategyOneEntryCursor(
+        boundary, ticker, 0, boundary, (0, 0, 0, 0), 0, 1)
+    return StrategyOneDecisionCandidate(row, evidence)
 
 
 def group(ticker, boundary):
@@ -52,7 +62,7 @@ def test_candidates_merge_with_active_broker_rows_in_causal_order():
     first = clock.pop_next()
     assert first.boundary_ms == 100
     assert [ticker for ticker, _ in first.broker_rows] == ["AAA"]
-    assert [row["ticker"] for row in first.candidate_rows] == ["AAA"]
+    assert [item.market_row["ticker"] for item in first.candidate_rows] == ["AAA"]
     clock.activate("AAA")
     second = clock.pop_next()
     assert second.boundary_ms == 200
@@ -61,7 +71,7 @@ def test_candidates_merge_with_active_broker_rows_in_causal_order():
     third = clock.pop_next()
     assert third.boundary_ms == 300
     assert [ticker for ticker, _ in third.broker_rows] == ["AAA", "BBB"]
-    assert [row["ticker"] for row in third.candidate_rows] == ["BBB"]
+    assert [item.market_row["ticker"] for item in third.candidate_rows] == ["BBB"]
     clock.deactivate("AAA")
     assert clock.pop_next() is None
     assert requests == [("AAA", 100)]
@@ -145,7 +155,7 @@ def test_active_candidate_uses_one_broker_row_and_rejects_conflicting_quote():
     clock = StrategyOneBoundaryScheduler(
         session_date=DAY,
         candidate_rows=iter((candidate("AAA", 100),
-                             {**candidate("AAA", 300), "bid_int": 101})),
+                             candidate("AAA", 300, bid_int=101))),
         active_source=conflicting)
     clock.pop_next()
     clock.activate("AAA")
@@ -174,7 +184,7 @@ def test_active_candidate_rejects_any_shared_entry_evidence_divergence(
     clock = StrategyOneBoundaryScheduler(
         session_date=DAY,
         candidate_rows=iter((candidate("AAA", 100),
-                             {**candidate("AAA", 300), field: candidate_value})),
+                             candidate("AAA", 300, **{field: candidate_value}))),
         active_source=source)
     clock.pop_next()
     clock.activate("AAA")
@@ -192,7 +202,7 @@ def test_active_candidate_rejects_trade_count_divergence():
     clock = StrategyOneBoundaryScheduler(
         session_date=DAY,
         candidate_rows=iter((candidate("AAA", 100),
-                             {**candidate("AAA", 300), "trade_count": 4})),
+                             candidate("AAA", 300, trade_count=4))),
         active_source=source)
     clock.pop_next()
     clock.activate("AAA")
@@ -211,7 +221,7 @@ def test_active_candidate_rejects_missing_shared_evidence(missing_from):
 
     later = candidate("AAA", 300)
     if missing_from == "candidate":
-        del later["quote_timestamp_us"]
+        del later.market_row["quote_timestamp_us"]
     clock = StrategyOneBoundaryScheduler(
         session_date=DAY,
         candidate_rows=iter((candidate("AAA", 100), later)),
@@ -236,6 +246,29 @@ def test_invalid_candidate_or_active_source_fails_closed():
     clock.pop_next()
     with pytest.raises(ValueError, match="completed ticker boundary"):
         clock.activate("AAA")
+    clock.close()
+
+
+def test_scheduler_requires_joined_closed_bar_evidence():
+    with pytest.raises(ValueError, match="paired closed-bar evidence"):
+        StrategyOneBoundaryScheduler(
+            session_date=DAY, candidate_rows=iter((shared_row("AAA", 100),)),
+            active_source=lambda ticker, after: iter(()))
+
+    item = PreparedStrategyOneTicker(
+        "AAA", 1_000, np.array([42]), np.array([31_000]),
+        np.array([30_000]), np.array([[31_000, 30_000, 30_000, 30_000]]),
+        np.array([30_000]), np.array([99_000]))
+    row = candidate("AAA", 31_000).market_row
+    joined = attach_sparse_candidate_evidence((row,), (item,))
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter(joined),
+        active_source=lambda ticker, after: iter(()))
+    work = clock.pop_next()
+    assert work.broker_rows[0][1][100] is row
+    assert work.candidate_rows[0].evidence.stop_low_int == 99_000
+    assert work.candidate_rows[0].evidence.macd_boundary_ms == (
+        31_000, 30_000, 30_000, 30_000)
     clock.close()
 
 

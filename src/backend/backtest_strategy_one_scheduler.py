@@ -18,6 +18,7 @@ from src.backend.backtest_market_data import (
     iter_market_day_rows, project_market_day_plan,
 )
 from src.backend.backtest_liquidity_price import PriceLevelPlan
+from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
 
 
 MarketGroup = tuple[int, Mapping[int, Mapping]]
@@ -69,21 +70,21 @@ def persisted_active_market_source(
 class StrategyOneBoundaryWork:
     boundary_ms: int
     broker_rows: tuple[tuple[str, Mapping[int, Mapping]], ...]
-    candidate_rows: tuple[Mapping, ...]
+    candidate_rows: tuple[StrategyOneDecisionCandidate, ...]
 
 
 class StrategyOneBoundaryScheduler:
     """One deterministic clock for entry candidates and active market reads."""
 
     def __init__(self, *, session_date: str,
-                 candidate_rows: Iterator[Mapping],
+                 candidate_rows: Iterator[StrategyOneDecisionCandidate],
                  active_source: MarketSource) -> None:
         if not session_date or not callable(active_source):
             raise ValueError("Strategy 1 scheduler needs a session and active source")
         self.session_date = session_date
         self._candidates = candidate_rows
         self._active_source = active_source
-        self._candidate: Mapping | None = None
+        self._candidate: StrategyOneDecisionCandidate | None = None
         self._prior_candidate: tuple[int, str] | None = None
         self._active: dict[str, Iterator[MarketGroup]] = {}
         self._active_prior: dict[str, int] = {}
@@ -99,17 +100,22 @@ class StrategyOneBoundaryScheduler:
         if row is None:
             self._candidate = None
             return
-        if not isinstance(row, Mapping):
+        if not isinstance(row, StrategyOneDecisionCandidate):
+            raise ValueError("Strategy 1 candidate lacks paired closed-bar evidence")
+        market = row.market_row
+        evidence = row.evidence
+        if not isinstance(market, Mapping):
             raise ValueError("Strategy 1 candidate market row is malformed")
-        boundary = row.get("boundary_ms")
-        ticker = row.get("ticker")
+        boundary = market.get("boundary_ms")
+        ticker = market.get("ticker")
         key = (boundary, ticker)
         if (type(boundary) is not int or boundary <= 0 or boundary % 100
                 or boundary > 57_600_000 or not isinstance(ticker, str)
-                or not ticker or row.get("session_date") != self.session_date
-                or row.get("resolution_ms") != 100
-                or row.get("price_valid") != 1
-                or row.get("indicator_resolution_ms") != 100
+                or not ticker or market.get("session_date") != self.session_date
+                or market.get("resolution_ms") != 100
+                or market.get("price_valid") != 1
+                or market.get("indicator_resolution_ms") != 100
+                or evidence.boundary_ms != boundary or evidence.ticker != ticker
                 or (self._prior_candidate is not None
                     and key <= self._prior_candidate)):
             raise ValueError("Strategy 1 candidates are not unique causal boundaries")
@@ -180,7 +186,7 @@ class StrategyOneBoundaryScheduler:
             or self._heads[0][2] != self._generation[self._heads[0][1]]
         ):
             heappop(self._heads)
-        candidate_at = (int(self._candidate["boundary_ms"])
+        candidate_at = (int(self._candidate.market_row["boundary_ms"])
                         if self._candidate is not None else None)
         active_at = self._heads[0][0] if self._heads else None
         if candidate_at is None and active_at is None:
@@ -200,10 +206,11 @@ class StrategyOneBoundaryScheduler:
             self._advance_active(ticker)
         candidates = []
         while (self._candidate is not None
-               and self._candidate["boundary_ms"] == boundary):
+               and self._candidate.market_row["boundary_ms"] == boundary):
             candidates.append(self._candidate)
             self._advance_candidate()
-        for row in candidates:
+        for candidate in candidates:
+            row = candidate.market_row
             ticker = str(row["ticker"])
             by_resolution = broker.setdefault(ticker, {})
             existing = by_resolution.get(100)
