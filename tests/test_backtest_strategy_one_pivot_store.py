@@ -64,6 +64,7 @@ def test_certification_pins_exact_select_only_rows(monkeypatch):
                                     candidate_tickers=("ABCD",), client=client)
     assert plan.coverage[0].interval_count == 1
     assert plan.intervals == (("ABCD", (INTERVAL,)),)
+    assert plan.timeline("ABCD").at(2_000)[0].side == "high"
     assert len(plan.token) == 64
     assert all(query.startswith("SELECT") for query in client.queries)
     assert any("toString(side)" in query for query in client.queries

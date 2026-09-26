@@ -16,6 +16,7 @@ from src.backend.backtest_market_data import CertifiedMarketDayPlan, market_day_
 from src.trading_runtime.strategy_one_pivot_product import (
     PivotInterval, interval_content_hash,
 )
+from src.trading_runtime.strategy_one_pivot_timeline import PivotTimeline
 from src.trading_runtime.strategy_one_pivot_schema import (
     COVERAGE_TABLE, PIVOT_TABLE, PRODUCT_DIGEST, verify_tables,
 )
@@ -37,6 +38,13 @@ class CertifiedPivotPlan:
     coverage: tuple[CertifiedPivotCoverage, ...]
     intervals: tuple[tuple[str, tuple[PivotInterval, ...]], ...]
     token: str
+
+    def timeline(self, ticker: str) -> PivotTimeline:
+        """Open one active-only causal cursor from this certified plan."""
+        found = [values for symbol, values in self.intervals if symbol == ticker]
+        if len(found) != 1:
+            raise ValueError("Ticker lacks certified Strategy 1 pivot intervals")
+        return PivotTimeline(session_date=self.session_date, intervals=found[0])
 
 
 def _rows(client: Any, query: str) -> list[dict]:
