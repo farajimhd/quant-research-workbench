@@ -76,7 +76,8 @@ def run(args):
     for name,expected in config['code_hashes'].items():
         if file_hash(Path(__file__).with_name(name)) != expected:
             raise ValueError('Replay model code differs from checkpoint contract: '+name)
-    checkpoint = root/'checkpoints'/'checkpoint_latest.pt'
+    checkpoint = root/'checkpoints'/('checkpoint_best_val.pt' if args.checkpoint == 'best-val'
+        else 'checkpoint_latest.pt')
     saved = torch.load(checkpoint,map_location='cpu',weights_only=False)
     if saved['config_hash'] != config['config_hash']:
         raise ValueError('Replay checkpoint and run configuration differ')
@@ -142,6 +143,7 @@ def main(argv=None):
     parser.add_argument('--run',type=Path,required=True)
     parser.add_argument('--test-shards',type=Path,nargs='+',required=True)
     parser.add_argument('--device',type=int,default=0)
+    parser.add_argument('--checkpoint',choices=('best-val','latest'),default='best-val')
     parser.add_argument('--max-seconds',type=int,default=0,help='Bounded smoke only')
     parser.add_argument('--allow-segment',action='store_true')
     args = parser.parse_args(argv)

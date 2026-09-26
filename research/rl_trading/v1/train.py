@@ -56,7 +56,7 @@ def _load_roots(paths, *, allow_segment):
     return sorted(result,key=lambda item:item.plan['date'])
 
 
-def _run_validation(model, shards, device, vocab, batch_size, trade_weight):
+def _run_validation(model, shards, device, vocab, batch_size, trade_weight, value_weight):
     model.eval()
     totals = dict(loss=0.,action_accuracy=0.,trade_recall=0.,samples=0)
     with torch.inference_mode():
@@ -67,7 +67,8 @@ def _run_validation(model, shards, device, vocab, batch_size, trade_weight):
                 batch = data.batch(index)
                 with torch.autocast('cuda',dtype=torch.bfloat16):
                     logits,value = model(batch,teacher_actions=batch['actions'])
-                    loss,metrics = teacher_loss(logits,value,batch,trade_weight=trade_weight)
+                    loss,metrics = teacher_loss(logits,value,batch,
+                        trade_weight=trade_weight,value_weight=value_weight)
                 count = len(index)
                 totals['loss'] += float(loss.detach())*count
                 totals['action_accuracy'] += float(metrics['action_accuracy'])*count
@@ -215,7 +216,8 @@ def run(args):
                 loading_seconds=loading_seconds,samples_per_second=sums['samples']/max(elapsed,1e-9))
             if sums['samples'] == 0:
                 raise ValueError('No training examples were processed')
-            val = _run_validation(model,val_shards,device,vocab,args.batch_size,args.trade_weight)
+            val = _run_validation(model,val_shards,device,vocab,args.batch_size,
+                args.trade_weight,args.value_weight)
             report = {**{'train/'+key:float(value) for key,value in train_result.items()},
                 **{'val/'+key:float(value) for key,value in val.items()}}
             metrics.log(report,global_step)

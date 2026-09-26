@@ -49,10 +49,11 @@ def test_cuda_training_launcher_reads_disk_shards_and_checkpoints(tmp_path,monke
     assert train.main(['--train-shards',str(train_root),'--val-shards',str(val_root),
         '--run-name','smoke','--epochs','1','--batch-size','2','--d-model','32',
         '--layers','1','--heads','4','--max-steps','1','--allow-segment',
-        '--no-require-gpu-bound','--wandb-mode','disabled']) == 0
+        '--value-weight','0.03','--no-require-gpu-bound','--wandb-mode','disabled']) == 0
     root = tmp_path/'rl-trading'/'v1'/'train'/'smoke'
     assert (root/'run_manifest.json').is_file()
     assert (root/'checkpoints'/'checkpoint_latest.pt').is_file()
+    assert (root/'checkpoints'/'checkpoint_best_val.pt').is_file()
     test_root = _shard(tmp_path/'test',date(2026,8,22))
     assert evaluate_supervised.main(['--run',str(root),'--test-shards',str(test_root),
         '--batch-size','2','--allow-segment']) == 0
