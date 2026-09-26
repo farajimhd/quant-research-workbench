@@ -61,6 +61,16 @@ def test_backtest_start_rejects_before_legacy_journal_or_disk_write(tmp_path, mo
     assert not controller.run_dir.exists()
 
 
+def test_fixed_backtest_never_schedules_disk_manifest_task():
+    controller = object.__new__(ReplayRunController)
+    controller.definition = SimpleNamespace(mode=RunMode.BACKTEST)
+    controller._manifest_write_pending = False
+    controller._manifest_write_task = None
+    controller._schedule_manifest_write()
+    assert controller._manifest_write_pending is False
+    assert controller._manifest_write_task is None
+
+
 def test_zero_source_native_candidates_fail_before_full_universe_read(monkeypatch):
     from src.backend import replay_run_service
 

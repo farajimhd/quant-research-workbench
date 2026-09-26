@@ -6563,7 +6563,8 @@ class ReplayRunController:
         # stopped.  In-flight boundary writes intentionally use the compact
         # projection so they cannot serialize hundreds of assignments while
         # the event loop is advancing them.
-        await asyncio.to_thread(self._write_manifest, include_details=True)
+        if self.definition.mode != RunMode.BACKTEST:
+            await asyncio.to_thread(self._write_manifest, include_details=True)
         if self._bar_gpt_scope_task is not None:
             await asyncio.gather(self._bar_gpt_scope_task, return_exceptions=True)
         try:
@@ -6696,6 +6697,11 @@ class ReplayRunController:
 
     def _schedule_manifest_write(self) -> None:
         """Coalesce durable manifest updates without blocking Replay transport."""
+
+        if self.definition.mode == RunMode.BACKTEST:
+            # A fixed Backtest has no disk manifest. Run context, cursors and
+            # terminal state must be fenced in ClickHouse/Keeper instead.
+            return
 
         self._manifest_write_pending = True
         if self._manifest_write_task is None or self._manifest_write_task.done():
