@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import date
 import os
 from pathlib import Path
@@ -24,11 +25,18 @@ from scripts.clickhouse.provision_fixed_backtest_v3_principals import _secret_pa
 from src.backend.backtest_strategy_one_preparation import (
     prepare_strategy_one_session, strategy_one_v7_tickers,
 )
+from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+from src.backend.backtest_market_data import (
+    iter_market_boundary_groups, iter_market_day_rows, iter_market_time_groups,
+    project_market_day_plan,
+)
+from src.backend.backtest_liquidity_price import certify_price_level_plan
 from src.backend.backtest_v3_clients import v3_client
 from src.backend.fixed_bar_signal import load_first_squeeze_occurrences
 from src.trading_runtime.arte_market_day_cold_preflight import cold_certified_market_day_plan
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
 from src.trading_runtime.keeper_session import open_workstation_keeper_session
+from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
 
 
 def _rules() -> tuple[dict, dict]:
@@ -94,6 +102,68 @@ def profile(build_id: str, day: date, tickers: tuple[str, ...], *,
             scan_seconds, preparation_seconds)
 
 
+@dataclass(frozen=True, slots=True)
+class CertifiedReadProfile:
+    tickers: int
+    candidate_tickers: int
+    candidate_boundaries: int
+    market_boundaries: int
+    market_rows: int
+    preflight_seconds: float
+    candidate_seconds: float
+    price_seconds: float
+    stream_seconds: float
+
+
+def profile_certified(build_id: str, day: date, tickers: tuple[str, ...], *,
+                      through_boundary_ms: int) -> CertifiedReadProfile:
+    """Measure the actual SELECT-only fixed-run data path, not regeneration."""
+    if platform.node().upper() != "DESKTOP-SAAI85T":
+        raise RuntimeError("Certified Strategy 1 profile requires the workstation")
+    credential = _secret_path("read")
+    if not credential.is_file():
+        raise RuntimeError("Private V3 reader credential is unavailable")
+    environment = {"BACKTEST_V3_READ_CREDENTIAL_FILE": str(credential)}
+    with (closing(v3_client("read", environment=environment, market_stream=True)) as reader,
+          closing(open_workstation_keeper_session()) as keeper):
+        started = perf_counter()
+        plan = cold_certified_market_day_plan(
+            reader, MarketDayKeeperReader(keeper.client), build_id,
+            sessions=(day.isoformat(),), tickers=tickers,
+            configuration={"strategy": {"strategy_number": 1,
+                                          "execution_interval": "100ms"}})
+        preflight_seconds = perf_counter() - started
+        started = perf_counter()
+        candidates = certify_candidate_plan(
+            plan, candidate_rule_digest=RULE_DIGEST,
+            through_boundary_ms=through_boundary_ms, client=reader)
+        candidate_seconds = perf_counter() - started
+        selected = strategy_one_v7_tickers(candidates.prepared)
+        started = perf_counter()
+        prices = certify_price_level_plan(plan, reader)
+        price_seconds = perf_counter() - started
+        market_boundaries = market_rows = 0
+        started = perf_counter()
+        if selected:
+            projected = project_market_day_plan(plan, selected)
+            source = iter_market_day_rows(
+                projected, client=reader, through_boundary_ms=through_boundary_ms,
+                price_plan=prices.projected(projected))
+            try:
+                for _, _, groups in iter_market_time_groups(
+                        iter_market_boundary_groups(source)):
+                    market_boundaries += 1
+                    market_rows += sum(len(resolutions) for _, resolutions in groups)
+            finally:
+                source.close()
+        stream_seconds = perf_counter() - started
+    return CertifiedReadProfile(
+        len(plan.tickers), len(selected),
+        sum(len(item.boundary_ms) for item in candidates.prepared),
+        market_boundaries, market_rows, preflight_seconds,
+        candidate_seconds, price_seconds, stream_seconds)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-id", required=True)
@@ -102,6 +172,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--through-boundary-ms", type=int, default=57_600_000,
                         help="Completed boundary after 04:00 New York; default full 16-hour session")
     parser.add_argument("--max-workers", type=int, default=4)
+    parser.add_argument("--certified-read", action="store_true",
+                        help="Profile persisted candidate certification and fixed market reads; never regenerate candidates")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", args.build_id):
         parser.error("Invalid market-day build ID")
@@ -115,6 +187,21 @@ def main(argv: list[str] | None = None) -> int:
             or not 1 <= args.max_workers <= 16):
         parser.error("Boundary must be a completed 100ms session clock; workers 1-16")
     try:
+        if args.certified_read:
+            result = profile_certified(
+                args.build_id, args.date, tickers,
+                through_boundary_ms=args.through_boundary_ms)
+            print(f"Strategy 1 certified read | {args.date} | {result.tickers} tickers | "
+                  f"through {args.through_boundary_ms} ms")
+            print(f"Candidate tickers {result.candidate_tickers} | "
+                  f"candidate boundaries {result.candidate_boundaries} | "
+                  f"market boundaries {result.market_boundaries} | "
+                  f"market rows {result.market_rows}")
+            print(f"Cold market preflight {result.preflight_seconds:.3f}s | "
+                  f"candidate read {result.candidate_seconds:.3f}s | "
+                  f"fill-price certification {result.price_seconds:.3f}s | "
+                  f"projected market stream {result.stream_seconds:.3f}s")
+            return 0
         tickers_count, episodes, loaded, candidates, boundaries, preflight, scan, preparation = profile(
             args.build_id, args.date, tickers,
             through_boundary_ms=args.through_boundary_ms,

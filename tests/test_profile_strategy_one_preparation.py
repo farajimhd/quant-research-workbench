@@ -20,3 +20,18 @@ def test_profiler_rule_contract_and_plain_result(monkeypatch, capsys):
     assert "Preflight 43.132s" in output
     assert calls[0][1] == {"through_boundary_ms": 57_600_000,
                            "max_workers": 4}
+
+
+def test_certified_read_reports_persisted_path_without_regeneration(monkeypatch, capsys):
+    def never_regenerate(*args, **kwargs):
+        raise AssertionError("certified read must not regenerate candidates")
+    monkeypatch.setattr(cli, "profile", never_regenerate)
+    monkeypatch.setattr(cli, "profile_certified", lambda *args, **kwargs:
+        cli.CertifiedReadProfile(6100, 957, 62072, 1000, 5000,
+                                 3.0, 4.0, 5.0, 6.0))
+    assert cli.main(["--build-id", BUILD, "--date", "2026-08-18",
+                     "--certified-read"]) == 0
+    output = capsys.readouterr().out
+    assert "certified read" in output
+    assert "candidate boundaries 62072" in output
+    assert "projected market stream 6.000s" in output
