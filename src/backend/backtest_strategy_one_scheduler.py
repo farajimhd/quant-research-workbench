@@ -20,10 +20,42 @@ from src.backend.backtest_market_data import (
 )
 from src.backend.backtest_liquidity_price import PriceLevelPlan
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
+from src.backend.backtest_strategy_one_market import (
+    attach_sparse_candidate_evidence, load_sparse_candidate_market,
+)
+from src.backend.backtest_strategy_one_candidate_store import CertifiedCandidatePlan
 
 
 MarketGroup = tuple[int, Mapping[int, Mapping]]
 MarketSource = Callable[[str, int], Iterator[MarketGroup]]
+
+
+def build_certified_strategy_one_scheduler(
+    plan: CertifiedMarketDayPlan, candidates: CertifiedCandidatePlan, *,
+    price_plan: PriceLevelPlan, through_boundary_ms: int,
+    client_factory: Callable[[], Any], max_workers: int = 4,
+    max_candidate_rows: int = 250_000,
+) -> StrategyOneBoundaryScheduler:
+    """Build the sparse causal tape solely from certified arte products."""
+    if (len(plan.sessions) != 1 or plan.execution_interval.kind != "fixed"
+            or plan.execution_interval.milliseconds != 100
+            or candidates.source_build_id != plan.build_id
+            or type(through_boundary_ms) is not int
+            or not 0 < through_boundary_ms <= 57_600_000
+            or through_boundary_ms % 100):
+        raise ValueError("Strategy 1 scheduler needs one pinned 100ms session")
+    rows = load_sparse_candidate_market(
+        plan, candidates, price_plan=price_plan,
+        client_factory=client_factory, max_workers=max_workers,
+        max_rows=max_candidate_rows)
+    paired = attach_sparse_candidate_evidence(rows, candidates.prepared)
+    source = persisted_active_market_source(
+        plan, price_plan=price_plan,
+        through_boundary_ms=through_boundary_ms,
+        client_factory=client_factory)
+    return StrategyOneBoundaryScheduler(
+        session_date=plan.sessions[0], candidate_rows=iter(paired),
+        active_source=source)
 
 # Both SELECT-only paths use the same full 100 ms projection. Compare the
 # complete row when they overlap: the broker also consumes size, high,

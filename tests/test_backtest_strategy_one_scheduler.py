@@ -141,6 +141,31 @@ def test_candidate_only_coordinator_has_no_per_boundary_thread_handoff(monkeypat
         finish_boundary=noop)) == 2
 
 
+def test_certified_scheduler_factory_joins_sparse_rows_before_financial_stream(monkeypatch):
+    from src.backend import backtest_strategy_one_scheduler as subject
+    from tests.test_backtest_strategy_one_market import authority
+
+    prepared = PreparedStrategyOneTicker(
+        "AAA", 1_000, np.array([42]), np.array([31_000]),
+        np.array([30_000]), np.array([[31_000, 30_000, 30_000, 30_000]]),
+        np.array([30_000]), np.array([99_000]))
+    market, prices, candidates = authority((prepared,))
+    row = {"session_date": DAY, "ticker": "AAA", "boundary_ms": 31_000,
+           "resolution_ms": 100, "price_valid": 1,
+           "indicator_resolution_ms": 100}
+    monkeypatch.setattr(subject, "load_sparse_candidate_market",
+                        lambda *_args, **_kwargs: (row,))
+    scheduler = subject.build_certified_strategy_one_scheduler(
+        market, candidates, price_plan=prices, through_boundary_ms=60_000,
+        client_factory=lambda: pytest.fail("candidate-only schedule opened active reader"))
+    work = scheduler.pop_next()
+    assert work.boundary_ms == 31_000
+    assert work.candidate_rows[0].evidence.stop_low_int == 99_000
+    assert work.broker_rows[0][1][100] is row
+    assert scheduler.pop_next() is None
+    scheduler.close()
+
+
 def shared_row(ticker, boundary):
     return {"session_date": DAY, "ticker": ticker, "boundary_ms": boundary,
             "resolution_ms": 100, "close_int": 100_000,
