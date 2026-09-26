@@ -143,6 +143,28 @@ def test_typed_journal_client_requires_a_separate_complete_identity(monkeypatch)
         client.close()
 
 
+def test_v4_client_requires_isolated_runner_identity(monkeypatch) -> None:
+    for key in ("BACKTEST_V4_RUNNER_CLICKHOUSE_URL",
+                "BACKTEST_V4_RUNNER_CLICKHOUSE_USER",
+                "BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD",
+                "BACKTEST_CLICKHOUSE_USER", "TRADING_JOURNAL_CLICKHOUSE_USER"):
+        monkeypatch.delenv(key, raising=False)
+    with pytest.raises(ValueError, match="dedicated runner"):
+        writer_module.backtest_v4_journal_client_from_env()
+    monkeypatch.setenv("BACKTEST_V4_RUNNER_CLICKHOUSE_URL", "http://localhost:8123")
+    monkeypatch.setenv("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", "backtest_v4_runner")
+    monkeypatch.setenv("BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD", "test-only")
+    monkeypatch.setenv("BACKTEST_CLICKHOUSE_USER", "backtest_v4_runner")
+    with pytest.raises(ValueError, match="differ from market"):
+        writer_module.backtest_v4_journal_client_from_env()
+    monkeypatch.setenv("BACKTEST_CLICKHOUSE_USER", "market-reader")
+    client = writer_module.backtest_v4_journal_client_from_env()
+    try:
+        assert client.user == "backtest_v4_runner" and client.persistent
+    finally:
+        client.close()
+
+
 def batch() -> TypedJournalBatch:
     event = typed_row("trading_event_v1", {
         "run_id": RUN, "event_month": "2026-08-01", "attempt_id": ATTEMPT,

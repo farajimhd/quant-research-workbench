@@ -194,6 +194,26 @@ def journal_client_from_env() -> Any:
     )
 
 
+def backtest_v4_journal_client_from_env() -> Any:
+    """Open the isolated V4 runner; never reuse the live journal identity."""
+    from research.mlops.clickhouse import ClickHouseHttpClient
+
+    url = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_URL", "").strip()
+    user = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", "").strip()
+    password = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD", "")
+    if not url or user != "backtest_v4_runner" or not password:
+        raise ValueError("V4 Backtest requires its dedicated runner credential")
+    if user in {os.environ.get(key, "").strip() for key in (
+        "BACKTEST_CLICKHOUSE_USER", "REAL_LIVE_CLICKHOUSE_READ_USER",
+        "REAL_LIVE_CLICKHOUSE_USER", "TRADING_JOURNAL_CLICKHOUSE_USER",
+    )}:
+        raise ValueError("V4 Backtest runner must differ from market and live writers")
+    return ClickHouseHttpClient(
+        url, user, password, timeout_seconds=60, persistent=True,
+        default_query_params={"max_threads": 2, "max_execution_time": 60},
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class TypedJournalBatch:
     run_id: str
