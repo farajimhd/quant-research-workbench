@@ -71,7 +71,7 @@ def test_entry_evidence_rejects_parent_intent_or_causal_mismatch():
                                       session_date=session), **kwargs)
 
 
-def test_v4_commit_seals_exact_one_entry_child_to_the_typed_parent():
+def test_v4_commit_seals_exact_one_entry_child_to_the_typed_parent(monkeypatch):
     proposal, intent, session = _source()
     attempt, batch_id = str(uuid4()), str(uuid4())
     prior = "00000000-0000-0000-0000-000000000000"
@@ -115,6 +115,15 @@ def test_v4_commit_seals_exact_one_entry_child_to_the_typed_parent():
     assert len(page.entries) == 1
     assert page.entries[0].proposal == proposal
     assert page.entries[0].intent == intent
+    from src.trading_runtime import arte_strategy_one_entry_journal as entry_module
+    original_load = entry_module.load_committed_strategy_intent_page
+    with monkeypatch.context() as patch:
+        patch.setattr(entry_module, "load_committed_strategy_intent_page",
+                      lambda *args, **kwargs: (
+                          replace(original_load(*args, **kwargs)[0],
+                                  batch_id=str(uuid4())),))
+        with pytest.raises(RuntimeError, match="evidence changed"):
+            load_committed_strategy_one_entry_page(client, prefix)
     client.tables[ENTRY_EVIDENCE.name].clear()
     with pytest.raises(RuntimeError, match="missing or duplicated"):
         load_committed_strategy_one_entry_page(client, prefix)

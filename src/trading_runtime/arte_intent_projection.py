@@ -342,6 +342,7 @@ class RecoveredIntent:
     sequence: int
     account_id: str
     record_id: str
+    batch_id: str
     intent: StrategyIntent
 
 
@@ -468,6 +469,7 @@ def load_committed_strategy_intent_page(
             ProjectedIntent(projected_core, tuple(projected_slices))
         )
         recovered.append(RecoveredIntent(
-            int(event["sequence"]), str(event["account_id"]), record_id, reconstructed,
+            int(event["sequence"]), str(event["account_id"]), record_id,
+            str(UUID(str(event["batch_id"]))), reconstructed,
         ))
     return tuple(recovered)

@@ -141,6 +141,7 @@ def load_committed_strategy_one_entry_page(
         session_date = instant.date()
         if (row["content_hash"] != digest
                 or str(UUID(str(row["batch_id"]))) not in allowed_batches
+                or str(UUID(str(row["batch_id"]))) != recovered.batch_id
                 or row["record_id"] != str(uuid5(
                     NAMESPACE_URL, f"{parent}:strategy-one-entry"))
                 or row["event_month"] != session_date.replace(day=1).isoformat()
