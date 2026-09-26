@@ -53,6 +53,7 @@ def test_strategy_one_definition_pins_candidate_rule_scan_and_pivots():
               "strategy_one_candidate_rule_digest": RULE_DIGEST,
               "strategy_one_scan_query_sha256": "d" * 64,
               "strategy_one_pivot_token": "e" * 64,
+              "strategy_one_activation_token": "f" * 64,
               "strategy_one_pivot_digest": PRODUCT_DIGEST}
     assert _definition(configuration_revision=config,
                        market_data_plan=market).market_data_plan == market
@@ -60,8 +61,9 @@ def test_strategy_one_definition_pins_candidate_rule_scan_and_pivots():
                     "strategy_one_candidate_rule_digest",
                     "strategy_one_scan_query_sha256",
                     "strategy_one_pivot_token",
+                    "strategy_one_activation_token",
                     "strategy_one_pivot_digest"):
-        with pytest.raises(ValueError, match="pinned certified candidates and pivots"):
+        with pytest.raises(ValueError, match="pinned candidates, activations, and pivots"):
             _definition(configuration_revision=config,
                         market_data_plan={key: value for key, value in market.items()
                                           if key != missing})

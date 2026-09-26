@@ -128,8 +128,13 @@ source bar attempts, scalar content hashes, and causal visibility at preflight
 and rechecks its token at launch. The separate workstation producer command
 `scripts/clickhouse/publish_strategy_one_pivots.py` publishes only the sealed
 candidate tickers with bounded workers and coverage-last restart behavior.
-The full historical campaign is not yet complete, so this product currently
-blocks Strategy 1.
+The August 18 full-session pivot campaign read-back-certified all 957
+candidate ticker-days. Other sessions still need their own producer campaign.
+Frozen activation geometry must use the signal's
+original price, not a later entry candidate: `backtest_strategy_one_activation`
+now SELECTs each distinct episode start once from the pinned completed 100ms
+bar attempt and pins its scalar token at preflight and launch. It neither
+persists a redundant activation-price table nor creates a bar in Backtest.
 `src/backend/backtest_strategy_one_preparation.py` now scans the full certified
 universe for completed-bar Early Squeeze starts, loads only episode-bearing
 tickers in bounded read-only lanes, and merges compact candidate cursors in

@@ -462,8 +462,10 @@ class ReplayRunDefinition:
                             self.market_data_plan.get("strategy_one_scan_query_sha256") or "")) is None
                         or re.fullmatch(r"[0-9a-f]{64}", str(
                             self.market_data_plan.get("strategy_one_pivot_token") or "")) is None
+                        or re.fullmatch(r"[0-9a-f]{64}", str(
+                            self.market_data_plan.get("strategy_one_activation_token") or "")) is None
                         or self.market_data_plan.get("strategy_one_pivot_digest") != PRODUCT_DIGEST):
-                    raise ValueError("Strategy 1 requires pinned certified candidates and pivots")
+                    raise ValueError("Strategy 1 requires pinned candidates, activations, and pivots")
         if type(self.prepare_frames_only) is not bool or (self.prepare_frames_only and self.mode != RunMode.BACKTEST):
             raise ValueError('Frame preparation only requires Backtest mode and a boolean flag')
         if not 0 <= self.minimum_p_norm <= 1:
@@ -3552,6 +3554,7 @@ class ReplayRunController:
             has_core_signal_plans=bool(getattr(self, "_historical_core_signal_plans", ())),
         )
         if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
+            from src.backend.backtest_strategy_one_activation import load_strategy_one_activations
             from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
             from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
             from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
@@ -3585,6 +3588,15 @@ class ReplayRunController:
             if (pivot_plan.token != self.definition.market_data_plan.get(
                     "strategy_one_pivot_token")):
                 raise ValueError("Certified Strategy 1 pivots changed after preflight")
+            def recheck_activations():
+                with closing(readonly_clickhouse_client(
+                        market_stream=True, v3_read_principal=True)) as reader:
+                    return load_strategy_one_activations(
+                        plan, candidate_plan, client=reader)
+            activation_plan = await asyncio.to_thread(recheck_activations)
+            if (activation_plan.token != self.definition.market_data_plan.get(
+                    "strategy_one_activation_token")):
+                raise ValueError("Certified Strategy 1 activations changed after preflight")
         if projection_tickers == ():
             # The scanner certified no possible participant. An empty tuple
             # must not fall through the truthy projection branch and stream
@@ -11045,6 +11057,7 @@ def backtest_preflight(
                     # STRATEGY CREATION RULE: candidates are producer-owned,
                     # immutable, and certified before Backtest launch. Never
                     # regenerate a missing strategy input inside Backtest.
+                    from src.backend.backtest_strategy_one_activation import load_strategy_one_activations
                     from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
                     from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
                     from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
@@ -11075,6 +11088,11 @@ def backtest_preflight(
                             client=pivot_reader)
                     market_data_plan["strategy_one_pivot_token"] = pivot_plan.token
                     market_data_plan["strategy_one_pivot_digest"] = PRODUCT_DIGEST
+                    with closing(readonly_clickhouse_client(
+                            market_stream=True, v3_read_principal=True)) as activation_reader:
+                        activation_plan = load_strategy_one_activations(
+                            certified, candidate_plan, client=activation_reader)
+                    market_data_plan["strategy_one_activation_token"] = activation_plan.token
                 projected = (project_market_day_plan(certified, projection_tickers)
                              if projection_tickers else certified)
                 with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
@@ -11112,6 +11130,21 @@ def backtest_preflight(
                 (causal_v7_error or "candidate or market-data certification did not complete")
             ),
             "evidence": pivot_token or causal_v7_error,
+        })
+        activation_token = str((market_data_plan or {}).get(
+            "strategy_one_activation_token") or "")
+        checks.append({
+            "id": "strategy_one_activation_prices",
+            "label": "Certified Early Squeeze activation prices",
+            "status": "ready" if re.fullmatch(r"[0-9a-f]{64}", activation_token) else "blocked",
+            "required": True,
+            "summary": (
+                "Each candidate episode starts at an exact pinned completed 100ms bar."
+                if activation_token else
+                "Strategy 1 activation bars are unavailable: " +
+                (causal_v7_error or "candidate or market-data certification did not complete")
+            ),
+            "evidence": activation_token or causal_v7_error,
         })
     signal_evidence = signal_check.get("evidence")
     if (execution_interval.kind == "fixed"
