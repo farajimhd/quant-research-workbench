@@ -34,9 +34,9 @@ async def run_strategy_one_proposals(
     scheduler: StrategyOneBoundaryScheduler,
     entry: CertifiedEntryEvidencePlan, *,
     process_broker_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
-    financial_view: Callable[[str, int], Awaitable[StrategyOneFinancialView]],
+    financial_views: Callable[[str, int], Awaitable[tuple[StrategyOneFinancialView, ...]]],
     on_entry_proposal: Callable[[StrategyOneEntryProposal], Awaitable[None]],
-    on_management: Callable[[str, Mapping[int, Mapping], int], Awaitable[None]],
+    on_management: Callable[[StrategyOneFinancialView, Mapping[int, Mapping], int], Awaitable[None]],
     financially_active_tickers: Callable[[], tuple[str, ...]],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     observe_activation: Callable[[object], Awaitable[None]],
@@ -47,7 +47,7 @@ async def run_strategy_one_proposals(
             or not isinstance(entry, CertifiedEntryEvidencePlan)
             or scheduler.session_date != entry.session_date
             or any(not callable(callback) for callback in (
-                process_broker_boundary, financial_view, on_entry_proposal,
+                process_broker_boundary, financial_views, on_entry_proposal,
                 on_management, financially_active_tickers, finish_boundary,
                 observe_activation, observe_completed_seconds))):
         raise ValueError("Strategy 1 proposal lane lacks pinned causal callbacks")
@@ -61,9 +61,24 @@ async def run_strategy_one_proposals(
                        candidate) -> None:
         nonlocal candidate_count, proposal_count, management_count
         boundary = next(iter(resolutions.values()))["boundary_ms"]
+        # One market row can serve several account assignments. The broker
+        # runs once globally; financial decisions serialize by stable account
+        # and assignment identity so shared cash cannot race across workers.
+        views = await financial_views(ticker, boundary)
+        if (not isinstance(views, tuple) or not views
+                or any(not isinstance(view, StrategyOneFinancialView)
+                       or view.ticker != ticker for view in views)
+                or len({(view.account_id, view.assignment_id) for view in views})
+                   != len(views)):
+            raise ValueError("Strategy 1 ticker lacks distinct typed financial views")
+        ordered = sorted(views, key=lambda view: (view.account_id,
+                                                  view.assignment_id))
         if candidate is None:
-            management_count += 1
-            await on_management(ticker, resolutions, boundary)
+            for current in ordered:
+                if (current.position_quantity > 0 or current.pending_entry
+                        or current.pending_exit or current.pending_capital_request):
+                    management_count += 1
+                    await on_management(current, resolutions, boundary)
             return
         row = candidate.market_row
         if row.get("ticker") != ticker or row.get("boundary_ms") != boundary:
@@ -72,20 +87,16 @@ async def run_strategy_one_proposals(
         activation = activations.get((ticker, fact.episode_start_ms))
         if activation is None:
             raise ValueError("Strategy 1 proposal lacks frozen activation")
-        # Fills for this completed boundary have already reconciled. Read
-        # the broker-owned position and OMS state only after that fence.
-        current = await financial_view(ticker, boundary)
-        if not isinstance(current, StrategyOneFinancialView):
-            raise TypeError("Strategy 1 financial view must be typed")
-        decision = propose_certified_strategy_one_entry(
-            candidate, fact, activation, current)
-        candidate_count += 1
-        if decision.proposal is not None:
-            proposal_count += 1
-            await on_entry_proposal(decision.proposal)
-        elif current.position_quantity > 0:
-            management_count += 1
-            await on_management(ticker, resolutions, boundary)
+        for current in ordered:
+            decision = propose_certified_strategy_one_entry(
+                candidate, fact, activation, current)
+            candidate_count += 1
+            if decision.proposal is not None:
+                proposal_count += 1
+                await on_entry_proposal(decision.proposal)
+            elif current.position_quantity > 0:
+                management_count += 1
+                await on_management(current, resolutions, boundary)
 
     completed = await run_strategy_one_boundaries(
         scheduler, process_broker_boundary=process_broker_boundary,
