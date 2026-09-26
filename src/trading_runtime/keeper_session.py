@@ -42,6 +42,12 @@ class ManagedKeeperSession:
                 self._leases = {}
             self._connected = connected and not self._closed
 
+    @property
+    def writable(self) -> bool:
+        """Read-only health gate for control-plane composition, not a lease."""
+        with self._lock:
+            return not self._closed and self._connected and _writable(self.client)
+
     def attest_lease(self, coordinator: Any, lease: Mapping[str, Any]) -> None:
         """Blocking control-plane proof; do not call from a market callback."""
         resource = lease.get("resource_id")

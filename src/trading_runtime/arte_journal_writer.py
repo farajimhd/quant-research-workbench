@@ -194,9 +194,15 @@ def journal_client_from_env() -> Any:
     )
 
 
-def backtest_v4_journal_client_from_env() -> Any:
-    """Open the isolated V4 runner; never reuse the live journal identity."""
+def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
+    """Open V4 with a caller-owned writable Keeper session and strict dispatch.
+
+    The caller must keep that session alive until the writer has drained and
+    closed. A credential alone is never a V4 publication authority.
+    """
     from research.mlops.clickhouse import ClickHouseHttpClient
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
 
     url = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_URL", "").strip()
     user = os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", "").strip()
@@ -208,10 +214,16 @@ def backtest_v4_journal_client_from_env() -> Any:
         "REAL_LIVE_CLICKHOUSE_USER", "TRADING_JOURNAL_CLICKHOUSE_USER",
     )}:
         raise ValueError("V4 Backtest runner must differ from market and live writers")
-    return ClickHouseHttpClient(
+    if (not isinstance(keeper_session, ManagedKeeperSession)
+            or not keeper_session.writable):
+        raise RuntimeError("V4 Backtest runner needs a caller-owned writable Keeper session")
+    client = ClickHouseHttpClient(
         url, user, password, timeout_seconds=60, persistent=True,
         default_query_params={"max_threads": 2, "max_execution_time": 60},
     )
+    client.typed_insert_dispatch = TypedInsertDispatch(keeper_session.client)
+    client.typed_insert_strict = True
+    return client
 
 
 @dataclass(frozen=True, slots=True)

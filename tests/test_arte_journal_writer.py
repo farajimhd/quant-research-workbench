@@ -144,6 +144,25 @@ def test_typed_journal_client_requires_a_separate_complete_identity(monkeypatch)
 
 
 def test_v4_client_requires_isolated_runner_identity(monkeypatch) -> None:
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+
+    class KeeperClient:
+        connected = True
+        client_state = "CONNECTED"
+
+        def add_listener(self, callback):
+            self.listener = callback
+
+        def remove_listener(self, callback):
+            assert callback == self.listener
+
+        def stop(self):
+            self.connected = False
+
+        def close(self):
+            pass
+
     for key in ("BACKTEST_V4_RUNNER_CLICKHOUSE_URL",
                 "BACKTEST_V4_RUNNER_CLICKHOUSE_USER",
                 "BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD",
@@ -158,11 +177,23 @@ def test_v4_client_requires_isolated_runner_identity(monkeypatch) -> None:
     with pytest.raises(ValueError, match="differ from market"):
         writer_module.backtest_v4_journal_client_from_env()
     monkeypatch.setenv("BACKTEST_CLICKHOUSE_USER", "market-reader")
-    client = writer_module.backtest_v4_journal_client_from_env()
+    with pytest.raises(RuntimeError, match="writable Keeper session"):
+        writer_module.backtest_v4_journal_client_from_env()
+    session = ManagedKeeperSession(KeeperClient())
+    with pytest.raises(RuntimeError, match="writable Keeper session"):
+        writer_module.backtest_v4_journal_client_from_env(keeper_session=session)
+    session._on_state("CONNECTED")
+    client = writer_module.backtest_v4_journal_client_from_env(
+        keeper_session=session)
     try:
         assert client.user == "backtest_v4_runner" and client.persistent
+        assert client.typed_insert_strict is True
+        assert isinstance(client.typed_insert_dispatch,
+                          TypedInsertDispatch)
+        assert client.typed_insert_dispatch.keeper is session.client
     finally:
         client.close()
+        session.close()
 
 
 def batch() -> TypedJournalBatch:
