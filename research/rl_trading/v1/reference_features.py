@@ -15,7 +15,7 @@ from src.backend.structural_v7_seed import _validate_coverage
 
 STRUCTURAL = ('structural_levels_v7', 'structural_level_observations_v7',
               'structural_level_coverage_v7')
-VERSION = 'arte-prior-structural-qlive-reference-v1'
+VERSION = 'arte-prior-structural-qlive-reference-v2'
 
 
 def opening(day: date) -> str:
@@ -103,18 +103,23 @@ def read_reference(client, day: date, listing: dict) -> tuple[dict, list[dict], 
         f'WHERE {identity} AND execution_date<=toDate({literal(day)}) AND inserted_at<={cutoff} '
         'ORDER BY execution_date DESC,inserted_at DESC')
     fundamental = fundamentals(day, floats, splits)
-    evidence = {'coverage':certificate,'float':floats[0] if floats else None,
-                'splits':splits,'contract':VERSION}
-    evidence['hash'] = sha256(json.dumps(evidence,sort_keys=True,default=str).encode()).hexdigest()
     by_day = {}
+    split_conflicts = set()
     for row in splits:
         key = str(row['execution_date'])
         previous = by_day.get(key)
-        if previous and (float(previous['split_from']),float(previous['split_to'])) != (
-                float(row['split_from']),float(row['split_to'])):
-            raise ValueError(f'Conflicting q_live split ratios: {ticker} {key}')
+        if previous and not math.isclose(
+                float(previous['split_to'])/float(previous['split_from']),
+                float(row['split_to'])/float(row['split_from']),rel_tol=1e-12,abs_tol=0.):
+            split_conflicts.add(key)
         if previous is None:
             by_day[key] = row
+    if any(key > str(seed['session']) for key in split_conflicts):
+        raise ValueError(f'Conflicting q_live split ratios after V7 seed: {ticker} '
+            + ', '.join(sorted(key for key in split_conflicts if key > str(seed['session']))))
+    evidence = {'coverage':certificate,'float':floats[0] if floats else None,
+                'splits':splits,'split_conflict_dates':sorted(split_conflicts),'contract':VERSION}
+    evidence['hash'] = sha256(json.dumps(evidence,sort_keys=True,default=str).encode()).hexdigest()
     stream_splits = [by_day[key] for key in sorted(by_day) if key > str(seed['session'])]
     return seed, stream_splits, fundamental, evidence
 
@@ -131,24 +136,34 @@ def fundamentals(day: date, floats: list[dict], splits: list[dict]) -> dict:
         return float(np.log1p(number)), 1.
     float_value,float_present = quantity('free_float')
     shares,shares_present = quantity('shares_outstanding')
-    seen = set()
-    last_split = last_reverse = None
+    factors_by_day = {}
     for split in splits:
         split_day = date.fromisoformat(str(split['execution_date']))
         before,after = float(split['split_from']),float(split['split_to'])
         if not all(math.isfinite(x) and x > 0 for x in (before,after)):
             raise ValueError('Invalid q_live split ratio')
-        if split_day in seen:
-            continue
-        seen.add(split_day)
-        if before != after:
-            last_split = split_day if last_split is None else max(last_split,split_day)
-            if after < before:
-                last_reverse = split_day if last_reverse is None else max(last_reverse,split_day)
+        factor = after/before
+        if not math.isfinite(factor) or factor <= 0:
+            raise ValueError('Invalid q_live split ratio')
+        factors_by_day.setdefault(split_day,[]).append(factor)
+    certain_split = uncertain_split = certain_reverse = uncertain_reverse = None
+    for split_day,factors in factors_by_day.items():
+        changed = [not math.isclose(factor,1.,rel_tol=1e-12,abs_tol=0.) for factor in factors]
+        reverse = [factor < 1. for factor in factors]
+        if all(changed):
+            certain_split = split_day if certain_split is None else max(certain_split,split_day)
+        elif any(changed):
+            uncertain_split = split_day if uncertain_split is None else max(uncertain_split,split_day)
+        if all(reverse):
+            certain_reverse = split_day if certain_reverse is None else max(certain_reverse,split_day)
+        elif any(reverse):
+            uncertain_reverse = split_day if uncertain_reverse is None else max(uncertain_reverse,split_day)
     def age(value):
         return (float(np.log1p((day-value).days)),1.) if value else (0.,0.)
-    split_age,split_present = age(last_split)
-    reverse_age,reverse_present = age(last_reverse)
+    split_age,split_present = age(certain_split) if uncertain_split is None or (
+        certain_split is not None and certain_split > uncertain_split) else (0.,0.)
+    reverse_age,reverse_present = age(certain_reverse) if uncertain_reverse is None or (
+        certain_reverse is not None and certain_reverse > uncertain_reverse) else (0.,0.)
     return dict(log_float_shares=float_value,float_present=float_present,
         log_shares_outstanding=shares,shares_present=shares_present,
         log_days_since_split=split_age,split_present=split_present,

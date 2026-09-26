@@ -58,3 +58,51 @@ def test_v7_population_excludes_missing_and_empty_before_ranking(monkeypatch):
     result = rf.nonempty_v7_population(object(),date(2026,8,21),['A','B','C'])
     assert result['included'] == ['A']
     assert result['excluded'] == {'B':'empty_prior_levels','C':'missing_prior_coverage'}
+
+
+def test_equivalent_split_units_do_not_create_a_false_conflict(monkeypatch):
+    ratios = [dict(execution_date='2014-06-18',split_from=100,split_to=101),
+              dict(execution_date='2014-06-18',split_from=1,split_to=1.01)]
+    def rows(_client,statement):
+        if 'structural_level_coverage_v7' in statement:
+            return [dict(ticker='CZFS',session_date='2026-08-18',state='complete')]
+        if 'market_stock_split_v1' in statement:
+            return ratios
+        return []
+    monkeypatch.setattr(rf,'query',rows)
+    monkeypatch.setattr(rf,'load_seed',lambda *_args,**_kwargs:{'session':'2026-08-18','ticker':'CZFS'})
+    listing=dict(ticker='CZFS',symbol_id='s',listing_id='l',security_id='x')
+    _,splits,fundamental,evidence=rf.read_reference(object(),date(2026,8,19),listing)
+    assert splits == []
+    assert fundamental['split_present'] == 1
+    assert evidence['split_conflict_dates'] == []
+    ratios[1]['split_to'] = 2
+    _,splits,fundamental,evidence=rf.read_reference(object(),date(2026,8,19),listing)
+    assert splits == []
+    assert fundamental['split_present'] == 1
+    assert fundamental['reverse_split_present'] == 0
+    assert evidence['split_conflict_dates'] == ['2014-06-18']
+
+
+def test_conflicting_split_direction_masks_reverse_age_and_replay_fails(monkeypatch):
+    ratios = [dict(execution_date='2026-08-17',split_from=1,split_to=4),
+              dict(execution_date='2026-08-17',split_from=10,split_to=1)]
+    fundamental = rf.fundamentals(date(2026,8,19),[],ratios)
+    assert fundamental['split_present'] == 1
+    assert fundamental['reverse_split_present'] == 0
+    def rows(_client,statement):
+        if 'structural_level_coverage_v7' in statement:
+            return [dict(ticker='NYC',session_date='2026-08-18',state='complete')]
+        if 'market_stock_split_v1' in statement:
+            return ratios
+        return []
+    monkeypatch.setattr(rf,'query',rows)
+    monkeypatch.setattr(rf,'load_seed',lambda *_args,**_kwargs:{'session':'2026-08-18','ticker':'NYC'})
+    listing=dict(ticker='NYC',symbol_id='s',listing_id='l',security_id='x')
+    _,stream,values,evidence=rf.read_reference(object(),date(2026,8,19),listing)
+    assert stream == [] and values['reverse_split_present'] == 0
+    assert evidence['split_conflict_dates'] == ['2026-08-17']
+    for row in ratios:
+        row['execution_date'] = '2026-08-19'
+    with pytest.raises(ValueError,match='after V7 seed'):
+        rf.read_reference(object(),date(2026,8,19),listing)
