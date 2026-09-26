@@ -122,9 +122,22 @@ unpublished complete Strategy 1 release seal; this lets the producer certify
 the expensive reusable mask without falsely claiming that Strategy 1 is live.
 Coverage also pins the exact squeeze SQL hash for the requested session end,
 so premarket and full-session products cannot be confused.
-The producer campaign and published release seal are not yet complete, so this
-path currently fails closed. A multi-session
+The producer campaign for the certified August 18, 2026 full session has
+published and read-back-verified all 6,100 ticker-days, including empty
+candidate sets. Other sessions still require their own exact coverage. The
+published Strategy 1 release seal and executable runtime are not yet complete,
+so this path currently fails closed. A multi-session
 or position-carrying Strategy must define a broader V7 dependency contract.
+The read-only full-session workstation profile found 62,072 candidate
+boundaries across 957 tickers. Certified candidate lookup took 1.895 seconds;
+the former all-boundary fixed market stream decoded 26,488,823 rows in
+547.632 seconds. A bounded four-worker SELECT of the same 62,072 exact
+candidate market rows took 6.833 seconds. These are data-read measurements,
+not Backtest runtime or fill-equivalence results. Candidate rows may drive
+entry decisions only; once an order or position exists, the causal coordinator
+must continue reading the relevant liquidity and management windows until
+that financial state is resolved. Skipping those windows would silently omit
+fills, stops, targets, and exits.
 `src/trading_runtime/strategy_one_position.py` now owns a pure, deterministic
 active-position protection reducer: entry requires the completed 30s stop and
 third overhead target; accepted 1s resistance breaks are deduplicated and
