@@ -30,12 +30,21 @@ class CertifiedStrategyOneConfiguration:
 
     def revision(self) -> dict[str, Any]:
         """App-facing identity without consulting an old SQLite candidate."""
+        plan = dict(self.payload.get("run_plan") or {})
         return {
             "revision_id": f"strategy-one-{STRATEGY_NUMBER}:{self.attempt_id}",
             "revision": STRATEGY_NUMBER,
             "label": f"Strategy {STRATEGY_NUMBER}",
             "release_state": "test_candidate",
             "content_hash": self.payload_hash,
+            "run_plan_id": str(plan.get("run_plan_id") or ""),
+            "available_run_plans": [{
+                "run_plan_id": str(plan.get("run_plan_id") or ""),
+                "name": "Strategy 1",
+                "strategy_id": STRATEGY_ID,
+                "strategy_revision": STRATEGY_NUMBER,
+                "profile_id": "strategy-one-1",
+            }],
             "payload": self.payload,
         }
 

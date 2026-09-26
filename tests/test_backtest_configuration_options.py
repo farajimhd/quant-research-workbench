@@ -1,4 +1,4 @@
-"""Backtest setup choices retain the canonical candidate/run-plan authority."""
+"""Backtest setup exposes only the normalized Strategy 1 release."""
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -43,42 +43,30 @@ class BacktestConfigurationOptionsTests(unittest.TestCase):
         finally:
             service._CANDIDATE_MODEL_CACHE.clear()
 
-    def test_defaults_to_active_profile_not_first_runtime(self):
-        candidates = [{"candidate_id": "new", "candidate_revision": 68, "label": "Current",
-                       "content_hash": "hash"}]
-        plans = [{"run_plan_id": "balanced", "profile_id": "balanced"},
-                 {"run_plan_id": "momentum", "profile_id": "active"}]
-        snapshot = {"available_run_plans": plans, "run_plan_id": "balanced",
-                    "configuration_model": {"strategy": {"active_profile_id": "active"}}}
-        with patch.object(TradingJournal, "trading_configuration_candidate_summaries", return_value=candidates), patch(
-            "src.backend.trading_configuration_service.configuration_candidate", return_value=candidates[0]
-        ), patch("src.backend.trading_configuration_service._validated_candidate_model", return_value=snapshot["configuration_model"]), patch(
-            "src.backend.trading_configuration_service._available_run_plans", return_value=plans
-        ), patch("src.backend.trading_configuration_service._resolve_runtime_configuration", side_effect=AssertionError("Options resolved a runtime")
-        ) as resolve:
+    def test_only_numbered_release_is_listed_without_sqlite_candidate_reads(self):
+        release = {"revision_id": "strategy-one-1:attempt", "content_hash": "a" * 64,
+                   "run_plan_id": "balanced-replay",
+                   "available_run_plans": [{"run_plan_id": "balanced-replay",
+                                            "name": "Strategy 1", "profile_id": "strategy-one-1",
+                                            "strategy_id": "early-squeeze-strategy",
+                                            "strategy_revision": 1}]}
+        with patch.object(TradingJournal, "trading_configuration_candidate_summaries",
+                          side_effect=AssertionError("SQLite candidate read")), patch(
+            "src.backend.backtest_strategy_one_configuration.selected_strategy_one_revision",
+            return_value=release) as selected:
             result = backtest_configuration_options()
-        resolve.assert_not_called()
-        self.assertEqual(result["run_plan_id"], "momentum")
-        self.assertEqual(result["available_run_plans"], plans)
+        selected.assert_called_once_with(revision_id="")
+        self.assertEqual(result["candidate_id"], release["revision_id"])
+        self.assertEqual(result["run_plan_id"], "balanced-replay")
+        self.assertEqual(len(result["candidates"]), 1)
+        self.assertEqual(result["candidates"][0]["label"], "Strategy 1")
         self.assertNotIn("payload", result["candidates"][0])
 
-    def test_invalid_saved_candidate_keeps_selection_available(self):
-        candidate = {"candidate_id": "old", "candidate_revision": 1, "label": "Old", "content_hash": "hash"}
-        with patch.object(TradingJournal, "trading_configuration_candidate_summaries", return_value=[candidate]), patch(
-            "src.backend.trading_configuration_service.configuration_candidate", return_value=candidate
-        ), patch("src.backend.trading_configuration_service._validated_candidate_model", side_effect=ValueError("Invalid saved profile")
-        ):
-            result = backtest_configuration_options("old")
-        self.assertEqual(result["candidate_id"], "old")
-        self.assertEqual(result["error"], "Invalid saved profile")
-        self.assertEqual(result["available_run_plans"], [])
-        self.assertEqual(len(result["candidates"]), 1)
-
-    def test_empty_and_missing_candidates_do_not_silently_change_selection(self):
-        with patch.object(TradingJournal, "trading_configuration_candidate_summaries", return_value=[]):
-            self.assertEqual(backtest_configuration_options()["available_run_plans"], [])
-            with self.assertRaisesRegex(ValueError, "no longer exists"):
-                backtest_configuration_options("missing")
+    def test_foreign_revision_fails_closed(self):
+        with patch("src.backend.backtest_strategy_one_configuration.selected_strategy_one_revision",
+                   side_effect=ValueError("Only the immutable Strategy 1 configuration can Backtest")):
+            with self.assertRaisesRegex(ValueError, "immutable Strategy 1"):
+                backtest_configuration_options("old")
 
     def test_journal_summaries_do_not_decode_configuration_payloads(self):
         journal = TradingJournal(Path(":memory:"))

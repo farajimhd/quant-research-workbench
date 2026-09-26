@@ -5197,7 +5197,7 @@ def trading_configuration_candidate_create(
 async def trading_backtest_configuration_options(candidate_id: str = "") -> dict[str, Any]:
     try:
         return await asyncio.to_thread(backtest_configuration_options, candidate_id)
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

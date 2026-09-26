@@ -500,12 +500,12 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   return (
     <TradingModeLaunch
       actionLabel={fullMarket ? 'Run Full-market Backtest' : batchPreset ? `Run ${normalizedTickers.length} Backtests` : 'Run Backtest'}
-      actionSummary={batchPreset ? `Creates one separate portfolio run per ticker on ${sessionDate}, each with its V7 book. Every ticker uses ${startTime.slice(0,5)}–${endTime.slice(0,5)} ET.` : launchReady ? <><strong>{fullMarket ? 'The Run Plan’s signal-admitted market' : normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and strategy revision <strong>{selectedPlan?.strategy_revision}</strong> (candidate {preflight?.configuration_revision}).</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
+      actionSummary={batchPreset ? `Creates one separate portfolio run per ticker on ${sessionDate}, each with its V7 book. Every ticker uses ${startTime.slice(0,5)}–${endTime.slice(0,5)} ET.` : launchReady ? <><strong>{fullMarket ? 'Strategy 1’s signal-admitted market' : normalizedTickers.join(", ")}</strong> will run together on <strong>{sessionDate}</strong> from <strong>{startTime.slice(0, 5)}–{endTime.slice(0, 5)} ET</strong> using one shared simulated portfolio and immutable Strategy <strong>{selectedPlan?.strategy_revision}</strong>.</> : !tickerReady ? parsedTickers.invalid.length ? `Remove invalid ticker${parsedTickers.invalid.length === 1 ? "" : "s"}: ${parsedTickers.invalid.join(", ")}.` : "Enter at least one valid ticker before starting." : !periodReady ? "Choose a valid period inside 04:00–20:00 ET." : preflight && !resolvedSessionMatches ? "The selected date is not an exchange session. Choose a trading day." : "Resolve each required readiness item before starting."}
       busy={creating}
       checking={checking || loadingOptions}
       checkingLabel={loadingOptions ? "Loading strategy settings…" : "Checking persisted market products…"}
       checks={launchChecks}
-      description="Evaluate an immutable Test Candidate across a bounded historical window using the same strategy, Portfolio, OMS, and journal contracts as Paper and Live."
+      description="Evaluate immutable Strategy 1 using certified ARTE market products, one shared simulated portfolio, and normalized trading records."
       error={optionsError || error}
       eyebrow="Backtest"
       icon={Gauge}
@@ -519,15 +519,15 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       title="Evaluate a strategy"
     >
               <TradingModeSelectField
-                label="Test Candidate" disabled={loadingOptions || !configurationOptions?.candidates.length}
-                help="Saved configuration containing the strategy, Portfolio, and OMS settings. The latest candidate is selected initially."
+                label="Strategy" disabled={loadingOptions || !configurationOptions?.candidates.length}
+                help="The sole immutable numbered Strategy 1 release, reconstructed from typed ARTE configuration rows."
                 onChange={(value) => { setPreflight(null); setRunPlanId(""); setCandidateId(value); }}
-                options={configurationOptions?.candidates.length ? configurationOptions.candidates.map((row) => ({ value: row.candidate_id, label: `${row.candidate_revision} · ${row.label}` })) : [{ value: "", label: loadingOptions ? "Loading candidates…" : "No Test Candidates" }]}
+                options={configurationOptions?.candidates.length ? configurationOptions.candidates.map((row) => ({ value: row.candidate_id, label: row.label })) : [{ value: "", label: loadingOptions ? "Loading strategy…" : "No published strategy" }]}
                 value={candidateId}
               />
               <TradingModeSelectField
                 label="Strategy / Run Plan" disabled={loadingOptions || configurationOptions?.candidate_id !== candidateId || !configurationOptions?.available_run_plans.length || Boolean(optionsError)}
-                help="Choose the strategy revision and its execution plan. Outdated strategy revisions are blocked by launch checks."
+                help="The release pins its only compatible execution plan and 100 ms evaluation interval."
                 onChange={(value) => { setPreflight(null); setRunPlanId(value); }}
                 options={configurationOptions?.available_run_plans.length ? configurationOptions.available_run_plans.map((plan) => ({ value: plan.run_plan_id, label: `${plan.name} · strategy r${plan.strategy_revision}`, description: plan.profile_id })) : [{ value: "", label: loadingOptions ? "Loading strategies…" : "No compatible strategies" }]}
                 value={runPlanId}
@@ -536,7 +536,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
                 options={[{value:'market',label:'Full market · shared portfolio',description:'The selected Run Plan’s signals admit tickers causally into one portfolio'}, {value:'SUGP',label:'SUGP'},{value:'JUNS',label:'JUNS'},
                   {value:'both',label:'SUGP and JUNS · separate runs'},{value:'all',label:'All V7 tickers · separate runs',description:'Separate portfolio per ticker; up to 100 tickers'},
                   {value:'custom',label:'Custom tickers'}]} help={fullMarket ? 'The selected Run Plan controls ticker admission; cash is shared across tickers.' : batchPreset ? 'Separate runs use the selected period and a V7 book for each ticker.' : 'Select a ticker to load its V7 book; the selected period is preserved.'} />
-              {fullMarket ? <p className="configuration-help">Tickers enter causally through the selected Run Plan's signals and share portfolio cash. The selected date must have prepared historical signals. Missing V7 books are excluded and reported before strategy preparation.</p> : null}
+              {fullMarket ? <p className="configuration-help">Tickers enter causally through Strategy 1's certified ARTE candidates and share portfolio cash. Missing market products or V7 coverage block preflight; Backtest does not build them.</p> : null}
               {tickerPreset === 'custom' ? <label className="configuration-field"><span>Tickers</span><textarea aria-label="Tickers" value={tickerInput} onChange={event => setTickerInput(event.target.value.toUpperCase())} /><small>Up to 100 symbols, separated by commas or spaces.</small></label> : null}
               {batchPreset ? <div className="configuration-help">{normalizedTickers.map(ticker => <p key={ticker}>{ticker} · {startTime.slice(0,5)}–{endTime.slice(0,5)} ET · {v6BookFor(ticker,sessionDate,structureBooks) ? 'V7 book selected' : 'V7 book unavailable'}</p>)}</div> : null}
               {batchRuns.length ? <div className="configuration-help">Created runs: {batchRuns.map(item => <button type="button" className="button secondary compact" key={item.run_id} onClick={() => {setSelectedRunId(item.run_id);persistSelectedRun(item.run_id);}}>{item.tickers?.join(', ')} · {item.run_id.slice(0,8)}</button>)}</div> : null}
@@ -548,9 +548,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <TradingModeSelectField disabled={batchPreset || fullMarket} label="Level book" help="V7 loads each ticker's verified preceding-session checkpoint and refits adaptive MLE bands from causal completed 1s candles."
                 value={structureBook} onChange={(value) => { setTickerPreset('custom'); setStructureBook(value); const book = structureBooks.find((row) => row.id === value); if (book) setTickerInput(book.ticker); }}
                 options={fullMarket ? [{ label: 'Automatic V7 coverage check per ticker', value: 'level-book-v7' }] : [{ label: "Automatic V7 book per ticker", value: "" }, ...structureBooks.map((row) => ({ label: `Level book V7 - ${row.ticker} - ${row.start} to ${row.end}`, value: row.id }))]} />
-              <p className="configuration-help">V7 uses fitted reaction-price bands. Checkpoint integrity and exact preceding-session coverage are verified when loading; no legacy book is substituted.</p>
+              <p className="configuration-help">V7 uses certified structural rows and causal completed 1-second bars. Missing coverage blocks the run; no legacy book is substituted.</p>
               <TradingModeSelectField help="Both use $0.005 per share with a $1 minimum commission. Approval requires positive stress results." label="Execution realism" onChange={(value) => setSimulationProfile(value as "baseline" | "stress")} options={[{ label: "Baseline · 25% participation · 5 bps slippage", value: "baseline" }, { label: "Stress · 10% participation · 10 bps slippage", value: "stress" }]} value={simulationProfile} />
-              <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal engine</strong><span>{selectedPlan ? `Strategy revision ${selectedPlan.strategy_revision} · candidate ${configurationOptions?.candidates.find((row) => row.candidate_id === candidateId)?.candidate_revision}.` : "Select a strategy above."} Launch checks require current execution code and strategy. Results open in Charts &amp; Quotes with MACD, positions, lifecycle activity, and performance.</span></div></div>
+              <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal engine</strong><span>{selectedPlan ? `Immutable Strategy ${selectedPlan.strategy_revision} · 100 ms completed-bar evaluation.` : "Loading the published strategy."} Launch checks require certified source data and current execution code. Results open in Charts &amp; Quotes with MACD, positions, lifecycle activity, and performance.</span></div></div>
     </TradingModeLaunch>
   );
 }

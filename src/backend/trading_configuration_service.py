@@ -399,28 +399,22 @@ def configuration_candidate(candidate_id: str = "", *, required: bool = False) -
 
 
 def backtest_configuration_options(candidate_id: str = "") -> dict[str, Any]:
-    """Lightweight setup choices resolved by the same authority as run launch."""
-    summaries = trading_journal().trading_configuration_candidate_summaries()
-    selected = next((row for row in summaries if row["candidate_id"] == candidate_id), None) if candidate_id else next(iter(summaries), None)
-    if candidate_id and selected is None:
-        raise ValueError("The selected Test Candidate no longer exists. Refresh the setup choices.")
-    result: dict[str, Any] = {"candidates": summaries, "candidate_id": "", "run_plan_id": "", "available_run_plans": [], "error": ""}
-    if selected is None:
-        return result
-    result["candidate_id"] = selected["candidate_id"]
-    try:
-        candidate = configuration_candidate(selected["candidate_id"], required=True)
-        model = _validated_candidate_model(candidate)
-        plans = _available_run_plans(model, "backtest")
-        if not plans:
-            raise ValueError("No enabled Strategy Run Plan supports backtest")
-        active_profile = dict(model.get("strategy") or {}).get("active_profile_id")
-        preferred = next((plan for plan in plans if plan["profile_id"] == active_profile), None)
-        result.update(available_run_plans=plans, run_plan_id=preferred["run_plan_id"] if preferred else plans[0]["run_plan_id"])
-    except (KeyError, TypeError, ValueError) as exc:
-        # Keep candidate selection usable when an older saved model is invalid.
-        result["error"] = str(exc)
-    return result
+    """Expose one numbered release, never the old SQLite candidate catalog."""
+    from src.backend.backtest_strategy_one_configuration import (
+        selected_strategy_one_revision,
+    )
+
+    revision = selected_strategy_one_revision(revision_id=candidate_id)
+    return {
+        "candidates": [{"candidate_id": revision["revision_id"],
+                        "candidate_revision": 1,
+                        "label": "Strategy 1",
+                        "content_hash": revision["content_hash"]}],
+        "candidate_id": revision["revision_id"],
+        "run_plan_id": revision["run_plan_id"],
+        "available_run_plans": revision["available_run_plans"],
+        "error": "",
+    }
 
 
 def approved_configuration(*, required: bool = False) -> dict[str, Any] | None:
