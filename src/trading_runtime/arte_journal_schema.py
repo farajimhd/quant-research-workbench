@@ -1133,6 +1133,7 @@ TABLES = (
          ("family_set_hash", "FixedString(64)"),
          ("source_cursor", "String"),
          ("status", "LowCardinality(String)"),
+         ("content_hash", "FixedString(64)"),
          ("committed_at", "DateTime64(6, 'UTC')")),
         "toYYYYMM(run_month)", "run_id, attempt_id, last_sequence, batch_id",
     ),

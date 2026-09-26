@@ -80,6 +80,9 @@ def prepare_commit_v4(
         "source_cursor": source_cursor, "status": status,
         "committed_at": committed_at.astimezone(timezone.utc).isoformat(),
     }
+    commit["content_hash"] = sha256(canonical_json({
+        key: value for key, value in commit.items() if key != "committed_at"
+    }).encode()).hexdigest()
     return commit, tuple(family_rows)
 
 
@@ -103,6 +106,10 @@ def verify_commit_v4(
         if (not run_id or count < 1 or events < 1 or events != span
                 or count != len(family_rows)):
             raise ValueError("V4 commit count or sequence span differs")
+        content = {key: value for key, value in commit.items()
+                   if key not in {"committed_at", "content_hash"}}
+        if sha256(canonical_json(content).encode()).hexdigest() != commit["content_hash"]:
+            raise ValueError("V4 commit scalar content differs from its seal")
         names = []
         for row in family_rows:
             name = str(row["family_name"])
@@ -134,3 +141,69 @@ def verify_commit_v4(
             raise ValueError("V4 family set differs from commit seal")
     except (KeyError, TypeError, AttributeError) as exc:
         raise ValueError("V4 readback lacks complete normalized families") from exc
+
+
+def load_verified_commit_v4(
+    client, *, run_id: str, batch_id: str,
+    max_rows_per_family: int = 65_536,
+) -> tuple[dict, tuple[dict, ...]]:
+    """SELECT one fenced batch and verify every normalized detail row."""
+    from src.trading_runtime.arte_journal_writer import (
+        _CONTRACTS, _canonical_typed_content, _literal, _rows,
+    )
+
+    identity = str(UUID(batch_id))
+    if not run_id or type(max_rows_per_family) is not int \
+            or not 1 <= max_rows_per_family <= 65_536:
+        raise ValueError("V4 readback scope or memory bound is invalid")
+    filters = (f"WHERE run_id={_literal(run_id)} "
+               f"AND batch_id=toUUID({_literal(identity)}) ")
+    commit_columns = ",".join(name for name, _ in
+                              _CONTRACTS["trading_commit_v4"].columns)
+    commits = _rows(client, f"SELECT {commit_columns} FROM arte.trading_commit_v4 "
+                    f"{filters}LIMIT 2 FORMAT JSONEachRow")
+    if len(commits) != 1:
+        raise RuntimeError("V4 commit is missing or ambiguous")
+    commit = commits[0]
+    if commit["run_id"] != run_id or str(UUID(str(commit["batch_id"]))) != identity:
+        raise RuntimeError("V4 commit differs from requested identity")
+    family_columns = ",".join(name for name, _ in
+                              _CONTRACTS["trading_commit_family_v4"].columns)
+    family_rows = _rows(client,
+        f"SELECT {family_columns} FROM arte.trading_commit_family_v4 "
+        f"{filters}LIMIT 257 FORMAT JSONEachRow")
+    if len(family_rows) > 256 or len(family_rows) != commit["family_count"]:
+        raise RuntimeError("V4 commit family readback is incomplete or unbounded")
+    details = {}
+    for family in family_rows:
+        name = str(family["family_name"])
+        contract = _CONTRACTS.get(name)
+        if (contract is None or name in {"trading_commit_v4",
+                                          "trading_commit_family_v4"}
+                or not {"record_id", "content_hash", "run_id", "batch_id"}
+                <= {column for column, _ in contract.columns}
+                or type(family["row_count"]) is not int
+                or not 1 <= family["row_count"] <= max_rows_per_family):
+            raise RuntimeError("V4 commit names an unbounded or untyped family")
+        columns = ",".join(column for column, _ in contract.columns)
+        rows = _rows(client, f"SELECT {columns} FROM arte.{name} "
+                     f"{filters}LIMIT {family['row_count'] + 1} FORMAT JSONEachRow")
+        if len(rows) != family["row_count"]:
+            raise RuntimeError("V4 detail readback has missing or excess rows")
+        identities = []
+        for row in rows:
+            content = {key: value for key, value in row.items()
+                       if key != "content_hash"}
+            digest = sha256(canonical_json(_canonical_typed_content(
+                name, content, stored_utc=True)).encode()).hexdigest()
+            if (row["run_id"] != run_id
+                    or str(UUID(str(row["batch_id"]))) != identity
+                    or row["content_hash"] != digest):
+                raise RuntimeError("V4 typed detail differs from its row hash")
+            identities.append((str(UUID(str(row["record_id"]))), digest))
+        details[name] = identities
+    try:
+        verify_commit_v4(commit, family_rows, details)
+    except ValueError as exc:
+        raise RuntimeError("V4 committed family seal differs from readback") from exc
+    return commit, tuple(family_rows)

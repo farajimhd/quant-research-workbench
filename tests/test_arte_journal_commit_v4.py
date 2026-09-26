@@ -4,11 +4,11 @@ from datetime import date, datetime, timezone
 import pytest
 
 from src.trading_runtime.arte_journal_commit_v4 import (
-    prepare_commit_v4, verify_commit_v4,
+    load_verified_commit_v4, prepare_commit_v4, verify_commit_v4,
 )
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_journal_writer import _sealed_families
-from tests.test_arte_journal_writer import batch
+from tests.test_arte_journal_writer import MemoryClient, batch
 
 
 def source():
@@ -77,9 +77,41 @@ def test_v4_readback_requires_exact_family_set_and_detail_hashes():
     with pytest.raises(ValueError, match="detail identities"):
         verify_commit_v4(commit, families,
                          {"trading_event_v1": [(event["record_id"], "0" * 64)]})
-    with pytest.raises(ValueError, match="family set"):
+    with pytest.raises(ValueError, match="scalar content"):
         verify_commit_v4({**commit, "family_set_hash": "0" * 64}, families, details)
+    with pytest.raises(ValueError, match="scalar content"):
+        verify_commit_v4({**commit, "source_cursor": "changed"}, families, details)
     with pytest.raises(ValueError, match="normalized families"):
         verify_commit_v4(commit, families, {})
     with pytest.raises(ValueError, match="count or sequence"):
         verify_commit_v4({**commit, "event_count": 2}, families, details)
+
+
+def test_v4_cold_readback_recomputes_each_typed_row_hash():
+    options = source()
+    commit, families = prepare_commit_v4(**options)
+    event = dict(options["sealed_families"][0][1][0])
+    for column, precision in (("event_time", 9), ("recorded_at", 6)):
+        parsed = datetime.fromisoformat(event[column]).astimezone(timezone.utc)
+        event[column] = (parsed.strftime("%Y-%m-%d %H:%M:%S.%f")
+                         + ("000" if precision == 9 else ""))
+    client = MemoryClient()
+    client.tables = {
+        "trading_commit_v4": [dict(commit)],
+        "trading_commit_family_v4": [dict(families[0])],
+        "trading_event_v1": [event],
+    }
+    assert load_verified_commit_v4(
+        client, run_id=commit["run_id"], batch_id=commit["batch_id"]
+    ) == (commit, families)
+    assert all("FORMAT JSONEachRow" in query for query in client.selects)
+    client.tables["trading_event_v1"][0]["entity_id"] = "tampered"
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_verified_commit_v4(
+            client, run_id=commit["run_id"], batch_id=commit["batch_id"])
+    client.tables["trading_event_v1"][0]["entity_id"] = (
+        options["sealed_families"][0][1][0]["entity_id"])
+    client.tables["trading_commit_v4"][0]["source_cursor"] = "changed"
+    with pytest.raises(RuntimeError, match="family seal"):
+        load_verified_commit_v4(
+            client, run_id=commit["run_id"], batch_id=commit["batch_id"])
