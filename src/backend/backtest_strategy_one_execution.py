@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from contextlib import closing
 from datetime import date
+from math import isfinite
 from typing import Any, Awaitable, Callable, Sequence
 
 import numpy as np
@@ -46,6 +47,29 @@ from src.trading_runtime.strategy_engine import StrategyAssignment
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
 
+def pinned_strategy_one_ticks(
+    assignments: Sequence[StrategyAssignment],
+) -> dict[str, float]:
+    """Resolve each symbol's immutable strategy execution tick before reads."""
+    if not isinstance(assignments, (tuple, list)) or not assignments:
+        raise ValueError("Strategy 1 needs pinned execution tick assignments")
+    ticks: dict[str, float] = {}
+    for assignment in assignments:
+        if (not isinstance(assignment, StrategyAssignment)
+                or (assignment.strategy_id, assignment.strategy_revision)
+                != (STRATEGY_ID, STRATEGY_NUMBER)):
+            raise ValueError("Strategy 1 execution tick has a foreign assignment")
+        execution = assignment.parameters.get("execution")
+        raw = execution.get("tick_size") if isinstance(execution, dict) else None
+        if type(raw) not in (int, float) or not isfinite(raw) or raw <= 0:
+            raise ValueError("Strategy 1 execution tick is missing or invalid")
+        tick = float(raw)
+        prior = ticks.setdefault(assignment.ticker, tick)
+        if prior != tick:
+            raise ValueError("Strategy 1 accounts disagree on ticker execution tick")
+    return ticks
+
+
 async def run_certified_strategy_one_session(
     *, market: CertifiedMarketDayPlan, candidates: CertifiedCandidatePlan,
     activations: CertifiedActivationPlan, pivots: CertifiedPivotPlan,
@@ -53,7 +77,7 @@ async def run_certified_strategy_one_session(
     entry: CertifiedEntryEvidencePlan, prices: PriceLevelPlan,
     through_boundary_ms: int, runtime: Any,
     assignments: Sequence[StrategyAssignment],
-    client_factory: Callable[[], Any], tick_for_ticker: Callable[[str], float],
+    client_factory: Callable[[], Any],
     before_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     max_workers: int = 4,
@@ -79,8 +103,9 @@ async def run_certified_strategy_one_session(
             or through_boundary_ms % 100
             or type(max_workers) is not int or not 1 <= max_workers <= 16
             or any(not callable(callback) for callback in (
-                client_factory, tick_for_ticker, before_boundary, finish_boundary))):
+                client_factory, before_boundary, finish_boundary))):
         raise ValueError("Strategy 1 session lacks pinned 100ms inputs")
+    ticks = pinned_strategy_one_ticks(assignments)
     visible = project_candidate_plan(
         candidates, through_boundary_ms=through_boundary_ms)
     if not visible.prepared:
@@ -98,6 +123,8 @@ async def run_certified_strategy_one_session(
         surviving_facts, np.zeros(len(surviving_facts), dtype=np.uint8),
         np.arange(len(surviving_facts), dtype=np.int64))
     selected = tuple(row.ticker for row in visible.prepared)
+    if set(selected) - ticks.keys():
+        raise ValueError("Strategy 1 candidate lacks a pinned execution tick")
     projected = project_market_day_plan(market, selected)
     projected_prices = prices.projected(projected)
     scheduler = build_certified_strategy_one_scheduler(
@@ -121,7 +148,7 @@ async def run_certified_strategy_one_session(
                 session=date.fromisoformat(projected.sessions[0]), client=reader)
             manager = StrategyOneManagementRunner(
                 runtime=runtime, evidence=evidence,
-                tick_for_ticker=tick_for_ticker)
+                tick_for_ticker=ticks.__getitem__)
             return await run_strategy_one_fixed_session(
                 scheduler, entry, evidence, manager, runtime=runtime,
                 static_gate=surviving_gate, assignments=assignments,

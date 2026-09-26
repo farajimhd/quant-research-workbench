@@ -3,6 +3,7 @@ import asyncio
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from src.backend import backtest_strategy_one_execution as subject
 from src.backend.backtest_liquidity_price import PriceLevelPlan
@@ -14,6 +15,25 @@ from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
 from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
 from src.backend.structural_v7_seed import CertifiedSeedPlan
+from src.trading_runtime.strategy_engine import (
+    AssignmentStatus, StrategyAssignment, StrategyPermissions,
+)
+
+
+def test_execution_ticks_are_pinned_and_consistent_across_accounts():
+    def assignment(account, tick):
+        return StrategyAssignment(
+            account, "early-squeeze-strategy", 1, account, "AAA", 123,
+            AssignmentStatus.WATCHING, StrategyPermissions(enter=True),
+            {"execution": {"tick_size": tick}})
+
+    assert subject.pinned_strategy_one_ticks(
+        (assignment("DU1", .01), assignment("DU2", .01))) == {"AAA": .01}
+    with pytest.raises(ValueError, match="disagree"):
+        subject.pinned_strategy_one_ticks(
+            (assignment("DU1", .01), assignment("DU2", .0001)))
+    with pytest.raises(ValueError, match="missing or invalid"):
+        subject.pinned_strategy_one_ticks((assignment("DU1", 0),))
 
 
 def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch):
@@ -74,8 +94,11 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch):
         hod=CertifiedHodPlan("build", "2026-08-18", (), "h" * 64),
         seeds=CertifiedSeedPlan("build", "v" * 64, (), "z" * 64, True),
         entry=entry, prices=prices, through_boundary_ms=19_800_000,
-        runtime=object(), assignments=(), client_factory=lambda: reader,
-        tick_for_ticker=lambda _: .01, before_boundary=boundary,
+        runtime=object(), assignments=(StrategyAssignment(
+            "A1", "early-squeeze-strategy", 1, "DU1", "AAA", 123,
+            AssignmentStatus.WATCHING, StrategyPermissions(enter=True),
+            {"execution": {"tick_size": .01}}),),
+        client_factory=lambda: reader, before_boundary=boundary,
         finish_boundary=boundary))
     assert result == "complete"
     assert calls == ["scheduler_built", "executed", "scheduler_closed", "reader_closed"]
