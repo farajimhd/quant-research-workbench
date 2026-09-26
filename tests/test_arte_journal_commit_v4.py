@@ -900,9 +900,10 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
                                  *RISK_ACTION_TABLES,
                                  *PROTECTION_CHANGE_TABLES,
                                  *PROTECTION_RECONCILIATION_TABLES)}
+    from src.trading_runtime.arte_journal_schema import PORTFOLIO_SNAPSHOT_WRITE_TABLES
     writable = frozenset(writer_module._v4_family_table(table)
                          for table, _, _, _ in writer_module._FAMILIES) | \
-        frozenset(table.name for table in V4_COMMIT_TABLES) | {
+        frozenset(table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
             ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
             ACKNOWLEDGEMENT.name, CANCEL.name,
             REPRICE.name,

@@ -1354,6 +1354,20 @@ def versioned_journal_v2_preflight(client: Any) -> None:
     )
 
 
+PORTFOLIO_SNAPSHOT_WRITE_TABLES = frozenset({
+    "trading_portfolio_snapshot_v1",
+    "trading_portfolio_disabled_strategy_v1",
+    "trading_portfolio_command_v1",
+    "trading_portfolio_request_v1",
+    "trading_portfolio_request_reason_v1",
+    "trading_portfolio_reservation_v1",
+    "trading_portfolio_allocation_v1",
+    "trading_portfolio_reconciliation_v1",
+    "trading_portfolio_snapshot_commit_v1",
+    "trading_backtest_snapshot_anchor_v1",
+})
+
+
 def fixed_backtest_v2_contracts() -> tuple[TableContract, ...]:
     """Exact occupied V1, active shared, and new fixed-V2 table shapes."""
     from src.trading_runtime.arte_backtest_definition import TABLES as DEFINITION_TABLES

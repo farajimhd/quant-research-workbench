@@ -1,6 +1,7 @@
 from scripts.clickhouse import provision_backtest_v4_runner as provision
 from src.trading_runtime.arte_journal_schema import (
-    MARKET_READ_TABLES, V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
+    MARKET_READ_TABLES, PORTFOLIO_SNAPSHOT_WRITE_TABLES,
+    V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
 )
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
@@ -18,7 +19,7 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
     assert plan.insert_arte == frozenset(
         provision._v4_family_table(table)
         for table, _, _, _ in provision._FAMILIES) | frozenset(
-            table.name for table in V4_COMMIT_TABLES) | {
+            table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
                 ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
                 ACKNOWLEDGEMENT.name,
                 provision.CANCEL.name,
@@ -31,6 +32,9 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
     assert "trading_strategy_signal_v1" not in plan.insert_arte
     assert "trading_strategy_signal_v2" in plan.insert_arte
     assert not plan.insert_arte & MARKET_READ_TABLES
+    assert PORTFOLIO_SNAPSHOT_WRITE_TABLES <= plan.insert_arte
+    assert PORTFOLIO_SNAPSHOT_WRITE_TABLES <= {
+        table.name for table in fixed_backtest_v2_contracts()}
     assert plan.select_arte == frozenset(
         table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES,
                                      ENTRY_EVIDENCE, V4_ALLOCATION,

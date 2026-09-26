@@ -25,6 +25,7 @@ from uuid import UUID
 
 from src.trading_runtime.arte_journal_schema import (
     POLICY_ALLOWED_TABLES, TABLES, V4_COMMIT_TABLES,
+    PORTFOLIO_SNAPSHOT_WRITE_TABLES,
     BACKTEST_TERMINAL_SNAPSHOT_V2_TABLES,
     VERSIONED_JOURNAL_V2_TABLES, fixed_backtest_v2_contracts,
     journal_permission_preflight, storage_preflight,
@@ -1799,7 +1800,7 @@ def _v4_preflight(client: Any) -> None:
     storage_preflight(client, tables=v4_storage_contracts())
     writable = frozenset(
         _v4_family_table(table) for table, _, _, _ in _FAMILIES
-    ) | frozenset(table.name for table in V4_COMMIT_TABLES) | {
+    ) | frozenset(table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
         ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
         ACKNOWLEDGEMENT.name, CANCEL.name, REPRICE.name,
         *(table.name for table in RISK_ACTION_TABLES),
