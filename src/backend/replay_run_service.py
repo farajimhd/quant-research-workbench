@@ -11373,6 +11373,20 @@ def backtest_preflight(
                 causal_v7_plan.get("token", "") if causal_v7_plan else causal_v7_error)
     if (execution_interval.kind == "fixed"
             and dict(configuration.get("strategy") or {}).get("strategy_number") == 1):
+        identity_token = str((market_data_plan or {}).get(
+            "strategy_one_identity_token") or "")
+        checks.append({
+            "id": "strategy_one_dated_identity",
+            "label": "Certified dated broker identity",
+            "status": "ready" if re.fullmatch(r"[0-9a-f]{64}", identity_token) else "blocked",
+            "required": True,
+            "summary": (
+                "Every tradable ticker has one normalized, pre-cutoff broker conid."
+                if identity_token else "Strategy 1 dated broker identity is unavailable: " +
+                (causal_v7_error or "market-data certification did not complete")
+            ),
+            "evidence": identity_token or causal_v7_error,
+        })
         hod_token = str((market_data_plan or {}).get("strategy_one_hod_token") or "")
         checks.append({
             "id": "strategy_one_hod_context",
