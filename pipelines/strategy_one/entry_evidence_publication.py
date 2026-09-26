@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 from pipelines.market_sip.events.market_day_sql import literal
 from src.backend.backtest_strategy_one_entry_product import (
-    ActivationFact, CandidateFact, content_hash,
+    ActivationFact, CandidateFact, canonical_price, content_hash,
 )
 from src.trading_runtime.strategy_one_entry_evidence_schema import (
     ACTIVATION_TABLE, ACTIVATION_RESISTANCE_TABLE, EVIDENCE_TABLE,
@@ -129,8 +129,10 @@ def _read_children(client: Any, scope: EntryPublicationScope, attempt: str,
             if row["bos_break_close_int"] is not None else None,
             str(row["bos_support_kind"]), str(row["bos_support_level_id"]),
             str(row["bos_support_pivot_id"]), bool(valid),
-            float(row["stop_price"]) if row["stop_price"] is not None else None,
-            float(row["target_price"]) if row["target_price"] is not None else None,
+            canonical_price(float(row["stop_price"]))
+            if row["stop_price"] is not None else None,
+            canonical_price(float(row["target_price"]))
+            if row["target_price"] is not None else None,
             str(row["target_level_id"]), int(row["target_ordinal"])
             if row["target_ordinal"] is not None else None))
     return tuple(activations), tuple(candidates), len(resistance_rows)

@@ -58,6 +58,7 @@ class Reader:
     def __init__(self, plans):
         market, candidates, activations, pivots, hod, seeds = plans
         self.queries = []
+        self.readback_stop_tail = False
         self.activation = ActivationFact("AAA", 30_000, 100_000, .5, ("R1",))
         self.candidate = CandidateFact(
             "AAA", 31_000, 30_000, 30_000, "P1", 101_000,
@@ -84,7 +85,10 @@ class Reader:
         elif "FROM arte.strategy_one_entry_activation_v1" in query:
             rows = [dict(ticker="AAA", **self.activation.row())]
         elif "FROM arte.strategy_one_entry_evidence_v1" in query:
-            rows = [dict(ticker="AAA", **self.candidate.row())]
+            row = dict(ticker="AAA", **self.candidate.row())
+            if self.readback_stop_tail:
+                row["stop_price"] = 9.889999999999999
+            rows = [row]
         else:
             raise AssertionError(query)
         return "\n".join(json.dumps(row) for row in rows)
@@ -101,6 +105,16 @@ def test_entry_store_certifies_exact_rows_without_any_write(monkeypatch):
     assert len(reader.queries) == 4
     with pytest.raises(ValueError, match="lacks certified entry evidence"):
         result.lookup("AAA", 31_100)
+
+
+def test_entry_store_normalizes_only_binary_price_tail(monkeypatch):
+    monkeypatch.setattr("src.backend.backtest_strategy_one_entry_store.verify_tables",
+                        lambda client: None)
+    plans = _plans()
+    reader = Reader(plans)
+    reader.readback_stop_tail = True
+    assert certify_entry_evidence_plan(*plans, client=reader).lookup(
+        "AAA", 31_000).stop_price == 9.89
 
 
 @pytest.mark.parametrize("field,value", [
