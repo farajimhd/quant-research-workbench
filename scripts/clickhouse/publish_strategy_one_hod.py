@@ -219,7 +219,9 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 130
     except Exception as exc:
-        detail = (str(exc) if isinstance(exc, HodCampaignFailure)
+        safe_seed_gap = (type(exc) is ValueError and str(exc).startswith(
+            "V7 prior coverage is missing or duplicated: "))
+        detail = (str(exc) if isinstance(exc, HodCampaignFailure) or safe_seed_gap
                   else f"{type(exc).__name__} at " + next((
                       f"{Path(frame.filename).name}:{frame.name}:{frame.lineno}"
                       for frame in reversed(traceback.extract_tb(exc.__traceback__))

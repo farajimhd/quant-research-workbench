@@ -29,3 +29,13 @@ def test_failure_shows_stage_without_leaking_driver_message(capsys, monkeypatch)
     error = capsys.readouterr().err
     assert "ValueError at" in error
     assert "private SQL detail" not in error
+
+
+def test_known_seed_coverage_gap_reports_bounded_count(capsys, monkeypatch):
+    monkeypatch.setattr(command.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(command, "verify_session", lambda **_kwargs:
+                        (_ for _ in ()).throw(ValueError(
+                            "V7 prior coverage is missing or duplicated: "
+                            "missing=1 ['2026-08-18:TEST'], duplicates=0, unexpected=[]")))
+    assert command.main(["--verify-only"]) == 1
+    assert "missing=1" in capsys.readouterr().err
