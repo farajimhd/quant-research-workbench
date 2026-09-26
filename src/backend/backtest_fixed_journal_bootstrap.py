@@ -374,7 +374,11 @@ def assemble_fixed_v4_journal(
             or load_typed_run_context(writer_client, token.run_id) != context
             or load_typed_run_context(terminal_client, token.run_id) != context):
         raise RuntimeError("V4 journal context changed before assembly")
-    _v4_preflight(writer_client)
+    # The production writer constructor performs this exact V4 storage and
+    # grant audit before starting its thread. Keep the explicit audit for
+    # injected factories, which may not enforce that constructor contract.
+    if writer_factory is not ArteJournalWriter:
+        _v4_preflight(writer_client)
     journal = BacktestMemoryJournal(run_id=token.run_id)
     try:
         writer = writer_factory(

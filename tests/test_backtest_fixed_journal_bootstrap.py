@@ -277,6 +277,8 @@ def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(mo
         expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
         writer_factory=lambda client, **kwargs: Writer())
     assert assembly.terminal_authority is None
+    assert checked[-1] == (writer_client, "v4")
+    assert len(checked) == 4  # Injected factories still need assembly's audit.
     controller = object.__new__(ReplayRunController)
     controller.run_id = RUN
     controller.definition = SimpleNamespace(
@@ -294,6 +296,46 @@ def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(mo
             read, writer_client, terminal, run_id=RUN, account_ids=("DU1",),
             configuration_hash="c" * 64, market_plan_token="b" * 64,
             projection_certifier=lambda: "a" * 64)
+
+
+def test_v4_assembly_does_not_repeat_real_writer_constructor_preflight(monkeypatch):
+    context = {"mode": "backtest", "account_ids": ("DU1",),
+               "run_month": "2026-08-01", "configuration_hash": "c" * 64,
+               "market_plan_token": "b" * 64}
+    calls = []
+    dispatch = bootstrap.TypedInsertDispatch(object())
+    writer_client = SimpleNamespace(typed_insert_strict=True,
+                                    typed_insert_dispatch=dispatch)
+    monkeypatch.setattr(bootstrap, "load_typed_run_context",
+                        lambda *_args: context)
+    monkeypatch.setattr(bootstrap, "_v4_preflight",
+                        lambda *_args: calls.append("assembly audit"))
+
+    class RealWriterStandIn:
+        run_id = RUN
+        run_mode = "backtest"
+        journal_profile = "backtest_v4"
+        coalesce_batches = False
+        max_events_per_commit = 512
+
+        def __init__(self, _client, **_kwargs):
+            calls.append("constructor audit")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(bootstrap, "ArteJournalWriter", RealWriterStandIn)
+    token = bootstrap.FixedV4JournalPreflightToken(
+        RUN, ("DU1",), date(2026, 8, 1), "c" * 64,
+        "b" * 64, "a" * 64)
+    assembly = bootstrap.assemble_fixed_v4_journal(
+        object(), writer_client, object(), token, attempt_id=ATTEMPT,
+        expected_config={"mode": "backtest"},
+        fixed_market_parent_plan=object(), fixed_market_execution_plan=object(),
+        expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
+        writer_factory=RealWriterStandIn)
+    assert calls == ["constructor audit"]
+    assembly.journal.close()
 
 
 def test_v4_publication_preflights_before_keeper_gate(monkeypatch):
