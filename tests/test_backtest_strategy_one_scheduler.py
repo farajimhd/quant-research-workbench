@@ -14,6 +14,9 @@ from src.backend.backtest_strategy_one_market import (
 from src.backend.backtest_strategy_one_preparation import (
     PreparedStrategyOneTicker, StrategyOneEntryCursor,
 )
+from src.backend.backtest_strategy_one_activation import (
+    CertifiedActivationPlan, StrategyOneActivation,
+)
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
 )
@@ -170,14 +173,45 @@ def test_certified_scheduler_factory_joins_sparse_rows_before_financial_stream(m
     monkeypatch.setattr(subject, "load_sparse_candidate_market",
                         lambda *_args, **_kwargs: (row,))
     scheduler = subject.build_certified_strategy_one_scheduler(
-        market, candidates, price_plan=prices, through_boundary_ms=60_000,
+        market, candidates,
+        activations=CertifiedActivationPlan(
+            (StrategyOneActivation(30_000, "AAA", 100_000),), "a" * 64),
+        price_plan=prices, through_boundary_ms=60_000,
         client_factory=lambda: pytest.fail("candidate-only schedule opened active reader"))
+    work = scheduler.pop_next()
+    assert work.boundary_ms == 30_000
+    assert work.activation_rows == (StrategyOneActivation(30_000, "AAA", 100_000),)
     work = scheduler.pop_next()
     assert work.boundary_ms == 31_000
     assert work.candidate_rows[0].evidence.stop_low_int == 99_000
     assert work.broker_rows[0][1][100] is row
     assert scheduler.pop_next() is None
     scheduler.close()
+
+
+def test_activation_follows_broker_and_precedes_same_boundary_candidate():
+    actions = []
+    async def broker(ticker, _rows, boundary):
+        actions.append((boundary, "broker", ticker))
+    async def activated(row):
+        actions.append((row.boundary_ms, "activation", row.ticker))
+    async def decision(ticker, rows, _candidate):
+        actions.append((rows[100]["boundary_ms"], "decision", ticker))
+    async def finished(work):
+        actions.append((work.boundary_ms, "finish", ""))
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date=DAY,
+        candidate_rows=iter((candidate("AAA", 100),)),
+        activation_rows=iter((StrategyOneActivation(100, "AAA", 100_000),)),
+        active_source=lambda _ticker, _after: iter(()))
+    assert asyncio.run(run_strategy_one_boundaries(
+        scheduler, process_broker_row=broker, evaluate_ticker=decision,
+        financially_active_tickers=lambda: (), finish_boundary=finished,
+        observe_activation=activated)) == 1
+    assert actions == [(100, "broker", "AAA"),
+                       (100, "activation", "AAA"),
+                       (100, "decision", "AAA"), (100, "finish", "")]
 
 
 def shared_row(ticker, boundary):

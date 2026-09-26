@@ -135,6 +135,11 @@ original price, not a later entry candidate: `backtest_strategy_one_activation`
 now SELECTs each distinct episode start once from the pinned completed 100ms
 bar attempt and pins its scalar token at preflight and launch. It neither
 persists a redundant activation-price table nor creates a bar in Backtest.
+The sparse scheduler emits these starts as separate causal work before a
+same-boundary entry candidate. `strategy_one_activation_state` freezes the
+resistance-gap evidence once from the V7 projection known at that start; a
+missing gap remains missing for that episode rather than being repaired by a
+later level book.
 `src/backend/backtest_strategy_one_preparation.py` now scans the full certified
 universe for completed-bar Early Squeeze starts, loads only episode-bearing
 tickers in bounded read-only lanes, and merges compact candidate cursors in

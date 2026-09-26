@@ -24,6 +24,9 @@ from src.backend.backtest_strategy_one_market import (
     attach_sparse_candidate_evidence, load_sparse_candidate_market,
 )
 from src.backend.backtest_strategy_one_candidate_store import CertifiedCandidatePlan
+from src.backend.backtest_strategy_one_activation import (
+    CertifiedActivationPlan, StrategyOneActivation,
+)
 
 
 MarketGroup = tuple[int, Mapping[int, Mapping]]
@@ -32,6 +35,7 @@ MarketSource = Callable[[str, int], Iterator[MarketGroup]]
 
 def build_certified_strategy_one_scheduler(
     plan: CertifiedMarketDayPlan, candidates: CertifiedCandidatePlan, *,
+    activations: CertifiedActivationPlan,
     price_plan: PriceLevelPlan, through_boundary_ms: int,
     client_factory: Callable[[], Any], max_workers: int = 4,
     max_candidate_rows: int = 250_000,
@@ -40,10 +44,23 @@ def build_certified_strategy_one_scheduler(
     if (len(plan.sessions) != 1 or plan.execution_interval.kind != "fixed"
             or plan.execution_interval.milliseconds != 100
             or candidates.source_build_id != plan.build_id
+            or not isinstance(activations, CertifiedActivationPlan)
+            or len(activations.token) != 64
             or type(through_boundary_ms) is not int
             or not 0 < through_boundary_ms <= 57_600_000
             or through_boundary_ms % 100):
         raise ValueError("Strategy 1 scheduler needs one pinned 100ms session")
+    expected_activations = {
+        (int(start), prepared.ticker)
+        for prepared in candidates.prepared
+        for start in prepared.episode_start_ms
+    }
+    actual_activations = {
+        (item.boundary_ms, item.ticker) for item in activations.rows
+    }
+    if (expected_activations != actual_activations
+            or len(actual_activations) != len(activations.rows)):
+        raise ValueError("Strategy 1 activation schedule differs from candidates")
     rows = load_sparse_candidate_market(
         plan, candidates, price_plan=price_plan,
         client_factory=client_factory, max_workers=max_workers,
@@ -55,7 +72,7 @@ def build_certified_strategy_one_scheduler(
         client_factory=client_factory)
     return StrategyOneBoundaryScheduler(
         session_date=plan.sessions[0], candidate_rows=iter(paired),
-        active_source=source)
+        activation_rows=iter(activations.rows), active_source=source)
 
 # Both SELECT-only paths use the same full 100 ms projection. Compare the
 # complete row when they overlap: the broker also consumes size, high,
@@ -104,6 +121,7 @@ class StrategyOneBoundaryWork:
     boundary_ms: int
     broker_rows: tuple[tuple[str, Mapping[int, Mapping]], ...]
     candidate_rows: tuple[StrategyOneDecisionCandidate, ...]
+    activation_rows: tuple[StrategyOneActivation, ...] = ()
 
 
 class StrategyOneBoundaryScheduler:
@@ -111,14 +129,18 @@ class StrategyOneBoundaryScheduler:
 
     def __init__(self, *, session_date: str,
                  candidate_rows: Iterator[StrategyOneDecisionCandidate],
+                 activation_rows: Iterator[StrategyOneActivation] | None = None,
                  active_source: MarketSource) -> None:
         if not session_date or not callable(active_source):
             raise ValueError("Strategy 1 scheduler needs a session and active source")
         self.session_date = session_date
         self._candidates = candidate_rows
+        self._activations = activation_rows or iter(())
         self._active_source = active_source
         self._candidate: StrategyOneDecisionCandidate | None = None
+        self._activation: StrategyOneActivation | None = None
         self._prior_candidate: tuple[int, str] | None = None
+        self._prior_activation: tuple[int, str] | None = None
         self._active: dict[str, Iterator[MarketGroup]] = {}
         self._active_prior: dict[str, int] = {}
         self._generation: dict[str, int] = {}
@@ -127,6 +149,27 @@ class StrategyOneBoundaryScheduler:
         self._boundary_ms = 0
         self._closed = False
         self._advance_candidate()
+        self._advance_activation()
+
+    def _advance_activation(self) -> None:
+        row = next(self._activations, None)
+        if row is None:
+            self._activation = None
+            return
+        if not isinstance(row, StrategyOneActivation):
+            raise ValueError("Strategy 1 activation lacks typed source evidence")
+        key = (row.boundary_ms, row.ticker)
+        if (type(row.boundary_ms) is not int
+                or not 0 < row.boundary_ms <= 57_600_000
+                or row.boundary_ms % 100
+                or not isinstance(row.ticker, str)
+                or not row.ticker or row.ticker != row.ticker.upper()
+                or type(row.price_int) is not int or row.price_int <= 0
+                or self._prior_activation is not None
+                and key <= self._prior_activation):
+            raise ValueError("Strategy 1 activations are not unique causal boundaries")
+        self._prior_activation = key
+        self._activation = row
 
     def _advance_candidate(self) -> None:
         row = next(self._candidates, None)
@@ -249,10 +292,12 @@ class StrategyOneBoundaryScheduler:
             heappop(self._heads)
         candidate_at = (int(self._candidate.market_row["boundary_ms"])
                         if self._candidate is not None else None)
+        activation_at = (self._activation.boundary_ms
+                         if self._activation is not None else None)
         active_at = self._heads[0][0] if self._heads else None
-        if candidate_at is None and active_at is None:
+        if candidate_at is None and active_at is None and activation_at is None:
             return None
-        boundary = min(value for value in (candidate_at, active_at)
+        boundary = min(value for value in (candidate_at, active_at, activation_at)
                        if value is not None)
         if boundary <= self._boundary_ms:
             raise ValueError("Strategy 1 scheduler moved backward")
@@ -270,6 +315,11 @@ class StrategyOneBoundaryScheduler:
                and self._candidate.market_row["boundary_ms"] == boundary):
             candidates.append(self._candidate)
             self._advance_candidate()
+        activations = []
+        while (self._activation is not None
+               and self._activation.boundary_ms == boundary):
+            activations.append(self._activation)
+            self._advance_activation()
         for candidate in candidates:
             row = candidate.market_row
             ticker = str(row["ticker"])
@@ -283,7 +333,8 @@ class StrategyOneBoundaryScheduler:
             elif dict(existing) != dict(row):
                 raise ValueError("Active and candidate market rows disagree at boundary")
         return StrategyOneBoundaryWork(
-            boundary, tuple(sorted(broker.items())), tuple(candidates))
+            boundary, tuple(sorted(broker.items())), tuple(candidates),
+            tuple(activations))
 
     @property
     def exhausted_tickers(self) -> tuple[str, ...]:
@@ -299,6 +350,9 @@ class StrategyOneBoundaryScheduler:
         close = getattr(self._candidates, "close", None)
         if close is not None:
             close()
+        close = getattr(self._activations, "close", None)
+        if close is not None:
+            close()
         self._closed = True
 
 
@@ -309,6 +363,7 @@ async def run_strategy_one_boundaries(
                                StrategyOneDecisionCandidate | None], Awaitable[None]],
     financially_active_tickers: Callable[[], tuple[str, ...]],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
+    observe_activation: Callable[[StrategyOneActivation], Awaitable[None]] | None = None,
 ) -> int:
     """One causal coordinator; market I/O cannot block the asyncio engine.
 
@@ -348,6 +403,10 @@ async def run_strategy_one_boundaries(
                           for row in work.candidate_rows}
             for ticker, resolutions in work.broker_rows:
                 await process_broker_row(ticker, resolutions, work.boundary_ms)
+            if work.activation_rows and observe_activation is None:
+                raise RuntimeError("Strategy 1 activation callback is required")
+            for activation in work.activation_rows:
+                await observe_activation(activation)
             for ticker, resolutions in work.broker_rows:
                 await evaluate_ticker(ticker, resolutions, candidates.get(ticker))
             await finish_boundary(work)
