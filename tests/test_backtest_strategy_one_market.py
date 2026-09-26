@@ -99,3 +99,44 @@ def test_candidate_market_shards_never_exceed_key_or_ticker_limit():
     assert sum(len(clocks) for shard in shards for clocks in shard.values()) == 1200
     assert all(len(shard) <= 8 and sum(map(len, shard.values())) <= 512
                for shard in shards)
+
+
+def test_sparse_market_join_preserves_certified_closed_bar_evidence():
+    item = PreparedStrategyOneTicker(
+        "AAA", 1_000, np.array([42]), np.array([31_000]),
+        np.array([30_000]), np.array([[31_000, 30_000, 30_000, 30_000]]),
+        np.array([30_000]), np.array([99_000]))
+    market_row = {"ticker": "AAA", "boundary_ms": 31_000,
+                  "resolution_ms": 100, "price_valid": 1,
+                  "indicator_resolution_ms": 100}
+    joined = subject.attach_sparse_candidate_evidence((market_row,), (item,))
+    assert joined[0].market_row is market_row
+    assert joined[0].evidence.source_row_index == 42
+    assert joined[0].evidence.stop_low_int == 99_000
+    assert joined[0].evidence.macd_boundary_ms == (
+        31_000, 30_000, 30_000, 30_000)
+
+    with pytest.raises(ValueError, match="exceed certified evidence"):
+        subject.attach_sparse_candidate_evidence((market_row, market_row), (item,))
+    with pytest.raises(ValueError, match="exceeds candidate market rows"):
+        subject.attach_sparse_candidate_evidence((), (item,))
+    for wrong in ({**market_row, "boundary_ms": 31_100},
+                  {**market_row, "ticker": "BBB"}):
+        with pytest.raises(ValueError, match="differs from certified"):
+            subject.attach_sparse_candidate_evidence((wrong,), (item,))
+
+
+def test_sparse_market_join_rejects_future_or_stale_stop_and_macd():
+    row = {"ticker": "AAA", "boundary_ms": 31_000,
+           "resolution_ms": 100, "price_valid": 1,
+           "indicator_resolution_ms": 100}
+    for stop, macd in ((60_000, (31_000, 30_000, 30_000, 30_000)),
+                       (0, (31_000, 30_000, 30_000, 30_000)),
+                       (30_000, (32_000, 30_000, 30_000, 30_000)),
+                       (30_000, (29_000, 30_000, 30_000, 30_000))):
+        item = PreparedStrategyOneTicker(
+            "AAA", 1_000, np.array([0]), np.array([31_000]),
+            np.array([30_000]), np.array([macd]),
+            np.array([stop]), np.array([99_000]))
+        with pytest.raises(ValueError, match="differs from certified"):
+            subject.attach_sparse_candidate_evidence((row,), (item,))
