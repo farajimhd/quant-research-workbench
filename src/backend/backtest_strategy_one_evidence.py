@@ -21,6 +21,7 @@ from src.backend.backtest_strategy_one_bos import (
     BosSnapshot, StrategyOneBosCursor,
 )
 from src.backend.backtest_strategy_one_decision import candidate_entry_protection
+from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
 from src.backend.fixed_v7_stream import FixedV7Cache
@@ -48,17 +49,24 @@ class StrategyOneCausalEvidence:
 
     def __init__(self, *, market_plan: CertifiedMarketDayPlan,
                  seed_plan: CertifiedSeedPlan, pivot_plan: CertifiedPivotPlan,
+                 hod_plan: CertifiedHodPlan,
                  session: date, client: Any) -> None:
         if (not isinstance(market_plan, CertifiedMarketDayPlan)
                 or not isinstance(seed_plan, CertifiedSeedPlan)
                 or not isinstance(pivot_plan, CertifiedPivotPlan)
+                or not isinstance(hod_plan, CertifiedHodPlan)
                 or pivot_plan.source_build_id != market_plan.build_id
+                or hod_plan.source_build_id != market_plan.build_id
+                or hod_plan.session_date != session.isoformat()
+                or not {ticker for ticker, _ in hod_plan.contexts}
+                <= set(market_plan.tickers)
                 or pivot_plan.session_date != session.isoformat()
                 or market_plan.sessions != (session.isoformat(),)
                 or not set(ticker for ticker, _ in pivot_plan.intervals)
                 <= set(market_plan.tickers)):
             raise ValueError("Strategy 1 causal evidence plans disagree")
         self.session = session
+        self.hod = hod_plan
         self.bos = StrategyOneBosCursor(pivot_plan)
         self.v7 = FixedV7Cache(
             market_plan=market_plan, seed_plan=seed_plan,
@@ -103,6 +111,8 @@ class StrategyOneCausalEvidence:
             bos.open_break, candidate_boundary_ms=cursor.boundary_ms,
             visible_pivots=bos.visible_pivots, admitted_levels=levels)
         protection = candidate_entry_protection(
-            candidate, admitted_v7_levels=levels, tick=tick)
+            candidate, admitted_v7_levels=levels,
+            hod_context=self.hod.lookup(cursor.ticker, cursor.boundary_ms),
+            tick=tick)
         return StrategyOneEntryEvidence(
             candidate, activation, bos, support, protection)

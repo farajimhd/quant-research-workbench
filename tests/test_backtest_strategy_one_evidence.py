@@ -12,12 +12,14 @@ from src.backend.backtest_market_data import (
 from src.backend.backtest_strategy_one_activation import StrategyOneActivation
 from src.backend.backtest_strategy_one_evidence import StrategyOneCausalEvidence
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
+from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
 from src.backend.backtest_strategy_one_pivot_store import (
     CertifiedPivotCoverage, CertifiedPivotPlan,
 )
 from src.backend.backtest_strategy_one_preparation import StrategyOneEntryCursor
 from src.backend.structural_v7_seed import CertifiedSeedPlan
 from src.trading_runtime.strategy_one_pivot_product import PivotInterval
+from src.trading_runtime.strategy_one_hod_product import HodContext
 
 
 def test_activation_and_later_candidate_use_same_completed_second_stream():
@@ -79,6 +81,9 @@ def test_activation_and_later_candidate_use_same_completed_second_stream():
     client = Client()
     evidence = StrategyOneCausalEvidence(
         market_plan=market, seed_plan=seeds, pivot_plan=pivots,
+        hod_plan=CertifiedHodPlan("market", session.isoformat(),
+            (("TEST", (HodContext(302_000, 100_000, 102_000, False, ""),)),),
+            "hod-token"),
         session=session, client=client)
 
     async def run():
@@ -93,7 +98,7 @@ def test_activation_and_later_candidate_use_same_completed_second_stream():
              "boundary_ms": boundary, "resolution_ms": 100,
              "price_valid": 1, "quote_valid": 1,
              "quote_timestamp_us": round(at.timestamp() * 1_000_000),
-             "bid_int": 101_900, "ask_int": 102_000},
+             "bid_int": 101_900, "ask_int": 102_000, "close_int": 102_000},
             StrategyOneEntryCursor(boundary, "TEST", 0, 301_000,
                                    (302_000, 300_000, 300_000, 300_000),
                                    300_000, 99_000))

@@ -15,6 +15,7 @@ from typing import Mapping, Sequence
 from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_strategy_one_market import StrategyOneDecisionCandidate
 from src.backend.fixed_v7_stream import FixedV7Cache
+from src.trading_runtime.strategy_one_hod_product import HodContext
 from src.trading_runtime.strategy_one_position import (
     ProtectionTransition, open_protection,
 )
@@ -22,7 +23,7 @@ from src.trading_runtime.strategy_one_position import (
 
 def candidate_entry_protection(
     candidate: StrategyOneDecisionCandidate, *,
-    admitted_v7_levels: Sequence[Mapping], tick: float,
+    admitted_v7_levels: Sequence[Mapping], hod_context: HodContext, tick: float,
 ) -> ProtectionTransition | None:
     """Use the certified closed 30s low and live-at-boundary persisted quote.
 
@@ -30,6 +31,7 @@ def candidate_entry_protection(
     This function never substitutes a forming low, stale quote, or level list.
     """
     if (not isinstance(candidate, StrategyOneDecisionCandidate)
+            or not isinstance(hod_context, HodContext)
             or not isinstance(admitted_v7_levels, (tuple, list))
             or type(tick) not in (int, float) or not isfinite(tick)
             or tick <= 0):
@@ -37,11 +39,27 @@ def candidate_entry_protection(
     row, evidence = candidate.market_row, candidate.evidence
     boundary = row.get("boundary_ms")
     if (type(boundary) is not int or boundary != evidence.boundary_ms
+            or boundary != hod_context.boundary_ms
             or row.get("ticker") != evidence.ticker
             or row.get("resolution_ms") != 100
             or row.get("price_valid") != 1
             or row.get("quote_valid") != 1):
         raise ValueError("Strategy 1 entry market identity differs from candidate")
+    close_int = row.get("close_int")
+    if (type(close_int) is not int or close_int <= 0
+            or type(hod_context.session_open_int) is not int
+            or type(hod_context.prior_hod_int) is not int
+            or not 0 < hod_context.session_open_int <= hod_context.prior_hod_int
+            or type(hod_context.late_mode) is not bool
+            or not isinstance(hod_context.gate_level_id, str)):
+        raise ValueError("Strategy 1 HOD context lacks completed price evidence")
+    if hod_context.late_mode and not (
+            hod_context.gate_level_id
+            and any(level.get("unified_level_id") == hod_context.gate_level_id
+                    for level in admitted_v7_levels)
+            and 0.7 * hod_context.prior_hod_int <= close_int
+            < hod_context.prior_hod_int):
+        return None
     quote_at = row.get("quote_timestamp_us")
     bid_int, ask_int = row.get("bid_int"), row.get("ask_int")
     if any(type(value) is not int for value in (quote_at, bid_int, ask_int)):
@@ -61,7 +79,7 @@ def candidate_entry_protection(
 
 async def certified_v7_candidate_protection(
     candidate: StrategyOneDecisionCandidate, *,
-    v7_cache: FixedV7Cache, tick: float,
+    v7_cache: FixedV7Cache, hod_context: HodContext, tick: float,
 ) -> ProtectionTransition | None:
     """Join one candidate to its pinned, causally caught-up V7 geometry."""
     if (not isinstance(candidate, StrategyOneDecisionCandidate)
@@ -77,4 +95,5 @@ async def certified_v7_candidate_protection(
         levels = await asyncio.to_thread(
             v7_cache.strategy_one_levels, ticker, as_of=at)
     return candidate_entry_protection(
-        candidate, admitted_v7_levels=levels, tick=tick)
+        candidate, admitted_v7_levels=levels,
+        hod_context=hod_context, tick=tick)
