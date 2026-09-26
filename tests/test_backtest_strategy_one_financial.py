@@ -4,7 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.backend.backtest_strategy_one_financial import read_strategy_one_financial_view
+from src.backend.backtest_strategy_one_financial import (
+    read_strategy_one_financial_view, read_strategy_one_financial_views,
+)
 from src.trading_runtime.order_management import OrderManagementState
 from src.trading_runtime.strategy_engine import (
     AssignmentStatus, StrategyAssignment, StrategyPermissions,
@@ -55,3 +57,28 @@ def test_financial_view_retains_pending_entry_and_rejects_mismatched_group():
     with pytest.raises(RuntimeError, match="differs"):
         asyncio.run(read_strategy_one_financial_view(
             _assignment(), broker, manager))
+
+
+def test_same_ticker_assignments_share_one_account_read_and_oms_snapshot():
+    first = _assignment()
+    second = StrategyAssignment(
+        "assignment-2", first.strategy_id, first.strategy_revision, "DU1",
+        "AAA", 456, AssignmentStatus.WATCHING,
+        StrategyPermissions(enter=True), {})
+    reads = {"positions": 0, "groups": 0}
+
+    async def positions(_account):
+        reads["positions"] += 1
+        return [SimpleNamespace(conid=123, contractDesc="AAA", position=5.),
+                SimpleNamespace(conid=456, contractDesc="AAA", position=7.)]
+
+    def groups():
+        reads["groups"] += 1
+        return [_group(filled=5., closed=True)]
+
+    views = asyncio.run(read_strategy_one_financial_views(
+        (first, second), SimpleNamespace(positions=positions),
+        SimpleNamespace(snapshots=groups)))
+    assert [view.position_quantity for view in views] == [5., 7.]
+    assert [view.completed_entries for view in views] == [1, 0]
+    assert reads == {"positions": 1, "groups": 1}
