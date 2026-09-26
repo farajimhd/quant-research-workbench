@@ -24,7 +24,7 @@ import sqlite3
 import time
 import urllib.parse
 from collections import deque
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, time as clock_time, timedelta
@@ -1172,6 +1172,8 @@ class ReplayRunController:
         self._journal_publisher = None
         self._journal_writer = None
         self._fixed_terminal_authority = None
+        self._fixed_keeper_session = None
+        self._fixed_v4_account_ids: tuple[str, ...] | None = None
         self._account_map: dict[str, str] = {}
         self._quotes: dict[str, QuoteEvent] = {}
         self._pending_passive_market_events: list[MarketEvent] = []
@@ -2875,7 +2877,8 @@ class ReplayRunController:
                     "backtest_v3" if v3 else "backtest_v4" if v4 else "backtest_v2")
                 or assembly.publisher.journal is not assembly.journal
                 or assembly.publisher.writer is not assembly.writer
-                or (v4 and assembly.terminal_authority is not None)
+                or (v4 and (assembly.terminal_authority is not None
+                            or token.account_ids != self._fixed_v4_account_ids))
                 or (not v4 and (assembly.terminal_authority is None
                     or assembly.terminal_authority.run_id != self.run_id
                     or tuple(assembly.terminal_authority.account_ids) != token.account_ids))):
@@ -3059,20 +3062,96 @@ class ReplayRunController:
             raise
 
     async def _open_fixed_journal(self) -> None:
-        """Fail closed at the typed journal boundary until recovery is complete."""
-        from src.backend.backtest_terminal_v2_preflight import terminal_v2_operator_preflight
-        from src.trading_runtime.arte_journal_writer import journal_client_from_env
-        if self.definition.mode != RunMode.BACKTEST or self._journal is not None:
-            raise RuntimeError("ClickHouse Backtest journal requires a new Backtest run")
-        client = await asyncio.to_thread(journal_client_from_env)
-        try:
-            await asyncio.to_thread(terminal_v2_operator_preflight, client)
-        finally:
-            await asyncio.to_thread(client.close)
-        raise RuntimeError(
-            "Fixed Backtest typed journal publication and cold recovery are incomplete; "
-            "the retired arte.bt_* publisher is not an allowed fallback"
+        """Assemble a new V4 authority after all Strategy 1 source seals pass.
+
+        Admission remains separately gated until end-to-end equivalence is
+        proven. This method is an exact, testable launch handoff, not a fallback.
+        """
+        from src.backend.backtest_fixed_journal_bootstrap import (
+            publish_and_assemble_fixed_v4_journal,
         )
+        from src.backend.backtest_fixed_v4_certification import (
+            certify_strategy_one_v4_projection,
+        )
+        from src.backend.backtest_journal_clickhouse import backtest_code_hash
+        from src.backend.backtest_v4_run_context import (
+            fixed_v4_context_rows, historical_runtime_config,
+            historical_simulated_account_ids,
+        )
+        from src.trading_runtime.arte_journal_writer import (
+            ArteJournalWriter, backtest_v4_context_client_from_env,
+            backtest_v4_journal_client_from_env, journal_client_from_env,
+        )
+        from src.trading_runtime.keeper_session import open_workstation_keeper_session
+
+        configuration = self.definition.configuration_revision["payload"]
+        if (self.definition.mode != RunMode.BACKTEST or self._journal is not None
+                or self._resume_state is not None
+                or dict(configuration.get("strategy") or {}).get("strategy_number") != 1):
+            raise RuntimeError("ClickHouse Backtest journal requires a new Backtest run")
+        plans = await self._fixed_strategy_one_plans()
+        account_ids = historical_simulated_account_ids(
+            mode=self.definition.mode, configuration=configuration)
+        runtime_config = historical_runtime_config(
+            mode=self.definition.mode, configuration=configuration,
+            account_ids=account_ids, anchor_date=self.definition.session_date,
+            run_id=self.run_id)
+        code_hash = await asyncio.to_thread(
+            backtest_code_hash, Path(__file__).resolve().parents[2])
+        run, config = fixed_v4_context_rows(
+            runtime_config, execution_interval=self.definition.execution_interval,
+            configuration_hash=str(
+                self.definition.configuration_revision.get("content_hash") or ""),
+            code_hash=code_hash, market_plan_token=plans.market.token,
+            started_at=self.created_at)
+
+        def bootstrap():
+            keeper = open_workstation_keeper_session()
+            assembly = None
+            writer = None
+            try:
+                with ExitStack() as control_clients:
+                    context = control_clients.enter_context(closing(
+                        backtest_v4_context_client_from_env(
+                            keeper_session=keeper)))
+                    reader = control_clients.enter_context(closing(
+                        journal_client_from_env()))
+                    writer = backtest_v4_journal_client_from_env(
+                        keeper_session=keeper)
+                    terminal = control_clients.enter_context(closing(
+                        journal_client_from_env()))
+                    assembly = publish_and_assemble_fixed_v4_journal(
+                        context, reader, writer, terminal,
+                        run=run, config=config, account_ids=account_ids,
+                        attempt_id=str(uuid4()), expected_config=config,
+                        fixed_market_parent_plan=plans.market,
+                        fixed_market_execution_plan=plans.execution_market,
+                        expected_market_start=self.definition.session_start,
+                        projection_certifier=certify_strategy_one_v4_projection,
+                        writer_factory=ArteJournalWriter)
+                return assembly, keeper
+            except BaseException:
+                try:
+                    if assembly is not None:
+                        assembly.writer.close()
+                        assembly.journal.close()
+                    elif writer is not None:
+                        writer.close()
+                finally:
+                    keeper.close()
+                raise
+
+        assembly, keeper = await asyncio.to_thread(bootstrap)
+        self._fixed_v4_account_ids = account_ids
+        try:
+            self._attach_fixed_journal_assembly(assembly)
+            self._fixed_keeper_session = keeper
+        except BaseException:
+            await asyncio.to_thread(assembly.writer.close)
+            assembly.journal.close()
+            await asyncio.to_thread(keeper.close)
+            self._fixed_v4_account_ids = None
+            raise
 
     def _read_fixed_running_prefix_anchor(self, client, plan):
         """Inactive cold cursor audit; never restores opaque runtime state."""
@@ -3097,12 +3176,18 @@ class ReplayRunController:
         self._journal_writer = None
         self._journal_publisher = None
         self._fixed_terminal_authority = None
+        keeper = self._fixed_keeper_session
+        self._fixed_keeper_session = None
         try:
             if writer is not None:
                 await asyncio.to_thread(writer.close)
         finally:
-            if self._journal is not None:
-                self._journal.close()
+            try:
+                if self._journal is not None:
+                    self._journal.close()
+            finally:
+                if keeper is not None:
+                    await asyncio.to_thread(keeper.close)
 
     async def _fixed_certified_market_plan(self):
         from src.backend.backtest_market_data import (
@@ -4050,9 +4135,17 @@ class ReplayRunController:
             if bool(row.get("enabled", True))
             and self.definition.mode.value in list(row.get("modes") or [])
         ]
+        if self.definition.mode == RunMode.BACKTEST:
+            from src.backend.backtest_v4_run_context import historical_simulated_account_ids
+            resolved_accounts = historical_simulated_account_ids(
+                mode=self.definition.mode, configuration=configuration)
+        else:
+            resolved_accounts = tuple(
+                f"SIM-{index + 1:02d}-{_slug(str(binding['account_key']))}"
+                for index, binding in enumerate(bindings))
         simulated_by_key = {
-            str(binding["account_key"]): f"SIM-{index + 1:02d}-{_slug(str(binding['account_key']))}"
-            for index, binding in enumerate(bindings)
+            str(binding["account_key"]): account_id
+            for binding, account_id in zip(bindings, resolved_accounts)
         }
         self._account_map = {
             str(binding.get("source_account_id") or binding["account_key"]): simulated_by_key[
@@ -4061,6 +4154,10 @@ class ReplayRunController:
             for binding in bindings
         }
         self._account_map.update(simulated_by_key)
+        if (self.definition.mode == RunMode.BACKTEST
+                and self._fixed_v4_account_ids is not None
+                and self.account_ids != self._fixed_v4_account_ids):
+            raise RuntimeError("V4 runtime accounts differ from published run context")
         if self._resume_state is not None and strategy_enabled:
             checkpoint_assignments = self._resume_state.get("assignments")
             if not isinstance(checkpoint_assignments, list):

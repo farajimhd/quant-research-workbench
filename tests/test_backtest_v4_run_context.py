@@ -5,6 +5,7 @@ import pytest
 
 from src.backend.backtest_v4_run_context import (
     fixed_v4_context_rows, historical_runtime_config,
+    historical_simulated_account_ids,
 )
 from src.trading_runtime.runtime import RunMode
 
@@ -63,3 +64,21 @@ def test_v4_context_rejects_wrong_strategy_or_unpinned_hash():
             configuration_hash="invalid",
             code_hash="b" * 64, market_plan_token="c" * 64,
             started_at=datetime.now(timezone.utc))
+
+
+def test_v4_resolves_published_accounts_before_runtime_initialization():
+    configuration = {"accounts": {"bindings": [
+        {"account_key": "Main Alpha", "modes": ["backtest"]},
+        {"account_key": "Disabled", "modes": ["backtest"], "enabled": False},
+        {"account_key": "Second/Beta", "modes": ["backtest"]},
+        {"account_key": "Replay", "modes": ["replay"]},
+    ]}}
+    assert historical_simulated_account_ids(
+        mode=RunMode.BACKTEST, configuration=configuration) == (
+            "SIM-01-MAIN-ALPHA", "SIM-02-SECOND-BETA")
+    with pytest.raises(ValueError, match="repeated"):
+        historical_simulated_account_ids(
+            mode=RunMode.BACKTEST, configuration={"accounts": {"bindings": [
+                {"account_key": "A", "modes": ["backtest"]},
+                {"account_key": "A", "modes": ["backtest"]},
+            ]}})

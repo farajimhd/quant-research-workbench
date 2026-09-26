@@ -284,6 +284,7 @@ def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(mo
         configuration_revision={"content_hash": "c" * 64},
         market_data_plan={"token": "b" * 64})
     controller._journal = None
+    controller._fixed_v4_account_ids = ("DU1",)
     controller._attach_fixed_journal_assembly(assembly)
     assert controller._journal_publisher is assembly.publisher
     assembly.journal.close()

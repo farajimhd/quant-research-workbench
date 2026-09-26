@@ -6,6 +6,7 @@ here. The exact returned scalars are validated before irreversible launch.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from hashlib import sha256
 import re
 from typing import Any, Mapping
 
@@ -16,6 +17,27 @@ from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMB
 
 
 _MAX_UINT32 = 2**32 - 1
+
+
+def historical_simulated_account_ids(
+    *, mode: RunMode, configuration: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Resolve the same ordered simulated accounts before runtime construction."""
+    if not isinstance(mode, RunMode) or not isinstance(configuration, Mapping):
+        raise ValueError("Historical account population lacks a pinned configuration")
+    bindings = [dict(row) for row in configuration["accounts"]["bindings"]
+                if bool(row.get("enabled", True))
+                and mode.value in list(row.get("modes") or [])]
+    keys = tuple(str(row["account_key"]) for row in bindings)
+    if not keys or len(set(keys)) != len(keys):
+        raise ValueError("Historical simulated account keys are empty or repeated")
+    return tuple(f"SIM-{index + 1:02d}-{_slug_account(key)}"
+                 for index, key in enumerate(keys))
+
+
+def _slug_account(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9]+", "-", value).strip("-").upper()
+    return normalized[:24] or sha256(value.encode("utf-8")).hexdigest()[:12].upper()
 
 
 def historical_runtime_config(*, mode: RunMode,
