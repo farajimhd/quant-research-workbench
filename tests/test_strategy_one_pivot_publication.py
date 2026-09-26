@@ -90,7 +90,7 @@ def test_uncertain_child_insert_never_publishes_coverage(monkeypatch):
     monkeypatch.setattr(producer, "derive_pivot_intervals",
                         lambda *_args, **_kwargs: (INTERVAL,))
     monkeypatch.setattr(producer, "_insert_intervals", lambda *_args: None)
-    with pytest.raises(RuntimeError, match="read-back"):
+    with pytest.raises(producer.PivotReadbackMismatch, match="read-back"):
         producer.publish_unit(writer, object(), market(),
                               session_date=DAY, ticker="ABCD")
     assert writer.fact is None

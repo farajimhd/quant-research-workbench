@@ -33,6 +33,10 @@ class PivotPublicationScope:
     bars_attempt_id: str
 
 
+class PivotReadbackMismatch(RuntimeError):
+    """Safe scalar-only evidence about an unpublished child attempt."""
+
+
 def _scope(market: CertifiedMarketDayPlan, session_date: str,
            ticker: str) -> PivotPublicationScope:
     if (not isinstance(market, CertifiedMarketDayPlan)
@@ -137,7 +141,15 @@ def publish_unit(writer: Any, reader: Any, market: CertifiedMarketDayPlan,
         _insert_intervals(writer, scope, attempt, intervals)
     observed = _child(writer, scope, attempt)
     if observed != intervals or interval_content_hash(observed) != digest:
-        raise RuntimeError("Pivot child INSERT failed read-back verification")
+        first = next((index for index, (expected, actual) in
+                      enumerate(zip(intervals, observed)) if expected != actual),
+                     min(len(intervals), len(observed)))
+        expected = intervals[first] if first < len(intervals) else None
+        actual = observed[first] if first < len(observed) else None
+        raise PivotReadbackMismatch(
+            f"child read-back expected_count={len(intervals)} "
+            f"observed_count={len(observed)} first_index={first} "
+            f"expected={expected!r} observed={actual!r}")
     writer.execute(f"""INSERT INTO {COVERAGE_TABLE}
       (source_build_id,session_date,ticker,derivation_attempt_id,bars_attempt_id,
        product_digest,interval_count,content_hash,certified_at)

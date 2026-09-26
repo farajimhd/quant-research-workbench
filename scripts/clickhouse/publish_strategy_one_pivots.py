@@ -23,7 +23,9 @@ sys.path.insert(0, str(REPO_ROOT))
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
 
-from pipelines.strategy_one.pivot_publication import publish_unit
+from pipelines.strategy_one.pivot_publication import (
+    PivotReadbackMismatch, publish_unit,
+)
 from research.mlops.clickhouse import ClickHouseHttpClient
 from scripts.clickhouse.provision_strategy_one_candidate_producer import (
     PRINCIPAL, WORKSTATION_IPV4, _GRANTS, _credential, _grant_set,
@@ -139,8 +141,9 @@ def publish_session(*, session_date: str, build_id: str,
                       for frame in reversed(frames)
                       if Path(frame.filename).is_relative_to(REPO_ROOT)),
                      "external_dependency")
+        detail = f" detail={exc}" if isinstance(exc, PivotReadbackMismatch) else ""
         raise PivotCampaignFailure(f"Pivot publication stopped at {ticker}: "
-                                   f"{type(exc).__name__} at {stage}; "
+                                   f"{type(exc).__name__} at {stage}{detail}; "
                                    "rerun verifies prior coverage")
     with closing(readonly_clickhouse_client(
             market_stream=True, v3_read_principal=True)) as reader:
