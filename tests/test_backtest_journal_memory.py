@@ -71,6 +71,18 @@ def test_buffer_fails_closed_without_json_evidence():
         journal.unfenced_records(after_sequence=0)
 
 
+def test_unfenced_projection_slice_does_not_copy_the_pending_tail():
+    journal = BacktestMemoryJournal(run_id=RUN_ID)
+    journal.append_many([_entry(str(index)) for index in range(5)])
+    assert [row.sequence for row in journal.unfenced_records(
+        after_sequence=1, through_sequence=3)] == [2, 3]
+    with pytest.raises(ValueError, match="publication limit"):
+        journal.unfenced_records(through_sequence=6)
+    journal.mark_fenced(2)
+    assert [row.sequence for row in journal.unfenced_records(
+        through_sequence=4)] == [3, 4]
+
+
 def test_typed_backtest_cannot_create_json_evidence_references():
     journal = BacktestMemoryJournal(run_id=RUN_ID)
     source = {"levels": [{"price": 12.0}]}

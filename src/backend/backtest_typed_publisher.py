@@ -100,8 +100,10 @@ class BacktestTypedJournalPublisher:
         self._task = asyncio.create_task(self._drain())
         return self._task
 
-    def _prepare_batches(self, through_sequence: int | None = None) -> tuple[TypedJournalBatch | V3SqueezeBatch, ...]:
-        """CPU-heavy bounded prefix projection runs outside the event loop."""
+    def _prepare_batches(self, through_sequence: int) -> tuple[TypedJournalBatch | V3SqueezeBatch, ...]:
+        """Project at most one commit-sized prefix outside the event loop."""
+        if not self._sequence < through_sequence <= self._sequence + self.batch_size:
+            raise ValueError("Typed Backtest projection exceeds one commit budget")
         if self.writer.journal_profile == "backtest_v3":
             from src.backend.backtest_squeeze_episode_v3 import coalesce_squeeze_units_v3
             units = project_pending_backtest_v3_prefix(
@@ -133,10 +135,17 @@ class BacktestTypedJournalPublisher:
 
     async def _drain(self) -> TypedBacktestReceipt:
         try:
-            through_sequence = (self._checkpoint_waiters[0][0]
-                                if self._checkpoint_waiters else None)
-            batches = await asyncio.to_thread(self._prepare_batches, through_sequence)
-            for unit in batches:
+            target_sequence = (self._checkpoint_waiters[0][0]
+                               if self._checkpoint_waiters else
+                               self.journal.latest_sequence(self.journal.run_id))
+            while self._sequence < target_sequence:
+                through_sequence = min(target_sequence,
+                                       self._sequence + self.batch_size)
+                batches = await asyncio.to_thread(self._prepare_batches,
+                                                  through_sequence)
+                if len(batches) != 1:
+                    raise RuntimeError("Typed Backtest projector changed the bounded prefix")
+                unit = batches[0]
                 batch = unit.base if isinstance(unit, V3SqueezeBatch) else unit
                 receipt = (self.writer.submit_squeeze_v3(unit)
                            if isinstance(unit, V3SqueezeBatch)

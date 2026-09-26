@@ -107,13 +107,18 @@ class BacktestMemoryJournal:
                     self._protection_records.append(record)
             return result
 
-    def unfenced_records(self, *, after_sequence: int | None = None) -> list[JournalRecord]:
+    def unfenced_records(self, *, after_sequence: int | None = None,
+                         through_sequence: int | None = None) -> list[JournalRecord]:
         """Return an immutable-to-the-caller prefix for asynchronous publication."""
         with self._lock:
             start = self._fenced_sequence if after_sequence is None else int(after_sequence)
             if start < self._fenced_sequence or start > self._next_sequence:
                 raise ValueError("Journal publication cursor is outside the unfenced prefix")
-            return list(self._records[start - self._base_sequence:])
+            end = self._next_sequence if through_sequence is None else through_sequence
+            if type(end) is not int or end < start or end > self._next_sequence:
+                raise ValueError("Journal publication limit is outside the unfenced prefix")
+            return list(self._records[start - self._base_sequence:
+                                      end - self._base_sequence])
 
     @property
     def pending_record_count(self) -> int:

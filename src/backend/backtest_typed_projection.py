@@ -48,14 +48,14 @@ def project_pending_backtest_prefix(
             or (prior_sequence == 0 and previous != NIL_BATCH_ID)
             or (prior_sequence > 0 and previous == NIL_BATCH_ID)):
         raise ValueError("Backtest typed prefix identity is invalid")
-    records = journal.unfenced_records(after_sequence=prior_sequence)
     if through_sequence is not None:
         if (type(through_sequence) is not int or through_sequence <= prior_sequence
                 or through_sequence > journal.latest_sequence(journal.run_id)):
             raise ValueError("Backtest typed projection limit is outside pending records")
-        records = [record for record in records if record.sequence <= through_sequence]
-        if len(records) != through_sequence - prior_sequence:
-            raise ValueError("Backtest typed projection limit is not contiguous")
+    records = journal.unfenced_records(after_sequence=prior_sequence,
+                                       through_sequence=through_sequence)
+    if through_sequence is not None and len(records) != through_sequence - prior_sequence:
+        raise ValueError("Backtest typed projection limit is not contiguous")
     batches: list[TypedJournalBatch] = []
     cursor = source_cursor
     for sequence, record in enumerate(records, start=prior_sequence + 1):
@@ -105,12 +105,12 @@ def project_pending_backtest_v3_prefix(
     previous = str(UUID(prior_batch_id))
     if (prior_sequence == 0) != (previous == NIL_BATCH_ID):
         raise ValueError("V3 projection prior batch identity differs")
-    records = journal.unfenced_records(after_sequence=prior_sequence)
     if through_sequence is not None:
         if (through_sequence <= prior_sequence
                 or through_sequence > journal.latest_sequence(journal.run_id)):
             raise ValueError("V3 projection limit is outside pending records")
-        records = [row for row in records if row.sequence <= through_sequence]
+    records = journal.unfenced_records(after_sequence=prior_sequence,
+                                       through_sequence=through_sequence)
     result: list[V3SqueezeBatch] = []
     cursor = source_cursor
     for sequence, record in enumerate(records, start=prior_sequence + 1):

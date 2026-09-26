@@ -126,6 +126,35 @@ def test_delayed_writer_does_not_stall_engine_and_one_receipt_fences_batch():
     asyncio.run(exercise())
 
 
+def test_large_pending_prefix_projects_only_one_commit_sized_slice_at_a_time():
+    async def exercise():
+        journal = BacktestMemoryJournal(run_id=RUN)
+        for ordinal in range(5):
+            journal.append(
+                run_id=RUN, category="risk", entity_type="risk_snapshot",
+                entity_id=RUN, event_time=AT,
+                payload={"status": "stale", "error": f"fault-{ordinal}",
+                         "entries_frozen": True})
+        writer = FakeWriter(automatic=False)
+        publisher = _publisher(journal, writer, batch_size=2)
+        task = publisher.enqueue_pending()
+        for index, expected_count in enumerate((2, 2, 1)):
+            for _ in range(100):
+                if len(writer.submitted) > index:
+                    break
+                await asyncio.sleep(.001)
+            assert len(writer.submitted) == index + 1
+            assert len(writer.submitted[index].events) == expected_count
+            assert journal.pending_record_count == 5 - 2 * index
+            writer.receipts[index].set_result(writer.submitted[index].batch_id)
+        receipt = await task
+        assert receipt.last_sequence == 5
+        assert journal.pending_record_count == 0
+        assert [batch.first_sequence for batch in writer.submitted] == [1, 3, 5]
+
+    asyncio.run(exercise())
+
+
 def test_checkpoint_enqueue_does_not_wait_for_clickhouse_receipt():
     async def exercise():
         journal = _journal()

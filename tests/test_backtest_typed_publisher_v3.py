@@ -113,6 +113,35 @@ def test_v3_publisher_batches_two_occurrences_under_one_exact_commit():
     asyncio.run(run())
 
 
+def test_v3_publisher_advances_multiple_bounded_commit_slices():
+    async def run():
+        first = _record()
+        journal = BacktestMemoryJournal(run_id=first.run_id)
+        for identity in (first.entity_id, "d" * 64, "e" * 64):
+            payload = dict(first.payload)
+            payload["event_id"] = identity
+            payload["squeeze_episode_id"] = identity
+            journal.append(
+                run_id=first.run_id, category=first.category,
+                entity_type=first.entity_type, entity_id=identity,
+                account_id=first.account_id, event_time=first.event_time,
+                payload=payload)
+        writer = FakeV3Writer()
+        publisher = BacktestTypedJournalPublisher(
+            journal, writer, attempt_id=ATTEMPT,
+            run_month=date(2026, 8, 1), batch_size=2,
+            expected_market_plan_token=PLAN, expected_query_sha256=QUERY)
+        receipt = await publisher.enqueue_pending()
+        assert receipt.last_sequence == 3
+        assert [(unit.base.first_sequence, unit.base.last_sequence)
+                for unit in writer.units] == [(1, 2), (3, 3)]
+        assert writer.units[1].base.prior_batch_id == writer.units[0].base.batch_id
+        assert journal.pending_record_count == 0
+        journal.close()
+
+    asyncio.run(run())
+
+
 def test_v3_publisher_to_real_worker_seals_two_events_once(monkeypatch):
     async def run():
         first = _record()
