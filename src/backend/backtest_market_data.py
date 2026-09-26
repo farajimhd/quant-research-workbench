@@ -578,6 +578,7 @@ def _unit_map(plan: CertifiedMarketDayPlan, stage: str) -> dict[tuple[str, str],
 
 def market_day_source_sqls(
     plan: CertifiedMarketDayPlan, *, through_boundary_ms: int | None = None,
+    after_boundary_ms: int | None = None,
     strategy_one_projection: bool = False,
     price_plan: Any | None = None,
 ) -> tuple[str, ...]:
@@ -588,6 +589,13 @@ def market_day_source_sqls(
         or through_boundary_ms % 100
     ):
         raise ValueError("Market-day end boundary must be a positive 100ms market-session clock")
+    if after_boundary_ms is not None and (
+        type(after_boundary_ms) is not int or not 0 <= after_boundary_ms < 57_600_000
+        or after_boundary_ms % 100
+        or (through_boundary_ms is not None
+            and after_boundary_ms >= through_boundary_ms)
+    ):
+        raise ValueError("Market-day start boundary must precede the completed end")
     bars = _unit_map(plan, "bars")
     technical = _unit_map(plan, "technical")
     liquidity = _unit_map(plan, "broker_100ms")
@@ -613,18 +621,30 @@ def market_day_source_sqls(
             for (day, ticker), unit in sorted(units.items())
         )
         boundary_filter = ""
-        if through_boundary_ms is not None:
-            upper_ms = through_boundary_ms + SESSION_OPEN_OFFSET_MS
+        if through_boundary_ms is not None or after_boundary_ms is not None:
             if stage == 'liquidity_100ms_v1':
-                boundary_filter = f" AND bucket_index<{upper_ms // 100}"
+                if after_boundary_ms is not None:
+                    boundary_filter += (" AND bucket_index>="
+                        f"{(after_boundary_ms + SESSION_OPEN_OFFSET_MS) // 100}")
+                if through_boundary_ms is not None:
+                    boundary_filter += (" AND bucket_index<"
+                        f"{(through_boundary_ms + SESSION_OPEN_OFFSET_MS) // 100}")
             else:
-                # Exact completed-bucket bounds per persisted resolution let
-                # ClickHouse prune by bucket_index before the pinned joins.
+                # A row at bucket_index k completes at (k+1)*resolution.
+                # The exclusive lower bound and inclusive upper bound must be
+                # translated separately for every persisted resolution.
                 resolutions = sorted({100, *plan.required_resolutions_ms})
-                bounds = " OR ".join(
-                    f"(resolution_ms={resolution} AND bucket_index<{upper_ms // resolution})"
-                    for resolution in resolutions)
-                boundary_filter = f" AND ({bounds})"
+                bounds = []
+                for resolution in resolutions:
+                    clauses = [f"resolution_ms={resolution}"]
+                    if after_boundary_ms is not None:
+                        clauses.append("bucket_index>="
+                            f"{(after_boundary_ms + SESSION_OPEN_OFFSET_MS) // resolution}")
+                    if through_boundary_ms is not None:
+                        clauses.append("bucket_index<"
+                            f"{(through_boundary_ms + SESSION_OPEN_OFFSET_MS) // resolution}")
+                    bounds.append("(" + " AND ".join(clauses) + ")")
+                boundary_filter = " AND (" + " OR ".join(bounds) + ")"
         return (
             f"SELECT * FROM arte.{stage} WHERE build_id={_literal(plan.build_id)} "
             f"AND (session_date,ticker,attempt_id) IN ({attempts}){boundary_filter}"
@@ -655,6 +675,8 @@ def market_day_source_sqls(
             f"toUUID({_literal(unit.source_attempt_id)}),"
             f"toUUID({_literal(unit.derivation_attempt_id)}))"
             for unit in price_units)
+        price_lower = (f" AND bucket_index>={(after_boundary_ms + SESSION_OPEN_OFFSET_MS) // 100}"
+                       if after_boundary_ms is not None else "")
         price_upper = (f" AND bucket_index<{(through_boundary_ms + SESSION_OPEN_OFFSET_MS) // 100}"
                        if through_boundary_ms is not None else "")
         price_join = f"""LEFT JOIN (
@@ -664,7 +686,7 @@ def market_day_source_sqls(
           FROM arte.liquidity_execution_price_100ms_v1
           WHERE source_build_id={_literal(plan.build_id)}
           AND (session_date,ticker,source_attempt_id,derivation_attempt_id)
-            IN ({price_attempts}){price_upper}
+            IN ({price_attempts}){price_lower}{price_upper}
           GROUP BY session_date,ticker,bucket_index
         ) p ON p.session_date=l.session_date AND p.ticker=l.ticker
           AND p.bucket_index=l.bucket_index"""
@@ -717,6 +739,7 @@ def market_day_source_sqls(
 
 def iter_market_day_rows(
     plan: CertifiedMarketDayPlan, client=None, *, through_boundary_ms: int | None = None,
+    after_boundary_ms: int | None = None,
     price_plan: Any | None = None,
 ) -> Iterator[dict[str, Any]]:
     active = client or readonly_clickhouse_client(market_stream=True, v3_read_principal=True)
@@ -726,6 +749,7 @@ def iter_market_day_rows(
         from heapq import merge
         sources = [active.iter_json_each_row(sql) for sql in
                    market_day_source_sqls(plan, through_boundary_ms=through_boundary_ms,
+                                          after_boundary_ms=after_boundary_ms,
                                           price_plan=price_plan)]
         def normalized(source):
             for row in source:

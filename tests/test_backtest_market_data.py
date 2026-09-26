@@ -301,6 +301,50 @@ class BacktestMarketDataTests(unittest.TestCase):
                                      (bucket_index + 1) * resolution <=
                                      boundary_ms + 14_400_000)
 
+    def test_window_excludes_completed_start_and_includes_completed_end(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self._ledger(Path(directory)).certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+        for start, end in ((0, 100), (100, 1_000), (1_000, 1_100),
+                           (29_900, 30_000), (30_000, 30_100)):
+            sources = market_day_source_sqls(
+                plan, after_boundary_ms=start, through_boundary_ms=end)
+            for resolution in (100, 1_000):
+                lower = (start + 14_400_000) // resolution
+                upper = (end + 14_400_000) // resolution
+                self.assertIn(f"bucket_index>={lower}", sources[0] if resolution == 100 else sources[1])
+                self.assertIn(f"bucket_index<{upper}", sources[0] if resolution == 100 else sources[1])
+                for bucket in range(lower - 1, upper + 1):
+                    self.assertEqual(lower <= bucket < upper,
+                        start + 14_400_000 < (bucket + 1) * resolution
+                        <= end + 14_400_000)
+        with self.assertRaisesRegex(ValueError, "start boundary"):
+            market_day_source_sqls(plan, after_boundary_ms=1_000,
+                                   through_boundary_ms=1_000)
+        with self.assertRaisesRegex(ValueError, "start boundary"):
+            market_day_source_sqls(plan, after_boundary_ms=101)
+
+    def test_window_prunes_certified_fill_price_children_too(self) -> None:
+        from src.backend.backtest_liquidity_price import PriceLevelPlan, PriceLevelUnit
+
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self._ledger(Path(directory)).certified_plan(
+                sessions=[date(2026, 8, 18)], tickers=["SUGP"],
+                configuration={"strategy": {"execution_interval": "100ms"}},
+            )
+        unit = next(unit for unit in plan.units if unit.stage == "broker_100ms")
+        prices = PriceLevelPlan(plan.build_id, (PriceLevelUnit(
+            unit.session_date, unit.ticker, unit.attempt_id,
+            "00000000-0000-0000-0000-000000000001", 0, 0, 0., "0"),), "token")
+        source = market_day_source_sqls(
+            plan, after_boundary_ms=100, through_boundary_ms=1_000,
+            price_plan=prices)[0]
+        self.assertIn("AND bucket_index>=144001", source)
+        self.assertIn("AND bucket_index<144010", source)
+        self.assertIn("FROM arte.liquidity_execution_price_100ms_v1", source)
+
     def test_boundary_groups_keep_sparse_quote_buckets_and_completed_seconds(self) -> None:
         rows = [
             {"session_date": "2026-08-18", "boundary_ms": 100, "ticker": "AAPL", "resolution_ms": 100},
