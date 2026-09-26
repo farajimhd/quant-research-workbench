@@ -774,7 +774,17 @@ class PortfolioManagementEngine:
         intent: StrategyIntent,
         *,
         account_id: str,
+        assignment_id: str | None = None,
     ) -> tuple[PortfolioDecision, StrategyIntent | None]:
+        if assignment_id is not None:
+            if (not isinstance(assignment_id, str) or not assignment_id
+                    or intent.metadata.get("assignment_id") not in (None, assignment_id)):
+                raise ValueError("Portfolio assignment identity conflicts with intent")
+            # The Strategy 1 proposal owns this normalized identity. Keep it
+            # operational only on the approved intent; the original journaled
+            # strategy intent remains metadata-free.
+            intent = replace(intent, metadata={**intent.metadata,
+                                               "assignment_id": assignment_id})
         async with self._admission_fence(account_id) as state:
             return self._approve_locked(intent, state)
 

@@ -45,12 +45,15 @@ def test_strategy_one_initial_admission_uses_no_sqlite_or_disk():
             "assignment-1", "DU1", "AAA", 31_000, 30_000,
             10.01, 9.89, 12., "R4", .5, 30_000, "S1")
         intent = strategy_one_entry_intent(proposal, session_date=date(2026, 8, 18))
-        decision, approved = await portfolio.approve(intent, account_id="DU1")
+        assert intent.metadata == {}
+        decision, approved = await portfolio.approve(
+            intent, account_id="DU1", assignment_id=proposal.assignment_id)
         return decision, approved, journal.records(journal.run_id)
 
     decision, approved, records = asyncio.run(exercise())
     assert approved is not None, decision.reasons
     assert approved.quantity > 0
+    assert approved.metadata["assignment_id"] == "assignment-1"
     assert records
     assert decision.decided_at == at
     assert all(record.event_time == at for record in records)
@@ -58,6 +61,9 @@ def test_strategy_one_initial_admission_uses_no_sqlite_or_disk():
     assert {record.entity_type for record in records} == {
         "portfolio_decision", "portfolio_reservation",
     }
+    reservation = next(record for record in records
+                       if record.entity_type == "portfolio_reservation")
+    assert reservation.payload["assignment_id"] == "assignment-1"
     for index, record in enumerate(records, start=1):
         projected = project_journal_record(
             record, run_month=date(2026, 8, 1), attempt_id=str(UUID(int=2)),
