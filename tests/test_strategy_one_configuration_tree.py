@@ -35,6 +35,16 @@ def test_dictionary_order_does_not_change_node_identity():
     assert encode_nodes(reordered) == encode_nodes(CONFIG)
 
 
+def test_integral_float64_json_readback_retains_type_and_seal():
+    nodes = encode_nodes({"value": 0.0})
+    readback = [dict(row) for row in nodes]
+    next(row for row in readback if row["value_kind"] == "float")[
+        "float_value"] = 0
+    assert node_hash(readback) == node_hash(nodes)
+    assert decode_nodes(readback) == {"value": 0.0}
+    assert type(decode_nodes(readback)["value"]) is float
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), 1 << 63,
                                   "x" * 1025, object()])
 def test_unsupported_or_blob_like_scalar_is_rejected(value):

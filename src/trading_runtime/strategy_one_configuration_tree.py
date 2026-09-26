@@ -167,7 +167,11 @@ def node_hash(nodes: Sequence[Mapping[str, Any]]) -> str:
     """Seal the typed rows in ordinal order; no persisted JSON representation."""
     keys = tuple(name for name, _ in NODE_COLUMNS if name not in {
         "strategy_number", "release_attempt_id"})
-    content = [[row[key] for key in keys] for row in nodes]
+    # ClickHouse JSONEachRow can render an integral Float64 as 0 instead of
+    # 0.0. Hash the declared scalar type, not that transport spelling.
+    content = [[float(row[key]) if key == "float_value"
+                and row.get("value_kind") == "float" else row[key]
+                for key in keys] for row in nodes]
     return sha256(json.dumps(content, separators=(",", ":"),
                              ensure_ascii=True, allow_nan=False).encode("ascii")).hexdigest()
 
@@ -198,6 +202,7 @@ def decode_nodes(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         value = {} if kind == "object" else [] if kind == "array" else (
             None if kind == "null" else
             bool(row["bool_value"]) if kind == "bool" else
+            float(row["float_value"]) if kind == "float" else
             row[scalar_fields[kind]])
         parent = row.get("parent_node_id")
         key, ordinal = row.get("child_key"), row.get("child_ordinal")

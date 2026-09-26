@@ -147,8 +147,12 @@ def publish_configuration(client: Any, keeper: Any,
                 f"node_count:{len(readback)}:expected:{len(nodes)}")
         actual_hash = node_hash(readback)
         if actual_hash != envelope["node_hash"]:
+            same_values = all(
+                all(actual[key] == expected[key] for key in expected)
+                for actual, expected in zip(readback, nodes))
             raise RuntimeError(
-                f"node_hash:{actual_hash}:expected:{envelope['node_hash']}")
+                f"node_hash:{actual_hash}:expected:{envelope['node_hash']}"
+                f":equal_values:{int(same_values)}")
         if decode_nodes(readback) != payload:
             raise RuntimeError("node_payload_mismatch")
         if not keeper.connected:
