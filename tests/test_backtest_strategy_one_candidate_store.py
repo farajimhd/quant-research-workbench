@@ -7,6 +7,9 @@ import pytest
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
 )
+from src.backend.backtest_strategy_one_activation import (
+    CertifiedActivationPlan, StrategyOneActivation, project_activation_plan,
+)
 from src.backend.backtest_strategy_one_candidate_contract import candidate_content_hash
 from src.backend.backtest_strategy_one_candidate_store import (
     certify_candidate_plan, project_candidate_plan,
@@ -119,6 +122,19 @@ def test_full_candidate_certificate_projects_an_exact_read_only_horizon():
     assert project_candidate_plan(full, through_boundary_ms=THROUGH) is full
     with pytest.raises(ValueError, match="full certified plan"):
         project_candidate_plan(prefix, through_boundary_ms=29_900)
+
+    activations = CertifiedActivationPlan(
+        (StrategyOneActivation(29_900, "ABCD", 101_000),), "a" * 64)
+    assert project_activation_plan(
+        activations, full, through_boundary_ms=29_900).rows == ()
+    assert project_activation_plan(
+        activations, full, through_boundary_ms=30_000).rows == activations.rows
+    assert project_activation_plan(
+        activations, full, through_boundary_ms=THROUGH) is activations
+    with pytest.raises(ValueError, match="differ from full candidates"):
+        project_activation_plan(
+            CertifiedActivationPlan((), "a" * 64), full,
+            through_boundary_ms=30_000)
 
 
 def test_missing_tampered_or_misplaced_candidates_fail_closed():

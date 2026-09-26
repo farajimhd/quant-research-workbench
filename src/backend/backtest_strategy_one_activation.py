@@ -14,7 +14,9 @@ from typing import Any
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, SESSION_OPEN_OFFSET_MS, _literal,
 )
-from src.backend.backtest_strategy_one_candidate_store import CertifiedCandidatePlan
+from src.backend.backtest_strategy_one_candidate_store import (
+    CertifiedCandidatePlan, project_candidate_plan,
+)
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -28,6 +30,40 @@ class StrategyOneActivation:
 class CertifiedActivationPlan:
     rows: tuple[StrategyOneActivation, ...]
     token: str
+
+
+def project_activation_plan(
+    full: CertifiedActivationPlan,
+    full_candidates: CertifiedCandidatePlan, *, through_boundary_ms: int,
+) -> CertifiedActivationPlan:
+    """Project the full bar-certified activation schedule to a causal run.
+
+    No bar or indicator is read here. A missing activation remains a hard
+    mismatch rather than being synthesized from a later candidate price.
+    """
+    if not isinstance(full, CertifiedActivationPlan) or len(full.token) != 64:
+        raise ValueError("Strategy 1 activation projection needs a sealed plan")
+    projected = project_candidate_plan(
+        full_candidates, through_boundary_ms=through_boundary_ms)
+    full_starts = {(item.ticker, int(value))
+                   for item in full_candidates.prepared
+                   for value in item.episode_start_ms}
+    actual = {(row.ticker, row.boundary_ms) for row in full.rows}
+    if (len(actual) != len(full.rows) or actual != full_starts
+            or any(row.price_int <= 0 for row in full.rows)):
+        raise ValueError("Strategy 1 activation rows differ from full candidates")
+    if projected is full_candidates:
+        return full
+    visible = {(item.ticker, int(value))
+               for item in projected.prepared
+               for value in item.episode_start_ms}
+    rows = tuple(row for row in full.rows
+                 if (row.ticker, row.boundary_ms) in visible)
+    if len(rows) != len(visible):
+        raise ValueError("Strategy 1 activation prefix is incomplete")
+    token = sha256((full.token + ":candidate-prefix:" +
+                    projected.token).encode()).hexdigest()
+    return CertifiedActivationPlan(rows, token)
 
 
 def load_strategy_one_activations(
