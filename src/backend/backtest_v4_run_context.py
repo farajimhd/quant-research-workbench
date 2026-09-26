@@ -10,6 +10,7 @@ import re
 from typing import Any, Mapping
 
 from src.backend.backtest_fixed_run_context import _validate_local_context
+from src.backend.backtest_market_data import ExecutionInterval
 from src.trading_runtime.runtime import RunConfig, RunMode
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
@@ -49,7 +50,8 @@ def historical_runtime_config(*, mode: RunMode,
     )
 
 
-def fixed_v4_context_rows(config: RunConfig, *, configuration_hash: str,
+def fixed_v4_context_rows(config: RunConfig, *, execution_interval: Any,
+                          configuration_hash: str,
                           code_hash: str, market_plan_token: str,
                           started_at: datetime) -> tuple[dict[str, Any], dict[str, Any]]:
     """Prepare typed Strategy 1 run/config rows before creating a Keeper gate."""
@@ -62,12 +64,15 @@ def fixed_v4_context_rows(config: RunConfig, *, configuration_hash: str,
                    for value in (configuration_hash, code_hash,
                                  market_plan_token))):
         raise ValueError("V4 run context needs pinned Strategy 1 and source hashes")
+    interval = ExecutionInterval.parse(execution_interval)
+    if interval.kind != "fixed" or interval.milliseconds is None:
+        raise ValueError("V4 run context requires a fixed evaluation interval")
     started = started_at.astimezone(timezone.utc)
     run = {
         "run_id": config.run_id,
         "run_month": started.date().replace(day=1).isoformat(),
         "mode": config.mode.value,
-        "evaluation_interval_ms": 100,
+        "evaluation_interval_ms": interval.milliseconds,
         "session_date": config.anchor_date.isoformat(),
         "configuration_hash": configuration_hash,
         "code_hash": code_hash,

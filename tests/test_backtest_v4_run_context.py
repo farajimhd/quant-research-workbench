@@ -26,7 +26,7 @@ def _config(*, mode=RunMode.BACKTEST):
 def test_v4_context_uses_same_runtime_scalars_and_uint32_checkpoint_field():
     config = _config()
     run, runtime = fixed_v4_context_rows(
-        config, configuration_hash="a" * 64,
+        config, execution_interval="100ms", configuration_hash="a" * 64,
         code_hash="b" * 64, market_plan_token="c" * 64,
         started_at=datetime(2026, 8, 18, 8, tzinfo=timezone.utc))
     assert run["run_month"] == "2026-08-01"
@@ -39,14 +39,27 @@ def test_v4_context_uses_same_runtime_scalars_and_uint32_checkpoint_field():
     assert runtime["write_progress_checkpoints"] is False
 
 
+def test_v4_context_pins_selected_fixed_interval_and_rejects_events():
+    config = _config()
+    fields = dict(configuration_hash="a" * 64, code_hash="b" * 64,
+                  market_plan_token="c" * 64,
+                  started_at=datetime(2026, 8, 18, 8, tzinfo=timezone.utc))
+    run, _ = fixed_v4_context_rows(config, execution_interval="200ms", **fields)
+    assert run["evaluation_interval_ms"] == 200
+    with pytest.raises(ValueError, match="fixed evaluation interval"):
+        fixed_v4_context_rows(config, execution_interval="events", **fields)
+
+
 def test_v4_context_rejects_wrong_strategy_or_unpinned_hash():
     with pytest.raises(ValueError, match="Strategy 1"):
         fixed_v4_context_rows(
-            _config(mode=RunMode.REPLAY), configuration_hash="a" * 64,
+            _config(mode=RunMode.REPLAY), execution_interval="100ms",
+            configuration_hash="a" * 64,
             code_hash="b" * 64, market_plan_token="c" * 64,
             started_at=datetime.now(timezone.utc))
     with pytest.raises(ValueError, match="source hashes"):
         fixed_v4_context_rows(
-            _config(), configuration_hash="invalid",
+            _config(), execution_interval="100ms",
+            configuration_hash="invalid",
             code_hash="b" * 64, market_plan_token="c" * 64,
             started_at=datetime.now(timezone.utc))
