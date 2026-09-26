@@ -2,6 +2,7 @@ from scripts.clickhouse import provision_backtest_v4_runner as provision
 from src.trading_runtime.arte_journal_schema import (
     MARKET_READ_TABLES, V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
 )
+from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 
 
 def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
@@ -10,12 +11,13 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
     assert plan.insert_arte == frozenset(
         provision._v4_family_table(table)
         for table, _, _, _ in provision._FAMILIES) | frozenset(
-            table.name for table in V4_COMMIT_TABLES)
+            table.name for table in V4_COMMIT_TABLES) | {ENTRY_EVIDENCE.name}
     assert "trading_strategy_signal_v1" not in plan.insert_arte
     assert "trading_strategy_signal_v2" in plan.insert_arte
     assert not plan.insert_arte & MARKET_READ_TABLES
     assert plan.select_arte == frozenset(
-        table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES)) | MARKET_READ_TABLES
+        table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES,
+                                 ENTRY_EVIDENCE)) | MARKET_READ_TABLES
     assert all(" ON arte." in grant or " ON system." in grant
                for grant in plan.grants())
 
@@ -59,6 +61,7 @@ def test_v4_apply_reconciles_exact_grants_before_runtime_preflight(monkeypatch):
         admin=Admin(), credential=lambda *, account_exists: "x" * 48,
         client_factory=lambda user, password: Writer())
     assert "preflight:72" in calls and "preflight:2" in calls
+    assert "preflight:1" in calls
     assert sum(sql.startswith("CREATE USER ") for sql in calls) == 1
     assert sum(sql.startswith("GRANT ") for sql in calls) == len(
         provision._desired_grants(provision.desired_plan()))

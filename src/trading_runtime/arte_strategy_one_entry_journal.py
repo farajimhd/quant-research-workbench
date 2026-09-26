@@ -11,27 +11,11 @@ from decimal import Decimal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .arte_intent_projection import _number
-from .arte_journal_schema import TableContract
+from .arte_journal_writer import typed_row
+from .arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from .signals import StrategyIntent
 from .strategy_one_intent import strategy_one_entry_intent
 from .strategy_one_stateful import StrategyOneEntryProposal
-
-
-ENTRY_EVIDENCE = TableContract(
-    "trading_strategy_one_entry_evidence_v1",
-    (
-        ("record_id", "UUID"), ("parent_record_id", "UUID"),
-        ("run_id", "String"), ("event_month", "Date"),
-        ("batch_id", "UUID"), ("strategy_number", "UInt32"),
-        ("assignment_id", "String"), ("episode_start_ms", "UInt32"),
-        ("boundary_ms", "UInt32"), ("target_level_id", "String"),
-        ("frozen_gap", "Decimal(38, 18)"),
-        ("bos_break_boundary_ms", "UInt32"),
-        ("bos_support_level_id", "String"),
-        ("content_hash", "FixedString(64)"),
-    ),
-    "toYYYYMM(event_month)", "run_id, parent_record_id, record_id",
-)
 
 
 def project_strategy_one_entry_evidence(
@@ -76,3 +60,8 @@ def project_strategy_one_entry_evidence(
         "bos_break_boundary_ms": proposal.bos_break_boundary_ms,
         "bos_support_level_id": proposal.bos_support_level_id,
     }
+
+
+def seal_strategy_one_entry_evidence(row: dict[str, str | int]) -> dict[str, str | int]:
+    """Hash the normalized persisted values on the journal writer lane."""
+    return typed_row(ENTRY_EVIDENCE.name, row)

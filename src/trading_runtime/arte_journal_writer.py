@@ -29,6 +29,7 @@ from src.trading_runtime.arte_journal_schema import (
     journal_permission_preflight, storage_preflight,
     versioned_journal_v2_contracts, versioned_journal_v2_preflight,
 )
+from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.backend.backtest_squeeze_episode_schema import (
     RESERVATION_REASON, SQUEEZE_COMMIT_V3, SQUEEZE_EPISODE,
 )
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
 
 
 _CONTRACTS = {table.name: table for table in TABLES}
+_CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
 _CONTRACTS.update({table.name: table for table in V4_COMMIT_TABLES})
 _CONTRACTS.update({table.name: table for table in VERSIONED_JOURNAL_V2_TABLES})
 _CONTRACTS.update({table.name: table for table in (
@@ -374,6 +376,22 @@ class V3SqueezeBatch:
                        "protected_exit_snapshots", "portfolio_allocation_fills"):
             object.__setattr__(self, family, tuple(
                 MappingProxyType(dict(row)) for row in getattr(self, family)))
+
+
+@dataclass(frozen=True, slots=True)
+class V4StrategyOneEntryBatch:
+    """One typed intent batch and its nonredundant numbered evidence."""
+
+    base: TypedJournalBatch
+    entry_evidence: tuple[Mapping[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.base, TypedJournalBatch)
+                or self.base.status != "running"
+                or not self.entry_evidence):
+            raise ValueError("V4 Strategy 1 entry needs a running typed batch and evidence")
+        object.__setattr__(self, "entry_evidence", tuple(
+            MappingProxyType(dict(row)) for row in self.entry_evidence))
 
 
 def _sealed_families(
@@ -1557,9 +1575,10 @@ def _v4_preflight(client: Any) -> None:
     installed = fixed_backtest_v2_contracts()
     storage_preflight(client, tables=installed)
     storage_preflight(client, tables=V4_COMMIT_TABLES)
+    storage_preflight(client, tables=(ENTRY_EVIDENCE,))
     writable = frozenset(
         _v4_family_table(table) for table, _, _, _ in _FAMILIES
-    ) | frozenset(table.name for table in V4_COMMIT_TABLES)
+    ) | frozenset(table.name for table in V4_COMMIT_TABLES) | {ENTRY_EVIDENCE.name}
     readonly = frozenset(table.name for table in installed) - writable
     journal_permission_preflight(
         client, journal_tables=writable, read_only_tables=readonly)
@@ -3052,7 +3071,8 @@ class ArteJournalWriter:
         self._coalesce_batches = coalesce_batches
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
-                  | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit | _TerminalBacktestUnit,
+                  | V4StrategyOneEntryBatch | _DurabilityBarrier | _AdmissionUnit
+                  | _PortfolioSyncUnit | _TerminalBacktestUnit,
                   Future[str]] | None
         ] = Queue(maxsize=capacity)
         self._submission_lock = Lock()
@@ -3139,6 +3159,24 @@ class ArteJournalWriter:
             receipt: Future[str] = Future()
             try:
                 self._queue.put_nowait((batch, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_strategy_one_entry_v4(self, unit: V4StrategyOneEntryBatch) -> Future[str]:
+        """Queue the intent and its typed child without blocking execution."""
+        if self._journal_profile != "backtest_v4" or not isinstance(
+                unit, V4StrategyOneEntryBatch):
+            raise ValueError("Strategy 1 entry requires the V4 writer profile")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            if unit.base.run_id != self._run_id:
+                raise ValueError("V4 writer cannot mix runs")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
             except Full as exc:
                 raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
             self._accepted_writes = True
@@ -3372,11 +3410,19 @@ class ArteJournalWriter:
                 if (self._journal_profile in {"backtest_v2", "backtest_v3", "backtest_v4"}
                         and not isinstance(group[0][0],
                                            (TypedJournalBatch, V3SqueezeBatch,
+                                            V4StrategyOneEntryBatch,
                                             _DurabilityBarrier))
                         and not (self._journal_profile == "backtest_v4"
                                  and isinstance(group[0][0], _TerminalBacktestUnit))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
-                if isinstance(group[0][0], V3SqueezeBatch):
+                if isinstance(group[0][0], V4StrategyOneEntryBatch):
+                    from src.trading_runtime.arte_journal_commit_v4 import (
+                        publish_strategy_one_entry_batch_v4,
+                    )
+                    unit = group[0][0]
+                    committed_id = publish_strategy_one_entry_batch_v4(
+                        self._client, unit.base, entry_evidence=unit.entry_evidence)
+                elif isinstance(group[0][0], V3SqueezeBatch):
                     unit = group[0][0]
                     committed_id = _publish_typed_batch(
                         self._client, unit.base, journal_profile="backtest_v3",

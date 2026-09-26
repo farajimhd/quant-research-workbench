@@ -8,12 +8,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from hashlib import sha256
 import re
 from typing import Mapping, Sequence
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +269,7 @@ def _load_verified_details_v4(
     filters = (f"WHERE run_id={_literal(run_id)} "
                f"AND batch_id=toUUID({_literal(batch_id)}) ")
     details = {}
+    related_rows = {}
     for family in family_rows:
         name = str(family["family_name"])
         contract = _CONTRACTS.get(name)
@@ -293,6 +297,28 @@ def _load_verified_details_v4(
                 raise RuntimeError("V4 typed detail differs from its row hash")
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
+        if name in {"trading_event_v1", "trading_strategy_intent_v1",
+                    ENTRY_EVIDENCE.name}:
+            related_rows[name] = rows
+    parents = {str(UUID(str(row["record_id"]))): row for row in
+               related_rows.get("trading_strategy_intent_v1", ())
+               if row["reason"] == "strategy_one_entry"}
+    children = related_rows.get(ENTRY_EVIDENCE.name, ())
+    if len(parents) != len(children):
+        raise RuntimeError("V4 Strategy 1 entry evidence is missing or extra")
+    events = {str(UUID(str(row["record_id"]))): row for row in
+              related_rows.get("trading_event_v1", ())}
+    seen = set()
+    for child in children:
+        parent_id = str(UUID(str(child["parent_record_id"])))
+        if parent_id in seen or parent_id not in parents or parent_id not in events:
+            raise RuntimeError("V4 Strategy 1 entry evidence has no unique parent")
+        seen.add(parent_id)
+        try:
+            _validate_strategy_one_entry_link(child, parents[parent_id],
+                                              events[parent_id], run_id, batch_id)
+        except ValueError as exc:
+            raise RuntimeError("V4 Strategy 1 entry evidence differs from its parent") from exc
     return details
 
 
@@ -376,6 +402,12 @@ def publish_base_typed_batch_v4(client, batch) -> str:
     return _publish_typed_batch_v4(client, batch)
 
 
+def publish_strategy_one_entry_batch_v4(client, batch, *, entry_evidence) -> str:
+    """Commit a numbered entry and its scalar child on the writer lane."""
+    return _publish_typed_batch_v4(
+        client, batch, strategy_one_entry_rows=entry_evidence)
+
+
 def publish_terminal_typed_batch_v4(client, batch, *, captures) -> V4CommittedPrefix:
     """Commit one lifecycle-last suffix, then anchor every account recovery.
 
@@ -433,7 +465,67 @@ def publish_terminal_typed_batch_v4(client, batch, *, captures) -> V4CommittedPr
     return prefix
 
 
-def _publish_typed_batch_v4(client, batch) -> str:
+def _sealed_strategy_one_entry_rows(batch, base_families, source_rows):
+    """Require one scalar child for every numbered entry intent in this batch."""
+    from src.trading_runtime.arte_journal_writer import typed_row
+
+    parents = {str(UUID(str(row["record_id"]))): row for name, rows in base_families
+               if name == "trading_strategy_intent_v1" for row in rows
+               if row["reason"] == "strategy_one_entry"}
+    events = {str(UUID(str(row["record_id"]))): row for name, rows in base_families
+              if name == "trading_event_v1" for row in rows}
+    if len(source_rows) != len(parents):
+        raise ValueError("V4 Strategy 1 entry intent lacks exact normalized evidence")
+    seen = set()
+    sealed = []
+    for source in source_rows:
+        row = typed_row(ENTRY_EVIDENCE.name, source)
+        parent_id = str(UUID(str(row["parent_record_id"])))
+        parent = parents.get(parent_id)
+        event = events.get(parent_id)
+        if parent_id in seen or parent is None or event is None:
+            raise ValueError("V4 Strategy 1 entry evidence has no unique parent intent")
+        seen.add(parent_id)
+        _validate_strategy_one_entry_link(row, parent, event,
+                                          batch.run_id, batch.batch_id)
+        sealed.append(row)
+    return tuple(sealed)
+
+
+def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
+    from datetime import time
+
+    source = str(event["event_time"]).replace("Z", "+00:00")
+    clock = datetime.fromisoformat(source)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    local = clock.astimezone(ZoneInfo("America/New_York"))
+    start = datetime.combine(local.date(), time(4), tzinfo=local.tzinfo)
+    elapsed = local - start
+    boundary_ms = (elapsed.days * 86_400_000 + elapsed.seconds * 1_000
+                   + elapsed.microseconds // 1_000)
+    if (row["run_id"] != run_id
+            or str(UUID(str(row["batch_id"]))) != batch_id
+            or row["event_month"] != parent["event_month"]
+            or event["account_id"] != parent["account_id"]
+            or (event["category"], event["entity_type"])
+               != ("strategy", "strategy_intent")
+            or parent["intent_id"] != event["entity_id"]
+            or parent["action"] != "enter_long"
+            or parent["protection_profile_id"]
+               != "early-squeeze-fixed-stop-full-target"
+            or row["strategy_number"] != 1
+            or row["boundary_ms"] != boundary_ms
+            or elapsed.microseconds % 1_000
+            or Decimal(str(row["frozen_gap"])) <= 0
+            or not 0 < row["episode_start_ms"] <= boundary_ms
+            or not 0 < row["bos_break_boundary_ms"] <= boundary_ms
+            or not row["assignment_id"] or not row["target_level_id"]
+            or not row["bos_support_level_id"]):
+        raise ValueError("V4 Strategy 1 entry evidence differs from its typed parent")
+
+
+def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=()) -> str:
     from src.trading_runtime.arte_journal_writer import (
         TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
         _sealed_families, _v4_family_table, _verify_commission_links,
@@ -451,8 +543,12 @@ def _publish_typed_batch_v4(client, batch) -> str:
         raise RuntimeError("V4 publication requires a strict Keeper-fenced insert dispatch")
     dispatch = client.typed_insert_dispatch
     base_families = _sealed_families(batch)
+    entry_rows = _sealed_strategy_one_entry_rows(
+        batch, base_families, strategy_one_entry_rows)
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families)
+    if entry_rows:
+        families += ((ENTRY_EVIDENCE.name, entry_rows),)
     commit, family_rows = prepare_commit_v4(
         run_id=batch.run_id, run_month=batch.run_month,
         attempt_id=batch.attempt_id, batch_id=batch.batch_id,

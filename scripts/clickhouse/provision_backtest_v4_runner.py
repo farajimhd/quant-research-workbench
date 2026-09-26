@@ -38,6 +38,7 @@ from src.trading_runtime.arte_journal_schema import (
 from src.trading_runtime.arte_journal_writer import (
     _FAMILIES, _v4_family_table, _v4_preflight,
 )
+from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 
 
 PRINCIPAL = "backtest_v4_runner"
@@ -49,10 +50,11 @@ PASSWORD_KEY = "BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD"
 
 def desired_plan() -> PrincipalPlan:
     writable = frozenset(_v4_family_table(table) for table, _, _, _ in _FAMILIES) | frozenset(
-        table.name for table in V4_COMMIT_TABLES)
+        table.name for table in V4_COMMIT_TABLES) | {ENTRY_EVIDENCE.name}
     return PrincipalPlan(
         "running", PRINCIPAL,
-        frozenset(table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES))
+        frozenset(table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES,
+                                          ENTRY_EVIDENCE))
         | MARKET_READ_TABLES,
         writable, frozenset(SYSTEM_READ_TABLES),
     )
@@ -95,6 +97,7 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
         raise RuntimeError("V4 principal inventory is inconsistent")
     storage_preflight(admin, tables=fixed_backtest_v2_contracts())
     storage_preflight(admin, tables=V4_COMMIT_TABLES)
+    storage_preflight(admin, tables=(ENTRY_EVIDENCE,))
     password = credential(account_exists=present == "1")
     if not isinstance(password, str) or len(password) < 40:
         raise RuntimeError("V4 requires a private credential of at least 40 characters")

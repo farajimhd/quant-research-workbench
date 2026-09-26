@@ -252,7 +252,11 @@ def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(mo
         read, writer_client, terminal, run_id=RUN, account_ids=("DU1",),
         configuration_hash="c" * 64, market_plan_token="b" * 64,
         projection_certifier=lambda: "a" * 64)
-    assert len(checked) == 5
+    from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+
+    assert len(checked) == 7
+    assert checked[2] == (read, (ENTRY_EVIDENCE,))
+    assert checked[5] == (terminal, (ENTRY_EVIDENCE,))
     class Writer:
         run_id = RUN
         run_mode = "backtest"
