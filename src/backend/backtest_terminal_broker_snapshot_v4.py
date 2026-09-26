@@ -1,8 +1,8 @@
 """Pure V4 terminal broker snapshot block normalization.
 
 Broker account/position evidence is distinct from the portfolio recovery
-capture. It must survive as tabular Float64 rows with complete grouping and
-source identities; the V4 writer does not publish this product yet.
+capture. It survives as tabular Float64 rows with complete grouping and
+source identities under the V4 terminal commit.
 """
 from __future__ import annotations
 

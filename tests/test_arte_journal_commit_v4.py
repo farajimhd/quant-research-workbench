@@ -398,7 +398,7 @@ def test_v4_terminal_broker_snapshots_share_commit_and_cold_readback(monkeypatch
         project_v4_terminal_broker_batch,
     )
     from src.backend.backtest_terminal_snapshot_v2 import (
-        ACCOUNT_METRICS, position_set_sha256,
+        ACCOUNT_METRICS, position_set_sha256, project_position_scalars,
     )
     from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
 
@@ -407,16 +407,29 @@ def test_v4_terminal_broker_snapshots_share_commit_and_cold_readback(monkeypatch
     journal = BacktestMemoryJournal(run_id=run_id)
     account = {name: {"amount": 1000.0, "currency": "USD", "timestamp": 123}
                for name, _ in ACCOUNT_METRICS}
+    position = {
+        "acctId": "DU1", "conid": 42, "contractDesc": "AAA",
+        "currency": "USD", "assetClass": "STK", "position": 3.0,
+        "mktPrice": 1.0000000000000002, "mktValue": 3.0,
+        "avgCost": 0.8, "avgPrice": 0.8,
+        "realizedPnl": -0.0, "unrealizedPnl": 0.6,
+    }
+    snapshot_id = str(uuid4())
     journal.append(
         run_id=run_id, category="snapshot", entity_type="portfolio",
         entity_id="DU1", account_id="DU1", event_time=at,
-        payload={**account, "snapshot_id": str(uuid4()),
-                 "expected_position_count": 0,
-                 "position_set_sha256": position_set_sha256(())})
+        payload={**account, "snapshot_id": snapshot_id,
+                 "expected_position_count": 1,
+                 "position_set_sha256": position_set_sha256((
+                     project_position_scalars(position, account_id="DU1"),))})
+    journal.append(
+        run_id=run_id, category="snapshot", entity_type="position",
+        entity_id="42", account_id="DU1", event_time=at,
+        payload={**position, "parent_snapshot_id": snapshot_id, "ordinal": 0})
     journal.append(
         run_id=run_id, category="lifecycle", entity_type="run",
         entity_id=run_id, event_time=at,
-        payload={"status": "completed", "processed_events": 2})
+        payload={"status": "completed", "processed_events": 3})
     unit = project_v4_terminal_broker_batch(
         tuple(journal.unfenced_records()), run_id=run_id,
         account_ids=("DU1",), attempt_id=str(uuid4()),
@@ -428,23 +441,27 @@ def test_v4_terminal_broker_snapshots_share_commit_and_cold_readback(monkeypatch
                             "mode": "backtest", "account_ids": ("DU1",)})
     monkeypatch.setattr(anchors, "publish_terminal_backtest_snapshots",
                         lambda *_args: None)
-    capture = replace(captured(), run_id=run_id, state_revision=2,
+    capture = replace(captured(), run_id=run_id, state_revision=3,
                       snapshot_at=at)
     prefix = publish_terminal_typed_batch_v4(
         client, unit.base, captures=(capture,),
         broker_snapshots=unit.broker_snapshots)
-    assert prefix.last_sequence == 2
+    assert prefix.last_sequence == 3
     assert {row["family_name"] for row in client.tables["trading_commit_family_v4"]} == {
         "trading_event_v1", "trading_run_transition_v1",
-        "trading_backtest_account_snapshot_v2"}
+        "trading_backtest_account_snapshot_v2",
+        "trading_backtest_position_snapshot_v2"}
     assert len(client.tables["trading_backtest_account_snapshot_v2"]) == 1
+    assert client.tables["trading_backtest_position_snapshot_v2"][0][
+        "market_price"] == 1.0000000000000002
     assert load_verified_commit_v4(
         client, run_id=run_id, batch_id=unit.base.batch_id)[0]["status"] == "completed"
     assert publish_terminal_typed_batch_v4(
         client, unit.base, captures=(capture,),
         broker_snapshots=unit.broker_snapshots) == prefix
     assert len(client.tables["trading_backtest_account_snapshot_v2"]) == 1
-    client.tables["trading_backtest_account_snapshot_v2"][0]["net_liquidation"] = 999.0
+    assert len(client.tables["trading_backtest_position_snapshot_v2"]) == 1
+    client.tables["trading_backtest_position_snapshot_v2"][0]["market_price"] = 1.0
     with pytest.raises(RuntimeError, match="row hash"):
         load_verified_commit_v4(client, run_id=run_id, batch_id=unit.base.batch_id)
     journal.close()
