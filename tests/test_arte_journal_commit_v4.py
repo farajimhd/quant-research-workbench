@@ -188,6 +188,45 @@ def test_v4_late_commission_requires_v4_committed_execution_before_insert():
     assert client.inserts == []
 
 
+def test_v4_continuation_requires_exact_sealed_predecessor():
+    first = batch()
+    next_batch_id = "00000000-0000-0000-0000-000000000024"
+    next_record_id = "00000000-0000-0000-0000-000000000025"
+    event = typed_row("trading_event_v1", {
+        **{key: value for key, value in first.events[0].items()
+           if key != "content_hash"},
+        "record_id": next_record_id, "batch_id": next_batch_id,
+        "sequence": 2,
+    })
+    continued = replace(
+        first, batch_id=next_batch_id, prior_batch_id=first.batch_id,
+        first_sequence=2, last_sequence=2, events=(event,))
+    client = MemoryClient()
+    with pytest.raises(RuntimeError, match="committed predecessor"):
+        publish_base_typed_batch_v4(client, continued)
+    assert client.inserts == []
+
+    assert publish_base_typed_batch_v4(client, first) == first.batch_id
+    client.tables["trading_commit_v4"][0]["source_cursor"] = "tampered"
+    with pytest.raises(RuntimeError, match="seal the contiguous run prefix"):
+        publish_base_typed_batch_v4(client, continued)
+    assert len(client.tables["trading_event_v1"]) == 1
+    client.tables["trading_commit_v4"][0]["source_cursor"] = first.source_cursor
+    assert publish_base_typed_batch_v4(client, continued) == next_batch_id
+    assert len(client.tables["trading_commit_v4"]) == 2
+
+    fork_batch_id = "00000000-0000-0000-0000-000000000026"
+    fork_event = typed_row("trading_event_v1", {
+        **{key: value for key, value in event.items() if key != "content_hash"},
+        "record_id": "00000000-0000-0000-0000-000000000027",
+        "batch_id": fork_batch_id,
+    })
+    fork = replace(continued, batch_id=fork_batch_id, events=(fork_event,))
+    with pytest.raises(RuntimeError, match="already has a committed batch"):
+        publish_base_typed_batch_v4(client, fork)
+    assert len(client.tables["trading_commit_v4"]) == 2
+
+
 def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(monkeypatch):
     client = MemoryClient()
     observed = []

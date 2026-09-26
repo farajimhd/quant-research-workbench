@@ -225,6 +225,51 @@ def _load_verified_details_v4(
     return details
 
 
+def _verify_prior_commit_v4(client, batch) -> None:
+    """Reject stale/forked prefixes before writes; Keeper still owns exclusion.
+
+    These SELECTs are not an atomic claim. Production must additionally fence
+    the writer through Keeper before V4 publication can be enabled.
+    """
+    from src.trading_runtime.arte_journal_writer import _CONTRACTS, _literal, _rows
+
+    nil = str(UUID(int=0))
+    siblings = _rows(client,
+        "SELECT batch_id FROM arte.trading_commit_v4 "
+        f"WHERE run_id={_literal(batch.run_id)} "
+        f"AND first_sequence={batch.first_sequence} "
+        "LIMIT 2 FORMAT JSONEachRow")
+    if siblings:
+        raise RuntimeError("V4 run prefix already has a committed batch at this sequence")
+    if batch.first_sequence == 1:
+        if batch.prior_batch_id != nil:
+            raise RuntimeError("V4 first batch must start at the nil predecessor")
+        return
+    if batch.prior_batch_id == nil:
+        raise RuntimeError("V4 continuation lacks a prior committed batch")
+    columns = ",".join(name for name, _ in
+                       _CONTRACTS["trading_commit_v4"].columns)
+    previous = _rows(client,
+        f"SELECT {columns} FROM arte.trading_commit_v4 "
+        f"WHERE run_id={_literal(batch.run_id)} "
+        f"AND batch_id=toUUID({_literal(batch.prior_batch_id)}) "
+        "LIMIT 2 FORMAT JSONEachRow")
+    if len(previous) != 1:
+        raise RuntimeError("V4 continuation lacks one committed predecessor")
+    row = previous[0]
+    content = {key: value for key, value in row.items()
+               if key not in {"committed_at", "content_hash"}}
+    if (row["run_id"] != batch.run_id
+            or str(UUID(str(row["batch_id"]))) != batch.prior_batch_id
+            or row["run_month"] != batch.run_month.isoformat()
+            or row["status"] != "running"
+            or row["last_sequence"] != batch.first_sequence - 1
+            or row["event_count"] != row["last_sequence"] - row["first_sequence"] + 1
+            or sha256(canonical_json(content).encode()).hexdigest()
+               != row["content_hash"]):
+        raise RuntimeError("V4 predecessor does not seal the contiguous run prefix")
+
+
 def publish_base_typed_batch_v4(client, batch) -> str:
     """Publish a base typed batch with detail-first, commit-last V4 fencing.
 
@@ -264,6 +309,8 @@ def publish_base_typed_batch_v4(client, batch) -> str:
         if existing["content_hash"] != commit["content_hash"]:
             raise RuntimeError("V4 batch conflicts with a committed cursor")
         return batch.batch_id
+
+    _verify_prior_commit_v4(client, batch)
 
     # Relationships to earlier records must be checked against a committed
     # V4 prefix before any detail row is inserted. An uncommitted orphan detail

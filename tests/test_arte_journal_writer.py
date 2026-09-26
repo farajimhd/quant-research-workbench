@@ -549,6 +549,10 @@ class MemoryClient:
             if "AND batch_id=toUUID('" in sql:
                 value = sql.split("AND batch_id=toUUID('", 1)[1].split("'", 1)[0]
                 matching = [row for row in matching if row["batch_id"] == value]
+            first_sequence = re.search(r"AND first_sequence=(\d+)", sql)
+            if first_sequence is not None:
+                matching = [row for row in matching
+                            if int(row["first_sequence"]) == int(first_sequence.group(1))]
             descending = "ORDER BY last_sequence DESC" in sql
             if "ORDER BY last_sequence" in sql:
                 matching.sort(key=lambda row: row["last_sequence"], reverse=descending)
