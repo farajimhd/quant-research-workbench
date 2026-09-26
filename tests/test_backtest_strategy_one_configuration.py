@@ -6,7 +6,7 @@ import json
 import pytest
 
 from src.backend.backtest_strategy_one_configuration import (
-    certify_strategy_one_configuration,
+    certify_strategy_one_configuration, selected_strategy_one_revision,
 )
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.strategy_one_configuration_tree import (
@@ -65,3 +65,34 @@ def test_changed_node_or_legacy_strategy_is_rejected():
     legacy = {"strategy": {**PAYLOAD["strategy"], "strategy_id": "legacy"}}
     with pytest.raises(RuntimeError):
         certify_strategy_one_configuration(Reader(payload=legacy))
+
+
+def test_selector_accepts_only_exact_release_and_run_plan():
+    payload = {**PAYLOAD, "run_plan": {"run_plan_id": "strategy-one-plan"}}
+    reader = Reader(payload=payload)
+    revision = selected_strategy_one_revision(client=reader,
+        run_plan_id="strategy-one-plan")
+    assert revision["revision_id"].startswith("strategy-one-1:")
+    assert all(query.startswith("SELECT ") for query in reader.queries)
+    with pytest.raises(ValueError):
+        selected_strategy_one_revision(client=Reader(payload=payload),
+                                       revision_id="candidate-350")
+    with pytest.raises(ValueError):
+        selected_strategy_one_revision(client=Reader(payload=payload),
+                                       run_plan_id="legacy-plan")
+
+
+def test_app_backtest_selector_does_not_read_sqlite_candidate(monkeypatch):
+    from src.backend import trading_configuration_service as service
+    from src.backend import backtest_strategy_one_configuration as numbered
+
+    monkeypatch.setattr(service, "candidate_runtime_configuration_snapshot",
+                        lambda *_args, **_kwargs: pytest.fail("legacy candidate read"))
+    monkeypatch.setattr(service, "approved_runtime_configuration_snapshot",
+                        lambda *_args, **_kwargs: pytest.fail("legacy release read"))
+    monkeypatch.setattr(numbered, "selected_strategy_one_revision",
+                        lambda **kwargs: kwargs)
+    assert service.backtest_configuration_snapshot(
+        "strategy-one-plan", candidate_id="strategy-one-1:attempt") == {
+            "run_plan_id": "strategy-one-plan",
+            "revision_id": "strategy-one-1:attempt"}

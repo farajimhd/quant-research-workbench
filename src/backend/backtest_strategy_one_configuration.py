@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import closing
 from hashlib import sha256
 import json
 import re
@@ -80,3 +81,27 @@ def certify_strategy_one_configuration(client: Any) -> CertifiedStrategyOneConfi
     return CertifiedStrategyOneConfiguration(
         attempt, digest, release["node_hash"], release["source_candidate_id"],
         release["source_candidate_hash"], token, payload)
+
+
+def selected_strategy_one_revision(*, revision_id: str = "",
+                                   run_plan_id: str = "",
+                                   client: Any | None = None) -> dict[str, Any]:
+    """Resolve only the numbered ARTE release for app Backtest selection.
+
+    A caller-supplied client is for read-only tests. Normal requests create
+    the V3 SELECT-only Backtest principal, never a producer credential.
+    """
+    if client is None:
+        from src.backend.backtest_market_data import readonly_clickhouse_client
+        with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
+            return selected_strategy_one_revision(
+                revision_id=revision_id, run_plan_id=run_plan_id, client=reader)
+    certified = certify_strategy_one_configuration(client)
+    revision = certified.revision()
+    if revision_id and revision_id != revision["revision_id"]:
+        raise ValueError("Only the immutable Strategy 1 configuration can Backtest")
+    selected_plan = str(dict(certified.payload.get("run_plan") or {}).get(
+        "run_plan_id") or "")
+    if not selected_plan or run_plan_id and run_plan_id != selected_plan:
+        raise ValueError("Backtest Run Plan differs from the Strategy 1 release")
+    return revision

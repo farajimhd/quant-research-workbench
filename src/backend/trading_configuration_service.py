@@ -755,11 +755,14 @@ def approved_session_configuration_snapshot(
 def backtest_configuration_snapshot(
     run_plan_id: str = "", *, candidate_id: str = ""
 ) -> dict[str, Any]:
-    if candidate_id or approved_configuration() is None:
-        return candidate_runtime_configuration_snapshot(
-            "backtest", candidate_id=candidate_id, run_plan_id=run_plan_id
-        )
-    return approved_runtime_configuration_snapshot("backtest", run_plan_id=run_plan_id)
+    # Numbered Strategy 1 has one immutable ARTE configuration authority.
+    # The old SQLite candidate is read only by the one-time publisher, never
+    # by a Backtest selection or execution path.
+    from src.backend.backtest_strategy_one_configuration import (
+        selected_strategy_one_revision,
+    )
+    return selected_strategy_one_revision(
+        revision_id=candidate_id, run_plan_id=run_plan_id)
 
 
 def backtest_debug_configuration_snapshot(

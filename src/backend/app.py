@@ -5326,7 +5326,8 @@ def _trading_historical_preflight_payload(
 ) -> dict[str, Any]:
     if payload.mode not in {"replay", "backtest"}:
         raise HTTPException(status_code=400, detail="mode must be replay or backtest")
-    if approved_configuration() is None and configuration_candidate() is None:
+    if (payload.mode != "backtest" and approved_configuration() is None
+            and configuration_candidate() is None):
         return _blocked_trading_launch_preflight(payload.mode)
     try:
         if payload.mode == "backtest":
@@ -5349,7 +5350,7 @@ def _trading_historical_preflight_payload(
             anchor_date=payload.anchor_date,
             session_count=1 if payload.mode == "replay" else payload.session_count,
         )
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
