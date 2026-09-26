@@ -1,7 +1,10 @@
 """Strategy 1 uses the shared Portfolio with a disk-free Backtest journal."""
 import asyncio
 from concurrent.futures import Future
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -32,6 +35,52 @@ from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
 from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
 from src.trading_runtime.risk import RiskAuthority
+from src.trading_runtime.runtime import RunMode, TradingRuntime
+
+
+def test_numbered_proposal_uses_shared_runtime_portfolio_and_oms_path():
+    session = date(2026, 8, 18)
+    proposal = StrategyOneEntryProposal(
+        "assignment-1", "DU1", "AAA", 31_000, 30_000,
+        10.01, 9.89, 12., "R4", .5, 30_000, "S1")
+    intent = strategy_one_entry_intent(proposal, session_date=session)
+    approved = replace(intent, quantity=5., metadata={"assignment_id": "assignment-1"})
+
+    @dataclass
+    class Submitted:
+        filled_quantity: float = 0.
+
+    decision = SimpleNamespace(payload=lambda: {"status": "approved"})
+    runtime = object.__new__(TradingRuntime)
+    runtime.config = SimpleNamespace(
+        mode=RunMode.BACKTEST, strategy_id="early-squeeze-strategy",
+        strategy_revision=1, account_ids=("DU1",), anchor_date=session)
+    runtime.run_id = str(UUID(int=120))
+    runtime.journal = BacktestMemoryJournal(run_id=runtime.run_id)
+    runtime.intent_planner = object()
+    runtime.order_manager = SimpleNamespace(submit_intent=AsyncMock(
+        return_value=Submitted()))
+    runtime.portfolio = SimpleNamespace(approve=AsyncMock(
+        return_value=(decision, approved)), _typed_recovery=False)
+    runtime.strategy = SimpleNamespace(assignments=lambda: ())
+    runtime.last_event_time = intent.event_time
+    runtime._refresh_portfolio_from_broker = AsyncMock()
+
+    result = asyncio.run(runtime.submit_strategy_one_proposal(proposal))
+    assert result == [{"decision": {"status": "approved"},
+                       "order_group": {"filled_quantity": 0.}}]
+    runtime.portfolio.approve.assert_awaited_once()
+    runtime.order_manager.submit_intent.assert_awaited_once_with(
+        approved, account_id="DU1", event=None)
+    source = runtime.journal.records(runtime.run_id)[0]
+    assert source.entity_type == "strategy_intent"
+    assert runtime.journal.strategy_one_entry_for_record(source.record_id) == (
+        proposal, session)
+    runtime.config.mode = RunMode.REPLAY
+    with pytest.raises(ValueError, match="numbered Backtest runtime"):
+        asyncio.run(runtime.submit_strategy_one_proposal(proposal))
+    assert len(runtime.journal.records(runtime.run_id)) == 1
+    runtime.journal.close()
 
 
 def test_strategy_one_initial_admission_uses_no_sqlite_or_disk():

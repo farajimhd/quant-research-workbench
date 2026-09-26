@@ -839,7 +839,22 @@ class TradingRuntime:
         evaluation: StrategyEvaluation,
         account_id: str,
         event: MarketEvent | None,
+        *, strategy_one_proposal: Any | None = None,
     ) -> list[dict[str, Any]]:
+        if strategy_one_proposal is not None:
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            from .strategy_one_intent import strategy_one_entry_intent
+            from .strategy_one_stateful import StrategyOneEntryProposal
+
+            if (self.config.mode != RunMode.BACKTEST
+                    or not isinstance(self.journal, BacktestMemoryJournal)
+                    or not isinstance(strategy_one_proposal, StrategyOneEntryProposal)
+                    or event is not None
+                    or account_id != strategy_one_proposal.account_id
+                    or evaluation.intents != (strategy_one_entry_intent(
+                        strategy_one_proposal,
+                        session_date=self.config.anchor_date),)):
+                raise ValueError("Strategy 1 source intent lacks exact disk-free proposal")
         if evaluation.intents and self.intent_planner is None:
             raise ValueError("Strategy emitted semantic intents but the runtime has no intent planner")
         if evaluation.intents and self.order_manager is None:
@@ -854,19 +869,27 @@ class TradingRuntime:
             self.portfolio.withdraw_invalidated_requests(account_id, active)
         for intent in evaluation.intents:
             intent = replace(intent, metadata=self.journal.reference_evidence(intent.metadata))
-            self.journal.append(
-                run_id=self.run_id,
-                category="strategy",
-                entity_type="strategy_intent",
-                entity_id=intent.intent_id,
-                account_id=account_id,
-                event_time=intent.event_time,
-                payload={
-                    **intent.payload(),
-                    "strategy_id": self.config.strategy_id,
-                    "strategy_revision": self.config.strategy_revision,
-                },
-            )
+            if strategy_one_proposal is not None:
+                self.journal.append_strategy_one_intent(
+                    intent=intent, proposal=strategy_one_proposal,
+                    session_date=self.config.anchor_date,
+                    account_id=account_id,
+                    strategy_id=self.config.strategy_id,
+                    strategy_revision=self.config.strategy_revision)
+            else:
+                self.journal.append(
+                    run_id=self.run_id,
+                    category="strategy",
+                    entity_type="strategy_intent",
+                    entity_id=intent.intent_id,
+                    account_id=account_id,
+                    event_time=intent.event_time,
+                    payload={
+                        **intent.payload(),
+                        "strategy_id": self.config.strategy_id,
+                        "strategy_revision": self.config.strategy_revision,
+                    },
+                )
             if intent.action == 'cancel_entry':
                 if self.order_manager is None:
                     raise RuntimeError('Entry cancellation requires order management')
@@ -1009,6 +1032,33 @@ class TradingRuntime:
                     continue
                 raise
         return results
+
+    async def submit_strategy_one_proposal(self, proposal: Any) -> list[dict[str, Any]]:
+        """Route numbered entry evidence through the shared Portfolio/OMS path.
+
+        The typed source intent is journaled with its normalized proposal
+        sidecar before Portfolio can reserve cash or OMS can submit an order.
+        This API neither accepts a broker order nor derives market inputs.
+        """
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+        from .strategy_one_intent import strategy_one_entry_intent
+        from .strategy_one_stateful import StrategyOneEntryProposal
+
+        if (self.config.mode != RunMode.BACKTEST
+                or self.config.strategy_id != STRATEGY_ID
+                or self.config.strategy_revision != STRATEGY_NUMBER
+                or not isinstance(self.journal, BacktestMemoryJournal)
+                or not isinstance(proposal, StrategyOneEntryProposal)
+                or proposal.account_id not in self.config.account_ids):
+            raise ValueError("Strategy 1 submission requires its numbered Backtest runtime")
+        intent = strategy_one_entry_intent(
+            proposal, session_date=self.config.anchor_date)
+        if self.last_event_time is not None and intent.event_time < self.last_event_time:
+            raise ValueError("Strategy 1 proposal precedes the completed broker boundary")
+        return await self._execute_intents(
+            StrategyEvaluation(intents=(intent,)), proposal.account_id, None,
+            strategy_one_proposal=proposal)
 
     async def _record_intent_rejection(
         self,
