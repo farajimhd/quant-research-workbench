@@ -36,6 +36,8 @@ _COMMON_TYPED = frozenset({
 # Do not add a family merely because a table with a similar name exists.
 _V4_ADDITIONS = frozenset({
     ("broker", "order_acknowledgement"),
+    ("command", "order_cancel"),
+    ("broker", "order_cancel_requested"),
     ("order_management", "order_group_state"),
     ("order_management", "protection_reconciliation"),
     ("snapshot", "portfolio"),

@@ -6,6 +6,7 @@ result is never inferred from a command, and no opaque response is persisted.
 from __future__ import annotations
 
 from datetime import timezone
+from datetime import date
 from typing import Any
 from uuid import UUID
 
@@ -125,3 +126,20 @@ def project_order_cancel_v4(
         "strategy_revision": payload["strategy_revision"],
     })
     return event, detail
+
+
+def order_cancel_batch_v4(
+    record: JournalRecord, *, run_month: date, attempt_id: str,
+    batch_id: str, prior_batch_id: str, source_cursor: str,
+):
+    from .arte_journal_writer import TypedJournalBatch, V4OrderCancelBatch
+
+    event, detail = project_order_cancel_v4(
+        record, attempt_id=attempt_id, batch_id=batch_id)
+    if event["event_month"] != run_month.isoformat():
+        raise ValueError("Cancellation event differs from the run month")
+    base = TypedJournalBatch(
+        record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        record.sequence, record.sequence, source_cursor, "running", (event,),
+    )
+    return V4OrderCancelBatch(base, detail)

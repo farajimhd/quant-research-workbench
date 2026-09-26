@@ -25,6 +25,7 @@ from src.trading_runtime.arte_journal_schema import (
 )
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
+from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     TABLES as PROTECTION_RECONCILIATION_TABLES,
 )
@@ -44,7 +45,7 @@ from src.trading_runtime.arte_journal_writer import journal_client_from_env
 
 def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
     if profile == "commit-v4":
-        return V4_COMMIT_TABLES + (ENTRY_EVIDENCE, ACKNOWLEDGEMENT,
+        return V4_COMMIT_TABLES + (ENTRY_EVIDENCE, ACKNOWLEDGEMENT, CANCEL,
                                    *PROTECTION_CHANGE_TABLES,
                                    *PROTECTION_RECONCILIATION_TABLES)
     if profile == "fixed-v2":

@@ -40,6 +40,7 @@ from src.trading_runtime.arte_journal_writer import (
 )
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
+from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     TABLES as PROTECTION_RECONCILIATION_TABLES,
 )
@@ -56,7 +57,7 @@ PASSWORD_KEY = "BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD"
 def desired_plan() -> PrincipalPlan:
     writable = frozenset(_v4_family_table(table) for table, _, _, _ in _FAMILIES) | frozenset(
         table.name for table in V4_COMMIT_TABLES) | {
-            ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
+            ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name, CANCEL.name,
             *(table.name for table in PROTECTION_CHANGE_TABLES),
             *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
             "trading_backtest_account_snapshot_v2",
@@ -64,7 +65,7 @@ def desired_plan() -> PrincipalPlan:
     return PrincipalPlan(
         "running", PRINCIPAL,
         frozenset(table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES,
-                                          ENTRY_EVIDENCE, ACKNOWLEDGEMENT,
+                                          ENTRY_EVIDENCE, ACKNOWLEDGEMENT, CANCEL,
                                           *PROTECTION_CHANGE_TABLES,
                                           *PROTECTION_RECONCILIATION_TABLES))
         | MARKET_READ_TABLES,

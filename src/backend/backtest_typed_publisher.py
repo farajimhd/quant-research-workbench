@@ -18,7 +18,7 @@ from src.backend.backtest_typed_projection import (
 )
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, TypedJournalBatch, V3SqueezeBatch,
-    V4StrategyOneEntryBatch, V4BrokerAcknowledgementBatch,
+    V4StrategyOneEntryBatch, V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
     V4ProtectionChangeBatch, _coalesce_unpublished,
 )
 from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
@@ -119,7 +119,7 @@ class BacktestTypedJournalPublisher:
 
     def _prepare_batches(self, through_sequence: int) -> tuple[
             TypedJournalBatch | V3SqueezeBatch | V4StrategyOneEntryBatch
-            | V4BrokerAcknowledgementBatch | V4ProtectionChangeBatch
+            | V4BrokerAcknowledgementBatch | V4OrderCancelBatch | V4ProtectionChangeBatch
             | V4ProtectionReconciliationBatch, ...]:
         """Project at most one commit-sized prefix outside the event loop."""
         if not self._sequence < through_sequence <= self._sequence + self.batch_size:
@@ -186,7 +186,7 @@ class BacktestTypedJournalPublisher:
                 for unit in batches:
                     batch = unit.base if isinstance(
                         unit, (V3SqueezeBatch, V4StrategyOneEntryBatch,
-                               V4BrokerAcknowledgementBatch,
+                               V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
                                V4ProtectionChangeBatch,
                                V4ProtectionReconciliationBatch)) else unit
                     if (batch.first_sequence != self._sequence + 1
@@ -196,6 +196,8 @@ class BacktestTypedJournalPublisher:
                                if isinstance(unit, V4StrategyOneEntryBatch)
                                else self.writer.submit_broker_acknowledgement_v4(unit)
                                if isinstance(unit, V4BrokerAcknowledgementBatch)
+                               else self.writer.submit_order_cancel_v4(unit)
+                               if isinstance(unit, V4OrderCancelBatch)
                                else self.writer.submit_protection_change_v4(unit)
                                if isinstance(unit, V4ProtectionChangeBatch)
                                else self.writer.submit_protection_reconciliation_v4(unit)

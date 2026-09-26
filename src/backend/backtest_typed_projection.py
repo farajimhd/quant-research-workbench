@@ -15,7 +15,7 @@ from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.arte_journal_writer import V3SqueezeBatch
 from src.trading_runtime.arte_journal_writer import (
-    V4BrokerAcknowledgementBatch, V4ProtectionChangeBatch,
+    V4BrokerAcknowledgementBatch, V4OrderCancelBatch, V4ProtectionChangeBatch,
     V4StrategyOneEntryBatch, _coalesce_unpublished,
 )
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
@@ -68,7 +68,7 @@ def project_pending_backtest_v4_prefix(
     committed_order_lineage: Mapping[str, tuple] | None = None,
     through_sequence: int,
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
-           | V4BrokerAcknowledgementBatch | V4ProtectionChangeBatch
+           | V4BrokerAcknowledgementBatch | V4OrderCancelBatch | V4ProtectionChangeBatch
            | V4ProtectionReconciliationBatch, ...]:
     """Project one bounded V4 prefix; special families never enter a base batch."""
     from src.trading_runtime.arte_broker_acknowledgement_v4 import (
@@ -113,7 +113,14 @@ def project_pending_backtest_v4_prefix(
         kind = (record.category, record.entity_type)
         if kind == ("checkpoint", "market_boundary"):
             cursor = record.entity_id
-        if kind == ("broker", "order_acknowledgement"):
+        if kind in {("command", "order_cancel"),
+                    ("broker", "order_cancel_requested")}:
+            from src.trading_runtime.arte_order_cancel_v4 import order_cancel_batch_v4
+            unit = order_cancel_batch_v4(
+                record, run_month=run_month, attempt_id=attempt,
+                batch_id=batch_id, prior_batch_id=previous,
+                source_cursor=cursor)
+        elif kind == ("broker", "order_acknowledgement"):
             unit = broker_acknowledgement_batch_v4(
                 record, run_month=run_month, attempt_id=attempt,
                 batch_id=batch_id, prior_batch_id=previous,
