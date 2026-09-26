@@ -169,6 +169,21 @@ class LiquidityBarBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(fill.price, fill.size) for fill in fills], [(10.0, 8.0)])
         self.assertEqual(await self.broker.match_current_orders("AAPL", at), [])
 
+    async def test_fixed_bar_slippage_remains_exactly_journal_representable(self):
+        from src.trading_runtime.arte_journal_projection import _exact_decimal
+
+        broker = SimulatedBrokerAdapter(
+            ["TEST"], replace(self.broker.config, market_slippage_bps=5.0),
+            mode=RunMode.BACKTEST, initial_time=START)
+        await broker.initialize()
+        await broker.place_orders("TEST", [OrderRequest(
+            acctId="TEST", conid=265598, cOID="slipped-entry", ticker="AAPL",
+            orderType="MKT", side="BUY", quantity=1)])
+        at = START + timedelta(milliseconds=100)
+        fill, = await broker.on_liquidity_bar(bar(at, ask=10.01), at=at)
+        self.assertEqual(_exact_decimal(fill.price, field="fill.price"),
+                         "10.0150050000")
+
     async def test_unambiguous_quote_only_bucket_matches_event_fill(self):
         at = START + timedelta(milliseconds=100)
         snapshot = bar(at, ask_size=8, quote_age_us=0)

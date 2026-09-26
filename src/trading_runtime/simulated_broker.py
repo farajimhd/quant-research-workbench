@@ -1393,7 +1393,17 @@ class SimulatedBrokerAdapter:
             return None
         slippage = self.config.market_slippage_bps / 10_000
         if order_type in {"MKT", "STP", "TRAIL"} and slippage:
-            market_price *= 1 + slippage if side == "BUY" else 1 - slippage
+            if self._bar_mode:
+                # Fixed-bar quotes originate as integer prices. Apply the
+                # configured bps on their decimal grid so binary float
+                # multiplication cannot leak a nonrepresentable fill price
+                # into the exact Decimal(38,10) trading journal.
+                adjustment = (Decimal(str(self.config.market_slippage_bps))
+                              / Decimal(10_000))
+                factor = Decimal(1) + adjustment if side == "BUY" else Decimal(1) - adjustment
+                market_price = float(Decimal(str(market_price)) * factor)
+            else:
+                market_price *= 1 + slippage if side == "BUY" else 1 - slippage
         if side == "BUY" and market_price > 0:
             # Final broker cash fence: other tickers/accounts' order matching
             # cannot spend this account's cash twice, including commissions.

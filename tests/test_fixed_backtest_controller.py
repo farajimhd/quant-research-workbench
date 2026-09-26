@@ -679,7 +679,8 @@ def test_fixed_controller_prepares_inactive_v4_without_disk_or_v2_terminal(monke
     running = SimpleNamespace(
         typed_insert_dispatch=bootstrap.TypedInsertDispatch(object()),
         typed_insert_strict=True)
-    context = dict(mode="backtest", account_ids=("DU1",), run_month="2026-08-01",
+    context = dict(run_id=RUN, mode="backtest", account_ids=("DU1",),
+                   run_month="2026-08-01",
                    configuration_hash="c" * 64, market_plan_token=parent.token)
     monkeypatch.setattr(bootstrap, "storage_preflight", lambda *_a, **_k: None)
     monkeypatch.setattr(bootstrap, "_v4_preflight", lambda *_a: None)
