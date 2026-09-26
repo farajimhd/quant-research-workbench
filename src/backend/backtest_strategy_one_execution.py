@@ -126,6 +126,8 @@ async def run_certified_strategy_one_session(
     if set(selected) - ticks.keys():
         raise ValueError("Strategy 1 candidate lacks a pinned execution tick")
     projected = project_market_day_plan(market, selected)
+    evidence_market = project_market_day_plan(
+        market, tuple(row.ticker for row in candidates.prepared))
     projected_prices = prices.projected(projected)
     scheduler = build_certified_strategy_one_scheduler(
         projected, survivors, activations=activation_schedule,
@@ -143,7 +145,10 @@ async def run_certified_strategy_one_session(
     with closing(reader):
         try:
             evidence = StrategyOneCausalEvidence(
-                market_plan=projected, seed_plan=seeds,
+                # V7 seeds, pivots and HOD cover all certified candidates,
+                # not only the shortened run horizon. Keep that exact scope
+                # together; only scheduler I/O is horizon-projected.
+                market_plan=evidence_market, seed_plan=seeds,
                 pivot_plan=pivots, hod_plan=hod,
                 session=date.fromisoformat(projected.sessions[0]), client=reader)
             manager = StrategyOneManagementRunner(

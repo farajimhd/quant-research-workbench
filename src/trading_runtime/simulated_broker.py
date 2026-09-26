@@ -676,8 +676,11 @@ class SimulatedBrokerAdapter:
         return self._summary_from_positions(account_id, positions, self._latest_event_time())
 
     def _summary_from_positions(self, account_id: str, positions: list[PortfolioPosition], at: datetime) -> AccountSummary:
-        gross = sum(abs(row.mktValue) for row in positions)
-        net = self._cash[account_id] + sum(row.mktValue for row in positions)
+        # An empty simulated portfolio still has Float64 snapshot values.
+        # sum([]) returns integer zero and violates the normalized terminal
+        # broker evidence contract before the first fill.
+        gross = sum((abs(row.mktValue) for row in positions), 0.0)
+        net = self._cash[account_id] + sum((row.mktValue for row in positions), 0.0)
         return AccountSummary(
             account_id=account_id,
             netliquidation=net,
