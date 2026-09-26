@@ -72,7 +72,8 @@ class StrategyOneCausalEvidence:
         self.v7 = FixedV7Cache(
             market_plan=market_plan, seed_plan=seed_plan,
             session=session, client=client,
-            observe_completed_second=self.bos.observe_second)
+            observe_completed_second=self.bos.observe_second,
+            prefetch_horizon_ms=300_000)
         self.activations = ActivationCatalog()
 
     async def observe_completed_seconds(self, work: StrategyOneBoundaryWork) -> None:
@@ -97,9 +98,13 @@ class StrategyOneCausalEvidence:
                 raise ValueError("Strategy 1 V7 second differs from boundary")
             rows.append(row)
         if rows:
-            await asyncio.to_thread(
-                self.v7.advance_seconds, rows,
-                at=market_day_boundary(self.session, work.boundary_ms))
+            at = market_day_boundary(self.session, work.boundary_ms)
+            if self.v7.prefetches_seconds:
+                await asyncio.to_thread(
+                    self.v7.catch_up_seconds,
+                    tuple(str(row["ticker"]) for row in rows), at=at)
+            else:
+                await asyncio.to_thread(self.v7.advance_seconds, rows, at=at)
 
     async def _levels(self, ticker: str, boundary_ms: int) -> tuple[Mapping, ...]:
         at = market_day_boundary(self.session, boundary_ms)

@@ -5,6 +5,7 @@ products. Structural projections are reused until the engine revision changes.
 """
 from __future__ import annotations
 
+from collections import deque
 from datetime import date, datetime
 from math import prod
 from typing import Any, Callable, Mapping, Sequence
@@ -116,7 +117,8 @@ class FixedV7Cache:
 
     def __init__(self, *, market_plan: CertifiedMarketDayPlan,
                  seed_plan: CertifiedSeedPlan, session: date, client: Any,
-                 observe_completed_second: Callable[[str, Mapping[str, Any], int], None] | None = None) -> None:
+                 observe_completed_second: Callable[[str, Mapping[str, Any], int], None] | None = None,
+                 prefetch_horizon_ms: int = 0) -> None:
         if session.isoformat() not in market_plan.sessions or seed_plan.build_id != market_plan.build_id:
             raise ValueError("V7 seed and bar plans do not share the requested session/build")
         self.market_plan = market_plan
@@ -124,7 +126,12 @@ class FixedV7Cache:
         self.client = client
         if observe_completed_second is not None and not callable(observe_completed_second):
             raise TypeError("V7 completed-second observer must be callable")
+        if (type(prefetch_horizon_ms) is not int or prefetch_horizon_ms < 0
+                or prefetch_horizon_ms > 300_000
+                or prefetch_horizon_ms % 1_000):
+            raise ValueError("V7 lookahead buffer must be a bounded whole-second horizon")
         self._observe_completed_second = observe_completed_second
+        self._prefetch_horizon_ms = prefetch_horizon_ms
         self._coverage = {row["ticker"]: row for row in seed_plan.units
                           if row["backtest_session"] == session.isoformat()}
         expected_tickers = {unit.ticker for unit in market_plan.units
@@ -133,10 +140,17 @@ class FixedV7Cache:
             raise ValueError("V7 seed plan does not cover the certified ticker population")
         self._streams: dict[str, FixedV7Stream] = {}
         self._last_loaded_second_ms: dict[str, int] = {}
+        self._last_observed_second_ms: dict[str, int] = {}
+        self._prefetched: dict[str, deque[Mapping[str, Any]]] = {}
+        self._prefetched_through_ms: dict[str, int] = {}
 
     def has_stream(self, ticker: str) -> bool:
         """True after this session's private book has been loaded and caught up."""
         return ticker in self._streams
+
+    @property
+    def prefetches_seconds(self) -> bool:
+        return self._prefetch_horizon_ms > 0
 
     def strategy_one_ready_without_read(self, ticker: str, *,
                                         as_of: datetime) -> bool:
@@ -168,6 +182,8 @@ class FixedV7Cache:
         stream = self._streams.get(ticker)
         if stream is None:
             return
+        if self._prefetch_horizon_ms:
+            raise RuntimeError("Prefetched V7 books must advance through their pinned buffer")
         if str(row.get("ticker") or "") != ticker:
             raise ValueError("V7 persisted second ticker changed")
         boundary_ms = self._boundary_ms(at)
@@ -178,12 +194,22 @@ class FixedV7Cache:
             stream.update_second(row, at=at)
         if self._observe_completed_second is not None:
             self._observe_completed_second(ticker, row, boundary_ms)
+        self._last_observed_second_ms[ticker] = boundary_ms
         self._last_loaded_second_ms[ticker] = boundary_ms
 
     def advance_seconds(self, rows: Sequence[Mapping[str, Any]], *, at: datetime) -> None:
         """Amortize one async handoff across all active books at a boundary."""
         for row in rows:
             self.advance_second(str(row.get("ticker") or ""), row, at=at)
+
+    def catch_up_seconds(self, tickers: Sequence[str], *, at: datetime) -> None:
+        """Consume buffered bars for already-loaded books at this completed clock."""
+        if not self._prefetch_horizon_ms:
+            raise RuntimeError("V7 buffered catch-up needs an explicit prefetch horizon")
+        for ticker in tickers:
+            if ticker not in self._streams:
+                raise ValueError("V7 catch-up cannot create an unactivated book")
+            self._stream(ticker, as_of=at)
 
     def _stream(self, ticker: str, *, as_of: datetime) -> FixedV7Stream:
         boundary_ms = self._boundary_ms(as_of)
@@ -202,21 +228,62 @@ class FixedV7Cache:
                                    splits=splits, consume_seed=True)
         else:
             after_ms = self._last_loaded_second_ms[ticker]
-        if completed_ms > after_ms:
+        def consume(row: Mapping[str, Any]) -> None:
+            if str(row.get("ticker") or "") != ticker:
+                raise ValueError("V7 catch-up changed ticker scope")
+            second_ms = ((int(row["bucket_index"]) + 1) * 1_000
+                         - SESSION_OPEN_OFFSET_MS)
+            if (second_ms <= self._last_observed_second_ms.get(ticker, 0)
+                    or second_ms > completed_ms or second_ms % 1_000):
+                raise ValueError("V7 completed second duplicated or crossed its causal clock")
+            bar_at = market_day_boundary(self.session, second_ms)
+            if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
+                stream.update_second(row, at=bar_at)
+            if self._observe_completed_second is not None:
+                self._observe_completed_second(ticker, row, second_ms)
+            self._last_observed_second_ms[ticker] = second_ms
+
+        if completed_ms > after_ms and self._prefetch_horizon_ms:
+            buffered = self._prefetched.setdefault(ticker, deque())
+            while buffered:
+                second_ms = ((int(buffered[0]["bucket_index"]) + 1) * 1_000
+                             - SESSION_OPEN_OFFSET_MS)
+                if second_ms > completed_ms:
+                    break
+                consume(buffered.popleft())
+            through = self._prefetched_through_ms.get(ticker, after_ms)
+            if completed_ms > through:
+                next_through = min(57_600_000,
+                                   completed_ms + self._prefetch_horizon_ms)
+                prior_bucket = ((through + SESSION_OPEN_OFFSET_MS) // 1_000 - 1)
+                for row in iter_persisted_v7_seconds(
+                    self.market_plan, session_date=self.session.isoformat(),
+                    ticker=ticker, after_boundary_ms=through,
+                    through_boundary_ms=next_through, client=self.client,
+                ):
+                    bucket = int(row["bucket_index"])
+                    if bucket <= prior_bucket:
+                        raise ValueError("V7 prefetched seconds are not unique and ordered")
+                    prior_bucket = bucket
+                    second_ms = ((bucket + 1) * 1_000
+                                 - SESSION_OPEN_OFFSET_MS)
+                    if second_ms <= completed_ms:
+                        consume(row)
+                    else:
+                        if (str(row.get("ticker") or "") != ticker
+                                or second_ms > next_through
+                                or buffered and int(buffered[-1]["bucket_index"])
+                                >= int(row["bucket_index"])):
+                            raise ValueError("V7 prefetched seconds are not unique and ordered")
+                        buffered.append(row)
+                self._prefetched_through_ms[ticker] = next_through
+        elif completed_ms > after_ms:
             for row in iter_persisted_v7_seconds(
                 self.market_plan, session_date=self.session.isoformat(), ticker=ticker,
                 after_boundary_ms=after_ms, through_boundary_ms=completed_ms,
                 client=self.client,
             ):
-                if str(row.get("ticker") or "") != ticker:
-                    raise ValueError("V7 catch-up changed ticker scope")
-                second_ms = ((int(row["bucket_index"]) + 1) * 1_000
-                             - SESSION_OPEN_OFFSET_MS)
-                bar_at = market_day_boundary(self.session, second_ms)
-                if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
-                    stream.update_second(row, at=bar_at)
-                if self._observe_completed_second is not None:
-                    self._observe_completed_second(ticker, row, second_ms)
+                consume(row)
         self._streams[ticker] = stream
         self._last_loaded_second_ms[ticker] = completed_ms
         return stream

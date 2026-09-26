@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -171,6 +172,83 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
                         session=date(2026, 8, 18), client=Client())
     late.context("TEST", as_of=completed, price=10.0)
     assert late._streams["TEST"].engine.bars_processed == 1
+
+
+def test_strategy_one_prefetch_never_consumes_future_second():
+    coverage = dict(ticker="TEST", session_date="2026-08-17",
+                    available_at="2026-08-18 00:00:00.000000000", state="empty",
+                    level_count=0, observation_count=0, input_policy="",
+                    source_extraction_version="", band_config_hash="0" * 64,
+                    source_checkpoint_hash="", source_plan_hash="b" * 64)
+    first = dict(ticker="TEST", resolution_ms=1000, bucket_index=14700,
+                 price_valid=1, extremes_valid=1, open_int=100000,
+                 high_int=100100, low_int=99900, close_int=100050, volume=100)
+
+    class Client:
+        def __init__(self, future_close):
+            self.queries = []
+            self.bars = (first, {**first, "bucket_index": 14701,
+                                 "close_int": future_close,
+                                 "high_int": max(100100, future_close)},
+                         {**first, "bucket_index": 15001,
+                          "close_int": 100200, "high_int": 100200})
+
+        def execute(self, sql):
+            self.queries.append(sql)
+            if "structural_level_coverage_v7" in sql:
+                rows = [coverage]
+            elif any(name in sql for name in (
+                    "structural_levels_v7", "structural_level_observations_v7",
+                    "market_stock_split_v1")):
+                rows = []
+            elif "arte.bars_v1" in sql:
+                limits = re.search(r"bucket_index>=(\d+).*bucket_index<(\d+)", sql)
+                assert limits is not None
+                low, high = map(int, limits.groups())
+                rows = [bar for bar in self.bars
+                        if low <= bar["bucket_index"] < high]
+            else:
+                raise AssertionError(sql)
+            return "\n".join(json.dumps(row) for row in rows)
+
+        def iter_json_each_row(self, sql):
+            for line in self.execute(sql).splitlines():
+                yield json.loads(line)
+
+    market = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "market", "definition",
+        ("2026-08-18",), ("TEST",),
+        (MarketDayUnit("market", "2026-08-18", "TEST", "bars",
+                       "00000000-0000-0000-0000-000000000001",
+                       "source", 1, "hash"),), (100, 1000), "market-token")
+    seeds = CertifiedSeedPlan(
+        "market", "b" * 64,
+        ({**coverage, "backtest_session": "2026-08-18"},), "v7-token", True)
+    early = datetime(2026, 8, 18, 4, 5, 1, tzinfo=NY)
+    later = early + timedelta(seconds=1)
+    snapshots = []
+    for future_close in (100100, 150000):
+        client = Client(future_close)
+        cache = FixedV7Cache(
+            market_plan=market, seed_plan=seeds, session=date(2026, 8, 18),
+            client=client, prefetch_horizon_ms=300_000)
+        cache.strategy_one_levels("TEST", as_of=early)
+        snapshots.append(cache._streams["TEST"].engine.hod)
+        assert cache._streams["TEST"].engine.bars_processed == 1
+        assert cache._last_loaded_second_ms["TEST"] == 301_000
+        assert len([sql for sql in client.queries if "arte.bars_v1" in sql]) == 1
+        assert cache._prefetched_through_ms["TEST"] == 601_000
+        with pytest.raises(RuntimeError, match="pinned buffer"):
+            cache.advance_second("TEST", client.bars[1], at=later)
+        cache.catch_up_seconds(("TEST",), at=later)
+        assert cache._streams["TEST"].engine.bars_processed == 2
+        assert len([sql for sql in client.queries if "arte.bars_v1" in sql]) == 1
+        cache.catch_up_seconds(
+            ("TEST",), at=datetime(2026, 8, 18, 4, 10, 2, tzinfo=NY))
+        assert cache._streams["TEST"].engine.bars_processed == 3
+        assert len([sql for sql in client.queries if "arte.bars_v1" in sql]) == 2
+        assert all(sql.startswith("SELECT") for sql in client.queries)
+    assert snapshots == [10.01, 10.01]
 
 
 def test_fixed_controller_projection_never_falls_back_to_disk_v7_cursor():
