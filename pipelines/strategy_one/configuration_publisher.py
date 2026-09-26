@@ -165,7 +165,8 @@ def publish_configuration(client: Any, keeper: Any,
             "source_candidate_hash": envelope["source_candidate_hash"],
             "payload_hash": envelope["payload_hash"],
             "node_count": len(nodes), "node_hash": envelope["node_hash"],
-            "published_at": datetime.now(timezone.utc).isoformat(),
+            "published_at": datetime.now(timezone.utc).strftime(
+                "%Y-%m-%d %H:%M:%S.%f"),
         }
         stage = "release_insert"
         _insert_rows(client, RELEASE_TABLE, tuple(release), [release])
