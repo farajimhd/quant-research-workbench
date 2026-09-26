@@ -453,13 +453,17 @@ class ReplayRunDefinition:
             strategy = dict(self.configuration_revision.get("payload", {}).get("strategy") or {})
             if strategy.get("strategy_number") == 1:
                 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
+                from src.trading_runtime.strategy_one_pivot_schema import PRODUCT_DIGEST
                 if (resolved_interval.milliseconds != 100
                         or re.fullmatch(r"[0-9a-f]{64}", str(
                             self.market_data_plan.get("strategy_one_candidate_token") or "")) is None
                         or self.market_data_plan.get("strategy_one_candidate_rule_digest") != RULE_DIGEST
                         or re.fullmatch(r"[0-9a-f]{64}", str(
-                            self.market_data_plan.get("strategy_one_scan_query_sha256") or "")) is None):
-                    raise ValueError("Strategy 1 requires a pinned certified candidate rule and scan")
+                            self.market_data_plan.get("strategy_one_scan_query_sha256") or "")) is None
+                        or re.fullmatch(r"[0-9a-f]{64}", str(
+                            self.market_data_plan.get("strategy_one_pivot_token") or "")) is None
+                        or self.market_data_plan.get("strategy_one_pivot_digest") != PRODUCT_DIGEST):
+                    raise ValueError("Strategy 1 requires pinned certified candidates and pivots")
         if type(self.prepare_frames_only) is not bool or (self.prepare_frames_only and self.mode != RunMode.BACKTEST):
             raise ValueError('Frame preparation only requires Backtest mode and a boolean flag')
         if not 0 <= self.minimum_p_norm <= 1:
@@ -3549,6 +3553,7 @@ class ReplayRunController:
         )
         if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
             from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+            from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
             from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
             from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
             if len(plan.sessions) != 1:
@@ -3570,6 +3575,16 @@ class ReplayRunController:
                         "strategy_one_scan_query_sha256")):
                 raise ValueError("Strategy 1 candidate rule or scan changed after preflight")
             projection_tickers = strategy_one_v7_tickers(candidate_plan.prepared)
+            def recheck_pivots():
+                with closing(readonly_clickhouse_client(
+                        market_stream=True, v3_read_principal=True)) as reader:
+                    return certify_pivot_plan(
+                        plan, session_date=plan.sessions[0],
+                        candidate_tickers=projection_tickers, client=reader)
+            pivot_plan = await asyncio.to_thread(recheck_pivots)
+            if (pivot_plan.token != self.definition.market_data_plan.get(
+                    "strategy_one_pivot_token")):
+                raise ValueError("Certified Strategy 1 pivots changed after preflight")
         if projection_tickers == ():
             # The scanner certified no possible participant. An empty tuple
             # must not fall through the truthy projection branch and stream
@@ -11031,8 +11046,10 @@ def backtest_preflight(
                     # immutable, and certified before Backtest launch. Never
                     # regenerate a missing strategy input inside Backtest.
                     from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
+                    from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
                     from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
                     from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
+                    from src.trading_runtime.strategy_one_pivot_schema import PRODUCT_DIGEST
                     if len(certified.sessions) != 1:
                         raise ValueError("Strategy 1 V7 candidate scope requires one flat-start session")
                     with closing(readonly_clickhouse_client(
@@ -11050,6 +11067,14 @@ def backtest_preflight(
                     projection_tickers = strategy_one_v7_tickers(candidate_plan.prepared)
                     if not projection_tickers:
                         raise ValueError("Strategy 1 has no candidate; zero-candidate terminal authority is not typed")
+                    with closing(readonly_clickhouse_client(
+                            market_stream=True, v3_read_principal=True)) as pivot_reader:
+                        pivot_plan = certify_pivot_plan(
+                            certified, session_date=certified.sessions[0],
+                            candidate_tickers=projection_tickers,
+                            client=pivot_reader)
+                    market_data_plan["strategy_one_pivot_token"] = pivot_plan.token
+                    market_data_plan["strategy_one_pivot_digest"] = PRODUCT_DIGEST
                 projected = (project_market_day_plan(certified, projection_tickers)
                              if projection_tickers else certified)
                 with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
@@ -11072,6 +11097,22 @@ def backtest_preflight(
             )
             v7_check["evidence"] = (
                 causal_v7_plan.get("token", "") if causal_v7_plan else causal_v7_error)
+    if (execution_interval.kind == "fixed"
+            and dict(configuration.get("strategy") or {}).get("strategy_number") == 1):
+        pivot_token = str((market_data_plan or {}).get("strategy_one_pivot_token") or "")
+        checks.append({
+            "id": "strategy_one_confirmed_pivots",
+            "label": "Certified completed-bar structural pivots",
+            "status": "ready" if re.fullmatch(r"[0-9a-f]{64}", pivot_token) else "blocked",
+            "required": True,
+            "summary": (
+                "Candidate tickers have normalized, source-pinned pivot intervals."
+                if pivot_token else
+                "Strategy 1 pivot coverage is unavailable: " +
+                (causal_v7_error or "candidate or market-data certification did not complete")
+            ),
+            "evidence": pivot_token or causal_v7_error,
+        })
     signal_evidence = signal_check.get("evidence")
     if (execution_interval.kind == "fixed"
             and isinstance(signal_evidence, Mapping)

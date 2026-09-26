@@ -123,9 +123,10 @@ normalizer matches the shared detector's pivot visibility on recorded
 completed candles; the producer derivation reads certified 1s ARTE bars.
 The producer-side publisher inserts interval rows under an immutable attempt,
 reads them back, and publishes coverage last; an uncertain insert cannot
-authorize a Backtest read. Operator provisioning, a full historical campaign,
-and read-side preflight certification are not yet wired, so this product
-cannot currently satisfy Strategy 1 preflight.
+authorize a Backtest read. Backtest now certifies selected ticker coverage,
+source bar attempts, scalar content hashes, and causal visibility at preflight
+and rechecks its token at launch. Operator provisioning and a full historical
+campaign are not yet complete, so this product currently blocks Strategy 1.
 `src/backend/backtest_strategy_one_preparation.py` now scans the full certified
 universe for completed-bar Early Squeeze starts, loads only episode-bearing
 tickers in bounded read-only lanes, and merges compact candidate cursors in

@@ -18,6 +18,9 @@ from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABL
 from src.backend.backtest_liquidity_price import PRICE_READ_TABLES
 from src.trading_runtime.arte_market_day_certification import TABLES as MARKET_DAY_CERTIFICATE_TABLES
 from src.trading_runtime.strategy_one_candidate_schema import CANDIDATE_TABLE, COVERAGE_TABLE
+from src.trading_runtime.strategy_one_pivot_schema import (
+    PIVOT_TABLE, COVERAGE_TABLE as PIVOT_COVERAGE_TABLE,
+)
 from src.trading_runtime.arte_journal_schema import (
     POLICY_ALLOWED_TABLES, TABLES, fixed_backtest_v2_contracts, journal_permission_preflight,
     storage_preflight, versioned_journal_v2_contracts,
@@ -130,7 +133,7 @@ def read_v3_preflight(client: Any) -> None:
     contracts = terminal_v3_contracts()
     certificate_names = frozenset(table.name for table in MARKET_DAY_CERTIFICATE_TABLES)
     candidate_names = frozenset(table.split(".", 1)[1] for table in (
-        CANDIDATE_TABLE, COVERAGE_TABLE))
+        CANDIDATE_TABLE, COVERAGE_TABLE, PIVOT_TABLE, PIVOT_COVERAGE_TABLE))
     storage_preflight(client, tables=contracts + MARKET_DAY_CERTIFICATE_TABLES)
     journal_permission_preflight(
         client, journal_tables=frozenset(),

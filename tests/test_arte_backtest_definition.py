@@ -18,6 +18,7 @@ from src.trading_runtime.keeper_ownership import (
     KeeperOwnershipCoordinator, KeeperUnavailable,
 )
 from src.trading_runtime.strategy_one_candidate_schema import RULE_DIGEST
+from src.trading_runtime.strategy_one_pivot_schema import PRODUCT_DIGEST
 
 
 RUN_MONTH = date(2026, 9, 1)  # September execution of an August market session.
@@ -43,20 +44,24 @@ def _definition(**changes):
     return ReplayRunDefinition(**values)
 
 
-def test_strategy_one_definition_pins_candidate_rule_and_scan():
+def test_strategy_one_definition_pins_candidate_rule_scan_and_pivots():
     config = {"revision_id": "revision-1", "content_hash": "a" * 64,
               "payload": {"strategy": {"strategy_number": 1}}}
     market = {"token": "certified-plan", "build_id": "build-1",
               "execution_interval": {"milliseconds": 100},
               "strategy_one_candidate_token": "c" * 64,
               "strategy_one_candidate_rule_digest": RULE_DIGEST,
-              "strategy_one_scan_query_sha256": "d" * 64}
+              "strategy_one_scan_query_sha256": "d" * 64,
+              "strategy_one_pivot_token": "e" * 64,
+              "strategy_one_pivot_digest": PRODUCT_DIGEST}
     assert _definition(configuration_revision=config,
                        market_data_plan=market).market_data_plan == market
     for missing in ("strategy_one_candidate_token",
                     "strategy_one_candidate_rule_digest",
-                    "strategy_one_scan_query_sha256"):
-        with pytest.raises(ValueError, match="pinned certified candidate"):
+                    "strategy_one_scan_query_sha256",
+                    "strategy_one_pivot_token",
+                    "strategy_one_pivot_digest"):
+        with pytest.raises(ValueError, match="pinned certified candidates and pivots"):
             _definition(configuration_revision=config,
                         market_data_plan={key: value for key, value in market.items()
                                           if key != missing})
