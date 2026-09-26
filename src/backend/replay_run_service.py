@@ -3000,14 +3000,7 @@ class ReplayRunController:
         strategy = dict(configuration.get("strategy") or {})
         kwargs = {}
         if strategy.get("strategy_number") == 1:
-            from src.backend.fixed_bar_signal import first_squeeze_sql
-
-            query = first_squeeze_sql(
-                plan, through_boundary_ms=self._fixed_through_boundary_ms())
-            kwargs = {
-                "journal_profile": "backtest_v3",
-                "expected_query_sha256": hashlib.sha256(query.encode()).hexdigest(),
-            }
+            kwargs = {"journal_profile": "backtest_v4"}
         return load_fixed_running_prefix_anchor(
             client, run_id=self.run_id, plan=plan,
             configuration_hash=str(

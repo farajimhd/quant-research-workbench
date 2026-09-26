@@ -1,6 +1,5 @@
 from copy import deepcopy
 from datetime import date, datetime, timezone
-from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
@@ -191,9 +190,7 @@ def test_controller_anchor_seam_passes_pinned_identity_without_restoring_state(m
     assert controller._resume_state is None
 
 
-def test_controller_strategy_one_anchor_requires_v3_query_identity(monkeypatch):
-    from src.backend import fixed_bar_signal
-
+def test_controller_strategy_one_anchor_uses_v4_commit_identity(monkeypatch):
     controller = object.__new__(ReplayRunController)
     controller.run_id = RUN
     controller.definition = SimpleNamespace(
@@ -202,13 +199,9 @@ def test_controller_strategy_one_anchor_requires_v3_query_identity(monkeypatch):
                                 "payload": {"strategy": {"strategy_number": 1}}})
     controller._account_map = {"key": "DU1"}
     controller._resume_state = None
-    controller._fixed_through_boundary_ms = lambda: 100
-    monkeypatch.setattr(fixed_bar_signal, "first_squeeze_sql",
-                        lambda _plan, *, through_boundary_ms: (
-                            "SELECT 1" if through_boundary_ms == 100 else ""))
     def read(_client, **kwargs):
-        assert kwargs["journal_profile"] == "backtest_v3"
-        assert kwargs["expected_query_sha256"] == sha256(b"SELECT 1").hexdigest()
+        assert kwargs["journal_profile"] == "backtest_v4"
+        assert "expected_query_sha256" not in kwargs
         return "verified"
     monkeypatch.setattr(anchor_module, "load_fixed_running_prefix_anchor", read)
     assert controller._read_fixed_running_prefix_anchor(object(), _plan()) == "verified"
