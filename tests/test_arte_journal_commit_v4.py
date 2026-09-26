@@ -9,6 +9,8 @@ from src.trading_runtime.arte_journal_commit_v4 import (
 )
 from src.trading_runtime.arte_journal_schema import TABLES, V4_COMMIT_TABLES
 from src.trading_runtime.arte_journal_writer import _sealed_families
+from src.trading_runtime.arte_journal_writer import ArteJournalWriter
+from src.trading_runtime import arte_journal_writer as writer_module
 from tests.test_arte_journal_writer import MemoryClient, batch
 
 
@@ -153,3 +155,32 @@ def test_v4_publication_recovers_partial_family_prefix_without_duplicate_rows():
                               "trading_commit_v4"]
     assert len(client.tables["trading_event_v1"]) == 1
     assert len(client.tables["trading_commit_family_v4"]) == 1
+
+
+def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(monkeypatch):
+    client = MemoryClient()
+    observed = []
+    monkeypatch.setattr(
+        writer_module, "storage_preflight",
+        lambda _client, **kwargs: observed.append(kwargs.get("tables")))
+    monkeypatch.setattr(
+        writer_module, "journal_permission_preflight",
+        lambda _client, **kwargs: observed.append(kwargs["journal_tables"]))
+    monkeypatch.setattr(
+        writer_module, "_verify_run_identity",
+        lambda _client, _run_id: {"mode": "backtest", "account_ids": ("DU1",)})
+    item = batch()
+    journal = ArteJournalWriter(
+        client, run_id=item.run_id, journal_profile="backtest_v4",
+        coalesce_batches=False)
+    try:
+        with pytest.raises(RuntimeError, match="explicit family envelope"):
+            journal.submit(item)
+        assert journal.submit_base_v4(item).result(timeout=5) == item.batch_id
+        assert client.inserts == ["trading_event_v1", "trading_commit_family_v4",
+                                  "trading_commit_v4"]
+    finally:
+        journal.close()
+    assert observed[:2] == [None, V4_COMMIT_TABLES]
+    assert observed[2] == frozenset(
+        table.name for table in (*TABLES, *V4_COMMIT_TABLES))

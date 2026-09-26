@@ -1488,6 +1488,15 @@ def _v3_preflight(client: Any) -> None:
     running_v3_preflight(client)
 
 
+def _v4_preflight(client: Any) -> None:
+    """Opt-in normalized fence; leave the live V1 startup contract unchanged."""
+    storage_preflight(client)
+    storage_preflight(client, tables=V4_COMMIT_TABLES)
+    journal_permission_preflight(
+        client, journal_tables=frozenset(
+            table.name for table in (*TABLES, *V4_COMMIT_TABLES)))
+
+
 def _optional_v3_commit_exists(client: Any) -> bool:
     """Check V3 only if installed; older V2 deployments need no V3 DDL."""
     installed = _rows(client,
@@ -2926,6 +2935,10 @@ class ArteJournalWriter:
             if coalesce_batches:
                 raise ValueError("V3 squeeze batches require explicit uncoalesced children")
             _v3_preflight(client)
+        elif journal_profile == "backtest_v4":
+            if coalesce_batches:
+                raise ValueError("V4 batches require explicit uncoalesced commits")
+            _v4_preflight(client)
         else:
             raise ValueError("Unknown typed journal profile")
         context = _verify_run_identity(client, run_id)
@@ -2937,8 +2950,8 @@ class ArteJournalWriter:
         self._run_id = run_id
         self._run_mode = context["mode"]
         self._journal_profile = journal_profile
-        if journal_profile in {"backtest_v2", "backtest_v3"} and self._run_mode != "backtest":
-            raise RuntimeError("V2 journal profile requires a verified Backtest run")
+        if journal_profile in {"backtest_v2", "backtest_v3", "backtest_v4"} and self._run_mode != "backtest":
+            raise RuntimeError("Versioned journal profile requires a verified Backtest run")
         if self._run_mode == "backtest":
             account_ids = context.get("account_ids")
             if (not isinstance(account_ids, (tuple, list)) or not account_ids
@@ -3012,8 +3025,8 @@ class ArteJournalWriter:
     def submit(self, batch: TypedJournalBatch) -> Future[str]:
         """Enqueue without waiting; the receipt names the durable combined batch."""
         with self._submission_lock:
-            if self._journal_profile == "backtest_v3":
-                raise RuntimeError("V3 writer requires an explicit squeeze family envelope")
+            if self._journal_profile in {"backtest_v3", "backtest_v4"}:
+                raise RuntimeError("Versioned writer requires an explicit family envelope")
             if self._closed:
                 raise RuntimeError("Typed journal writer is closed")
             if self._error is not None:
@@ -3029,6 +3042,25 @@ class ArteJournalWriter:
                 raise JournalQueueFull("Typed journal queue is full; stop new admission") from exc
             self._accepted_writes = True
         return receipt
+
+    def submit_base_v4(self, batch: TypedJournalBatch) -> Future[str]:
+        """Queue an explicitly limited V4 base batch; no network I/O on caller."""
+        if self._journal_profile != "backtest_v4" or not isinstance(batch, TypedJournalBatch):
+            raise ValueError("V4 base submission requires its opt-in writer profile")
+        if batch.status != "running":
+            raise ValueError("V4 terminal publication requires a recovery anchor")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            if batch.run_id != self._run_id:
+                raise ValueError("V4 writer cannot mix runs")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((batch, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
 
     def submit_squeeze_v3(self, unit: V3SqueezeBatch) -> Future[str]:
         """Queue a closed V3 family without waiting for ClickHouse."""
@@ -3255,7 +3287,7 @@ class ArteJournalWriter:
             try:
                 if self._error is not None:
                     raise RuntimeError("Typed journal writer failed earlier") from self._error
-                if (self._journal_profile in {"backtest_v2", "backtest_v3"}
+                if (self._journal_profile in {"backtest_v2", "backtest_v3", "backtest_v4"}
                         and not isinstance(group[0][0],
                                            (TypedJournalBatch, V3SqueezeBatch,
                                             _DurabilityBarrier))):
@@ -3287,6 +3319,11 @@ class ArteJournalWriter:
                     batch = _coalesce_unpublished(tuple(row for row, _ in group))
                     if self._journal_profile == "v1":
                         committed_id = publish_typed_batch(self._client, batch)
+                    elif self._journal_profile == "backtest_v4":
+                        from src.trading_runtime.arte_journal_commit_v4 import (
+                            publish_base_typed_batch_v4,
+                        )
+                        committed_id = publish_base_typed_batch_v4(self._client, batch)
                     else:
                         committed_id = _publish_typed_batch(
                             self._client, batch, journal_profile=self._journal_profile,
