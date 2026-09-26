@@ -115,6 +115,36 @@ def test_seed_preflight_reports_all_missing_tickers():
     assert "2026-08-18:ABSENT2" in str(error.value)
 
 
+def test_disjoint_supplement_requires_exact_producer_lineage():
+    parent, supplement = "b" * 64, "c" * 64
+    market = SimpleNamespace(build_id="market", sessions=("2026-08-18",),
+        units=tuple(SimpleNamespace(session_date="2026-08-18", ticker=ticker,
+                                    stage="bars") for ticker in ("BASE", "FIXED")))
+
+    class Mixed:
+        def __init__(self, lineage):
+            self.lineage = lineage
+
+        def execute(self, sql):
+            if "structural_v7_supplement_lineage_v1" in sql:
+                return "\n".join(json.dumps(row) for row in self.lineage)
+            if "structural_level_coverage_v7" in sql:
+                return "\n".join(json.dumps({**Client().coverage,
+                    "ticker": ticker, "source_plan_hash": source})
+                    for ticker, source in (("BASE", parent), ("FIXED", supplement)))
+            raise AssertionError(sql)
+
+    correct = dict(parent_source_plan_hash=parent,
+                   supplement_source_plan_hash=supplement, ticker="FIXED")
+    plan = certified_seed_plan(market, Mixed((correct,)))
+    assert plan.catalog_hash not in {parent, supplement}
+    assert plan.payload()["unit_count"] == 2
+    for invalid in ((), ({**correct, "ticker": "BASE"},),
+                    ({**correct, "parent_source_plan_hash": "d" * 64},)):
+        with pytest.raises(ValueError, match="lineage|membership"):
+            certified_seed_plan(market, Mixed(invalid))
+
+
 def test_split_evidence_is_as_of_and_rejects_conflicting_actions():
     class Splits:
         def __init__(self):
