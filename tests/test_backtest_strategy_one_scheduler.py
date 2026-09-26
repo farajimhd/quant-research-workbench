@@ -141,6 +141,20 @@ def test_candidate_only_coordinator_has_no_per_boundary_thread_handoff(monkeypat
         finish_boundary=noop)) == 2
 
 
+def test_active_stream_exhaustion_cannot_complete_with_open_financial_state():
+    async def noop(*_args):
+        pass
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter((candidate("AAA", 100),)),
+        active_source=lambda ticker, after: iter(()))
+    with pytest.raises(RuntimeError, match="ended with financially active tickers: AAA"):
+        asyncio.run(run_strategy_one_boundaries(
+            scheduler, process_broker_row=noop, evaluate_ticker=noop,
+            financially_active_tickers=lambda: ("AAA",),
+            finish_boundary=noop))
+
+
 def test_certified_scheduler_factory_joins_sparse_rows_before_financial_stream(monkeypatch):
     from src.backend import backtest_strategy_one_scheduler as subject
     from tests.test_backtest_strategy_one_market import authority

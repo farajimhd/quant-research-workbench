@@ -338,6 +338,11 @@ async def run_strategy_one_boundaries(
             else:
                 work = scheduler.pop_next()
             if work is None:
+                remaining = financially_active_tickers()
+                if remaining:
+                    raise RuntimeError(
+                        "Strategy 1 market stream ended with financially active tickers: "
+                        + ", ".join(remaining))
                 return count
             candidates = {row.market_row["ticker"]: row
                           for row in work.candidate_rows}
