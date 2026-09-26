@@ -32,6 +32,10 @@ from src.trading_runtime.strategy_one_entry_evidence_schema import (
 from src.trading_runtime.strategy_one_identity_schema import (
     IDENTITY_TABLE, COVERAGE_TABLE as IDENTITY_COVERAGE_TABLE,
 )
+from src.trading_runtime.strategy_one_configuration_tree import (
+    NODE_TABLE as STRATEGY_ONE_CONFIG_NODE_TABLE,
+    RELEASE_TABLE as STRATEGY_ONE_CONFIG_RELEASE_TABLE,
+)
 from src.trading_runtime.structural_v7_lineage import TABLE as V7_LINEAGE_TABLE
 from src.trading_runtime.arte_journal_schema import (
     POLICY_ALLOWED_TABLES, TABLES, V4_COMMIT_TABLES,
@@ -151,6 +155,7 @@ def read_v3_preflight(client: Any) -> None:
         HOD_CONTEXT_TABLE, HOD_COVERAGE_TABLE,
         ACTIVATION_TABLE, ACTIVATION_RESISTANCE_TABLE, EVIDENCE_TABLE,
         ENTRY_COVERAGE_TABLE, IDENTITY_TABLE, IDENTITY_COVERAGE_TABLE,
+        STRATEGY_ONE_CONFIG_NODE_TABLE, STRATEGY_ONE_CONFIG_RELEASE_TABLE,
         V7_LINEAGE_TABLE))
     storage_preflight(client, tables=contracts + MARKET_DAY_CERTIFICATE_TABLES)
     journal_permission_preflight(
