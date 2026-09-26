@@ -60,7 +60,7 @@ def test_v4_handoff_pins_accounts_and_closes_control_clients(monkeypatch):
                         lambda: session)
     monkeypatch.setattr(arte_journal_writer, "backtest_v4_context_client_from_env",
                         lambda *, keeper_session: Resource("context"))
-    monkeypatch.setattr(arte_journal_writer, "journal_client_from_env",
+    monkeypatch.setattr(arte_journal_writer, "backtest_v4_operator_client_from_env",
                         lambda: Resource("reader"))
     monkeypatch.setattr(arte_journal_writer, "backtest_v4_journal_client_from_env",
                         lambda *, keeper_session: Resource("writer_client"))

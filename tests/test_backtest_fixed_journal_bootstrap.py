@@ -318,8 +318,8 @@ def test_v4_publication_preflights_before_keeper_gate(monkeypatch):
         write_progress_checkpoints=True)
     monkeypatch.setattr(backtest_fixed_market_authority, "_validate_plans",
                         lambda *_: calls.append("market"))
-    for name in ("fixed_backtest_v2_preflight", "read_v3_preflight",
-                 "terminal_v3_preflight", "_v4_preflight"):
+    for name in ("fixed_backtest_v2_preflight", "_v4_cold_reader_preflight",
+                 "_v4_preflight"):
         monkeypatch.setattr(bootstrap, name,
                             lambda _client, name=name: calls.append(name))
     monkeypatch.setattr(bootstrap, "publish_fixed_run_context",
@@ -330,7 +330,8 @@ def test_v4_publication_preflights_before_keeper_gate(monkeypatch):
     monkeypatch.setattr(bootstrap, "assemble_fixed_v4_journal",
                         lambda *_args, **_kwargs: calls.append("assembly") or assembly)
     kwargs = dict(run=run, config=config, account_ids=("DU1",),
-        attempt_id=ATTEMPT, expected_config={"strategy": {"strategy_number": 1}},
+        attempt_id=ATTEMPT, expected_config={"strategy_id": "early-squeeze-strategy",
+                                           "strategy_revision": 1},
         fixed_market_parent_plan=market, fixed_market_execution_plan=market,
         expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
         writer_factory=lambda *_args, **_kwargs: None)
@@ -339,7 +340,7 @@ def test_v4_publication_preflights_before_keeper_gate(monkeypatch):
         projection_certifier=lambda: calls.append("certificate") or "a" * 64,
         **kwargs) is assembly
     assert calls == ["market", "fixed_backtest_v2_preflight",
-                     "read_v3_preflight", "terminal_v3_preflight",
+                     "_v4_cold_reader_preflight", "_v4_cold_reader_preflight",
                      "_v4_preflight", "certificate", "gate", "token", "assembly"]
     calls.clear()
     with pytest.raises(RuntimeError, match="projector"):
@@ -360,5 +361,26 @@ def test_v4_publication_preflights_before_keeper_gate(monkeypatch):
         bootstrap.publish_and_assemble_fixed_v4_journal(
             context, read, writer, terminal,
             projection_certifier=lambda: "a" * 64,
-            **{**kwargs, "expected_config": {"strategy": {"strategy_number": 350}}})
+            **{**kwargs, "expected_config": {"strategy_id": "early-squeeze-strategy",
+                                             "strategy_revision": 350}})
     assert calls == ["market"]
+
+
+def test_v4_cold_reader_requires_server_readonly_and_runner_identity():
+    class Reader:
+        def __init__(self, readonly, user):
+            self.readonly = readonly
+            self.user = user
+
+        def execute(self, query):
+            if query == "SELECT getSetting('readonly')":
+                return self.readonly
+            if query == "SELECT currentUser()":
+                return self.user
+            raise AssertionError(query)
+
+    bootstrap._v4_cold_reader_preflight(Reader("1", "backtest_v4_runner"))
+    with pytest.raises(RuntimeError, match="readonly=1"):
+        bootstrap._v4_cold_reader_preflight(Reader("0", "backtest_v4_runner"))
+    with pytest.raises(RuntimeError, match="unexpected principal"):
+        bootstrap._v4_cold_reader_preflight(Reader("1", "trading_journal"))

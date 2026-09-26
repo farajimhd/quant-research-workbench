@@ -3083,7 +3083,8 @@ class ReplayRunController:
         )
         from src.trading_runtime.arte_journal_writer import (
             ArteJournalWriter, backtest_v4_context_client_from_env,
-            backtest_v4_journal_client_from_env, journal_client_from_env,
+            backtest_v4_journal_client_from_env,
+            backtest_v4_operator_client_from_env,
         )
         from src.trading_runtime.keeper_session import open_workstation_keeper_session
 
@@ -3118,11 +3119,11 @@ class ReplayRunController:
                         backtest_v4_context_client_from_env(
                             keeper_session=keeper)))
                     reader = control_clients.enter_context(closing(
-                        journal_client_from_env()))
+                        backtest_v4_operator_client_from_env()))
                     writer = backtest_v4_journal_client_from_env(
                         keeper_session=keeper)
                     terminal = control_clients.enter_context(closing(
-                        journal_client_from_env()))
+                        backtest_v4_operator_client_from_env()))
                     assembly = publish_and_assemble_fixed_v4_journal(
                         context, reader, writer, terminal,
                         run=run, config=config, account_ids=account_ids,

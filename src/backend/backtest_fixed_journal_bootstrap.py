@@ -443,8 +443,8 @@ def publish_and_assemble_fixed_v4_journal(
     # Every reversible check runs before the first Keeper gate or ClickHouse
     # INSERT. Once publication starts, failures remain cold-recovery work.
     fixed_backtest_v2_preflight(context_client)
-    read_v3_preflight(read_client)
-    terminal_v3_preflight(terminal_client)
+    _v4_cold_reader_preflight(read_client)
+    _v4_cold_reader_preflight(terminal_client)
     _v4_preflight(writer_client)
     certificate = projection_certifier()
     if (not isinstance(certificate, str)
@@ -467,3 +467,16 @@ def publish_and_assemble_fixed_v4_journal(
         expected_market_start=expected_market_start,
         writer_factory=writer_factory, batch_size=batch_size,
         queue_capacity=queue_capacity)
+
+
+def _v4_cold_reader_preflight(client: Any) -> None:
+    """Use a server-enforced read-only V4 connection, never a V3 catalog.
+
+    The writable V4 client audits the exact schema/grants once above. This
+    check prevents the cold-audit connections from issuing INSERTs even when
+    their underlying V4 principal also has journal INSERT grants.
+    """
+    if client.execute("SELECT getSetting('readonly')").strip() != "1":
+        raise RuntimeError("V4 cold reader must have ClickHouse readonly=1")
+    if client.execute("SELECT currentUser()").strip() != "backtest_v4_runner":
+        raise RuntimeError("V4 cold reader has unexpected principal")
