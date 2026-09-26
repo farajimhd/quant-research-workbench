@@ -185,6 +185,14 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
             journal.close()
 
     group, records, frozen = asyncio.run(exercise())
+    assert {(record.category, record.entity_type) for record in records} == {
+        ("broker", "order_acknowledgement"),
+        ("command", "order"),
+        ("order_management", "order_group_state"),
+        ("portfolio_management", "portfolio_decision"),
+        ("portfolio_management", "portfolio_reservation"),
+        ("protection", "protection_change"),
+    }
     assert group.assignment_id == "assignment-1"
     assert group.broker_order_ids, group
     assert frozen and all(item is not None and item.group_id == group.group_id
