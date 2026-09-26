@@ -63,6 +63,8 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
     max_drawdown = 0.
     buys = sells = forced = 0
     fees_paid = 0.
+    position_seconds = exposure_seconds = max_open_lots = 0
+    holding_seconds = 0.
     rows = shard.complete['rows'] if not max_seconds else min(max_seconds,shard.complete['rows'])
     if rows < 1:
         raise ValueError('Replay has no decision seconds')
@@ -112,6 +114,7 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
                 fees_paid += fee
                 sells += 1
                 forced += 1
+                holding_seconds += (time_us-lot.entry_us)/1_000_000
             lots.clear()
         else:
             select = prepare(state)
@@ -155,7 +158,11 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
                     fees_paid += fee
                     used_sells.add(lot_index)
                     sells += 1
+                    holding_seconds += (time_us-lot.entry_us)/1_000_000
                 previous_token = token
+        position_seconds += len(lots)
+        exposure_seconds += bool(lots)
+        max_open_lots = max(max_open_lots,len(lots))
         equity = cash+sum(lot.quantity*float(prices[lot.ticker_index,1])-
             (costs.fee(lot.quantity,float(prices[lot.ticker_index,1]),side='sell') if costs else 0.)
             for lot in lots)
@@ -172,4 +179,7 @@ def replay_session(shard: SessionShard, prepare: Callable, *, max_seconds: int =
         profit=previous_equity-initial,profit_to_cash=(previous_equity-initial)/initial,
         max_drawdown=max_drawdown,buys=buys,sells=sells,forced_liquidations=forced,
         open_lots=len(lots),fees_paid=fees_paid,
+        position_seconds=position_seconds,exposure_seconds=exposure_seconds,
+        max_open_lots=max_open_lots,
+        average_holding_seconds=holding_seconds/max(1,sells),
         gross_profit_before_fees=previous_equity-initial+fees_paid)

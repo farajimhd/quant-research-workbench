@@ -29,13 +29,13 @@ from research.rl_trading.v1.common import digest, file_hash
 from research.rl_trading.v1.data import SessionShard, ticker_vocabulary
 from research.rl_trading.v1.features import FEATURE_NAMES
 from research.rl_trading.v1.model import MarketPolicy
-from research.rl_trading.v1.objectives import teacher_loss
+from research.rl_trading.v1.objectives import teacher_loss, classification_metrics
 from research.rl_trading.v1.evaluate_replay import ModelSelector
 from research.rl_trading.v1.replay import replay_session
 from src.market_engine.level_book_store import read, write
 from src.runtime_paths import runtime_root
 
-VERSION = 'rl-trading-market-policy-bc-v3'
+VERSION = 'rl-trading-market-policy-bc-v4'
 STOP = False
 
 
@@ -62,7 +62,9 @@ def _load_roots(paths, *, allow_segment):
 
 def _run_validation(model, sessions, device, batch_size, trade_weight, value_weight):
     model.eval()
-    totals = dict(loss=0.,action_accuracy=0.,trade_recall=0.,samples=0)
+    totals = dict(loss=0.,samples=0)
+    confusion = torch.zeros((3,3),device=device,dtype=torch.long)
+    exact = torch.zeros(3,device=device,dtype=torch.long)
     with torch.inference_mode():
         for data in sessions:
             for start in range(0,data.rows,batch_size):
@@ -74,11 +76,12 @@ def _run_validation(model, sessions, device, batch_size, trade_weight, value_wei
                         trade_weight=trade_weight,value_weight=value_weight)
                 count = len(index)
                 totals['loss'] += float(loss.detach())*count
-                totals['action_accuracy'] += float(metrics['action_accuracy'])*count
-                totals['trade_recall'] += float(metrics['trade_recall'])*count
+                confusion += metrics['class_confusion']
+                exact += metrics['exact_by_class']
                 totals['samples'] += count
     model.train()
-    return {key:value/max(1,totals['samples']) for key,value in totals.items() if key != 'samples'}
+    return dict(loss=totals['loss']/max(1,totals['samples']),
+        **classification_metrics(confusion,exact))
 
 
 def _run_closed_loop(model, shards, sessions, device):
@@ -93,7 +96,11 @@ def _run_closed_loop(model, shards, sessions, device):
                 profit_to_cash=result['profit_to_cash'],max_drawdown=result['max_drawdown'],
                 buys=result['buys'],voluntary_sells=result['sells']-result['forced_liquidations'],
                 forced_liquidations=result['forced_liquidations'],
-                fees_paid=result['fees_paid'],gross_profit_before_fees=result['gross_profit_before_fees']))
+                fees_paid=result['fees_paid'],gross_profit_before_fees=result['gross_profit_before_fees'],
+                position_seconds=result['position_seconds'],
+                exposure_seconds=result['exposure_seconds'],
+                max_open_lots=result['max_open_lots'],
+                average_holding_seconds=result['average_holding_seconds']))
     model.train()
     return reports
 
@@ -217,7 +224,9 @@ def run(args):
             if STOP or (paths.run_root/'STOP').exists():
                 break
             model.train()
-            sums = dict(loss=0.,action_accuracy=0.,trade_recall=0.,samples=0)
+            sums = dict(loss=0.,samples=0)
+            confusion = torch.zeros((3,3),device=device,dtype=torch.long)
+            exact = torch.zeros(3,device=device,dtype=torch.long)
             wall_start = perf_counter()
             gpu_ms = 0.
             for shard,data in zip(train_shards,train_data):
@@ -254,8 +263,8 @@ def run(args):
                     global_step += 1
                     scheduler.step(global_step*args.batch_size)
                     sums['loss'] += float(loss.detach())*count
-                    sums['action_accuracy'] += float(measure['action_accuracy'])*count
-                    sums['trade_recall'] += float(measure['trade_recall'])*count
+                    confusion += measure['class_confusion']
+                    exact += measure['exact_by_class']
                     sums['samples'] += count
                     if args.max_steps and global_step >= args.max_steps:
                         break
@@ -265,6 +274,7 @@ def run(args):
             torch.cuda.synchronize()
             elapsed = perf_counter()-wall_start
             train_result = {key:value/max(1,sums['samples']) for key,value in sums.items() if key != 'samples'}
+            train_result.update(classification_metrics(confusion,exact))
             train_result.update(gpu_compute_fraction=min(1.,gpu_ms/1000/max(elapsed,1e-9)),
                 preload_seconds=preload_seconds if epoch == start_epoch else 0.,
                 samples_per_second=sums['samples']/max(elapsed,1e-9))
@@ -304,7 +314,19 @@ def run(args):
                     'replay/val_fees':replay_report['val_fees'],
                     'replay/val_max_drawdown':replay_report['val_max_drawdown'],
                     'replay/wall_seconds':replay_report['wall_seconds'],
-                    **{f'replay/train/{item["date"]}/profit':item['profit'] for item in train_replays}})
+                    'replay/val_position_seconds':sum(item['position_seconds'] for item in val_replays),
+                    'replay/val_exposure_seconds':sum(item['exposure_seconds'] for item in val_replays),
+                    'replay/val_average_holding_seconds':sum(item['average_holding_seconds']
+                        for item in val_replays)/len(val_replays),
+                    'replay/val_buys':sum(item['buys'] for item in val_replays),
+                    'replay/val_sells':sum(item['voluntary_sells'] for item in val_replays),
+                    'replay/val_max_open_lots':max(item['max_open_lots'] for item in val_replays),
+                    'replay/train_position_seconds':sum(item['position_seconds'] for item in train_replays),
+                    'replay/train_buys':sum(item['buys'] for item in train_replays),
+                    **{f'replay/{split}/{item["date"]}/{key}':item[key]
+                        for split,items in (('train',train_replays),('val',val_replays))
+                        for item in items for key in ('profit','fees_paid','buys','voluntary_sells',
+                            'position_seconds','exposure_seconds','average_holding_seconds')}})
                 console.print(f'Epoch {epoch+1} closed loop | train '
                     f'${replay_report["train_profit"]:,.2f} | validation '
                     f'${replay_report["val_profit"]:,.2f} | '
@@ -348,7 +370,7 @@ def main(argv=None):
     parser.add_argument('--learning-rate',type=float,default=3e-4)
     parser.add_argument('--weight-decay',type=float,default=.01)
     parser.add_argument('--grad-clip',type=float,default=1.)
-    parser.add_argument('--trade-weight',type=float,default=4.)
+    parser.add_argument('--trade-weight',type=float,default=1.)
     parser.add_argument('--value-weight',type=float,default=.1)
     parser.add_argument('--seed',type=int,default=17)
     parser.add_argument('--archive-every',type=int,default=5)

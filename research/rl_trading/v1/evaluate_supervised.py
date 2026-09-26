@@ -23,7 +23,7 @@ from research.rl_trading.v1.common import file_hash
 from research.rl_trading.v1.data import SessionShard
 from research.rl_trading.v1.features import FEATURE_NAMES
 from research.rl_trading.v1.model import MarketPolicy
-from research.rl_trading.v1.objectives import teacher_loss
+from research.rl_trading.v1.objectives import teacher_loss, active_orders, classification_metrics
 from src.market_engine.level_book_store import read
 
 
@@ -70,6 +70,8 @@ def run(args):
                   teacher_sells=0,correct_sells=0,predicted_buys=0,
                   feasible_first_buys=0,first_order_buys=0,
                   action_loss=0.,value_loss=0.)
+    confusion = torch.zeros((3,3),device=device,dtype=torch.long)
+    exact_by_class = torch.zeros(3,device=device,dtype=torch.long)
     with torch.inference_mode():
         for shard in shards:
             data = shard.to_gpu(device,vocab)
@@ -82,9 +84,12 @@ def run(args):
                     value_weight=config['training']['value_weight'])
                 prediction = logits.float().masked_fill(~batch['action_mask'],-1e9).argmax(-1)
                 teacher = batch['actions']
-                correct = prediction == teacher
+                active = active_orders(teacher)
+                correct = (prediction == teacher) & active
+                confusion += metrics['class_confusion']
+                exact_by_class += metrics['exact_by_class']
                 totals['seconds'] += len(index)
-                totals['orders'] += teacher.numel()
+                totals['orders'] += int(active.sum())
                 totals['teacher_actions'] += int((teacher != 0).sum())
                 totals['correct_orders'] += int(correct.sum())
                 totals['correct_trades'] += int((correct & (teacher != 0)).sum())
@@ -95,7 +100,7 @@ def run(args):
                 totals['teacher_sells'] += int(sells.sum())
                 totals['correct_sells'] += int((correct & sells).sum())
                 totals['predicted_buys'] += int(((prediction > 0) &
-                    (prediction <= first['top_n'])).sum())
+                    (prediction <= first['top_n']) & active).sum())
                 totals['feasible_first_buys'] += int(batch['action_mask'][:,0,
                     1:1+first['top_n']].any(dim=-1).sum())
                 totals['first_order_buys'] += int(((prediction[:,0] > 0) &
@@ -116,7 +121,9 @@ def run(args):
         feasible_first_buys=totals['feasible_first_buys'],
         first_order_buys=totals['first_order_buys'],
         action_loss=totals['action_loss']/max(1,totals['seconds']),
-        value_loss=totals['value_loss']/max(1,totals['seconds']))
+        value_loss=totals['value_loss']/max(1,totals['seconds']),
+        **{f'class_{key}':value for key,value in
+            classification_metrics(confusion,exact_by_class).items()})
     Console().print(json.dumps(report,indent=2))
     return 0
 

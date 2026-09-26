@@ -33,6 +33,10 @@ def test_replay_uses_own_cash_and_forced_terminal_liquidation(tmp_path):
     assert result['profit'] == 10.
     assert result['buys'] == 1
     assert result['forced_liquidations'] == 1
+    assert result['position_seconds'] == 1
+    assert result['exposure_seconds'] == 1
+    assert result['max_open_lots'] == 1
+    assert result['average_holding_seconds'] == 1.
 
 
 def test_replay_volume_order_breaks_ties_by_stable_ticker_identity():

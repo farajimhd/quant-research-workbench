@@ -1,7 +1,7 @@
 import torch
 
 from research.rl_trading.v1.model import MarketPolicy
-from research.rl_trading.v1.objectives import teacher_loss
+from research.rl_trading.v1.objectives import teacher_loss, classification_metrics
 
 
 def test_policy_scores_identity_preserving_market_and_teacher_orders():
@@ -25,6 +25,29 @@ def test_policy_scores_identity_preserving_market_and_teacher_orders():
     loss.backward()
     assert model.temporal[0].weight.grad is not None
     assert 'trade_recall' in metrics
+
+
+def test_stop_padding_is_excluded_from_loss_and_class_metrics():
+    actions = torch.tensor([[0,0,0,0],[1,0,0,0],[1,3,0,0]])
+    batch = dict(actions=actions,action_mask=torch.ones(3,4,4,dtype=torch.bool),
+        ticker_id=torch.ones(3,2,dtype=torch.long),return_to_go=torch.zeros(3))
+    logits = torch.zeros(3,4,4)
+    value = torch.zeros(3)
+    loss,metrics = teacher_loss(logits,value,batch)
+    altered = logits.clone()
+    altered[0,1:,1] = 100.
+    altered[1,2:,1] = 100.
+    altered[2,3:,1] = 100.
+    changed,_ = teacher_loss(altered,value,batch)
+    assert torch.allclose(loss,changed)
+    report = classification_metrics(metrics['class_confusion'],metrics['exact_by_class'])
+    assert report['active_orders'] == 6
+    assert report['stop_support'] == 3
+    assert report['buy_support'] == 2
+    assert report['sell_support'] == 1
+    assert report['stop_predicted'] == 6
+    assert report['balanced_accuracy'] == 1/3
+    assert report['macro_f1'] == 2/9
 
 
 def test_temporal_encoder_uses_older_history_and_unknown_identity():
