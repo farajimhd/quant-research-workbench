@@ -252,6 +252,47 @@ def project_journal_record(
                     batch_id=batch_id, prior_batch_id=prior_batch_id,
                     source_cursor=source_cursor)
     kind = (record.category, record.entity_type)
+    if kind == ("command", "order"):
+        from src.trading_runtime.ibkr_schema import OrderRequest
+
+        payload = dict(record.payload)
+        context_keys = {"strategy_intent_id", "order_group_id", "policy_version",
+                        "correlation_id", "causation_id"}
+        context = {key: payload.pop(key, None) for key in context_keys}
+        request = OrderRequest.from_cpapi(payload, account_id=record.account_id)
+        strategy = (expected_config.get("strategy", expected_config)
+                    if isinstance(expected_config, dict) else None)
+        strategy_id = strategy.get("strategy_id") if isinstance(strategy, dict) else None
+        strategy_revision = (strategy.get("strategy_revision")
+                             if isinstance(strategy, dict) else None)
+        if (request.raw or request.strategyParameters
+                or request.acctId != record.account_id
+                or not request.cOID or record.entity_id != request.cOID
+                or request.to_cpapi() != payload
+                or not isinstance(strategy_id, str) or not strategy_id
+                or type(strategy_revision) is not int or strategy_revision < 0
+                or any(not isinstance(context[key], str) or not context[key]
+                       for key in ("strategy_intent_id", "order_group_id",
+                                   "policy_version"))
+                or any(context[key] is not None and not isinstance(context[key], str)
+                       for key in ("correlation_id", "causation_id"))):
+            raise ValueError("Order command journal source is not an exact typed command")
+        return order_command_batch(
+            request, run_id=record.run_id, run_month=run_month,
+            attempt_id=attempt_id, batch_id=batch_id,
+            prior_batch_id=prior_batch_id, sequence=record.sequence,
+            source_cursor=source_cursor, run_status="running",
+            command_id=record.entity_id, created_at=record.event_time,
+            recorded_at=record.recorded_at,
+            strategy_intent_id=context["strategy_intent_id"],
+            order_group_id=context["order_group_id"],
+            policy_version=context["policy_version"],
+            strategy_id=strategy_id, strategy_revision=strategy_revision,
+            record_id=record.record_id, event_category=record.category,
+            event_entity_type=record.entity_type,
+            correlation_id=context["correlation_id"] or "",
+            causation_id=context["causation_id"] or "",
+        )
     if kind == ("lifecycle", "run"):
         return runtime_lifecycle_batch(record, **identity,
                                        expected_config=expected_config)
@@ -1421,6 +1462,9 @@ def order_command_batch(
     strategy_intent_id: str = "", order_group_id: str = "",
     policy_version: str = "", strategy_intent_record_id: str = "",
     strategy_intent_content_hash: str = "",
+    record_id: str | None = None, event_category: str = "order_management",
+    event_entity_type: str = "order_command",
+    correlation_id: str = "", causation_id: str = "",
 ) -> TypedJournalBatch:
     """Capture one simple broker command losslessly before external dispatch.
 
@@ -1431,7 +1475,9 @@ def order_command_batch(
         raise ValueError("Order command has unmodeled nested broker or strategy evidence")
     if (not command_id or not request.cOID or not run_id
             or created_at.tzinfo is None or recorded_at.tzinfo is None
-            or strategy_revision < 0):
+            or strategy_revision < 0 or not event_category or not event_entity_type
+            or not isinstance(correlation_id, str)
+            or not isinstance(causation_id, str)):
         raise ValueError("Order command identity or time is incomplete")
     if any((strategy_intent_id, order_group_id, policy_version)) and not all(
         (strategy_intent_id, order_group_id, policy_version)
@@ -1446,15 +1492,17 @@ def order_command_batch(
     at = created_at.astimezone(timezone.utc).isoformat()
     received = recorded_at.astimezone(timezone.utc).isoformat()
     event_month = created_at.astimezone(timezone.utc).strftime("%Y-%m-01")
-    record_id = str(uuid5(NAMESPACE_URL, f"{run_id}:{batch_id}:{command_id}:order-command"))
+    record_id = record_id or str(uuid5(
+        NAMESPACE_URL, f"{run_id}:{batch_id}:{command_id}:order-command"))
+    UUID(record_id)
     event = {
         "run_id": run_id, "event_month": event_month,
         "attempt_id": attempt_id, "batch_id": batch_id,
         "record_id": record_id, "sequence": sequence,
         "event_time": at, "recorded_at": received,
-        "category": "order_management", "entity_type": "order_command",
+        "category": event_category, "entity_type": event_entity_type,
         "entity_id": command_id, "account_id": request.acctId,
-        "correlation_id": "", "causation_id": "",
+        "correlation_id": correlation_id, "causation_id": causation_id,
     }
     detail = {
         "record_id": record_id, "run_id": run_id, "event_month": event_month,

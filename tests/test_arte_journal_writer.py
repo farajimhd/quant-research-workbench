@@ -476,14 +476,22 @@ class MemoryClient:
             run_id = sql.split("WHERE run_id='", 1)[1].split("'", 1)[0]
             matching = [row for row in self.tables.get(name, []) if row["run_id"] == run_id]
             fault_pair_filter = "AND ((category='broker' AND entity_type='connection_state')" in sql
+            command_pair_filter = "OR (category='command' AND entity_type='order')" in sql
             if fault_pair_filter:
                 matching = [row for row in matching if
                             (row["category"], row["entity_type"]) in {
                                 ("broker", "connection_state"),
                                 ("risk", "risk_snapshot"),
                             }]
+            if command_pair_filter:
+                matching = [row for row in matching if
+                            (row["category"], row["entity_type"]) in {
+                                ("order_management", "order_command"),
+                                ("command", "order"),
+                            }]
             for field in ("account_id", "execution_id", "category", "entity_type"):
-                if fault_pair_filter and field in {"category", "entity_type"}:
+                if (fault_pair_filter or command_pair_filter) and field in {
+                        "category", "entity_type"}:
                     continue
                 marker = f"AND {field}='"
                 if marker in sql:
@@ -631,13 +639,16 @@ def test_recovery_detects_content_change_even_when_hash_column_is_unchanged() ->
         load_committed_prefix(client, RUN)
 
 
-def test_order_command_and_transition_have_typed_durable_fences() -> None:
+@pytest.mark.parametrize("category,entity", [
+    ("order_management", "order_command"), ("command", "order"),
+])
+def test_order_command_and_transition_have_typed_durable_fences(category, entity) -> None:
     first = dict(batch().events[0])
     first.pop("content_hash")
-    first.update(category="order_management", entity_type="order_command")
+    first.update(category=category, entity_type=entity)
     second_id = "00000000-0000-0000-0000-000000000014"
     second = {**first, "record_id": second_id, "sequence": 2,
-              "entity_type": "order_transition"}
+              "category": "order_management", "entity_type": "order_transition"}
     common = {"run_id": RUN, "event_month": "2026-08-01", "batch_id": BATCH,
               "account_id": "DU1", "command_id": "command-1",
               "client_order_id": "client-1", "conid": 123, "ticker": "TEST"}
@@ -668,7 +679,7 @@ def test_order_command_and_transition_have_typed_durable_fences() -> None:
     prefix = load_committed_prefix(client, RUN)
     assert prefix is not None and prefix.last_sequence == 2
     page = load_committed_order_command_page(client, prefix, limit=1)
-    assert len(page) == 1
+    assert len(page) == 1, client.selects[-1]
     assert page[0]["sequence"] == 1
     assert page[0]["command_id"] == "command-1"
     assert page[0]["client_order_id"] == "client-1"

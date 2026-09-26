@@ -55,6 +55,40 @@ def test_shared_record_projection_is_typed_and_rejects_unknown_payloads() -> Non
         project_journal_record(record, **identity)
 
 
+def test_shared_order_command_preserves_source_identity_and_rejects_extra_fields() -> None:
+    request = OrderRequest(
+        acctId="DU1", conid=123, cOID="client-1", ticker="TEST",
+        orderType="LMT", side="BUY", quantity=5, price=12.34,
+    )
+    record = JournalRecord(
+        "00000000-0000-0000-0000-000000000033", "backtest-1", 7,
+        AT, AT, "command", "order", "client-1", "DU1",
+        {**request.to_cpapi(), "strategy_intent_id": "intent-1",
+         "order_group_id": "group-1", "policy_version": "policy-1",
+         "correlation_id": "correlation-1", "causation_id": "intent-1"},
+    )
+    identity = dict(run_month=date(2026, 8, 1),
+                    attempt_id="00000000-0000-0000-0000-000000000031",
+                    batch_id="00000000-0000-0000-0000-000000000032",
+                    prior_batch_id="00000000-0000-0000-0000-000000000000",
+                    source_cursor="command-1")
+    batch = project_journal_record(
+        record, **identity,
+        expected_config={"strategy_id": "strategy-1", "strategy_revision": 1})
+    assert batch.events[0]["record_id"] == record.record_id
+    assert batch.events[0]["category"] == "command"
+    assert batch.events[0]["entity_type"] == "order"
+    assert batch.events[0]["correlation_id"] == "correlation-1"
+    assert batch.order_commands[0]["record_id"] == record.record_id
+    assert batch.order_contexts[0]["parent_record_id"] == record.record_id
+    assert dict(_sealed_families(batch))["trading_order_command_v1"]
+    with pytest.raises(ValueError, match="exact typed command"):
+        project_journal_record(replace(
+            record, payload={**record.payload, "unmodeled": {"x": 1}}),
+            **identity,
+            expected_config={"strategy_id": "strategy-1", "strategy_revision": 1})
+
+
 def test_backtest_cursor_is_normalized_and_causal(monkeypatch) -> None:
     record = JournalRecord(
         "00000000-0000-0000-0000-000000000023", "backtest-1", 1,

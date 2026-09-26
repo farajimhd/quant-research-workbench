@@ -16,6 +16,7 @@ from src.trading_runtime.arte_journal_projection import recover_common_signal_de
 from src.trading_runtime.signals import StrategySignal
 from src.trading_runtime.signals import StrategyEvaluation
 from src.trading_runtime.runtime import TradingRuntime
+from src.trading_runtime.ibkr_schema import OrderRequest
 
 
 RUN_ID = "00000000-0000-0000-0000-000000000a01"
@@ -64,6 +65,28 @@ def test_actual_memory_records_project_into_chained_typed_families():
                for row in batch.events)
     assert _project(journal).batches == projected.batches
     assert journal.pending_record_count == 2  # Projection is not a durability fence.
+
+
+def test_strategy_order_command_projects_from_actual_memory_journal() -> None:
+    journal = _journal()
+    request = OrderRequest(
+        acctId="SIM-01", conid=123, cOID="client-1", ticker="ABCD",
+        orderType="LMT", side="BUY", quantity=5, price=12.34)
+    record = journal.append(
+        run_id=RUN_ID, category="command", entity_type="order",
+        entity_id=request.cOID, account_id="SIM-01", event_time=AT,
+        payload={**request.to_cpapi(), "strategy_intent_id": "intent-1",
+                 "order_group_id": "group-1", "policy_version": "policy-1"})
+    projected = project_pending_backtest_prefix(
+        journal, attempt_id=ATTEMPT_ID, run_month=DAY.replace(day=1),
+        prior_sequence=0,
+        expected_config={"strategy_id": "strategy-1", "strategy_revision": 1})
+    batch = projected.batches[0]
+    assert batch.events[0]["record_id"] == record.record_id
+    assert batch.order_commands[0]["client_order_id"] == request.cOID
+    assert batch.order_commands[0]["strategy_id"] == "strategy-1"
+    assert batch.order_contexts[0]["strategy_intent_id"] == "intent-1"
+    assert dict(_sealed_families(batch))["trading_order_command_v1"]
 
 
 def test_unsupported_record_rejects_whole_pending_prefix():

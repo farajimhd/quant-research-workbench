@@ -44,6 +44,7 @@ _V3_PROJECTED = frozenset({
     ("protection", "protection_change"),
     ("trade_proposal", "trade_proposal_confirmed"),
     ("trade_proposal", "trade_proposal_result"),
+    ("command", "order"),
 })
 
 

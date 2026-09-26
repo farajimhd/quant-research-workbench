@@ -155,6 +155,7 @@ _EVENT_DETAILS = {
     ("execution", "fill"): "trading_execution_v1",
     ("execution", "commission"): "trading_commission_v1",
     ("order_management", "order_command"): "trading_order_command_v1",
+    ("command", "order"): "trading_order_command_v1",
     ("order_management", "order_transition"): "trading_order_transition_v1",
     ("order_management", "order_group_state"): "trading_oms_group_state_v1",
     ("snapshot", "portfolio"): "trading_account_snapshot_v1",
@@ -2373,7 +2374,8 @@ def load_committed_order_command_page(
         f"WHERE run_id={_literal(prefix.run_id)} "
         f"AND sequence>{int(after_sequence)} "
         f"AND sequence<={int(prefix.last_sequence)} "
-        "AND category='order_management' AND entity_type='order_command' "
+        "AND ((category='order_management' AND entity_type='order_command') "
+        "OR (category='command' AND entity_type='order')) "
         f"{_committed_batch_filter(prefix)}"
         f"ORDER BY sequence LIMIT {int(limit)} FORMAT JSONEachRow")
     if not events:
