@@ -37,6 +37,7 @@ from src.trading_runtime.arte_journal_schema import (
     fixed_backtest_v2_preflight, storage_preflight,
 )
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, _v4_preflight, load_typed_run_context,
@@ -427,7 +428,11 @@ def publish_and_assemble_fixed_v4_journal(
         raise ValueError("V4 launch lacks distinct strict shared-Keeper authorities")
     run_id = _validate_local_context(run, config, account_ids)
     _validate_plans(fixed_market_parent_plan, fixed_market_execution_plan)
-    if (dict(expected_config.get("strategy") or {}).get("strategy_number") != 1
+    # expected_config is the flat RunConfig projection emitted into the typed
+    # journal, not the full Strategy Studio payload. The two authorities were
+    # accidentally conflated here, blocking every real V4 launch.
+    if (expected_config.get("strategy_id") != STRATEGY_ID
+            or expected_config.get("strategy_revision") != STRATEGY_NUMBER
             or run["evaluation_interval_ms"] != 100
             or run["market_plan_token"] != fixed_market_parent_plan.token
             or expected_market_start.tzinfo is None):
