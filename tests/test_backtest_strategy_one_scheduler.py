@@ -1,7 +1,13 @@
 """Sparse entry plus active liquidity scheduling remains causal and exact."""
 import pytest
 
-from src.backend.backtest_strategy_one_scheduler import StrategyOneBoundaryScheduler
+from src.backend.backtest_strategy_one_scheduler import (
+    StrategyOneBoundaryScheduler, persisted_active_market_source,
+)
+from src.backend.backtest_market_data import (
+    CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
+)
+from src.backend.backtest_liquidity_price import PriceLevelPlan, PriceLevelUnit
 
 
 DAY = "2026-08-18"
@@ -99,4 +105,54 @@ def test_invalid_candidate_or_active_source_fails_closed():
     clock.pop_next()
     with pytest.raises(ValueError, match="completed ticker boundary"):
         clock.activate("AAA")
+    clock.close()
+
+
+def test_active_source_reads_persisted_window_and_closes_on_deactivation():
+    build = "a" * 64
+    attempt = "00000000-0000-0000-0000-000000000001"
+    units = tuple(MarketDayUnit(build, DAY, "AAA", stage, attempt,
+                                "b" * 64, 1, "c" * 64)
+                  for stage in ("bars", "technical", "broker_100ms"))
+    plan = CertifiedMarketDayPlan(
+        ExecutionInterval.parse("100ms"), build, "d" * 64,
+        (DAY,), ("AAA",), units, (100, 1_000), "e" * 64)
+    prices = PriceLevelPlan(build, (PriceLevelUnit(
+        DAY, "AAA", attempt, attempt, 0, 0, 0., "f" * 64),), "g" * 64)
+
+    class Reader:
+        def __init__(self):
+            self.queries = []
+            self.closed = False
+
+        def iter_json_each_row(self, sql):
+            self.queries.append(sql)
+            if "SELECT l.session_date" in sql:
+                return iter((dict(group("AAA", 200)[1][100]),))
+            return iter(({"session_date": DAY, "ticker": "AAA",
+                          "boundary_ms": 1_000, "resolution_ms": 1_000},))
+
+        def close(self):
+            self.closed = True
+
+    opened = []
+    def client():
+        reader = Reader()
+        opened.append(reader)
+        return reader
+
+    source = persisted_active_market_source(
+        plan, price_plan=prices, through_boundary_ms=1_000,
+        client_factory=client)
+    clock = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter((candidate("AAA", 100),)),
+        active_source=source)
+    clock.pop_next()
+    clock.activate("AAA")
+    assert clock.pop_next().boundary_ms == 200
+    assert len(opened[0].queries) == 2
+    assert all("bucket_index>=144001" in sql for sql in opened[0].queries)
+    clock.deactivate("AAA")
+    assert opened[0].closed
+    assert clock.pop_next() is None
     clock.close()

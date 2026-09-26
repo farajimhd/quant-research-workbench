@@ -9,12 +9,56 @@ decision; the broker still enforces new-order activation delay.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import closing
 from heapq import heappop, heappush
-from typing import Callable, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
+
+from src.backend.backtest_market_data import (
+    CertifiedMarketDayPlan, iter_market_boundary_groups,
+    iter_market_day_rows, project_market_day_plan,
+)
+from src.backend.backtest_liquidity_price import PriceLevelPlan
 
 
 MarketGroup = tuple[int, Mapping[int, Mapping]]
 MarketSource = Callable[[str, int], Iterator[MarketGroup]]
+
+
+def persisted_active_market_source(
+    plan: CertifiedMarketDayPlan, *, price_plan: PriceLevelPlan,
+    through_boundary_ms: int, client_factory: Callable[[], Any],
+) -> MarketSource:
+    """Open one SELECT-only ticker stream only while its financial state lives."""
+    if (len(plan.sessions) != 1 or not isinstance(price_plan, PriceLevelPlan)
+            or type(through_boundary_ms) is not int
+            or not 0 < through_boundary_ms <= 57_600_000
+            or through_boundary_ms % 100 or not callable(client_factory)):
+        raise ValueError("Active Strategy 1 source lacks a certified fixed session")
+
+    def source(ticker: str, after_boundary_ms: int) -> Iterator[MarketGroup]:
+        if ticker not in plan.tickers or type(after_boundary_ms) is not int \
+                or not 0 <= after_boundary_ms <= through_boundary_ms:
+            raise ValueError("Active Strategy 1 source is outside certified scope")
+        if after_boundary_ms == through_boundary_ms:
+            return
+        scoped = project_market_day_plan(plan, (ticker,))
+        prices = price_plan.projected(scoped)
+        reader = client_factory()
+        if reader is None or not callable(getattr(reader, "close", None)):
+            raise TypeError("Active Strategy 1 source needs a closable read client")
+        with closing(reader):
+            rows = iter_market_day_rows(
+                scoped, client=reader, after_boundary_ms=after_boundary_ms,
+                through_boundary_ms=through_boundary_ms, price_plan=prices)
+            try:
+                for day, boundary, symbol, resolutions in iter_market_boundary_groups(rows):
+                    if day != plan.sessions[0] or symbol != ticker:
+                        raise ValueError("Active Strategy 1 market row changed ticker scope")
+                    yield boundary, resolutions
+            finally:
+                rows.close()
+
+    return source
 
 
 @dataclass(frozen=True, slots=True)
