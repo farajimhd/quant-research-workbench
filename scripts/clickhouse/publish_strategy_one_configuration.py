@@ -106,12 +106,13 @@ def main() -> None:
         return
     if not SSH_KEY.is_file():
         raise RuntimeError("Dedicated workstation SSH key is missing")
+    remote_command = (
+        f"cd /d {WORKSTATION_REPO} && {WORKSTATION_PYTHON} -B "
+        r"scripts\clickhouse\publish_strategy_one_configuration.py "
+        "--receive-stdin"
+    )
     command = ["ssh", "-i", str(SSH_KEY),
-               f"mehdi@{WORKSTATION}",
-               f'"cd /d {WORKSTATION_REPO} && '
-               f'{WORKSTATION_PYTHON} -B '
-               r'scripts\clickhouse\publish_strategy_one_configuration.py '
-               '--receive-stdin"']
+               f"mehdi@{WORKSTATION}", remote_command]
     result = subprocess.run(
         command, input=json.dumps(envelope, separators=(",", ":"),
                                   ensure_ascii=True, allow_nan=False).encode("utf-8"),
