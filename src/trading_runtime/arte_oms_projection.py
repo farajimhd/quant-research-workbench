@@ -21,6 +21,7 @@ from src.trading_runtime.arte_journal_writer import (
     _committed_batch_filter, _literal, _rows, _sealed_families, _valid_prefix, typed_row,
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
+from src.trading_runtime.order_management import ExecutionTactic
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.signals import StrategyIntent
@@ -61,6 +62,7 @@ class FrozenOmsGroup:
     protection_required_quantity: float
     protection_coverage_quantity: float
     protection_delegated: bool
+    tactic: ExecutionTactic | None = None
 
 
 _APPROVED_ADMISSION_KEYS = frozenset({
@@ -152,6 +154,7 @@ def freeze_oms_group(group: Any) -> FrozenOmsGroup:
         group.high_water_price, group.low_water_price,
         group.protection_required_quantity, group.protection_coverage_quantity,
         group.protection_delegated,
+        deepcopy(group.tactic),
     )
 
 

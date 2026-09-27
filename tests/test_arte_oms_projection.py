@@ -19,7 +19,10 @@ from src.trading_runtime.arte_oms_projection import (
     oms_group_state_batch,
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
-from src.trading_runtime.order_management import _ManagedOrderGroup, OrderManagementState
+from src.trading_runtime.order_management import (
+    _ManagedOrderGroup, OrderManagementState, ExecutionQuote,
+    ExecutionTactic, ExecutionUrgency, PriceStep,
+)
 from src.trading_runtime.signals import CapitalRequest
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 from tests.test_arte_intent_projection import intent
@@ -152,9 +155,13 @@ def test_oms_projection_uses_original_intent_and_normalized_admission() -> None:
     group = _ManagedOrderGroup(
         "group-1", approved, "DU1", StrategyOrderPlan((order,)),
         OrderManagementState.CREATED, at, at, [order], remaining_quantity=4.)
+    group.tactic = ExecutionTactic(
+        ExecutionUrgency.URGENT, "BUY", (PriceStep(0, 12.5),),
+        ExecutionQuote(12.4, 12.6, at, 0.01), 0)
     frozen = freeze_oms_group(group)
     group.orders.clear()
     assert len(frozen.orders) == 1
+    assert frozen.tactic == group.tactic and frozen.tactic is not group.tactic
     batch = oms_group_state_batch(
         frozen, run_id=run_id, run_month=date(2026, 8, 1),
         attempt_id=attempt_id, batch_id=second_id, prior_batch_id=first_id,
