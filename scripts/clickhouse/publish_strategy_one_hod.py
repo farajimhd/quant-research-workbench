@@ -101,6 +101,14 @@ def publish_session(*, session_date: str, build_id: str,
         if (checked.execute("SELECT currentUser()").strip() != PRINCIPAL
                 or _grant_set(checked) != _GRANTS):
             raise RuntimeError("Strategy 1 producer lacks exact derived-table grants")
+    retried = 0
+    retry_lock = Lock()
+
+    def record_source_retry() -> None:
+        nonlocal retried
+        with retry_lock:
+            retried += 1
+
     state = local()
     opened = []
     opened_lock = Lock()
@@ -118,7 +126,8 @@ def publish_session(*, session_date: str, build_id: str,
                 opened.extend(clients)
             state.clients = clients
         return publish_unit(
-            *clients, market, candidates, seeds, ticker=ticker)
+            *clients, market, candidates, seeds, ticker=ticker,
+            on_source_retry=record_source_retry)
 
     published = skipped = failed = 0
     first_failure: tuple[str, BaseException] | None = None
@@ -156,7 +165,8 @@ def publish_session(*, session_date: str, build_id: str,
                 if monotonic() - last_report >= 10 or not pending or failed:
                     queued = len(tickers) - published - skipped - failed - len(pending)
                     print(f"HOD coverage: published={published} skipped={skipped} "
-                          f"failed={failed} active={len(pending)} queued={queued}",
+                          f"retried={retried} failed={failed} "
+                          f"active={len(pending)} queued={queued}",
                           flush=True)
                     last_report = monotonic()
     finally:
@@ -178,7 +188,8 @@ def publish_session(*, session_date: str, build_id: str,
           f"{count} candidate boundaries, {monotonic() - started:.1f}s wall.",
           flush=True)
     return {"published": published, "skipped": skipped,
-            "failed": failed, "tickers": len(tickers), "candidates": count}
+            "retried": retried, "failed": failed,
+            "tickers": len(tickers), "candidates": count}
 
 
 def main(argv: list[str] | None = None) -> int:

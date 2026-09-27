@@ -9,8 +9,9 @@ from __future__ import annotations
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
+from http.client import IncompleteRead, RemoteDisconnected
 import json
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from uuid import UUID, uuid4
 
 from pipelines.market_sip.events.market_day_sql import literal
@@ -208,12 +209,25 @@ def _insert_children(client: Any, scope: HodPublicationScope,
 def publish_unit(writer: Any, reader_100ms: Any, reader_1s: Any,
                  market: CertifiedMarketDayPlan,
                  candidates: CertifiedCandidatePlan,
-                 seeds: CertifiedSeedPlan, *, ticker: str) -> str:
+                 seeds: CertifiedSeedPlan, *, ticker: str,
+                 on_source_retry: Callable[[], None] | None = None) -> str:
     """Skip verified coverage, or publish a new read-back-sealed ticker attempt."""
     scope = _scope(market, candidates, seeds, ticker=ticker)
     if _verify_existing(writer, scope) is not None:
         return "skipped"
-    values = _derive(reader_100ms, reader_1s, market, seeds, scope)
+    # Only an incomplete read is restartable. Retry the entire pinned ticker
+    # before creating an attempt ID or issuing any INSERT; never resume a
+    # partially consumed stream or retry an uncertain child publication.
+    for attempt in range(3):
+        try:
+            values = _derive(reader_100ms, reader_1s, market, seeds, scope)
+            break
+        except (IncompleteRead, RemoteDisconnected,
+                ConnectionResetError, BrokenPipeError, TimeoutError):
+            if attempt == 2:
+                raise
+            if on_source_retry is not None:
+                on_source_retry()
     digest = context_content_hash(values)
     attempt = str(uuid4())
     _insert_children(writer, scope, attempt, values)

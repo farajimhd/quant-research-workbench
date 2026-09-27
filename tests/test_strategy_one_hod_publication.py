@@ -1,5 +1,7 @@
 """HOD producer skips sealed units and never covers uncertain child writes."""
 
+from http.client import IncompleteRead
+
 import pytest
 
 from pipelines.strategy_one import hod_publication as subject
@@ -39,3 +41,45 @@ def test_uncertain_child_readback_never_publishes_coverage(monkeypatch):
     with pytest.raises(subject.HodReadbackMismatch, match="read-back"):
         subject.publish_unit(Writer(), None, None, None, None, None,
                              ticker="TEST")
+
+
+def test_truncated_source_restarts_entire_ticker_before_any_insert(monkeypatch):
+    monkeypatch.setattr(subject, "_scope", lambda *_args, **_kwargs: SCOPE)
+    monkeypatch.setattr(subject, "_verify_existing", lambda *_args: None)
+    calls = []
+    def interrupted(*_args):
+        calls.append("read")
+        raise IncompleteRead(b"partial", 100)
+    monkeypatch.setattr(subject, "_derive", interrupted)
+    monkeypatch.setattr(subject, "_insert_children", lambda *_args:
+                        pytest.fail("incomplete SELECT reached INSERT"))
+    retried = []
+    with pytest.raises(IncompleteRead):
+        subject.publish_unit(None, None, None, None, None, None,
+                             ticker="TEST",
+                             on_source_retry=lambda: retried.append(True))
+    assert calls == ["read"] * 3
+    assert retried == [True, True]
+
+
+def test_uncertain_insert_is_not_retried_as_a_source_read(monkeypatch):
+    monkeypatch.setattr(subject, "_scope", lambda *_args, **_kwargs: SCOPE)
+    monkeypatch.setattr(subject, "_verify_existing", lambda *_args: None)
+    derived = []
+    expected = (HodContext(300_100, 100_000, 120_000, True, "r11"),)
+    def read(*_args):
+        derived.append(True)
+        if len(derived) == 1:
+            raise IncompleteRead(b"partial", 100)
+        return expected
+    monkeypatch.setattr(subject, "_derive", read)
+    def uncertain_insert(*_args):
+        raise RuntimeError("insert uncertainty")
+    monkeypatch.setattr(subject, "_insert_children", uncertain_insert)
+    retried = []
+    with pytest.raises(RuntimeError, match="insert uncertainty"):
+        subject.publish_unit(None, None, None, None, None, None,
+                             ticker="TEST",
+                             on_source_retry=lambda: retried.append(True))
+    assert len(derived) == 2
+    assert retried == [True]
