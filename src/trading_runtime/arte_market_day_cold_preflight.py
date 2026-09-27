@@ -342,9 +342,10 @@ def sealed_certified_market_day_plan(client: Any, keeper: Any, build_id: str, *,
         days, ordered_tickers, units, resolutions, token=_stable_hash(payload))
     verify_market_day_plan(plan, client, read_client_factory=read_client_factory)
     _placement(client)
-    if (_certificate_part_snapshot(client, include_market=True) != parts_before
-            or keeper.load(build_id) != proof):
-        raise RuntimeError("Sealed market-day authority changed during preflight")
+    if keeper.load(build_id) != proof:
+        raise RuntimeError("Sealed market-day Keeper proof changed during preflight")
+    if _certificate_part_snapshot(client, include_market=True) != parts_before:
+        raise RuntimeError("Sealed market-day active parts changed during preflight")
     return plan
 
 
