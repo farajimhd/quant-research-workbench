@@ -6884,7 +6884,7 @@ class ReplayRunController:
         await self._publish(force=True)
 
     async def _finish_fixed_v4(self, status: str) -> None:
-        """Capture terminal account state on the actor; publish on the writer."""
+        """Fence the final market clock, then publish lifecycle-last account state."""
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
 
         publisher = self._journal_publisher
@@ -6896,6 +6896,28 @@ class ReplayRunController:
                 or not self.account_ids
                 or len(set(self.account_ids)) != len(self.account_ids)):
             raise RuntimeError('V4 terminal requires one active typed run and account set')
+        # The terminal broker suffix begins with account snapshots, so its
+        # market cursor must be a separate prior running commit. This is the
+        # only persisted through-boundary authority after the process exits.
+        from src.backend.backtest_market_data import market_day_boundary
+        from src.trading_runtime.arte_journal_projection import (
+            backtest_cursor_record_fields,
+        )
+        if not self._source_cursor:
+            day = self.definition.session_date
+            self._source_cursor = {
+                'session_date': day, 'boundary_ms': 0, 'sequence': 0,
+            }
+            cursor_time = market_day_boundary(day, 0)
+        else:
+            cursor_time = self.current_time
+        if cursor_time is None:
+            raise RuntimeError('V4 terminal lacks its completed market clock')
+        boundary_id, _ = backtest_cursor_record_fields(
+            self._source_cursor, self._frame_cursor, completed_at=cursor_time)
+        if publisher._source_cursor != boundary_id:
+            await self._save_restart_checkpoint_responsive(
+                cursor_time, checkpoint_status='running')
         await self._runtime.finish(status=status)
         self._runtime_finished = True
         records = self._journal.unfenced_records()

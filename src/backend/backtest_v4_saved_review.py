@@ -45,10 +45,11 @@ def load_v4_terminal_review_page(client, run_id: str, *,
         for account_id in context["account_ids"]
     }
     cursor = load_latest_backtest_cursor(client, prefix)
-    if (cursor is None
-            or str(cursor["session_date"]) != str(context["session_date"])
-            or prefix.source_cursor !=
-            f"{cursor['session_date']}:{int(cursor['boundary_ms'])}"):
+    if (cursor is None and prefix.source_cursor != "start"
+            or cursor is not None and (
+                str(cursor["session_date"]) != str(context["session_date"])
+                or prefix.source_cursor !=
+                f"{cursor['session_date']}:{int(cursor['boundary_ms'])}")):
         raise RuntimeError("Saved review market cursor differs from terminal run")
     page = load_typed_event_page(
         client, prefix, after_sequence=after_sequence, limit=limit)
@@ -59,6 +60,10 @@ def load_v4_terminal_review_page(client, run_id: str, *,
         "status": prefix.status,
         "verified_sequence": prefix.last_sequence,
         "market_cursor": cursor,
+        "market_cursor_verified": cursor is not None,
+        "limitations": (["This archived V4 run has no persisted market-boundary cursor; "
+                         "its exact processed-through clock is unavailable."]
+                        if cursor is None else []),
         "accounts": {
             account_id: {
                 "state_hash": snapshot["state_hash"],

@@ -83,3 +83,18 @@ def test_terminal_page_rejects_non_strategy_one(monkeypatch):
                         pytest.fail("Read unrelated run"))
     with pytest.raises(ValueError, match="only immutable Strategy 1"):
         review.load_v4_terminal_review_page(object(), RUN)
+
+
+def test_archived_v4_without_cursor_discloses_missing_clock(monkeypatch):
+    monkeypatch.setattr(review, "load_typed_run_context", lambda *_a: _context())
+    monkeypatch.setattr(review, "load_verified_v4_prefix", lambda *_a:
+                        V4CommittedPrefix(RUN, 2, BATCH, "start", "completed", (BATCH,)))
+    monkeypatch.setattr(review, "load_terminal_backtest_snapshot", lambda *_a, **_k:
+                        {"state_hash": "a" * 64, "state_revision": 1,
+                         "snapshot_at": "2026-08-18T13:30:00+00:00"})
+    monkeypatch.setattr(review, "load_latest_backtest_cursor", lambda *_a: None)
+    monkeypatch.setattr(review, "load_typed_event_page", lambda *_a, **_k: ())
+    page = review.load_v4_terminal_review_page(object(), RUN, after_sequence=2)
+    assert page["market_cursor"] is None
+    assert page["market_cursor_verified"] is False
+    assert "exact processed-through clock is unavailable" in page["limitations"][0]
