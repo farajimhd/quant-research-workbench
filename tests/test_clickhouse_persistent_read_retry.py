@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import http.client
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -40,3 +41,25 @@ def test_never_replays_ambiguous_non_select(monkeypatch, sql):
     with pytest.raises(http.client.RemoteDisconnected):
         client.execute(sql)
     assert calls == [sql]
+
+
+def test_writer_reopens_idle_socket_before_sending_insert(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr("research.mlops.clickhouse.time.monotonic", lambda: now[0])
+    sockets = [MagicMock(), MagicMock()]
+    for connection in sockets:
+        response = MagicMock(status=200, reason="OK", will_close=False)
+        response.read.return_value = b""
+        connection.getresponse.return_value = response
+    client = ClickHouseHttpClient(
+        "http://localhost:8123", "writer", "secret", persistent=True,
+        max_persistent_idle_seconds=5)
+    monkeypatch.setattr(client, "_new_connection", lambda: sockets.pop(0))
+    client.execute("INSERT INTO arte.x VALUES (1)")
+    first = client._connection
+    now[0] = 6.0
+    client.execute("INSERT INTO arte.x VALUES (2)")
+    first.close.assert_called_once()
+    assert client._connection is not first
+    assert first.request.call_count == 1
+    assert client._connection.request.call_count == 1

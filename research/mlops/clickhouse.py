@@ -250,18 +250,26 @@ class ClickHouseHttpClient:
         timeout_seconds: float | None = None,
         persistent: bool = False,
         default_query_params: Mapping[str, str | int | float] | None = None,
+        max_persistent_idle_seconds: float | None = None,
     ) -> None:
         if timeout_seconds is not None and float(timeout_seconds) <= 0:
             raise ValueError("timeout_seconds must be positive when provided")
+        if (max_persistent_idle_seconds is not None
+                and (not persistent or float(max_persistent_idle_seconds) <= 0)):
+            raise ValueError("Idle reconnect needs a persistent client and positive interval")
         self.base_url = base_url.rstrip("/")
         self.user = user
         self.password = password
         self.timeout_seconds = None if timeout_seconds is None else float(timeout_seconds)
         self.persistent = bool(persistent)
+        self.max_persistent_idle_seconds = (
+            None if max_persistent_idle_seconds is None
+            else float(max_persistent_idle_seconds))
         self.default_query_params = {
             str(key): str(value) for key, value in (default_query_params or {}).items()
         }
         self._connection: http.client.HTTPConnection | None = None
+        self._last_persistent_response_at: float | None = None
         self._connection_lock = threading.Lock()
         self._parsed_url = parse.urlsplit(self.base_url)
         if self.persistent and self._parsed_url.scheme not in {"http", "https"}:
@@ -440,6 +448,14 @@ class ClickHouseHttpClient:
         if self.password:
             headers["X-ClickHouse-Key"] = self.password
         with self._connection_lock:
+            if (self._connection is not None
+                    and self.max_persistent_idle_seconds is not None
+                    and self._last_persistent_response_at is not None
+                    and time.monotonic() - self._last_persistent_response_at
+                        >= self.max_persistent_idle_seconds):
+                # Proactive reconnect is safe for INSERT: it occurs before
+                # sending any bytes, unlike retrying an ambiguous response.
+                self._close_connection_unlocked()
             if self._connection is None:
                 self._connection = self._new_connection()
             try:
@@ -451,6 +467,7 @@ class ClickHouseHttpClient:
                 )
                 response = self._connection.getresponse()
                 body = response.read().decode("utf-8", errors="replace")
+                self._last_persistent_response_at = time.monotonic()
                 if response.will_close:
                     self._close_connection_unlocked()
                 if response.status >= 400:
@@ -467,6 +484,7 @@ class ClickHouseHttpClient:
     def _close_connection_unlocked(self) -> None:
         connection = self._connection
         self._connection = None
+        self._last_persistent_response_at = None
         if connection is not None:
             connection.close()
 

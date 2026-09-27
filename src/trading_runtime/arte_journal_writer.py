@@ -220,6 +220,7 @@ def journal_client_from_env() -> Any:
         raise ValueError("Typed journal principal must differ from market-data readers")
     return ClickHouseHttpClient(
         url, user, password, timeout_seconds=60, persistent=True,
+        max_persistent_idle_seconds=5,
         default_query_params={"max_threads": 2, "max_execution_time": 60},
     )
 
@@ -277,6 +278,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
     def new_detail_lane() -> ClickHouseHttpClient:
         lane = ClickHouseHttpClient(
             url, user, password, timeout_seconds=60, persistent=True,
+            max_persistent_idle_seconds=5,
             default_query_params={"max_threads": 2, "max_execution_time": 60},
         )
         lane.typed_insert_dispatch = client.typed_insert_dispatch
