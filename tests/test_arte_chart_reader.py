@@ -24,9 +24,11 @@ class _Client:
     def __init__(self, rows):
         self.rows = rows
         self.sql = ""
+        self.calls = 0
 
     def execute(self, sql):
         self.sql = sql
+        self.calls += 1
         return "\n".join(json.dumps(row) for row in self.rows)
 
     def close(self):
@@ -76,6 +78,42 @@ class ArteChartReaderTests(unittest.TestCase):
                        return_value=_Client(rows)):
                 with self.assertRaisesRegex(RuntimeError, reason):
                     certified_chart_plan(DAY, "SUGP", "1s")
+
+    def test_immutable_fenced_plan_reuses_two_minute_cache_but_absence_expires(self):
+        from src.backend import arte_chart_reader
+        rows = [{"build_id": "build", "definition_hash": "a" * 64,
+                 "stage": stage, "attempt_id": attempt, "source_hash": "source",
+                 "output_rows": 2, "output_hash": "hash"}
+                for stage, attempt in (("bars", BAR_ATTEMPT),
+                                       ("technical", TECH_ATTEMPT),
+                                       ("broker_100ms", BAR_ATTEMPT))]
+        clock = [100.0]
+        client = _Client(rows)
+        arte_chart_reader._plan_cache.clear()
+        with (patch("src.backend.arte_chart_reader._reader", return_value=client),
+              patch("src.backend.arte_chart_reader.monotonic",
+                    side_effect=lambda: clock[0])):
+            first = certified_chart_plan(DAY, "SUGP", "1s")
+            clock[0] = 219.0
+            self.assertIs(certified_chart_plan(DAY, "SUGP", "1s"), first)
+            self.assertEqual(client.calls, 1)
+            clock[0] = 221.0
+            certified_chart_plan(DAY, "SUGP", "1s")
+            self.assertEqual(client.calls, 2)
+        arte_chart_reader._plan_cache.clear()
+        missing = _Client([])
+        clock[0] = 300.0
+        with (patch("src.backend.arte_chart_reader._reader", return_value=missing),
+              patch("src.backend.arte_chart_reader.monotonic",
+                    side_effect=lambda: clock[0])):
+            self.assertIsNone(certified_chart_plan(DAY, "SUGP", "1s"))
+            clock[0] = 301.0
+            self.assertIsNone(certified_chart_plan(DAY, "SUGP", "1s"))
+            self.assertEqual(missing.calls, 1)
+            clock[0] = 303.0
+            self.assertIsNone(certified_chart_plan(DAY, "SUGP", "1s"))
+            self.assertEqual(missing.calls, 2)
+        arte_chart_reader._plan_cache.clear()
 
     def test_only_compatible_columns_and_auxiliary_modes_use_arte(self):
         args = dict(timeframe="1s", stage="full", indicator_columns=["bar_start", "ema_9"],

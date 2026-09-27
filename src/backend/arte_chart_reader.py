@@ -36,6 +36,8 @@ _INDICATORS = frozenset({
 _NY = ZoneInfo("America/New_York")
 _plan_cache: dict[tuple[date, str, str], tuple[float, CertifiedMarketDayPlan | None]] = {}
 _plan_lock = Lock()
+_FENCED_PLAN_TTL_SECONDS = 120.0
+_MISSING_PLAN_TTL_SECONDS = 2.0
 
 
 def _literal(value: str) -> str:
@@ -138,7 +140,12 @@ def certified_chart_plan(session: date, ticker: str, timeframe: str) -> Certifie
     with _plan_lock:
         if len(_plan_cache) >= 512:
             _plan_cache.clear()
-        _plan_cache[key] = (monotonic() + 2.0, plan)
+        # A fenced build is immutable, and the chart-page cache uses this
+        # same two-minute horizon. Missing scope stays short-lived while a
+        # producer may still publish its coverage-last certificate.
+        _plan_cache[key] = (monotonic() + (
+            _FENCED_PLAN_TTL_SECONDS if plan is not None
+            else _MISSING_PLAN_TTL_SECONDS), plan)
     return plan
 
 
