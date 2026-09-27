@@ -71,10 +71,14 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch):
 
     monkeypatch.setattr(subject, "build_certified_strategy_one_scheduler", build)
     reader = SimpleNamespace(close=lambda: calls.append("reader_closed"))
+    def preload_seeds(_selected, *, client_factory, max_workers):
+        assert max_workers == 1
+        assert callable(client_factory)
+        calls.append("seed_preloaded")
+
     monkeypatch.setattr(subject, "StrategyOneCausalEvidence",
                         lambda **_kwargs: SimpleNamespace(v7=SimpleNamespace(
-                            preload_seeds=lambda *_args, **_kwargs:
-                            calls.append("seed_preloaded"))))
+                            preload_seeds=preload_seeds)))
     monkeypatch.setattr(subject, "StrategyOneManagementRunner",
                         lambda **_kwargs: SimpleNamespace())
 

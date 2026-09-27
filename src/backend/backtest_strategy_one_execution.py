@@ -174,7 +174,11 @@ async def run_certified_strategy_one_session(
                 seed_started = perf_counter() if stage_time is not None else 0.0
                 await asyncio.to_thread(
                     evidence.v7.preload_seeds, selected,
-                    client_factory=client_factory, max_workers=max_workers)
+                    client_factory=client_factory,
+                    # Seed construction is read-only and ticker-independent.
+                    # Keep it bounded separately from the four-lane market
+                    # scheduler so cold start uses the workstation's CPUs.
+                    max_workers=min(8, len(selected)))
                 if stage_time is not None:
                     stage_time("strategy_one_v7_seed_preload", seed_started)
             manager = StrategyOneManagementRunner(
