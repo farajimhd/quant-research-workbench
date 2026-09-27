@@ -635,7 +635,9 @@ def project_journal_record(
             lineage = (committed_order_lineage or {}).get(str(source.get("order_ref", "")))
             if lineage is None:
                 raise ValueError("Fill has unmodeled source fields without a committed typed order lineage")
-            expected_raw, account, ticker, conid = lineage
+            if len(lineage) not in {4, 6}:
+                raise ValueError("Fill has incomplete committed OMS order lineage")
+            expected_raw, account, ticker, conid = lineage[:4]
             if ({key: source.get(key) for key in canonical_keys} != expected_raw
                     or record.account_id != account
                     or str(source.get("symbol", "")).upper() != ticker
@@ -1533,6 +1535,7 @@ def order_command_batch(
     correlation_id: str = "", causation_id: str = "",
     source_intent: StrategyIntent | None = None,
     source_intent_batch_id: str = "",
+    approved_oms_lineage: tuple | None = None,
 ) -> TypedJournalBatch:
     """Capture one broker command losslessly before external dispatch.
 
@@ -1574,7 +1577,25 @@ def order_command_batch(
         expected = canonical_runtime_order_raw(
             flat, source_intent, run_id=run_id,
             strategy_id=strategy_id, strategy_revision=strategy_revision)
-        if request.raw != expected:
+        if request.raw != expected and (
+                approved_oms_lineage is None
+                or len(approved_oms_lineage) != 6
+                or not isinstance(approved_oms_lineage[0], dict)
+                or request.raw != {
+                    "canonical_run_id": run_id,
+                    "canonical_strategy_id": strategy_id,
+                    "canonical_strategy_revision": strategy_revision,
+                    "canonical_metadata": approved_oms_lineage[0].get(
+                        "canonical_metadata"),
+                }
+                or approved_oms_lineage != (
+                    {
+                        "strategy_id": strategy_id,
+                        "canonical_strategy_revision": strategy_revision,
+                        "canonical_run_id": run_id,
+                        "canonical_metadata": request.raw.get("canonical_metadata"),
+                    }, request.acctId, request.ticker.upper(), request.conid,
+                    order_group_id, strategy_intent_id)):
             mismatched = [key for key in sorted(set(request.raw) | set(expected))
                           if request.raw.get(key) != expected.get(key)]
             if "canonical_metadata" in mismatched:

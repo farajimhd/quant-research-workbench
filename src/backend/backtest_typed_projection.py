@@ -52,7 +52,8 @@ def committed_oms_order_lineage(group: object, *, run_id: str,
             "canonical_metadata": canonical_oms_order_metadata(
                 group, order, authorized_protection),
         }
-        lineage = (expected, group.account_id, order.ticker.upper(), order.conid)
+        lineage = (expected, group.account_id, order.ticker.upper(), order.conid,
+                   group.group_id, group.intent.intent_id)
         prior = result.setdefault(order.cOID, lineage)
         if prior != lineage:
             raise ValueError("Client order ID has conflicting OMS lineage")
@@ -64,7 +65,7 @@ def authorized_oms_lineage_transition(
     proof: object | None,
 ) -> bool:
     """Permit only a target child's journaled scalar amendment delta."""
-    if (proof is None or len(old) != 4 or len(new) != 4
+    if (proof is None or len(old) != len(new) or len(old) not in {4, 6}
             or old[1:] != new[1:]
             or not isinstance(old[0], dict) or not isinstance(new[0], dict)
             or not isinstance(old[0].get("canonical_metadata"), dict)
@@ -205,6 +206,7 @@ def project_pending_backtest_v4_prefix(
                 strategy_intent_record_id=source[0].intents[0]["record_id"],
                 strategy_intent_content_hash=sealed_source[0]["content_hash"],
                 source_intent=source[1], source_intent_batch_id=source[0].batch_id,
+                approved_oms_lineage=order_lineage.get(request.cOID),
                 record_id=record.record_id, event_category=record.category,
                 event_entity_type=record.entity_type,
                 correlation_id=str(payload.get("correlation_id") or ""),
