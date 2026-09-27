@@ -149,6 +149,55 @@ def test_typed_ack_does_not_rewrite_shared_gate() -> None:
     assert authority._read_gate("run-1")[1] == gate_versions[0]
 
 
+@pytest.mark.parametrize("conflict_count,success", ((12, True), (64, False)))
+def test_typed_ack_tolerates_bounded_parallel_gate_contention(
+    monkeypatch, conflict_count, success,
+) -> None:
+    from src.trading_runtime import arte_typed_insert_dispatch as dispatch_module
+
+    keeper = Keeper()
+    authority = TypedInsertDispatch(keeper)
+    authority.initialize_new_run("run-1")
+    reserve_direct(authority)
+    actual_transaction = keeper.transaction
+    conflicts = conflict_count
+
+    def contended_transaction():
+        transaction = actual_transaction()
+        actual_commit = transaction.commit
+
+        def commit():
+            nonlocal conflicts
+            if (transaction.checks and len(transaction.ops) == 1
+                    and transaction.ops[0][0] == "set"
+                    and transaction.ops[0][1] != transaction.checks[0][0]
+                    and conflicts):
+                conflicts -= 1
+                return [BadVersionError()]
+            return actual_commit()
+
+        transaction.commit = commit
+        return transaction
+
+    keeper.transaction = contended_transaction
+    monkeypatch.setattr(dispatch_module, "sleep", lambda _: None)
+    client = Client(authority)
+    def insert():
+        authority.execute_typed_insert(
+            client, run_id="run-1", table="trading_event_v1", token="batch-1",
+            sql=SQL, batch_id=BATCH_ID, batch_last_sequence=1)
+
+    if success:
+        insert()
+    else:
+        with pytest.raises(KeeperUnavailable, match="acknowledgement CAS contended"):
+            insert()
+        with pytest.raises(KeeperUnavailable, match="pending or ambiguous"):
+            authority.acquire_cold_barrier("run-1")
+    assert conflicts == 0
+    assert len(client.calls) == 1
+
+
 def test_acknowledged_insert_blocks_cold_until_explicit_parent_seal() -> None:
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run("run-1")

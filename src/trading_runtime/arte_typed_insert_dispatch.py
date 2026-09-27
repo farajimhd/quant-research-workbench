@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import re
+from time import sleep
 from typing import Any
 from uuid import UUID
 
@@ -18,6 +19,7 @@ from src.trading_runtime.keeper_ownership import (
 
 _ZERO_BATCH = "00000000-0000-0000-0000-000000000000"
 _ZERO_HASH = "0" * 64
+_ACK_CAS_ATTEMPTS = 64
 _SNAPSHOT_TABLES = frozenset({
     "trading_portfolio_snapshot_v1", "trading_portfolio_disabled_strategy_v1",
     "trading_portfolio_command_v1", "trading_portfolio_request_v1",
@@ -542,7 +544,7 @@ class TypedInsertDispatch:
             raise KeeperUnavailable("Typed dispatch gate CAS contended")
         # Do not catch/clear transport errors: the server may still commit.
         client.execute(sql, query_id=query_id)
-        for _ in range(8):
+        for attempt in range(_ACK_CAS_ATTEMPTS):
             gate, version = self._read_gate(run_id)
             if gate.mode != "open" or gate.inflight < 1:
                 raise KeeperUnavailable("Typed dispatch gate changed before acknowledgement")
@@ -557,6 +559,11 @@ class TypedInsertDispatch:
             txn.set_data(path, completed, version=stat.version)
             if _committed(txn.commit()):
                 return
+            # Independent family lanes can register or acknowledge while this
+            # lane checks the shared gate. Yield only on a proven optimistic
+            # conflict; transport and ambiguous INSERT errors still fail closed.
+            if attempt + 1 < _ACK_CAS_ATTEMPTS:
+                sleep(min(0.001 * (attempt + 1), 0.01))
         raise KeeperUnavailable("Typed dispatch acknowledgement CAS contended")
 
     def seal_verified_operation(self, *, run_id: str, table: str, token: str,
