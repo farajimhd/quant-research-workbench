@@ -174,6 +174,11 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "strategy_run_ready": True,
                     "window": {"sessions": ["2026-07-28"]},
+                    "execution_interval": "100ms",
+                    "market_data_plan": {
+                        "token": "certified-plan",
+                        "execution_interval": {"milliseconds": 100},
+                    },
                 },
             ),
             patch(
@@ -195,7 +200,31 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(definition.start_time, time(9, 30))
         self.assertEqual(definition.end_time, time(10, 15))
         self.assertEqual(definition.tickers, ("AAPL", "MSFT"))
+        self.assertEqual(definition.execution_interval, "100ms")
         self.assertEqual(payload["mode"], "backtest")
+
+    async def test_backtest_create_rejects_uncertified_interval(self) -> None:
+        request = BacktestRunCreateRequest(
+            anchor_date=date(2026, 7, 28), session_count=1,
+            configuration_revision_id="approved-backtest",
+            start_time="09:30:00", end_time="10:15:00",
+        )
+        with (
+            patch("src.backend.app.backtest_configuration_snapshot",
+                  return_value={"revision_id": "approved-backtest", "payload": {}}),
+            patch("src.backend.app.backtest_preflight", return_value={
+                "strategy_run_ready": True,
+                "window": {"sessions": ["2026-07-28"]},
+            }),
+            patch("src.backend.app.backtest_run_service.create",
+                  new=AsyncMock()) as create,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await trading_backtest_run_create(request)
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("did not certify an execution interval",
+                      str(raised.exception.detail))
+        create.assert_not_awaited()
 
     async def test_debug_canvas_uses_debug_service_and_preserves_runtime_mode(self) -> None:
         controller = MagicMock()

@@ -5496,6 +5496,9 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
                         for check in preflight.get("checks", [])
                         if check.get("required", True) and check.get("status") == "blocked"]
             raise ValueError("Backtest cannot start: " + ("; ".join(blockers) or "check dependencies again"))
+        interval = preflight.get("execution_interval")
+        if not isinstance(interval, str) or not interval:
+            raise ValueError("Backtest preflight did not certify an execution interval")
         sessions = tuple(date.fromisoformat(value) for value in preflight["window"]["sessions"])
         definition = ReplayRunDefinition(
             session_date=sessions[0],
@@ -5504,7 +5507,7 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             end_time=_replay_clock_time(payload.end_time),
             initial_cash=payload.initial_cash,
             configuration_revision=configuration_revision,
-            execution_interval=str(preflight.get("execution_interval") or "events"),
+            execution_interval=interval,
             market_data_plan=dict(preflight.get("market_data_plan") or {}),
             causal_v7_plan=dict(preflight.get("causal_v7_plan") or {}),
             mode=RunMode.BACKTEST,
