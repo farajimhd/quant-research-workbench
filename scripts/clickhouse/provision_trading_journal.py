@@ -299,12 +299,33 @@ def main() -> int:
                         help="also grant preprovisioned typed dispatch/completion tables")
     parser.add_argument("--staged-live-signal-only", action="store_true",
                         help="grant only preprovisioned live-signal tables; leave all other grants unchanged")
+    parser.add_argument("--inspect-effective-grants", action="store_true",
+                        help="print the existing journal principal's effective grants without changes")
     parser.add_argument("--staged-live-plan-membership", action="store_true",
                         help="also grant preprovisioned typed membership tables")
     parser.add_argument("--fixed-backtest-v2", action="store_true",
                         help="reconcile exact preprovisioned V2 grants and remove legacy V1 inserts")
     args = parser.parse_args()
     try:
+        if args.inspect_effective_grants:
+            if args.apply:
+                raise ValueError("Grant inspection is read-only")
+            if platform.node().upper() != "DESKTOP-SAAI85T":
+                raise RuntimeError("Grant inspection must run on DESKTOP-SAAI85T")
+            parsed = urlsplit(args.url)
+            if (parsed.scheme, parsed.hostname, parsed.port, parsed.path,
+                    parsed.query, parsed.fragment, parsed.username, parsed.password) not in {
+                    ("http", "desktop-saai85t", 18123, "", "", "", None, None),
+                    ("http", "127.0.0.1", 8123, "", "", "", None, None),
+            } or not SECRET_PATH.is_file():
+                raise RuntimeError("Pinned journal endpoint or existing credential is missing")
+            password = _credential(SECRET_PATH, account_exists=True)
+            writer = ClickHouseHttpClient(args.url, PRINCIPAL, password,
+                                          timeout_seconds=20)
+            if writer.execute("SELECT currentUser()").strip() != PRINCIPAL:
+                raise RuntimeError("Journal credential authenticated as the wrong user")
+            print(writer.execute("SHOW GRANTS FINAL"))
+            return 0
         provision(args.url, apply=args.apply,
                   staged_live_signal=args.staged_live_signal,
                   staged_live_plan_membership=args.staged_live_plan_membership,
