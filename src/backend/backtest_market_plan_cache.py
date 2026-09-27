@@ -13,10 +13,12 @@ from threading import Lock
 from typing import Any, Mapping
 
 from src.trading_runtime.arte_market_day_certification import TABLES as CERTIFICATE_TABLES
+from src.trading_runtime.arte_market_day_session_seal import SESSION_SEAL
 
 
 _NAMES = tuple(sorted({table.name for table in CERTIFICATE_TABLES} |
-                      {"bars_v1", "indicators_v1", "liquidity_100ms_v1"}))
+                      {SESSION_SEAL.name, "bars_v1", "indicators_v1",
+                       "liquidity_100ms_v1"}))
 _PRICE_NAMES = ("liquidity_execution_price_100ms_v1",
                 "liquidity_execution_price_coverage_v1")
 _QUERIES = (

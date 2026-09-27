@@ -341,6 +341,7 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
             sessions=days,
             tickers=symbols, configuration=configuration,
             expected_build_ids=build_ids,
+            use_seals=True,
             read_client_factory=(
                 lambda: _MarketCertificateReader(
                     readonly_clickhouse_client(v3_read_principal=True))
@@ -374,6 +375,7 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
                     reader, _MarketCertificateProofs(proofs),
                     sessions=days, tickers=symbols, configuration=configuration,
                     expected_build_ids=build_ids,
+                    use_seals=True,
                     read_client_factory=lambda: _MarketCertificateReader(
                         readonly_clickhouse_client(v3_read_principal=True)))
                 if refreshed.token != plan.token:

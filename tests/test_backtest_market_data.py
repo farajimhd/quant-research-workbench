@@ -147,6 +147,7 @@ class BacktestMarketDataTests(unittest.TestCase):
         open_reader.assert_called_once_with(v3_read_principal=True)
         self.assertEqual(discover.call_args.kwargs["sessions"], ("2026-08-18",))
         self.assertEqual(discover.call_args.kwargs["expected_build_ids"], ("a" * 64,))
+        self.assertIs(discover.call_args.kwargs["use_seals"], True)
         self.assertTrue(session.closed)
         self.assertEqual(discover.call_args.args[1].load("a" * 64), "attested")
         keeper_reader.return_value.load.assert_called_once_with("a" * 64)

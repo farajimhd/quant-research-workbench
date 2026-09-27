@@ -397,7 +397,8 @@ def discover_cold_certified_market_day_plan(certificate_client: Any,
                                              tickers: tuple[str, ...],
                                              configuration: Mapping[str, Any],
                                              expected_build_ids: tuple[str, ...] | None = None,
-                                             read_client_factory: Callable[[], Any] | None = None) -> Any:
+                                             read_client_factory: Callable[[], Any] | None = None,
+                                             use_seals: bool = False) -> Any:
     """Select one attested build from arte, never a producer disk manifest.
 
     An explicit build pin resolves overlapping certified builds. A caller may
@@ -409,9 +410,11 @@ def discover_cold_certified_market_day_plan(certificate_client: Any,
         raise RuntimeError("Market-day fence catalogue changed during Keeper proof snapshot")
     compatible = []
     errors = []
+    constructor = (sealed_certified_market_day_plan if use_seals
+                   else cold_certified_market_day_plan)
     for build_id in ids:
         try:
-            compatible.append(cold_certified_market_day_plan(
+            compatible.append(constructor(
                 certificate_client, keeper, build_id, sessions=sessions,
                 tickers=tickers, configuration=configuration,
                 read_client_factory=read_client_factory))
