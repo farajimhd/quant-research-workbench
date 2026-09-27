@@ -39,9 +39,9 @@ preserve these semantics and original condition evidence.
 
 ARTE needs a versioned compact bar product, beginning with completed 100 ms
 bars. This paragraph describes the earlier ARTE-native proposal; it is not a
-claim that no `arte` bars exist. The current market-day builder already writes
-versioned `arte.market_day_bars_v1` and technical products from certified
-compact events. ARTE must validate that existing schema, source/revision
+claim that no `arte` bars exist. The current market-day builder writes
+`arte.bars_v1`, `arte.indicators_v1`, and `arte.liquidity_100ms_v1` from
+certified compact events. ARTE must validate their schema, source/revision
 identity, retention, and range-query cost before adopting it or publishing a
 compatible successor.
 

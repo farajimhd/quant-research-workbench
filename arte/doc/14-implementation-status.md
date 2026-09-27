@@ -13,10 +13,10 @@ select or reconcile certified yearly compact and flatfile-import sources.
 The delayed-trade `event_meta` capability and source-day reporting revision
 must be checked before a historical run relies on the bit.
 
-The existing `arte.structural_levels_v7`,
-`arte.structural_level_coverage_v7`, and
-`arte.structural_level_builder_checkpoint_v7` contract and persisted
-`arte.market_day_bars_v1`/`arte.market_day_technical_v1` are design inputs.
+The approved `arte.structural_levels_v7_v2`,
+`arte.structural_level_observations_v7_v2`, and
+`arte.structural_level_coverage_v7_v2` contract and persisted
+`arte.bars_v1`/`arte.indicators_v1`/`arte.liquidity_100ms_v1` are design inputs.
 Current ARTE code has not yet adopted and verified these external products as
 its historical seed and fast Backtest authorities. Their presence or ongoing
 population is not proof of ARTE coverage, parity, or runnable readiness.

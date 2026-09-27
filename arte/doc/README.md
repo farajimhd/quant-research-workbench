@@ -14,8 +14,9 @@ products, not raw flatfiles. This revision supersedes the earlier REST-only
 historical-source boundary. It does not make the parent application a runtime
 dependency or authorize writes to the existing yearly tables.
 
-The existing `arte` V7 interval, coverage, and builder-checkpoint tables and
-persisted market-day bars/indicators are design inputs. Their source revisions,
+The approved `arte` V7 V2 level/observation/coverage tables and
+`arte.bars_v1`, `arte.indicators_v1`, `arte.liquidity_100ms_v1` are design inputs.
+The V2 direct producer has no terminal builder-checkpoint table. Source revisions,
 coverage, storage placement, calculation versions, and causal availability
 must be verified before ARTE uses them. Their existence is not end-to-end
 Backtest readiness.

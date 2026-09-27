@@ -79,6 +79,13 @@ Do not cancel the only protection while attempting a replacement.
 
 Outside applicable LULD hours, use the explicit extended-session risk policy.
 Estimated historical bands are not official bands. Record that capability difference.
+Historical Backtest may explicitly select a versioned estimated-band mode to
+study strategy behavior. Label its orders and results as modeled and compare
+against any recorded official-band days. The live execution gate remains
+official-only; a REST trade/quote response or an estimated band does not meet it.
+The documented Massive LULD channel is WebSocket. A live REST endpoint returning
+fresh official bands has not been established by this design and must be
+verified before an adapter relies on it.
 
 ## IBKR session contract
 

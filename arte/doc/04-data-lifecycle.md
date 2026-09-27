@@ -131,8 +131,9 @@ run or recovery checkpoint. Bar-based historical level construction and
 streaming live level updates share tested semantics but have separate source
 and availability contracts.
 
-The existing `arte.market_day_bars_v1` and `arte.market_day_technical_v1`
-products are a candidate fast Backtest authority. Their current builder reads
+The approved `arte.bars_v1`, `arte.indicators_v1`, and
+`arte.liquidity_100ms_v1` products are candidate fast Backtest authorities.
+Their current builder reads
 certified compact events and other dated reference inputs. ARTE must pin each
 completed build, unit attempt, source/reporting revision, seed mode, and
 calculation hash; verify coverage and `live_market_ssd` placement; and either
@@ -141,13 +142,17 @@ ARTE-owned successors. A current `arte` table does not by itself remove its
 parent-code or other-database dependencies. No per-bar ClickHouse query belongs
 in the Backtest hot loop.
 
-The existing `arte.structural_levels_v7`,
-`arte.structural_level_coverage_v7`, and
-`arte.structural_level_builder_checkpoint_v7` contracts must be maintained.
-The coverage fence and terminal builder checkpoint are distinct. The historical
+The approved `arte.structural_levels_v7_v2`,
+`arte.structural_level_observations_v7_v2`, and
+`arte.structural_level_coverage_v7_v2` contracts must be maintained.
+The V2 coverage fence follows level and observation inserts. Its direct producer
+does not publish a terminal builder-checkpoint table and currently restarts an
+interrupted ticker from the start of its frozen history. Incremental ARTE
+maintenance needs a separately designed compatible recovery state. The historical
 levels are retrospective and become seed inputs only after their recorded
 session-end availability. ARTE must check source/condition/split/algorithm
-compatibility before advancing or loading a checkpoint. Streaming state does
+compatibility before advancing or loading any future incremental recovery state.
+Streaming state does
 not replace these historical rows.
 
 Fixed-cadence Boolean products such as signal streams and Watchlists use sparse
@@ -210,6 +215,29 @@ files are not an allowed fallback, temporary spool, or recovery authority.
 Retention durations are mandatory profile settings, not hidden defaults.
 Expiry must respect checkpoint dependencies, active runs, and audit pins.
 Delete nothing required to reproduce an accepted run or resume a retained seed.
+
+## Historical halt and LULD evidence
+
+Do not synthesize price bars to represent a halt. A proposed
+`arte.halt_episodes_v1` table stores one logical episode per instrument and
+session: start and optional end, source status and reason codes, first and
+last source-event clocks, knowledge/publication clocks, source revision, and
+coverage identity. An open episode is provisional; a later close is a
+versioned update to the same episode identity. Half-open `[start, end)`
+queries must not expose an end that was unknown at the requested cutoff.
+Missing halt evidence is unknown, not trading-active. This table is proposed,
+not yet implemented or approved as a specific physical schema.
+
+Keep official LULD band updates separate from technical indicators and from
+estimated bands. Live official updates can be recorded as sparse timestamped
+intervals with provider, instrument, session, lower/upper prices, effective
+and receive/availability clocks, and source coverage. A historical estimate
+may be computed from causally available trades and versioned LULD-plan rules,
+but must be labeled `estimated` and carry uncertainty. It cannot certify the
+SIP's actual disseminated band or satisfy Live's official-band safety gate.
+Trades/quotes or flatfiles alone do not establish complete official historical
+LULD coverage. Backtests must name the chosen official, estimated, or
+unavailable mode and never silently substitute one for another.
 
 ## Nonblocking market persistence
 

@@ -32,8 +32,9 @@ and strategy acceptance remain separate approvals.
 - The new event store has no dense persisted ordinal requirement.
 - Store no redundant whole payloads for ordinary REST/WebSocket overlap.
 - Historical V7 owns daily seeds; streaming state is separate.
-- Maintain compatible existing `arte` V7 interval, coverage, and terminal
-  builder-checkpoint tables instead of introducing a duplicate seed authority.
+- Maintain approved `arte` V7 V2 level, observation, and coverage tables
+  instead of introducing a duplicate seed authority. Its direct producer has
+  no persisted terminal builder checkpoint; incremental recovery is a gate.
 - Use completed persisted `arte` bars and indicators for Backtest when their
   source, reporting revision, unit attempts, seed mode, and coverage match.
 - ClickHouse is the only external durable persistence service.
@@ -58,14 +59,15 @@ and strategy acceptance remain separate approvals.
 | Acquisition scope | Universe, historical depth, entitlement, cost and throughput | Broad REST backfill |
 | Flatfile import target | Decide whether an ARTE-owned importer writes only ARTE source tables or may append to yearly compact tables; prove isolation and recovery | Any importer writer |
 | Existing archive capability | Yearly source-day certificates, `event_meta` reporting revision, field support, point-in-time identity | Read-only archive admission |
-| Existing derived products | `arte` market-day builds and V7 interval/checkpoint coverage, exact source/calculation compatibility | Backtest and next-session seed admission |
+| Existing derived products | Approved `arte` market-day builds and V7 V2 interval/coverage, exact source/calculation compatibility | Backtest and next-session seed admission |
 | Cross-channel order | Precision ties and stable merge contract | Historical parity claims |
 | V7 baseline | Copied source/config hashes and representative fixtures | Rust port acceptance |
 | Seed availability | Observed or declared historical publication schedule | Point-in-time seed validation |
 | Device budgets | Measured memory, peak rates and query contention | Approved hardware profiles |
 | Latency thresholds | Clock uncertainty and strategy timing requirements | Live arming |
 | Broker adapter | Session workflow, account permissions, pacing and partial protection | Broker release |
-| Historical LULD | Official recorded coverage or explicit modeled alternative | Official-band historical claims |
+| Historical LULD | Official recorded coverage or explicit versioned modeled alternative with separate result labels | Official-band historical claims |
+| Historical halt episodes | Approved event sources, status/reason mapping, interval identity, as-known closure and coverage | Halt-aware Backtest or live admission |
 | Durability | ClickHouse acknowledgment/recovery semantics and measured latency | Crash-safe order submission |
 | Retention | Run pins, seed dependencies and recovery requirements | Automated expiry |
 | Strategy 350 | Frozen source/configuration, causal rule and decision parity | Candidate backtest and live activation |

@@ -428,3 +428,22 @@ boundary but do not approve a new importer write target.**
 |---|---|---|
 | U25 | "boundary that might not help ... flatfiles digestions" | Read-only compact history, flatfile resilience, retained `arte` V7 and bars/indicators, documentation reorganization |
 | U26 | "download_update_events ... rewritten ... in Rust and Clickhouse" | Rust/ClickHouse importer target; write destination remains for discussion |
+
+## Approved current products and new historical questions
+
+**Confirmed by the user after the source review:** the current `arte` market-day
+products and V7 V2 persistence contract are approved design inputs. Replace
+stale references to the former `market_day_bars_v1` and
+`market_day_technical_v1` names with `bars_v1`, `indicators_v1`, and
+`liquidity_100ms_v1`. Use V7 V2 level, observation, and coverage tables;
+do not claim that V2 publishes a terminal builder-checkpoint table.
+
+The user proposed one historical halt row per episode with start, end, and
+reasons. A separate causal halt-episode product is now a design proposal; its
+physical schema, source completeness, and as-known closure still need review.
+The user asked whether historical LULD can be estimated and whether a new
+historical updater can be used for the pending week. An estimated historical
+mode is possible but is not official-band evidence. The new updater has not
+been implemented or authorized for connected operation in this temporary
+repository. Neither question changes the Live official-band gate or the
+undecided import destination.

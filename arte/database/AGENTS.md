@@ -16,10 +16,14 @@ Read `../doc/03-events.md`, `../doc/04-data-lifecycle.md`, and
 - Version compact bars, indicators, Boolean products, V7 levels, seeds,
   decisions, commands, fills, logs, and coverage by their actual causal and
   publication contracts. Store only required products with pinned retention.
-- Maintain compatible existing `arte.structural_levels_v7`, V7 coverage and
-  builder checkpoints, plus completed `arte.market_day_bars_v1` and
-  `arte.market_day_technical_v1`; verify source and calculation identities
-  before consumer cutover.
+- Treat `arte.structural_levels_v7_v2`,
+  `arte.structural_level_observations_v7_v2`, and
+  `arte.structural_level_coverage_v7_v2` as the approved current historical
+  V7 contract. The V2 direct producer has no persisted terminal builder
+  checkpoint table; design incremental recovery before relying on it.
+- Treat `arte.bars_v1`, `arte.indicators_v1`, and
+  `arte.liquidity_100ms_v1` as the approved current market-day table contract.
+  Verify source, calculation, coverage, and published attempts before cutover.
 - Make migrations restart-safe and independently verifiable. Insert immutable
   objects first, read them back, and publish roots/coverage last. Never treat
   `IF NOT EXISTS` or a setting change as proof of schema or part migration.

@@ -2,19 +2,22 @@
 
 ## Current persisted historical authority
 
-The user has selected the existing `arte` V7 persistence contract for
-continued use. `arte.structural_levels_v7` stores coalesced historical closing
-states as half-open `[valid_from, valid_to)` intervals. Here `valid_from` is
-the checkpoint's session-end availability, not an intraday confirmation.
-`arte.structural_level_coverage_v7` is the publication fence and session audit;
-`arte.structural_level_builder_checkpoint_v7` stores the latest complete
-historical engine checkpoint per ticker. A missing or empty-certified session
+The user has approved the current direct-publication V2 persistence contract.
+`arte.structural_levels_v7_v2` and
+`arte.structural_level_observations_v7_v2` store coalesced historical closing
+states and observation assignments as half-open `[valid_from, valid_to)`
+intervals. Here `valid_from` is the checkpoint's session-end availability,
+not an intraday confirmation. `arte.structural_level_coverage_v7_v2` is the
+publication fence and session audit. A missing or empty-certified session
 must remain distinguishable.
 
-The stored contract is `arte-structural-levels-v7-1`. Preserve role-transition
-ancestry, mixture parent identity, fit geometry, and the terminal checkpoint.
+The producer identity is `arte-structural-v7-direct-v2`. It retains
+role-transition ancestry, mixture parent identity,
+fit geometry, and typed observation assignments. Unlike the earlier V1
+proposal, it has no persisted terminal builder-checkpoint table: an
+interrupted ticker is recalculated from the start of its frozen history.
 Read only a published coverage generation. Never expose a future `valid_to` as
-a strategy feature. Before ARTE advances a builder checkpoint, verify source,
+a strategy feature. Before ARTE advances any new recovery state, verify source,
 trade-condition/reporting, split, algorithm, numerical, and predecessor
 compatibility. A changed historical source resumes from the last compatible
 predecessor, not by relabeling a current checkpoint.
@@ -22,9 +25,10 @@ predecessor, not by relabeling a current checkpoint.
 These tables exist as a persistence design and, per the user's update, are
 being populated. This document does not claim that the full population,
 source coverage, storage placement, or ARTE Rust parity has been verified.
-ARTE must not build a redundant historical checkpoint store merely because
-an earlier proposal described one. A separate version is justified only by a
-validated incompatible change and an explicit migration.
+ARTE must not build a redundant historical level authority merely because
+an earlier proposal described one. Incremental maintenance needs an explicit,
+compatible restart state or a measured bounded recomputation policy. A
+separate level version needs a validated incompatible change and migration.
 
 ## Two outputs, separate authority
 
@@ -94,7 +98,7 @@ Do not use retrospective chart candles as strategy inputs.
 ## Interval contract and causal query
 
 The original ARTE proposal below was inspired by half-open intervals. The
-existing `arte.structural_levels_v7` contract now supplies this shape and is
+approved `arte.structural_levels_v7_v2` contract now supplies this shape and is
 the starting authority. The proposal does not copy the earlier experimental
 level algorithm or assume its row fields are sufficient for V7.
 
@@ -117,13 +121,12 @@ mathematical proof and replay validation establish equivalence.
 
 ## Seed publication
 
-1. Pin the completed source generation and preceding certified seed or builder
-   checkpoint from the existing `arte` V7 authority.
+1. Pin the completed source generation and preceding published V2 historical
+   state. A future incremental builder checkpoint needs its own contract.
 2. Run historical V7 and validate fit, lineage, identity, and split handling.
-3. Write changed level intervals and the terminal builder checkpoint to
-   ClickHouse under a compatible versioned contract.
-4. Verify referenced object counts, hashes, interval continuity, and the
-   terminal checkpoint.
+3. Write changed level and observation intervals under the compatible V2
+   contract. Do not assume a V2 terminal builder-checkpoint table exists.
+4. Verify counts, hashes, interval continuity, and predecessor identity.
 5. Publish V7 coverage last as the certification fence.
 
 Readers ignore incomplete generations. Multi-table writes are not assumed atomic.
@@ -168,7 +171,7 @@ before returning it. Table merges must not conceal conflicting payloads.
 `schemas/001-seed-storage.sql` defines those proposed tables with
 `live_market_ssd`. It is not applied by build or validation commands.
 This proposal must not become a parallel historical seed authority while the
-existing `arte.structural_levels_v7` contract is compatible. Existing tables
+approved `arte.structural_levels_v7_v2` contract is compatible. Existing tables
 require schema review; `IF NOT EXISTS` is not proof that a deployed schema
 matches the contract.
 

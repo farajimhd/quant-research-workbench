@@ -47,9 +47,10 @@ Keep Market Data Engine (MDE) as the market-data component name.
   retain their designated source storage policy; ARTE does not move them.
 - Never substitute absent timestamps or convert retrospective evidence into live evidence.
 - Only historical V7 creates authoritative next-session seeds.
-- Maintain the existing `arte` V7 interval/coverage/builder-checkpoint contract
-  and persisted market-day bars/indicators. Reuse them only through verified
-  source, calculation, availability, and compatibility identities.
+- Maintain the approved `arte` historical V7 V2 level/observation/coverage
+  contract and current `bars_v1`, `indicators_v1`, `liquidity_100ms_v1` products.
+  Reuse them only through verified source, calculation, availability, attempt,
+  and compatibility identities. Do not assume V2 has a terminal builder table.
 - Backtest must not possess live broker credentials or control capability.
 - Reject exposure increases without complete approved bracket protection.
 

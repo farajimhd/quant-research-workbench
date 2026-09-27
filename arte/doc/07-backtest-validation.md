@@ -26,7 +26,8 @@ it never silently substitutes another source.
 
 The first backtest execution grid is completed 100 ms bars. Read bounded,
 columnar batches for many tickers and sessions from ARTE ClickHouse. The
-existing `arte.market_day_bars_v1` and `arte.market_day_technical_v1` are
+approved `arte.bars_v1`, `arte.indicators_v1`, and
+`arte.liquidity_100ms_v1` are
 candidate persisted inputs, not merely a future materialization. Verify their
 completed build, unit attempts, source/reporting revision, seed mode, exact
 calculation identity, and coverage before a run pins them. Vectorize
@@ -253,9 +254,9 @@ effective configuration hashes, and independently read decision journal rows.
 It does not substitute for a published multi-shard common cut.
 
 A run-scoped historical V7 seed catalog now pins exactly one seed-manifest
-hash per certified source shard. The existing `arte.structural_levels_v7`,
-`arte.structural_level_coverage_v7`, and
-`arte.structural_level_builder_checkpoint_v7` must supply or be proven
+hash per certified source shard. The approved `arte.structural_levels_v7_v2`,
+`arte.structural_level_observations_v7_v2`, and
+`arte.structural_level_coverage_v7_v2` must supply or be proven
 compatible with this catalog; a second ARTE seed store is not an automatic
 replacement. Multi-shard market startup checks the whole
 catalog against the run, then checks each ticker's seed identity, prior
