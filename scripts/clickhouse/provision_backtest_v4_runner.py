@@ -39,6 +39,7 @@ from src.trading_runtime.arte_journal_writer import (
     _FAMILIES, _v4_family_table, _v4_preflight,
 )
 from src.trading_runtime.arte_journal_schema import PORTFOLIO_SNAPSHOT_WRITE_TABLES
+from src.trading_runtime.arte_backtest_definition import TABLES as BACKTEST_DEFINITION_TABLES
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
@@ -71,7 +72,8 @@ def desired_plan() -> PrincipalPlan:
             *(table.name for table in PROTECTION_CHANGE_TABLES),
             *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
             "trading_backtest_account_snapshot_v2",
-            "trading_backtest_position_snapshot_v2"}
+            "trading_backtest_position_snapshot_v2",
+            *(table.name for table in BACKTEST_DEFINITION_TABLES)}
     return PrincipalPlan(
         "running", PRINCIPAL,
         frozenset(table.name for table in (*fixed_backtest_v2_contracts(), *V4_COMMIT_TABLES,
@@ -82,7 +84,8 @@ def desired_plan() -> PrincipalPlan:
                                           *OMS_TACTIC_TABLES,
                                           *RISK_ACTION_TABLES,
                                           *PROTECTION_CHANGE_TABLES,
-                                          *PROTECTION_RECONCILIATION_TABLES))
+                                          *PROTECTION_RECONCILIATION_TABLES,
+                                          *BACKTEST_DEFINITION_TABLES))
         | MARKET_READ_TABLES,
         writable, frozenset(SYSTEM_READ_TABLES),
     )
@@ -127,6 +130,7 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
     storage_preflight(admin, tables=V4_COMMIT_TABLES)
     storage_preflight(admin, tables=(ENTRY_EVIDENCE,))
     storage_preflight(admin, tables=OMS_TACTIC_TABLES)
+    storage_preflight(admin, tables=BACKTEST_DEFINITION_TABLES)
     password = credential(account_exists=present == "1")
     if not isinstance(password, str) or len(password) < 40:
         raise RuntimeError("V4 requires a private credential of at least 40 characters")

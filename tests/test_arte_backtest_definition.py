@@ -54,6 +54,7 @@ def test_strategy_one_definition_pins_all_certified_entry_dependencies():
     market = {"token": "certified-plan", "build_id": "build-1",
               "execution_interval": {"milliseconds": 100},
               "strategy_one_candidate_token": "c" * 64,
+              "strategy_one_identity_token": "9" * 64,
               "strategy_one_candidate_rule_digest": RULE_DIGEST,
               "strategy_one_scan_query_sha256": "d" * 64,
               "strategy_one_pivot_token": "e" * 64,
@@ -66,6 +67,7 @@ def test_strategy_one_definition_pins_all_certified_entry_dependencies():
     assert _definition(configuration_revision=config,
                        market_data_plan=market).market_data_plan == market
     for missing in ("strategy_one_candidate_token",
+                    "strategy_one_identity_token",
                     "strategy_one_candidate_rule_digest",
                     "strategy_one_scan_query_sha256",
                     "strategy_one_pivot_token",

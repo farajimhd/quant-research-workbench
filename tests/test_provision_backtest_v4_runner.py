@@ -3,6 +3,7 @@ from src.trading_runtime.arte_journal_schema import (
     MARKET_READ_TABLES, PORTFOLIO_SNAPSHOT_WRITE_TABLES,
     V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
 )
+from src.trading_runtime.arte_backtest_definition import TABLES as DEFINITION_TABLES
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
@@ -29,7 +30,8 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                 *(table.name for table in PROTECTION_CHANGE_TABLES),
                 *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
                 "trading_backtest_account_snapshot_v2",
-                "trading_backtest_position_snapshot_v2"}
+                "trading_backtest_position_snapshot_v2",
+                *(table.name for table in DEFINITION_TABLES)}
     assert "trading_strategy_signal_v1" not in plan.insert_arte
     assert "trading_strategy_signal_v2" in plan.insert_arte
     assert not plan.insert_arte & MARKET_READ_TABLES
@@ -46,7 +48,8 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                                      *provision.OMS_TACTIC_TABLES,
                                      *provision.RISK_ACTION_TABLES,
                                  *PROTECTION_CHANGE_TABLES,
-                                 *PROTECTION_RECONCILIATION_TABLES)) | MARKET_READ_TABLES
+                                 *PROTECTION_RECONCILIATION_TABLES,
+                                 *DEFINITION_TABLES)) | MARKET_READ_TABLES
     assert all(" ON arte." in grant or " ON system." in grant
                for grant in plan.grants())
 

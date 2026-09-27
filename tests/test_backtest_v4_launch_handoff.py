@@ -9,7 +9,10 @@ from uuid import uuid4
 from src.backend import backtest_fixed_journal_bootstrap as bootstrap
 from src.backend import backtest_journal_clickhouse, backtest_fixed_v4_certification
 from src.backend.replay_run_service import ReplayRunController
-from src.trading_runtime import arte_journal_writer, keeper_session
+from src.trading_runtime import (
+    arte_backtest_definition, arte_journal_writer, keeper_ownership,
+    keeper_session,
+)
 from src.trading_runtime.runtime import RunMode
 
 
@@ -56,6 +59,7 @@ def test_v4_handoff_pins_accounts_and_closes_control_clients(monkeypatch):
             calls.append(f"close:{self.name}")
 
     session = Resource("keeper")
+    session.client = object()
     monkeypatch.setattr(keeper_session, "open_workstation_keeper_session",
                         lambda: session)
     monkeypatch.setattr(arte_journal_writer, "backtest_v4_context_client_from_env",
@@ -79,6 +83,25 @@ def test_v4_handoff_pins_accounts_and_closes_control_clients(monkeypatch):
         return assembly
 
     monkeypatch.setattr(bootstrap, "publish_and_assemble_fixed_v4_journal", publish)
+    class Coordinator:
+        def __init__(self, client):
+            assert client is session.client
+
+        def acquire_portfolio_admission_lease(self, resource_id, *, owner_id,
+                                               ttl_seconds):
+            assert resource_id == f"backtest-definition:{controller.run_id}"
+            assert ttl_seconds == 300.0
+            return {"owner_id": owner_id, "epoch": 1}
+
+        def release_portfolio_admission_lease(self, resource_id, *, owner_id,
+                                               epoch):
+            calls.append("release_definition_claim")
+            return True
+
+    monkeypatch.setattr(keeper_ownership, "KeeperOwnershipCoordinator", Coordinator)
+    monkeypatch.setattr(arte_backtest_definition, "publish_backtest_definition",
+                        lambda writer, run_id, found, **kwargs: calls.append(
+                            "publish_definition"))
     def attach(found):
         assert found is assembly
         controller._journal_writer = assembly.writer
@@ -91,6 +114,8 @@ def test_v4_handoff_pins_accounts_and_closes_control_clients(monkeypatch):
     assert controller._fixed_keeper_session is session
     assert controller._fixed_v4_account_ids == ("SIM-01-MAIN",)
     assert calls[:2] == ["sealed_plans", "publish"]
+    assert "publish_definition" in calls
+    assert "release_definition_claim" in calls
     assert calls[-1] == "attach"
     assert calls.count("close:reader") == 2
     assert "close:context" in calls and "close:keeper" not in calls

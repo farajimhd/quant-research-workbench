@@ -3103,6 +3103,10 @@ class ReplayRunController:
             backtest_v4_operator_client_from_env,
         )
         from src.trading_runtime.keeper_session import open_workstation_keeper_session
+        from src.trading_runtime.keeper_ownership import KeeperOwnershipCoordinator
+        from src.trading_runtime.arte_backtest_definition import (
+            publish_backtest_definition,
+        )
 
         configuration = self.definition.configuration_revision["payload"]
         if (self.definition.mode != RunMode.BACKTEST or self._journal is not None
@@ -3157,6 +3161,21 @@ class ReplayRunController:
                         expected_market_start=self.definition.session_start,
                         projection_certifier=certify_strategy_one_v4_projection,
                         writer_factory=ArteJournalWriter)
+                    coordinator = KeeperOwnershipCoordinator(keeper.client)
+                    resource_id = f"backtest-definition:{self.run_id}"
+                    lease = coordinator.acquire_portfolio_admission_lease(
+                        resource_id, owner_id=f"definition-{uuid4()}",
+                        ttl_seconds=300.0)
+                    if lease is None:
+                        raise RuntimeError("Backtest definition launch is owned by another session")
+                    try:
+                        publish_backtest_definition(
+                            writer, self.run_id, self.definition,
+                            keeper=coordinator, lease=lease)
+                    finally:
+                        coordinator.release_portfolio_admission_lease(
+                            resource_id, owner_id=lease["owner_id"],
+                            epoch=lease["epoch"])
                 return assembly, keeper
             except BaseException:
                 try:
