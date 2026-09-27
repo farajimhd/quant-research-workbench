@@ -46,11 +46,27 @@ class FixedV7Stream:
         self._strategy_one_rows: tuple[Mapping[str, Any], ...] = ()
         self._latest_completed_second = start.timestamp()
 
-    def update_second(self, row: Mapping[str, Any], *, at: datetime) -> None:
+    def update_second(self, row: Mapping[str, Any], *,
+                      at: datetime | None = None,
+                      completed_second_ms: int | None = None) -> None:
         """Advance exactly one completed, valid 1s bar at its close boundary."""
-        if at.tzinfo is None or int(row["resolution_ms"]) != 1_000:
-            raise ValueError("V7 requires a timezone-aware completed 1s bar")
-        stamp = at.timestamp()
+        if (at is None) == (completed_second_ms is None):
+            raise ValueError("V7 needs exactly one completed-second clock")
+        if at is not None:
+            if at.tzinfo is None:
+                raise ValueError("V7 requires a timezone-aware completed 1s bar")
+            stamp = at.timestamp()
+        else:
+            if (type(completed_second_ms) is not int
+                    or not 0 <= completed_second_ms <= 57_600_000
+                    or completed_second_ms % 1_000):
+                raise ValueError("V7 requires a certified completed 1s boundary")
+            # The cache already checked the pinned ticker, ordered bucket and
+            # causal boundary. Reuse the session's exact integer-second epoch
+            # instead of constructing a timezone-aware datetime for every bar.
+            stamp = self.engine.start + completed_second_ms // 1_000
+        if int(row["resolution_ms"]) != 1_000:
+            raise ValueError("V7 requires a completed 1s bar")
         if stamp <= self._latest_completed_second:
             raise ValueError("V7 completed seconds must be strictly increasing")
         if int(row.get("price_valid") or 0) != 1 or int(row.get("extremes_valid") or 0) != 1:
@@ -318,7 +334,7 @@ class FixedV7Cache:
                 raise ValueError("V7 completed second duplicated or crossed its causal clock")
             if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
                 update_started = perf_counter() if self._stage_time is not None else 0.0
-                stream.update_second(row, at=market_day_boundary(self.session, second_ms))
+                stream.update_second(row, completed_second_ms=second_ms)
                 if update_started:
                     engine_update_seconds += perf_counter() - update_started
                 self._last_completed_second_rows[ticker] = {

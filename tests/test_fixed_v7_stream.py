@@ -49,6 +49,24 @@ def test_completed_second_advances_causally_from_empty_seed():
         stream.update_second(row, at=at)
 
 
+def test_integer_completed_second_clock_matches_datetime_clock():
+    row = dict(resolution_ms=1000, price_valid=1, extremes_valid=1,
+               open_int=100000, high_int=100100, low_int=99900,
+               close_int=100050, volume=100)
+    slow = FixedV7Stream(seed(), ticker="TEST", session=date(2026, 8, 18))
+    fast = FixedV7Stream(seed(), ticker="TEST", session=date(2026, 8, 18))
+    at = datetime(2026, 8, 18, 4, 5, 1, tzinfo=NY)
+    slow.update_second(row, at=at)
+    fast.update_second(row, completed_second_ms=301_000)
+    assert fast.engine.as_of == slow.engine.as_of
+    assert fast.engine.bars_processed == slow.engine.bars_processed
+    assert fast.context(as_of=at) == slow.context(as_of=at)
+    with pytest.raises(ValueError, match="exactly one"):
+        fast.update_second(row, at=at, completed_second_ms=302_000)
+    with pytest.raises(ValueError, match="certified completed"):
+        fast.update_second(row, completed_second_ms=301_100)
+
+
 def test_private_typed_seed_transfers_observation_ownership_without_default_mutation():
     from tests.test_structural_v7_seed import Client
 

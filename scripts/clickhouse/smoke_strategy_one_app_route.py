@@ -46,11 +46,11 @@ def _profile_v7_updates(enabled: bool):
     fit_shapes: Counter[tuple[str, int]] = Counter()
     lock = Lock()
 
-    def wrapped(self, row, *, at):
+    def wrapped(self, row, **clock):
         identity = get_ident()
         with lock:
             profile = profiles.setdefault(identity, cProfile.Profile())
-        return profile.runcall(original, self, row, at=at)
+        return profile.runcall(original, self, row, **clock)
 
     def counted_fit(prices, resolution):
         result = original_fit(prices, resolution)
