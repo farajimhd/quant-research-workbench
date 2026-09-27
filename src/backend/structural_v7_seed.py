@@ -5,14 +5,12 @@ time.  Current-session observations are never read from these tables by Backtest
 """
 from __future__ import annotations
 
-from collections import OrderedDict
 from datetime import date, datetime, time, timezone
 from dataclasses import dataclass
 from hashlib import sha256
 import json
 from math import isfinite
-from threading import Lock
-from typing import Any, Sequence
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.backend.backtest_market_data import assert_select_only
@@ -28,53 +26,6 @@ _OBSERVATIONS = "arte.structural_level_observations_v7"
 _COVERAGE = "arte.structural_level_coverage_v7"
 _BAND_CONFIG = {**BAND_CONFIG, "coverage": .8}
 _PROVISIONAL_INPUT_POLICY = "legacy-unfiltered"
-_SEED_CACHE_MAX_WEIGHT = 64 * 1024 * 1024
-_seed_cache: OrderedDict[
-    tuple[str, ...], tuple[tuple[dict[str, Any], ...],
-                           tuple[dict[str, Any], ...], int]
-] = OrderedDict()
-_seed_cache_weight = 0
-_seed_cache_lock = Lock()
-
-
-def _seed_cache_key(session: date, row: dict[str, Any]) -> tuple[str, ...]:
-    # Coverage is reread before lookup. A V2 rebuild or changed source plan
-    # cannot reuse a V1 decoded book with the same ticker and seed date.
-    return (session.isoformat(), *(str(row[key]) for key in (
-        "ticker", "session_date", "available_at", "state",
-        "source_checkpoint_hash", "source_plan_hash", "level_count",
-        "observation_count", "input_policy", "source_extraction_version",
-        "band_config_hash")))
-
-
-def _cached_seed(key: tuple[str, ...], *, ticker: str, session: date,
-                 pinned: dict[str, Any]) -> dict[str, Any] | None:
-    with _seed_cache_lock:
-        entry = _seed_cache.get(key)
-        if entry is None:
-            return None
-        _seed_cache.move_to_end(key)
-    # _assemble_seed reads but never mutates the private cached source rows.
-    # Each caller gets fresh mutable levels and observations to hand to V7.
-    return _assemble_seed(ticker, session, pinned, entry[0], entry[1])
-
-
-def _remember_seed_rows(key: tuple[str, ...], *,
-                        levels: list[dict[str, Any]],
-                        observations: list[dict[str, Any]]) -> None:
-    global _seed_cache_weight
-    # Conservative bounded approximation for Python dictionaries and strings.
-    weight = 2048 + 2048 * len(levels) + 1024 * len(observations)
-    if weight > _SEED_CACHE_MAX_WEIGHT:
-        return
-    with _seed_cache_lock:
-        if key in _seed_cache:
-            return
-        while _seed_cache and _seed_cache_weight + weight > _SEED_CACHE_MAX_WEIGHT:
-            _, (_, _, evicted_weight) = _seed_cache.popitem(last=False)
-            _seed_cache_weight -= evicted_weight
-        _seed_cache[key] = (tuple(levels), tuple(observations), weight)
-        _seed_cache_weight += weight
 
 
 def _literal(value: str) -> str:
@@ -313,8 +264,8 @@ def load_seed(client: Any, *, ticker: str, session: date,
 
 
 def _assemble_seed(ticker: str, session: date, pinned: dict[str, Any],
-                   levels: Sequence[dict[str, Any]],
-                   observations: Sequence[dict[str, Any]]) -> dict[str, Any]:
+                   levels: list[dict[str, Any]],
+                   observations: list[dict[str, Any]]) -> dict[str, Any]:
     """One decoder for single and batched reads; preserve the seed digest."""
     if len(levels) != int(pinned["level_count"]) or len(observations) != int(pinned["observation_count"]):
         raise ValueError(f"Prior V7 rows differ from coverage: {session} {ticker}")
@@ -373,10 +324,10 @@ def _assemble_seed(ticker: str, session: date, pinned: dict[str, Any],
 
 def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
                      coverage: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Recheck coverage, then reuse or decode at most eight prior books.
+    """Recheck and decode at most eight prior books with three bounded SELECTs.
 
-    Immutable certified books may be reused in one app process. Every run
-    receives a private seed; current coverage is still checked before reuse.
+    This only changes the read shape. Every ticker still uses the exact
+    single-seed decoder and its independent coverage/count/hash checks.
     """
     if (not isinstance(session, date) or type(tickers) is not tuple
             or not 1 <= len(tickers) <= 8 or len(set(tickers)) != len(tickers)
@@ -399,36 +350,23 @@ def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
                 "source_plan_hash", "level_count", "observation_count",
                 "input_policy")):
             raise ValueError("Prior V7 coverage changed after preflight")
-    keys = {ticker: _seed_cache_key(session, current[ticker]) for ticker in tickers}
-    seeds = {ticker: seed for ticker in tickers
-             if (seed := _cached_seed(keys[ticker], ticker=ticker,
-                                     session=session,
-                                     pinned=coverage[ticker])) is not None}
-    missing = tuple(ticker for ticker in tickers if ticker not in seeds)
-    if not missing:
-        return {ticker: seeds[ticker] for ticker in tickers}
-    missing_names = ",".join(_literal(ticker) for ticker in missing)
-    predicate = (f"ticker IN ({missing_names}) AND valid_from<=toDateTime64({cutoff},9,'UTC') "
+    predicate = (f"ticker IN ({names}) AND valid_from<=toDateTime64({cutoff},9,'UTC') "
                  f"AND (isNull(valid_to) OR valid_to>toDateTime64({cutoff},9,'UTC'))")
     grouped: dict[str, dict[str, list[dict[str, Any]]]] = {
-        ticker: {"levels": [], "observations": []} for ticker in missing}
+        ticker: {"levels": [], "observations": []} for ticker in tickers}
     for table, order, family in (
         (_LEVELS, "ticker,level_id", "levels"),
         (_OBSERVATIONS, "ticker,level_id,observation_id", "observations"),
     ):
         expected = sum(int(coverage[ticker]["level_count" if family == "levels"
-                            else "observation_count"]) for ticker in missing)
+                            else "observation_count"]) for ticker in tickers)
         for row in _rows(client, f"SELECT * FROM {table} FINAL WHERE {predicate} "
                          f"ORDER BY {order} LIMIT {expected + 1} FORMAT JSONEachRow"):
             ticker = str(row.get("ticker") or "")
             if ticker not in grouped:
                 raise ValueError("V7 batch returned an unrequested ticker")
             grouped[ticker][family].append(row)
-    for ticker in missing:
-        seed = _assemble_seed(ticker, session, coverage[ticker],
-                              grouped[ticker]["levels"],
-                              grouped[ticker]["observations"])
-        seeds[ticker] = seed
-        _remember_seed_rows(keys[ticker], levels=grouped[ticker]["levels"],
-                            observations=grouped[ticker]["observations"])
-    return {ticker: seeds[ticker] for ticker in tickers}
+    return {ticker: _assemble_seed(ticker, session, coverage[ticker],
+                                  grouped[ticker]["levels"],
+                                  grouped[ticker]["observations"])
+            for ticker in tickers}

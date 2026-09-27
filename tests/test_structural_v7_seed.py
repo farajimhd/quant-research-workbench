@@ -82,23 +82,12 @@ def test_batched_seed_reads_preserve_single_ticker_decoding():
     assert len(client.queries) == 3
     assert "LIMIT 3" in client.queries[1]
     assert "LIMIT 7" in client.queries[2]
-    seeds["TEST"]["levels"][0]["observations"][0]["price"] = 999.0
-    again = load_seeds_batch(client, tickers=("TEST", "OTHER"),
-                             session=date(2026, 8, 18), coverage=pinned)
-    assert len(client.queries) == 4  # Coverage recheck, no level/observation reread.
-    assert again["TEST"]["levels"][0]["observations"][0]["price"] == 10.0
     wrong_count = {ticker: dict(row) for ticker, row in pinned.items()}
     wrong_count["TEST"]["observation_count"] = 4
     with pytest.raises(ValueError, match="changed after preflight"):
         load_seeds_batch(client, tickers=("TEST", "OTHER"),
                          session=date(2026, 8, 18), coverage=wrong_count)
-    assert len(client.queries) == 5  # No cached seed may hide changed counts.
-    client.coverage["source_plan_hash"] = "c" * 64
-    changed = {ticker: {**client.coverage, "ticker": ticker}
-               for ticker in ("TEST", "OTHER")}
-    load_seeds_batch(client, tickers=("TEST", "OTHER"),
-                     session=date(2026, 8, 18), coverage=changed)
-    assert len(client.queries) == 8  # Changed certified source is a cache miss.
+    assert len(client.queries) == 4  # No row read after changed coverage.
 
 
 def test_batched_splits_preserve_per_ticker_seed_window_and_shape():
