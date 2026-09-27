@@ -14,6 +14,7 @@ from src.trading_runtime.estimated_luld import reference_from_indicator as _back
 from src.trading_runtime.normalized_level_book import DEFAULT_THRESHOLD, CONTRACT as LEVEL_LOAD_CONTRACT
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import logging
@@ -108,6 +109,10 @@ from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
 from src.trading_runtime.strategy_campaign import campaign_state
 from src.trading_runtime.strategy_activation import run_plan_accepts_signal
 from src.trading_runtime.watchlist_resolver import evaluate_rule_sets_frame
+
+
+_STRATEGY_ONE_PREFLIGHT_POOL = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="strategy-one-version-preflight")
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -11093,6 +11098,17 @@ def backtest_preflight(
         and selected_strategy.get("revision") == 1
         and selected_strategy.get("execution_interval") == "100ms"
     )
+    version_future = None
+    if (execution_interval.kind == "fixed"
+            and selected_strategy.get("strategy_number") == 1):
+        # This source/projection check is independent of the ARTE market-day
+        # certificate. Await it before readiness; no stale or skipped proof is
+        # allowed just because both control-plane reads run concurrently.
+        from src.backend.historical_runtime_versions import (
+            fixed_strategy_one_runtime_version_check,
+        )
+        version_future = _STRATEGY_ONE_PREFLIGHT_POOL.submit(
+            fixed_strategy_one_runtime_version_check, configuration)
     if strategy_one_fixed:
         # STRATEGY CREATION RULE: the numbered scanner is code-owned and its
         # materialized candidate seal is the signal authority. A historical
@@ -11632,12 +11648,8 @@ def backtest_preflight(
             "summary": "Fixed Backtest requires already certified signal sessions; preparation during execution is forbidden.",
         }
     checks.append(signal_check)
-    if (execution_interval.kind == "fixed"
-            and dict(configuration.get("strategy") or {}).get("strategy_number") == 1):
-        from src.backend.historical_runtime_versions import (
-            fixed_strategy_one_runtime_version_check,
-        )
-        version_check = fixed_strategy_one_runtime_version_check(configuration)
+    if version_future is not None:
+        version_check = version_future.result()
     else:
         try:
             version_check = runtime_version_check(
