@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import platform
 import pstats
+import re
 import sys
 from threading import Lock
 from time import perf_counter
@@ -86,9 +87,12 @@ def _print_completed_profile(controller) -> None:
 def _profile_preflight_call(call, **kwargs):
     """Profile the worker-thread preflight itself, not its asyncio caller."""
     profile = cProfile.Profile()
+    sql_profile = _SqlCallProfile(by_source=True)
     try:
-        return profile.runcall(call, **kwargs)
+        with _profile_sql_calls(sql_profile):
+            return profile.runcall(call, **kwargs)
     finally:
+        sql_profile.print_summary(limit=12)
         output = StringIO()
         pstats.Stats(profile, stream=output).sort_stats("cumulative").print_stats(25)
         print("Preflight call profile (top 25 cumulative seconds):", flush=True)
@@ -98,8 +102,9 @@ def _profile_preflight_call(call, **kwargs):
 class _SqlCallProfile:
     """Per-process HTTP timing; SQL text and credentials are never retained."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, by_source: bool = False) -> None:
         self._lock = Lock()
+        self._by_source = by_source
         self._bins: dict[str, tuple[int, float]] = {}
         self._v7_stream_reads = 0
 
@@ -112,8 +117,21 @@ class _SqlCallProfile:
         return ("journal" if journal else "market_or_control") + (
             "_insert" if insert else "_read")
 
+    @staticmethod
+    def source_category(sql: str) -> str:
+        """Bounded diagnostic label; never retain SQL text or row values."""
+        sources = set(re.findall(
+            r"\b(?:FROM|JOIN)\s+((?:arte|system|q_live)\.[a-z_][a-z0-9_]*)\b",
+            sql, flags=re.IGNORECASE))
+        if not sources:
+            return "other_select"
+        if len(sources) == 1:
+            return next(iter(sources)).lower()
+        return "multi_source_select"
+
     def record(self, sql: str, elapsed: float) -> None:
-        category = self.category(sql)
+        category = (self.source_category(sql) if self._by_source
+                    else self.category(sql))
         with self._lock:
             calls, seconds = self._bins.get(category, (0, 0.0))
             self._bins[category] = (calls + 1, seconds + elapsed)
@@ -123,12 +141,18 @@ class _SqlCallProfile:
             with self._lock:
                 self._v7_stream_reads += 1
 
-    def print_summary(self) -> None:
-        for category, (calls, seconds) in sorted(self._bins.items()):
+    def print_summary(self, *, limit: int | None = None) -> None:
+        rows = sorted(self._bins.items(), key=(
+            (lambda item: -item[1][1]) if self._by_source
+            else (lambda item: item[0])))
+        for category, (calls, seconds) in rows[:limit]:
             print(f"ClickHouse {category}: calls={calls} "
                   f"client_s={seconds:.3f}", flush=True)
-        print(f"ClickHouse v7_completed_second_stream: "
-              f"calls={self._v7_stream_reads}; timing=not_measured", flush=True)
+        if limit is not None and len(rows) > limit:
+            print(f"ClickHouse other sources: {len(rows) - limit} hidden", flush=True)
+        if not self._by_source:
+            print(f"ClickHouse v7_completed_second_stream: "
+                  f"calls={self._v7_stream_reads}; timing=not_measured", flush=True)
 
 
 @contextmanager

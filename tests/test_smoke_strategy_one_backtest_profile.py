@@ -16,6 +16,19 @@ def test_sql_profile_separates_v7_completed_seconds_from_other_market_reads():
         "journal_insert")
 
 
+def test_preflight_source_profile_uses_bounded_table_labels_not_sql(capsys):
+    source = _SqlCallProfile.source_category
+    assert source("SELECT x FROM arte.bars_v1 WHERE token='private'") == "arte.bars_v1"
+    assert source("SELECT x FROM arte.bars_v1 JOIN system.parts USING x") == (
+        "multi_source_select")
+    profile = _SqlCallProfile(by_source=True)
+    profile.record("SELECT x FROM arte.bars_v1 WHERE token='private'", 1.25)
+    profile.print_summary(limit=12)
+    output = capsys.readouterr().out
+    assert "arte.bars_v1: calls=1 client_s=1.250" in output
+    assert "private" not in output
+
+
 def test_sql_profile_counts_streaming_v7_reads_without_claiming_latency(
     monkeypatch, capsys,
 ):
