@@ -83,7 +83,8 @@ def _profile_v7_updates(enabled: bool):
 
 
 async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
-               profile_v7: bool = False, profile_preflight: bool = False) -> None:
+               profile_v7: bool = False, profile_preflight: bool = False,
+               repeat_preflight: int = 1) -> None:
     from src.backend.app import (  # noqa: PLC0415
         BacktestRunCreateRequest, HistoricalPreflightRequest,
         _trading_historical_preflight_payload, backtest_run_service,
@@ -107,8 +108,14 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
         pstats.Stats(profile, stream=report).sort_stats("cumulative").print_stats(35)
         print("App preflight CPU profile:\n" + report.getvalue(), flush=True)
         return result
-    began = perf_counter()
-    preflight = await asyncio.to_thread(load_preflight)
+    preflight = None
+    for repetition in range(repeat_preflight):
+        began = perf_counter()
+        observed = await asyncio.to_thread(load_preflight)
+        preflight = observed
+        print(f"App preflight pass {repetition + 1}/{repeat_preflight}: "
+              f"wall_s={perf_counter()-began:.3f}", flush=True)
+    assert preflight is not None
     blocked = tuple(row["id"] for row in preflight["checks"]
                     if row.get("required", True) and row["status"] != "ready")
     print(f"App preflight: session={day} scope={ticker or 'full-market'} "
@@ -168,8 +175,11 @@ def main() -> None:
                         help="profile completed-second V7 engine calls in memory")
     parser.add_argument("--profile-preflight", action="store_true",
                         help="profile the read-only app preflight in memory")
+    parser.add_argument("--repeat-preflight", type=int, default=1,
+                        help="repeat identical read-only preflight in one process")
     args = parser.parse_args()
-    if (not 1 <= args.minutes <= 330 or not 1_000 <= args.cash <= 1_000_000_000
+    if (not 1 <= args.minutes <= 330 or not 1 <= args.repeat_preflight <= 5
+            or not 1_000 <= args.cash <= 1_000_000_000
             or args.cash != args.cash or args.cash in (float("inf"), float("-inf"))
             or (args.ticker and (not args.ticker.isascii()
                                  or not args.ticker.isalnum()))):
@@ -177,7 +187,8 @@ def main() -> None:
                      "and an optional ASCII ticker")
     _load_private_credentials()
     asyncio.run(_run(args.session, args.ticker, args.minutes, args.cash,
-                     args.apply, args.profile_v7, args.profile_preflight))
+                     args.apply, args.profile_v7, args.profile_preflight,
+                     args.repeat_preflight))
 
 
 if __name__ == "__main__":
