@@ -6,7 +6,7 @@ versioned typed column or child family represents them.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
@@ -25,6 +25,8 @@ from src.trading_runtime.ibkr_client import _execution as parse_ibkr_execution
 from src.trading_runtime.ibkr_schema import Execution, OrderRequest
 from src.trading_runtime.journal_contract import JournalRecord, canonical_json
 from src.trading_runtime.signals import CapitalRequest, StrategyIntent, StrategySignal
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID as STRATEGY_ONE_ID, STRATEGY_NUMBER
+from src.trading_runtime.strategy_orders import canonical_runtime_order_raw
 
 
 _SOURCE_FIELDS = frozenset({
@@ -1529,14 +1531,47 @@ def order_command_batch(
     record_id: str | None = None, event_category: str = "order_management",
     event_entity_type: str = "order_command",
     correlation_id: str = "", causation_id: str = "",
+    source_intent: StrategyIntent | None = None,
+    source_intent_batch_id: str = "",
 ) -> TypedJournalBatch:
-    """Capture one simple broker command losslessly before external dispatch.
+    """Capture one broker command losslessly before external dispatch.
 
-    Strategy metadata and broker algo parameters still need typed child rows;
-    neither may be silently discarded by this projection.
+    Exact Strategy 1 lineage may be derived from its typed source intent and
+    this flat order; arbitrary metadata and broker algo parameters still fail.
     """
-    if request.raw or request.strategyParameters:
+    if request.strategyParameters:
         raise ValueError("Order command has unmodeled nested broker or strategy evidence")
+    if request.raw:
+        if (source_intent is None or source_intent.metadata
+                or not strategy_intent_record_id or not strategy_intent_content_hash
+                or not source_intent_batch_id
+                or (strategy_id, strategy_revision) != (STRATEGY_ONE_ID, STRATEGY_NUMBER)
+                or source_intent.intent_id != strategy_intent_id
+                or source_intent.ticker.upper() != request.ticker.upper()
+                or not order_group_id or not policy_version):
+            raise ValueError("Order command has unmodeled nested broker or strategy evidence")
+        from src.trading_runtime.arte_intent_projection import project_strategy_intent
+
+        source_record_id = str(UUID(strategy_intent_record_id))
+        source_batch_id = str(UUID(source_intent_batch_id))
+        projected = project_strategy_intent(source_intent)
+        source_row = {
+            "record_id": source_record_id, "run_id": run_id,
+            "event_month": source_intent.event_time.astimezone(timezone.utc).strftime("%Y-%m-01"),
+            "batch_id": source_batch_id, "account_id": request.acctId,
+            **{key: value for key, value in projected.core.items() if key != "event_time"},
+        }
+        source_hash = sha256(canonical_json(_canonical_typed_content(
+            "trading_strategy_intent_v1", source_row)).encode("utf-8")).hexdigest()
+        if source_hash != strategy_intent_content_hash:
+            raise ValueError("Order command source intent differs from the sealed typed row")
+        flat = replace(request, raw={})
+        expected = canonical_runtime_order_raw(
+            flat, source_intent, run_id=run_id,
+            strategy_id=strategy_id, strategy_revision=strategy_revision)
+        if request.raw != expected:
+            raise ValueError("Order command canonical lineage differs from typed intent")
+        request = flat
     if (not command_id or not request.cOID or not run_id
             or created_at.tzinfo is None or recorded_at.tzinfo is None
             or strategy_revision < 0 or not event_category or not event_entity_type

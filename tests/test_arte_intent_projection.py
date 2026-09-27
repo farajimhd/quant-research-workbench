@@ -28,6 +28,8 @@ from src.trading_runtime.signals import CapitalRequest, StrategyIntent
 from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.ibkr_schema import OrderRequest
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.strategy_orders import canonical_runtime_order_raw
 from tests.test_arte_journal_writer import MemoryClient
 
 
@@ -370,3 +372,56 @@ def test_command_context_uses_exact_intent_revision_when_id_repeats():
     contexts = load_committed_order_context_page(client, prefix, commands)
     assert len(contexts) == 1
     assert third.intent_uses[0]["intent_record_id"] == second.intents[0]["record_id"]
+
+
+def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent():
+    run_id, attempt_id = "live:strategy-one-lineage", str(uuid4())
+    intent_batch_id, command_batch_id = str(uuid4()), str(uuid4())
+    source = intent(ticker="TEST", metadata={})
+    first = strategy_intent_batch(
+        source, run_id=run_id, run_month=date(2026, 8, 1),
+        account_id="DU1", attempt_id=attempt_id, batch_id=intent_batch_id,
+        prior_batch_id="00000000-0000-0000-0000-000000000000", sequence=1,
+        source_cursor="intent", run_status="running", recorded_at=source.event_time,
+    )
+    source_hash = dict(_sealed_families(first))["trading_strategy_intent_v1"][0]["content_hash"]
+    flat = OrderRequest(acctId="DU1", conid=123, cOID="client-1", ticker="TEST",
+                        orderType="LMT", side="BUY", quantity=5, price=12.5)
+    raw = canonical_runtime_order_raw(
+        flat, source, run_id=run_id, strategy_id=STRATEGY_ID,
+        strategy_revision=STRATEGY_NUMBER)
+    args = dict(
+        run_id=run_id, run_month=date(2026, 8, 1), attempt_id=attempt_id,
+        batch_id=command_batch_id, prior_batch_id=intent_batch_id, sequence=2,
+        source_cursor="command", run_status="completed", command_id="command-1",
+        created_at=source.event_time, recorded_at=source.event_time,
+        strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
+        strategy_intent_id=source.intent_id, order_group_id="group-1",
+        policy_version="policy-1", source_intent=source,
+        source_intent_batch_id=intent_batch_id,
+        strategy_intent_record_id=first.intents[0]["record_id"],
+        strategy_intent_content_hash=source_hash,
+    )
+    second = order_command_batch(replace(flat, raw=raw), **args)
+    client = MemoryClient()
+    publish_typed_batch(client, first)
+    publish_typed_batch(client, second)
+    prefix = load_committed_prefix(client, run_id)
+    assert prefix is not None
+    commands = load_committed_order_command_page(client, prefix)
+    assert len(commands) == 1
+    contexts = load_committed_order_context_page(client, prefix, commands)
+    assert len(contexts) == 1
+    assert second.intent_uses[0]["intent_record_id"] == first.intents[0]["record_id"]
+    recovered = load_committed_strategy_intent_page(client, prefix)[0].intent
+    assert canonical_runtime_order_raw(
+        flat, recovered, run_id=run_id, strategy_id=STRATEGY_ID,
+        strategy_revision=STRATEGY_NUMBER) == raw
+    with pytest.raises(ValueError, match="canonical lineage differs"):
+        order_command_batch(replace(flat, raw={**raw, "unmodeled": 1}), **args)
+    with pytest.raises(ValueError, match="sealed typed row"):
+        order_command_batch(replace(flat, raw=raw),
+                            **{**args, "strategy_intent_content_hash": "f" * 64})
+    with pytest.raises(ValueError, match="unmodeled nested"):
+        order_command_batch(replace(flat, raw=raw),
+                            **{**args, "source_intent": replace(source, metadata={"extra": 1})})

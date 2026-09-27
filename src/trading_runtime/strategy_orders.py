@@ -294,13 +294,10 @@ class RuntimeIbkrStrategyOrderPlanner:
         for order in planned.orders:
             enriched_by_identity[id(order)] = replace(
                 order,
-                raw={
-                    **dict(order.raw),
-                    "canonical_run_id": self.run_id,
-                    "canonical_strategy_id": self.strategy_id,
-                    "canonical_strategy_revision": self.strategy_revision,
-                    "canonical_metadata": canonical_runtime_metadata(order, intent),
-                },
+                raw=canonical_runtime_order_raw(
+                    order, intent, run_id=self.run_id,
+                    strategy_id=self.strategy_id,
+                    strategy_revision=self.strategy_revision),
             )
         return replace(
             planned,
@@ -333,6 +330,20 @@ def _planned_execution_role(order: OrderRequest, intent_action: str) -> str:
     if order_type in {"TRAIL", "TRAILLMT"}:
         return "trailing_stop"
     return "protective_exit"
+
+
+def canonical_runtime_order_raw(
+    order: OrderRequest, intent: StrategyIntent, *, run_id: str,
+    strategy_id: str, strategy_revision: int,
+) -> dict:
+    """Derive command lineage; typed intent plus flat order can restore it."""
+    return {
+        **dict(order.raw),
+        "canonical_run_id": run_id,
+        "canonical_strategy_id": strategy_id,
+        "canonical_strategy_revision": strategy_revision,
+        "canonical_metadata": canonical_runtime_metadata(order, intent),
+    }
 
 
 def canonical_runtime_metadata(order: OrderRequest, intent: StrategyIntent) -> dict:
