@@ -83,7 +83,7 @@ def _profile_v7_updates(enabled: bool):
 
 
 async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
-               profile_v7: bool = False) -> None:
+               profile_v7: bool = False, profile_preflight: bool = False) -> None:
     from src.backend.app import (  # noqa: PLC0415
         BacktestRunCreateRequest, HistoricalPreflightRequest,
         _trading_historical_preflight_payload, backtest_run_service,
@@ -93,15 +93,22 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
     selected = (ticker,) if ticker else ()
     end = (datetime.combine(day, time(4)) + timedelta(minutes=minutes)).time()
     anchor = day + timedelta(days=1)
-    began = perf_counter()
-    preflight = await asyncio.to_thread(
-        _trading_historical_preflight_payload,
-        HistoricalPreflightRequest(
-            mode="backtest", anchor_date=anchor, session_count=1,
-            initial_cash=cash, start_time="04:00:00",
-            end_time=end.isoformat(), tickers=list(selected),
-        ),
+    preflight_request = HistoricalPreflightRequest(
+        mode="backtest", anchor_date=anchor, session_count=1,
+        initial_cash=cash, start_time="04:00:00",
+        end_time=end.isoformat(), tickers=list(selected),
     )
+    def load_preflight():
+        if not profile_preflight:
+            return _trading_historical_preflight_payload(preflight_request)
+        profile = cProfile.Profile()
+        result = profile.runcall(_trading_historical_preflight_payload, preflight_request)
+        report = StringIO()
+        pstats.Stats(profile, stream=report).sort_stats("cumulative").print_stats(35)
+        print("App preflight CPU profile:\n" + report.getvalue(), flush=True)
+        return result
+    began = perf_counter()
+    preflight = await asyncio.to_thread(load_preflight)
     blocked = tuple(row["id"] for row in preflight["checks"]
                     if row.get("required", True) and row["status"] != "ready")
     print(f"App preflight: session={day} scope={ticker or 'full-market'} "
@@ -159,6 +166,8 @@ def main() -> None:
                         help="create and await one normalized ClickHouse Backtest run")
     parser.add_argument("--profile-v7", action="store_true",
                         help="profile completed-second V7 engine calls in memory")
+    parser.add_argument("--profile-preflight", action="store_true",
+                        help="profile the read-only app preflight in memory")
     args = parser.parse_args()
     if (not 1 <= args.minutes <= 330 or not 1_000 <= args.cash <= 1_000_000_000
             or args.cash != args.cash or args.cash in (float("inf"), float("-inf"))
@@ -168,7 +177,7 @@ def main() -> None:
                      "and an optional ASCII ticker")
     _load_private_credentials()
     asyncio.run(_run(args.session, args.ticker, args.minutes, args.cash,
-                     args.apply, args.profile_v7))
+                     args.apply, args.profile_v7, args.profile_preflight))
 
 
 if __name__ == "__main__":
