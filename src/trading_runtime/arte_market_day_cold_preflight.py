@@ -159,7 +159,8 @@ def certified_market_day_plan_from_cold_audit(client: Any,
                                                audit: MarketDayColdAudit, *,
                                                sessions: tuple[str, ...],
                                                tickers: tuple[str, ...],
-                                               configuration: Mapping[str, Any]) -> Any:
+                                               configuration: Mapping[str, Any],
+                                               read_client_factory: Callable[[], Any] | None = None) -> Any:
     """Build the existing fixed Backtest plan token from rechecked typed facts.
 
     This is an inactive constructor, not permission to replace the active
@@ -217,7 +218,7 @@ def certified_market_day_plan_from_cold_audit(client: Any,
     plan = CertifiedMarketDayPlan(interval, audit.certificate.build_id,
         audit.certificate.definition_hash, days, ordered_tickers, units,
         resolutions, token=_stable_hash(payload))
-    verify_market_day_plan(plan, client)
+    verify_market_day_plan(plan, client, read_client_factory=read_client_factory)
     return plan
 
 
@@ -238,7 +239,7 @@ def cold_certified_market_day_plan(certificate_client: Any,
         read_client_factory=read_client_factory)
     return certified_market_day_plan_from_cold_audit(
         certificate_client, audit, sessions=sessions, tickers=tickers,
-        configuration=configuration)
+        configuration=configuration, read_client_factory=read_client_factory)
 
 
 def market_day_fence_build_ids(certificate_client: Any,

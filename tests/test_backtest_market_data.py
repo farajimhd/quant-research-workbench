@@ -216,6 +216,7 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertIn("i.resolution_ms AS indicator_resolution_ms", sql)
         self.assertIn("arte.liquidity_100ms_v1", sql)
         self.assertNotIn("market_day_events", sql)
+
         self.assertNotIn("WITH scopes", sql)
         self.assertIn("SELECT l.session_date AS session_date,l.ticker AS ticker", sql)
         self.assertIn("l.bucket_index AS bucket_index", sql)
@@ -232,6 +233,32 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertIn("*100-14400000 AS boundary_ms", premarket_sql)
         with self.assertRaisesRegex(ValueError, "positive 100ms"):
             market_day_source_sqls(plan, through_boundary_ms=19_800_001)
+
+    def test_parallel_product_scan_uses_separate_readers_and_preserves_key_proof(self) -> None:
+        readers = []
+        class Worker(_ReadClient):
+            def __init__(self):
+                super().__init__()
+                self.closed = False
+                readers.append(self)
+
+            def close(self):
+                self.closed = True
+
+        verify_market_day_plan(self._plan(), read_client_factory=Worker)
+        self.assertEqual(len(readers), 3)
+        self.assertEqual(sorted(len(reader.queries) for reader in readers), [1, 1, 1])
+        self.assertTrue(all(reader.closed for reader in readers))
+        self.assertTrue(all(query.startswith("SELECT ") for reader in readers
+                            for query in reader.queries))
+
+        readers.clear()
+        class CorruptWorker(_MisalignedIndicatorClient, Worker):
+            pass
+        with self.assertRaisesRegex(ValueError, "indicator.*key coverage"):
+            verify_market_day_plan(self._plan(), read_client_factory=CorruptWorker)
+        self.assertEqual(len(readers), 3)
+        self.assertTrue(all(reader.closed for reader in readers))
 
     def test_liquidity_bucket_upper_bound_is_exact_completed_boundary(self) -> None:
         plan = self._plan()

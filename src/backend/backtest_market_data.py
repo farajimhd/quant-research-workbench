@@ -7,6 +7,7 @@ publish market products.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import date, datetime, time, timedelta
 import hashlib
@@ -422,94 +423,108 @@ class _MarketCertificateReader:
             return self._reader.execute(query)
 
 
-def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None) -> None:
-    """Recheck pinned row counts, keys, hashes, and resolutions read-only."""
-    active = client or readonly_clickhouse_client(v3_read_principal=True)
-    close = client is None
+def _verify_market_stage(plan: CertifiedMarketDayPlan, expected: int,
+                         stage: str, table: str, active: Any
+                         ) -> dict[tuple[str, str, str], tuple[int, str]]:
+    units = [unit for unit in plan.units if unit.stage == stage]
+    if len(units) != expected:
+        raise ValueError(f"Certified market-day plan has incomplete {stage} scope")
+    by_day: dict[str, list[MarketDayUnit]] = {}
+    for unit in units:
+        by_day.setdefault(unit.session_date, []).append(unit)
+    indicator_keys: dict[tuple[str, str, str], tuple[int, str]] = {}
+    for day, day_units in by_day.items():
+        ordered = sorted(day_units, key=lambda unit: unit.ticker)
+        # Grouped scans amortize HTTP overhead while bounding the predicate.
+        for offset in range(0, len(ordered), 1024):
+            batch = ordered[offset:offset + 1024]
+            tickers = ",".join(_literal(unit.ticker) for unit in batch)
+            key_evidence = (
+                ",countIf(price_valid) AS eligible_keys,"
+                "toString(sumIf(cityHash64(tuple(resolution_ms,bucket_index)),price_valid)) AS key_hash"
+                if stage == "bars" else
+                ",count() AS eligible_keys,"
+                "toString(sum(cityHash64(tuple(resolution_ms,bucket_index)))) AS key_hash"
+                if stage == "technical" else ""
+            )
+            sql = assert_select_only(
+                "SELECT ticker,toString(attempt_id) AS attempt_id,"
+                "count() AS n,uniqExact((resolution_ms,bucket_index)) AS unique_keys,"
+                "toString(sum(cityHash64(tuple(*)))) AS hash,"
+                "groupUniqArray(resolution_ms) AS resolutions"
+                f"{key_evidence} "
+                f"FROM {ARTE_DATABASE}.{table} WHERE build_id={_literal(plan.build_id)} "
+                f"AND session_date=toDate({_literal(day)}) AND ticker IN ({tickers}) "
+                "GROUP BY ticker,attempt_id FORMAT JSONEachRow"
+            )
+            rows = [json.loads(line) for line in active.execute(sql).splitlines() if line.strip()]
+            actual = {(str(row["ticker"]), str(row["attempt_id"])): row for row in rows}
+            if len(actual) != len(rows):
+                raise ValueError(f"Persisted {ARTE_DATABASE}.{table} has duplicate integrity groups")
+            for unit in batch:
+                row = actual.get((unit.ticker, unit.attempt_id))
+                count = int(row["n"]) if row else 0
+                output_hash = str(row["hash"]) if row else "0"
+                unique = int(row["unique_keys"]) if row else 0
+                if (count != unit.output_rows or output_hash != unit.output_hash
+                        or unique != count):
+                    raise ValueError(
+                        f"Persisted {ARTE_DATABASE}.{table} integrity changed: "
+                        f"{day} {unit.ticker} expected {unit.output_rows} rows, "
+                        f"found {count}"
+                    )
+                if stage in {"bars", "technical"}:
+                    indicator_keys[(day, unit.ticker, stage)] = (
+                        int(row["eligible_keys"]) if row else 0,
+                        str(row["key_hash"]) if row else "0",
+                    )
+                if row and stage in {"bars", "technical"}:
+                    missing = set(plan.required_resolutions_ms).difference(
+                        int(value) for value in row["resolutions"]
+                    )
+                    if missing:
+                        raise ValueError(
+                            f"Persisted {ARTE_DATABASE}.{table} lacks {day} "
+                            f"{unit.ticker} resolutions {sorted(missing)}"
+                        )
+    return indicator_keys
+
+
+def verify_market_day_plan(plan: CertifiedMarketDayPlan, client=None, *,
+                           read_client_factory=None) -> None:
+    """Recheck exact product hashes; parallel readers never share a connection."""
+    if read_client_factory is None:
+        active = client or readonly_clickhouse_client(v3_read_principal=True)
+    else:
+        active = None
     try:
         expected = len({(unit.session_date, unit.ticker) for unit in plan.units})
         if expected <= 0:
             raise ValueError("Certified market-day plan has no ticker-day scope")
-        stage_tables = {
-            "bars": "bars_v1",
-            "technical": "indicators_v1",
-            "broker_100ms": "liquidity_100ms_v1",
-        }
-        # These are computed in the same vectorized scan as each product's
-        # immutable row hash. A matching row count alone would not detect an
-        # indicator key replaced by a different completed bar key.
-        indicator_keys: dict[tuple[str, str, str], tuple[int, str]] = {}
-        for stage, table in stage_tables.items():
-            units = [unit for unit in plan.units if unit.stage == stage]
-            if len(units) != expected:
-                raise ValueError(f"Certified market-day plan has incomplete {stage} scope")
-            by_day: dict[str, list[MarketDayUnit]] = {}
-            for unit in units:
-                by_day.setdefault(unit.session_date, []).append(unit)
-            for day, day_units in by_day.items():
-                ordered = sorted(day_units, key=lambda unit: unit.ticker)
-                # One grouped ClickHouse scan amortizes HTTP and planner
-                # overhead across ticker-day units. 1024 still bounds the IN
-                # predicate, response, and aggregate memory for a busy day.
-                for offset in range(0, len(ordered), 1024):
-                    batch = ordered[offset:offset + 1024]
-                    tickers = ",".join(_literal(unit.ticker) for unit in batch)
-                    key_evidence = (
-                        ",countIf(price_valid) AS eligible_keys,"
-                        "toString(sumIf(cityHash64(tuple(resolution_ms,bucket_index)),price_valid)) AS key_hash"
-                        if stage == "bars" else
-                        ",count() AS eligible_keys,"
-                        "toString(sum(cityHash64(tuple(resolution_ms,bucket_index)))) AS key_hash"
-                        if stage == "technical" else ""
-                    )
-                    sql = assert_select_only(
-                        "SELECT ticker,toString(attempt_id) AS attempt_id,"
-                        "count() AS n,uniqExact((resolution_ms,bucket_index)) AS unique_keys,"
-                        "toString(sum(cityHash64(tuple(*)))) AS hash,"
-                        "groupUniqArray(resolution_ms) AS resolutions"
-                        f"{key_evidence} "
-                        f"FROM {ARTE_DATABASE}.{table} WHERE build_id={_literal(plan.build_id)} "
-                        f"AND session_date=toDate({_literal(day)}) AND ticker IN ({tickers}) "
-                        "GROUP BY ticker,attempt_id FORMAT JSONEachRow"
-                    )
-                    rows = [json.loads(line) for line in active.execute(sql).splitlines() if line.strip()]
-                    actual = {(str(row["ticker"]), str(row["attempt_id"])): row for row in rows}
-                    if len(actual) != len(rows):
-                        raise ValueError(f"Persisted {ARTE_DATABASE}.{table} has duplicate integrity groups")
-                    for unit in batch:
-                        row = actual.get((unit.ticker, unit.attempt_id))
-                        count = int(row["n"]) if row else 0
-                        output_hash = str(row["hash"]) if row else "0"
-                        unique = int(row["unique_keys"]) if row else 0
-                        if (count != unit.output_rows or output_hash != unit.output_hash
-                                or unique != count):
-                            raise ValueError(
-                                f"Persisted {ARTE_DATABASE}.{table} integrity changed: "
-                                f"{day} {unit.ticker} expected {unit.output_rows} rows, "
-                                f"found {count}"
-                            )
-                        if stage in {"bars", "technical"}:
-                            indicator_keys[(day, unit.ticker, stage)] = (
-                                int(row["eligible_keys"]) if row else 0,
-                                str(row["key_hash"]) if row else "0",
-                            )
-                        if row and stage in {"bars", "technical"}:
-                            missing = set(plan.required_resolutions_ms).difference(
-                                int(value) for value in row["resolutions"]
-                            )
-                            if missing:
-                                raise ValueError(
-                                    f"Persisted {ARTE_DATABASE}.{table} lacks {day} "
-                                    f"{unit.ticker} resolutions {sorted(missing)}"
-                                )
+        stage_tables = (("bars", "bars_v1"), ("technical", "indicators_v1"),
+                        ("broker_100ms", "liquidity_100ms_v1"))
+        def scan(item):
+            stage, table = item
+            if read_client_factory is None:
+                return _verify_market_stage(plan, expected, stage, table, active)
+            with closing(read_client_factory()) as reader:
+                return _verify_market_stage(plan, expected, stage, table, reader)
+        if read_client_factory is None:
+            results = tuple(map(scan, stage_tables))
+        else:
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                results = tuple(pool.map(scan, stage_tables))
+        indicator_keys = {key: value for result in results for key, value in result.items()}
+        # A matching product hash alone does not prove that each indicator row
+        # belongs to the corresponding completed price-bearing bar.
         for day, ticker in sorted({(unit.session_date, unit.ticker) for unit in plan.units}):
             if indicator_keys.get((day, ticker, "bars")) != indicator_keys.get(
-                (day, ticker, "technical")):
+                    (day, ticker, "technical")):
                 raise ValueError(
                     f"Persisted {ARTE_DATABASE}.indicators_v1 key coverage differs "
                     f"from price-valid bars: {day} {ticker}")
     finally:
-        if close:
+        if active is not None and client is None:
             active.close()
 
 
