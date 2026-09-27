@@ -121,12 +121,15 @@ class MarketDayCertificate:
     scopes: tuple[tuple[str, str], ...]
     stages: tuple[tuple[str, str, str, str, int, str], ...]
     source_plan: Mapping[str, Any]
+    fence: Mapping[str, Any]
+    session_hashes: Mapping[str, Mapping[str, tuple[int, str]]] | None = None
 
 
 def verify_market_day_certificate(client: Any, build_id: str, *,
                                   sessions: tuple[str, ...],
                                   read_client_factory: Callable[[], Any] | None = None,
-                                  read_workers: int = 4) -> MarketDayCertificate:
+                                  read_workers: int = 4,
+                                  include_session_hashes: bool = False) -> MarketDayCertificate:
     """Read a complete late-fenced certificate; never infer empty units from market rows."""
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", build_id):
         raise ValueError("Invalid market-day build identity")
@@ -240,10 +243,27 @@ def verify_market_day_certificate(client: Any, build_id: str, *,
                 ("scope_count", len(scopes)), ("stage_count", len(stages)),
                 ("seed_count", len(seeds))))):
         raise RuntimeError("Market-day final fence does not seal complete typed inventory")
+    session_hashes = None
+    if include_session_hashes:
+        selected_families = (
+            ("market_day_planned_scope_v1", "session_date"),
+            ("market_day_stage_certificate_v1", "session_date"),
+            ("market_day_seed_v1", "session_date"),
+            ("market_day_source_unit_v1", "source_date"),
+        )
+        grouped: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        for name, date_key in selected_families:
+            for row in families[name]:
+                grouped.setdefault(row[date_key], {}).setdefault(name, []).append(row)
+        session_hashes = {
+            day: {name: (len(rows), family_hash(rows))
+                  for name, rows in by_family.items()}
+            for day, by_family in grouped.items()
+        }
     return MarketDayCertificate(build_id, head["definition_hash"],
         tuple(sorted(scope_keys)), tuple(sorted((r["session_date"], r["ticker"],
             r["stage"], r["attempt_id"], int(r["output_rows"]), r["output_hash"])
-            for r in stages)), source_plan)
+            for r in stages)), source_plan, fence, session_hashes)
 
 
 def _utc(value: str) -> datetime:

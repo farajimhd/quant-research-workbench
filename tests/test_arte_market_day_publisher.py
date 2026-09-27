@@ -53,6 +53,8 @@ class FakeClickHouse:
             return "\n".join(json.dumps(dict(table=table.name, name=name, type=kind))
                 for table in TABLES if table.name in selected
                 for name, kind in table.columns)
+        if "FROM system.data_skipping_indices" in sql:
+            return ""
         if "FROM system.parts" in sql:
             if "disk_name!='live_market_ssd'" in sql and self.disk == "live_market_ssd":
                 return ""
