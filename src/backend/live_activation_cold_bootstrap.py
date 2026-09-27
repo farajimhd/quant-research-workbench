@@ -25,7 +25,7 @@ from src.backend.signal_stream_session_head import SignalSessionHeadKeeper
 from src.backend.live_activation_session_fence import ActivationSessionFence
 from src.trading_runtime.arte_journal_writer import _literal, _rows
 from src.trading_runtime.arte_activation_projection import (
-    load_activation, load_day_activations, prepare_activation_rows,
+    ACTIVATION_RUN_ID, load_activation, load_day_activations, prepare_activation_rows,
     project_activation,
 )
 
@@ -106,7 +106,7 @@ def cold_audit_activation_watches(
     activation_client: Any, dispatch_storage: DispatchColdStorage,
     completion_storage: CompletionStorage, completion_keeper: CompletionKeeper, *,
     session_date: date, source_commit_hashes: tuple[str, ...],
-    configuration_revision_id: str,
+    configuration_revision_id: str, activation_run_id: str = ACTIVATION_RUN_ID,
 ) -> tuple[dict[str, Any], ...]:
     """Require exact one-to-one durable ACK, completion and activation proof."""
     if type(session_date) is not date:
@@ -130,7 +130,7 @@ def cold_audit_activation_watches(
     activations = load_day_activations(
         activation_client, session_date=session_date,
         page_size=min(1024, len(expected) + 1),
-        max_inventory_rows_per_family=len(expected))
+        max_inventory_rows_per_family=len(expected), run_id=activation_run_id)
     if len(activations) != len(expected):
         raise ValueError("cold activation inventory differs from completed dispatch")
     observed: set[str] = set()
@@ -145,7 +145,8 @@ def cold_audit_activation_watches(
                 "run_plan_id", "profile_id", "book_id", "ticker",
                 "signal_stream_id", "event_id")):
             raise ValueError("cold activation identity differs from dispatch")
-        parent = prepare_activation_rows(project_activation(activation))[
+        parent = prepare_activation_rows(project_activation(activation),
+                                         run_id=activation_run_id)[
             "trading_activation_v1"][0]
         if (parent["event_time"] != intent["event_time"]
                 or parent["content_hash"] != ack["activation_receipt_hash"]):
@@ -160,7 +161,7 @@ def read_attested_activation_prefix(
     activation_client: Any, dispatch_storage: DispatchColdStorage,
     completion_storage: CompletionStorage, completion_keeper: CompletionKeeper, *,
     session_date: date, source_commit_hashes: tuple[str, ...],
-    configuration_revision_id: str,
+    configuration_revision_id: str, activation_run_id: str = ACTIVATION_RUN_ID,
 ) -> tuple[dict[str, Any], ...]:
     """Restore only completed, Keeper-attested ACK identities, in source order.
 
@@ -191,13 +192,14 @@ def read_attested_activation_prefix(
         activation = load_activation(
             activation_client, session_date=session_date,
             run_plan_id=intent["run_plan_id"], ticker=intent["ticker"],
-            event_id=intent["event_id"])
+            event_id=intent["event_id"], run_id=activation_run_id)
         if (activation["delivery_id"] != delivery_id
                 or any(activation.get(key) != intent[key] for key in (
                     "run_plan_id", "profile_id", "book_id", "ticker",
                     "signal_stream_id", "event_id"))):
             raise ValueError("attested activation differs from dispatch identity")
-        parent = prepare_activation_rows(project_activation(activation))[
+        parent = prepare_activation_rows(project_activation(activation),
+                                         run_id=activation_run_id)[
             "trading_activation_v1"][0]
         if (parent["event_time"] != intent["event_time"]
                 or parent["content_hash"] != ack["activation_receipt_hash"]):
@@ -216,6 +218,7 @@ def _cold_recover_activation_checkpoint_under_fence(
     max_source_batches: int = 100_000,
     max_source_occurrences: int = 100_000,
     receipt_defined: bool = False,
+    activation_run_id: str = ACTIVATION_RUN_ID,
 ) -> tuple[dict[str, Any], ...]:
     """Read-only typed replacement prerequisite for the SQLite watch checkpoint.
 
@@ -266,7 +269,8 @@ def _cold_recover_activation_checkpoint_under_fence(
         activation_client, dispatch_storage, completion_storage,
         completion_keeper, session_date=session_date,
         source_commit_hashes=hashes,
-        configuration_revision_id=configuration_revision_id)
+        configuration_revision_id=configuration_revision_id,
+        activation_run_id=activation_run_id)
     if source_keeper.read_head(session_key) != first:
         raise RuntimeError("Signal Stream Keeper head changed during activation recovery")
     return watches
@@ -283,6 +287,7 @@ def audit_activation_checkpoint_under_cooperative_fences(
     max_source_batches: int = 100_000,
     max_source_occurrences: int = 100_000,
     receipt_defined: bool = False,
+    activation_run_id: str = ACTIVATION_RUN_ID,
 ) -> tuple[dict[str, Any], ...]:
     """Diagnostic cold audit, not an admission or executable checkpoint.
 
@@ -315,7 +320,8 @@ def audit_activation_checkpoint_under_cooperative_fences(
             source_revision_id=source_revision_id, catalogs=catalogs,
             max_source_batches=max_source_batches,
             max_source_occurrences=max_source_occurrences,
-            receipt_defined=receipt_defined)
+            receipt_defined=receipt_defined,
+            activation_run_id=activation_run_id)
         if not source_keeper.is_current(session_key, owner_id=owner_id, epoch=epoch):
             raise RuntimeError("Signal Stream source owner fence lost during recovery")
         if not activation_fence.is_current(
@@ -339,6 +345,7 @@ def audit_receipt_defined_activation_prefix_under_fences(
     owner_id: str, activation_fence: ActivationSessionFence,
     max_source_batches: int = 100_000,
     max_source_occurrences: int = 100_000,
+    activation_run_id: str = ACTIVATION_RUN_ID,
 ) -> tuple[dict[str, Any], ...]:
     """Inactive causal-prefix audit; only attested receipts become visible."""
     return audit_activation_checkpoint_under_cooperative_fences(
@@ -350,7 +357,8 @@ def audit_receipt_defined_activation_prefix_under_fences(
         owner_id=owner_id, activation_fence=activation_fence,
         max_source_batches=max_source_batches,
         max_source_occurrences=max_source_occurrences,
-        receipt_defined=True)
+        receipt_defined=True,
+        activation_run_id=activation_run_id)
 
 
 class ActivationRecoveryUnfenced(RuntimeError):

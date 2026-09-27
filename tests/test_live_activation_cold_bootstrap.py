@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 import json
 from unittest.mock import patch
 
@@ -19,7 +19,8 @@ from src.backend.signal_dispatch_typed_cursor import (
     project_dispatch_ack, project_dispatch_intents,
 )
 from src.trading_runtime.arte_activation_projection import (
-    prepare_activation_rows, project_activation, publish_activation,
+    ACTIVATION_RUN_ID, _family_hash, _sealed, prepare_activation_rows, project_activation,
+    publish_activation, strategy_one_activation_run_id,
 )
 from tests.test_arte_activation_projection import _MemoryClient
 from tests.test_live_signal_work_completion import Keeper, Storage
@@ -43,7 +44,7 @@ class ActivationKeeper:
         return True
 
 
-def _case():
+def _case(*, activation_run_id: str = ACTIVATION_RUN_ID):
     at = "2026-09-24T14:00:00+00:00"
     occurrence = {"event_id": EVENT_ID, "signal_id": EVENT_ID,
                   "ticker": "ABC", "signal_stream_id": "stream-1",
@@ -55,10 +56,30 @@ def _case():
                 "signal_stream_id": "stream-1", "event_id": EVENT_ID,
                 "event_time": at, "occurrence": occurrence}
     activation_client = _MemoryClient()
-    activation_hash = publish_activation(
-        activation_client, project_activation(delivery), keeper=ActivationKeeper(),
-        owner_id="worker-1", epoch=1)
-    assert activation_hash == prepare_activation_rows(project_activation(delivery))[
+    projected = project_activation(delivery)
+    if activation_run_id == ACTIVATION_RUN_ID:
+        activation_hash = publish_activation(
+            activation_client, projected, keeper=ActivationKeeper(),
+            owner_id="worker-1", epoch=1)
+    else:
+        # Model the normalized result of a registered Strategy 1 publisher;
+        # the legacy publisher is deliberately forbidden from this run scope.
+        prepared = prepare_activation_rows(projected, run_id=activation_run_id)
+        for table, rows in prepared.items():
+            activation_client.rows[table].extend(rows)
+        activation_hash = activation_client.rows["trading_activation_v1"][0]["content_hash"]
+        parent = prepared["trading_activation_v1"][0]
+        identity = {key: parent[key] for key in (
+            "run_id", "session_date", "run_plan_id", "ticker", "event_id")}
+        activation_client.rows["trading_activation_commit_v1"].append(_sealed({
+            **identity, "parent_hash": activation_hash,
+            "evidence_hash": _family_hash(prepared["trading_activation_evidence_v1"]),
+            "field_evidence_hash": _family_hash(
+                prepared["trading_activation_field_evidence_v1"]),
+            "committed_at": datetime.now(timezone.utc).isoformat(),
+        }))
+    assert activation_hash == prepare_activation_rows(
+        projected, run_id=activation_run_id)[
         "trading_activation_v1"][0]["content_hash"]
     intents = project_dispatch_intents(
         [delivery], session_key=SESSION.isoformat(), source_batch_sequence=1,
@@ -342,6 +363,22 @@ def test_attested_prefix_admits_only_ack_receipts_not_late_orphan_rows() -> None
         source_commit_hashes=("b" * 64,),
         configuration_revision_id="approved-1")
     assert [item["delivery_id"] for item in result] == [delivery["delivery_id"]]
+
+
+def test_attested_strategy_one_scope_cannot_read_legacy_activation_rows() -> None:
+    run_id = strategy_one_activation_run_id(
+        SESSION, mode="paper", run_plan_id="plan-1")
+    activation, dispatch, completion, keeper, delivery = _case(
+        activation_run_id=run_id)
+    kwargs = dict(session_date=SESSION, source_commit_hashes=("b" * 64,),
+                  configuration_revision_id="approved-1")
+    with pytest.raises((ValueError, RuntimeError), match="Activation|activation"):
+        read_attested_activation_prefix(
+            activation, dispatch, completion, keeper, **kwargs)
+    restored = read_attested_activation_prefix(
+        activation, dispatch, completion, keeper,
+        activation_run_id=run_id, **kwargs)
+    assert [row["delivery_id"] for row in restored] == [delivery["delivery_id"]]
 
 
 def test_attested_prefix_rejects_missing_or_conflicting_receipt_rows() -> None:
