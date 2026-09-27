@@ -167,6 +167,8 @@ class TypedSignalPublicationQueue:
                  attestor: Any | None = None) -> None:
         if capacity < 1:
             raise ValueError("typed Signal Stream publication capacity must be positive")
+        if getattr(storage, "registered_transport", False) and attestor is None:
+            raise ValueError("registered Signal Stream source requires Keeper head attestation")
         self._storage = storage
         self._attestor = attestor
         self._capacity = capacity
@@ -191,6 +193,8 @@ class TypedSignalPublicationQueue:
                 raise ValueError("typed Signal Stream session is already bootstrapped")
             self._bootstrapping.add(session_key)
         try:
+            acquire_barrier = getattr(self._storage, "acquire_bootstrap_barrier", None)
+            fence = acquire_barrier() if acquire_barrier is not None else None
             head = recover_committed_head(
                 self._storage, session_key=session_key,
                 configuration_revision=configuration_revision,
@@ -199,6 +203,8 @@ class TypedSignalPublicationQueue:
                 self._attestor.bootstrap(
                     head, configuration_revision=configuration_revision,
                     source_revision=source_revision)
+            if fence is not None:
+                self._storage.release_bootstrap_barrier(head, fence)
             with self._lock:
                 if self._started or self._closing or self._pending or self._fatal is not None:
                     raise RuntimeError("typed Signal Stream bootstrap raced publication")
@@ -258,7 +264,14 @@ class TypedSignalPublicationQueue:
                     failure = self._fatal
                 if failure is not None:
                     raise RuntimeError("typed Signal Stream publication halted") from failure
-                head = _publish_one(self._storage, deepcopy(batch))
+                staged = deepcopy(batch)
+                begin = getattr(self._storage, "begin_batch", None)
+                if begin is not None:
+                    begin(staged)
+                head = _publish_one(self._storage, staged)
+                finish = getattr(self._storage, "finish_batch", None)
+                if finish is not None:
+                    finish(staged, head)
                 if self._attestor is not None:
                     head = self._attestor.attest(batch, head, self._storage)
             except BaseException as exc:
