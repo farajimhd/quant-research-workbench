@@ -86,12 +86,29 @@ def publish_terminal_backtest_snapshots(
     captures: tuple[CapturedPortfolioSnapshot, ...],
 ) -> tuple[str, ...]:
     """Verify the terminal prefix once, then anchor every pinned account."""
+    context = _verify_current_prefix(client, prefix)
+    return _publish_terminal_snapshots_after_verified_prefix(
+        client, prefix, captures, context)
+
+
+def _publish_terminal_snapshots_after_verified_prefix(
+    client: Any, prefix: CommittedPrefix | V4CommittedPrefix,
+    captures: tuple[CapturedPortfolioSnapshot, ...],
+    context: dict[str, Any],
+) -> tuple[str, ...]:
+    """Internal continuation after a same-call full cold prefix verification.
+
+    This must not be used for a prefix restored from a saved manifest, cache,
+    or caller input. The V4 terminal writer calls load_verified_v4_prefix
+    immediately before this function and retains its Keeper batch authority.
+    """
     if (not captures
             or any(not isinstance(row, CapturedPortfolioSnapshot) for row in captures)
             or len({row.account_id for row in captures}) != len(captures)):
         raise ValueError("Terminal Backtest snapshots require distinct accounts")
-    context = _verify_current_prefix(client, prefix)
-    if set(context["account_ids"]) != {row.account_id for row in captures}:
+    if (context.get("mode") != "backtest"
+            or prefix.status not in {"completed", "stopped", "failed"}
+            or set(context["account_ids"]) != {row.account_id for row in captures}):
         raise ValueError("Terminal Backtest snapshots omit a pinned account")
     return tuple(_publish_verified_snapshot(client, prefix, row) for row in captures)
 

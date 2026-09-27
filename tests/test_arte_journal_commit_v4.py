@@ -806,6 +806,7 @@ def test_v4_protection_change_fences_numbered_children_and_cold_readback():
 
 def test_v4_terminal_is_lifecycle_last_and_anchors_all_accounts(monkeypatch):
     from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
+    from src.trading_runtime import arte_journal_commit_v4 as commit_module
 
     client = attached_v4_client()
     unit, capture = terminal_broker_unit()
@@ -814,18 +815,26 @@ def test_v4_terminal_is_lifecycle_last_and_anchors_all_accounts(monkeypatch):
                         lambda _client, _run: {
                             "mode": "backtest", "account_ids": ("DU1",)})
     anchored = []
-    monkeypatch.setattr(anchors, "publish_terminal_backtest_snapshots",
-                        lambda _client, prefix, captures: anchored.append(
+    cold_reads = []
+    cold_reader = commit_module.load_verified_v4_prefix
+    def traced_cold_reader(*args, **kwargs):
+        cold_reads.append((args, kwargs))
+        return cold_reader(*args, **kwargs)
+    monkeypatch.setattr(commit_module, "load_verified_v4_prefix", traced_cold_reader)
+    monkeypatch.setattr(anchors, "_publish_terminal_snapshots_after_verified_prefix",
+                        lambda _client, prefix, captures, _context: anchored.append(
                             (prefix, captures)))
     prefix = publish_terminal_typed_batch_v4(
         client, item, captures=(capture,),
         broker_snapshots=unit.broker_snapshots)
     assert prefix.status == "completed" and prefix.last_batch_id == item.batch_id
     assert len(anchored) == 1 and anchored[0][1] == (capture,)
+    assert len(cold_reads) == 1
     assert client.inserts[-1] == "trading_commit_v4"
     assert publish_terminal_typed_batch_v4(
         client, item, captures=(capture,),
         broker_snapshots=unit.broker_snapshots) == prefix
+    assert len(cold_reads) == 2
     assert len(client.tables["trading_commit_v4"]) == 1
     with pytest.raises(ValueError, match="running event batch"):
         publish_base_typed_batch_v4(client, item)
@@ -878,7 +887,7 @@ def test_v4_terminal_broker_snapshots_share_commit_and_cold_readback(monkeypatch
     monkeypatch.setattr(writer_module, "load_typed_run_context",
                         lambda _client, _run: {
                             "mode": "backtest", "account_ids": ("DU1",)})
-    monkeypatch.setattr(anchors, "publish_terminal_backtest_snapshots",
+    monkeypatch.setattr(anchors, "_publish_terminal_snapshots_after_verified_prefix",
                         lambda *_args: None)
     capture = replace(captured(), run_id=run_id, state_revision=3,
                       snapshot_at=at)
@@ -1106,13 +1115,13 @@ def test_v4_terminal_writer_queue_waits_for_anchor_before_receipt(monkeypatch):
                         lambda _client, _run: {
                             "mode": "backtest", "account_ids": ("DU1",)})
 
-    def anchors_after_commit(_client, prefix, captures):
+    def anchors_after_commit(_client, prefix, captures, _context):
         assert client.tables["trading_commit_v4"][0]["status"] == "completed"
         entered.set()
         assert release.wait(5)
         return ("anchored",)
 
-    monkeypatch.setattr(anchors, "publish_terminal_backtest_snapshots",
+    monkeypatch.setattr(anchors, "_publish_terminal_snapshots_after_verified_prefix",
                         anchors_after_commit)
     journal = ArteJournalWriter(
         client, run_id=item.run_id, journal_profile="backtest_v4",

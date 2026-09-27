@@ -716,7 +716,7 @@ def publish_terminal_typed_batch_v4(
     This function belongs on the bounded writer lane, never the market loop.
     """
     from src.trading_runtime.arte_backtest_snapshot_anchor import (
-        publish_terminal_backtest_snapshots,
+        _publish_terminal_snapshots_after_verified_prefix,
     )
     from src.trading_runtime.arte_journal_writer import load_typed_run_context
     from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
@@ -774,7 +774,8 @@ def publish_terminal_typed_batch_v4(
             or prefix.last_batch_id != batch.batch_id
             or prefix.last_sequence != batch.last_sequence):
         raise RuntimeError("V4 terminal commit lacks exact cold readback")
-    publish_terminal_backtest_snapshots(client, prefix, captures)
+    _publish_terminal_snapshots_after_verified_prefix(
+        client, prefix, captures, context)
     return prefix
 
 

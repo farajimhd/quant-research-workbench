@@ -539,7 +539,7 @@ def test_v4_terminal_commit_compacts_real_keeper_dispatch(monkeypatch) -> None:
     monkeypatch.setattr(journal_writer, "load_typed_run_context",
                         lambda _client, _run: {
                             "mode": "backtest", "account_ids": ("DU1",)})
-    monkeypatch.setattr(anchors, "publish_terminal_backtest_snapshots",
+    monkeypatch.setattr(anchors, "_publish_terminal_snapshots_after_verified_prefix",
                         lambda *_args: ("anchored",))
     client = WriterClient()
     prefix = publish_terminal_typed_batch_v4(
