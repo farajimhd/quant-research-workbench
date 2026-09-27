@@ -288,6 +288,7 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
     from src.trading_runtime.keeper_session import open_workstation_keeper_session
     from src.backend.backtest_market_plan_cache import (
         MARKET_PLAN_CACHE, market_inventory_fingerprint,
+        selected_market_inventory_fingerprint,
     )
     from research.mlops.clickhouse import ClickHouseHttpClient
 
@@ -300,6 +301,7 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
         days = tuple(str(day) for day in sessions)
         symbols = tuple(tickers)
         cacheable = isinstance(raw_reader, ClickHouseHttpClient)
+        selected_before = None
         if cacheable:
             interval = effective_execution_interval(configuration)
             resolutions = compile_required_resolutions(configuration, interval)
@@ -309,6 +311,14 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
             cached = MARKET_PLAN_CACHE.get(key, proofs, before)
             if cached is not None and market_inventory_fingerprint(reader) == before:
                 return cached
+            # The producer may append a different build while this full cold
+            # certificate is read. Pin the selected build's physical parts so
+            # unrelated product growth need not force a second full audit.
+            try:
+                selected_before = selected_market_inventory_fingerprint(
+                    reader, build_ids, days)
+            except RuntimeError:
+                pass  # Unstable scoped metadata retains the full re-audit path.
         plan = discover_cold_certified_market_day_plan(
             reader, _MarketCertificateProofs(proofs),
             sessions=days,
@@ -317,6 +327,20 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
         if cacheable:
             after = market_inventory_fingerprint(reader)
             if after != before:
+                selected_after = None
+                try:
+                    selected_after = selected_market_inventory_fingerprint(
+                        reader, build_ids, days)
+                except RuntimeError:
+                    pass
+                if (selected_before is not None
+                        and selected_after == selected_before
+                        and market_day_fence_build_ids(reader, configuration) == build_ids):
+                    # First audit was full and attested. Active parts that can
+                    # contain its certificate or selected market rows did not
+                    # change; only another build's parts changed. Do not cache
+                    # this physically unstable global inventory.
+                    return plan
                 # A producer may append another build while this certified
                 # build is being audited. Recheck the exact attested build and
                 # product hashes instead of treating an unrelated part change

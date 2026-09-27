@@ -9,6 +9,7 @@ from src.backend import backtest_market_plan_cache as subject
 class InventoryClient:
     def __init__(self):
         self.part_name = "part-1"
+        self.unrelated_part_name = None
         self.disk_name = "live_market_ssd"
 
     def execute(self, sql):
@@ -24,6 +25,12 @@ class InventoryClient:
             rows = [dict(table="bars_v1", name=self.part_name,
                          disk_name=self.disk_name, rows=10, bytes_on_disk=100,
                          hash_of_all_files="a" * 32)]
+            if self.unrelated_part_name:
+                rows.append(dict(table="bars_v1", name=self.unrelated_part_name,
+                                 disk_name=self.disk_name, rows=20, bytes_on_disk=200,
+                                 hash_of_all_files="b" * 32))
+        elif "SELECT DISTINCT _part FROM arte." in sql:
+            return self.part_name if "arte.bars_v1 " in sql else ""
         else:
             raise AssertionError(sql)
         return "\n".join(json.dumps(row) for row in rows)
@@ -39,6 +46,22 @@ def test_market_inventory_fingerprint_invalidates_on_part_change_and_fails_off_s
     client.disk_name = "default"
     with pytest.raises(RuntimeError, match="outside SSD"):
         subject.market_inventory_fingerprint(client)
+
+
+def test_selected_inventory_ignores_unrelated_parts_but_fences_selected_parts():
+    client = InventoryClient()
+    client.part_name = "part_1"
+    args = (("a" * 64,), ("2026-08-18",))
+    first = subject.selected_market_inventory_fingerprint(client, *args)
+    global_before = subject.market_inventory_fingerprint(client)
+    client.unrelated_part_name = "part_2"
+    assert subject.market_inventory_fingerprint(client) != global_before
+    assert subject.selected_market_inventory_fingerprint(client, *args) == first
+    client.part_name = "part_3"
+    assert subject.selected_market_inventory_fingerprint(client, *args) != first
+    client.disk_name = "default"
+    with pytest.raises(RuntimeError, match="off-SSD"):
+        subject.selected_market_inventory_fingerprint(client, *args)
 
 
 def test_market_plan_cache_requires_exact_keeper_and_inventory():
@@ -80,6 +103,8 @@ def test_fixed_plan_reuses_only_unchanged_verified_snapshot(monkeypatch):
     fingerprint = ["part-1"]
     monkeypatch.setattr(subject, "market_inventory_fingerprint",
                         lambda _reader: fingerprint[0])
+    monkeypatch.setattr(subject, "selected_market_inventory_fingerprint",
+                        lambda *_args: "selected")
     monkeypatch.setattr(subject, "MARKET_PLAN_CACHE", subject.MarketPlanCache())
     args = dict(sessions=("2026-08-18",), tickers=("ABCD",),
                 configuration={"strategy": {"execution_interval": "100ms"}})
@@ -120,6 +145,9 @@ def test_cold_plan_rechecks_pinned_build_during_unrelated_part_growth(
     fingerprints = iter(("before", "after"))
     monkeypatch.setattr(subject, "market_inventory_fingerprint",
                         lambda _reader: next(fingerprints))
+    scoped = iter(("selected-before", "selected-after"))
+    monkeypatch.setattr(subject, "selected_market_inventory_fingerprint",
+                        lambda *_args: next(scoped))
     scans = []
     def discover(*_args, **kwargs):
         assert kwargs["expected_build_ids"] == ("a" * 64,)
@@ -137,4 +165,44 @@ def test_cold_plan_rechecks_pinned_build_during_unrelated_part_growth(
     else:
         assert market.certified_market_plan_from_arte(**args) is scans[-1]
     assert len(scans) == 2
+    assert cache._entry is None
+
+
+def test_unrelated_part_growth_reuses_full_audit_without_caching(monkeypatch):
+    from src.backend import backtest_market_data as market
+    from src.trading_runtime import arte_market_day_cold_preflight as cold
+    from src.trading_runtime import arte_market_day_keeper as keeper_module
+    from src.trading_runtime import keeper_session as session_module
+    from research.mlops import clickhouse
+
+    class Reader:
+        def close(self):
+            pass
+
+    class Session:
+        client = object()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
+    monkeypatch.setattr(market, "readonly_clickhouse_client", lambda **_: Reader())
+    monkeypatch.setattr(cold, "market_day_fence_build_ids", lambda *_: ("a" * 64,))
+    monkeypatch.setattr(session_module, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(keeper_module, "MarketDayKeeperReader",
+                        lambda _: SimpleNamespace(load=lambda _build: "proof"))
+    scans = []
+    monkeypatch.setattr(cold, "discover_cold_certified_market_day_plan",
+                        lambda *_args, **_kwargs: scans.append(
+                            SimpleNamespace(token="same")) or scans[-1])
+    inventory = iter(("before", "after"))
+    monkeypatch.setattr(subject, "market_inventory_fingerprint",
+                        lambda _reader: next(inventory))
+    monkeypatch.setattr(subject, "selected_market_inventory_fingerprint",
+                        lambda *_args: "selected")
+    cache = subject.MarketPlanCache()
+    monkeypatch.setattr(subject, "MARKET_PLAN_CACHE", cache)
+    plan = market.certified_market_plan_from_arte(
+        sessions=("2026-08-18",), tickers=("ABCD",),
+        configuration={"strategy": {"execution_interval": "100ms"}})
+    assert plan is scans[0] and len(scans) == 1
     assert cache._entry is None

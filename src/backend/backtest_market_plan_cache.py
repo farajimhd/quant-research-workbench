@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+import re
 from threading import Lock
 from typing import Any, Mapping
 
@@ -62,6 +63,76 @@ def _inventory_fingerprint(client: Any, names: tuple[str, ...], domain: bytes) -
 def market_inventory_fingerprint(client: Any) -> str:
     """Hash every schema and active-part identity required by a cached plan."""
     return _inventory_fingerprint(client, _NAMES, b"arte-market-plan-inventory-v1")
+
+
+def selected_market_inventory_fingerprint(
+    client: Any, build_ids: tuple[str, ...], days: tuple[str, ...],
+) -> str:
+    """Fence only attested-build parts while still checking every table's SSD policy.
+
+    A producer's unrelated build can append parts during a full cold audit.
+    ClickHouse parts are immutable: an INSERT affecting the selected build/day
+    adds a part, and a merge involving it replaces its part identity. Both
+    change this fingerprint. Certificate/source families cover the full build;
+    market products cover the sessions in this Backtest plan.
+    """
+    if (not build_ids or not days
+            or any(not re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", value)
+                   for value in build_ids)
+            or any(not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
+                   for value in days)):
+        raise ValueError("Selected market inventory requires exact build and session keys")
+    sql_names = ",".join(f"'{name}'" for name in _NAMES)
+    digest = sha256(b"arte-selected-market-inventory-v1\0")
+    for label, columns, system_table, key, ordering in _QUERIES[:2]:
+        rows = [json.loads(line) for line in client.execute(
+            f"SELECT {columns} FROM {system_table} WHERE database='arte' "
+            f"AND {key} IN ({sql_names}) ORDER BY {ordering} FORMAT JSONEachRow"
+        ).splitlines() if line.strip()]
+        expected = set(columns.split(","))
+        if (any(set(row) != expected or row[key] not in _NAMES for row in rows)
+                or (label == "table" and (
+                    {row["name"] for row in rows} != set(_NAMES)
+                    or any(row["storage_policy"] != "live_market_ssd" for row in rows)))
+                or (label == "column" and
+                    {row["table"] for row in rows} != set(_NAMES))):
+            raise RuntimeError("Selected market inventory schema or policy changed")
+        digest.update(label.encode() + b"\0")
+        for row in rows:
+            digest.update(json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+    parts = [json.loads(line) for line in client.execute(
+        "SELECT table,name,disk_name,rows,bytes_on_disk,hash_of_all_files "
+        "FROM system.parts WHERE database='arte' AND active "
+        f"AND table IN ({sql_names}) ORDER BY table,name FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    expected_parts = {"table", "name", "disk_name", "rows", "bytes_on_disk",
+                      "hash_of_all_files"}
+    if any(set(row) != expected_parts or row["table"] not in _NAMES
+           or row["disk_name"] != "live_market_ssd" for row in parts):
+        raise RuntimeError("Selected market inventory has malformed or off-SSD parts")
+    by_part = {(row["table"], row["name"]): row for row in parts}
+    if len(by_part) != len(parts):
+        raise RuntimeError("Selected market inventory repeats an active part")
+    ids = ",".join(f"'{value}'" for value in build_ids)
+    day_filter = ",".join(f"toDate('{value}')" for value in days)
+    for name in _NAMES:
+        scope = (f" AND session_date IN ({day_filter})" if name in {
+            "bars_v1", "indicators_v1", "liquidity_100ms_v1"} else "")
+        selected = client.execute(
+            f"SELECT DISTINCT _part FROM arte.{name} WHERE build_id IN ({ids})"
+            f"{scope} ORDER BY _part FORMAT TabSeparated"
+        ).splitlines()
+        if len(set(selected)) != len(selected) or any(
+                not re.fullmatch(r"[A-Za-z0-9_]+", value) for value in selected):
+            raise RuntimeError("Selected market inventory returned invalid part names")
+        digest.update(name.encode() + b"\0")
+        for part_name in selected:
+            row = by_part.get((name, part_name))
+            if row is None:
+                raise RuntimeError("Selected market part merged during inventory read")
+            digest.update(json.dumps(row, sort_keys=True,
+                                     separators=(",", ":")).encode() + b"\n")
+    return digest.hexdigest()
 
 
 def price_inventory_fingerprint(client: Any) -> str:
