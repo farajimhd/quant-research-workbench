@@ -2390,11 +2390,16 @@ def capture(args: argparse.Namespace) -> int:
                     page.route(re.compile('/api/trading/backtest/runs/' + re.escape(args.historical_run_id) + r'(\?.*)?$'), cached_preparation)
                 if args.full_market_backtest:
                     full_market_requests = []
+                    full_market_preflights = []
                     plan = dict(name='V7 full session / first Early Squeeze', profile_id='fixture', run_plan_id='fixture-plan', strategy_id='fixture', strategy_revision=1)
                     page.route('**/api/trading/backtest/configuration-options*', fulfill_json(json.dumps(dict(candidate_id='fixture-222', run_plan_id='fixture-plan', available_run_plans=[plan], error='', candidates=[dict(candidate_id='fixture-222', candidate_revision=222, label='Full session', content_hash='fixture')]))))
                     page.route('**/api/trading/backtest/structure-books', fulfill_json(json.dumps(dict(items=[dict(id='fixture-SUGP', ticker='SUGP', version='causal-level-book-v7-mle-1', start='2025-01-01', end='2026-09-12')]))))
                     page.route('**/api/trading/backtest/indicator-warmup', fulfill_json(json.dumps(dict(status='ready', items=[], ready_count=1, ticker_count=1))))
-                    page.route('**/api/trading/historical-preflight', fulfill_json(json.dumps(dict(configuration_revision_id='fixture-222', configuration_revision=222, run_plan_id='fixture-plan', strategy_run_ready=True, checks=[], window=dict(sessions=['2026-08-18'])))))
+                    def capture_market_preflight(route):
+                        request = route.request.post_data_json
+                        full_market_preflights.append(request)
+                        route.fulfill(content_type='application/json', body=json.dumps(dict(configuration_revision_id='fixture-222', configuration_revision=222, run_plan_id='fixture-plan', initial_cash=request['initial_cash'], strategy_run_ready=True, checks=[], window=dict(sessions=['2026-08-18']))))
+                    page.route('**/api/trading/historical-preflight', capture_market_preflight)
                     def capture_market_launch(route):
                         if route.request.method == 'POST':
                             full_market_requests.append(route.request.post_data_json)
@@ -3367,12 +3372,15 @@ def capture(args: argparse.Namespace) -> int:
                         if page.get_by_label('Tickers', exact=True).count():raise RuntimeError('Full market must not require a ticker list')
                         if page.get_by_label('Start time', exact=True).input_value()!='04:00:00' or page.get_by_label('End time', exact=True).input_value()!='09:30:00':raise RuntimeError('Strategy 1 must default to the full premarket')
                         if page.get_by_role('button', name='Level book', exact=True).count():raise RuntimeError('Strategy 1 must not offer a legacy book override')
+                        page.locator('label.configuration-field').filter(has=page.get_by_text('Initial cash', exact=True)).locator('input').fill('20000')
+                        page.wait_for_function("[...document.querySelectorAll('button')].some(b=>b.textContent==='Run Full-market Backtest'&&!b.disabled)")
+                        if not full_market_preflights or full_market_preflights[-1].get('initial_cash')!=20000:raise RuntimeError('Cash change did not refresh Backtest preflight')
                         launch=page.get_by_role('button', name='Run Full-market Backtest', exact=True)
                         launch.click(timeout=args.timeout_ms)
                         page.wait_for_function("!document.querySelector('button[aria-label=\"Check readiness again\"]').disabled")
                         if len(full_market_requests)!=1:raise RuntimeError('Full market must create exactly one run')
                         request=full_market_requests[0]
-                        expected=dict(tickers=[], experimental_structure_book='level-book-v7', start_time='04:00:00', end_time='09:30:00', session_count=1, configuration_revision_id='fixture-222', run_plan_id='fixture-plan', new_order_activation_delay_ms=0)
+                        expected=dict(tickers=[], experimental_structure_book='level-book-v7', start_time='04:00:00', end_time='09:30:00', session_count=1, initial_cash=20000, configuration_revision_id='fixture-222', run_plan_id='fixture-plan', new_order_activation_delay_ms=0)
                         if any(request.get(k)!=v for k,v in expected.items()):raise RuntimeError('Full market launch differs from canonical request: '+str(request))
                         page.get_by_role('button', name='Ticker scope', exact=True).click()
                         page.get_by_role('option', name=re.compile('^Selected tickers')).click()

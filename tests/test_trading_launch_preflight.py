@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import date
 from unittest.mock import patch
+from fastapi import HTTPException
 
 from src.backend.app import (
     HistoricalPreflightRequest,
@@ -45,20 +46,35 @@ class TradingLaunchPreflightTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("historical_source", {row["id"] for row in payload["checks"]})
         self.assertIn("runtime_storage", {row["id"] for row in payload["checks"]})
 
-    @patch("src.backend.app.configuration_candidate", return_value=None)
-    @patch("src.backend.app.approved_configuration", return_value=None)
-    async def test_backtest_missing_release_preserves_launch_contract(self, _approved, _candidate) -> None:
-        payload = await trading_historical_preflight(
-            HistoricalPreflightRequest(
-                mode="backtest",
-                anchor_date=date(2026, 8, 18),
-                session_count=5,
-            )
-        )
+    async def test_backtest_missing_typed_release_fails_before_preflight(self) -> None:
+        with (
+            patch("src.backend.app.backtest_configuration_snapshot",
+                  side_effect=ValueError("No immutable Strategy 1 release")),
+            patch("src.backend.app.backtest_preflight") as preflight,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await trading_historical_preflight(HistoricalPreflightRequest(
+                    mode="backtest", anchor_date=date(2026, 8, 18),
+                    session_count=5))
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("No immutable Strategy 1 release", str(raised.exception.detail))
+        preflight.assert_not_called()
 
-        self.assertFalse(payload["strategy_run_ready"])
-        self.assertEqual(payload["window"]["sessions"], [])
-        self.assertEqual(payload["available_run_plans"], [])
+    async def test_backtest_preflight_uses_selected_initial_cash(self) -> None:
+        request = HistoricalPreflightRequest(
+            mode="backtest", anchor_date=date(2026, 8, 19),
+            session_count=1, initial_cash=10_000,
+        )
+        revision = {"revision_id": "strategy-one-1"}
+        with (
+            patch("src.backend.app.backtest_configuration_snapshot",
+                  return_value=revision),
+            patch("src.backend.app.backtest_preflight",
+                  return_value={"strategy_run_ready": True}) as preflight,
+        ):
+            await trading_historical_preflight(request)
+        self.assertEqual(preflight.call_args.kwargs["initial_cash"], 10_000)
+        self.assertIs(preflight.call_args.kwargs["configuration_revision"], revision)
 
     @patch("src.backend.app.configuration_candidate", return_value=None)
     @patch("src.backend.app.approved_configuration", return_value=None)

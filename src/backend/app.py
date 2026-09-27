@@ -981,6 +981,7 @@ class HistoricalPreflightRequest(BaseModel):
     mode: str
     anchor_date: date
     session_count: int = Field(default=20, ge=1, le=260)
+    initial_cash: float = Field(default=100_000.0, ge=1_000, le=1_000_000_000)
     configuration_revision_id: str = Field(default="", max_length=128)
     run_plan_id: str = Field(default="", max_length=128)
     start_time: str = "04:00:00"
@@ -5336,6 +5337,7 @@ def _trading_historical_preflight_payload(
             return backtest_preflight(
                 anchor_date=payload.anchor_date,
                 session_count=payload.session_count,
+                initial_cash=payload.initial_cash,
                 start_time=_replay_clock_time(payload.start_time),
                 end_time=_replay_clock_time(payload.end_time),
                 tickers=tuple(payload.tickers),
