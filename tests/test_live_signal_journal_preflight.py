@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from scripts.clickhouse.install_trading_journal_layout import install_live_signal_tables
 from scripts.clickhouse.provision_trading_journal import _grants
 from src.backend.live_signal_journal_preflight import (
     LIVE_SIGNAL_TABLES, operator_ddl, staged_live_signal_storage_preflight,
@@ -39,12 +40,12 @@ class Catalog:
 
 def test_operator_only_ddl_and_opt_in_grants() -> None:
     ddl = operator_ddl()
-    assert len(ddl) == len(LIVE_SIGNAL_TABLES) == 5
+    assert len(ddl) == len(LIVE_SIGNAL_TABLES) == 13
     assert all("storage_policy = 'live_market_ssd'" in row for row in ddl)
     default = _grants()
     staged = _grants(staged_live_signal=True)
-    assert len(staged) == len(default) + 5
-    assert all(f"arte.{table.name}" in staged[-5 + index]
+    assert len(staged) == len(default) + len(LIVE_SIGNAL_TABLES)
+    assert all(f"arte.{table.name}" in staged[-len(LIVE_SIGNAL_TABLES) + index]
                for index, table in enumerate(LIVE_SIGNAL_TABLES))
     assert not any("signal_dispatch_intent_typed_v1" in grant for grant in default)
 
@@ -63,3 +64,15 @@ def test_staged_preflight_requires_exact_schema_policy_and_parts() -> None:
     catalog.misplaced = True
     with pytest.raises(RuntimeError, match="outside"):
         staged_live_signal_storage_preflight(catalog)
+
+
+def test_live_signal_operator_install_defaults_to_read_only_plan() -> None:
+    class EmptyCatalog:
+        def execute(self, sql):
+            if "system.storage_policies" in sql:
+                return json.dumps({"disks": ["live_market_ssd"]})
+            if "system.tables" in sql:
+                return ""
+            raise AssertionError(sql)
+
+    assert install_live_signal_tables(EmptyCatalog(), apply=False) == "planned (13 missing)"

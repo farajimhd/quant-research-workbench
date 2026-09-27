@@ -42,6 +42,9 @@ from src.backend.backtest_squeeze_episode_schema import (
 )
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.live_plan_membership import TABLES as LIVE_PLAN_MEMBERSHIP_TABLES
+from src.backend.live_signal_journal_preflight import (
+    LIVE_SIGNAL_TABLES, staged_live_signal_storage_preflight,
+)
 from scripts.clickhouse.provision_fixed_backtest_v3_principals import WORKSTATION_IPV4
 
 
@@ -819,6 +822,41 @@ def install_missing(client: object, *, apply: bool, profile: str = "fixed-v2",
     return installed, created
 
 
+def install_live_signal_tables(client: object, *, apply: bool) -> str:
+    """Install only missing normalized source/dispatch tables; never write rows."""
+    policy = [json.loads(line) for line in client.execute(
+        "SELECT disks FROM system.storage_policies "
+        "WHERE policy_name='live_market_ssd' FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    if len(policy) != 1 or policy[0].get("disks") != ["live_market_ssd"]:
+        raise RuntimeError("Live signal layout requires SSD-only live_market_ssd")
+    names = ",".join(f"'{table.name}'" for table in LIVE_SIGNAL_TABLES)
+    rows = [json.loads(line) for line in client.execute(
+        "SELECT name FROM system.tables WHERE database='arte' "
+        f"AND name IN ({names}) FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    installed = {row.get("name") for row in rows}
+    if (len(installed) != len(rows) or any(set(row) != {"name"} for row in rows)
+            or installed - {table.name for table in LIVE_SIGNAL_TABLES}):
+        raise RuntimeError("Live signal table inventory is ambiguous")
+    for table in LIVE_SIGNAL_TABLES:
+        if table.name in installed:
+            storage_preflight(client, tables=(TableContract(
+                table.name, table.columns, "toYYYYMM(session_key)", table.order),))
+    if len(installed) == len(LIVE_SIGNAL_TABLES):
+        staged_live_signal_storage_preflight(client)
+        return "verified"
+    if not apply:
+        return f"planned ({len(LIVE_SIGNAL_TABLES) - len(installed)} missing)"
+    for table in LIVE_SIGNAL_TABLES:
+        if table.name not in installed:
+            client.execute(table.ddl())
+            storage_preflight(client, tables=(TableContract(
+                table.name, table.columns, "toYYYYMM(session_key)", table.order),))
+    staged_live_signal_storage_preflight(client)
+    return "installed"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://DESKTOP-SAAI85T:18123")
@@ -850,6 +888,8 @@ def main() -> int:
                         help="verify or install empty-fence V3 allocation fill")
     parser.add_argument("--install-live-plan-membership", action="store_true",
                         help="verify or install typed live plan membership tables")
+    parser.add_argument("--install-live-signal", action="store_true",
+                        help="verify or install normalized live signal tables")
     args = parser.parse_args()
     parsed = urlsplit(args.url)
     if (platform.node().upper() != "DESKTOP-SAAI85T"
@@ -876,9 +916,13 @@ def main() -> int:
                     args.upgrade_v3_protection_change,
                     args.upgrade_v3_protected_exit_snapshot,
                     args.upgrade_v3_portfolio_allocation_fill,
-                    args.install_live_plan_membership)) > 1:
+                    args.install_live_plan_membership,
+                    args.install_live_signal)) > 1:
                 parser.error("Select only one layout upgrade at a time")
-            if args.install_live_plan_membership:
+            if args.install_live_signal:
+                result = install_live_signal_tables(client, apply=args.apply)
+                print(f"Live signal layout: {result}; no rows inserted")
+            elif args.install_live_plan_membership:
                 result = install_live_plan_membership(client, apply=args.apply)
                 print(f"Live plan membership layout: {result}; no rows inserted")
             elif args.upgrade_v3_portfolio_allocation_fill:

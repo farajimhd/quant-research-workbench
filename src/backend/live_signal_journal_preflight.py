@@ -6,9 +6,12 @@ from typing import Any
 
 from src.backend.signal_dispatch_typed_cursor import DISPATCH_TABLES
 from src.backend.live_signal_work_completion import COMPLETION
+from src.backend.signal_stream_typed_cursor import TABLES as CURSOR_TABLES
+from src.backend.signal_stream_typed_occurrence import TABLES as OCCURRENCE_TABLES
 
 
-LIVE_SIGNAL_TABLES = (*DISPATCH_TABLES, COMPLETION)
+LIVE_SIGNAL_TABLES = (*DISPATCH_TABLES, COMPLETION,
+                      *OCCURRENCE_TABLES, *CURSOR_TABLES)
 
 
 def operator_ddl() -> tuple[str, ...]:
@@ -42,9 +45,13 @@ def staged_live_signal_storage_preflight(client: Any) -> None:
         raise RuntimeError("staged live signal table inventory differs")
     for contract in LIVE_SIGNAL_TABLES:
         row = by_name.get(contract.name)
+        actual_order = (tuple(field.strip() for field in row["sorting_key"].split(","))
+                        if row is not None and isinstance(row.get("sorting_key"), str)
+                        else ())
+        expected_order = tuple(field.strip() for field in contract.order.split(","))
         if row is None or (row.get("engine"), row.get("storage_policy"),
-                           row.get("partition_key"), row.get("sorting_key")) != (
-                "MergeTree", "live_market_ssd", "toYYYYMM(session_key)", contract.order):
+                           row.get("partition_key"), actual_order) != (
+                "MergeTree", "live_market_ssd", "toYYYYMM(session_key)", expected_order):
             raise RuntimeError(f"staged live signal table layout differs: {contract.name}")
     columns = _rows(client, "SELECT table,name,type FROM system.columns "
                     "WHERE database='arte' "
