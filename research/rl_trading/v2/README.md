@@ -159,18 +159,18 @@ rollout chunks bootstrap the critic and do not reset account state. Both trainin
 and validation report fees, slippage dollars/ratios, partial/unfilled orders,
 forced fills, turnover notional, net return, and drawdown.
 
-The actor applies PPO clipping and its KL limit to each eligible ticker's
-factorized action probability, then averages over eligible tickers. Entropy is
-averaged the same way. The critic still estimates the whole account value.
-For actor credit assignment, each step's marked price movement, fill slippage,
-and cash fees are attributed to their ticker; their sum must reconcile with
-the account reward. Each ticker's undiscounted return within a rollout guides
-its action probabilities. This local attribution is an approximation to the
-portfolio policy gradient because ticker actions compete for shared cash.
-Summing all ticker log probabilities into one joint PPO ratio made the KL
-threshold scale with universe width and prematurely stopped policy updates in
-the first laptop campaign. Giving every ticker the same portfolio advantage
-then led to excessive trading in the second campaign.
+The policy scores every visible ticker and first samples a learned trade/pass
+gate. If trading, it selects one eligible ticker and buy, reduce, or close
+mode, then samples its allocation and, for a new position, stop and target.
+This limits discretionary fills to one order per second; sticky forced exits
+can still execute together. The gate begins with a sparse-trading prior but
+is trainable. PPO uses the selected action's probability and the full
+net-account advantage, so its KL limit no longer scales with 1000 independent
+action samples. Each step's marked price movement, fill slippage, and cash
+fees are also attributed to their ticker, and their sum must reconcile with
+the account reward. This ledger is diagnostic and does not supply labels.
+The earlier independent-action campaigns are retained as failed experiments:
+their many simultaneous small orders incurred prohibitive fixed commissions.
 
 ## Learned exits and estimated regular-session bands
 

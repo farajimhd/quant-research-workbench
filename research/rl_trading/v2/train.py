@@ -19,7 +19,7 @@ from research.rl_trading.v2.config import Config, VERSION
 from research.rl_trading.v2.data import MarketSession, chronological
 from research.rl_trading.v2.environment import TradingEnv
 from research.rl_trading.v2.model import PortfolioPolicy, collate
-from research.rl_trading.v2.objectives import advantages, ticker_returns, ppo_loss
+from research.rl_trading.v2.objectives import advantages, ppo_loss
 from research.rl_trading.v2.io import code_identity, digest, exclusive, file_hash, output_root, read, write
 from research.mlops.env import discover_env_files, load_env_files
 from research.mlops.wandb_utils import init_wandb
@@ -239,18 +239,14 @@ def _train_locked(args, config, root):
             for step in range(args.rollout_steps):
                 observations = [env.observe() for env in envs]
                 with torch.no_grad():
-                    modes,sizes,logprobs,_,values = policy.action(
-                        collate(observations,args.device),per_ticker=True)
+                    modes,sizes,logprobs,_,values = policy.action(collate(observations,args.device))
                 for slot,env in enumerate(envs):
                     count = len(observations[slot]['ids'])
                     mode = modes[slot,:count].cpu().numpy()
                     size = sizes[slot,:count].cpu().numpy()
                     _,reward,done,summary = env.step(mode,size)
                     trajectories[slot].append(dict(obs=observations[slot],modes=mode,sizes=size,
-                        logprob=logprobs[slot,:count].cpu().numpy(),
-                        ids=observations[slot]['ids'].copy(),
-                        ticker_rewards=env.last_reward_by_ticker[observations[slot]['ids']].copy(),
-                        value=float(values[slot]),reward=reward,done=done))
+                        logprob=float(logprobs[slot]),value=float(values[slot]),reward=reward,done=done))
                     if done:
                         if not summary['valid_terminal']:
                             raise ValueError(f'Unresolved terminal holdings in training: {summary}')
@@ -266,14 +262,11 @@ def _train_locked(args, config, root):
             for slot,trajectory in enumerate(trajectories):
                 adv,returns = advantages([x['reward'] for x in trajectory],[x['value'] for x in trajectory],
                     [x['done'] for x in trajectory],float(bootstrap[slot]),gae_lambda=args.gae_lambda)
-                local = ticker_returns(trajectory,max(x.n for x in sessions),
-                    gae_lambda=1.)
-                for row,advantage,target,ticker_advantage in zip(trajectory,adv,returns,local):
-                    row.update(advantage=float(advantage),target=float(target),
-                        ticker_advantage=ticker_advantage)
+                for row,advantage,target in zip(trajectory,adv,returns):
+                    row.update(advantage=float(advantage),target=float(target))
                     rows.append(row)
-            local_values = np.concatenate([x['ticker_advantage'] for x in rows])
-            mean, std = float(local_values.mean()),float(local_values.std())
+            mean = np.mean([x['advantage'] for x in rows])
+            std = np.std([x['advantage'] for x in rows])
             measures = []
             early_stop = False
             for epoch in range(args.epochs):
@@ -285,22 +278,16 @@ def _train_locked(args, config, root):
                     width = batch['valid'].shape[1]
                     mode = np.zeros((len(batch_rows),width),dtype=np.int64)
                     size = np.full((len(batch_rows),width,3),.5,dtype=np.float32)
-                    old_logprob = np.zeros((len(batch_rows),width),dtype=np.float32)
-                    ticker_advantage = np.zeros((len(batch_rows),width),dtype=np.float32)
                     for i,row in enumerate(batch_rows):
                         mode[i,:len(row['modes'])] = row['modes']
                         size[i,:len(row['sizes'])] = row['sizes']
-                        old_logprob[i,:len(row['logprob'])] = row['logprob']
-                        ticker_advantage[i,:len(row['ticker_advantage'])] = row['ticker_advantage']
                     _,_,logprob,entropy,value = policy.action(batch,
-                        torch.as_tensor(mode,device=args.device),torch.as_tensor(size,device=args.device),
-                        per_ticker=True)
+                        torch.as_tensor(mode,device=args.device),torch.as_tensor(size,device=args.device))
                     def tensor(key):
                         return torch.tensor([x[key] for x in batch_rows],dtype=torch.float32,device=args.device)
-                    loss,measure = ppo_loss(logprob,torch.as_tensor(old_logprob,device=args.device),
-                        torch.as_tensor((ticker_advantage-mean)/max(std,1e-8),device=args.device),
-                        value,tensor('target'),entropy,
-                        clip=args.clip,entropy_weight=args.entropy_weight,token_mask=batch['valid'])
+                    loss,measure = ppo_loss(logprob,tensor('logprob'),
+                        (tensor('advantage')-mean)/max(std,1e-8),value,tensor('target'),entropy,
+                        clip=args.clip,entropy_weight=args.entropy_weight)
                     if measure['approx_kl'] > args.target_kl:
                         early_stop = True
                         break

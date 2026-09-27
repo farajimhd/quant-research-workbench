@@ -201,6 +201,29 @@ def test_model_equivariance_and_sampled_probability_reproduction():
     torch.testing.assert_close(logprob,recomputed)
 
 
+def test_policy_scheduler_selects_one_discretionary_action_or_passes():
+    obs = TradingEnv(market(),config()).observe()
+    policy = PortfolioPolicy(3,width=16,heads=2)
+    with torch.no_grad():
+        policy.trade_gate.weight.zero_()
+        policy.trade_gate.bias.fill_(2.)
+    batch = collate([obs])
+    modes,sizes,logprob,_,_ = policy.action(batch,deterministic=True)
+    assert int((modes != 0).sum()) == 1
+    _,_,recomputed,_,_ = policy.action(batch,modes,sizes)
+    torch.testing.assert_close(logprob,recomputed)
+    (-recomputed.mean()).backward()
+    assert policy.trade_gate.bias.grad.abs().sum() > 0
+    assert policy.actor.weight.grad[1:].abs().sum() > 0
+    order = np.array([2,0,1])
+    permuted = {key:(value[order] if key != 'account' else value) for key,value in obs.items()}
+    other,_,_,_,_ = policy.action(collate([permuted]),deterministic=True)
+    torch.testing.assert_close(modes[:,order],other)
+    empty = TradingEnv(market(),replace(config(),min_volume_60s=1e9)).observe()
+    passed,_,score,_,_ = policy.action(collate([empty]))
+    assert torch.count_nonzero(passed) == 0 and torch.isfinite(score).all()
+
+
 def test_empty_universe_and_padding_are_finite():
     session = market()
     session.arrays['volume_60s'][:] = 0
