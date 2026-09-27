@@ -70,6 +70,8 @@ def test_terminal_page_requires_verified_context_prefix_and_snapshot(monkeypatch
     monkeypatch.setattr(review, "load_terminal_backtest_snapshot", snapshot)
     monkeypatch.setattr(review, "load_latest_backtest_cursor", cursor)
     monkeypatch.setattr(review, "load_typed_event_page", events)
+    monkeypatch.setattr(review, "_terminal_financial_accounts", lambda *_a:
+                        {"SIM-01-A": {"net_liquidation": 100000.0}})
     monkeypatch.setattr(review, "_head_matches", lambda *_a: True)
     page = _read(after_sequence=1)
     assert order == ["context", "prefix", "snapshot", "cursor", "events"]
@@ -108,6 +110,8 @@ def test_archived_v4_without_cursor_discloses_missing_clock(monkeypatch):
                          "snapshot_at": "2026-08-18T13:30:00+00:00"})
     monkeypatch.setattr(review, "load_latest_backtest_cursor", lambda *_a: None)
     monkeypatch.setattr(review, "load_typed_event_page", lambda *_a, **_k: ())
+    monkeypatch.setattr(review, "_terminal_financial_accounts", lambda *_a:
+                        {"SIM-01-A": {"net_liquidation": 100000.0}})
     monkeypatch.setattr(review, "_head_matches", lambda *_a: True)
     page = _read(after_sequence=2)
     assert page["market_cursor"] is None
@@ -141,6 +145,8 @@ def test_subsequent_page_reuses_audited_prefix_but_rechecks_head(monkeypatch):
     monkeypatch.setattr(review, "load_terminal_backtest_snapshot", snapshot)
     monkeypatch.setattr(review, "load_latest_backtest_cursor", lambda *_a:
                         {"session_date": "2026-08-18", "boundary_ms": 34200000})
+    monkeypatch.setattr(review, "_terminal_financial_accounts", lambda *_a:
+                        {"SIM-01-A": {"net_liquidation": 100000.0}})
     monkeypatch.setattr(review, "_head_matches", head)
     monkeypatch.setattr(review, "load_typed_event_page", events)
     cache = AuditedSessionCache()

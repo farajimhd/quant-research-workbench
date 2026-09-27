@@ -13,8 +13,11 @@ from src.trading_runtime.arte_backtest_snapshot_anchor import (
 from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
 from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
 from src.trading_runtime.arte_journal_reader import load_typed_event_page
-from src.trading_runtime.arte_journal_writer import load_typed_run_context
+from src.trading_runtime.arte_journal_writer import (
+    _CONTRACTS, _literal, _rows, load_typed_run_context,
+)
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.backend.backtest_terminal_v2_fence import _verify_rows
 from src.backend.typed_backtest_review_core import (
     AuditedSessionCache, _cache_key, _client_scope, _head_matches,
 )
@@ -22,6 +25,29 @@ from src.backend.typed_backtest_review_core import (
 
 _V4_CACHE = AuditedSessionCache(max_sessions=8, max_bytes=8 * 1024 * 1024,
                                 max_entry_bytes=512 * 1024, ttl_seconds=300)
+
+
+def _terminal_financial_accounts(client, prefix, account_ids: tuple[str, ...]) -> dict:
+    table = "trading_backtest_account_snapshot_v2"
+    columns = ",".join(name for name, _ in _CONTRACTS[table].columns)
+    rows = _rows(client,
+        f"SELECT {columns} FROM arte.{table} "
+        f"WHERE run_id={_literal(prefix.run_id)} "
+        f"AND batch_id=toUUID({_literal(prefix.last_batch_id)}) "
+        f"LIMIT {len(account_ids) + 1} FORMAT JSONEachRow")
+    verified = _verify_rows(table, tuple(rows))
+    if (len(verified) != len(account_ids)
+            or {row["account_id"] for row in verified} != set(account_ids)
+            or any(row["run_id"] != prefix.run_id
+                   or row["batch_id"] != prefix.last_batch_id for row in verified)):
+        raise RuntimeError("Saved review terminal financial accounts differ from run")
+    return {row["account_id"]: {
+        key: row[key] for key in (
+            "source_timestamp_ms", "currency", "net_liquidation",
+            "total_cash_value", "buying_power", "gross_position_value",
+            "available_funds", "excess_liquidity", "expected_position_count",
+        )
+    } for row in verified}
 
 
 def load_v4_terminal_review_page(client, run_id: str, *,
@@ -71,6 +97,8 @@ def load_v4_terminal_review_page(client, run_id: str, *,
             raise RuntimeError("Saved review terminal head changed during audit")
         attestation = {
             "context": context, "prefix": prefix, "cursor": cursor,
+            "financial_accounts": _terminal_financial_accounts(
+                client, prefix, tuple(context["account_ids"])),
             "accounts": {
                 account_id: {
                     "state_hash": snapshot["state_hash"],
@@ -102,6 +130,7 @@ def load_v4_terminal_review_page(client, run_id: str, *,
                          "its exact processed-through clock is unavailable."]
                         if cursor is None else []),
         "accounts": attestation["accounts"],
+        "financial_accounts": attestation["financial_accounts"],
         "events": tuple({
             "event": row.event,
             "detail_family": row.detail_family,
