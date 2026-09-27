@@ -32,6 +32,8 @@ def _command():
 
 
 class _Writer:
+    coalesce_batches = False
+
     def __init__(self) -> None:
         self.receipts: list[Future[str]] = []
         self.submitted = asyncio.Event()
@@ -93,6 +95,33 @@ def test_broker_send_waits_for_durable_receipt_without_blocking_submit(monkeypat
             await dispatcher.close()
 
     asyncio.run(scenario())
+
+
+def test_wrong_valid_receipt_never_sends_order(monkeypatch) -> None:
+    _install_audit(monkeypatch)
+
+    async def scenario() -> None:
+        writer, broker = _Writer(), _Broker()
+        dispatcher = ArteCommandDispatcher(writer, broker)
+        await dispatcher.start(None, "live:DU1")
+        batch, request = _command()
+        ticket = dispatcher.submit(batch, "DU1", (request,))
+        await asyncio.wait_for(writer.submitted.wait(), 1)
+        writer.receipts[0].set_result(str(uuid4()))
+        with pytest.raises(RuntimeError, match="receipt differs"):
+            await asyncio.wait_for(ticket, 1)
+        assert broker.calls == []
+        with pytest.raises(RuntimeError, match="broker reconciliation"):
+            await dispatcher.close()
+
+    asyncio.run(scenario())
+
+
+def test_command_lane_rejects_coalescing_writer() -> None:
+    writer = _Writer()
+    writer.coalesce_batches = True
+    with pytest.raises(ValueError, match="non-coalesced"):
+        ArteCommandDispatcher(writer, _Broker())
 
 
 def test_failed_persistence_never_sends_and_poisons_lane(monkeypatch) -> None:

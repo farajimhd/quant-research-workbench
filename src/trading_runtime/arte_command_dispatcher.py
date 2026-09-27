@@ -17,6 +17,9 @@ from src.trading_runtime.ibkr_schema import OrderRequest
 
 
 class _JournalWriter(Protocol):
+    @property
+    def coalesce_batches(self) -> bool: ...
+
     def submit(self, batch: TypedJournalBatch) -> ThreadFuture[str]: ...
 
 
@@ -45,6 +48,8 @@ class ArteCommandDispatcher:
                  *, capacity: int = 64) -> None:
         if capacity < 1:
             raise ValueError("Command queue capacity must be positive")
+        if getattr(writer, "coalesce_batches", None) is not False:
+            raise ValueError("Command lane requires exact, non-coalesced journal receipts")
         self._writer = writer
         self._broker = broker
         self._queue: asyncio.Queue[_PendingCommand | None] = asyncio.Queue(maxsize=capacity)
@@ -111,7 +116,8 @@ class ArteCommandDispatcher:
                     raise RuntimeError("An earlier command requires broker reconciliation") from self._error
                 receipt = self._writer.submit(pending.batch)
                 committed_id = await asyncio.wrap_future(receipt)
-                UUID(str(committed_id))
+                if UUID(str(committed_id)) != UUID(pending.batch.batch_id):
+                    raise RuntimeError("Committed command receipt differs from submitted batch")
                 response = await self._broker.place_orders(
                     pending.account_id, list(pending.orders),
                 )
