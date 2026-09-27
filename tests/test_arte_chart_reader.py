@@ -209,6 +209,8 @@ class ArteChartReaderTests(unittest.TestCase):
         self.assertEqual(payload["indicator_provenance"]["unavailable_columns"],
                          ["session_relative_volume"])
         self.assertNotIn("i.session_relative_volume", client.sql)
+        self.assertNotIn("indicator_attempt_id", client.sql)
+        self.assertNotIn(", FROM", client.sql)
 
     def test_historical_canvas_uses_persisted_page_without_qmd_rebuild(self):
         from src.backend.trading_runtime_service import historical_bar_history_before

@@ -195,8 +195,8 @@ def chart_page(*, session: date, ticker: str, timeframe: str,
     requested = set(indicator_columns or ()).difference({"bar_start"})
     unavailable = sorted(requested.difference(_INDICATORS))
     projected = sorted(requested.intersection(_INDICATORS))
-    projection = "i.attempt_id AS indicator_attempt_id," + ",".join(
-        f"i.{column} AS {column}" for column in projected)
+    projection = ("i.attempt_id AS indicator_attempt_id," + ",".join(
+        f"i.{column} AS {column}" for column in projected)) if projected else ""
     join = (f"LEFT JOIN arte.indicators_v1 i ON i.build_id=b.build_id "
             f"AND i.session_date=b.session_date AND i.ticker=b.ticker "
             f"AND i.resolution_ms=b.resolution_ms AND i.bucket_index=b.bucket_index "
