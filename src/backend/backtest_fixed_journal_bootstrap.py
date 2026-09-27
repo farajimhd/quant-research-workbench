@@ -370,7 +370,7 @@ def assemble_fixed_v4_journal(
     """Build one bounded memory-to-Keeper writer lane; never open the gate."""
     if (not isinstance(token, FixedV4JournalPreflightToken)
             or len({id(read_client), id(writer_client), id(terminal_client)}) != 3
-            or not 1 <= batch_size <= 4096 or not 1 <= queue_capacity <= 64
+            or not 1 <= batch_size <= 1024 or not 1 <= queue_capacity <= 64
             or expected_market_start.tzinfo is None
             or fixed_market_parent_plan is None
             or fixed_market_execution_plan is None
@@ -455,7 +455,7 @@ def publish_and_assemble_fixed_v4_journal(
             or expected_market_start.tzinfo is None):
         raise ValueError("V4 launch requires pinned Strategy 1 at 100 ms")
     UUID(attempt_id)
-    if not 1 <= batch_size <= 4096 or not 1 <= queue_capacity <= 64:
+    if not 1 <= batch_size <= 1024 or not 1 <= queue_capacity <= 64:
         raise ValueError("V4 launch journal bounds are invalid")
     # Every reversible check runs before the first Keeper gate or ClickHouse
     # INSERT. Once publication starts, failures remain cold-recovery work.
