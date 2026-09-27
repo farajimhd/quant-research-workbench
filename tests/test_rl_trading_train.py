@@ -99,6 +99,26 @@ def test_warm_start_transfers_ticker_identity_by_name(tmp_path):
     assert torch.all(model.identity.weight[-1] == .75)
     assert torch.equal(model.identity.weight[2],new_before)
 
+    config['training']['epochs'] = 3
+    write(source/'config.json',config,immutable=False)
+    (source/'STOP').write_text('validation overfit\n')
+    (source/'metrics.jsonl').write_text('{"step":2}\n')
+    with pytest.raises(FileNotFoundError):
+        train._warm_start_model(model,new_vocab,contract,
+            source/'checkpoints/checkpoint_best_replay.pt')
+    certificate = dict(version='rl-trading-early-stop-v1',config_hash='source-hash',
+        completed_epochs=2,planned_epochs=3,
+        checkpoint_hash=file_hash(source/'checkpoints/checkpoint_latest.pt'),
+        best_replay_hash=file_hash(source/'checkpoints/checkpoint_best_replay.pt'),
+        stop_hash=file_hash(source/'STOP'),metrics_hash=file_hash(source/'metrics.jsonl'))
+    write(source/'early_stop_complete.json',certificate)
+    assert train._warm_start_model(model,new_vocab,contract,
+        source/'checkpoints/checkpoint_best_replay.pt')['source_epoch'] == 2
+    (source/'metrics.jsonl').write_text('{"step":3}\n')
+    with pytest.raises(ValueError,match='early-stop certificate'):
+        train._warm_start_model(model,new_vocab,contract,
+            source/'checkpoints/checkpoint_best_replay.pt')
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required by training contract')
 def test_cuda_training_launcher_reads_disk_shards_and_checkpoints(tmp_path,monkeypatch,

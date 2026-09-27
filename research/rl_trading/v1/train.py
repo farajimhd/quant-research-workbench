@@ -152,10 +152,22 @@ def _warm_start_model(model, vocab, contract, checkpoint_path):
     latest = torch.load(source_run/'checkpoints/checkpoint_latest.pt',
         map_location='cpu',weights_only=False)
     saved = torch.load(checkpoint_path,map_location='cpu',weights_only=False)
+    completed_epochs = latest['epoch']+1
+    planned_epochs = source_config['training']['epochs']
+    if completed_epochs < planned_epochs:
+        certificate = read(source_run/'early_stop_complete.json')
+        expected = dict(version='rl-trading-early-stop-v1',
+            config_hash=source_config['config_hash'],completed_epochs=completed_epochs,
+            planned_epochs=planned_epochs,
+            checkpoint_hash=file_hash(source_run/'checkpoints/checkpoint_latest.pt'),
+            best_replay_hash=file_hash(checkpoint_path),
+            stop_hash=file_hash(source_run/'STOP'),
+            metrics_hash=file_hash(source_run/'metrics.jsonl'))
+        if certificate != expected:
+            raise ValueError('Warm-start early-stop certificate does not match finished source')
     if (latest['config_hash'] != source_config['config_hash'] or
             saved['config_hash'] != source_config['config_hash'] or
             source_best['config_hash'] != source_config['config_hash'] or
-            latest['epoch']+1 < source_config['training']['epochs'] or
             saved['epoch']+1 != source_best['epoch']):
         raise ValueError('Warm-start source is unfinished or changed')
     old_vocab = saved['ticker_vocabulary']
@@ -293,6 +305,8 @@ def run(args):
         f'{len(vocab)} tickers | top {contract["top_n"]} | history {contract["history_seconds"]}s | '
         f'{sum(p.numel() for p in model.parameters()):,} parameters | {device}')
     previous = signal.signal(signal.SIGINT,_interrupt)
+    clean_exit = False
+    completed_epochs = start_epoch
     try:
         resident = None
         preload_seconds = 0.
@@ -433,16 +447,27 @@ def run(args):
                     replay_best = replay_report
                     write(replay_best_path,replay_best,immutable=False)
             metrics.log(report,global_step)
+            completed_epochs = epoch+1
             if args.require_gpu_bound and train_result['gpu_compute_fraction'] < args.min_gpu_fraction:
                 raise RuntimeError(f'Training is not GPU-bound: measured compute fraction '
                     f'{train_result["gpu_compute_fraction"]:.1%} < {args.min_gpu_fraction:.1%}')
             if args.max_steps and global_step >= args.max_steps:
                 break
+        clean_exit = True
         return 0
     finally:
         signal.signal(signal.SIGINT,previous)
         checkpoint.close(wait=True,timeout=180)
         metrics.close()
+        if clean_exit and completed_epochs < args.epochs and (paths.run_root/'STOP').is_file():
+            best_checkpoint = paths.checkpoints_dir/'checkpoint_best_replay.pt'
+            write(paths.run_root/'early_stop_complete.json',dict(
+                version='rl-trading-early-stop-v1',config_hash=config['config_hash'],
+                completed_epochs=completed_epochs,planned_epochs=args.epochs,
+                checkpoint_hash=file_hash(paths.checkpoints_dir/'checkpoint_latest.pt'),
+                best_replay_hash=file_hash(best_checkpoint) if best_checkpoint.is_file() else None,
+                stop_hash=file_hash(paths.run_root/'STOP'),
+                metrics_hash=file_hash(paths.run_root/'metrics.jsonl')),immutable=False)
         if wandb is not None:
             wandb.finish()
 
