@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from datetime import date, time
 from unittest.mock import patch
@@ -263,6 +264,58 @@ class BacktestMarketDataTests(unittest.TestCase):
             verify_market_day_plan(self._plan(), read_client_factory=CorruptWorker)
         self.assertEqual(len(readers), 3)
         self.assertTrue(all(reader.closed for reader in readers))
+
+    def test_parallel_product_scan_shards_full_population_without_shared_clients(self) -> None:
+        tickers = tuple(f"T{index:04d}" for index in range(1025))
+        attempt = "00000000-0000-0000-0000-000000000001"
+        units = tuple(MarketDayUnit(
+            "build-1", "2026-08-18", ticker, stage, attempt,
+            "source", 10, "42")
+            for ticker in tickers
+            for stage in ("bars", "technical", "broker_100ms"))
+        plan = CertifiedMarketDayPlan(
+            ExecutionInterval.parse("100ms"), "build-1", "definition",
+            ("2026-08-18",), tickers, units, (100, 1000), "token")
+        readers = []
+
+        class Worker:
+            def __init__(self):
+                self.queries = []
+                self.closed = False
+                readers.append(self)
+
+            def execute(self, sql):
+                self.queries.append(sql)
+                scope = re.search(r"ticker IN \(([^)]*)\)", sql)
+                assert scope is not None
+                selected = re.findall(r"'T[0-9]{4}'", scope.group(1))
+                return "".join(json.dumps({
+                    "ticker": ticker.strip("'"), "attempt_id": attempt,
+                    "n": 10, "unique_keys": 10, "hash": "42",
+                    "resolutions": [100, 1000], "eligible_keys": 10,
+                    "key_hash": "123",
+                }) + "\n" for ticker in selected)
+
+            def close(self):
+                self.closed = True
+
+        verify_market_day_plan(plan, read_client_factory=Worker)
+        self.assertEqual(len(readers), 6)
+        self.assertTrue(all(len(reader.queries) == 1 and reader.closed
+                            for reader in readers))
+        self.assertEqual(sorted(len(re.findall(r"'T[0-9]{4}'", reader.queries[0]))
+                                for reader in readers), [1, 1, 1, 1024, 1024, 1024])
+        self.assertTrue(all(query.startswith("SELECT ") for reader in readers
+                            for query in reader.queries))
+
+        class MissingWorker(Worker):
+            def execute(self, sql):
+                result = super().execute(sql)
+                return "" if ("arte.liquidity_100ms_v1" in sql
+                              and "'T1024'" in sql) else result
+
+        with self.assertRaisesRegex(ValueError, "integrity changed.*T1024"):
+            verify_market_day_plan(plan, read_client_factory=MissingWorker)
 
     def test_liquidity_bucket_upper_bound_is_exact_completed_boundary(self) -> None:
         plan = self._plan()
