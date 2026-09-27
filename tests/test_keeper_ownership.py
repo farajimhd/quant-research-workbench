@@ -32,6 +32,18 @@ class RolledBackError(Exception):
     pass
 
 
+class RuntimeInconsistency(Exception):
+    pass
+
+
+def test_keeper_cas_conflict_with_rolled_back_followup_is_retryable() -> None:
+    assert ownership._committed([BadVersionError(), RuntimeInconsistency()]) is False
+    with pytest.raises(KeeperUnavailable, match="transaction failed"):
+        ownership._committed([RuntimeInconsistency()])
+    with pytest.raises(KeeperUnavailable, match="transaction failed"):
+        ownership._committed([BadVersionError(), TimeoutError()])
+
+
 @dataclass
 class _Stat:
     version: int = 0

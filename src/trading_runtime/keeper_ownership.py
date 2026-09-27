@@ -108,7 +108,11 @@ def _committed(results: Any) -> bool:
     errors = [value for value in results if isinstance(value, BaseException)]
     if not errors:
         return True
-    if all(_contention(error) or type(error).__name__ == "RolledBackError"
+    # ClickHouse Keeper/Kazoo reports later actions in a failed multi-op as
+    # RuntimeInconsistency, whereas ZooKeeper may report RolledBackError.
+    # Neither is retryable alone; require an actual optimistic conflict too.
+    if all(_contention(error) or type(error).__name__ in {
+            "RolledBackError", "RuntimeInconsistency"}
            for error in errors) and any(_contention(error) for error in errors):
         return False
     raise KeeperUnavailable("Keeper ownership transaction failed") from errors[0]
