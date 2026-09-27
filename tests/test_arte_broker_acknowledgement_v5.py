@@ -30,6 +30,13 @@ def _project(record=None, **changes):
         batch_id=str(UUID(int=2)), decision_to_submit_ms=1.234567890123,
     )
     arguments.update(changes)
+    if record is None:
+        arguments["record"] = replace(
+            arguments["record"], payload={
+                **arguments["response"],
+                "order_group_id": arguments["order_group_id"],
+                "decision_to_submit_ms": arguments["decision_to_submit_ms"],
+            })
     return project_broker_acknowledgement_v5(**arguments)
 
 
@@ -78,3 +85,13 @@ def test_unmodeled_or_inconsistent_reply_fails_closed(change):
 def test_wrong_journal_family_fails_closed():
     with pytest.raises(ValueError):
         _project(replace(_record(), category="strategy"))
+
+
+def test_detached_response_cannot_be_sealed_as_recorded_reply():
+    source = replace(_record(), payload={
+        "order_id": "1001", "order_status": "Submitted",
+        "order_group_id": "group-1", "decision_to_submit_ms": 1.0,
+    })
+    with pytest.raises(ValueError, match="differs from its recorded source"):
+        _project(source, response={"order_id": "1001",
+                                   "order_status": "PreSubmitted"})

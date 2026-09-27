@@ -63,10 +63,13 @@ def project_broker_acknowledgement_v5(
             or (record.category, record.entity_type)
             != ("broker", "order_acknowledgement")
             or record.event_time.tzinfo is None
+            or record.recorded_at.tzinfo is None
+            or not record.run_id or not record.account_id
             or provider not in {"simulated", "ibkr_cpapi"}
             or any(type(value) is not str or not value
                    for value in (client_order_id, order_group_id, intent_id))
-            or not isinstance(response, Mapping)):
+            or not isinstance(response, Mapping)
+            or not isinstance(record.payload, dict)):
         raise ValueError("Broker acknowledgement source is invalid")
     UUID(record.record_id)
     UUID(batch_id)
@@ -80,6 +83,13 @@ def project_broker_acknowledgement_v5(
         if (not {"order_id", "order_status"} <= set(response)
                 or set(response) - allowed):
             raise ValueError("IBKR broker reply has unmodeled fields")
+    # The broker adapter and OMS may expose two references to the reply. Seal
+    # only the response actually recorded by OMS; never hash a detached reply
+    # that could silently disagree with the authoritative journal sequence.
+    expected_payload = {**response, "order_group_id": order_group_id,
+                        "decision_to_submit_ms": decision_to_submit_ms}
+    if record.payload != expected_payload:
+        raise ValueError("Broker reply differs from its recorded source")
     broker_id = response["order_id"]
     status = response["order_status"]
     local_id = response.get("local_order_id")
