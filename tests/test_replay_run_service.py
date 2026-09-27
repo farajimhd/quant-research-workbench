@@ -357,7 +357,11 @@ class ReplayRunDefinitionTests(unittest.TestCase):
 
         self.assertEqual(snapshot["speed"], 1.0)
 
-    def test_stream_snapshot_omits_heavy_audit_collections(self) -> None:
+    @patch("src.backend.experimental_structure_book.resolve", return_value={
+        "version": "causal-level-book-v7-mle-1", "ticker": "*",
+        "start": "2026-01-01", "end": "2026-12-31", "fingerprint": "a" * 64,
+    })
+    def test_stream_snapshot_omits_heavy_audit_collections(self, _resolve) -> None:
         definition = ReplayRunDefinition(
             session_date=date(2026, 7, 28),
             start_time=time(9, 45),
@@ -366,6 +370,9 @@ class ReplayRunDefinitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = ReplayRunController(definition, runtime_root=Path(directory))
             full = controller.snapshot()
+            controller._journal_publisher = SimpleNamespace(
+                writer=SimpleNamespace(metrics=lambda: {
+                    "committed_units": 3, "publish_ns_total": 100}))
             streamed = controller.stream_snapshot()
 
         self.assertIn("assignments", full)
@@ -375,6 +382,8 @@ class ReplayRunDefinitionTests(unittest.TestCase):
         self.assertNotIn("sources", streamed["data_authority"])
         self.assertEqual(streamed["data_authority"]["source_count"], 0)
         self.assertEqual(streamed["canvas_profile"], full["canvas_profile"])
+        self.assertEqual(streamed["performance_timings"]["journal_writer"], {
+            "committed_units": 3, "publish_ns_total": 100})
 
     def test_stream_snapshot_reuses_bounded_checkpoint_projection(self) -> None:
         definition = ReplayRunDefinition(

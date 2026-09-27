@@ -1826,6 +1826,7 @@ class ReplayRunController:
             (self.definition.session_end - self.definition.requested_start).total_seconds(),
         )
         elapsed = max(0.0, (current - self.definition.requested_start).total_seconds())
+        journal_writer = getattr(getattr(self, '_journal_publisher', None), 'writer', None)
         payload = {
             "schema_version": 1,
             "mode": self.definition.mode.value,
@@ -1840,6 +1841,10 @@ class ReplayRunController:
             },
             "performance_timings": {"stages": deepcopy(getattr(self, '_stage_timings', {})),
                 "journal": dict(getattr(self._journal, 'timings', {})),
+                "journal_writer": (
+                    journal_writer.metrics()
+                    if callable(getattr(journal_writer, 'metrics', None))
+                    else {}),
                 "scope": "inclusive wall time; journal work is included in execution stages"},
             "preparation_stage": self._preparation_stage,
             "preparation_progress": {
