@@ -157,6 +157,16 @@ def price_inventory_fingerprint(client: Any) -> str:
                                   b"arte-price-plan-inventory-v1")
 
 
+def product_inventory_fingerprint(client: Any, names: tuple[str, ...]) -> str:
+    """Fence exact normalized derivative tables before reusing a cold audit."""
+    if (not names or len(names) != len(set(names))
+            or any(not re.fullmatch(r"[a-z][a-z0-9_]*", name)
+                   for name in names)):
+        raise ValueError("Product inventory requires distinct arte table names")
+    return _inventory_fingerprint(
+        client, tuple(sorted(names)), b"arte-product-plan-inventory-v1")
+
+
 class MarketPlanCache:
     """One verified plan at a time; never a source of authority by itself."""
 

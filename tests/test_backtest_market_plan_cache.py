@@ -51,6 +51,21 @@ def test_market_inventory_fingerprint_invalidates_on_part_change_and_fails_off_s
         subject.market_inventory_fingerprint(client)
 
 
+def test_product_inventory_fingerprint_requires_exact_ssd_tables(monkeypatch):
+    monkeypatch.setattr(subject, "_NAMES", ("bars_v1", "indicators_v1"))
+    client = InventoryClient()
+    names = ("bars_v1", "indicators_v1")
+    first = subject.product_inventory_fingerprint(client, names)
+    assert len(first) == 64
+    client.part_name = "part-2"
+    assert subject.product_inventory_fingerprint(client, names) != first
+    client.disk_name = "default"
+    with pytest.raises(RuntimeError, match="outside SSD"):
+        subject.product_inventory_fingerprint(client, names)
+    with pytest.raises(ValueError, match="distinct arte table names"):
+        subject.product_inventory_fingerprint(client, ("bars_v1", "bars_v1"))
+
+
 def test_selected_inventory_ignores_unrelated_parts_but_fences_selected_parts():
     client = InventoryClient()
     client.part_name = "part_1"

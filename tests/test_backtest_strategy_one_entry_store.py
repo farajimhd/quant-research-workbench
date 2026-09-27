@@ -116,6 +116,50 @@ def test_entry_store_certifies_exact_rows_without_any_write(monkeypatch):
         result.lookup("AAA", 31_100)
 
 
+def test_entry_plan_reuses_only_stable_verified_parts(monkeypatch):
+    from research.mlops import clickhouse
+    from src.backend import backtest_market_plan_cache as cache_module
+    from src.backend import backtest_strategy_one_entry_store as subject
+
+    monkeypatch.setattr(subject, "verify_tables", lambda _client: None)
+    monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
+    parts = ["parts-1"]
+    monkeypatch.setattr(cache_module, "product_inventory_fingerprint",
+                        lambda _client, _names: parts[0])
+    monkeypatch.setattr(subject, "ENTRY_PLAN_CACHE",
+                        cache_module.FingerprintPlanCache())
+    plans = _plans()
+    reader = Reader(plans)
+    first = certify_entry_evidence_plan(*plans, client=reader)
+    assert len(reader.queries) == 4
+    assert certify_entry_evidence_plan(*plans, client=reader) is first
+    assert len(reader.queries) == 4
+    parts[0] = "parts-2"
+    reader.coverage["content_hash"] = "z" * 64
+    with pytest.raises(RuntimeError, match="child rows differ"):
+        certify_entry_evidence_plan(*plans, client=reader)
+    assert len(reader.queries) == 8
+
+
+def test_entry_plan_does_not_cache_a_changing_cold_inventory(monkeypatch):
+    from research.mlops import clickhouse
+    from src.backend import backtest_market_plan_cache as cache_module
+    from src.backend import backtest_strategy_one_entry_store as subject
+
+    monkeypatch.setattr(subject, "verify_tables", lambda _client: None)
+    monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
+    fingerprints = iter(("parts-1", "parts-2", "parts-2", "parts-2"))
+    monkeypatch.setattr(cache_module, "product_inventory_fingerprint",
+                        lambda _client, _names: next(fingerprints))
+    monkeypatch.setattr(subject, "ENTRY_PLAN_CACHE",
+                        cache_module.FingerprintPlanCache())
+    plans = _plans()
+    reader = Reader(plans)
+    certify_entry_evidence_plan(*plans, client=reader)
+    certify_entry_evidence_plan(*plans, client=reader)
+    assert len(reader.queries) == 8
+
+
 def test_entry_store_normalizes_only_binary_price_tail(monkeypatch):
     monkeypatch.setattr("src.backend.backtest_strategy_one_entry_store.verify_tables",
                         lambda client: None)

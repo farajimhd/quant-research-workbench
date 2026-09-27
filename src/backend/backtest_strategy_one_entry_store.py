@@ -14,6 +14,7 @@ from typing import Any, Mapping
 from uuid import UUID
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, _literal
+from src.backend.backtest_market_plan_cache import FingerprintPlanCache
 from src.backend.backtest_strategy_one_activation import CertifiedActivationPlan
 from src.backend.backtest_strategy_one_candidate_store import CertifiedCandidatePlan
 from src.backend.backtest_strategy_one_entry_product import (
@@ -26,6 +27,12 @@ from src.trading_runtime.strategy_one_entry_evidence_schema import (
     ACTIVATION_TABLE, ACTIVATION_RESISTANCE_TABLE, COVERAGE_TABLE,
     EVIDENCE_TABLE, PRODUCT_DIGEST, verify_tables,
 )
+
+
+ENTRY_PLAN_CACHE = FingerprintPlanCache()
+_ENTRY_TABLE_NAMES = tuple(name.rsplit(".", 1)[1] for name in (
+    ACTIVATION_TABLE, ACTIVATION_RESISTANCE_TABLE, EVIDENCE_TABLE,
+    COVERAGE_TABLE))
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +151,24 @@ def certify_entry_evidence_plan(
             or sum(len(unit[0].boundary_ms) for unit in source.values()) > max_rows):
         raise ValueError("Strategy 1 entry evidence exceeds bounded read scope")
     verify_tables(client)
+    # A cold audit checks every normalized child and coverage seal. On a
+    # subsequent in-process launch, exact source tokens plus stable table
+    # identity, columns, and active part hashes authorize reusing that audit.
+    # Never cache a failed or physically changing audit, and never use a fake
+    # reader's inventory as production authority.
+    from research.mlops.clickhouse import ClickHouseHttpClient
+    from src.backend.backtest_market_plan_cache import product_inventory_fingerprint
+    cache_key = sha256("\0".join((
+        market.token, candidates.token, activations.token, pivots.token,
+        hod.token, seeds.token, PRODUCT_DIGEST,
+    )).encode()).hexdigest()
+    before = None
+    if isinstance(client, ClickHouseHttpClient):
+        before = product_inventory_fingerprint(client, _ENTRY_TABLE_NAMES)
+        cached = ENTRY_PLAN_CACHE.get(cache_key, before)
+        if (cached is not None
+                and product_inventory_fingerprint(client, _ENTRY_TABLE_NAMES) == before):
+            return cached
     coverage: dict[str, dict[str, Any]] = {}
     tickers = tuple(sorted(source))
     for offset in range(0, len(tickers), batch_size):
@@ -302,6 +327,10 @@ def certify_entry_evidence_plan(
             encoded = value.encode()
             digest.update(len(encoded).to_bytes(4, "big"))
             digest.update(encoded)
-    return CertifiedEntryEvidencePlan(
+    result = CertifiedEntryEvidencePlan(
         market.build_id, session, tuple(sealed), tuple(all_activations),
         tuple(all_candidates), digest.hexdigest())
+    if (before is not None
+            and product_inventory_fingerprint(client, _ENTRY_TABLE_NAMES) == before):
+        ENTRY_PLAN_CACHE.put(cache_key, before, result)
+    return result
