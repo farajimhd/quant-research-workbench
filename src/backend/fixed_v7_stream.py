@@ -203,8 +203,10 @@ class FixedV7Cache:
             raise ValueError("V7 completed second duplicated or moved backward")
         if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
             stream.update_second(row, at=at)
-        self._last_completed_second_rows[ticker] = {
-            **row, "boundary_ms": boundary_ms, "session_date": self.session.isoformat()}
+            self._last_completed_second_rows[ticker] = {
+                **row, "boundary_ms": boundary_ms, "session_date": self.session.isoformat()}
+        else:
+            self._last_completed_second_rows.pop(ticker, None)
         if self._observe_completed_second is not None:
             self._observe_completed_second(ticker, row, boundary_ms)
         self._last_observed_second_ms[ticker] = boundary_ms
@@ -249,12 +251,14 @@ class FixedV7Cache:
             if (second_ms <= self._last_observed_second_ms.get(ticker, 0)
                     or second_ms > completed_ms or second_ms % 1_000):
                 raise ValueError("V7 completed second duplicated or crossed its causal clock")
-            bar_at = market_day_boundary(self.session, second_ms)
             if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
-                stream.update_second(row, at=bar_at)
-            self._last_completed_second_rows[ticker] = {
-                **row, "boundary_ms": second_ms,
-                "session_date": self.session.isoformat()}
+                stream.update_second(
+                    row, at=market_day_boundary(self.session, second_ms))
+                self._last_completed_second_rows[ticker] = {
+                    **row, "boundary_ms": second_ms,
+                    "session_date": self.session.isoformat()}
+            else:
+                self._last_completed_second_rows.pop(ticker, None)
             if self._observe_completed_second is not None:
                 self._observe_completed_second(ticker, row, second_ms)
             self._last_observed_second_ms[ticker] = second_ms

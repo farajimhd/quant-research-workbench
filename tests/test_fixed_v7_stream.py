@@ -169,6 +169,12 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
     count = len(client.queries)
     cache.strategy_one_levels("TEST", as_of=later + timedelta(milliseconds=100))
     assert len(client.queries) == count
+    quote_only = {**next_bar, "bucket_index": 14702,
+                  "price_valid": 0, "extremes_valid": 0}
+    cache.advance_second("TEST", quote_only, at=later + timedelta(seconds=1))
+    assert cache.last_completed_price_second("TEST") is None
+    assert cache._streams["TEST"].engine.bars_processed == 2
+    assert observed_seconds[-1] == ("TEST", 14702, 303_000)
 
     late = FixedV7Cache(market_plan=market, seed_plan=v7,
                         session=date(2026, 8, 18), client=Client())
