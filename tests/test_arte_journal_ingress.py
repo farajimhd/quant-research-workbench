@@ -186,6 +186,42 @@ def test_cancelled_consumer_receipt_does_not_cancel_durable_publication():
     assert len(writer.batches) == 1
 
 
+def test_slow_payload_snapshot_does_not_hold_admission_lock():
+    entered = Event()
+    release = Event()
+    failures = []
+
+    class SlowPayload(dict):
+        def __deepcopy__(self, memo):
+            entered.set()
+            release.wait(2)
+            return dict(self)
+
+    ingress = TypedJournalIngress(
+        Writer(), run_id="run-1", attempt_id=str(uuid4()),
+        first_sequence=1, prior_batch_id=ZERO)
+
+    def submit_slow():
+        try:
+            ingress.submit(record(1, SlowPayload()), source_cursor="bar:1")
+        except RuntimeError as exc:
+            failures.append(str(exc))
+
+    submitter = Thread(target=submit_slow)
+    submitter.start()
+    try:
+        assert entered.wait(2)
+        # Control-plane shutdown must not wait for another producer's copy.
+        closer = Thread(target=ingress.close)
+        closer.start()
+        closer.join(0.5)
+        assert not closer.is_alive()
+    finally:
+        release.set()
+        submitter.join(2)
+    assert failures == ["Typed journal ingress is unavailable"]
+
+
 def test_external_writer_contention_retries_without_a_local_receipt():
     available = Event()
     attempted = Event()

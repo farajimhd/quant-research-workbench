@@ -77,19 +77,20 @@ class TypedJournalIngress:
                 or record.recorded_at.tzinfo is None):
             raise ValueError("Typed ingress needs a record and scalar source cursor")
         UUID(record.record_id)
+        # Runtime payload dictionaries can be mutated after submission. Snapshot
+        # caller-owned data before taking the admission lock so large evidence
+        # payloads do not serialize unrelated realtime producers.
+        frozen = JournalRecord(
+            record.record_id, record.run_id, record.sequence,
+            record.event_time, record.recorded_at, record.category,
+            record.entity_type, record.entity_id, record.account_id,
+            deepcopy(record.payload),
+        )
         with self._lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("Typed journal ingress is unavailable") from self._error
             if record.run_id != self._run_id or record.sequence != self._next_sequence:
                 raise ValueError("Typed journal ingress requires a contiguous run sequence")
-            # Runtime payload dictionaries can be mutated after submission. The
-            # bounded snapshot is the fact the asynchronous projector will see.
-            frozen = JournalRecord(
-                record.record_id, record.run_id, record.sequence,
-                record.event_time, record.recorded_at, record.category,
-                record.entity_type, record.entity_id, record.account_id,
-                deepcopy(record.payload),
-            )
             receipt: Future[str] = Future()
             try:
                 self._queue.put_nowait((frozen, source_cursor, receipt))
