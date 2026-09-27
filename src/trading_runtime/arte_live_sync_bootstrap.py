@@ -330,6 +330,7 @@ def recover_attested_live_portfolio(*, cold: LiveSyncColdResult,
 class VerifiedStrategyOneOmsHead:
     group: Any
     source_intent: Any
+    admission: Mapping[str, Any]
 
 
 def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
@@ -340,7 +341,7 @@ def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
     these states can be installed in an order manager or admit new orders.
     """
     from src.trading_runtime.arte_oms_projection import (
-        load_latest_committed_oms_groups,
+        load_committed_oms_admission_page, load_latest_committed_oms_groups,
     )
     from src.trading_runtime.arte_intent_projection import (
         load_committed_strategy_intent_page,
@@ -379,17 +380,28 @@ def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
             sources[source.record_id] = source
     if set(sources) != set(source_ids):
         raise RuntimeError("Live OMS source intent coverage is incomplete")
+    admissions = {}
+    for offset in range(0, len(groups), 200):
+        admissions.update(load_committed_oms_admission_page(
+            read_client, cold.prefix, groups[offset:offset + 200]))
+    if set(admissions) != {group.sequence for group in groups}:
+        raise RuntimeError("Live OMS admission coverage is incomplete")
     verified = []
     for group in groups:
         source = sources[group.intent_record_id]
+        admission = admissions[group.sequence]
         if (source.sequence >= group.sequence
                 or source.account_id != group.group["account_id"]
                 or source.intent.intent_id != group.group["strategy_intent_id"]
                 or source.intent.metadata
+                or admission["account_id"] != source.account_id
+                or admission["intent_id"] != source.intent.intent_id
+                or admission["ticker"].upper() != source.intent.ticker.upper()
+                or admission["action"] != str(source.intent.action)
                 or any(order.acctId != source.account_id
                        or order.ticker.upper() != source.intent.ticker.upper()
                        for order in group.orders)):
             raise RuntimeError("Live OMS head contradicts its normalized source intent")
-        verified.append(VerifiedStrategyOneOmsHead(group, source))
+        verified.append(VerifiedStrategyOneOmsHead(group, source, admission))
     cold.barrier.assert_fenced(cold.run_id)
     return tuple(verified)

@@ -488,21 +488,28 @@ def test_strategy_one_live_oms_heads_are_fenced_and_strategy_pinned(monkeypatch)
         "strategy_revision": 1, "strategy_intent_id": "intent-1"})
     source = SimpleNamespace(record_id="intent-record", sequence=1,
                              account_id="DU1", intent=SimpleNamespace(
-                                 intent_id="intent-1", ticker="TEST", metadata={}))
+                                 intent_id="intent-1", ticker="TEST",
+                                 action="enter_long", metadata={}))
+    admission = {"account_id": "DU1", "intent_id": "intent-1",
+                 "ticker": "TEST", "action": "enter_long"}
     monkeypatch.setattr(oms, "load_latest_committed_oms_groups",
                         lambda _client, _prefix, **kwargs:
                         calls.append(("read", kwargs)) or (row,))
     monkeypatch.setattr(intents, "load_committed_strategy_intent_page",
                         lambda _client, _prefix, **kwargs:
                         calls.append(("intent", kwargs)) or (source,))
+    monkeypatch.setattr(oms, "load_committed_oms_admission_page",
+                        lambda _client, _prefix, groups:
+                        calls.append(("admission", len(groups))) or {2: admission})
     assert bootstrap.recover_strategy_one_live_oms(
         cold=cold, read_client=object()) == (
-            bootstrap.VerifiedStrategyOneOmsHead(row, source),)
+            bootstrap.VerifiedStrategyOneOmsHead(row, source, admission),)
     assert calls == ["fence", ("read", {
         "allowed_accounts": frozenset({"DU1"}),
             "strategy_identity": (STRATEGY_ID, 1),
             "require_tactic": True}),
-            ("intent", {"limit": 1, "record_ids": ("intent-record",)}), "fence"]
+            ("intent", {"limit": 1, "record_ids": ("intent-record",)}),
+            ("admission", 1), "fence"]
     row.group["strategy_revision"] = 2
     with pytest.raises(RuntimeError, match="differs from Strategy 1"):
         bootstrap.recover_strategy_one_live_oms(
@@ -528,10 +535,22 @@ def test_strategy_one_live_oms_rejects_contradictory_source_intent(monkeypatch):
                                 "strategy_intent_id": "intent-1"})
     source = SimpleNamespace(record_id="intent-record", sequence=3,
                              account_id="DU1", intent=SimpleNamespace(
-                                 intent_id="intent-1", ticker="TEST", metadata={}))
+                                 intent_id="intent-1", ticker="TEST",
+                                 action="enter_long", metadata={}))
     monkeypatch.setattr(oms, "load_latest_committed_oms_groups",
                         lambda *_args, **_kwargs: (group,))
     monkeypatch.setattr(intents, "load_committed_strategy_intent_page",
                         lambda *_args, **_kwargs: (source,))
+    monkeypatch.setattr(oms, "load_committed_oms_admission_page",
+                        lambda *_args, **_kwargs: {2: {
+                            "account_id": "DU1", "intent_id": "intent-1",
+                            "ticker": "TEST", "action": "enter_long"}})
+    with pytest.raises(RuntimeError, match="contradicts"):
+        bootstrap.recover_strategy_one_live_oms(cold=cold, read_client=object())
+    source.sequence = 1
+    monkeypatch.setattr(oms, "load_committed_oms_admission_page",
+                        lambda *_args, **_kwargs: {2: {
+                            "account_id": "DU1", "intent_id": "intent-1",
+                            "ticker": "OTHER", "action": "enter_long"}})
     with pytest.raises(RuntimeError, match="contradicts"):
         bootstrap.recover_strategy_one_live_oms(cold=cold, read_client=object())
