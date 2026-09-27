@@ -111,6 +111,10 @@ def test_no_future_price_fill_and_net_reward_reconciliation():
     assert env.reward_sum == pytest.approx((env.cash-env.initial)/env.initial)
     assert report['fees'] > 0 and report['slippage_dollars'] > 0
     assert report['net_profit'] == pytest.approx(-report['fees']-report['slippage_dollars'])
+    assert report['realized_net_pnl'] == pytest.approx(report['net_profit'])
+    assert report['open_unrealized_pnl'] == 0
+    assert report['policy_buy_decisions'] == 1
+    assert report['policy_pass_decisions'] == env.session.seconds-2
 
 
 def test_share_cap_and_consecutive_impact():
@@ -334,6 +338,33 @@ def test_cpu_training_resume_and_heldout_cli(tmp_path,monkeypatch):
     with pytest.raises(ValueError,match='Resume contract'):
         train.main(common+['--run-name','resume','--iterations','3','--resume','--extra-venue-fee-per-share','.02'])
     assert read(run/'status.json')['status'] == 'complete'
+
+
+def test_single_account_cycles_complete_sessions_before_checkpoint_selection(tmp_path,monkeypatch):
+    monkeypatch.setenv('QW_RUNTIME_ROOT',str(tmp_path))
+    days = ['2026-08-19','2026-08-20','2026-08-21']
+    training = [save_market(tmp_path/day,market(n=1,seconds=8,day=day)) for day in days]
+    validation = save_market(tmp_path/'validation',market(n=1,seconds=8,day='2026-08-24'))
+    common = ['--train-sessions',*[str(path) for path in training],
+        '--val-sessions',str(validation),'--run-name','single-account',
+        '--allow-segment','--device','cpu','--width','16','--heads','2',
+        '--threads','1','--rollout-steps','5','--environments','1',
+        '--capital-multipliers','1','--session-order','cycle',
+        '--min-completed-episodes','3','--selection-min-episodes','1',
+        '--epochs','1','--batch-size','5','--history-seconds','4',
+        '--liquidation-buffer-seconds','2','--eval-every','2']
+    with pytest.raises(ValueError,match='cannot complete'):
+        train.main(common+['--iterations','4'])
+    assert train.main(common+['--iterations','5']) == 0
+    run = tmp_path/'rl-trading/v2/train/single-account'
+    reports = [read(run/'metrics'/f'{iteration:06d}.json') for iteration in range(1,6)]
+    assert [episode['date'] for report in reports for episode in report['episodes']] == days
+    assert 'validation' not in reports[0]
+    assert 'validation' in reports[1]
+    assert read(run/'status.json')['completed_episodes'] == 3
+    saved = torch.load(run/'checkpoint_latest.pt',weights_only=False)
+    assert saved['next_session_index'] == 4
+    assert saved['session_indices'] == [0]
 
 
 def test_arrival_band_cap_and_fees_are_applied_on_both_sides():

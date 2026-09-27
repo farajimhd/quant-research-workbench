@@ -40,7 +40,13 @@ class TradingEnv:
                             forced_fills=0, requested_shares=0., filled_shares=0.,
                             commission=0.,sec=0.,taf=0.,cat=0.,venue=0.,
                             stop_fills=0,target_fills=0,market_unavailable_orders=0,
-                            estimated_band_blocked_entries=0)
+                            estimated_band_blocked_entries=0,
+                            policy_pass_decisions=0,policy_buy_decisions=0,
+                            policy_reduce_decisions=0,policy_close_decisions=0,
+                            discretionary_fills=0,discretionary_fees=0.,
+                            discretionary_slippage_dollars=0.,
+                            realized_net_pnl=0.,realized_discretionary_exit_pnl=0.,
+                            realized_forced_exit_pnl=0.)
         self.last_fills = []
         self.last_reward_by_ticker = np.zeros(self.session.n,dtype=np.float64)
         self.done = False
@@ -219,6 +225,10 @@ class TradingEnv:
             self.cash -= quantity*fill+fee
             self.quantity[ticker] += quantity
         else:
+            realized = quantity*(fill-self.basis[ticker])-fee
+            self.metrics['realized_net_pnl'] += realized
+            self.metrics['realized_forced_exit_pnl' if self.forced[ticker]
+                         else 'realized_discretionary_exit_pnl'] += realized
             self.quantity[ticker] -= quantity
             self.cash += quantity*fill-fee
             if self.quantity[ticker] == 0:
@@ -240,7 +250,9 @@ class TradingEnv:
         self.recent_shares[ticker] += quantity
         self.recent.append((self.t,int(ticker),quantity))
         self.last_fills.append(dict(listing_id=self.session.ids[ticker],side=side,shares=quantity,
-            price=fill,fee=fee,slippage_ratio=slip,fee_ratio=fee/(quantity*fill),
+            price=fill,fee=fee,slippage_ratio=slip,
+            slippage_dollars=quantity*float(a['execution_open'][ticker,self.t])*slip,
+            fee_ratio=fee/(quantity*fill),
             fee_components=components,exit_reason=int(self.exit_reason[ticker]),
             decision_second=previous,fill_second=self.t,forced=bool(self.forced[ticker])))
         # Mark each fill at the same completed price as account equity. This
@@ -260,6 +272,11 @@ class TradingEnv:
                 or not np.isfinite(sizes).all() or np.any(sizes<0) or np.any(sizes>1)
                 or not obs['action_mask'][np.arange(len(modes)),modes].all()):
             raise ValueError('Invalid sampled policy action')
+        selected = np.bincount(modes,minlength=4)
+        self.metrics['policy_pass_decisions'] += int(selected[1:].sum() == 0)
+        for key,count in zip(('policy_buy_decisions','policy_reduce_decisions',
+                              'policy_close_decisions'),selected[1:]):
+            self.metrics[key] += int(count)
         before, previous = self.equity, self.t
         a, c = self.session.arrays, self.config
         sells, buys, brackets = {}, {}, {}
@@ -298,6 +315,11 @@ class TradingEnv:
                 requested = math.floor(budget/max(float(a['prices'][ticker,previous]),1e-12))
                 if requested > 0:
                     self._execute(ticker,requested,1,previous,budget,brackets[ticker])
+        discretionary = [fill for fill in self.last_fills if not fill['forced']]
+        self.metrics['discretionary_fills'] += len(discretionary)
+        self.metrics['discretionary_fees'] += sum(fill['fee'] for fill in discretionary)
+        self.metrics['discretionary_slippage_dollars'] += sum(
+            fill['slippage_dollars'] for fill in discretionary)
         after = self.equity
         if self.cash < -1e-6 or np.any(self.quantity<0) or not math.isfinite(after):
             raise ValueError('Account conservation failed')
@@ -313,7 +335,12 @@ class TradingEnv:
 
     def summary(self):
         notional = self.metrics['traded_notional']
-        return dict(**self.metrics, equity=self.equity, cash=self.cash,
+        unrealized = float(self.quantity @ (self.session.arrays['prices'][:,self.t]-self.basis))
+        if not math.isclose(self.metrics['realized_net_pnl']+unrealized,
+                self.equity-self.initial,rel_tol=1e-6,abs_tol=1e-6):
+            raise ValueError('Realized/unrealized P&L does not reconcile with account equity')
+        return dict(**self.metrics, open_unrealized_pnl=unrealized,
+            equity=self.equity, cash=self.cash,
             net_profit=self.equity-self.initial, net_return=self.equity/self.initial-1,
             reward_sum=self.reward_sum,max_drawdown=self.drawdown,
             realized_fee_ratio=self.metrics['fees']/notional if notional else 0.,

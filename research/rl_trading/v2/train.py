@@ -54,6 +54,9 @@ def parser():
     p.add_argument('--validation-rollouts',type=int,default=3)
     p.add_argument('--validation-seed',type=int,default=1917)
     p.add_argument('--capital-multipliers',type=float,nargs='+',default=[.5,1.,2.])
+    p.add_argument('--session-order',choices=('random','cycle'),default='random')
+    p.add_argument('--min-completed-episodes',type=int,default=0)
+    p.add_argument('--selection-min-episodes',type=int,default=0)
     p.add_argument('--resume',action='store_true')
     p.add_argument('--allow-segment',action='store_true')
     p.add_argument('--wandb-mode',choices=('disabled','offline','online'),default='disabled')
@@ -114,12 +117,20 @@ def wandb_metrics(result):
         report['train/max_drawdown_mean'] = float(np.mean([x['max_drawdown'] for x in summaries]))
         report['train/fees_mean'] = float(np.mean([x['fees'] for x in summaries]))
         report['train/filled_orders_mean'] = float(np.mean([x['filled_orders'] for x in summaries]))
+        for name in ('policy_pass_decisions','policy_buy_decisions','policy_reduce_decisions',
+                     'policy_close_decisions','discretionary_fills','discretionary_fees',
+                     'realized_net_pnl','realized_forced_exit_pnl'):
+            report['train/'+name+'_mean'] = float(np.mean([x[name] for x in summaries]))
     if 'validation_mean_return' in result:
         report['validation/net_return_mean'] = result['validation_mean_return']
         report['validation/max_drawdown_mean'] = float(np.mean([x['max_drawdown'] for x in result['validation']]))
         report['validation/fees_mean'] = float(np.mean([x['fees'] for x in result['validation']]))
         report['validation/filled_orders_mean'] = float(np.mean([x['filled_orders'] for x in result['validation']]))
         report['validation/pass_only_fraction'] = float(np.mean([x['filled_orders'] == 0 for x in result['validation']]))
+        for name in ('policy_pass_decisions','policy_buy_decisions','policy_reduce_decisions',
+                     'policy_close_decisions','discretionary_fills','discretionary_fees',
+                     'realized_net_pnl','realized_forced_exit_pnl'):
+            report['validation/'+name+'_mean'] = float(np.mean([x[name] for x in result['validation']]))
     return report
 
 
@@ -135,6 +146,12 @@ def train(args):
             or args.validation_seed < 0
             or any(not np.isfinite(x) or x <= 0 for x in args.capital_multipliers)):
         raise ValueError('Invalid PPO parameters')
+    if args.min_completed_episodes < 0 or args.selection_min_episodes < 0:
+        raise ValueError('Episode requirements must be nonnegative')
+    if args.min_completed_episodes and (args.environments != 1 or
+            args.session_order != 'cycle' or args.capital_multipliers != [1.] or
+            args.selection_min_episodes < 1):
+        raise ValueError('Full-session campaign requires one 1x account, cycled sessions, and post-episode selection')
     if not args.run_name or Path(args.run_name).name != args.run_name or args.run_name in ('.','..'):
         raise ValueError('Run name must be a single directory name')
     config = Config(**{field.name:getattr(args,field.name) for field in fields(Config)})
@@ -155,6 +172,11 @@ def _train_locked(args, config, root):
     sessions = [MarketSession.load(p,allow_segment=args.allow_segment) for p in args.train_sessions]
     validation = [MarketSession.load(p,allow_segment=args.allow_segment) for p in args.val_sessions]
     chronological(sessions,validation)
+    if args.min_completed_episodes:
+        required = sum(sessions[i % len(sessions)].seconds-1
+            for i in range(args.min_completed_episodes))
+        if args.iterations*args.rollout_steps < required:
+            raise ValueError(f'Iteration budget cannot complete {args.min_completed_episodes} sessions; require at least {required} steps')
     contract_args = {k:v for k,v in vars(args).items() if k not in ('resume','iterations','run_name','train_sessions','val_sessions')}
     manifest = dict(version=VERSION,job='train',config=config.manifest(),arguments=contract_args,
         model=dict(features=len(sessions[0].plan['feature_names']),width=args.width,heads=args.heads),
@@ -179,9 +201,15 @@ def _train_locked(args, config, root):
     optimizer = torch.optim.Adam(policy.parameters(),lr=args.learning_rate)
     rng = np.random.default_rng(args.seed)
     envs, session_indices = [], []
+    next_session_index = 0
 
     def new_env():
-        index = int(rng.integers(len(sessions)))
+        nonlocal next_session_index
+        if args.session_order == 'cycle':
+            index = next_session_index % len(sessions)
+            next_session_index += 1
+        else:
+            index = int(rng.integers(len(sessions)))
         cash = config.initial_cash*float(rng.choice(args.capital_multipliers))
         return index,TradingEnv(sessions[index],config,initial_cash=cash)
 
@@ -198,7 +226,8 @@ def _train_locked(args, config, root):
             policy=policy.state_dict(),optimizer=optimizer.state_dict(),rng=rng.bit_generator.state,
             python_rng=random.getstate(),numpy_rng=np.random.get_state(),torch_rng=torch.get_rng_state(),
             cuda_rng=torch.cuda.get_rng_state_all() if args.device == 'cuda' else [],
-            session_indices=session_indices,environments=[env.state_dict() for env in envs])
+            session_indices=session_indices,next_session_index=next_session_index,
+            environments=[env.state_dict() for env in envs])
 
     if args.resume:
         saved = torch.load(latest,map_location=args.device,weights_only=False)
@@ -215,6 +244,7 @@ def _train_locked(args, config, root):
         if args.device == 'cuda':
             torch.cuda.set_rng_state_all([x.cpu() for x in saved['cuda_rng']])
         session_indices = saved['session_indices']
+        next_session_index = saved['next_session_index']
         for slot,index in enumerate(session_indices):
             envs[slot] = TradingEnv(sessions[index],config)
             envs[slot].load_state_dict(saved['environments'][slot])
@@ -321,7 +351,8 @@ def _train_locked(args, config, root):
                 rollout_steps=len(rows),updates=len(measures),kl_early_stop=early_stop,
                 losses={k:float(np.mean([m[k] for m in measures])) for k in measures[0]} if measures else {})
             improved = False
-            if iteration == 1 or iteration % args.eval_every == 0 or iteration == args.iterations:
+            if (completed_episodes >= args.selection_min_episodes and
+                    (iteration == 1 or iteration % args.eval_every == 0 or iteration == args.iterations)):
                 result['validation'] = evaluate(policy,validation,config,args.device,
                     rollouts=args.validation_rollouts,seed=args.validation_seed)
                 score = float(np.mean([x['net_return'] for x in result['validation']]))
@@ -341,6 +372,10 @@ def _train_locked(args, config, root):
                 queued_iterations=args.iterations-iteration,completed_episodes=completed_episodes,
                 failed=0,retried=0,skipped=0))
             print(f"Iteration {iteration}/{args.iterations} steps={len(rows)} updates={len(measures)} episodes={completed_episodes} validation={result.get('validation_mean_return','not scheduled')} seconds={result['elapsed_seconds']:.1f}",flush=True)
+            if args.min_completed_episodes and completed_episodes >= args.min_completed_episodes:
+                write(root/'status.json',dict(status='complete',iteration=iteration,active=0,
+                    completed_episodes=completed_episodes,failed=0))
+                return 0
     except KeyboardInterrupt:
         write(root/'status.json',dict(status='interrupted',active=0,resume='last committed iteration'))
         return 2
@@ -350,7 +385,10 @@ def _train_locked(args, config, root):
     finally:
         if wandb_run is not None:
             wandb_run.finish()
-    write(root/'status.json',dict(status='complete',iteration=args.iterations,active=0,failed=0))
+    if completed_episodes < args.min_completed_episodes:
+        raise ValueError('Training ended before the required complete sessions')
+    write(root/'status.json',dict(status='complete',iteration=args.iterations,active=0,
+        completed_episodes=completed_episodes,failed=0))
     return 0
 
 
