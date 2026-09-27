@@ -11539,7 +11539,7 @@ def backtest_preflight(
                                  if projection_tickers else certified)
                     with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
                         seed_plan = certified_seed_plan(projected, reader)
-                    causal_v7_plan = seed_plan.payload()
+                causal_v7_plan = seed_plan.payload()
                 if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
                     from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
                     from src.trading_runtime.strategy_one_hod_schema import PRODUCT_DIGEST as HOD_DIGEST
@@ -11568,7 +11568,17 @@ def backtest_preflight(
                 causal_v7_plan = {}
                 causal_v7_error = str(exc)
             v7_check = next(row for row in checks if row["id"] == "causal_v7_seed")
-            v7_check["status"] = "ready" if causal_v7_plan else "blocked"
+            seed_ready = bool(
+                causal_v7_plan.get("build_id") == certified.build_id
+                and re.fullmatch(r"[0-9a-f]{64}", str(causal_v7_plan.get("token") or ""))
+                and re.fullmatch(r"[0-9a-f]{64}", str(causal_v7_plan.get("catalog_hash") or ""))
+                and causal_v7_plan.get("market_projection_token") == projected.token
+                and causal_v7_plan.get("parent_market_plan_token") == certified.token
+            )
+            if not seed_ready and not causal_v7_error:
+                causal_v7_error = "Strategy 1 V7 seed certificate is incomplete"
+                causal_v7_plan = {}
+            v7_check["status"] = "ready" if seed_ready else "blocked"
             v7_check["summary"] = (
                 f"Pinned provisional V1 seeds cover {len(projected.tickers)} selected tickers; "
                 "the complete tradable universe was scanned before this computation prune."
