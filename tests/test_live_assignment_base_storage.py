@@ -41,7 +41,7 @@ def test_real_wire_spelling_normalizes_to_attested_base_row():
     sql, query_id = client.calls[0]
     assert "SELECT schema_version,assignment_id" in sql
     assert "WHERE assignment_id='as-1'" in sql
-    assert "ORDER BY revision_sequence FORMAT JSONEachRow" in sql
+    assert "ORDER BY revision_sequence LIMIT 10001 FORMAT JSONEachRow" in sql
     assert query_id is None
 
 
@@ -79,3 +79,12 @@ def test_query_does_not_accept_a_different_assignment_or_swallow_duplicates():
     client.rows = [{**row, "assignment_id": "other"}]
     with pytest.raises(ValueError, match="another identity"):
         ClickHouseAssignmentBaseStorage(client).read_base_rows("as-1")
+
+
+def test_cold_read_fails_closed_when_revision_bound_is_exceeded(monkeypatch):
+    monkeypatch.setattr("src.backend.live_assignment_base_storage._MAX_BASE_REVISIONS", 1)
+    row = _clickhouse_wire(_project())
+    client = Client([row, row])
+    with pytest.raises(RuntimeError, match="exceeds cold-read bound"):
+        ClickHouseAssignmentBaseStorage(client).read_base_rows("as-1")
+    assert "LIMIT 2 FORMAT JSONEachRow" in client.calls[0][0]

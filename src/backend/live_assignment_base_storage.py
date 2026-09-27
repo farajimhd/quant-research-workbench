@@ -26,6 +26,7 @@ _INTEGERS = frozenset(name for name, kind in BASE_REVISION.columns
 _TIMES = frozenset(name for name, kind in BASE_REVISION.columns
                    if kind.startswith("DateTime64"))
 _UUIDS = frozenset(name for name, kind in BASE_REVISION.columns if kind == "UUID")
+_MAX_BASE_REVISIONS = 10_000
 
 
 def _stored_row(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -77,9 +78,12 @@ class ClickHouseAssignmentBaseStorage:
             raise ValueError("assignment base identity is required")
         sql = (f"SELECT {','.join(_COLUMNS)} FROM arte.{BASE_REVISION.name} "
                f"WHERE assignment_id={_literal(assignment_id)} "
-               "ORDER BY revision_sequence FORMAT JSONEachRow")
+               f"ORDER BY revision_sequence LIMIT {_MAX_BASE_REVISIONS + 1} "
+               "FORMAT JSONEachRow")
         values = [json.loads(line) for line in self.client.execute(sql).splitlines()
                   if line.strip()]
+        if len(values) > _MAX_BASE_REVISIONS:
+            raise RuntimeError("assignment base revision chain exceeds cold-read bound")
         if any(value.get("assignment_id") != assignment_id for value in values):
             raise ValueError("assignment base query returned another identity")
         rows = [_stored_row(value) for value in values]
