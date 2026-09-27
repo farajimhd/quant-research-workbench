@@ -115,7 +115,7 @@ async def derive_unit(
         max_candidate_rows=len(scope.candidate_boundaries))
     activation_facts: list[ActivationFact] = []
     candidate_facts: list[CandidateFact] = []
-    with closing(client_factory()) as reader:
+    with closing(client_factory()) as reader, closing(scheduler):
         evidence = StrategyOneCausalEvidence(
             market_plan=projected, seed_plan=projected_seeds,
             pivot_plan=projected_pivots, hod_plan=projected_hod,

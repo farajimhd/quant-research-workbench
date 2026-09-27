@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from http.client import IncompleteRead, RemoteDisconnected
 import json
 from math import isfinite
 from struct import pack, unpack
@@ -224,11 +225,23 @@ def publish_unit(
     writer: Any, scope: EntryPublicationScope, *,
     derive: Callable[[], tuple[tuple[ActivationFact, ...],
                                tuple[CandidateFact, ...]]],
+    on_source_retry: Callable[[], None] | None = None,
 ) -> str:
     """Read back children exactly before the single authoritative seal."""
     if _verify_existing(writer, scope) is not None:
         return "skipped"
-    activations, candidates = derive()
+    # A failed source SELECT can restart this entire pinned derivation only
+    # before an attempt ID or INSERT exists. Never retry an uncertain write.
+    for attempt in range(3):
+        try:
+            activations, candidates = derive()
+            break
+        except (IncompleteRead, RemoteDisconnected,
+                ConnectionResetError, BrokenPipeError, TimeoutError):
+            if attempt == 2:
+                raise
+            if on_source_retry is not None:
+                on_source_retry()
     if (tuple(item.episode_start_ms for item in activations)
             != scope.episode_starts
             or tuple(item.boundary_ms for item in candidates)

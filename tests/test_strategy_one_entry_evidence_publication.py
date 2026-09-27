@@ -1,4 +1,5 @@
 """Entry evidence is published only after normalized child read-back."""
+from http.client import IncompleteRead
 from uuid import uuid4
 
 import pytest
@@ -82,6 +83,35 @@ def test_existing_coverage_skips_derivation(monkeypatch):
     assert subject.publish_unit(writer, scope(), derive=lambda: pytest.fail(
         "covered unit was recalculated")) == "skipped"
     assert writer.sql == []
+
+
+def test_transient_source_failure_retries_only_before_publication(monkeypatch):
+    writer = Writer()
+    monkeypatch.setattr(subject, "_verify_existing", lambda *_: None)
+    calls = []
+    def derive():
+        calls.append("derive")
+        raise IncompleteRead(b"partial")
+    with pytest.raises(IncompleteRead):
+        subject.publish_unit(writer, scope(), derive=derive,
+                             on_source_retry=lambda: calls.append("retry"))
+    assert calls == ["derive", "retry", "derive", "retry", "derive"]
+    assert writer.sql == []
+
+
+def test_uncertain_insert_is_never_retried(monkeypatch):
+    writer = Writer()
+    monkeypatch.setattr(subject, "_verify_existing", lambda *_: None)
+    calls = []
+    def insert(*_args):
+        calls.append("insert")
+        raise IncompleteRead(b"partial")
+    monkeypatch.setattr(subject, "_insert_rows", insert)
+    with pytest.raises(IncompleteRead):
+        subject.publish_unit(writer, scope(),
+                             derive=lambda: (calls.append("derive"), facts())[1],
+                             on_source_retry=lambda: calls.append("retry"))
+    assert calls == ["derive", "insert"]
 
 
 def test_float_inserts_use_exact_bits_not_decimal_values():
