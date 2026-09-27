@@ -459,6 +459,12 @@ def _verify_market_batch(plan: CertifiedMarketDayPlan, stage: str, table: str,
     actual = {(str(row["ticker"]), str(row["attempt_id"])): row for row in rows}
     if len(actual) != len(rows):
         raise ValueError(f"Persisted {ARTE_DATABASE}.{table} has duplicate integrity groups")
+    expected_keys = {(unit.ticker, unit.attempt_id) for unit in batch}
+    if set(actual) - expected_keys:
+        raise ValueError(
+            f"Persisted {ARTE_DATABASE}.{table} has an unexpected attempt "
+            f"or ticker in {day}"
+        )
     for unit in batch:
         row = actual.get((unit.ticker, unit.attempt_id))
         count = int(row["n"]) if row else 0

@@ -49,6 +49,14 @@ class _CorruptReadClient(_ReadClient):
         return json.dumps(row) + "\n"
 
 
+class _ExtraAttemptReadClient(_ReadClient):
+    def execute(self, sql: str) -> str:
+        original = super().execute(sql)
+        extra = json.loads(original)
+        extra["attempt_id"] = "00000000-0000-0000-0000-000000000002"
+        return original + json.dumps(extra) + "\n"
+
+
 class _MisalignedIndicatorClient(_ReadClient):
     def execute(self, sql: str) -> str:
         row = json.loads(super().execute(sql))
@@ -533,6 +541,10 @@ class BacktestMarketDataTests(unittest.TestCase):
         plan = self._plan()
         with self.assertRaisesRegex(ValueError, "integrity changed"):
             verify_market_day_plan(plan, _CorruptReadClient())
+
+    def test_second_attempt_for_same_ticker_fails_preflight(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unexpected attempt"):
+            verify_market_day_plan(self._plan(), _ExtraAttemptReadClient())
 
     def test_replaced_indicator_key_fails_preflight_even_with_matching_counts(self) -> None:
         plan = self._plan()
