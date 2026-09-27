@@ -16,14 +16,26 @@ def advantages(rewards, values, dones, bootstrap, *, gamma=1., gae_lambda=.95):
 
 
 def ppo_loss(logprob, old_logprob, advantage, value, returns, entropy,
-             *, clip=.2, value_weight=.5, entropy_weight=.001):
+             *, clip=.2, value_weight=.5, entropy_weight=.001, token_mask=None):
     logratio = logprob-old_logprob
     ratio = torch.exp(logratio)
-    policy = -torch.minimum(ratio*advantage,ratio.clamp(1-clip,1+clip)*advantage).mean()
+    if token_mask is not None:
+        if logratio.ndim != 2 or token_mask.shape != logratio.shape:
+            raise ValueError('Per-ticker PPO requires an aligned token mask')
+        advantage = advantage.unsqueeze(1)
+        weight = token_mask.to(logratio.dtype)
+        denominator = weight.sum().clamp_min(1)
+        policy = -(torch.minimum(ratio*advantage,
+                    ratio.clamp(1-clip,1+clip)*advantage)*weight).sum()/denominator
+        mean_entropy = (entropy*weight).sum()/denominator
+        kl = ((((ratio-1)-logratio)*weight).sum()/denominator).detach()
+    else:
+        policy = -torch.minimum(ratio*advantage,ratio.clamp(1-clip,1+clip)*advantage).mean()
+        mean_entropy = entropy.mean()
+        kl = ((ratio-1)-logratio).mean().detach()
     critic = (value-returns).square().mean()
-    loss = policy+value_weight*critic-entropy_weight*entropy.mean()
+    loss = policy+value_weight*critic-entropy_weight*mean_entropy
     if not torch.isfinite(loss):
         raise ValueError('Nonfinite PPO objective')
-    kl = ((ratio-1)-logratio).mean().detach()
     return loss, dict(policy_loss=float(policy.detach()),value_loss=float(critic.detach()),
-                       entropy=float(entropy.mean().detach()),approx_kl=float(kl))
+                       entropy=float(mean_entropy.detach()),approx_kl=float(kl))

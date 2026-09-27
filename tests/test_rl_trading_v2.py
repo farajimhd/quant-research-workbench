@@ -10,7 +10,7 @@ from research.rl_trading.v2.config import Config, share_cap
 from research.rl_trading.v2.data import MarketSession, DATA_VERSION, ARRAYS
 from research.rl_trading.v2.environment import TradingEnv
 from research.rl_trading.v2.model import PortfolioPolicy, collate
-from research.rl_trading.v2.objectives import advantages
+from research.rl_trading.v2.objectives import advantages, ppo_loss
 from research.rl_trading.v2.io import write, read
 from research.rl_trading.v2 import train, evaluate
 
@@ -216,6 +216,24 @@ def test_advantages_bootstrap_chunks_but_not_terminal():
     np.testing.assert_allclose(ret,[6.,5.])
     adv,ret = advantages([1.,2.],[.5,.5],[False,True],999.,gae_lambda=1.)
     np.testing.assert_allclose(ret,[3.,2.])
+
+
+def test_per_ticker_ppo_kl_and_entropy_do_not_scale_with_universe_width():
+    one = torch.full((1,1),.01,requires_grad=True)
+    wide = torch.full((1,1000),.01,requires_grad=True)
+    wide_mask = torch.ones_like(wide,dtype=torch.bool)
+    wide_mask[:,-1] = False
+    args = (torch.ones(1),torch.zeros(1),torch.zeros(1))
+    single_loss,single = ppo_loss(one,torch.zeros_like(one),args[0],args[1],args[2],
+        torch.ones_like(one),token_mask=torch.ones_like(one,dtype=torch.bool))
+    wide_loss,many = ppo_loss(wide,torch.zeros_like(wide),args[0],args[1],args[2],
+        torch.ones_like(wide),token_mask=wide_mask)
+    assert many['approx_kl'] == pytest.approx(single['approx_kl'])
+    assert many['entropy'] == pytest.approx(single['entropy'])
+    assert many['policy_loss'] == pytest.approx(single['policy_loss'])
+    wide_loss.backward()
+    assert wide.grad[0,-1] == 0
+    assert wide.grad[0,0] != 0
 
 
 def save_market(root,session):

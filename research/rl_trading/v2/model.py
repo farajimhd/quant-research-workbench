@@ -53,7 +53,8 @@ class PortfolioPolicy(nn.Module):
         parameters = torch.nn.functional.softplus(self.size(context[:,1:])).reshape(b,n,3,2)+1.01
         return Categorical(logits=logits), Beta(parameters[...,0],parameters[...,1]), self.critic(context[:,0]).squeeze(-1)
 
-    def action(self, batch, modes=None, sizes=None, *, deterministic=False):
+    def action(self, batch, modes=None, sizes=None, *, deterministic=False,
+               per_ticker=False):
         category, sizing, value = self(batch)
         if modes is None:
             modes = category.probs.argmax(dim=-1) if deterministic else category.sample()
@@ -63,6 +64,9 @@ class PortfolioPolicy(nn.Module):
         active_size = ((modes == 1) | (modes == 2)) & batch['valid']
         entry = (modes == 1) & (batch['position'][...,0] == 0) & batch['valid']
         active = torch.stack((active_size,entry,entry),dim=-1)
-        logprob = (category.log_prob(modes)*batch['valid'] + (sizing.log_prob(sizes)*active).sum(dim=-1)).sum(dim=1)
-        entropy = (category.entropy()*batch['valid']+(sizing.entropy()*active).sum(dim=-1)).sum(dim=1)
+        logprob = category.log_prob(modes)*batch['valid'] + (sizing.log_prob(sizes)*active).sum(dim=-1)
+        entropy = category.entropy()*batch['valid']+(sizing.entropy()*active).sum(dim=-1)
+        if not per_ticker:
+            logprob = logprob.sum(dim=1)
+            entropy = entropy.sum(dim=1)
         return modes,sizes,logprob,entropy,value

@@ -239,14 +239,16 @@ def _train_locked(args, config, root):
             for step in range(args.rollout_steps):
                 observations = [env.observe() for env in envs]
                 with torch.no_grad():
-                    modes,sizes,logprobs,_,values = policy.action(collate(observations,args.device))
+                    modes,sizes,logprobs,_,values = policy.action(
+                        collate(observations,args.device),per_ticker=True)
                 for slot,env in enumerate(envs):
                     count = len(observations[slot]['ids'])
                     mode = modes[slot,:count].cpu().numpy()
                     size = sizes[slot,:count].cpu().numpy()
                     _,reward,done,summary = env.step(mode,size)
                     trajectories[slot].append(dict(obs=observations[slot],modes=mode,sizes=size,
-                        logprob=float(logprobs[slot]),value=float(values[slot]),reward=reward,done=done))
+                        logprob=logprobs[slot,:count].cpu().numpy(),
+                        value=float(values[slot]),reward=reward,done=done))
                     if done:
                         if not summary['valid_terminal']:
                             raise ValueError(f'Unresolved terminal holdings in training: {summary}')
@@ -278,15 +280,19 @@ def _train_locked(args, config, root):
                     width = batch['valid'].shape[1]
                     mode = np.zeros((len(batch_rows),width),dtype=np.int64)
                     size = np.full((len(batch_rows),width,3),.5,dtype=np.float32)
+                    old_logprob = np.zeros((len(batch_rows),width),dtype=np.float32)
                     for i,row in enumerate(batch_rows):
                         mode[i,:len(row['modes'])] = row['modes']
                         size[i,:len(row['sizes'])] = row['sizes']
+                        old_logprob[i,:len(row['logprob'])] = row['logprob']
                     _,_,logprob,entropy,value = policy.action(batch,
-                        torch.as_tensor(mode,device=args.device),torch.as_tensor(size,device=args.device))
+                        torch.as_tensor(mode,device=args.device),torch.as_tensor(size,device=args.device),
+                        per_ticker=True)
                     def tensor(key):
                         return torch.tensor([x[key] for x in batch_rows],dtype=torch.float32,device=args.device)
-                    loss,measure = ppo_loss(logprob,tensor('logprob'),(tensor('advantage')-mean)/max(std,1e-8),
-                        value,tensor('target'),entropy,clip=args.clip,entropy_weight=args.entropy_weight)
+                    loss,measure = ppo_loss(logprob,torch.as_tensor(old_logprob,device=args.device),
+                        (tensor('advantage')-mean)/max(std,1e-8),value,tensor('target'),entropy,
+                        clip=args.clip,entropy_weight=args.entropy_weight,token_mask=batch['valid'])
                     if measure['approx_kl'] > args.target_kl:
                         early_stop = True
                         break

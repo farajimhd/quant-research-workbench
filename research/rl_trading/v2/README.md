@@ -159,6 +159,13 @@ rollout chunks bootstrap the critic and do not reset account state. Both trainin
 and validation report fees, slippage dollars/ratios, partial/unfilled orders,
 forced fills, turnover notional, net return, and drawdown.
 
+The actor applies PPO clipping and its KL limit to each eligible ticker's
+factorized action probability, then averages over eligible tickers. Entropy is
+averaged the same way. The critic still estimates the whole account value and
+the actor uses the shared net-account advantage. Summing all ticker log
+probabilities into one joint PPO ratio made the KL threshold scale with universe
+width and prematurely stopped policy updates in the first laptop campaign.
+
 ## Learned exits and estimated regular-session bands
 
 On entry the policy samples stop distance (default range 0.1%–50%) and target
