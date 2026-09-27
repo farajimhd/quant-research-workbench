@@ -6,6 +6,7 @@ from src.trading_runtime.arte_journal_schema import (
 )
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.live_strategy_one_approval import TABLE as STRATEGY_ONE_APPROVAL
+from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES,
     ENTRY_REPRICE_REJECTED, PROTECTED_EXIT_SATISFIED, PROTECTION_CHANGE_TABLES,
@@ -53,6 +54,22 @@ def test_strategy_one_approval_is_separate_typed_read_only_plan(monkeypatch):
     assert missing == (STRATEGY_ONE_APPROVAL.name,)
     assert ddl == (STRATEGY_ONE_APPROVAL.ddl(),)
     assert "live_market_ssd" in ddl[0] and "JSON" not in ddl[0]
+
+
+def test_oms_tactic_plan_is_normalized_and_opt_in(monkeypatch):
+    class Client:
+        def execute(self, sql):
+            assert sql.startswith("SELECT name FROM system.tables")
+            return ""
+
+    monkeypatch.setattr(plan, "storage_preflight",
+                        lambda *_args, **_kwargs: None)
+    assert plan.profile_contracts("oms-execution-tactic") == OMS_TACTIC_TABLES
+    missing, ddl = plan.plan_missing(Client(), profile="oms-execution-tactic")
+    assert missing == tuple(table.name for table in OMS_TACTIC_TABLES)
+    assert ddl == tuple(table.ddl() for table in OMS_TACTIC_TABLES)
+    assert all("live_market_ssd" in sql and "JSON" not in sql
+               and "Array(" not in sql for sql in ddl)
 
 
 def test_missing_plan_fails_if_existing_table_is_incompatible(monkeypatch):

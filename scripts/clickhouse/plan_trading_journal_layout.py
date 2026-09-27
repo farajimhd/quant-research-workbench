@@ -44,10 +44,13 @@ from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.live_strategy_one_approval import TABLE as STRATEGY_ONE_APPROVAL
 from src.trading_runtime.arte_journal_writer import journal_client_from_env
+from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
 
 
 def profile_contracts(profile: str = "fixed-v2") -> tuple[Any, ...]:
+    if profile == "oms-execution-tactic":
+        return OMS_TACTIC_TABLES
     if profile == "live-strategy-one-approval":
         return (STRATEGY_ONE_APPROVAL,)
     if profile == "commit-v4":
@@ -108,7 +111,8 @@ def main() -> int:
     parser.add_argument("--show-ddl", action="store_true",
                         help="print operator-reviewed CREATE TABLE statements")
     parser.add_argument("--profile", choices=("fixed-v2", "fixed-v3", "commit-v4",
-                                              "live-strategy-one-approval"),
+                                              "live-strategy-one-approval",
+                                              "oms-execution-tactic"),
                         default="fixed-v2", help="exact journal table layout")
     args = parser.parse_args()
     if not args.env_file.is_file():
