@@ -87,6 +87,15 @@ def _target_proof_failures(
 ) -> tuple[str, ...]:
     if proof is None:
         return ("missing_proof",)
+    matching_indexes = [index for index, candidate in enumerate(group.orders)
+                        if candidate.cOID == order.cOID]
+    terminal_target = False
+    if len(matching_indexes) == 1:
+        broker_ids = [broker_id for broker_id, index in
+                      group.broker_order_request_indexes.items()
+                      if index == matching_indexes[0]]
+        terminal_target = bool(broker_ids) and all(
+            broker_id in group.terminal_broker_order_ids for broker_id in broker_ids)
     checks = {
         "category": proof.category == "protection",
         "entity_type": proof.entity_type == "protection_change",
@@ -98,7 +107,11 @@ def _target_proof_failures(
         "action": proof.payload.get("action") == "replace_profit_target",
         "client_order_id": proof.payload.get("client_order_id") == order.cOID,
         "order_price": proof.payload.get("price") == order.price,
-        "intent_target": proof.payload.get("price") == group.intent.profit_target_price,
+        # A terminal target remains in immutable OMS order history after a
+        # later target amendment. Its exact per-order proof must still match
+        # that order, but only a live target must equal the current intent.
+        "intent_target": (proof.payload.get("price") == group.intent.profit_target_price
+                          or terminal_target),
         "amendment_intent_id": isinstance(proof.payload.get("intent_id"), str)
                                and bool(proof.payload.get("intent_id")),
     }

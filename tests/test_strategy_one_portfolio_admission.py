@@ -424,6 +424,25 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
                 {"target": replace(target_proof, payload={
                     **target_proof.payload, "client_order_id": "foreign"})}
             ) == initial_metadata
+            target_index = first.orders.index(target_order)
+            historical = replace(
+                amended_target,
+                broker_order_request_indexes={"broker-target": target_index},
+                terminal_broker_order_ids=frozenset({"broker-target"}))
+            old_proof = replace(target_proof, payload={
+                **target_proof.payload, "price": target_order.price})
+            prior_metadata = canonical_oms_order_metadata(historical, target_order)
+            assert canonical_oms_order_metadata(
+                historical, target_order,
+                {f"target:{target_order.cOID}": old_proof}) == {
+                    **prior_metadata, "reason": "structural_profit_target_advanced",
+                    "replacement_intent_id": "target-amendment-1",
+                    "target_price": target_order.price}
+            # An active stale target cannot use an old per-order proof to
+            # override the current protected target in its typed lineage.
+            assert canonical_oms_order_metadata(
+                amended_target, target_order,
+                {f"target:{target_order.cOID}": old_proof}) == prior_metadata
             prior_lineage = (dict(target_order.raw), "DU1", "AAA", 123)
             changed_lineage = ({**target_order.raw,
                 "canonical_metadata": revised_metadata}, "DU1", "AAA", 123)
