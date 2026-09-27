@@ -17,6 +17,7 @@ from src.backend.backtest_terminal_v3_fence import TERMINAL_COMMIT_V3
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.backtest_liquidity_price import PRICE_READ_TABLES
 from src.trading_runtime.arte_market_day_certification import TABLES as MARKET_DAY_CERTIFICATE_TABLES
+from src.trading_runtime.arte_market_day_session_seal import SESSION_SEAL
 from src.trading_runtime.strategy_one_candidate_schema import CANDIDATE_TABLE, COVERAGE_TABLE
 from src.trading_runtime.strategy_one_pivot_schema import (
     PIVOT_TABLE, COVERAGE_TABLE as PIVOT_COVERAGE_TABLE,
@@ -157,11 +158,12 @@ def read_v3_preflight(client: Any) -> None:
         ENTRY_COVERAGE_TABLE, IDENTITY_TABLE, IDENTITY_COVERAGE_TABLE,
         STRATEGY_ONE_CONFIG_NODE_TABLE, STRATEGY_ONE_CONFIG_RELEASE_TABLE,
         V7_LINEAGE_TABLE))
-    storage_preflight(client, tables=contracts + MARKET_DAY_CERTIFICATE_TABLES)
+    storage_preflight(client, tables=contracts + MARKET_DAY_CERTIFICATE_TABLES + (SESSION_SEAL,))
     journal_permission_preflight(
         client, journal_tables=frozenset(),
         read_only_tables=frozenset(table.name for table in contracts) |
-                         certificate_names | PRICE_READ_TABLES | candidate_names,
+                         certificate_names | {SESSION_SEAL.name} |
+                         PRICE_READ_TABLES | candidate_names,
         reference_read_tables=frozenset({("q_live", "market_stock_split_v1")}))
     _exact_grants(client, frozenset())
 

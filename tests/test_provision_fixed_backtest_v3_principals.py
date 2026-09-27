@@ -96,6 +96,8 @@ def test_exact_three_role_plan_matches_v3_preflight_tables():
     from src.trading_runtime.arte_market_day_certification import TABLES as CERTIFICATE_TABLES
     assert {table.name for table in CERTIFICATE_TABLES} <= read.select_arte
     assert not ({table.name for table in CERTIFICATE_TABLES} & read.insert_arte)
+    assert "market_day_session_seal_v1" in read.select_arte
+    assert "market_day_session_seal_v1" not in read.insert_arte
     from src.backend.backtest_liquidity_price import PRICE_READ_TABLES
     assert PRICE_READ_TABLES <= read.select_arte
     assert not PRICE_READ_TABLES & (read.insert_arte | running.insert_arte |

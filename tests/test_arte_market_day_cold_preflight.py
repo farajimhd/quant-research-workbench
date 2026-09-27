@@ -9,7 +9,7 @@ import pytest
 from src.trading_runtime.arte_market_day_cold_preflight import (
     audit_attested_market_day_certificate, certified_market_day_plan_from_cold_audit,
     cold_certified_market_day_plan, discover_cold_certified_market_day_plan,
-    replay_canonical_source_plan_parity,
+    replay_canonical_source_plan_parity, sealed_certified_market_day_plan,
     verify_attested_market_products,
 )
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperAuthority
@@ -43,6 +43,53 @@ def fixture():
                   stage_hash=fence["stage_hash"],
                   seed_hash=fence["seed_hash"])
     return client, keeper
+
+
+def test_selected_seal_plan_matches_full_plan_without_global_family_read(monkeypatch):
+    from datetime import date
+    from src.trading_runtime.arte_market_day_certification import (
+        verify_market_day_certificate,
+    )
+    from src.trading_runtime.arte_market_day_session_seal import prepare_session_seal
+    from test_arte_market_day_certification import FakeReader
+
+    client, keeper = fixture()
+    audit = audit_attested_market_day_certificate(client, keeper, BUILD,
+                                                   sessions=(DAY,))
+    monkeypatch.setattr(
+        "src.trading_runtime.arte_market_day_cold_preflight.verify_market_day_plan",
+        lambda *_args, **_kwargs: None, raising=False)
+    from src.backend import backtest_market_data
+    monkeypatch.setattr(backtest_market_data, "verify_market_day_plan",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "src.trading_runtime.arte_market_day_cold_preflight._market_product_placement",
+        lambda _client: None)
+    full = certified_market_day_plan_from_cold_audit(
+        client, audit, sessions=(DAY,), tickers=(), configuration={})
+    certificate = verify_market_day_certificate(
+        FakeReader(client.rows), BUILD, sessions=(DAY,), include_session_hashes=True)
+    proof = keeper.load(BUILD)
+    seal = prepare_session_seal(certificate, proof, session_date=date.fromisoformat(DAY))
+    from src.trading_runtime import arte_market_day_session_seal as seals
+    monkeypatch.setattr(seals, "load_session_seal", lambda *_args: seal)
+    monkeypatch.setattr(seals, "read_sealed_session_families",
+                        lambda *_args: {name: tuple(client.rows[name]) for name in (
+                            "market_day_planned_scope_v1", "market_day_stage_certificate_v1",
+                            "market_day_seed_v1", "market_day_source_unit_v1")})
+    touched = []
+    original = client.execute
+
+    def tracked(sql):
+        touched.append(sql)
+        return original(sql)
+
+    client.execute = tracked
+    selected = sealed_certified_market_day_plan(
+        client, keeper, BUILD, sessions=(DAY,), tickers=(), configuration={})
+    assert selected == full
+    assert not any("FROM arte.market_day_planned_scope_v1 " in sql
+                   for sql in touched)
 
 
 def test_cold_read_accepts_exact_historical_proof_but_not_backtest_cutover() -> None:

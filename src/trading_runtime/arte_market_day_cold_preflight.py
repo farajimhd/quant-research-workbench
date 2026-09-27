@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import date
 from hashlib import sha256
 import json
 import re
@@ -46,9 +47,12 @@ class MarketDayColdAudit:
                 and self.certificate_parts_on_ssd)
 
 
-def _certificate_part_snapshot(client: Any) -> str:
+def _certificate_part_snapshot(client: Any, *, include_market: bool = False) -> str:
     """Fence immutable certificate/source parts across the cold audit."""
     names = tuple(table.name for table in TABLES)
+    if include_market:
+        names += ("market_day_session_seal_v1", "bars_v1", "indicators_v1",
+                  "liquidity_100ms_v1")
     quoted = ",".join(f"'{name}'" for name in names)
     rows = [json.loads(line) for line in client.execute(
         "SELECT table,name,disk_name,hash_of_all_files FROM system.parts "
@@ -160,6 +164,16 @@ def _checked_market_stage_rows(client: Any, audit: MarketDayColdAudit
     The selected Backtest plan separately hashes every requested product row.
     Do not hash the entire historical build here on every Backtest launch.
     """
+    _market_product_placement(client)
+    rows = _read(client, "market_day_stage_certificate_v1", audit.certificate.build_id)
+    observed = sorted((r["session_date"], r["ticker"], r["stage"], r["attempt_id"],
+                       int(r["output_rows"]), r["output_hash"]) for r in rows)
+    if tuple(observed) != audit.certificate.stages:
+        raise RuntimeError("Market-day stage facts changed after Keeper audit")
+    return rows
+
+
+def _market_product_placement(client: Any) -> None:
     names = ("bars_v1", "indicators_v1", "liquidity_100ms_v1")
     quoted = ",".join(f"'{name}'" for name in names)
     tables = [json.loads(line) for line in client.execute(
@@ -174,12 +188,6 @@ def _checked_market_stage_rows(client: Any, audit: MarketDayColdAudit
     if any(row.get("table") not in names or row.get("disk_name") != "live_market_ssd"
            for row in parts):
         raise RuntimeError("Market-day product part is outside live_market_ssd")
-    rows = _read(client, "market_day_stage_certificate_v1", audit.certificate.build_id)
-    observed = sorted((r["session_date"], r["ticker"], r["stage"], r["attempt_id"],
-                       int(r["output_rows"]), r["output_hash"]) for r in rows)
-    if tuple(observed) != audit.certificate.stages:
-        raise RuntimeError("Market-day stage facts changed after Keeper audit")
-    return rows
 
 
 def certified_market_day_plan_from_cold_audit(client: Any,
@@ -246,6 +254,97 @@ def certified_market_day_plan_from_cold_audit(client: Any,
         audit.certificate.definition_hash, days, ordered_tickers, units,
         resolutions, token=_stable_hash(payload))
     verify_market_day_plan(plan, client, read_client_factory=read_client_factory)
+    return plan
+
+
+def sealed_certified_market_day_plan(client: Any, keeper: Any, build_id: str, *,
+                                     sessions: tuple[str, ...],
+                                     tickers: tuple[str, ...],
+                                     configuration: Mapping[str, Any],
+                                     read_client_factory: Callable[[], Any] | None = None,
+                                     ) -> Any:
+    """Selected-session alternative to the whole-build cold audit.
+
+    Every requested day must have a producer-sealed, exactly read-back row.
+    A missing seal is a preflight failure, never a request to make one.
+    """
+    from src.backend.backtest_market_data import (
+        CertifiedMarketDayPlan, MarketDayUnit, _stable_hash,
+        compile_required_resolutions, effective_execution_interval,
+        verify_market_day_plan,
+    )
+    from src.trading_runtime.arte_market_day_session_seal import (
+        load_session_seal, read_sealed_session_families, session_seal_receipt,
+    )
+    from src.trading_runtime.arte_market_day_source_plan import verify_source_plan_storage
+
+    days = tuple(str(day) for day in sessions)
+    if not days or len(set(days)) != len(days):
+        raise ValueError("Sealed plan needs distinct requested sessions")
+    parsed_days = tuple(date.fromisoformat(day) for day in days)
+    if any(day.isoformat() != wire for day, wire in zip(parsed_days, days)):
+        raise ValueError("Sealed plan needs canonical session dates")
+    interval = effective_execution_interval(configuration)
+    if interval.kind != "fixed":
+        raise ValueError("Event execution does not use sealed market days")
+    resolutions = compile_required_resolutions(configuration, interval)
+    _placement(client)
+    verify_source_plan_storage(client)
+    _market_product_placement(client)
+    parts_before = _certificate_part_snapshot(client, include_market=True)
+    fences = _read(client, TABLES[-1].name, build_id)
+    if len(fences) != 1:
+        raise RuntimeError("Sealed plan lacks one final build fence")
+    proof = keeper.load(build_id)
+    require_attested_inventory(proof, fences[0])
+    scopes: set[tuple[str, str]] = set()
+    stage_rows: list[dict[str, Any]] = []
+    scope_count = 0
+    for day in parsed_days:
+        seal = load_session_seal(client, keeper, proof, day)
+        families = read_sealed_session_families(
+            client, proof, seal, session_seal_receipt(seal))
+        selected_scopes = families["market_day_planned_scope_v1"]
+        scope_count += len(selected_scopes)
+        scopes.update((row["session_date"], row["ticker"])
+                      for row in selected_scopes)
+        stage_rows.extend(families["market_day_stage_certificate_v1"])
+    if len(scopes) != scope_count:
+        raise RuntimeError("Sealed plan has duplicate ticker-day scopes")
+    selected = ({(day, ticker) for day in days for ticker in tickers}
+                if tickers else scopes)
+    if not selected or not selected.issubset(scopes) or any(
+            not any(scope_day == day for scope_day, _ in selected) for day in days):
+        raise ValueError("Sealed plan scopes are empty or outside attested population")
+    stage_by_key = {(row["session_date"], row["ticker"], row["stage"]): row
+                    for row in stage_rows}
+    if len(stage_by_key) != len(stage_rows):
+        raise RuntimeError("Sealed plan has duplicate stage rows")
+    units = tuple(MarketDayUnit(row["build_id"], row["session_date"],
+                                row["ticker"], row["stage"], row["attempt_id"],
+                                row["source_hash"], int(row["output_rows"]),
+                                row["output_hash"])
+                  for key, row in sorted(stage_by_key.items())
+                  if key[:2] in selected)
+    if {(unit.session_date, unit.ticker, unit.stage) for unit in units} != {
+            (day, ticker, stage) for day, ticker in selected
+            for stage in ("bars", "technical", "broker_100ms")
+    }:
+        raise RuntimeError("Sealed plan has incomplete typed stage scope")
+    ordered_tickers = tuple(sorted({ticker for _, ticker in selected}))
+    payload = {"build_id": build_id, "definition_hash": proof.definition_hash,
+               "sessions": days, "tickers": ordered_tickers,
+               "resolutions": resolutions,
+               "units": [[unit.build_id, unit.session_date, unit.ticker,
+                          unit.stage, unit.attempt_id, unit.source_hash,
+                          unit.output_rows, unit.output_hash] for unit in units]}
+    plan = CertifiedMarketDayPlan(interval, build_id, proof.definition_hash,
+        days, ordered_tickers, units, resolutions, token=_stable_hash(payload))
+    verify_market_day_plan(plan, client, read_client_factory=read_client_factory)
+    _placement(client)
+    if (_certificate_part_snapshot(client, include_market=True) != parts_before
+            or keeper.load(build_id) != proof):
+        raise RuntimeError("Sealed market-day authority changed during preflight")
     return plan
 
 
