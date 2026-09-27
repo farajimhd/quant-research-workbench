@@ -444,6 +444,11 @@ def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent(
     with pytest.raises(RuntimeError, match="row hash"):
         load_committed_strategy_one_command_page(client, prefix)
     command_row["limit_price"] = "12.5000000000"
+    command_event = client.tables["trading_event_v1"][1]
+    command_event["entity_id"] = "different-command"
+    with pytest.raises(RuntimeError, match="order event differs from its row hash"):
+        load_committed_strategy_one_command_page(client, prefix)
+    command_event["entity_id"] = "command-1"
     with pytest.raises(ValueError, match="canonical lineage differs"):
         order_command_batch(replace(flat, raw={**raw, "unmodeled": 1}), **args)
     with pytest.raises(ValueError, match="sealed typed row"):

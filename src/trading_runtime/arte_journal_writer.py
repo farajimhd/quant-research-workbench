@@ -61,6 +61,7 @@ from src.backend.backtest_squeeze_episode_schema import (
     PORTFOLIO_ALLOCATION_FILL,
 )
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
 if TYPE_CHECKING:
     from src.trading_runtime.arte_portfolio_snapshot import (
@@ -2747,9 +2748,9 @@ def load_committed_order_command_page(
         raise ValueError("Order recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 1000:
         raise ValueError("Order recovery page bounds are invalid")
+    event_columns = ",".join(column for column, _ in _CONTRACTS["trading_event_v1"].columns)
     events = _rows(client,
-        "SELECT record_id,batch_id,sequence,event_month,account_id,event_time "
-        "FROM arte.trading_event_v1 "
+        f"SELECT {event_columns} FROM arte.trading_event_v1 "
         f"WHERE run_id={_literal(prefix.run_id)} "
         f"AND sequence>{int(after_sequence)} "
         f"AND sequence<={int(prefix.last_sequence)} "
@@ -2779,6 +2780,12 @@ def load_committed_order_command_page(
     result = []
     prior = after_sequence
     for event in events:
+        event_content = {key: value for key, value in event.items() if key != "content_hash"}
+        event_digest = sha256(canonical_json(_canonical_typed_content(
+            "trading_event_v1", event_content, stored_utc=True,
+        )).encode("utf-8")).hexdigest()
+        if event_digest != str(event["content_hash"]):
+            raise RuntimeError("Committed order event differs from its row hash")
         sequence = int(event["sequence"])
         record_id = str(UUID(str(event["record_id"])))
         detail = by_id[record_id]
@@ -2787,6 +2794,11 @@ def load_committed_order_command_page(
                 or str(detail["event_month"]) != str(event["event_month"])
                 or str(detail["account_id"]) != str(event["account_id"])):
             raise RuntimeError("Committed command page differs from its event envelope")
+        if ((str(detail["strategy_id"]), int(detail["strategy_revision"])) == (
+                STRATEGY_ID, STRATEGY_NUMBER)
+                and (str(detail["command_id"]) != str(event["entity_id"])
+                     or str(detail["created_at"]) != str(event["event_time"]))):
+            raise RuntimeError("Strategy 1 command differs from its event envelope")
         content = {key: value for key, value in detail.items() if key != "content_hash"}
         digest = sha256(canonical_json(_canonical_typed_content(
             "trading_order_command_v1", content, stored_utc=True,
