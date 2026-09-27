@@ -29,12 +29,23 @@ from src.trading_runtime.arte_market_day_cold_preflight import (
 )
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
 from src.trading_runtime.keeper_session import open_workstation_keeper_session
+from scripts.clickhouse.provision_fixed_backtest_v3_principals import _secret_path
+from scripts.clickhouse.provision_trading_journal import _restrict_secret_file
 
 
 def audit(build_id: str, day: date) -> tuple[int, int, str]:
     if (platform.node().upper() != "DESKTOP-SAAI85T"
             or re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", build_id) is None):
         raise ValueError("Selected-day audit requires workstation and exact build ID")
+    path = _secret_path("read")
+    if not path.is_file():
+        raise RuntimeError("Private Backtest reader credential is absent")
+    _restrict_secret_file(path)
+    if not any(os.environ.get(key) for key in (
+            "BACKTEST_V3_READ_CREDENTIAL_FILE", "BACKTEST_V3_READ_CLICKHOUSE_URL",
+            "BACKTEST_V3_READ_CLICKHOUSE_USER",
+            "BACKTEST_V3_READ_CLICKHOUSE_PASSWORD")):
+        os.environ["BACKTEST_V3_READ_CREDENTIAL_FILE"] = str(path)
     with closing(readonly_clickhouse_client(v3_read_principal=True)) as http:
         reader = _MarketCertificateReader(http)
         with closing(open_workstation_keeper_session()) as session:
