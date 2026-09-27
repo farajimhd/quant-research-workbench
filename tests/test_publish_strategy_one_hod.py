@@ -62,6 +62,18 @@ def test_recompute_ticker_compares_sealed_rows_without_writer(capsys, monkeypatc
     assert "MATCH" in capsys.readouterr().out
 
 
+def test_recompute_first_selects_certified_first_ticker(capsys, monkeypatch):
+    monkeypatch.setattr(command.platform, "node", lambda: "DESKTOP-SAAI85T")
+    observed = []
+    monkeypatch.setattr(command, "verify_recomputed_ticker", lambda **kwargs:
+                        observed.append(kwargs))
+    assert command.main(["--session-date", "2026-08-19",
+                         "--recompute-first"]) == 0
+    assert observed == [{"session_date": "2026-08-19",
+                         "build_id": "", "ticker": ""}]
+    assert capsys.readouterr().err == ""
+
+
 def test_recompute_ticker_rejects_mismatched_context(monkeypatch):
     from src.trading_runtime.strategy_one_hod_product import HodContext
 

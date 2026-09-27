@@ -88,10 +88,11 @@ def verify_session(*, session_date: str, build_id: str):
 
 
 def verify_recomputed_ticker(*, session_date: str, build_id: str,
-                             ticker: str) -> None:
+                             ticker: str = "") -> None:
     """Compare a sealed ticker with today's causal derivation; write nothing."""
     market, candidates, seeds, tickers = _plans(
         session_date=session_date, build_id=build_id)
+    ticker = ticker or tickers[0]
     if ticker not in tickers:
         raise ValueError("Requested ticker has no certified HOD candidates")
     scope = _scope(market, candidates, seeds, ticker=ticker)
@@ -231,6 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verify-only", action="store_true")
     parser.add_argument("--recompute-ticker", default="",
                         help="read-only comparison against sealed HOD rows")
+    parser.add_argument("--recompute-first", action="store_true",
+                        help="read-only comparison of the first certified ticker")
     parser.add_argument("--confirm-hod-publication", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -238,15 +241,17 @@ def main(argv: list[str] | None = None) -> int:
         if not 1 <= args.workers <= 16:
             raise ValueError("HOD workers must be within 1-16")
         if sum(bool(value) for value in (
-                args.apply, args.verify_only, args.recompute_ticker)) > 1:
-            raise ValueError("--apply, --verify-only and --recompute-ticker are exclusive")
+                args.apply, args.verify_only, args.recompute_ticker,
+                args.recompute_first)) > 1:
+            raise ValueError("HOD run, verification, and recomputation modes are exclusive")
         if args.recompute_ticker and (not args.recompute_ticker.isascii()
                 or not args.recompute_ticker.isalnum()
                 or args.recompute_ticker != args.recompute_ticker.upper()):
             raise ValueError("Recompute ticker must be an uppercase ASCII symbol")
     except ValueError as exc:
         parser.error(str(exc))
-    if not args.apply and not args.verify_only and not args.recompute_ticker:
+    if not any((args.apply, args.verify_only, args.recompute_ticker,
+                args.recompute_first)):
         print(f"DRY RUN: {day}, certified candidate ticker-days, "
               f"{args.workers} bounded workers; no connection or write.")
         print("Apply on DESKTOP-SAAI85T with --apply "
@@ -261,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verify_only:
             verify_session(session_date=day, build_id=args.build_id)
-        elif args.recompute_ticker:
+        elif args.recompute_ticker or args.recompute_first:
             verify_recomputed_ticker(
                 session_date=day, build_id=args.build_id,
                 ticker=args.recompute_ticker)
