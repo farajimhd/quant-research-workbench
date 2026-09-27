@@ -269,10 +269,12 @@ def backtest_v4_operator_client_from_env() -> Any:
     from research.mlops.clickhouse import ClickHouseHttpClient
 
     url, user, password = _v4_runner_credentials()
-    return ClickHouseHttpClient(
+    client = ClickHouseHttpClient(
         url, user, password, timeout_seconds=60, persistent=True,
         default_query_params={"readonly": 1, "max_threads": 2,
                               "max_execution_time": 60})
+    client.v4_batched_detail_readback = True
+    return client
 
 
 def backtest_v4_context_client_from_env(*, keeper_session=None) -> Any:

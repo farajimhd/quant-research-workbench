@@ -280,7 +280,8 @@ def load_verified_commit_v4(
         raise RuntimeError("V4 commit family readback is incomplete or unbounded")
     details = _load_verified_details_v4(
         client, run_id=run_id, batch_id=identity,
-        family_rows=family_rows, max_rows_per_family=max_rows_per_family)
+        family_rows=family_rows, max_rows_per_family=max_rows_per_family,
+        batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)))
     try:
         verify_commit_v4(commit, family_rows, details)
     except ValueError as exc:

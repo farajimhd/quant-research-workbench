@@ -383,6 +383,39 @@ def test_v4_cold_readback_recomputes_each_typed_row_hash():
             client, run_id=commit["run_id"], batch_id=commit["batch_id"])
 
 
+def test_v4_cold_batched_readback_still_recomputes_row_hash(monkeypatch):
+    from src.trading_runtime import arte_journal_commit_v4 as module
+
+    options = source()
+    commit, families = prepare_commit_v4(**options)
+    event = dict(options["sealed_families"][0][1][0])
+    for column, precision in (("event_time", 9), ("recorded_at", 6)):
+        parsed = datetime.fromisoformat(event[column]).astimezone(timezone.utc)
+        event[column] = (parsed.strftime("%Y-%m-%d %H:%M:%S.%f")
+                         + ("000" if precision == 9 else ""))
+    client = MemoryClient()
+    client.v4_batched_detail_readback = True
+    client.tables = {
+        "trading_commit_v4": [dict(commit)],
+        "trading_commit_family_v4": [dict(families[0])],
+        "trading_event_v1": [event],
+    }
+    calls = []
+    def batched(reader, specs, filters):
+        calls.append((specs, filters))
+        return {name: [dict(row) for row in reader.tables[name]]
+                for name, _, _ in specs}
+    monkeypatch.setattr(module, "_batched_detail_rows_v4", batched)
+    assert load_verified_commit_v4(
+        client, run_id=commit["run_id"], batch_id=commit["batch_id"]
+    ) == (commit, families)
+    assert len(calls) == 1
+    client.tables["trading_event_v1"][0]["entity_id"] = "tampered"
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_verified_commit_v4(
+            client, run_id=commit["run_id"], batch_id=commit["batch_id"])
+
+
 def test_v4_publication_is_detail_first_commit_last_and_idempotent():
     client = attached_v4_client()
     item = batch()
