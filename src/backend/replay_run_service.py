@@ -113,6 +113,8 @@ from src.trading_runtime.watchlist_resolver import evaluate_rule_sets_frame
 
 _STRATEGY_ONE_PREFLIGHT_POOL = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="strategy-one-version-preflight")
+_STRATEGY_ONE_PRICE_PREFLIGHT_POOL = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="strategy-one-price-preflight")
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -11020,6 +11022,16 @@ def _fixed_market_evidence_gaps(configuration: Mapping[str, Any]) -> tuple[str, 
     return tuple(sorted(gaps))
 
 
+def _certify_fixed_price_plan(certified: Any) -> Any:
+    """Read-only price-volume proof on its own bounded ClickHouse connection."""
+    from src.backend.backtest_liquidity_price import certify_price_level_plan
+    from src.backend.backtest_market_data import readonly_clickhouse_client
+
+    with closing(readonly_clickhouse_client(
+            market_stream=True, v3_read_principal=True)) as reader:
+        return certify_price_level_plan(certified, reader)
+
+
 def backtest_preflight(
     *,
     anchor_date: date,
@@ -11144,7 +11156,7 @@ def backtest_preflight(
                 configuration=configuration,
             )
             # The certificate constructor already hashes the selected market
-            # rows. A second connection is needed only for V7 seed preflight.
+            # rows. Downstream price and V7 proofs use independent read clients.
             market_data_plan = certified.payload()
             if needs_v7 and not activated_signal_streams:
                 if experimental_structure_book not in {"", "level-book-v7"}:
@@ -11158,6 +11170,11 @@ def backtest_preflight(
                 causal_v7_error = str(exc)
             else:
                 market_data_error = str(exc)
+    price_future = (
+        _STRATEGY_ONE_PRICE_PREFLIGHT_POOL.submit(
+            _certify_fixed_price_plan, certified)
+        if strategy_one_fixed and market_data_plan else None
+    )
     bindings = [
         dict(row)
         for row in dict(configuration.get("accounts") or {}).get("bindings") or []
@@ -11291,16 +11308,12 @@ def backtest_preflight(
         ),
         "evidence": market_data_plan.get("token", "") if market_data_plan else market_data_error,
     })
-    if execution_interval.kind == "fixed":
+    if execution_interval.kind == "fixed" and not strategy_one_fixed:
         price_plan_error = ""
         price_plan_token = ""
         if market_data_plan:
             try:
-                from src.backend.backtest_liquidity_price import certify_price_level_plan
-                from src.backend.backtest_market_data import readonly_clickhouse_client
-                with closing(readonly_clickhouse_client(
-                        market_stream=True, v3_read_principal=True)) as reader:
-                    price_plan = certify_price_level_plan(certified, reader)
+                price_plan = _certify_fixed_price_plan(certified)
                 price_plan_token = price_plan.token
                 market_data_plan["price_level_plan_token"] = price_plan_token
                 market_data_plan["price_level_unit_count"] = len(price_plan.units)
@@ -11749,6 +11762,30 @@ def backtest_preflight(
             "required": True,
         }
     )
+    if strategy_one_fixed:
+        price_plan_error = ""
+        price_plan_token = ""
+        if price_future is not None:
+            try:
+                price_plan = price_future.result()
+                price_plan_token = price_plan.token
+                market_data_plan["price_level_plan_token"] = price_plan_token
+                market_data_plan["price_level_unit_count"] = len(price_plan.units)
+            except Exception as exc:
+                price_plan_error = str(exc)
+        checks.append({
+            "id": "eligible_execution_prices",
+            "label": "Certified passive-fill price volume",
+            "status": "ready" if price_plan_token else "blocked",
+            "required": True,
+            "summary": (
+                f"Read-only eligible trade-price rows cover {len(price_plan.units)} ticker-days."
+                if price_plan_token else
+                "Eligible trade-price coverage is unavailable: " +
+                (price_plan_error or market_data_error or "market-day plan is unavailable")
+            ),
+            "evidence": price_plan_token or price_plan_error,
+        })
     # One visible required-check contract controls admission. The fixed and
     # event execution guards above remain blocked until each runnable path is
     # accepted; a second, contradictory interval veto would permanently hide
