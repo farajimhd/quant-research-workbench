@@ -92,6 +92,8 @@ class _SqlCallProfile:
 
     @staticmethod
     def category(sql: str) -> str:
+        if "FROM arte.bars_v1" in sql and "AND resolution_ms=1000" in sql:
+            return "v7_completed_second_read"
         journal = "arte.trading_" in sql.lower()
         insert = sql.lstrip().upper().startswith("INSERT ")
         return ("journal" if journal else "market_or_control") + (
