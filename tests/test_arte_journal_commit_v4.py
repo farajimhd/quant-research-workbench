@@ -1215,6 +1215,58 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
         writable, frozenset(table.name for table in fixed_backtest_v2_contracts()) - writable)
 
 
+def test_live_v4_writer_uses_same_typed_commit_without_backtest_authority(monkeypatch):
+    from src.backend import live_strategy_one_v4_principal as live_principal
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from tests.test_live_signal_completion_keeper import FakeKazoo
+
+    client = attached_v4_client()
+    calls = []
+    monkeypatch.setattr(live_principal, "live_v4_preflight",
+                        lambda observed: calls.append(observed))
+    monkeypatch.setattr(writer_module, "_v4_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity",
+                        lambda _client, _run_id: {"mode": "live", "account_ids": ("DU1",)})
+    item = batch()
+    keeper_client = FakeKazoo()
+    keeper_client.add_listener = lambda listener: None
+    keeper_client.remove_listener = lambda listener: None
+    keeper_client.stop = lambda: None
+    keeper_client.close = lambda: None
+    session = ManagedKeeperSession(keeper_client)
+    session._on_state("CONNECTED")
+    lease = live_principal.LiveV4KeeperLease.acquire(
+        session, run_id=item.run_id, owner_id="live-writer-test")
+    client.live_v4_lease = lease
+    journal = ArteJournalWriter(
+        client, run_id=item.run_id, journal_profile="live_v4",
+        coalesce_batches=False)
+    try:
+        with pytest.raises(RuntimeError, match="explicit family envelope"):
+            journal.submit(item)
+        assert journal.submit_base_v4(item).result(timeout=5) == item.batch_id
+        assert calls == [client]
+        assert client.inserts == ["trading_event_v1", "trading_commit_family_v4",
+                                  "trading_commit_v4"]
+        assert journal.run_mode == "live"
+    finally:
+        journal.close()
+        lease.release()
+        session.close()
+    with pytest.raises(RuntimeError, match="pinned Keeper lease"):
+        ArteJournalWriter(attached_v4_client(), run_id=item.run_id,
+                          journal_profile="live_v4", coalesce_batches=False)
+    expired_client = attached_v4_client()
+    expired_client.live_v4_lease = lease
+    with pytest.raises(RuntimeError, match="Keeper session is unavailable"):
+        ArteJournalWriter(expired_client, run_id=item.run_id,
+                          journal_profile="live_v4", coalesce_batches=False)
+    assert expired_client.inserts == []
+    with pytest.raises(RuntimeError, match="verified Backtest run"):
+        ArteJournalWriter(attached_v4_client(), run_id=item.run_id,
+                          journal_profile="backtest_v4", coalesce_batches=False)
+
+
 def test_v4_terminal_writer_queue_waits_for_anchor_before_receipt(monkeypatch):
     from threading import Event
     from src.trading_runtime import arte_backtest_snapshot_anchor as anchors

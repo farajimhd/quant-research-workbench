@@ -894,6 +894,11 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
             or not isinstance(getattr(client, "typed_insert_dispatch", None),
                               TypedInsertDispatch)):
         raise RuntimeError("V4 publication requires a strict Keeper-fenced insert dispatch")
+    live_lease = getattr(client, "live_v4_lease", None)
+    if live_lease is not None:
+        if live_lease.run_id != batch.run_id:
+            raise RuntimeError("Live V4 publication crossed its Keeper run")
+        live_lease.assert_current()
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
             strategy_one_entry_rows, portfolio_allocation_row,
@@ -1328,6 +1333,7 @@ def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
         _verify_order_context_links,
     )
 
+    live_lease = getattr(client, "live_v4_lease", None)
     dispatch = client.typed_insert_dispatch
     commit, family_rows = prepare_commit_v4(
         run_id=batch.run_id, run_month=batch.run_month,
@@ -1428,6 +1434,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
         f"{filters}LIMIT 257 FORMAT JSONEachRow")
     if sorted(verified_families, key=lambda row: row["family_name"]) != list(family_rows):
         raise RuntimeError("V4 family publication lacks complete readback")
+    if live_lease is not None:
+        live_lease.assert_current()
     _insert(client, "trading_commit_v4", (commit,),
             f"{batch.batch_id}:commit:v4", dispatch_batch_id=batch.batch_id,
             dispatch_sequence=batch.last_sequence)
@@ -1451,4 +1459,6 @@ def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
         raise RuntimeError("V4 committed cursor differs from the intended batch")
     _compact_verified_v4_batch(
         dispatch, batch, families, family_rows, loaded)
+    if live_lease is not None:
+        live_lease.assert_current()
     return batch.batch_id

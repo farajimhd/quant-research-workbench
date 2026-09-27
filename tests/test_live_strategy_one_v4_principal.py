@@ -3,6 +3,7 @@ import pytest
 from src.backend import live_strategy_one_v4_principal as live
 from scripts.clickhouse.provision_backtest_v4_runner import desired_plan as backtest_plan
 from src.trading_runtime.keeper_session import ManagedKeeperSession
+from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from tests.test_live_signal_completion_keeper import FakeKazoo
 
 
@@ -86,6 +87,10 @@ def test_client_factory_requires_current_keeper_and_closes_on_failure(monkeypatc
     assert live.open_live_v4_client(
         lease=lease, endpoint=live.MANAGED_URL, credential_user=live.PRINCIPAL,
         credential_password="x" * 40, client_factory=factory) is client
+    assert client.live_v4_lease is lease
+    assert client.typed_insert_strict is True
+    assert isinstance(client.typed_insert_dispatch, TypedInsertDispatch)
+    assert client.typed_insert_dispatch.keeper is lease.owner._session.client
     assert not client.closed
     client = Client()
     lease = _lease()

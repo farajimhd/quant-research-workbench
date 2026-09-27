@@ -173,6 +173,10 @@ def open_live_v4_client(
     try:
         live_v4_preflight(client)
         lease.assert_current()
+        from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+        client.typed_insert_dispatch = TypedInsertDispatch(lease.owner._session.client)
+        client.typed_insert_strict = True
+        client.live_v4_lease = lease
         return client
     except BaseException:
         close = getattr(client, "close", None)

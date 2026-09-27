@@ -3342,6 +3342,8 @@ class _TerminalBacktestUnit:
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 
+    _V4_PROFILES = frozenset({"backtest_v4", "live_v4"})
+
     def __init__(self, client: Any, *, run_id: str, capacity: int = 8,
                  max_events_per_commit: int = 4096,
                  coalesce_batches: bool = True,
@@ -3359,7 +3361,7 @@ class ArteJournalWriter:
             if coalesce_batches:
                 raise ValueError("V3 squeeze batches require explicit uncoalesced children")
             _v3_preflight(client)
-        elif journal_profile == "backtest_v4":
+        elif journal_profile in self._V4_PROFILES:
             if coalesce_batches:
                 raise ValueError("V4 batches require explicit uncoalesced commits")
             from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
@@ -3367,7 +3369,11 @@ class ArteJournalWriter:
                     or not isinstance(getattr(client, "typed_insert_dispatch", None),
                                       TypedInsertDispatch)):
                 raise RuntimeError("V4 writer requires a strict Keeper-fenced insert dispatch")
-            _v4_preflight(client)
+            if journal_profile == "backtest_v4":
+                _v4_preflight(client)
+            else:
+                from src.backend.live_strategy_one_v4_principal import live_v4_preflight
+                live_v4_preflight(client)
         else:
             raise ValueError("Unknown typed journal profile")
         context = _verify_run_identity(client, run_id)
@@ -3381,6 +3387,17 @@ class ArteJournalWriter:
         self._journal_profile = journal_profile
         if journal_profile in {"backtest_v2", "backtest_v3", "backtest_v4"} and self._run_mode != "backtest":
             raise RuntimeError("Versioned journal profile requires a verified Backtest run")
+        if journal_profile == "live_v4" and self._run_mode not in {"live", "paper"}:
+            raise RuntimeError("Live V4 journal requires a verified live or paper run")
+        if journal_profile == "live_v4":
+            from src.backend.live_strategy_one_v4_principal import LiveV4KeeperLease
+            lease = getattr(client, "live_v4_lease", None)
+            if not isinstance(lease, LiveV4KeeperLease) or lease.run_id != run_id:
+                raise RuntimeError("Live V4 writer requires its pinned Keeper lease")
+            lease.assert_current()
+        else:
+            lease = None
+        self._live_v4_lease = lease
         if self._run_mode == "backtest":
             account_ids = context.get("account_ids")
             if (not isinstance(account_ids, (tuple, list)) or not account_ids
@@ -3466,7 +3483,7 @@ class ArteJournalWriter:
     def submit(self, batch: TypedJournalBatch) -> Future[str]:
         """Enqueue without waiting; the receipt names the durable combined batch."""
         with self._submission_lock:
-            if self._journal_profile in {"backtest_v3", "backtest_v4"}:
+            if self._journal_profile in {"backtest_v3", *self._V4_PROFILES}:
                 raise RuntimeError("Versioned writer requires an explicit family envelope")
             if self._closed:
                 raise RuntimeError("Typed journal writer is closed")
@@ -3486,7 +3503,7 @@ class ArteJournalWriter:
 
     def submit_base_v4(self, batch: TypedJournalBatch) -> Future[str]:
         """Queue an explicitly limited V4 base batch; no network I/O on caller."""
-        if self._journal_profile != "backtest_v4" or not isinstance(batch, TypedJournalBatch):
+        if self._journal_profile not in self._V4_PROFILES or not isinstance(batch, TypedJournalBatch):
             raise ValueError("V4 base submission requires its opt-in writer profile")
         if batch.status != "running":
             raise ValueError("V4 terminal publication requires a recovery anchor")
@@ -3524,7 +3541,7 @@ class ArteJournalWriter:
 
     def submit_strategy_one_entry_v4(self, unit: V4StrategyOneEntryBatch) -> Future[str]:
         """Queue the intent and its typed child without blocking execution."""
-        if self._journal_profile != "backtest_v4" or not isinstance(
+        if self._journal_profile not in self._V4_PROFILES or not isinstance(
                 unit, V4StrategyOneEntryBatch):
             raise ValueError("Strategy 1 entry requires the V4 writer profile")
         with self._submission_lock:
@@ -3544,7 +3561,7 @@ class ArteJournalWriter:
         """Queue one group+tactic graph without network I/O on the actor."""
         from .arte_oms_tactic_projection import V4OmsTacticBatch
 
-        if (self._journal_profile != "backtest_v4"
+        if (self._journal_profile not in self._V4_PROFILES
                 or type(unit) is not V4OmsTacticBatch
                 or unit.base.run_id != self._run_id):
             raise ValueError("OMS tactic needs the pinned V4 writer")
@@ -3563,7 +3580,7 @@ class ArteJournalWriter:
         self, unit: V4PortfolioAllocationBatch,
     ) -> Future[str]:
         """Queue one normalized allocation and parent without caller I/O."""
-        if (self._journal_profile != "backtest_v4"
+        if (self._journal_profile not in self._V4_PROFILES
                 or not isinstance(unit, V4PortfolioAllocationBatch)
                 or unit.base.run_id != self._run_id):
             raise ValueError("V4 allocation requires its pinned writer")
@@ -3582,7 +3599,7 @@ class ArteJournalWriter:
         self, unit: V4ReservationReasonBatch,
     ) -> Future[str]:
         """Queue a scalar reservation reason family outside the execution lane."""
-        if (self._journal_profile != "backtest_v4"
+        if (self._journal_profile not in self._V4_PROFILES
                 or not isinstance(unit, V4ReservationReasonBatch)
                 or unit.base.run_id != self._run_id):
             raise ValueError("V4 reservation reasons require the pinned writer")
@@ -3600,7 +3617,7 @@ class ArteJournalWriter:
     def submit_broker_acknowledgement_v4(
             self, unit: V4BrokerAcknowledgementBatch) -> Future[str]:
         """Queue one sealed broker reply without network I/O on the caller."""
-        if (self._journal_profile != "backtest_v4"
+        if (self._journal_profile not in self._V4_PROFILES
                 or not isinstance(unit, V4BrokerAcknowledgementBatch)):
             raise ValueError("V4 broker reply requires its typed writer profile")
         with self._submission_lock:
@@ -3618,7 +3635,7 @@ class ArteJournalWriter:
 
     def submit_order_cancel_v4(self, unit: V4OrderCancelBatch) -> Future[str]:
         """Queue one scalar cancel command/result without blocking on I/O."""
-        if (self._journal_profile != "backtest_v4"
+        if (self._journal_profile not in self._V4_PROFILES
                 or not isinstance(unit, V4OrderCancelBatch)):
             raise ValueError("V4 cancellation requires its typed writer profile")
         with self._submission_lock:
@@ -3636,7 +3653,7 @@ class ArteJournalWriter:
 
     def submit_order_reprice_v4(self, unit: V4OrderRepriceBatch) -> Future[str]:
         """Queue one scalar reprice outcome without blocking on I/O."""
-        if (self._journal_profile != "backtest_v4"
+        if (self._journal_profile not in self._V4_PROFILES
                 or not isinstance(unit, V4OrderRepriceBatch)):
             raise ValueError("V4 repricing requires its typed writer profile")
         with self._submission_lock:
@@ -3654,7 +3671,7 @@ class ArteJournalWriter:
 
     def submit_risk_action_v4(self, unit: V4RiskActionBatch) -> Future[str]:
         """Queue one normalized risk action and its bounded reply rows."""
-        if (self._journal_profile != "backtest_v4"
+        if (self._journal_profile not in self._V4_PROFILES
                 or not isinstance(unit, V4RiskActionBatch)):
             raise ValueError("V4 risk action requires its typed writer profile")
         with self._submission_lock:
@@ -3673,7 +3690,7 @@ class ArteJournalWriter:
     def submit_protection_change_v4(
             self, unit: V4ProtectionChangeBatch) -> Future[str]:
         """Queue normalized protection evidence without waiting on ClickHouse."""
-        if (self._journal_profile != "backtest_v4"
+        if (self._journal_profile not in self._V4_PROFILES
                 or not isinstance(unit, V4ProtectionChangeBatch)):
             raise ValueError("V4 protection change requires its typed writer profile")
         with self._submission_lock:
@@ -3692,7 +3709,7 @@ class ArteJournalWriter:
     def submit_protection_reconciliation_v4(
             self, unit: V4ProtectionReconciliationBatch) -> Future[str]:
         """Queue normalized repair actions without blocking the engine."""
-        if (self._journal_profile != "backtest_v4"
+        if (self._journal_profile not in self._V4_PROFILES
                 or not isinstance(unit, V4ProtectionReconciliationBatch)):
             raise ValueError("V4 reconciliation requires its typed writer profile")
         with self._submission_lock:
@@ -3947,7 +3964,9 @@ class ArteJournalWriter:
             try:
                 if self._error is not None:
                     raise RuntimeError("Typed journal writer failed earlier") from self._error
-                if (self._journal_profile in {"backtest_v2", "backtest_v3", "backtest_v4"}
+                if self._live_v4_lease is not None:
+                    self._live_v4_lease.assert_current()
+                if (self._journal_profile in {"backtest_v2", "backtest_v3", *self._V4_PROFILES}
                         and not isinstance(group[0][0],
                                            (TypedJournalBatch, V3SqueezeBatch,
                                             V4CompoundBatch,
@@ -4073,7 +4092,7 @@ class ArteJournalWriter:
                     batch = _coalesce_unpublished(tuple(row for row, _ in group))
                     if self._journal_profile == "v1":
                         committed_id = publish_typed_batch(self._client, batch)
-                    elif self._journal_profile == "backtest_v4":
+                    elif self._journal_profile in self._V4_PROFILES:
                         from src.trading_runtime.arte_journal_commit_v4 import (
                             publish_base_typed_batch_v4,
                         )
@@ -4131,6 +4150,8 @@ class ArteJournalWriter:
                     if isinstance(snapshot, CapturedPortfolioSnapshot):
                         snapshot = prepare_captured_portfolio_snapshot(snapshot)
                     committed_id = publish_prepared_portfolio_snapshot(self._client, snapshot)
+                if self._live_v4_lease is not None:
+                    self._live_v4_lease.assert_current()
                 self._last_commit_id = committed_id
                 elapsed_ns = perf_counter_ns() - started_ns
                 event_rows = 0
