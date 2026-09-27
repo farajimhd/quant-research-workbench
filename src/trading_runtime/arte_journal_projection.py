@@ -255,6 +255,15 @@ def project_journal_record(
                     batch_id=batch_id, prior_batch_id=prior_batch_id,
                     source_cursor=source_cursor)
     kind = (record.category, record.entity_type)
+    # Live and paper journals share the normalized financial families with
+    # Backtest, but must never acquire simulated market/cursor authority.
+    # A future live publisher must pass its pinned mode explicitly.
+    if expected_mode in {"live", "paper"} and kind in {
+        ("checkpoint", "market_boundary"),
+        ("data_authority", "source_revision"),
+        ("market_discovery_signal", "signal_occurrence"),
+    }:
+        raise ValueError("Backtest-only market evidence cannot enter a live journal")
     if kind == ("command", "order"):
         from src.trading_runtime.ibkr_schema import OrderRequest
 

@@ -55,6 +55,29 @@ def test_shared_record_projection_is_typed_and_rejects_unknown_payloads() -> Non
         project_journal_record(record, **identity)
 
 
+@pytest.mark.parametrize("category,entity_type", [
+    ("checkpoint", "market_boundary"),
+    ("data_authority", "source_revision"),
+    ("market_discovery_signal", "signal_occurrence"),
+])
+@pytest.mark.parametrize("mode", ["live", "paper"])
+def test_live_projection_rejects_backtest_market_authority(
+    category: str, entity_type: str, mode: str,
+) -> None:
+    record = JournalRecord(
+        "00000000-0000-0000-0000-000000000013", "live:DU1", 1,
+        AT, AT, category, entity_type, "market-1", "", {},
+    )
+    with pytest.raises(ValueError, match="Backtest-only market evidence"):
+        project_journal_record(
+            record, run_month=date(2026, 8, 1),
+            attempt_id="00000000-0000-0000-0000-000000000011",
+            batch_id="00000000-0000-0000-0000-000000000012",
+            prior_batch_id="00000000-0000-0000-0000-000000000000",
+            source_cursor="start", expected_mode=mode,
+        )
+
+
 def test_shared_order_command_preserves_source_identity_and_rejects_extra_fields() -> None:
     request = OrderRequest(
         acctId="DU1", conid=123, cOID="client-1", ticker="TEST",
