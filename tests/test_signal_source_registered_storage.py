@@ -94,3 +94,18 @@ def test_registered_source_cannot_publish_without_attestor():
         configuration_revision=batch.configuration_revision)
     with pytest.raises(ValueError, match="Keeper head attestation"):
         TypedSignalPublicationQueue(storage)
+
+
+def test_registered_source_new_session_checks_all_clickhouse_rows():
+    batch = _batch()
+    raw = FakeStorage()
+    raw.has_any_source_rows = lambda *, session_key: True
+    dispatch = SignalSourceInsertDispatch(Keeper())
+    storage = RegisteredSignalSourceStorage(
+        raw, _InsertClient(raw), dispatch, session_key=batch.session_key,
+        configuration_revision=batch.configuration_revision)
+    with pytest.raises(KeeperUnavailable, match="unregistered ClickHouse rows"):
+        storage.initialize_new_session()
+    raw.has_any_source_rows = lambda *, session_key: False
+    storage.initialize_new_session()
+    assert dispatch.acquire_cold_barrier(storage.run_id) == (0, "0" * 64)

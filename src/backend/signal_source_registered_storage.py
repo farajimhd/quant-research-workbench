@@ -40,6 +40,16 @@ class RegisteredSignalSourceStorage:
         self._active_sequence: int | None = None
         self._operations = 0
 
+    def initialize_new_session(self) -> None:
+        """Only a proven empty typed source may receive a fresh Keeper gate."""
+        inventory = getattr(self._read_storage, "has_any_source_rows", None)
+        if inventory is None:
+            raise RuntimeError("Registered source lacks complete row inventory")
+        has_rows = inventory(session_key=self._session_key)
+        if type(has_rows) is not bool:
+            raise RuntimeError("Registered source inventory result is invalid")
+        self._dispatch.initialize_new_session(self.run_id, has_ch_rows=has_rows)
+
     def acquire_bootstrap_barrier(self) -> tuple[int, str]:
         return self._dispatch.acquire_cold_barrier(self.run_id)
 
