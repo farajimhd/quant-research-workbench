@@ -5858,6 +5858,34 @@ async def trading_backtest_typed_financial_page(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/api/trading/backtest/runs/{run_id}/v4-terminal-page")
+async def trading_backtest_v4_terminal_page(
+    run_id: str,
+    after_sequence: int = Query(default=0, ge=0),
+    limit: int = Query(default=250, ge=1, le=1000),
+) -> dict[str, Any]:
+    """Cold-verified normalized Strategy 1 evidence, never local saved state."""
+    try:
+        normalized = str(uuid.UUID(run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Backtest run id") from exc
+
+    def read_page() -> dict[str, Any]:
+        from contextlib import closing
+        from src.backend.backtest_v4_saved_review import load_v4_terminal_review_page
+        from src.trading_runtime.arte_journal_writer import (
+            backtest_v4_operator_client_from_env,
+        )
+        with closing(backtest_v4_operator_client_from_env()) as client:
+            return load_v4_terminal_review_page(
+                client, normalized, after_sequence=after_sequence, limit=limit)
+
+    try:
+        return await asyncio.to_thread(read_page)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/backtest/runs/{run_id}/typed-running-page")
 async def trading_backtest_typed_running_page(
     run_id: str,
