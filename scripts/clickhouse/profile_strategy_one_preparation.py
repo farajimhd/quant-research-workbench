@@ -29,6 +29,7 @@ from src.backend.backtest_strategy_one_preparation import (
 from src.backend.backtest_strategy_one_market import candidate_market_shards
 from src.backend.backtest_strategy_one_candidate_store import certify_candidate_plan
 from src.backend.backtest_market_data import (
+    certified_market_plan_from_arte,
     iter_candidate_market_rows, iter_market_boundary_groups, iter_market_day_rows,
     iter_market_time_groups,
     project_market_day_plan,
@@ -256,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Profile persisted candidate certification and fixed market reads; never regenerate candidates")
     parser.add_argument("--sparse-market", action="store_true",
                         help="Profile exact persisted candidate-key reads with bounded concurrent SELECTs")
+    parser.add_argument("--cold-app-plan", action="store_true",
+                        help="Time the actual cold and warm app market-plan preflight")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", args.build_id):
         parser.error("Invalid market-day build ID")
@@ -268,9 +271,37 @@ def main(argv: list[str] | None = None) -> int:
             or args.through_boundary_ms % 100
             or not 1 <= args.max_workers <= 16):
         parser.error("Boundary must be a completed 100ms session clock; workers 1-16")
-    if args.certified_read and args.sparse_market:
-        parser.error("Choose either certified full stream or sparse candidate market profile")
+    if sum((args.certified_read, args.sparse_market, args.cold_app_plan)) > 1:
+        parser.error("Choose one certified-read, sparse-market, or cold-app-plan profile")
     try:
+        if args.cold_app_plan:
+            if platform.node().upper() != "DESKTOP-SAAI85T":
+                raise RuntimeError("App market-plan profile requires the workstation")
+            credential = _secret_path("read")
+            if not credential.is_file():
+                raise RuntimeError("Private V3 reader credential is unavailable")
+            os.environ["BACKTEST_V3_READ_CREDENTIAL_FILE"] = str(credential)
+            configuration = {
+                "market_day_build_id": args.build_id,
+                "strategy": {"strategy_number": 1,
+                             "execution_interval": "100ms"},
+            }
+            started = perf_counter()
+            cold = certified_market_plan_from_arte(
+                sessions=(args.date,), tickers=tickers,
+                configuration=configuration)
+            cold_seconds = perf_counter() - started
+            started = perf_counter()
+            warm = certified_market_plan_from_arte(
+                sessions=(args.date,), tickers=tickers,
+                configuration=configuration)
+            warm_seconds = perf_counter() - started
+            if cold.token != warm.token:
+                raise RuntimeError("Cold and warm app market plans differ")
+            print(f"Strategy 1 app market plan | {args.date} | "
+                  f"{len(cold.tickers)} tickers | cold {cold_seconds:.3f}s | "
+                  f"warm {warm_seconds:.3f}s | token {cold.token}")
+            return 0
         if args.sparse_market:
             result = profile_sparse(
                 args.build_id, args.date, tickers,

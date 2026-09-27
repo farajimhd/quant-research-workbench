@@ -339,7 +339,11 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
             reader, _MarketCertificateProofs(proofs),
             sessions=days,
             tickers=symbols, configuration=configuration,
-            expected_build_ids=build_ids)
+            expected_build_ids=build_ids,
+            read_client_factory=(
+                lambda: _MarketCertificateReader(
+                    readonly_clickhouse_client(v3_read_principal=True))
+            ) if cacheable else None)
         if cacheable:
             after = market_inventory_fingerprint(reader)
             if after != before:
@@ -368,7 +372,9 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
                 refreshed = discover_cold_certified_market_day_plan(
                     reader, _MarketCertificateProofs(proofs),
                     sessions=days, tickers=symbols, configuration=configuration,
-                    expected_build_ids=build_ids)
+                    expected_build_ids=build_ids,
+                    read_client_factory=lambda: _MarketCertificateReader(
+                        readonly_clickhouse_client(v3_read_principal=True)))
                 if refreshed.token != plan.token:
                     raise RuntimeError(
                         "Certified ARTE market plan changed during cold preflight")
@@ -399,6 +405,9 @@ class _MarketCertificateReader:
 
     def __init__(self, reader: Any) -> None:
         self._reader = reader
+
+    def close(self) -> None:
+        self._reader.close()
 
     def execute(self, sql: str) -> str:
         # Cold certification also queries read-only system.tables/parts. The

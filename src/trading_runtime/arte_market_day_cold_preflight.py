@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from dataclasses import replace
 import json
 import re
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from src.trading_runtime.arte_market_day_certification import (
     MarketDayCertificate, TABLES, verify_market_day_certificate,
@@ -47,11 +47,14 @@ class MarketDayColdAudit:
 
 
 def audit_attested_market_day_certificate(client: Any, keeper: Any,
-                                           build_id: str, *, sessions: tuple[str, ...]
+                                           build_id: str, *, sessions: tuple[str, ...],
+                                           read_client_factory: Callable[[], Any] | None = None,
                                            ) -> MarketDayColdAudit:
     """Fail closed on absent, partial, duplicate, unplaced or unattested facts."""
     _placement(client)
-    certificate = verify_market_day_certificate(client, build_id, sessions=sessions)
+    certificate = verify_market_day_certificate(
+        client, build_id, sessions=sessions,
+        read_client_factory=read_client_factory)
     fence_name = TABLES[-1].name
     fences = _read(client, fence_name, build_id)
     if len(fences) != 1:
@@ -222,7 +225,8 @@ def cold_certified_market_day_plan(certificate_client: Any,
                                    keeper: Any, build_id: str, *,
                                    sessions: tuple[str, ...],
                                    tickers: tuple[str, ...],
-                                   configuration: Mapping[str, Any]) -> Any:
+                                   configuration: Mapping[str, Any],
+                                   read_client_factory: Callable[[], Any] | None = None) -> Any:
     """Inactive SELECT-only replacement candidate for the SQLite plan read.
 
     Canonical replay is a producer-side prerequisite of the V3 Keeper proof;
@@ -230,7 +234,8 @@ def cold_certified_market_day_plan(certificate_client: Any,
     fixed Backtest launch path or grant any writes.
     """
     audit = audit_attested_market_day_certificate(
-        certificate_client, keeper, build_id, sessions=sessions)
+        certificate_client, keeper, build_id, sessions=sessions,
+        read_client_factory=read_client_factory)
     return certified_market_day_plan_from_cold_audit(
         certificate_client, audit, sessions=sessions, tickers=tickers,
         configuration=configuration)
@@ -264,7 +269,8 @@ def discover_cold_certified_market_day_plan(certificate_client: Any,
                                              sessions: tuple[str, ...],
                                              tickers: tuple[str, ...],
                                              configuration: Mapping[str, Any],
-                                             expected_build_ids: tuple[str, ...] | None = None) -> Any:
+                                             expected_build_ids: tuple[str, ...] | None = None,
+                                             read_client_factory: Callable[[], Any] | None = None) -> Any:
     """Select one attested build from arte, never a producer disk manifest.
 
     An explicit build pin resolves overlapping certified builds. A caller may
@@ -280,7 +286,8 @@ def discover_cold_certified_market_day_plan(certificate_client: Any,
         try:
             compatible.append(cold_certified_market_day_plan(
                 certificate_client, keeper, build_id, sessions=sessions,
-                tickers=tickers, configuration=configuration))
+                tickers=tickers, configuration=configuration,
+                read_client_factory=read_client_factory))
         except (RuntimeError, ValueError, KeyError, TypeError) as exc:
             errors.append(f"{build_id}: {exc}")
     if len(compatible) != 1:

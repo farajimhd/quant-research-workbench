@@ -87,6 +87,51 @@ def test_zero_row_planned_unit_is_certified_by_explicit_stage_rows() -> None:
     assert len(client.calls) == len(TABLES)
 
 
+def test_parallel_read_only_certificate_matches_serial_and_closes_workers() -> None:
+    tables = inventory()
+    readers = []
+    class Worker(FakeReader):
+        def __init__(self):
+            super().__init__(tables)
+            self.closed = False
+            readers.append(self)
+
+        def close(self):
+            self.closed = True
+
+    main = FakeReader(tables)
+    expected = verify_market_day_certificate(main, BUILD, sessions=(DAY,))
+    main.calls.clear()
+    actual = verify_market_day_certificate(
+        main, BUILD, sessions=(DAY,), read_client_factory=Worker,
+        read_workers=4)
+    assert actual == expected
+    assert main.calls == []
+    assert 1 <= len(readers) <= 4
+    assert sum(len(reader.calls) for reader in readers) == len(TABLES)
+    assert all(reader.closed for reader in readers)
+
+
+def test_parallel_certificate_rejects_corrupt_family_and_closes_workers() -> None:
+    tables = inventory()
+    tables["market_day_stage_certificate_v1"][0]["output_hash"] = "corrupt"
+    readers = []
+    class Worker(FakeReader):
+        def __init__(self):
+            super().__init__(tables)
+            self.closed = False
+            readers.append(self)
+
+        def close(self):
+            self.closed = True
+
+    with pytest.raises(RuntimeError, match="certificate|inventory|stage"):
+        verify_market_day_certificate(
+            FakeReader(tables), BUILD, sessions=(DAY,),
+            read_client_factory=Worker, read_workers=4)
+    assert readers and all(reader.closed for reader in readers)
+
+
 def test_planned_scope_with_no_source_events_remains_certifiable() -> None:
     tables = inventory()
     source = source_plan_fixture()

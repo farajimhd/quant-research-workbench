@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import re
-from typing import Any, Mapping
+from threading import Lock, local
+from typing import Any, Callable, Mapping
 
 from src.trading_runtime.arte_journal_schema import TableContract
 from src.trading_runtime.journal_contract import canonical_json
@@ -121,19 +123,46 @@ class MarketDayCertificate:
 
 
 def verify_market_day_certificate(client: Any, build_id: str, *,
-                                  sessions: tuple[str, ...]) -> MarketDayCertificate:
+                                  sessions: tuple[str, ...],
+                                  read_client_factory: Callable[[], Any] | None = None,
+                                  read_workers: int = 4) -> MarketDayCertificate:
     """Read a complete late-fenced certificate; never infer empty units from market rows."""
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", build_id):
         raise ValueError("Invalid market-day build identity")
     if not sessions or len(set(sessions)) != len(sessions):
         raise ValueError("Requested market-day sessions must be unique and nonempty")
+    if not 1 <= read_workers <= 8:
+        raise ValueError("Market-day certificate read workers are invalid")
     families: dict[str, list[dict[str, Any]]] = {}
-    for table in TABLES:
-        rows = read_certificate_rows(client, table.name, build_id)
-        if any(set(row) != set(_COLUMNS[table.name]) or row["build_id"] != build_id
+    worker_local = local()
+    opened: list[Any] = []
+    opened_lock = Lock()
+    def read_family(name: str) -> list[dict[str, Any]]:
+        if read_client_factory is None:
+            return read_certificate_rows(client, name, build_id)
+        reader = getattr(worker_local, "reader", None)
+        if reader is None:
+            reader = read_client_factory()
+            worker_local.reader = reader
+            with opened_lock:
+                opened.append(reader)
+        return read_certificate_rows(reader, name, build_id)
+
+    names = tuple(table.name for table in TABLES)
+    try:
+        if read_client_factory is None or read_workers == 1:
+            read_rows = tuple(map(read_family, names))
+        else:
+            with ThreadPoolExecutor(max_workers=read_workers) as pool:
+                read_rows = tuple(pool.map(read_family, names))
+    finally:
+        for reader in opened:
+            reader.close()
+    for name, rows in zip(names, read_rows):
+        if any(set(row) != set(_COLUMNS[name]) or row["build_id"] != build_id
                for row in rows):
-            raise RuntimeError(f"Invalid {table.name} certificate row")
-        families[table.name] = rows
+            raise RuntimeError(f"Invalid {name} certificate row")
+        families[name] = rows
     header, scopes, stages, seeds = (families[table.name] for table in _BASE_TABLES[:-1])
     fences = families[_BASE_TABLES[-1].name]
     if len(header) != 1 or len(fences) != 1:
