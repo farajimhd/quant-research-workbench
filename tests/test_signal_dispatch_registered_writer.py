@@ -11,6 +11,7 @@ from src.backend.signal_dispatch_insert_dispatch import (
 from src.backend.signal_dispatch_registered_writer import (
     RegisteredDispatchCursorWriter,
 )
+import src.backend.signal_dispatch_registered_writer as writer_module
 from src.backend.signal_dispatch_typed_cursor import project_dispatch_ack
 from src.backend.signal_dispatch_typed_cursor import project_dispatch_intents
 from src.backend.live_activation_dispatch_admission import (
@@ -70,6 +71,27 @@ def _packets():
         "activation_receipt_hash": ACTIVATION_HASH,
     }], acknowledged_at="2026-09-24T14:00:01+00:00")
     return intents, acks
+
+
+def test_default_registered_writer_preflight_uses_installed_v2_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatch = SignalDispatchInsertDispatch(_Client(_Store(), 11))
+    dispatch.initialize_new_session(RUN, has_ch_rows=False)
+    checked = []
+    monkeypatch.setattr(writer_module, "staged_live_signal_storage_preflight",
+                        lambda client: checked.append(("layout", client)))
+    monkeypatch.setattr(writer_module, "fixed_backtest_v2_preflight",
+                        lambda client: checked.append(("v2", client)))
+    client = _MemoryClient()
+    writer = RegisteredDispatchCursorWriter(
+        client, dispatch, session_key="2026-09-24",
+        configuration_revision_id="approved-revision-1",
+        source_commit_verifier=lambda _: None)
+    try:
+        assert checked == [("layout", client), ("v2", client)]
+    finally:
+        writer.close(timeout_seconds=5)
 
 
 def test_writer_receipt_waits_for_insert_and_ack_extends_intent() -> None:
