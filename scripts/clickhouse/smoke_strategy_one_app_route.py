@@ -8,10 +8,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import contextmanager
+import cProfile
 from datetime import date, datetime, time, timedelta
+from io import StringIO
 import os
 from pathlib import Path
+import pstats
 import sys
+from threading import Lock, get_ident
 from time import perf_counter
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +30,41 @@ from scripts.clickhouse.smoke_strategy_one_backtest import (  # noqa: E402
 )
 
 
-async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool) -> None:
+@contextmanager
+def _profile_v7_updates(enabled: bool):
+    """Profile only completed-second engine CPU, keeping output off disk."""
+    if not enabled:
+        yield
+        return
+    from src.backend.fixed_v7_stream import FixedV7Stream
+
+    original = FixedV7Stream.update_second
+    profiles: dict[int, cProfile.Profile] = {}
+    lock = Lock()
+
+    def wrapped(self, row, *, at):
+        identity = get_ident()
+        with lock:
+            profile = profiles.setdefault(identity, cProfile.Profile())
+        return profile.runcall(original, self, row, at=at)
+
+    FixedV7Stream.update_second = wrapped
+    try:
+        yield
+    finally:
+        FixedV7Stream.update_second = original
+        if profiles:
+            report = StringIO()
+            stats = pstats.Stats(*profiles.values(), stream=report)
+            stats.sort_stats("cumulative").print_stats(30)
+            stats.sort_stats("tottime").print_stats(
+                "streaming_level_book|reaction_band", 30)
+            print("V7 completed-second engine profile:", flush=True)
+            print(report.getvalue(), flush=True)
+
+
+async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
+               profile_v7: bool = False) -> None:
     from src.backend.app import (  # noqa: PLC0415
         BacktestRunCreateRequest, HistoricalPreflightRequest,
         _trading_historical_preflight_payload, backtest_run_service,
@@ -66,7 +105,7 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool) -
         experimental_structure_book="level-book-v7",
     )
     sql_profile = _SqlCallProfile()
-    with _profile_sql_calls(sql_profile):
+    with _profile_v7_updates(profile_v7), _profile_sql_calls(sql_profile):
         began = perf_counter()
         response = await trading_backtest_run_create(request)
         launch_s = perf_counter() - began
@@ -99,6 +138,8 @@ def main() -> None:
                         help="initial simulated cash; default matches the app")
     parser.add_argument("--apply", action="store_true",
                         help="create and await one normalized ClickHouse Backtest run")
+    parser.add_argument("--profile-v7", action="store_true",
+                        help="profile completed-second V7 engine calls in memory")
     args = parser.parse_args()
     if (not 1 <= args.minutes <= 330 or not 1_000 <= args.cash <= 1_000_000_000
             or args.cash != args.cash or args.cash in (float("inf"), float("-inf"))
@@ -107,7 +148,8 @@ def main() -> None:
         parser.error("require 1..330 minutes, 1,000..1,000,000,000 finite cash, "
                      "and an optional ASCII ticker")
     _load_private_credentials()
-    asyncio.run(_run(args.session, args.ticker, args.minutes, args.cash, args.apply))
+    asyncio.run(_run(args.session, args.ticker, args.minutes, args.cash,
+                     args.apply, args.profile_v7))
 
 
 if __name__ == "__main__":
