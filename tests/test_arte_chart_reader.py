@@ -188,6 +188,28 @@ class ArteChartReaderTests(unittest.TestCase):
         self.assertEqual(payload["indicator_provenance"]["unavailable_columns"], ["vwap"])
         self.assertNotIn("i.vwap", client.sql)
 
+    def test_backtest_rvol_uses_persisted_bars_and_is_stale(self):
+        client = _Client([{
+            "bucket_index": 14700, "open_int": 10000, "high_int": 11000,
+            "low_int": 9000, "close_int": 10500, "volume": 12,
+            "trade_count": 2, "notional": 12.5,
+        }])
+        with (patch("src.backend.arte_chart_reader.certified_chart_plan", return_value=_plan()),
+              patch("src.backend.arte_chart_reader._reader", return_value=client)):
+            payload = chart_page(
+                session=DAY, ticker="SUGP", timeframe="1s",
+                page_start=datetime(2026, 8, 18, 4, 5, tzinfo=NY),
+                page_end=datetime(2026, 8, 18, 4, 6, tzinfo=NY),
+                row_limit=10, stage="full",
+                indicator_columns=["bar_start", "session_relative_volume"],
+                include_market_signals=False, include_structure=False,
+                allow_persisted_bars=True, mode="backtest",
+            )
+        self.assertEqual(len(payload["bars"]), 1)
+        self.assertEqual(payload["indicator_provenance"]["unavailable_columns"],
+                         ["session_relative_volume"])
+        self.assertNotIn("i.session_relative_volume", client.sql)
+
     def test_historical_canvas_uses_persisted_page_without_qmd_rebuild(self):
         from src.backend.trading_runtime_service import historical_bar_history_before
 
@@ -270,6 +292,34 @@ class ArteChartReaderTests(unittest.TestCase):
         self.assertEqual(first["source"], "build-one")
         self.assertEqual(second["source"], "build-two")
         self.assertEqual(load.call_count, 2)
+
+    def test_backtest_rvol_is_reported_stale_without_run_local_disk_read(self):
+        from src.backend import app
+
+        payload = {
+            "source": "arte.market-day-core-v5",
+            "history": [], "indicators": [],
+            "indicator_provenance": {
+                "authority": "arte.indicators_v1",
+                "unavailable_columns": ["session_relative_volume"],
+            },
+        }
+        request = dict(symbol="SUGP", timeframe="1s", session_date=DAY.isoformat(),
+                       as_of="2026-08-18T04:06:00-04:00", row_limit=60,
+                       indicator_columns="bar_start,session_relative_volume",
+                       include_market_signals=False, include_structure=False,
+                       mode="backtest", stage="full")
+        with (patch("src.backend.arte_chart_reader.chart_revision", return_value="build-rvol"),
+              patch.object(app._CANVAS_CHART_HISTORY_CACHE, "get_or_load",
+                           side_effect=lambda _key, loader: loader()),
+              patch.object(app, "_canvas_live_chart_history", return_value=payload) as load,
+              patch("src.backend.chart_session_relative_volume.attach") as disk_attach):
+            result = app.trading_canvas_live_chart_history(**request)
+        self.assertEqual(result["indicator_provenance"]["unavailable_columns"],
+                         ["session_relative_volume"])
+        self.assertEqual(load.call_args.kwargs["indicator_columns"],
+                         ["bar_start", "session_relative_volume"])
+        disk_attach.assert_not_called()
 
 
 if __name__ == "__main__":
