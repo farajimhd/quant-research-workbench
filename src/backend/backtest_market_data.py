@@ -317,7 +317,18 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
         if cacheable:
             after = market_inventory_fingerprint(reader)
             if after != before:
-                raise RuntimeError("ARTE market inventory changed during cold preflight")
+                # A producer may append another build while this certified
+                # build is being audited. Recheck the exact attested build and
+                # product hashes instead of treating an unrelated part change
+                # as missing data. Never cache a physically unstable inventory.
+                refreshed = discover_cold_certified_market_day_plan(
+                    reader, _MarketCertificateProofs(proofs),
+                    sessions=days, tickers=symbols, configuration=configuration,
+                    expected_build_ids=build_ids)
+                if refreshed.token != plan.token:
+                    raise RuntimeError(
+                        "Certified ARTE market plan changed during cold preflight")
+                return refreshed
             MARKET_PLAN_CACHE.put(key, proofs, after, plan)
         return plan
 

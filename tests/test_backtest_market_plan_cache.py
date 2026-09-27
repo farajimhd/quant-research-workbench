@@ -89,3 +89,52 @@ def test_fixed_plan_reuses_only_unchanged_verified_snapshot(monkeypatch):
     fingerprint[0] = "part-2"
     assert market.certified_market_plan_from_arte(**args) is not first
     assert len(generations) == 2
+
+
+@pytest.mark.parametrize("refreshed_token,changes_plan", [
+    ("same", False), ("different", True),
+])
+def test_cold_plan_rechecks_pinned_build_during_unrelated_part_growth(
+        monkeypatch, refreshed_token, changes_plan):
+    from src.backend import backtest_market_data as market
+    from src.trading_runtime import arte_market_day_cold_preflight as cold
+    from src.trading_runtime import arte_market_day_keeper as keeper_module
+    from src.trading_runtime import keeper_session as session_module
+    from research.mlops import clickhouse
+
+    class Reader:
+        def close(self):
+            pass
+
+    class Session:
+        client = object()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
+    monkeypatch.setattr(market, "readonly_clickhouse_client", lambda **_: Reader())
+    monkeypatch.setattr(cold, "market_day_fence_build_ids", lambda *_: ("a" * 64,))
+    monkeypatch.setattr(session_module, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(keeper_module, "MarketDayKeeperReader",
+                        lambda _: SimpleNamespace(load=lambda _build: "proof"))
+    fingerprints = iter(("before", "after"))
+    monkeypatch.setattr(subject, "market_inventory_fingerprint",
+                        lambda _reader: next(fingerprints))
+    scans = []
+    def discover(*_args, **kwargs):
+        assert kwargs["expected_build_ids"] == ("a" * 64,)
+        result = SimpleNamespace(token="same" if not scans else refreshed_token)
+        scans.append(result)
+        return result
+    monkeypatch.setattr(cold, "discover_cold_certified_market_day_plan", discover)
+    cache = subject.MarketPlanCache()
+    monkeypatch.setattr(subject, "MARKET_PLAN_CACHE", cache)
+    args = dict(sessions=("2026-08-18",), tickers=("ABCD",),
+                configuration={"strategy": {"execution_interval": "100ms"}})
+    if changes_plan:
+        with pytest.raises(RuntimeError, match="plan changed"):
+            market.certified_market_plan_from_arte(**args)
+    else:
+        assert market.certified_market_plan_from_arte(**args) is scans[-1]
+    assert len(scans) == 2
+    assert cache._entry is None
