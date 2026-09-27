@@ -1,4 +1,5 @@
 """Strategy 1 commit family authority stays tabular and exact."""
+import json
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -8,7 +9,7 @@ from uuid import UUID
 import pytest
 
 from src.trading_runtime.arte_journal_commit_v4 import (
-    _publish_typed_batch_v4,
+    _existing_detail_identities_v4, _publish_typed_batch_v4,
     load_verified_commit_v4, load_verified_v4_prefix, prepare_commit_v4,
     publish_base_typed_batch_v4, publish_broker_acknowledgement_batch_v4,
     publish_terminal_typed_batch_v4,
@@ -38,6 +39,47 @@ from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.replay_run_service import ReplayRunController, RunMode
 from src.trading_runtime.domain import CommissionEvent
 from tests.test_arte_journal_writer import MemoryClient, batch, captured
+
+
+def test_v4_clickhouse_detail_existence_uses_one_bounded_family_read(monkeypatch):
+    from research.mlops import clickhouse
+
+    record_id = "00000000-0000-0000-0000-000000000001"
+    batch_id = "00000000-0000-0000-0000-000000000002"
+    run_id = "00000000-0000-0000-0000-000000000003"
+    families = (
+        ("trading_event_v1", ({"record_id": record_id,
+                               "content_hash": "a" * 64},)),
+        ("trading_strategy_intent_v1", ({"record_id": record_id,
+                                         "content_hash": "b" * 64},)),
+    )
+
+    class UnionReader:
+        def __init__(self, rows):
+            self.rows = rows
+            self.queries = []
+
+        def execute(self, sql):
+            self.queries.append(sql)
+            return "\n".join(json.dumps(row) for row in self.rows)
+
+    monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", UnionReader)
+    source = SimpleNamespace(run_id=run_id, batch_id=batch_id)
+    reader = UnionReader([{"family_name": "trading_event_v1",
+                           "record_id": record_id, "content_hash": "a" * 64}])
+    identities = _existing_detail_identities_v4(reader, source, families)
+    assert identities == {
+        "trading_event_v1": [(record_id, "a" * 64)],
+        "trading_strategy_intent_v1": [],
+    }
+    assert len(reader.queries) == 1
+    assert reader.queries[0].count(" LIMIT 2)") == 2
+    assert " UNION ALL " in reader.queries[0]
+    assert reader.queries[0].endswith(" FORMAT JSONEachRow")
+    reader.rows = [{"family_name": "foreign", "record_id": record_id,
+                    "content_hash": "a" * 64}]
+    with pytest.raises(RuntimeError, match="foreign family"):
+        _existing_detail_identities_v4(reader, source, families)
 
 
 def test_v4_prepare_only_seals_typed_families_without_transport():

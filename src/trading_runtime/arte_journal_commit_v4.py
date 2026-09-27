@@ -1109,6 +1109,43 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
     return _publish_sealed_batch_v4(client, batch, base_families, families)
 
 
+def _existing_detail_identities_v4(client, batch, families):
+    """Read all pre-insert family identities in one bounded SELECT on ClickHouse."""
+    from research.mlops.clickhouse import ClickHouseHttpClient
+    from src.trading_runtime.arte_journal_writer import _CONTRACTS, _literal, _rows
+
+    present = [(name, rows) for name, rows in families if rows]
+    if not present:
+        return {}
+    if any(name not in _CONTRACTS or not 1 <= len(rows) <= 65_536
+           for name, rows in present):
+        raise ValueError("V4 detail existence scope is unbounded or untyped")
+    filters = (f"WHERE run_id={_literal(batch.run_id)} "
+               f"AND batch_id=toUUID({_literal(batch.batch_id)}) ")
+    if not isinstance(client, ClickHouseHttpClient) or len(present) == 1:
+        return {name: sorted((str(UUID(str(row["record_id"]))),
+                              str(row["content_hash"])) for row in _rows(
+            client, f"SELECT record_id,content_hash FROM arte.{name} "
+                    f"{filters}FORMAT JSONEachRow")) for name, _ in present}
+    branches = [
+        f"(SELECT {_literal(name)} AS family_name,"
+        "toString(record_id) AS record_id,content_hash "
+        f"FROM arte.{name} {filters}LIMIT {len(rows) + 1})"
+        for name, rows in present
+    ]
+    observed = _rows(client, " UNION ALL ".join(branches) + " FORMAT JSONEachRow")
+    by_name = {name: [] for name, _ in present}
+    for row in observed:
+        if set(row) != {"family_name", "record_id", "content_hash"}:
+            raise RuntimeError("V4 typed detail inventory has unexpected columns")
+        name = row["family_name"]
+        if name not in by_name:
+            raise RuntimeError("V4 typed detail inventory has a foreign family")
+        by_name[name].append((str(UUID(str(row["record_id"]))),
+                              str(row["content_hash"])))
+    return {name: sorted(identities) for name, identities in by_name.items()}
+
+
 def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
     from src.trading_runtime.arte_journal_writer import (
@@ -1163,18 +1200,15 @@ def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
         first_sequence=batch.first_sequence,
         last_sequence=batch.last_sequence)
 
+    existing_identities = _existing_detail_identities_v4(client, batch, families)
     for name, rows in families:
         if not rows:
             continue
-        existing = _rows(client,
-            f"SELECT record_id,content_hash FROM arte.{name} "
-            f"{filters}FORMAT JSONEachRow")
-        identities = sorted((str(UUID(str(row["record_id"]))),
-                             str(row["content_hash"])) for row in existing)
+        identities = existing_identities[name]
         expected = _identity(rows)
-        if existing and identities != expected:
+        if identities and identities != expected:
             raise RuntimeError("V4 typed detail conflicts with a prior attempt")
-        if not existing:
+        if not identities:
             _insert(client, name, tuple(rows), f"{batch.batch_id}:{name}:v4",
                     dispatch_batch_id=batch.batch_id,
                     dispatch_sequence=batch.last_sequence)
