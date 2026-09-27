@@ -92,11 +92,14 @@ def _client_scope(client: Any) -> str:
 
 def _head_matches(client: Any, run_id: str, prefix: Any) -> bool:
     """Cheap terminal head check; full chain was verified on audit cache miss."""
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+
     if isinstance(prefix, V2CommittedPrefix) and _rows(client,
         "SELECT batch_id FROM arte.trading_commit_v1 "
         f"WHERE run_id={_literal(run_id)} LIMIT 1 FORMAT JSONEachRow"):
         return False
-    commit_table = ("trading_commit_v2" if isinstance(prefix, V2CommittedPrefix)
+    commit_table = ("trading_commit_v4" if isinstance(prefix, V4CommittedPrefix)
+                    else "trading_commit_v2" if isinstance(prefix, V2CommittedPrefix)
                     else "trading_commit_v1")
     rows = _rows(client,
         "SELECT run_id,batch_id,last_sequence,status,source_cursor "

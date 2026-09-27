@@ -13,6 +13,7 @@ from tests.test_backtest_terminal_v2_fence import (
     RUN as V2_RUN, _suffix,
 )
 from src.backend.backtest_terminal_v2_fence import project_terminal_v2_commit
+from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from src.trading_runtime import arte_journal_writer as writer
 from tests.test_arte_journal_v2_profile import V2MemoryClient, _batch as v2_batch
 from tests.test_backtest_typed_activity import ActivityClient
@@ -23,6 +24,23 @@ def scoped(client):
     client.user = "reader"
     client.password = "test-only"
     return client
+
+
+def test_v4_cached_head_uses_v4_commit_table(monkeypatch):
+    prefix = V4CommittedPrefix(
+        RUN, 2, V2_BATCH, "2026-08-18:100", "completed", (V2_BATCH,))
+    queries = []
+
+    def rows(_client, sql):
+        queries.append(sql)
+        return [{"run_id": RUN, "batch_id": V2_BATCH,
+                 "last_sequence": 2, "status": "completed",
+                 "source_cursor": "2026-08-18:100"}]
+
+    monkeypatch.setattr(review, "_rows", rows)
+    assert review._head_matches(object(), RUN, prefix)
+    assert len(queries) == 1
+    assert "arte.trading_commit_v4" in queries[0]
 
 
 def test_review_core_reads_real_run_commit_and_event_without_writes(monkeypatch):
