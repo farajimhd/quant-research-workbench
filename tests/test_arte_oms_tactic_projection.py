@@ -3,7 +3,9 @@ from uuid import uuid4
 
 import pytest
 
-from src.trading_runtime.arte_oms_tactic_projection import tactic_from_rows, tactic_rows
+from src.trading_runtime.arte_oms_tactic_projection import (
+    seal_oms_tactic_rows, tactic_from_rows, tactic_rows,
+)
 from src.trading_runtime.order_management import (
     ExecutionQuote, ExecutionTactic, ExecutionUrgency, PriceStep,
 )
@@ -62,3 +64,22 @@ def test_tactic_codec_rejects_unordered_or_out_of_duration_steps():
     with pytest.raises(ValueError, match="duration"):
         tactic_rows(ExecutionTactic(ExecutionUrgency.REGULAR, "BUY",
                                    (PriceStep(101, 2.01),), quote, 100), **COMMON)
+
+
+def test_tactic_family_requires_exact_committed_group_lineage():
+    parent, steps = tactic_rows(None, **COMMON)
+    group = {"record_id": COMMON["group_record_id"],
+             "run_id": COMMON["run_id"], "batch_id": COMMON["batch_id"],
+             "event_month": COMMON["event_month"],
+             "account_id": COMMON["account_id"]}
+    event = {**group, "category": "order_management",
+             "entity_type": "order_group_state"}
+    seal_oms_tactic_rows((parent,), steps, (group,), (event,),
+                         run_id=COMMON["run_id"], batch_id=COMMON["batch_id"])
+    with pytest.raises(ValueError, match="count"):
+        seal_oms_tactic_rows((), steps, (group,), (event,),
+                             run_id=COMMON["run_id"], batch_id=COMMON["batch_id"])
+    with pytest.raises(ValueError, match="group"):
+        seal_oms_tactic_rows((parent,), steps, ({**group, "account_id": "other"},),
+                             (event,), run_id=COMMON["run_id"],
+                             batch_id=COMMON["batch_id"])

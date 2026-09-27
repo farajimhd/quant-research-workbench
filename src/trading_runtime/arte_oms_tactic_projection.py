@@ -120,3 +120,44 @@ def tactic_from_rows(
                 run_id=parent["run_id"], event_month=str(parent["event_month"]),
                 batch_id=str(parent["batch_id"]), account_id=parent["account_id"])
     return tactic
+
+
+def seal_oms_tactic_rows(
+    parents: tuple[Mapping[str, Any], ...],
+    steps: tuple[Mapping[str, Any], ...],
+    groups: tuple[Mapping[str, Any], ...],
+    events: tuple[Mapping[str, Any], ...],
+    *, run_id: str, batch_id: str, stored_utc: bool = False,
+) -> None:
+    """Require one exact tactic state per represented OMS group revision."""
+    group_by_id = {str(UUID(str(row["record_id"]))): row for row in groups}
+    event_by_id = {str(UUID(str(row["record_id"]))): row for row in events}
+    if len(group_by_id) != len(groups) or len(parents) != len(groups):
+        raise ValueError("OMS tactic parent count differs from group revisions")
+    by_parent: dict[str, list[Mapping[str, Any]]] = {}
+    for step in steps:
+        by_parent.setdefault(str(UUID(str(step["parent_record_id"]))), []).append(step)
+    seen = set()
+    for parent in parents:
+        group_id = str(UUID(str(parent["parent_record_id"])))
+        tactic_id = str(UUID(str(parent["record_id"])))
+        group = group_by_id.get(group_id)
+        event = event_by_id.get(group_id)
+        if (group_id in seen or group is None or event is None
+                or tactic_id != str(uuid5(NAMESPACE_URL,
+                                           f"{group_id}:execution-tactic"))
+                or (event["category"], event["entity_type"])
+                   != ("order_management", "order_group_state")
+                or event["account_id"] != group["account_id"]
+                or parent["account_id"] != group["account_id"]
+                or parent["event_month"] != group["event_month"]
+                or parent["run_id"] != run_id
+                or str(UUID(str(parent["batch_id"]))) != str(UUID(batch_id))
+                or any(parent[key] != group[key] for key in ("run_id", "batch_id"))):
+            raise ValueError("OMS tactic parent differs from its committed group")
+        seen.add(group_id)
+        children = tuple(sorted(by_parent.pop(tactic_id, ()),
+                                key=lambda row: int(row["ordinal"])))
+        tactic_from_rows(parent, children, stored_utc=stored_utc)
+    if seen != set(group_by_id) or by_parent:
+        raise ValueError("OMS tactic children or group revisions are unclaimed")

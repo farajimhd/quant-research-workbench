@@ -350,8 +350,24 @@ def _load_verified_details_v4(
                     PROTECTION_RECONCILIATION.name,
                     RECONCILIATION_ACTION.name, RECONCILIATION_REPLY.name,
                     "trading_backtest_account_snapshot_v2",
-                    "trading_backtest_position_snapshot_v2"}:
+                    "trading_backtest_position_snapshot_v2",
+                    "trading_oms_group_state_v1",
+                    "trading_oms_execution_tactic_v1",
+                    "trading_oms_execution_step_v1"}:
             related_rows[name] = rows
+    if ("trading_oms_execution_tactic_v1" in related_rows
+            or "trading_oms_execution_step_v1" in related_rows):
+        from .arte_oms_tactic_projection import seal_oms_tactic_rows
+
+        try:
+            seal_oms_tactic_rows(
+                tuple(related_rows.get("trading_oms_execution_tactic_v1", ())),
+                tuple(related_rows.get("trading_oms_execution_step_v1", ())),
+                tuple(related_rows.get("trading_oms_group_state_v1", ())),
+                tuple(related_rows.get("trading_event_v1", ())),
+                run_id=run_id, batch_id=batch_id, stored_utc=True)
+        except ValueError as exc:
+            raise RuntimeError("V4 OMS tactic differs from its group revision") from exc
     parents = {str(UUID(str(row["record_id"]))): row for row in
                related_rows.get("trading_strategy_intent_v1", ())
                if row["reason"] == "strategy_one_entry"}
