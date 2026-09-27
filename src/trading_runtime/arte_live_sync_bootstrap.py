@@ -46,21 +46,22 @@ _EXISTING_TABLES = (
 
 
 def _run_fact_tables(client: Any) -> tuple[str, ...]:
-    """Inventory every installed normalized trading family with run identity.
+    """Inventory every installed ARTE family with run identity.
 
     A stale child fact can exist without a run/context row after an interrupted
     insert. Checking only the core tables would let a fresh allocation collide
-    with that orphan; new typed families must be covered automatically.
+    with that orphan; new run-scoped families must be covered automatically,
+    even when their names do not start with ``trading_``.
     """
     rows = _rows(client,
         "SELECT table FROM system.columns WHERE database='arte' "
-        "AND startsWith(table,'trading_') AND name='run_id' "
+        "AND name='run_id' "
         "ORDER BY table FORMAT JSONEachRow")
     names = tuple(str(row.get("table") or "") for row in rows)
     if (len(names) != len(set(names)) or tuple(sorted(names)) != names
             or not set(_EXISTING_TABLES) <= set(names)
             or any(set(row) != {"table"} or
-                   re.fullmatch(r"trading_[a-z0-9_]+", name) is None
+                   re.fullmatch(r"[a-z][a-z0-9_]*", name) is None
                    for row, name in zip(rows, names))):
         raise KeeperUnavailable("Live run fact-table inventory is incomplete or ambiguous")
     return names

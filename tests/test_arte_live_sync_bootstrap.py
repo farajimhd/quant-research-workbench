@@ -252,6 +252,31 @@ def test_fresh_live_run_rejects_orphans_in_new_typed_families(monkeypatch):
         core._read_gate(RUN)
 
 
+def test_fresh_live_run_rejects_orphan_outside_trading_prefix(monkeypatch):
+    keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
+
+    def rows(client, sql):
+        if "FROM system.columns" in sql:
+            assert "startsWith(table,'trading_')" not in sql
+            return [{"table": name} for name in sorted({
+                *(row["table"] for row in _empty_facts(client, sql)),
+                "strategy_one_live_order_fact_v1",
+            })]
+        return ([{"run_id": RUN}]
+                if "arte.strategy_one_live_order_fact_v1" in sql else [])
+
+    monkeypatch.setattr(bootstrap, "_rows", rows)
+    with pytest.raises(KeeperUnavailable, match="already has ClickHouse facts"):
+        bootstrap.initialize_new_live_sync_run(
+            run_id=RUN, writer_client=writer, read_client=object(),
+            owner_id="live-run-controller", core_dispatch=core,
+            sync_dispatch=sync_dispatch, allocator=allocator,
+            allocation=allocation)
+    assert writer.__dict__.get("typed_sync_insert_dispatch") is None
+    with pytest.raises(KeeperUnavailable, match="absent"):
+        core._read_gate(RUN)
+
+
 @pytest.mark.parametrize("inventory", [
     [],
     [{"table": "trading_run_v1"}],
