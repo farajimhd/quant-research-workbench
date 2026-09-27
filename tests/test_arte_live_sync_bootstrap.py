@@ -34,6 +34,13 @@ def _release():
             "run_plan": {"run_plan_id": "plan-1"}})
 
 
+def _cold_admission_pair():
+    transport = object()
+    return (SimpleNamespace(keeper=transport),
+            bootstrap.KeeperAdmissionEpochAuthority(
+                SimpleNamespace(_client=transport)))
+
+
 def _live_context():
     run = dict(run_id=RUN, run_month="2026-08-01", mode="live",
                evaluation_interval_ms=100, session_date="2026-08-18",
@@ -160,6 +167,7 @@ def test_live_publication_recertifies_release_before_keeper_create(monkeypatch):
 def test_cold_preparation_composes_approval_recovery_and_broker_audit(monkeypatch):
     release = _release()
     calls = []
+    core, admission = _cold_admission_pair()
 
     class Barrier:
         def assert_fenced(self, run_id):
@@ -182,6 +190,14 @@ def test_cold_preparation_composes_approval_recovery_and_broker_audit(monkeypatc
                             "approval_id": "selected"})
     monkeypatch.setattr(bootstrap, "verify_live_sync_cold_start",
                         lambda **_kwargs: calls.append("cold") or cold)
+    def audit_admissions(_reader, authority, run_id, *, quiescence):
+        assert authority is admission and run_id == RUN
+        assert quiescence is cold.barrier
+        calls.append("admission")
+        return 2
+
+    monkeypatch.setattr(bootstrap, "audit_attested_admission_revisions",
+                        audit_admissions)
     monkeypatch.setattr(bootstrap, "recover_attested_live_portfolio",
                         lambda **_kwargs: calls.append("portfolio") or portfolio)
     monkeypatch.setattr(bootstrap, "recover_strategy_one_live_oms",
@@ -192,20 +208,22 @@ def test_cold_preparation_composes_approval_recovery_and_broker_audit(monkeypatc
     monkeypatch.setattr(bootstrap, "audit_recovered_strategy_one_live_oms",
                         broker_audit)
     prepared = asyncio.run(bootstrap.prepare_strategy_one_live_cold_start(
-        run_id=RUN, read_client=object(), core_dispatch=object(),
+        run_id=RUN, read_client=object(), core_dispatch=core,
         sync_dispatch=object(), keeper=object(), allocator=object(),
         allocation=object(), release=release,
+        admission_authority=admission,
         approval_reader=SimpleNamespace(read_head=lambda _mode: None),
         profiles=(), cutoff_at=datetime.now(timezone.utc), broker=object(),
         expected_code_hash="b" * 64))
     assert prepared == bootstrap.StrategyOneLiveColdPreparation(
-        cold, portfolio, (), audit)
-    assert calls == ["cold", "release", "approval", "portfolio", "oms",
+        cold, portfolio, (), audit, 2)
+    assert calls == ["cold", "release", "approval", "admission", "portfolio", "oms",
                      "broker", "fenced", "release", "approval", "fenced"]
 
 
 def test_cold_preparation_rejects_changed_approval_after_broker_audit(monkeypatch):
     release = _release()
+    core, admission = _cold_admission_pair()
     selected = iter(({"approval_id": "selected"}, {"approval_id": "revoked"}))
     monkeypatch.setattr(bootstrap, "certify_strategy_one_configuration",
                         lambda _client: release)
@@ -221,6 +239,8 @@ def test_cold_preparation_rejects_changed_approval_after_broker_audit(monkeypatc
         SimpleNamespace(assert_fenced=lambda _run_id: None))
     monkeypatch.setattr(bootstrap, "verify_live_sync_cold_start",
                         lambda **_kwargs: cold)
+    monkeypatch.setattr(bootstrap, "audit_attested_admission_revisions",
+                        lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(bootstrap, "recover_attested_live_portfolio",
                         lambda **_kwargs: object())
     monkeypatch.setattr(bootstrap, "recover_strategy_one_live_oms",
@@ -231,9 +251,43 @@ def test_cold_preparation_rejects_changed_approval_after_broker_audit(monkeypatc
                         broker_audit)
     with pytest.raises(RuntimeError, match="approval changed"):
         asyncio.run(bootstrap.prepare_strategy_one_live_cold_start(
-            run_id=RUN, read_client=object(), core_dispatch=object(),
+            run_id=RUN, read_client=object(), core_dispatch=core,
             sync_dispatch=object(), keeper=object(), allocator=object(),
             allocation=object(), release=release,
+            admission_authority=admission,
+            approval_reader=SimpleNamespace(read_head=lambda _mode: None),
+            profiles=(), cutoff_at=datetime.now(timezone.utc), broker=object(),
+            expected_code_hash="b" * 64))
+
+
+def test_cold_preparation_rejects_admission_proof_gap_before_recovery(monkeypatch):
+    release = _release()
+    core, admission = _cold_admission_pair()
+    cold = bootstrap.LiveSyncColdResult(
+        RUN, 0, {"mode": "live", "configuration_hash": release.payload_hash,
+                 "strategy_id": STRATEGY_ID, "strategy_revision": 1,
+                 "evaluation_interval_ms": 100, "code_hash": "b" * 64,
+                 "run_plan_id": "plan-1", "anchor_date": "2026-08-18",
+                 "session_date": "2026-08-18"}, object(),
+        SimpleNamespace(assert_fenced=lambda _run_id: None))
+    monkeypatch.setattr(bootstrap, "verify_live_sync_cold_start",
+                        lambda **_kwargs: cold)
+    monkeypatch.setattr(bootstrap, "certify_strategy_one_configuration",
+                        lambda _client: release)
+    monkeypatch.setattr(bootstrap, "verify_selected_approval",
+                        lambda *_args, **_kwargs: {"approval_id": "selected"})
+    monkeypatch.setattr(bootstrap, "audit_attested_admission_revisions",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                            RuntimeError("admission proof gap")))
+    monkeypatch.setattr(bootstrap, "recover_attested_live_portfolio",
+                        lambda **_kwargs: pytest.fail(
+                            "admission gap reached portfolio recovery"))
+    with pytest.raises(RuntimeError, match="admission proof gap"):
+        asyncio.run(bootstrap.prepare_strategy_one_live_cold_start(
+            run_id=RUN, read_client=object(), core_dispatch=core,
+            sync_dispatch=object(), keeper=object(), allocator=object(),
+            allocation=object(), admission_authority=admission,
+            release=release,
             approval_reader=SimpleNamespace(read_head=lambda _mode: None),
             profiles=(), cutoff_at=datetime.now(timezone.utc), broker=object(),
             expected_code_hash="b" * 64))
@@ -241,6 +295,7 @@ def test_cold_preparation_rejects_changed_approval_after_broker_audit(monkeypatc
 
 def test_cold_preparation_rejects_code_drift_before_state_recovery(monkeypatch):
     release = _release()
+    core, admission = _cold_admission_pair()
     calls = []
     cold = bootstrap.LiveSyncColdResult(
         RUN, 1, {"mode": "live", "configuration_hash": release.payload_hash,
@@ -259,9 +314,10 @@ def test_cold_preparation_rejects_code_drift_before_state_recovery(monkeypatch):
                         lambda **_kwargs: pytest.fail("portfolio recovery reached"))
     with pytest.raises(RuntimeError, match="differs from its approved release"):
         asyncio.run(bootstrap.prepare_strategy_one_live_cold_start(
-            run_id=RUN, read_client=object(), core_dispatch=object(),
+            run_id=RUN, read_client=object(), core_dispatch=core,
             sync_dispatch=object(), keeper=object(), allocator=object(),
             allocation=object(), release=release,
+            admission_authority=admission,
             approval_reader=SimpleNamespace(read_head=lambda _mode: None),
             profiles=(), cutoff_at=datetime.now(timezone.utc), broker=object(),
             expected_code_hash="b" * 64))

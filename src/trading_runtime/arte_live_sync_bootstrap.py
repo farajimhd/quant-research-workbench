@@ -22,6 +22,9 @@ from src.trading_runtime.arte_journal_writer import (
     load_typed_run_context, publish_typed_run, publish_typed_run_context,
     typed_row,
 )
+from src.trading_runtime.arte_admission_epoch_proof import (
+    KeeperAdmissionEpochAuthority, audit_attested_admission_revisions,
+)
 from src.trading_runtime.arte_live_run_allocation import LiveRunAllocation, LiveRunAllocator
 from src.trading_runtime.arte_portfolio_sync import (
     audit_attested_portfolio_sync_transitions,
@@ -462,11 +465,13 @@ class StrategyOneLiveColdPreparation:
     portfolio: Any
     oms_heads: tuple[VerifiedStrategyOneOmsHead, ...]
     broker_audit: StrategyOneColdBrokerAudit
+    admission_revisions: int
 
 
 async def prepare_strategy_one_live_cold_start(
     *, run_id: str, read_client: Any, core_dispatch: TypedInsertDispatch,
     sync_dispatch: PortfolioSyncDispatch, keeper: Any,
+    admission_authority: KeeperAdmissionEpochAuthority,
     allocator: LiveRunAllocator, allocation: LiveRunAllocation,
     release: CertifiedStrategyOneConfiguration,
     approval_reader: ApprovalHeadReader, profiles: tuple[Any, ...],
@@ -481,6 +486,8 @@ async def prepare_strategy_one_live_cold_start(
     """
     if (not isinstance(release, CertifiedStrategyOneConfiguration)
             or not callable(getattr(approval_reader, "read_head", None))
+            or not isinstance(admission_authority, KeeperAdmissionEpochAuthority)
+            or admission_authority.client is not core_dispatch.keeper
             or type(expected_code_hash) is not str
             or re.fullmatch(r"[0-9a-f]{64}", expected_code_hash) is None):
         raise ValueError("Strategy 1 cold start requires a typed approved release")
@@ -501,6 +508,9 @@ async def prepare_strategy_one_live_cold_start(
             release.payload["run_plan"]["run_plan_id"]
             or cold.context.get("anchor_date") != cold.context.get("session_date")):
         raise RuntimeError("Strategy 1 cold run differs from its approved release")
+    admission_revisions = audit_attested_admission_revisions(
+        read_client, admission_authority, run_id,
+        quiescence=cold.barrier)
     portfolio = recover_attested_live_portfolio(
         cold=cold, read_client=read_client, keeper=keeper,
         profiles=profiles, cutoff_at=cutoff_at)
@@ -514,4 +524,5 @@ async def prepare_strategy_one_live_cold_start(
             != selected):
         raise RuntimeError("Strategy 1 live approval changed during cold recovery")
     cold.barrier.assert_fenced(run_id)
-    return StrategyOneLiveColdPreparation(cold, portfolio, heads, audit)
+    return StrategyOneLiveColdPreparation(
+        cold, portfolio, heads, audit, admission_revisions)
