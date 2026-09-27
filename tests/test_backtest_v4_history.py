@@ -56,6 +56,7 @@ def test_history_lists_normalized_record_without_claiming_review(monkeypatch):
         "journal_backend": "arte_typed_journal_v4",
         "journal_verification": "inventory_only", "journal_sequence": 7782,
         "review_available": False,
+        "v4_review_available": True,
         "checkpoint": {"resume_supported": False},
         "tickers": [], "processed_events": None,
     }]

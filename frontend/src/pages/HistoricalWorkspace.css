@@ -52,8 +52,16 @@
 .backtest-history-actions { display: flex; gap: 6px; }
 .backtest-history-actions button { white-space: nowrap; }
 .backtest-run-history [role="alert"] { color: var(--destructive); }
+.backtest-v4-review { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px; min-width: 0; }
+.backtest-v4-review h3 { margin: 0; font-size: 15px; }
+.backtest-v4-review h4 { margin: 18px 0 4px; font-size: 13px; }
+.backtest-v4-review details summary { cursor: pointer; }
+.backtest-v4-review details dl { margin: 8px 0 0; display: grid; grid-template-columns: minmax(100px, 1fr) minmax(120px, 2fr); gap: 4px 8px; }
+.backtest-v4-review details :is(dt, dd) { margin: 0; overflow-wrap: anywhere; }
+.backtest-v4-review details dt { color: var(--muted-foreground); }
 @media (max-width: 1100px) {
   .backtest-run-history :is(th, td):last-child { position: sticky; right: 0; background: var(--surface); min-width: 170px; border-left: 1px solid var(--border); }
+  .backtest-v4-review :is(th, td):last-child { position: static; border-left: 0; }
 }
 
 .historical-canvas-run-state.historical-backtest-progress {

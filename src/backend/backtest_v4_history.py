@@ -96,6 +96,7 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
             "journal_verification": "inventory_only",
             "journal_sequence": int(head["last_sequence"]) if head else 0,
             "review_available": False,
+            "v4_review_available": status in {"completed", "stopped", "failed"},
             "checkpoint": {"resume_supported": False},
             "tickers": [],
             "processed_events": None,
