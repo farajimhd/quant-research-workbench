@@ -366,7 +366,7 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Provision a least-privilege ARTE journal writer")
-    parser.add_argument("--url", default="http://DESKTOP-SAAI85T:18123",
+    parser.add_argument("--url", default="http://127.0.0.1:8123",
                         help="managed workstation ClickHouse endpoint")
     parser.add_argument("--apply", action="store_true", help="create credential and ClickHouse grants")
     parser.add_argument("--staged-live-signal", action="store_true",
