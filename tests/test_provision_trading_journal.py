@@ -79,6 +79,24 @@ def test_workstation_local_clickhouse_endpoint_is_allowed_without_weaker_scope(
         provision.provision("http://127.0.0.1:18123", apply=False)
 
 
+def test_signal_only_plan_does_not_reconcile_legacy_grants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Admin:
+        def execute(self, sql):
+            assert sql.startswith("SELECT count() FROM system.users")
+            return "1\n"
+    monkeypatch.setattr(provision.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(provision, "SECRET_ROOT", tmp_path)
+    monkeypatch.setattr(provision, "_admin_client", lambda _url: Admin())
+    provision.provision("http://127.0.0.1:8123", apply=False,
+                        staged_live_signal_only=True)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        provision.provision("http://127.0.0.1:8123", apply=False,
+                            staged_live_signal_only=True,
+                            fixed_backtest_v2=True)
+
+
 def test_fixed_v2_apply_rejects_missing_layout_before_credentials_or_grants(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

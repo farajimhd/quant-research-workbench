@@ -203,7 +203,8 @@ def _admin_client(url: str) -> ClickHouseHttpClient:
 
 def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
               staged_live_plan_membership: bool = False,
-              fixed_backtest_v2: bool = False) -> None:
+              fixed_backtest_v2: bool = False,
+              staged_live_signal_only: bool = False) -> None:
     if platform.node().upper() != "DESKTOP-SAAI85T":
         raise RuntimeError("Provisioning must run on DESKTOP-SAAI85T")
     if not SECRET_ROOT.is_dir():
@@ -226,6 +227,27 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
     if present not in {"0", "1"}:
         raise RuntimeError("ClickHouse principal inventory is inconsistent")
     print(f"Journal principal: {'present' if present == '1' else 'absent'}")
+    if staged_live_signal_only:
+        if staged_live_signal or staged_live_plan_membership or fixed_backtest_v2:
+            raise ValueError("Signal-only grants cannot be combined with another profile")
+        if present != "1":
+            raise RuntimeError("Signal-only grants require an existing journal principal")
+        grants = staged_grants(PRINCIPAL)
+        print(f"Required grants: {len(grants)} exact live-signal table grants")
+        if not apply:
+            print("Plan only; no credential or ClickHouse state changed")
+            return
+        staged_live_signal_storage_preflight(client)
+        password = _credential(SECRET_PATH, account_exists=True)
+        writer = ClickHouseHttpClient(url, PRINCIPAL, password, timeout_seconds=20)
+        if writer.execute("SELECT currentUser()").strip() != PRINCIPAL:
+            raise RuntimeError("Journal credential authenticated as the wrong user")
+        journal_permission_preflight(writer)
+        for statement in grants:
+            client.execute(statement)
+        journal_permission_preflight(writer)
+        print("Live-signal table grants verified; no legacy or market grants changed")
+        return
     grants = _grants(staged_live_signal=staged_live_signal,
                      staged_live_plan_membership=staged_live_plan_membership,
                      fixed_backtest_v2=fixed_backtest_v2)
@@ -275,6 +297,8 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="create credential and ClickHouse grants")
     parser.add_argument("--staged-live-signal", action="store_true",
                         help="also grant preprovisioned typed dispatch/completion tables")
+    parser.add_argument("--staged-live-signal-only", action="store_true",
+                        help="grant only preprovisioned live-signal tables; leave all other grants unchanged")
     parser.add_argument("--staged-live-plan-membership", action="store_true",
                         help="also grant preprovisioned typed membership tables")
     parser.add_argument("--fixed-backtest-v2", action="store_true",
@@ -284,7 +308,8 @@ def main() -> int:
         provision(args.url, apply=args.apply,
                   staged_live_signal=args.staged_live_signal,
                   staged_live_plan_membership=args.staged_live_plan_membership,
-                  fixed_backtest_v2=args.fixed_backtest_v2)
+                  fixed_backtest_v2=args.fixed_backtest_v2,
+                  staged_live_signal_only=args.staged_live_signal_only)
     except Exception as exc:
         print(f"Journal provisioning failed: {exc}", file=sys.stderr)
         return 1
