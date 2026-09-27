@@ -190,6 +190,12 @@ class SignalStreamRuntime:
         This is not an ACK or dispatch API. The caller must validate every
         occurrence against a pinned typed catalog before publication.
         """
+        if as_of.tzinfo is None or as_of.utcoffset() is None:
+            raise ValueError("staged Signal Stream cutoff must be timezone-aware")
+        # The normalized ClickHouse occurrence contract stores UTC clocks.
+        # Canonicalize before ID generation so equivalent instants cannot
+        # produce different source event identities across host timezones.
+        as_of = as_of.astimezone(UTC)
         with self._lock:
             if not self._hydrated:
                 raise RuntimeError("staged Signal Stream requires cold-hydrated state")

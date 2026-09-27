@@ -143,6 +143,24 @@ class SignalStreamRuntimeTests(unittest.TestCase):
             SignalStreamRuntime().stage_resolve(
                 self.configuration, [], as_of=datetime(2026, 8, 17, 15, 0, tzinfo=UTC))
 
+    def test_staged_resolve_canonicalizes_aware_cutoff_before_event_identity(self) -> None:
+        from zoneinfo import ZoneInfo
+
+        row = {"ticker": "AAA", "change_pct": 4.5, "market_cap": 500_000_000}
+        def staged(at):
+            runtime = SignalStreamRuntime()
+            runtime._hydrated = True
+            runtime._session_key = "2026-08-17"
+            return runtime.stage_resolve(self.configuration, [row], as_of=at)
+
+        utc = staged(datetime(2026, 8, 17, 15, 0, tzinfo=UTC))
+        eastern = staged(datetime(2026, 8, 17, 11, 0,
+                                  tzinfo=ZoneInfo("America/New_York")))
+        self.assertEqual(utc.occurrences, eastern.occurrences)
+        self.assertEqual(utc.cutoff_at, eastern.cutoff_at)
+        with self.assertRaisesRegex(ValueError, "timezone-aware"):
+            staged(datetime(2026, 8, 17, 15, 0))
+
     def test_staged_promotion_requires_ack_and_returns_occurrence_once(self) -> None:
         runtime = SignalStreamRuntime()
         runtime._hydrated = True
