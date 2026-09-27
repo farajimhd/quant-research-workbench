@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from concurrent.futures import Future
 from threading import Event
 
 import pytest
@@ -14,6 +15,10 @@ from src.trading_runtime.arte_activation_projection import (
 from src.trading_runtime.arte_registered_activation_writer import (
     RegisteredActivationQueueFull, RegisteredActivationWriter,
 )
+from src.backend.live_activation_dispatch_admission import (
+    AdmissionBatch, TypedActivationDispatchAdmission,
+)
+from src.backend.signal_dispatch_typed_cursor import project_dispatch_intents
 from test_keeper_ownership import _Client, _Store
 from tests.test_arte_activation_projection import _MemoryClient, _delivery
 
@@ -88,3 +93,48 @@ def test_lost_response_makes_writer_fatal_and_cold_fence_impossible() -> None:
         writer.close(timeout_seconds=5)
     with pytest.raises(RuntimeError, match="unresolved"):
         dispatch.close_for_cold(RUN)
+
+
+def test_dispatch_admission_waits_for_registered_activation_receipt() -> None:
+    delivery = _delivery()
+    event_id = "a" * 64
+    delivery["event_id"] = event_id
+    delivery["delivery_id"] = f"plan-1:{event_id}"
+    delivery["occurrence"]["event_id"] = event_id
+    delivery["occurrence"]["signal_id"] = event_id
+    delivery["occurrence"]["signal_stream_id"] = delivery["signal_stream_id"]
+    class Authority:
+        def read_exact(self, requested):
+            return delivery["occurrence"] if requested == event_id else None
+    intents = project_dispatch_intents(
+        [delivery], session_key=SESSION.isoformat(), source_batch_sequence=1,
+        source_cursor_commit_hash="b" * 64,
+        configuration_revision_id="approved-1",
+        occurrence_authority=Authority())
+    client = _BlockingClient()
+    writer, dispatch = _writer(client)
+    class AckWriter:
+        calls = 0
+        def submit_ack(self, projected):
+            self.calls += 1
+            receipt: Future[str] = Future()
+            receipt.set_result(projected["commit"]["content_hash"])
+            return receipt
+    ack = AckWriter()
+    admitted: list[dict] = []
+    lane = TypedActivationDispatchAdmission(writer, ack, admitted.extend)
+    try:
+        result = lane.submit(AdmissionBatch(
+            intents, (delivery,), "worker-1", "2026-08-21T08:10:02+00:00"))
+        assert client.entered.wait(5)
+        assert not result.done()
+        assert not admitted and ack.calls == 0
+        client.release.set()
+        assert result.result(timeout=5)
+        assert [row["delivery_id"] for row in admitted] == [delivery["delivery_id"]]
+        assert ack.calls == 1
+        dispatch.close_for_cold(RUN)
+    finally:
+        client.release.set()
+        lane.close(timeout=5)
+        writer.close(timeout_seconds=5)
