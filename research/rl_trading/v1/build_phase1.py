@@ -18,6 +18,7 @@ from datetime import date, datetime, time, timezone
 from hashlib import sha256
 import math
 import signal
+from threading import Lock, get_ident
 from time import monotonic
 
 import polars as pl
@@ -46,15 +47,14 @@ def stopped(root):
     return STOP.is_set() or (root/'STOP').exists()
 
 
-def listing_work(listing, day, source, plan, root, threads):
+def listing_work(listing, day, source, plan, root, client):
     started = monotonic()
     folder = root/'listings'/digest(listing)[:20]
     folder.mkdir(parents=True, exist_ok=True)
     ticker = listing['ticker']
-    c = source_api.reader(threads)
     stage = 'initial integrity'
     try:
-        source_api.verify_listing(c,source,day,ticker)
+        source_api.verify_listing(client,source,day,ticker)
         if (folder/'ready.json').exists():
             ready = read(folder/'ready.json')
             if ready['plan_hash'] != plan['plan_hash'] or ready['listing'] != listing:
@@ -63,7 +63,7 @@ def listing_work(listing, day, source, plan, root, threads):
             return dict(ticker=ticker,status='reused',rows=ready['rows'],coverage=ready['coverage'],elapsed_seconds=monotonic()-started)
         verified_at = monotonic()
         stage = 'bars and indicators'
-        bars, indicators = source_api.inputs(c,source,day,ticker)
+        bars, indicators = source_api.inputs(client,source,day,ticker)
         left, right = bounds(day)
         for frame in (bars,indicators):
             if frame.filter(~pl.col('time_us').is_between(left+1,right)).height:
@@ -82,7 +82,7 @@ def listing_work(listing, day, source, plan, root, threads):
             price_us=terminal['price_us'],basis='latest_completed_trade_close_at_or_before_cutoff')
         # Recheck pinned products before publishing; do not trust a mutable latest pointer.
         stage = 'final integrity'
-        source_api.verify_listing(c,source,day,ticker)
+        source_api.verify_listing(client,source,day,ticker)
         coverage = labels.label_coverage(values)
         parquet(folder/'opportunities.parquet',values)
         write(folder/'targets.json',target)
@@ -93,8 +93,6 @@ def listing_work(listing, day, source, plan, root, threads):
         return dict(ticker=ticker,status='completed',rows=values.height,coverage=coverage,elapsed_seconds=monotonic()-started)
     except Exception as exc:
         raise RuntimeError(f'{stage}: {exc}') from exc
-    finally:
-        c.close()
 
 
 def phase1(day, source, listings, population, root, args, console, code):
@@ -128,14 +126,27 @@ def phase1(day, source, listings, population, root, args, console, code):
     with exclusive(folder/'run.lock'):
         write(folder/'plan.json',plan)
         (folder/'complete.json').unlink(missing_ok=True)
-        jobs = ordered_jobs(listings,lambda row:listing_work(row,day,source,plan,folder,args.query_threads),
-            args.workers,lambda:stopped(root) or stopped(folder),heartbeat)
-        for listing, result in jobs:
-            if isinstance(result,Exception):
-                result = dict(ticker=listing['ticker'],status='failed',error=str(result))
-                console.print(f'Failed {listing["ticker"]}: {result["error"]}',markup=False)
-            counts[result['status']] += 1
-            results.append(result)
+        clients = {}
+        clients_lock = Lock()
+        def work(listing):
+            thread = get_ident()
+            with clients_lock:
+                if thread not in clients:
+                    clients[thread] = source_api.reader(args.query_threads)
+                client = clients[thread]
+            return listing_work(listing,day,source,plan,folder,client)
+        try:
+            jobs = ordered_jobs(listings,work,args.workers,
+                lambda:stopped(root) or stopped(folder),heartbeat)
+            for listing, result in jobs:
+                if isinstance(result,Exception):
+                    result = dict(ticker=listing['ticker'],status='failed',error=str(result))
+                    console.print(f'Failed {listing["ticker"]}: {result["error"]}',markup=False)
+                counts[result['status']] += 1
+                results.append(result)
+        finally:
+            for client in clients.values():
+                client.close()
         complete = len(results) == len(listings) and not counts['failed']
         state = 'complete' if complete else 'failed' if counts['failed'] else 'interrupted'
         summary = dict(status=state,counts=counts,results=results,elapsed_seconds=monotonic()-started)

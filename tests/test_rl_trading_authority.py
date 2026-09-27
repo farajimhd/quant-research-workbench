@@ -53,6 +53,8 @@ def test_research_reader_sets_clickhouse_readonly(monkeypatch):
     monkeypatch.setattr(arte_sql, 'default_clickhouse_password', lambda: '')
     reader = arte_sql.ArteReader()
     assert seen['default_query_params']['readonly'] == 1
+    assert seen['persistent'] is True
+    assert seen['max_persistent_idle_seconds'] > 0
     assert reader.execute('SELECT count() FROM arte.bars_v1').startswith('SELECT')
     with pytest.raises(ValueError):
         reader.execute('INSERT INTO arte.bars_v1 VALUES (1)')

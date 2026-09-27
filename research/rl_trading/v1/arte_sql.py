@@ -47,7 +47,8 @@ def _approved(statement):
 class ArteReader:
     def __init__(self, threads=2):
         self._client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(),
-            default_clickhouse_password(), timeout_seconds=180,
+            default_clickhouse_password(), timeout_seconds=180, persistent=True,
+            max_persistent_idle_seconds=10,
             default_query_params=dict(readonly=1, max_execution_time=150, max_threads=threads,
                 max_memory_usage=2147483648, max_result_rows=700000,
                 max_result_bytes=100000000, result_overflow_mode='throw'))
