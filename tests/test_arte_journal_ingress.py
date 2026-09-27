@@ -433,3 +433,53 @@ def test_live_v4_entry_ingress_commits_and_recovers_normalized_families():
     assert len(page.entries) == 1
     assert page.entries[0].proposal == proposal
     assert page.entries[0].intent == intent
+
+
+def test_live_v4_protection_ingress_commits_numbered_rows_off_actor():
+    from src.trading_runtime.arte_journal_commit_v4 import (
+        load_verified_v4_prefix, publish_protection_change_batch_v4,
+    )
+    from src.backend.backtest_protection_change_v3 import TABLES
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+
+    client = attached_v4_client()
+
+    class LiveWriter(Writer):
+        journal_profile = "live_v4"
+        run_mode = "live"
+
+        def submit_base_v4(self, unit):
+            raise AssertionError("Protection must retain its numbered rows")
+
+        def submit_protection_change_v4(self, unit):
+            receipt = Future()
+            receipt.set_result(publish_protection_change_batch_v4(
+                client, unit.base, change=unit.change,
+                entry_orders=unit.entry_orders))
+            return receipt
+
+    source = JournalRecord(
+        str(uuid4()), "run-1", 1, AT, AT,
+        "protection", "protection_change", "broker-1", "DU1",
+        {"schema_version": 1, "order_group_id": "group-1",
+         "entry_order_ids": ["entry-1", "entry-2"],
+         "order_id": "broker-1", "client_order_id": "client-1",
+         "kind": "stop", "phase": "effective", "price": 5.75,
+         "active": True, "ticker": "AAA", "source_intent_id": "intent-1",
+         "strategy_id": "early-squeeze-strategy", "strategy_revision": 1,
+         "action": "enter_long", "intent_id": "intent-1",
+         "correlation_id": "correlation-1", "causation_id": "causation-1"},
+    )
+    ingress = TypedJournalIngress(
+        LiveWriter(), run_id="run-1", attempt_id=str(uuid4()),
+        first_sequence=1, prior_batch_id=ZERO,
+        projection_context={"expected_mode": "live"},
+    )
+    receipt = ingress.submit_protection_change(
+        source, source_cursor="boundary-31000")
+    source.payload["entry_order_ids"].append("entry-3")
+    ingress.close()
+    assert receipt.result() in {row["batch_id"] for row in client.tables["trading_commit_v4"]}
+    assert len(client.tables[TABLES[0].name]) == 1
+    assert len(client.tables[TABLES[1].name]) == 2
+    assert load_verified_v4_prefix(client, "run-1").last_sequence == 1

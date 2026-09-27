@@ -80,7 +80,7 @@ class TypedJournalIngress:
         self._projection_context = context
         self._projector = projector
         self._queue: Queue[tuple[JournalRecord, str, Future[str],
-                                 tuple[Any, date] | None] | None] = Queue(capacity)
+                                 tuple[Any, date] | None, bool] | None] = Queue(capacity)
         self._lock = Lock()
         self._error: BaseException | None = None
         self._closed = False
@@ -109,7 +109,7 @@ class TypedJournalIngress:
             record.entity_type, record.entity_id, record.account_id,
             deepcopy(record.payload),
         )
-        return self._enqueue(frozen, source_cursor, None)
+        return self._enqueue(frozen, source_cursor, None, False)
 
     def submit_strategy_one_entry(
         self, record: JournalRecord, *, proposal: Any,
@@ -138,10 +138,34 @@ class TypedJournalIngress:
             deepcopy(record.payload),
         )
         return self._enqueue(frozen, source_cursor,
-                             (deepcopy(proposal), session_date))
+                             (deepcopy(proposal), session_date), False)
+
+    def submit_protection_change(
+        self, record: JournalRecord, *, source_cursor: str,
+    ) -> Future[str]:
+        """Queue a normalized protection revision without blocking the actor."""
+        if (not self._live_v4 or not isinstance(record, JournalRecord)
+                or (record.category, record.entity_type) !=
+                   ("protection", "protection_change")
+                or not callable(getattr(self._writer,
+                                        "submit_protection_change_v4", None))
+                or not isinstance(source_cursor, str) or not source_cursor
+                or source_cursor.lstrip().startswith(("{", "["))
+                or record.event_time.tzinfo is None
+                or record.recorded_at.tzinfo is None):
+            raise ValueError("Live protection change requires its typed source")
+        UUID(record.record_id)
+        frozen = JournalRecord(
+            record.record_id, record.run_id, record.sequence,
+            record.event_time, record.recorded_at, record.category,
+            record.entity_type, record.entity_id, record.account_id,
+            deepcopy(record.payload),
+        )
+        return self._enqueue(frozen, source_cursor, None, True)
 
     def _enqueue(self, frozen: JournalRecord, source_cursor: str,
-                 entry_source: tuple[Any, date] | None) -> Future[str]:
+                 entry_source: tuple[Any, date] | None,
+                 protection_change: bool) -> Future[str]:
         with self._lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("Typed journal ingress is unavailable") from self._error
@@ -149,7 +173,8 @@ class TypedJournalIngress:
                 raise ValueError("Typed journal ingress requires a contiguous run sequence")
             receipt: Future[str] = Future()
             try:
-                self._queue.put_nowait((frozen, source_cursor, receipt, entry_source))
+                self._queue.put_nowait((frozen, source_cursor, receipt,
+                                       entry_source, protection_change))
             except Full as exc:
                 raise JournalIngressFull("Typed ingress is full; stop new admission") from exc
             self._next_sequence += 1
@@ -167,20 +192,33 @@ class TypedJournalIngress:
                 if item is None:
                     self._queue.task_done()
                     break
-                record, cursor, receipt, entry_source = item
+                record, cursor, receipt, entry_source, protection_change = item
                 try:
                     batch_id = str(uuid5(
                         NAMESPACE_URL,
                         f"{self._run_id}:{self._attempt_id}:{record.sequence}:"
                         f"{record.record_id}:typed-journal",
                     ))
-                    batch = self._projector(
-                        record,
-                        run_month=record.event_time.astimezone(timezone.utc).date().replace(day=1),
-                        attempt_id=self._attempt_id, batch_id=batch_id,
-                        prior_batch_id=self._prior_batch_id,
-                        source_cursor=cursor, **self._projection_context,
-                    )
+                    if protection_change:
+                        from src.trading_runtime.arte_protection_change_v4 import (
+                            protection_change_batch_v4,
+                        )
+                        unit = protection_change_batch_v4(
+                            record,
+                            run_month=record.event_time.astimezone(timezone.utc).date().replace(day=1),
+                            attempt_id=self._attempt_id, batch_id=batch_id,
+                            prior_batch_id=self._prior_batch_id,
+                            source_cursor=cursor,
+                        )
+                        batch = unit.base
+                    else:
+                        batch = self._projector(
+                            record,
+                            run_month=record.event_time.astimezone(timezone.utc).date().replace(day=1),
+                            attempt_id=self._attempt_id, batch_id=batch_id,
+                            prior_batch_id=self._prior_batch_id,
+                            source_cursor=cursor, **self._projection_context,
+                        )
                     if (not isinstance(batch, TypedJournalBatch)
                             or batch.run_id != self._run_id
                             or batch.first_sequence != record.sequence
@@ -214,13 +252,15 @@ class TypedJournalIngress:
                             run_id=batch.run_id, batch_id=batch.batch_id,
                             parent_record_id=record.record_id)
                         unit = V4StrategyOneEntryBatch(batch, (evidence,))
-                    else:
+                    elif not protection_change:
                         unit = batch
                     while True:
                         try:
                             writer_receipt = (
                                 self._writer.submit_strategy_one_entry_v4(unit)
                                 if entry_source is not None else
+                                self._writer.submit_protection_change_v4(unit)
+                                if protection_change else
                                 self._writer.submit_base_v4(unit)
                                 if self._live_v4 else self._writer.submit(unit))
                             break
