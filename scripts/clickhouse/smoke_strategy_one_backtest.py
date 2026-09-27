@@ -201,6 +201,10 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
             output = StringIO()
             pstats.Stats(execution_profile, stream=output).sort_stats(
                 "cumulative").print_stats(35)
+            pstats.Stats(execution_profile, stream=output).sort_stats(
+                "cumulative").print_stats("streaming_level_book", 30)
+            pstats.Stats(execution_profile, stream=output).sort_stats(
+                "tottime").print_stats("streaming_level_book", 30)
             print("Execution event-loop profile (top 35; worker threads excluded):",
                   flush=True)
             print(output.getvalue(), flush=True)
