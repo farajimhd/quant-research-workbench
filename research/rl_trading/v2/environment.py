@@ -42,6 +42,7 @@ class TradingEnv:
                             stop_fills=0,target_fills=0,market_unavailable_orders=0,
                             estimated_band_blocked_entries=0)
         self.last_fills = []
+        self.last_reward_by_ticker = np.zeros(self.session.n,dtype=np.float64)
         self.done = False
         return self.observe()
 
@@ -240,6 +241,10 @@ class TradingEnv:
             price=fill,fee=fee,slippage_ratio=slip,fee_ratio=fee/(quantity*fill),
             fee_components=components,exit_reason=int(self.exit_reason[ticker]),
             decision_second=previous,fill_second=self.t,forced=bool(self.forced[ticker])))
+        # Mark each fill at the same completed price as account equity. This
+        # attributes slippage and all cash fees to the ticker that caused them.
+        self.last_reward_by_ticker[ticker] += (
+            side*quantity*(float(a['prices'][ticker,self.t])-fill)-fee)/self.initial
         if self.quantity[ticker] == 0:
             self.exit_reason[ticker] = 0
 
@@ -275,6 +280,8 @@ class TradingEnv:
         buys = {i:budget*scale for i,budget in buys.items()}
         self.t += 1
         self.last_fills = []
+        self.last_reward_by_ticker = (self.quantity *
+            (a['prices'][:,self.t]-a['prices'][:,previous]))/self.initial
         while self.recent and self.recent[0][0] <= self.t-60:
             _,ticker,quantity = self.recent.popleft()
             self.recent_shares[ticker] -= quantity
@@ -293,6 +300,9 @@ class TradingEnv:
         if self.cash < -1e-6 or np.any(self.quantity<0) or not math.isfinite(after):
             raise ValueError('Account conservation failed')
         reward = (after-before)/self.initial
+        if not math.isclose(float(self.last_reward_by_ticker.sum()),reward,
+                rel_tol=1e-6,abs_tol=1e-8):
+            raise ValueError('Per-ticker reward does not reconcile with account equity')
         self.reward_sum += reward
         self.peak = max(self.peak,after)
         self.drawdown = max(self.drawdown,(self.peak-after)/self.peak)

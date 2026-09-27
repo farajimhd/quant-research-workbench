@@ -10,7 +10,7 @@ from research.rl_trading.v2.config import Config, share_cap
 from research.rl_trading.v2.data import MarketSession, DATA_VERSION, ARRAYS
 from research.rl_trading.v2.environment import TradingEnv
 from research.rl_trading.v2.model import PortfolioPolicy, collate
-from research.rl_trading.v2.objectives import advantages, ppo_loss
+from research.rl_trading.v2.objectives import advantages, ticker_returns, ppo_loss
 from research.rl_trading.v2.io import write, read
 from research.rl_trading.v2 import train, evaluate
 
@@ -223,10 +223,10 @@ def test_per_ticker_ppo_kl_and_entropy_do_not_scale_with_universe_width():
     wide = torch.full((1,1000),.01,requires_grad=True)
     wide_mask = torch.ones_like(wide,dtype=torch.bool)
     wide_mask[:,-1] = False
-    args = (torch.ones(1),torch.zeros(1),torch.zeros(1))
-    single_loss,single = ppo_loss(one,torch.zeros_like(one),args[0],args[1],args[2],
+    value = torch.zeros(1)
+    single_loss,single = ppo_loss(one,torch.zeros_like(one),torch.ones_like(one),value,value,
         torch.ones_like(one),token_mask=torch.ones_like(one,dtype=torch.bool))
-    wide_loss,many = ppo_loss(wide,torch.zeros_like(wide),args[0],args[1],args[2],
+    wide_loss,many = ppo_loss(wide,torch.zeros_like(wide),torch.ones_like(wide),value,value,
         torch.ones_like(wide),token_mask=wide_mask)
     assert many['approx_kl'] == pytest.approx(single['approx_kl'])
     assert many['entropy'] == pytest.approx(single['entropy'])
@@ -234,6 +234,35 @@ def test_per_ticker_ppo_kl_and_entropy_do_not_scale_with_universe_width():
     wide_loss.backward()
     assert wide.grad[0,-1] == 0
     assert wide.grad[0,0] != 0
+
+
+def test_ticker_reward_reconciles_and_uses_stable_listing_identity():
+    env = TradingEnv(market(n=2,seconds=5,prices=[[5,5,5,5,5],[5,6,7,8,9]]),config())
+    first = env.observe()
+    modes = np.zeros(len(first['ids']),dtype=np.int64)
+    sizes = np.full((len(modes),3),.5)
+    ticker = int(np.flatnonzero(first['ids'] == 1)[0])
+    modes[ticker] = 1
+    _,reward,_,_ = env.step(modes,sizes)
+    assert env.last_reward_by_ticker.sum() == pytest.approx(reward)
+    assert env.last_reward_by_ticker[0] == 0
+    second = env.observe()
+    _,reward,_,_ = env.step(np.zeros(len(second['ids']),dtype=np.int64),
+        np.full((len(second['ids']),3),.5))
+    assert env.last_reward_by_ticker.sum() == pytest.approx(reward)
+    assert env.last_reward_by_ticker[1] > 0
+    third = env.observe()
+    modes = np.zeros(len(third['ids']),dtype=np.int64)
+    _,reward,_,_ = env.step(modes,np.full((len(modes),3),.5))
+    assert env.last_reward_by_ticker.sum() == pytest.approx(reward)
+    assert env.quantity[1] == 0
+    trajectory = [dict(ids=np.array([1,0]),ticker_rewards=np.array([1.,0.]),done=False),
+        dict(ids=np.array([0,1]),ticker_rewards=np.array([0.,2.]),done=True),
+        dict(ids=np.array([1]),ticker_rewards=np.array([4.]),done=False)]
+    local = ticker_returns(trajectory,2,gae_lambda=1.)
+    np.testing.assert_allclose(local[0],[3.,0.])
+    np.testing.assert_allclose(local[1],[0.,2.])
+    np.testing.assert_allclose(local[2],[4.])
 
 
 def save_market(root,session):

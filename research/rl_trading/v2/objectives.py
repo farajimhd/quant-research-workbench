@@ -15,6 +15,27 @@ def advantages(rewards, values, dones, bootstrap, *, gamma=1., gae_lambda=.95):
     return result, result+np.asarray(values,dtype=np.float32)
 
 
+def ticker_returns(trajectory, population, *, gae_lambda=.95):
+    """Causal local reward-to-go over one rollout, keyed by stable listing index."""
+    if not 0 < gae_lambda <= 1:
+        raise ValueError('Invalid ticker return trace')
+    tail = np.zeros(population,dtype=np.float32)
+    result = [None]*len(trajectory)
+    for index in reversed(range(len(trajectory))):
+        row = trajectory[index]
+        if row['done']:
+            tail.fill(0)
+        tail *= gae_lambda
+        ids = np.asarray(row['ids'],dtype=np.int64)
+        rewards = np.asarray(row['ticker_rewards'],dtype=np.float32)
+        if (ids.ndim != 1 or rewards.shape != ids.shape or
+                np.any(ids < 0) or np.any(ids >= population) or len(np.unique(ids)) != len(ids)):
+            raise ValueError('Invalid ticker reward identities')
+        tail[ids] += rewards
+        result[index] = tail[ids].copy()
+    return result
+
+
 def ppo_loss(logprob, old_logprob, advantage, value, returns, entropy,
              *, clip=.2, value_weight=.5, entropy_weight=.001, token_mask=None):
     logratio = logprob-old_logprob
@@ -22,7 +43,10 @@ def ppo_loss(logprob, old_logprob, advantage, value, returns, entropy,
     if token_mask is not None:
         if logratio.ndim != 2 or token_mask.shape != logratio.shape:
             raise ValueError('Per-ticker PPO requires an aligned token mask')
-        advantage = advantage.unsqueeze(1)
+        if advantage.ndim == 1:
+            advantage = advantage.unsqueeze(1)
+        if advantage.shape != logratio.shape:
+            raise ValueError('Per-ticker PPO advantage must align with token actions')
         weight = token_mask.to(logratio.dtype)
         denominator = weight.sum().clamp_min(1)
         policy = -(torch.minimum(ratio*advantage,
