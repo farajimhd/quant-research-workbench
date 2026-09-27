@@ -29,7 +29,7 @@ def test_preflight_source_profile_uses_bounded_table_labels_not_sql(capsys):
     assert "private" not in output
 
 
-def test_sql_profile_counts_streaming_v7_reads_without_claiming_latency(
+def test_sql_profile_times_streaming_v7_iterator_without_retaining_sql(
     monkeypatch, capsys,
 ):
     from research.mlops.clickhouse import ClickHouseHttpClient
@@ -47,5 +47,4 @@ def test_sql_profile_counts_streaming_v7_reads_without_claiming_latency(
         assert list(rows) == [{"ticker": "TEST"}]
     assert ClickHouseHttpClient.iter_json_each_row is stream
     profile.print_summary()
-    assert "v7_completed_second_stream: calls=1; timing=not_measured" in (
-        capsys.readouterr().out)
+    assert "v7_completed_second_stream: calls=1 iterator_s=" in capsys.readouterr().out

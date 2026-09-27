@@ -107,6 +107,7 @@ class _SqlCallProfile:
         self._by_source = by_source
         self._bins: dict[str, tuple[int, float]] = {}
         self._v7_stream_reads = 0
+        self._v7_stream_iteration_seconds = 0.0
 
     @staticmethod
     def category(sql: str) -> str:
@@ -141,6 +142,11 @@ class _SqlCallProfile:
             with self._lock:
                 self._v7_stream_reads += 1
 
+    def record_stream_iteration(self, sql: str, elapsed: float) -> None:
+        if self.category(sql) == "v7_completed_second_read":
+            with self._lock:
+                self._v7_stream_iteration_seconds += elapsed
+
     def print_summary(self, *, limit: int | None = None) -> None:
         rows = sorted(self._bins.items(), key=(
             (lambda item: -item[1][1]) if self._by_source
@@ -152,7 +158,8 @@ class _SqlCallProfile:
             print(f"ClickHouse other sources: {len(rows) - limit} hidden", flush=True)
         if not self._by_source:
             print(f"ClickHouse v7_completed_second_stream: "
-                  f"calls={self._v7_stream_reads}; timing=not_measured", flush=True)
+                  f"calls={self._v7_stream_reads} "
+                  f"iterator_s={self._v7_stream_iteration_seconds:.3f}", flush=True)
 
 
 @contextmanager
@@ -172,7 +179,30 @@ def _profile_sql_calls(profile: _SqlCallProfile):
     def counted_stream(client, sql, *args, **kwargs):
         result = original_stream(client, sql, *args, **kwargs)
         profile.record_stream(sql)
-        return result
+
+        def measured_rows():
+            iterator = iter(result)
+            iteration_seconds = 0.0
+            try:
+                while True:
+                    started = perf_counter()
+                    try:
+                        row = next(iterator)
+                    except StopIteration:
+                        iteration_seconds += perf_counter() - started
+                        return
+                    except BaseException:
+                        iteration_seconds += perf_counter() - started
+                        raise
+                    iteration_seconds += perf_counter() - started
+                    yield row
+            finally:
+                profile.record_stream_iteration(sql, iteration_seconds)
+                close = getattr(iterator, "close", None)
+                if close is not None:
+                    close()
+
+        return measured_rows()
 
     ClickHouseHttpClient.execute = timed_execute
     ClickHouseHttpClient.iter_json_each_row = counted_stream

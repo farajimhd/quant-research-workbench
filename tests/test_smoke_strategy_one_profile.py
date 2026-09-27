@@ -80,7 +80,7 @@ def test_sql_profile_keeps_only_bounded_categories(capsys):
         "ClickHouse journal_insert: calls=1 client_s=0.750",
         "ClickHouse journal_read: calls=1 client_s=1.250",
         "ClickHouse market_or_control_read: calls=1 client_s=0.500",
-        "ClickHouse v7_completed_second_stream: calls=0; timing=not_measured",
+        "ClickHouse v7_completed_second_stream: calls=0 iterator_s=0.000",
     ]
 
 
