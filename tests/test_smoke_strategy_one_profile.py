@@ -21,15 +21,16 @@ def test_completed_profile_reports_wall_and_writer_units(capsys):
         _stage_timings={"execute": {"calls": 1, "seconds": 12.5,
                                     "maximum_seconds": 12.5}},
         _journal_writer_final_metrics={
-            "committed_units": 4, "failed_units": 0, "failed": False,
+            "committed_units": 4, "committed_event_rows": 7,
+            "failed_units": 0, "failed": False,
             "queue_depth": 0, "queue_capacity": 8,
             "publish_ns_total": 2_500_000_000,
             "publish_ns_max": 1_000_000_000,
             "publish_by_unit": {
-                "TypedJournalBatch": {"units": 3,
+                "TypedJournalBatch": {"units": 3, "event_rows": 6,
                                       "publish_ns_total": 1_500_000_000,
                                       "publish_ns_max": 750_000_000},
-                "V4StrategyOneEntryBatch": {"units": 1,
+                "V4StrategyOneEntryBatch": {"units": 1, "event_rows": 1,
                                             "publish_ns_total": 1_000_000_000,
                                             "publish_ns_max": 1_000_000_000}},
         },
@@ -37,10 +38,10 @@ def test_completed_profile_reports_wall_and_writer_units(capsys):
     _print_completed_profile(controller)
     assert capsys.readouterr().out.splitlines() == [
         "Stage execute: calls=1 wall_s=12.500 max_call_s=12.500",
-        "Journal writer: committed_units=4 failed_units=0 "
+        "Journal writer: committed_units=4 event_rows=7 failed_units=0 "
         "worker_s=2.500 max_unit_s=1.000 queue_capacity=8",
-        "  TypedJournalBatch: units=3 worker_s=1.500 max_s=0.750",
-        "  V4StrategyOneEntryBatch: units=1 worker_s=1.000 max_s=1.000",
+        "  TypedJournalBatch: units=3 event_rows=6 worker_s=1.500 max_s=0.750",
+        "  V4StrategyOneEntryBatch: units=1 event_rows=1 worker_s=1.000 max_s=1.000",
     ]
 
 
@@ -49,7 +50,8 @@ def test_completed_profile_reports_wall_and_writer_units(capsys):
     {"committed_units": 0},
 ])
 def test_completed_profile_rejects_unsettled_writer(change):
-    metrics = dict(committed_units=1, failed_units=0, failed=False,
+    metrics = dict(committed_units=1, committed_event_rows=1,
+                   failed_units=0, failed=False,
                    queue_depth=0, queue_capacity=8,
                    publish_ns_total=1, publish_ns_max=1)
     metrics.update(change)
@@ -59,11 +61,12 @@ def test_completed_profile_rejects_unsettled_writer(change):
 
 
 def test_completed_profile_rejects_unreconciled_family_timings():
-    metrics = dict(committed_units=1, failed_units=0, failed=False,
+    metrics = dict(committed_units=1, committed_event_rows=1,
+                   failed_units=0, failed=False,
                    queue_depth=0, queue_capacity=8,
                    publish_ns_total=10, publish_ns_max=10,
                    publish_by_unit={"TypedJournalBatch": {
-                       "units": 1, "publish_ns_total": 9,
+                       "units": 1, "event_rows": 1, "publish_ns_total": 9,
                        "publish_ns_max": 9}})
     with pytest.raises(RuntimeError, match="do not reconcile"):
         _print_completed_profile(SimpleNamespace(

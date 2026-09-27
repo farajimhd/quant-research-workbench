@@ -1087,9 +1087,12 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
         assert UUID(second.result(timeout=5)) == UUID(BATCH)
         finished = journal.metrics()
         assert finished["committed_units"] == 2
+        assert finished["committed_event_rows"] == 2 * len(batch().events)
         assert finished["failed_units"] == 0
         assert finished["publish_ns_total"] >= finished["publish_ns_max"] > 0
         assert finished["publish_by_unit"]["TypedJournalBatch"]["units"] == 2
+        assert (finished["publish_by_unit"]["TypedJournalBatch"]["event_rows"]
+                == finished["committed_event_rows"])
         assert (finished["publish_by_unit"]["TypedJournalBatch"]["publish_ns_total"]
                 == finished["publish_ns_total"])
     finally:

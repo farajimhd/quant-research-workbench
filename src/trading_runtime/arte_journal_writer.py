@@ -3398,6 +3398,7 @@ class ArteJournalWriter:
         self._client_close_error: BaseException | None = None
         self._metrics_lock = Lock()
         self._committed_units = 0
+        self._committed_event_rows = 0
         self._failed_units = 0
         self._publish_ns_total = 0
         self._publish_ns_max = 0
@@ -3432,6 +3433,7 @@ class ArteJournalWriter:
                 "queue_depth": self._queue.qsize(),
                 "queue_capacity": self._queue.maxsize,
                 "committed_units": self._committed_units,
+                "committed_event_rows": self._committed_event_rows,
                 "failed_units": self._failed_units,
                 "publish_ns_total": self._publish_ns_total,
                 "publish_ns_max": self._publish_ns_max,
@@ -4110,15 +4112,25 @@ class ArteJournalWriter:
                     committed_id = publish_prepared_portfolio_snapshot(self._client, snapshot)
                 self._last_commit_id = committed_id
                 elapsed_ns = perf_counter_ns() - started_ns
+                event_rows = 0
+                for published, _ in group:
+                    source = (published if isinstance(published, TypedJournalBatch)
+                              else getattr(published, "base", None))
+                    if source is None:
+                        source = getattr(published, "batch", None)
+                    if isinstance(source, TypedJournalBatch):
+                        event_rows += len(source.events)
                 with self._metrics_lock:
                     self._committed_units += len(group)
+                    self._committed_event_rows += event_rows
                     self._publish_ns_total += elapsed_ns
                     self._publish_ns_max = max(self._publish_ns_max, elapsed_ns)
                     family = type(group[0][0]).__name__
                     by_unit = self._publish_by_unit.setdefault(
-                        family, {"units": 0, "publish_ns_total": 0,
+                        family, {"units": 0, "event_rows": 0, "publish_ns_total": 0,
                                  "publish_ns_max": 0})
                     by_unit["units"] += len(group)
+                    by_unit["event_rows"] += event_rows
                     by_unit["publish_ns_total"] += elapsed_ns
                     by_unit["publish_ns_max"] = max(
                         by_unit["publish_ns_max"], elapsed_ns)
