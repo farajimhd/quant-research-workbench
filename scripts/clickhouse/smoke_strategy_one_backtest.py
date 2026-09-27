@@ -223,6 +223,7 @@ def _profile_sql_calls(profile: _SqlCallProfile):
 
 
 async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
+               initial_cash: int = 10_000,
                profile_preflight: bool = False,
                profile_execution: bool = False,
                preflight_repeats: int = 1) -> None:
@@ -238,6 +239,8 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
                 + timedelta(minutes=minutes)).time()
     if preflight_repeats not in (1, 2) or (apply and preflight_repeats != 1):
         raise ValueError("Read-only preflight repeats must be one or two")
+    if type(initial_cash) is not int or not 1_000 <= initial_cash <= 1_000_000_000:
+        raise ValueError("Initial cash must match the Backtest UI's supported range")
     preflight = None
     first_tokens = None
     for repeat in range(preflight_repeats):
@@ -271,7 +274,7 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
         return
     definition = ReplayRunDefinition(
         session_date=day, final_session_date=day,
-        start_time=time(4), end_time=end_time, initial_cash=100_000,
+        start_time=time(4), end_time=end_time, initial_cash=initial_cash,
         configuration_revision=revision, execution_interval="100ms",
         market_data_plan=dict(preflight["market_data_plan"]),
         causal_v7_plan=dict(preflight["causal_v7_plan"]),
@@ -316,7 +319,7 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
                   flush=True)
             print(output.getvalue(), flush=True)
     elapsed = perf_counter() - began
-    print(f"Strategy 1 probe run_id={controller.run_id} "
+    print(f"Strategy 1 probe initial_cash={initial_cash} run_id={controller.run_id} "
           f"status={controller.status} elapsed_s={elapsed:.3f} "
           f"processed_rows={controller.processed_events} "
           f"error={controller.error[:300]}", flush=True)
@@ -336,6 +339,8 @@ def main() -> None:
                         help="optional single-symbol probe; omit for the full market")
     parser.add_argument("--minutes", type=int, default=10,
                         help="whole minutes from 04:00 ET, at most 330")
+    parser.add_argument("--initial-cash", type=int, default=10_000,
+                        help="simulated account cash; default matches the Backtest UI")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--profile-preflight", action="store_true",
                         help="show the slowest preflight calls; does not create market data")
@@ -350,9 +355,12 @@ def main() -> None:
         raise ValueError("Integration ticker must be an ASCII market symbol")
     if not 1 <= args.minutes <= 330:
         raise ValueError("Integration horizon must be one to 330 minutes")
+    if not 1_000 <= args.initial_cash <= 1_000_000_000:
+        parser.error("Initial cash must be between 1,000 and 1,000,000,000")
     _load_private_credentials()
     asyncio.run(_run(args.session, args.ticker, apply=args.apply,
-                     minutes=args.minutes, profile_preflight=args.profile_preflight,
+                     minutes=args.minutes, initial_cash=args.initial_cash,
+                     profile_preflight=args.profile_preflight,
                      profile_execution=args.profile_execution,
                      preflight_repeats=args.preflight_repeats))
 
