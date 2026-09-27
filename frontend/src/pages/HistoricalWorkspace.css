@@ -72,6 +72,13 @@
 .backtest-v4-review [aria-label="Terminal account balances"] table { width: max-content; min-width: 100%; }
 .backtest-v4-review [aria-label="Terminal account balances"] :is(th, td) { max-width: none; white-space: nowrap; overflow-wrap: normal; }
 .backtest-v4-review [aria-label="Terminal account balances"] :is(th, td):nth-child(n+2):nth-child(-n+6) { text-align: right; }
+.backtest-v4-saved-chart { margin: 16px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; min-width: 0; }
+.backtest-v4-saved-chart h4 { margin: 0; }
+.backtest-v4-chart-controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 10px 0; }
+.backtest-v4-chart-controls label { display: inline-flex; gap: 6px; align-items: center; }
+.backtest-v4-chart-controls form { display: inline-flex; gap: 6px; align-items: center; }
+.backtest-v4-chart-controls input:not([type="checkbox"]) { width: 100px; }
+.backtest-v4-chart-source { color: var(--muted-foreground); font-size: 12px; }
 @media (max-width: 1100px) {
   .backtest-run-history :is(th, td):last-child { position: sticky; right: 0; background: var(--surface); min-width: 170px; border-left: 1px solid var(--border); }
   .backtest-v4-review :is(th, td):last-child { position: static; border-left: 0; }

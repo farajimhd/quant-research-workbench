@@ -2596,6 +2596,14 @@ def capture(args: argparse.Namespace) -> int:
                     if args.historical_run_id and scenario["page"] == "canvas-focus":
                         page.get_by_role("button", name=args.canvas_chart_timeframe, exact=True).click(timeout=args.timeout_ms)
                     page.wait_for_timeout(args.settle_ms)
+                    if args.saved_v4_chart_ticker and scenario["page"] == "backtest-trading":
+                        page.get_by_role("button", name=f"Chart {args.saved_v4_chart_ticker}", exact=True).first.click(timeout=args.timeout_ms)
+                        saved_chart = page.get_by_role("region", name=f"Saved {args.saved_v4_chart_ticker} chart")
+                        saved_chart.get_by_text(re.compile(r"ARTE closed bars and indicators · verified through")).wait_for(timeout=args.timeout_ms)
+                        saved_chart.locator(".chart-shell canvas").first.wait_for(timeout=args.timeout_ms)
+                        if saved_chart.get_by_label("Show 1s Supertrend").count():
+                            raise RuntimeError("Saved ARTE chart exposed an unpersisted indicator")
+                        saved_chart.evaluate("element => element.scrollIntoView({block: 'start'})")
                     if args.hindsight_action_chart:
                         from action_values_review import mount_action_chart
                         mount_action_chart(page,args.hindsight_action_chart,args.canvas_symbol,args.canvas_session_date)
@@ -3543,6 +3551,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--labeler", action="store_true", help="exercise manual interval labeling with isolated deterministic API fixtures")
     result.add_argument("--canvas-id", help="open trading routes directly in the named child canvas")
     result.add_argument("--historical-run-id", help="review a portable Backtest Canvas or restore the main Backtest page by run ID")
+    result.add_argument("--saved-v4-chart-ticker", help="open a saved V4 journal ticker chart in each Backtest capture")
     result.add_argument("--canvas-session-date", help="seed a deterministic Canvas preview session date (YYYY-MM-DD)")
     result.add_argument("--canvas-preview-time", default="09:45", help="preview time paired with --canvas-session-date (HH:MM)")
     result.add_argument("--canvas-runtime-mode", choices=("live", "paper"), help="open Canvas focus review under the selected real-time runtime authority")

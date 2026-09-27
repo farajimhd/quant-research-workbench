@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { api } from "../../api/client";
+
+const BacktestV4SavedChart = lazy(() => import("./BacktestV4SavedChart").then(module => ({ default: module.BacktestV4SavedChart })));
 
 type Account = {
   currency: string;
@@ -31,7 +33,12 @@ export type V4Page = {
 };
 
 function et(value: string | number): string {
-  const parsed = new Date(value);
+  // ClickHouse DateTime64 journal values are UTC even when JSONEachRow omits
+  // the offset. Date.parse would otherwise reinterpret them in browser time.
+  const normalized = typeof value === "string" && /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?$/.test(value)
+    ? `${value.replace(" ", "T").replace(/(\.\d{3})\d+$/, "$1")}Z`
+    : value;
+  const parsed = new Date(normalized);
   return Number.isFinite(parsed.getTime())
     ? new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "medium", timeZone: "America/New_York" }).format(parsed)
     : "—";
@@ -64,6 +71,7 @@ export function BacktestV4SavedReview({ runId, onClose, initialPage }: {
   const [page, setPage] = useState<V4Page | null>(initialPage ?? null);
   const [loading, setLoading] = useState(!initialPage);
   const [error, setError] = useState("");
+  const [chartTicker, setChartTicker] = useState("");
   const afterSequence = cursors[index];
 
   useEffect(() => {
@@ -100,6 +108,7 @@ export function BacktestV4SavedReview({ runId, onClose, initialPage }: {
       <p><strong>{page.status}</strong> · {page.verified_sequence.toLocaleString()} verified journal records
         {page.market_cursor_verified && page.market_cursor ? ` · Last processed boundary ${page.market_cursor.session_date} ${boundaryClock(page.market_cursor.boundary_ms)}` : " · Last processed boundary unavailable"}</p>
       {page.limitations.map((message, i) => <p key={i} role="note">{message}</p>)}
+      {chartTicker ? <Suspense fallback={<p role="status">Loading chart…</p>}><BacktestV4SavedChart runId={runId} ticker={chartTicker} onClose={() => setChartTicker("")} /></Suspense> : null}
       <div className="backtest-history-scroll" role="region" aria-label="Terminal account balances" tabIndex={0}><table>
         <thead><tr><th scope="col">Account</th><th scope="col">Net liquidation</th><th scope="col">Cash</th><th scope="col">Gross positions</th><th scope="col">Buying power</th><th scope="col">Open positions</th><th scope="col">Snapshot · ET</th></tr></thead>
         <tbody>{accounts.map(([id, account]) => <tr key={id}><td>{id}</td><td>{amount(account.net_liquidation, account.currency)}</td><td>{amount(account.total_cash_value, account.currency)}</td><td>{amount(account.gross_position_value, account.currency)}</td><td>{amount(account.buying_power, account.currency)}</td><td>{account.expected_position_count}</td><td>{et(account.source_timestamp_ms)}</td></tr>)}</tbody>
@@ -107,7 +116,7 @@ export function BacktestV4SavedReview({ runId, onClose, initialPage }: {
       <h4>Normalized event journal</h4>
       <div className="backtest-history-scroll" role="region" aria-label="Verified journal events" tabIndex={0}><table>
         <thead><tr><th scope="col">Sequence</th><th scope="col">Time · ET</th><th scope="col">Category</th><th scope="col">Entity</th><th scope="col">Account</th><th scope="col">Evidence</th></tr></thead>
-        <tbody>{page.events.map(({ event, detail, detail_family }) => <tr key={event.sequence}><td>{event.sequence.toLocaleString()}</td><td>{et(event.event_time)}</td><td>{event.category}</td><td>{event.entity_type}<small>{event.entity_id}</small></td><td>{event.account_id || "—"}</td><td>{detail ? <details><summary>{detail_family || "Typed detail"}</summary><dl>{Object.entries(detail).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{scalar(value)}</dd></div>)}</dl></details> : "—"}</td></tr>)}</tbody>
+        <tbody>{page.events.map(({ event, detail, detail_family }) => <tr key={event.sequence}><td>{event.sequence.toLocaleString()}</td><td>{et(event.event_time)}</td><td>{event.category}</td><td>{event.entity_type}<small>{event.entity_id}</small></td><td>{event.account_id || "—"}</td><td>{detail && typeof detail.ticker === "string" && /^[A-Z0-9.-]{1,24}$/.test(detail.ticker) ? <button className="button secondary compact" type="button" onClick={() => setChartTicker(detail.ticker as string)}>Chart {detail.ticker}</button> : null}{detail ? <details><summary>{detail_family || "Typed detail"}</summary><dl>{Object.entries(detail).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{scalar(value)}</dd></div>)}</dl></details> : "—"}</td></tr>)}</tbody>
       </table></div>
       <footer><span>Records {afterSequence + 1}–{page.next_sequence.toLocaleString()} of {page.verified_sequence.toLocaleString()}</span><div className="backtest-history-actions">
         <button className="button secondary compact" type="button" disabled={loading || index === 0} onClick={() => setIndex(value => value - 1)}>Previous page</button>

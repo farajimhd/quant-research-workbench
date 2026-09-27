@@ -704,6 +704,8 @@ export type ChartPanelHandle = {
 };
 
 type ChartPanelProps = {
+  /** Saved ARTE Backtest pages may display only persisted products. */
+  persistedOnly?: boolean;
   labeling?: ChartLabeling;
   levelBookMode?: 'history' | 'live';
   hindsightSessionDate?: string;
@@ -892,6 +894,7 @@ type ChartPalette = {
 };
 
 const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
+  persistedOnly = false,
   appearanceDefaults,
   baseHeight = 620,
   labeling,
@@ -1014,7 +1017,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const hindsightActionsRef = useRef(hindsightActions);
   hindsightActionsRef.current = hindsightActions;
   const hindsightActionsPrimitiveRef = useRef<HindsightActionsPrimitive | null>(null);
-  const levelReaction = useLevelReaction(ticker, hindsightSessionDate, indicatorAsOf, timeframe, payload?.candles);
+  const levelReaction = useLevelReaction(ticker, hindsightSessionDate, indicatorAsOf,
+    persistedOnly ? "unavailable" : timeframe, persistedOnly ? [] : payload?.candles);
   const [v7Viewport,setV7Viewport]=useState<{ticker:string;first:string;last:string}>();
   const reactionBook=useReactionBook(ticker,hindsightSessionDate || periodEnd,indicatorAsOf,(visibleColumns ?? []).includes('indicator.qmd_unified_structure'),levelBookMode,settingsStorageKey || 'chart',v7Viewport?.ticker===ticker?v7Viewport:undefined);
   const reactionBookRef=useRef(reactionBook);reactionBookRef.current=reactionBook;
@@ -1034,11 +1038,11 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const structureGapsRef = useRef(structureGaps);
   structureGapsRef.current = structureGaps;
   const structureGapPrimitiveRef = useRef<StructureGapPrimitive | null>(null);
-  const structuralDetector = useStructuralDetector(ticker, timeframe, payload?.candles ?? [], indicatorAsOf,
+  const structuralDetector = useStructuralDetector(ticker, persistedOnly ? "unavailable" : timeframe, persistedOnly ? [] : payload?.candles ?? [], indicatorAsOf,
     settingsStorageKey || 'chart.structural-detector', indicatorSplitAdjusted, payload?.volume);
   const structuralDetectorRef = useRef(structuralDetector);
-  const supertrendIndicator=useSupertrend(settingsStorageKey || 'chart',timeframe,payload?.candles ?? [],indicatorAsOf);
-  const formingMacd = useFormingMacd(settingsStorageKey || 'chart', ticker, timeframe, chartTimeframeSeconds(timeframe), payload?.candles ?? [], indicatorAsOf, payload?.timeframe, indicatorSplitAdjusted);
+  const supertrendIndicator=useSupertrend(settingsStorageKey || 'chart',persistedOnly ? 'unavailable' : timeframe,persistedOnly ? [] : payload?.candles ?? [],indicatorAsOf);
+  const formingMacd = useFormingMacd(settingsStorageKey || 'chart', ticker, persistedOnly ? 'unavailable' : timeframe, persistedOnly ? null : chartTimeframeSeconds(timeframe), persistedOnly ? [] : payload?.candles ?? [], indicatorAsOf, persistedOnly ? 'unavailable' : payload?.timeframe, indicatorSplitAdjusted);
   const supertrendRendererRef=useRef<SupertrendRenderer|null>(null);
   structuralDetectorRef.current = structuralDetector;
   const structuralDetectorPrimitiveRef = useRef<StructuralDetectorPrimitive | null>(null);
@@ -2238,7 +2242,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             <span className="toolbar-divider" />
             {showIndicatorControls ? (
               <IndicatorFeatureSelect
-                additionalIndicators={[structuralDetector.menuItem,supertrendIndicator.menuItem,formingMacd.menuItem]}
+                additionalIndicators={persistedOnly ? [] : [structuralDetector.menuItem,supertrendIndicator.menuItem,formingMacd.menuItem]}
                 catalogColumns={catalogColumns}
                 displayItemOptions={displayItemOptions}
                 featureOptions={featureOptions}
@@ -2306,7 +2310,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           />
         ) : null}
         <div className="toolbar-spacer" />
-        {!labeling ? <>{hindsight.controls}{hindsightActions.controls}{levelReaction.controls}{structuralDetector.controls}{supertrendIndicator.controls}{formingMacd.controls}</> : null}
+        {!labeling && !persistedOnly ? <>{hindsight.controls}{hindsightActions.controls}{levelReaction.controls}{structuralDetector.controls}{supertrendIndicator.controls}{formingMacd.controls}</> : null}
         <button
           className="toolbar-button"
           data-chart-settings-trigger="true"
