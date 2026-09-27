@@ -254,12 +254,14 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       return;
     }
     let cancelled = false;
+    const controller = new AbortController();
     setChecking(true);
     setPreflight(null);
     const timer = window.setTimeout(() => {
       setChecking(true);
       setError("");
       api<HistoricalPreflight>("/api/trading/historical-preflight", {
+        signal: controller.signal,
         body: JSON.stringify({
           anchor_date: anchorDate,
           configuration_revision_id: candidateId,
@@ -271,7 +273,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           tickers: normalizedTickers,
         }),
         method: "POST",
-        timeoutMs: 60_000,
+        timeoutMs: fullMarket ? 180_000 : 60_000,
       })
         .then((payload) => {
           if (!cancelled) {
@@ -292,8 +294,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      controller.abort();
     };
-  }, [anchorDate, candidateId, endTime, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady, selectedRunId]);
+  }, [anchorDate, candidateId, endTime, fullMarket, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady, selectedRunId]);
 
   usePollingTask({
     enabled: Boolean(run && (run.work_progress?.active || !["completed", "stopped", "failed"].includes(run.status))),
