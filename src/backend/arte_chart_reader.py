@@ -35,6 +35,7 @@ _INDICATORS = frozenset({
 })
 _NY = ZoneInfo("America/New_York")
 _plan_cache: dict[tuple[str, date, str, str], tuple[float, CertifiedMarketDayPlan | None]] = {}
+_certificate_cache: dict[tuple[str, date, str], tuple[float, tuple[dict[str, Any], ...]]] = {}
 _plan_lock = Lock()
 _open_readers: list[Any] = []
 _FENCED_PLAN_TTL_SECONDS = 120.0
@@ -104,15 +105,22 @@ def certified_chart_plan(session: date, ticker: str, timeframe: str, *,
             return cached[1]
     if timeframe not in _RESOLUTIONS or not re.fullmatch(r"[A-Z0-9.\-]{1,24}", ticker):
         raise ValueError("ARTE chart scope is invalid")
-    rows = [json.loads(line) for line in _reader(authority).execute(assert_select_only(
-        "SELECT s.build_id,f.definition_hash,s.stage,s.attempt_id,"
-        "s.source_hash,s.output_rows,s.output_hash "
-        "FROM arte.market_day_stage_certificate_v1 s "
-        "INNER JOIN arte.market_day_build_fence_v1 f ON f.build_id=s.build_id "
-        f"WHERE s.session_date=toDate({_literal(session.isoformat())}) "
-        f"AND s.ticker={_literal(ticker)} "
-        "ORDER BY s.build_id,s.stage FORMAT JSONEachRow"
-    )).splitlines() if line.strip()]
+    certificate_key = (authority, session, ticker)
+    with _plan_lock:
+        cached_certificate = _certificate_cache.get(certificate_key)
+        rows = (cached_certificate[1] if cached_certificate
+                and cached_certificate[0] > now else None)
+    if rows is None:
+        rows = tuple(json.loads(line) for line in _reader(authority).execute(
+            assert_select_only(
+                "SELECT s.build_id,f.definition_hash,s.stage,s.attempt_id,"
+                "s.source_hash,s.output_rows,s.output_hash "
+                "FROM arte.market_day_stage_certificate_v1 s "
+                "INNER JOIN arte.market_day_build_fence_v1 f ON f.build_id=s.build_id "
+                f"WHERE s.session_date=toDate({_literal(session.isoformat())}) "
+                f"AND s.ticker={_literal(ticker)} "
+                "ORDER BY s.build_id,s.stage FORMAT JSONEachRow"
+            )).splitlines() if line.strip())
     builds = {str(row.get("build_id") or "") for row in rows}
     if len(builds) > 1:
         raise RuntimeError("ARTE chart has ambiguous fenced market-day builds")
@@ -155,12 +163,17 @@ def certified_chart_plan(session: date, ticker: str, timeframe: str, *,
     with _plan_lock:
         if len(_plan_cache) >= 512:
             _plan_cache.clear()
+        if len(_certificate_cache) >= 512:
+            _certificate_cache.clear()
         # A fenced build is immutable, and the chart-page cache uses this
         # same two-minute horizon. Missing scope stays short-lived while a
         # producer may still publish its coverage-last certificate.
         _plan_cache[key] = (monotonic() + (
             _FENCED_PLAN_TTL_SECONDS if plan is not None
             else _MISSING_PLAN_TTL_SECONDS), plan)
+        _certificate_cache[certificate_key] = (monotonic() + (
+            _FENCED_PLAN_TTL_SECONDS if plan is not None
+            else _MISSING_PLAN_TTL_SECONDS), rows)
     return plan
 
 

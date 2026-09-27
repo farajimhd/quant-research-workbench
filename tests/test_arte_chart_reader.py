@@ -47,6 +47,18 @@ def _plan():
 
 
 class ArteChartReaderTests(unittest.TestCase):
+    def setUp(self):
+        from src.backend import arte_chart_reader
+
+        arte_chart_reader._plan_cache.clear()
+        arte_chart_reader._certificate_cache.clear()
+
+    def tearDown(self):
+        from src.backend import arte_chart_reader
+
+        arte_chart_reader._plan_cache.clear()
+        arte_chart_reader._certificate_cache.clear()
+
     def test_backtest_chart_uses_dedicated_read_only_principal(self):
         from src.backend import arte_chart_reader
 
@@ -116,6 +128,7 @@ class ArteChartReaderTests(unittest.TestCase):
             certified_chart_plan(DAY, "SUGP", "1s")
             self.assertEqual(client.calls, 2)
         arte_chart_reader._plan_cache.clear()
+        arte_chart_reader._certificate_cache.clear()
         missing = _Client([])
         clock[0] = 300.0
         with (patch("src.backend.arte_chart_reader._reader", return_value=missing),
@@ -129,6 +142,30 @@ class ArteChartReaderTests(unittest.TestCase):
             self.assertIsNone(certified_chart_plan(DAY, "SUGP", "1s"))
             self.assertEqual(missing.calls, 2)
         arte_chart_reader._plan_cache.clear()
+
+    def test_timeframe_switch_reuses_certificate_but_keeps_distinct_plan_tokens(self):
+        from src.backend import arte_chart_reader
+
+        rows = [{"build_id": "build", "definition_hash": "a" * 64,
+                 "stage": stage, "attempt_id": attempt, "source_hash": "source",
+                 "output_rows": 2, "output_hash": "hash"}
+                for stage, attempt in (("bars", BAR_ATTEMPT),
+                                       ("technical", TECH_ATTEMPT),
+                                       ("broker_100ms", BAR_ATTEMPT))]
+        client = _Client(rows)
+        clock = [100.0]
+        with (patch("src.backend.arte_chart_reader._reader", return_value=client),
+              patch("src.backend.arte_chart_reader.monotonic",
+                    side_effect=lambda: clock[0])):
+            one = certified_chart_plan(DAY, "SUGP", "1s")
+            thirty = certified_chart_plan(DAY, "SUGP", "30s")
+            self.assertEqual(client.calls, 1)
+            self.assertEqual(one.required_resolutions_ms, (1_000,))
+            self.assertEqual(thirty.required_resolutions_ms, (30_000,))
+            self.assertNotEqual(one.token, thirty.token)
+            clock[0] = 221.0
+            certified_chart_plan(DAY, "SUGP", "5s")
+            self.assertEqual(client.calls, 2)
 
     def test_only_compatible_columns_and_auxiliary_modes_use_arte(self):
         args = dict(timeframe="1s", stage="full", indicator_columns=["bar_start", "ema_9"],
