@@ -384,24 +384,11 @@ def test_controller_adds_boundary_after_other_pending_records():
         asyncio.run(controller._save_restart_checkpoint_responsive(AT))
 
 
-def test_controller_rejects_retired_publisher_after_typed_preflight(monkeypatch):
-    import src.backend.backtest_terminal_v2_preflight as typed_preflight
-    import src.trading_runtime.arte_journal_writer as typed_writer
-
-    calls = []
-
-    class Client:
-        def close(self):
-            calls.append("closed")
-
-    client = Client()
-    monkeypatch.setattr(typed_writer, "journal_client_from_env", lambda: client)
-    monkeypatch.setattr(typed_preflight, "terminal_v2_operator_preflight",
-                        lambda actual: calls.append(("v2_preflight", actual)))
+def test_controller_rejects_unnumbered_strategy_before_typed_publication():
     controller = object.__new__(ReplayRunController)
     controller.definition = SimpleNamespace(
         mode=RunMode.BACKTEST,
-        configuration_revision={"content_hash": "a" * 64},
+        configuration_revision={"content_hash": "a" * 64, "payload": {"strategy": {}}},
         market_data_plan={"token": "market"},
         causal_v7_plan={"token": "v7"},
         payload=lambda: {"mode": "backtest"},
@@ -411,12 +398,12 @@ def test_controller_rejects_retired_publisher_after_typed_preflight(monkeypatch)
     controller._journal = None
     controller._journal_writer = None
     controller._journal_publisher = None
+    controller._resume_state = None
 
     async def exercise():
-        with pytest.raises(RuntimeError, match="typed journal publication and cold recovery"):
+        with pytest.raises(RuntimeError, match="new Backtest run"):
             await controller._open_fixed_journal()
         assert controller._journal is None
         assert controller._journal_publisher is None
 
     asyncio.run(exercise())
-    assert calls == [("v2_preflight", client), "closed"]
