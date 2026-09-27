@@ -130,7 +130,8 @@ def _profile_sql_calls(profile: _SqlCallProfile):
 
 
 async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
-               profile_preflight: bool = False) -> None:
+               profile_preflight: bool = False,
+               profile_execution: bool = False) -> None:
     from src.backend.replay_run_service import (
         ReplayRunController, ReplayRunDefinition, backtest_preflight,
     )
@@ -185,11 +186,24 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
     controller._open_fixed_journal = traced_open_journal
     began = perf_counter()
     sql_profile = _SqlCallProfile()
-    with _profile_sql_calls(sql_profile):
-        await controller.start()
-        if controller._task is None:
-            raise RuntimeError("Public Backtest start did not schedule execution")
-        await controller._task
+    execution_profile = cProfile.Profile() if profile_execution else None
+    if execution_profile is not None:
+        execution_profile.enable()
+    try:
+        with _profile_sql_calls(sql_profile):
+            await controller.start()
+            if controller._task is None:
+                raise RuntimeError("Public Backtest start did not schedule execution")
+            await controller._task
+    finally:
+        if execution_profile is not None:
+            execution_profile.disable()
+            output = StringIO()
+            pstats.Stats(execution_profile, stream=output).sort_stats(
+                "cumulative").print_stats(35)
+            print("Execution event-loop profile (top 35; worker threads excluded):",
+                  flush=True)
+            print(output.getvalue(), flush=True)
     elapsed = perf_counter() - began
     print(f"Strategy 1 probe run_id={controller.run_id} "
           f"status={controller.status} elapsed_s={elapsed:.3f} "
@@ -214,6 +228,8 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--profile-preflight", action="store_true",
                         help="show the slowest preflight calls; does not create market data")
+    parser.add_argument("--profile-execution", action="store_true",
+                        help="show main event-loop calls; profile overhead affects wall time")
     args = parser.parse_args()
     if args.ticker and (not args.ticker.isascii() or not args.ticker.isalnum()):
         raise ValueError("Integration ticker must be an ASCII market symbol")
@@ -221,7 +237,8 @@ def main() -> None:
         raise ValueError("Integration horizon must be one to 330 minutes")
     _load_private_credentials()
     asyncio.run(_run(args.session, args.ticker, apply=args.apply,
-                     minutes=args.minutes, profile_preflight=args.profile_preflight))
+                     minutes=args.minutes, profile_preflight=args.profile_preflight,
+                     profile_execution=args.profile_execution))
 
 
 if __name__ == "__main__":
