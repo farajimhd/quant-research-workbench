@@ -37,7 +37,7 @@ def parser():
     p.add_argument('--run-name',required=True)
     p.add_argument('--device',choices=('cpu','cuda'),default='cpu')
     p.add_argument('--iterations',type=int,default=1000)
-    p.add_argument('--rollout-steps',type=int,default=256)
+    p.add_argument('--rollout-steps',type=int,default=512)
     p.add_argument('--environments',type=int,default=4)
     p.add_argument('--epochs',type=int,default=4)
     p.add_argument('--batch-size',type=int,default=32)
@@ -46,11 +46,13 @@ def parser():
     p.add_argument('--seed',type=int,default=17)
     p.add_argument('--threads',type=int,default=2)
     p.add_argument('--learning-rate',type=float,default=3e-4)
-    p.add_argument('--gae-lambda',type=float,default=.95)
+    p.add_argument('--gae-lambda',type=float,default=1.)
     p.add_argument('--clip',type=float,default=.2)
     p.add_argument('--entropy-weight',type=float,default=.001)
     p.add_argument('--target-kl',type=float,default=.03)
     p.add_argument('--eval-every',type=int,default=100)
+    p.add_argument('--validation-rollouts',type=int,default=3)
+    p.add_argument('--validation-seed',type=int,default=1917)
     p.add_argument('--capital-multipliers',type=float,nargs='+',default=[.5,1.,2.])
     p.add_argument('--resume',action='store_true')
     p.add_argument('--allow-segment',action='store_true')
@@ -61,25 +63,36 @@ def parser():
     return p
 
 
-def evaluate(policy, sessions, config, device):
+def evaluate(policy, sessions, config, device, *, rollouts=3, seed=1917):
+    if rollouts < 1 or seed < 0:
+        raise ValueError('Invalid fixed-seed validation contract')
     result = []
+    was_training = policy.training
     policy.eval()
-    with torch.no_grad():
-        for session in sessions:
-            env = TradingEnv(session,config)
-            obs = env.observe()
-            last_report = time.monotonic()
-            while not env.done:
-                modes,sizes,_,_,_ = policy.action(collate([obs],device),deterministic=True)
-                obs,_,_,_ = env.step(modes[0].cpu().numpy(),sizes[0].cpu().numpy())
-                if time.monotonic()-last_report > 20:
-                    print(f"Validation {session.plan['date']} second={env.t}/{session.seconds-1}",flush=True)
+    devices = [torch.cuda.current_device()] if torch.device(device).type == 'cuda' else []
+    try:
+        with torch.no_grad(), torch.random.fork_rng(devices=devices):
+            for session in sessions:
+                for replicate in range(rollouts):
+                    # Common random numbers make checkpoint comparisons repeatable
+                    # without changing the training RNG or hiding stochastic trades.
+                    sample_seed = seed + int(session.plan['date'].replace('-',''))*rollouts + replicate
+                    torch.manual_seed(sample_seed)
+                    env = TradingEnv(session,config)
+                    obs = env.observe()
                     last_report = time.monotonic()
-            summary = dict(date=session.plan['date'],**env.summary())
-            if not summary['valid_terminal']:
-                raise ValueError(f"Unresolved terminal liquidation: {summary}")
-            result.append(summary)
-    policy.train()
+                    while not env.done:
+                        modes,sizes,_,_,_ = policy.action(collate([obs],device))
+                        obs,_,_,_ = env.step(modes[0].cpu().numpy(),sizes[0].cpu().numpy())
+                        if time.monotonic()-last_report > 20:
+                            print(f"Validation {session.plan['date']} replicate={replicate+1}/{rollouts} second={env.t}/{session.seconds-1}",flush=True)
+                            last_report = time.monotonic()
+                    summary = dict(date=session.plan['date'],replicate=replicate+1,**env.summary())
+                    if not summary['valid_terminal']:
+                        raise ValueError(f"Unresolved terminal liquidation: {summary}")
+                    result.append(summary)
+    finally:
+        policy.train(was_training)
     return result
 
 
@@ -100,21 +113,26 @@ def wandb_metrics(result):
         report['train/net_return_mean'] = float(np.mean([x['net_return'] for x in summaries]))
         report['train/max_drawdown_mean'] = float(np.mean([x['max_drawdown'] for x in summaries]))
         report['train/fees_mean'] = float(np.mean([x['fees'] for x in summaries]))
+        report['train/filled_orders_mean'] = float(np.mean([x['filled_orders'] for x in summaries]))
     if 'validation_mean_return' in result:
         report['validation/net_return_mean'] = result['validation_mean_return']
         report['validation/max_drawdown_mean'] = float(np.mean([x['max_drawdown'] for x in result['validation']]))
         report['validation/fees_mean'] = float(np.mean([x['fees'] for x in result['validation']]))
+        report['validation/filled_orders_mean'] = float(np.mean([x['filled_orders'] for x in result['validation']]))
+        report['validation/pass_only_fraction'] = float(np.mean([x['filled_orders'] == 0 for x in result['validation']]))
     return report
 
 
 def train(args):
-    for name in ('iterations','rollout_steps','environments','epochs','batch_size','eval_every','threads'):
+    for name in ('iterations','rollout_steps','environments','epochs','batch_size','eval_every',
+                 'validation_rollouts','threads'):
         if getattr(args,name) < 1:
             raise ValueError(name+' must be positive')
     if (not 0 < args.gae_lambda <= 1 or not 0 < args.clip < 1
             or not np.isfinite(args.learning_rate) or args.learning_rate <= 0
             or not np.isfinite(args.entropy_weight) or args.entropy_weight < 0
             or not np.isfinite(args.target_kl) or args.target_kl <= 0
+            or args.validation_seed < 0
             or any(not np.isfinite(x) or x <= 0 for x in args.capital_multipliers)):
         raise ValueError('Invalid PPO parameters')
     if not args.run_name or Path(args.run_name).name != args.run_name or args.run_name in ('.','..'):
@@ -304,7 +322,8 @@ def _train_locked(args, config, root):
                 losses={k:float(np.mean([m[k] for m in measures])) for k in measures[0]} if measures else {})
             improved = False
             if iteration == 1 or iteration % args.eval_every == 0 or iteration == args.iterations:
-                result['validation'] = evaluate(policy,validation,config,args.device)
+                result['validation'] = evaluate(policy,validation,config,args.device,
+                    rollouts=args.validation_rollouts,seed=args.validation_seed)
                 score = float(np.mean([x['net_return'] for x in result['validation']]))
                 improved = score > best
                 best = max(best,score)

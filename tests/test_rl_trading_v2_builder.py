@@ -146,7 +146,7 @@ def test_incompatible_code_is_reported_and_identity_mismatch_fails(cache):
 def test_cached_extraction_never_fetches_features_or_reference(cache,monkeypatch):
     rows,_ = lookup(cache)
     monkeypatch.setattr(build_data,'SECONDS',8)
-    bars = pl.DataFrame(dict(bucket_index=[14400,14402],close_int=[12345,20000],
+    bars = pl.DataFrame(dict(bucket_index=[14400,14402],open_int=[12000,19000],close_int=[12345,20000],
         price_valid=[1,1],volume=[23.,45.],trade_count=[2,3]))
     def forbidden(*args):
         raise AssertionError('Fetched already cached features')
@@ -224,7 +224,7 @@ def test_builder_mixes_v1_copy_and_missing_listing_then_resumes(cache,tmp_path,m
     monkeypatch.setattr(build_data,'missing_seeds',lambda c,d,t:seeds.extend(t) or [])
     monkeypatch.setattr(build_data.arte_source,'verify_listing',lambda *a:None)
     monkeypatch.setattr(build_data,'verify_execution_source',lambda *a:None)
-    bars = pl.DataFrame(dict(bucket_index=[14400],close_int=[50000],price_valid=[1],
+    bars = pl.DataFrame(dict(bucket_index=[14400],open_int=[50000],close_int=[50000],price_valid=[1],
                             volume=[0.],trade_count=[0]))
     fetched = []
     def raw(c,s,d,t):

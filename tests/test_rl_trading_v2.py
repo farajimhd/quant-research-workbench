@@ -18,6 +18,7 @@ from research.rl_trading.v2 import train, evaluate
 def market(n=3, seconds=12, day='2026-08-20', prices=None):
     price = np.full((n,seconds),5.,dtype=np.float64) if prices is None else np.asarray(prices,dtype=np.float64)
     arrays = dict(features=np.zeros((n,seconds,3),dtype=np.float32),prices=price,
+        execution_open=price.copy(),
         volume=np.full((n,seconds),100000.,dtype=np.float64),
         volume_60s=np.broadcast_to(np.arange(n,0,-1)[:,None]*100000.,(n,seconds)).copy(),
         trades_60s=np.full((n,seconds),100.),fresh=np.ones((n,seconds),dtype=bool),
@@ -347,6 +348,31 @@ def test_arrival_band_cap_and_fees_are_applied_on_both_sides():
     assert env.equity == pytest.approx(env.initial-350)
 
 
+def test_fill_uses_next_second_open_without_exposing_it_to_decision():
+    session = market(n=1,seconds=12)
+    session.arrays['execution_open'][0,1] = 6.
+    env = TradingEnv(session,config(initial_cash=1000.))
+    assert env.observe()['market'][0,-1,0] == pytest.approx(np.log(5.))
+    act(env,0,1,size=.5)
+    assert env.last_fills[0]['price'] == pytest.approx(6.)
+    assert env.session.arrays['prices'][0,1] == 5.
+
+
+def test_validation_samples_fixed_policy_rollouts_without_changing_training_rng():
+    session = market(n=1,seconds=12)
+    policy = PortfolioPolicy(3,width=16,heads=2)
+    with torch.no_grad():
+        policy.trade_gate.weight.zero_()
+        policy.trade_gate.bias.fill_(3.)
+    before = torch.get_rng_state().clone()
+    first = train.evaluate(policy,[session],config(),device='cpu',rollouts=2,seed=41)
+    assert torch.equal(before,torch.get_rng_state())
+    second = train.evaluate(policy,[session],config(),device='cpu',rollouts=2,seed=41)
+    assert first == second
+    assert len(first) == 2 and all(row['valid_terminal'] for row in first)
+    assert sum(row['filled_orders'] for row in first) > 0
+
+
 def test_order_volume_limits_partial_fills():
     session = market(n=1)
     session.arrays['volume'][0,1] = 1000
@@ -415,7 +441,8 @@ def test_direct_extraction_price_clock_and_rolling_activity(monkeypatch):
     import polars as pl
     from research.rl_trading.v2 import build_data
     bars = pl.DataFrame(dict(bucket_index=[14400,14401,14460],price_valid=[1,0,1],
-        close_int=[50000,990000,60000],volume=[100.,200.,300.],trade_count=[2,3,4]))
+        open_int=[49000,990000,61000],close_int=[50000,990000,60000],
+        volume=[100.,200.,300.],trade_count=[2,3,4]))
     calls = []
     monkeypatch.setattr(build_data.arte_source,'verify_listing',lambda *a:calls.append(a[-1]))
     monkeypatch.setattr(build_data,'read_reference',lambda *a:({},[],{},{}))
@@ -427,6 +454,7 @@ def test_direct_extraction_price_clock_and_rolling_activity(monkeypatch):
     assert arrays['prices'][0] == 0
     assert arrays['prices'][1] == 5 and arrays['prices'][2] == 5
     assert arrays['prices'][60] == 5 and arrays['prices'][61] == 6
+    assert arrays['execution_open'][1] == 4.9 and arrays['execution_open'][61] == 6.1
     assert not arrays['fresh'][2] and arrays['fresh'][61]
     assert arrays['trades_60s'][60] == 5
     assert arrays['trades_60s'][61] == 7

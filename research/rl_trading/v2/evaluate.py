@@ -44,7 +44,9 @@ def main(argv=None):
     policy = PortfolioPolicy(**manifest['model']).to(args.device)
     policy.load_state_dict(saved['policy'])
     report = dict(run=str(run),checkpoint_hash=file_hash(checkpoint),config=config.manifest(),
-        test_plans=[x.plan['plan_hash'] for x in sessions],results=evaluate(policy,sessions,config,args.device))
+        test_plans=[x.plan['plan_hash'] for x in sessions],results=evaluate(policy,sessions,config,args.device,
+            rollouts=manifest['arguments']['validation_rollouts'],
+            seed=manifest['arguments']['validation_seed']))
     root = output_root()/'evaluation'/digest(report)[:20]
     write(root/'report.json',report)
     print(root/'report.json',flush=True)

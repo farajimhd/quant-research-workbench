@@ -2,7 +2,7 @@
 from dataclasses import asdict, dataclass
 import math
 
-VERSION = 'rl-trading-v2-ppo-estimated-luld-1'
+VERSION = 'rl-trading-v2-ppo-execution-open-2'
 # Upper bounds are inclusive, except the first band which excludes $1.
 SHARE_CAPS = ((1., 40000), (5., 35000), (10., 30000), (20., 25000),
               (50., 20000), (None, 15000))
@@ -80,5 +80,5 @@ class Config:
                         bracket_buffer_ratio=BRACKET_BUFFER_RATIO,
                         provenance='research proxy from prior close and completed regular-session bars; not official SIP bands'),
                     duration_preference='none; gamma=1; session_only',
-                    execution_assumptions='uncalibrated_price_only', latency_seconds=1,
-                    order_type='next_second_IOC', reward='delta_equity_over_initial_equity')
+                    execution_assumptions='uncalibrated_next_second_open_price_only', latency_seconds=1,
+                    order_type='next_second_open_IOC_proxy', reward='delta_equity_over_initial_equity')
