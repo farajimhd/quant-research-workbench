@@ -141,11 +141,14 @@ async def run_certified_strategy_one_session(
     evidence_market = project_market_day_plan(
         market, tuple(row.ticker for row in candidates.prepared))
     projected_prices = prices.projected(projected)
+    sparse_started = perf_counter() if stage_time is not None else 0.0
     scheduler = build_certified_strategy_one_scheduler(
         projected, survivors, activations=activation_schedule,
         price_plan=projected_prices, through_boundary_ms=through_boundary_ms,
         client_factory=client_factory, max_workers=max_workers,
         activation_source_candidates=visible)
+    if stage_time is not None:
+        stage_time("strategy_one_sparse_load", sparse_started)
     try:
         reader = client_factory()
     except BaseException:
@@ -156,6 +159,7 @@ async def run_certified_strategy_one_session(
         raise TypeError("Strategy 1 V7 source needs a closable read client")
     with closing(reader):
         try:
+            evidence_started = perf_counter() if stage_time is not None else 0.0
             evidence = StrategyOneCausalEvidence(
                 # V7 seeds, pivots and HOD cover all certified candidates,
                 # not only the shortened run horizon. Keep that exact scope
@@ -164,6 +168,8 @@ async def run_certified_strategy_one_session(
                 pivot_plan=pivots, hod_plan=hod,
                 session=date.fromisoformat(projected.sessions[0]), client=reader,
                 stage_time=stage_time)
+            if stage_time is not None:
+                stage_time("strategy_one_evidence_init", evidence_started)
             if len(selected) <= 64:
                 seed_started = perf_counter() if stage_time is not None else 0.0
                 await asyncio.to_thread(

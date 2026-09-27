@@ -3338,6 +3338,7 @@ class ReplayRunController:
                 await self._publish()
 
         try:
+            session_started = time.perf_counter()
             await run_certified_strategy_one_session(
                 market=market, candidates=candidates,
                 activations=activations, pivots=pivots, hod=hod,
@@ -3352,6 +3353,8 @@ class ReplayRunController:
         except StopRequested:
             await self._finish("stopped")
             return
+        finally:
+            self._record_stage_time("strategy_one_session", session_started)
         await self._finish("completed")
 
     async def _run_engine(self) -> None:
