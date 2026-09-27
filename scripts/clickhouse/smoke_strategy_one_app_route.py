@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import Counter
 from contextlib import contextmanager
 import cProfile
 from datetime import date, datetime, time, timedelta
@@ -37,9 +38,12 @@ def _profile_v7_updates(enabled: bool):
         yield
         return
     from src.backend.fixed_v7_stream import FixedV7Stream
+    from src.market_engine import reaction_band
 
     original = FixedV7Stream.update_second
+    original_fit = reaction_band.fit
     profiles: dict[int, cProfile.Profile] = {}
+    fit_shapes: Counter[tuple[str, int]] = Counter()
     lock = Lock()
 
     def wrapped(self, row, *, at):
@@ -48,11 +52,26 @@ def _profile_v7_updates(enabled: bool):
             profile = profiles.setdefault(identity, cProfile.Profile())
         return profile.runcall(original, self, row, at=at)
 
+    def counted_fit(prices, resolution):
+        result = original_fit(prices, resolution)
+        distinct = len(set(prices))
+        shape = ("one_price" if distinct == 1 else
+                 "two_prices" if distinct == 2 else "three_plus_prices")
+        with lock:
+            fit_shapes[(shape, min(len(prices), 20))] += 1
+        return result
+
     FixedV7Stream.update_second = wrapped
+    reaction_band.fit = counted_fit
     try:
         yield
     finally:
         FixedV7Stream.update_second = original
+        reaction_band.fit = original_fit
+        print("V7 fit observation shapes (length 20 means 20+): "
+              + ", ".join(f"{shape}/{length}={count}"
+                          for (shape, length), count in sorted(fit_shapes.items())),
+              flush=True)
         if profiles:
             report = StringIO()
             stats = pstats.Stats(*profiles.values(), stream=report)
