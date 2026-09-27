@@ -6,6 +6,18 @@ account states. Full extraction has no V1 Phase 1–3 dependency; optional V1 ca
 reuse reads its certified provenance metadata. V1 source and runtime are unchanged.
 This is a research implementation, not a released strategy or profitability claim.
 
+The single-account full-session experiment uses `--environments 1`,
+`--capital-multipliers 1`, `--session-order cycle`,
+`--min-completed-episodes 3`, and `--selection-min-episodes 1`. It replays the
+training dates in supplied chronological order at the configured initial cash.
+PPO still updates from bounded consecutive one-second segments; the same account
+continues across those updates until the session ends. The iteration budget must
+cover the required complete sessions. Validation cannot select a checkpoint
+before the first completed training session. Episode and validation summaries
+separate policy pass/buy/reduce/close decisions, discretionary fills/costs, and
+realized P&L from discretionary versus mandatory exits. These are diagnostics;
+the reward remains net change in account equity without an additional fee tax.
+
 ## Market and observation contract
 
 `build_data.py` reads the full population of a certified ARTE market-day build,
