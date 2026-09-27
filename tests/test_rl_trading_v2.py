@@ -350,6 +350,7 @@ def test_single_account_cycles_complete_sessions_before_checkpoint_selection(tmp
         '--allow-segment','--device','cpu','--width','16','--heads','2',
         '--threads','1','--rollout-steps','5','--environments','1',
         '--capital-multipliers','1','--session-order','cycle',
+        '--stream-sessions',
         '--min-completed-episodes','3','--selection-min-episodes','1',
         '--epochs','1','--batch-size','5','--history-seconds','4',
         '--liquidation-buffer-seconds','2','--eval-every','2']
@@ -365,6 +366,7 @@ def test_single_account_cycles_complete_sessions_before_checkpoint_selection(tmp
     saved = torch.load(run/'checkpoint_latest.pt',weights_only=False)
     assert saved['next_session_index'] == 4
     assert saved['session_indices'] == [0]
+    assert read(run/'run_manifest.json')['arguments']['stream_sessions'] is True
 
 
 def test_arrival_band_cap_and_fees_are_applied_on_both_sides():
