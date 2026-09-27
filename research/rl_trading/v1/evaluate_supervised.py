@@ -48,8 +48,9 @@ def run(args):
                  for path in config['train_shards']+config['val_shards']}
     if not shards or len({s.plan['date'] for s in shards}) != len(shards):
         raise ValueError('Test shards must cover distinct sessions')
-    if train_val & {s.plan['date'] for s in shards}:
-        raise ValueError('Held-out test session overlaps training or validation')
+    test_days = {s.plan['date'] for s in shards}
+    if train_val & test_days or min(test_days) <= max(train_val):
+        raise ValueError('Held-out test sessions must follow training and validation')
     first = shards[0].plan
     if any((s.plan['top_n'],s.plan['history_seconds'],s.plan['max_lots'],
             s.plan['max_orders'],s.plan['feature_names']) !=

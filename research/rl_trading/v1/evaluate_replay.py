@@ -85,9 +85,10 @@ def run(args):
     shards = [SessionShard(path) for path in args.test_shards]
     protected = {SessionShard(Path(path),verify=False).plan['date']
                  for path in config['train_shards']+config['val_shards']}
+    test_days = {s.plan['date'] for s in shards}
     if (not shards or len({s.plan['date'] for s in shards}) != len(shards)
-            or protected & {s.plan['date'] for s in shards}):
-        raise ValueError('Replay needs distinct held-out session dates')
+            or protected & test_days or min(test_days) <= max(protected)):
+        raise ValueError('Replay needs distinct held-out dates after all training and validation')
     if not args.allow_segment and any(s.plan['segment'] for s in shards):
         raise ValueError('Segment replay requires explicit bounded-smoke permission')
     first = shards[0].plan

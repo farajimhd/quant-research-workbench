@@ -11,6 +11,7 @@ sys.path.insert(0,str(REPO))
 
 import argparse
 from contextlib import nullcontext
+import gc
 import math
 import signal
 from time import perf_counter
@@ -60,36 +61,57 @@ def _load_roots(paths, *, allow_segment):
     return sorted(result,key=lambda item:item.plan['date'])
 
 
-def _run_validation(model, sessions, device, batch_size, trade_weight, value_weight):
+def _session_data(shard, resident, device, vocab):
+    return resident[shard.root] if resident is not None else shard.to_gpu(
+        device,vocab,reserve_fraction=.25)
+
+
+def _run_validation(model, shards, resident, device, vocab, batch_size,
+                    trade_weight, value_weight):
     model.eval()
     totals = dict(loss=0.,samples=0)
     confusion = torch.zeros((3,3),device=device,dtype=torch.long)
     exact = torch.zeros(3,device=device,dtype=torch.long)
     with torch.inference_mode():
-        for data in sessions:
-            for start in range(0,data.rows,batch_size):
-                index = torch.arange(start,min(start+batch_size,data.rows),device=device)
-                batch = data.batch(index)
-                with torch.autocast('cuda',dtype=torch.bfloat16):
-                    logits,value = model(batch,teacher_actions=batch['actions'])
-                    loss,metrics = teacher_loss(logits,value,batch,
-                        trade_weight=trade_weight,value_weight=value_weight)
-                count = len(index)
-                totals['loss'] += float(loss.detach())*count
-                confusion += metrics['class_confusion']
-                exact += metrics['exact_by_class']
-                totals['samples'] += count
+        for shard in shards:
+            data = _session_data(shard,resident,device,vocab)
+            try:
+                for start in range(0,data.rows,batch_size):
+                    index = torch.arange(start,min(start+batch_size,data.rows),device=device)
+                    batch = data.batch(index)
+                    with torch.autocast('cuda',dtype=torch.bfloat16):
+                        logits,value = model(batch,teacher_actions=batch['actions'])
+                        loss,metrics = teacher_loss(logits,value,batch,
+                            trade_weight=trade_weight,value_weight=value_weight)
+                    count = len(index)
+                    totals['loss'] += float(loss.detach())*count
+                    confusion += metrics['class_confusion']
+                    exact += metrics['exact_by_class']
+                    totals['samples'] += count
+                del index,batch,logits,value,loss,metrics
+            finally:
+                if resident is None:
+                    del data
+                    gc.collect()
+                    torch.cuda.empty_cache()
     model.train()
     return dict(loss=totals['loss']/max(1,totals['samples']),
         **classification_metrics(confusion,exact))
 
 
-def _run_closed_loop(model, shards, sessions, device):
+def _run_closed_loop(model, shards, resident, device, vocab):
     model.eval()
     reports = []
     with torch.inference_mode():
-        for shard,data in zip(shards,sessions):
-            result = replay_session(shard,ModelSelector(model,data,shard,device))
+        for shard in shards:
+            data = _session_data(shard,resident,device,vocab)
+            try:
+                result = replay_session(shard,ModelSelector(model,data,shard,device))
+            finally:
+                if resident is None:
+                    del data
+                    gc.collect()
+                    torch.cuda.empty_cache()
             if not result['complete']:
                 raise ValueError('Training replay did not reach liquidation')
             reports.append(dict(date=shard.plan['date'],profit=result['profit'],
@@ -111,6 +133,52 @@ def _eligible_replay(report):
         and all(item['buys'] > 0 for item in report['validation']))
 
 
+def _warm_start_model(model, vocab, contract, checkpoint_path):
+    """Transfer a finished, validation-qualified policy into a new dated run."""
+    checkpoint_path = Path(checkpoint_path).resolve()
+    if checkpoint_path.name != 'checkpoint_best_replay.pt':
+        raise ValueError('Warm start requires a best closed-loop replay checkpoint')
+    source_run = checkpoint_path.parent.parent
+    source_config = read(source_run/'config.json')
+    source_best = read(source_run/'best_closed_loop.json')
+    if not _eligible_replay(source_best):
+        raise ValueError('Warm-start source was not validation-qualified')
+    source_plan = read(Path(source_config['train_shards'][0])/'plan.json')
+    keys = ('top_n','history_seconds','max_lots','max_orders','feature_names')
+    if (source_config['feature_names'] != list(FEATURE_NAMES) or
+            any(source_plan[key] != (list(contract[key]) if key == 'feature_names'
+                else contract[key]) for key in keys)):
+        raise ValueError('Warm-start source has a different feature or action contract')
+    latest = torch.load(source_run/'checkpoints/checkpoint_latest.pt',
+        map_location='cpu',weights_only=False)
+    saved = torch.load(checkpoint_path,map_location='cpu',weights_only=False)
+    if (latest['config_hash'] != source_config['config_hash'] or
+            saved['config_hash'] != source_config['config_hash'] or
+            source_best['config_hash'] != source_config['config_hash'] or
+            latest['epoch']+1 < source_config['training']['epochs'] or
+            saved['epoch']+1 != source_best['epoch']):
+        raise ValueError('Warm-start source is unfinished or changed')
+    old_vocab = saved['ticker_vocabulary']
+    weights = dict(saved['model'])
+    prior_identity = weights['identity.weight']
+    new_identity = model.state_dict()['identity.weight'].clone()
+    if (prior_identity.shape[0] != len(old_vocab)+2 or
+            prior_identity.shape[1] != new_identity.shape[1]):
+        raise ValueError('Warm-start identity embedding has a different width')
+    copied = 0
+    for ticker,index in vocab.items():
+        old_index = old_vocab.get(ticker)
+        if old_index is not None:
+            new_identity[index] = prior_identity[old_index]
+            copied += 1
+    new_identity[-1] = prior_identity[-1]
+    weights['identity.weight'] = new_identity
+    model.load_state_dict(weights,strict=True)
+    return dict(source_run=str(source_run),checkpoint=str(checkpoint_path),
+        checkpoint_hash=file_hash(checkpoint_path),source_epoch=saved['epoch']+1,
+        reused_tickers=copied,new_tickers=len(vocab)-copied)
+
+
 def run(args):
     global STOP
     STOP = False
@@ -124,8 +192,9 @@ def run(args):
     train_shards = _load_roots(args.train_shards,allow_segment=args.allow_segment)
     val_shards = _load_roots(args.val_shards,allow_segment=args.allow_segment)
     train_days = {item.plan['date'] for item in train_shards}
-    if train_days & {item.plan['date'] for item in val_shards}:
-        raise ValueError('Training and validation sessions overlap')
+    val_days = {item.plan['date'] for item in val_shards}
+    if max(train_days) >= min(val_days):
+        raise ValueError('Every validation session must follow every training session')
     vocab = ticker_vocabulary(train_shards)
     contract = train_shards[0].plan
     if any((item.plan['top_n'],item.plan['history_seconds'],item.plan['max_lots'],
@@ -142,7 +211,10 @@ def run(args):
             weight_decay=args.weight_decay,grad_clip=args.grad_clip,
             trade_weight=args.trade_weight,value_weight=args.value_weight,
             seed=args.seed,allow_segment=args.allow_segment,archive_every=args.archive_every,
-            replay_every=args.replay_every,unknown_ticker_dropout=args.unknown_ticker_dropout),
+            replay_every=args.replay_every,unknown_ticker_dropout=args.unknown_ticker_dropout,
+            data_mode=args.data_mode,
+            init_checkpoint=str(args.init_checkpoint.resolve()) if args.init_checkpoint else None,
+            init_checkpoint_hash=file_hash(args.init_checkpoint) if args.init_checkpoint else None),
         code_hashes={name:file_hash(Path(__file__).with_name(name)) for name in
             ('train.py','data.py','model.py','objectives.py','features.py',
              'replay.py','evaluate_replay.py','shard_labels.py','costs.py')})
@@ -160,6 +232,10 @@ def run(args):
         top_n=contract['top_n'],max_lots=contract['max_lots'],
         max_orders=contract['max_orders'],d_model=args.d_model,
         layers=args.layers,heads=args.heads).to(device)
+    warm_start = (_warm_start_model(model,vocab,contract,args.init_checkpoint)
+        if args.init_checkpoint else None)
+    if warm_start:
+        write(paths.run_root/'warm_start.json',warm_start)
     optimizer = torch.optim.AdamW(model.parameters(),lr=args.learning_rate,
         weight_decay=args.weight_decay,fused=True)
     steps_per_epoch = sum(math.ceil(item.complete['rows']/args.batch_size) for item in train_shards)
@@ -170,6 +246,8 @@ def run(args):
     start_epoch = 0
     global_step = 0
     latest = paths.checkpoints_dir/'checkpoint_latest.pt'
+    if latest.exists() and not args.resume:
+        raise ValueError('Existing training checkpoint requires --resume; choose a new run name')
     if args.resume and latest.exists():
         saved = torch.load(latest,map_location=device,weights_only=False)
         if saved['config_hash'] != config['config_hash']:
@@ -179,6 +257,8 @@ def run(args):
         scheduler.load_state_dict(saved['scheduler'])
         start_epoch = int(saved['epoch'])+1
         global_step = int(saved['global_step'])
+    elif args.resume:
+        raise ValueError('Resume requested but the run has no latest checkpoint')
     load_env_files(discover_env_files(REPO),verbose=False)
     wandb = init_wandb(entity=args.wandb_entity,project=args.wandb_project,
         run_name=name,config=config,run_dir=paths.wandb_dir,mode=args.wandb_mode,
@@ -186,7 +266,8 @@ def run(args):
     write_run_manifest(paths.manifest_path,repo_root=REPO,model_family='rl_trading',
         version=VERSION,job_type='train',run_name=name,args=vars(args),config=config,
         data_roots={str(i):str(shard.root) for i,shard in enumerate(train_shards+val_shards)},
-        output_root=paths.run_root,source_checkpoint=latest if start_epoch else None,
+        output_root=paths.run_root,source_checkpoint=(latest if start_epoch else
+            args.init_checkpoint if args.init_checkpoint else None),
         wandb_info={'project':args.wandb_project,'mode':args.wandb_mode})
     metrics = AsyncJsonlMetricLogger(paths.metrics_path,wandb)
     checkpoint = AsyncCheckpointManager(paths.checkpoints_dir,paths.checkpoint_manifest_path,
@@ -213,13 +294,18 @@ def run(args):
         f'{sum(p.numel() for p in model.parameters()):,} parameters | {device}')
     previous = signal.signal(signal.SIGINT,_interrupt)
     try:
-        preload_started = perf_counter()
-        train_data = [shard.to_gpu(device,vocab,reserve_fraction=.25) for shard in train_shards]
-        val_data = [shard.to_gpu(device,vocab,reserve_fraction=.25) for shard in val_shards]
-        torch.cuda.synchronize()
-        preload_seconds = perf_counter()-preload_started
-        console.print(f'GPU-resident sessions ready | preload {preload_seconds:.1f}s | '
-            f'allocated {torch.cuda.memory_allocated(device)/2**30:.1f} GiB')
+        resident = None
+        preload_seconds = 0.
+        if args.data_mode == 'gpu_resident':
+            preload_started = perf_counter()
+            resident = {shard.root:shard.to_gpu(device,vocab,reserve_fraction=.25)
+                for shard in train_shards+val_shards}
+            torch.cuda.synchronize()
+            preload_seconds = perf_counter()-preload_started
+            console.print(f'GPU-resident sessions ready | preload {preload_seconds:.1f}s | '
+                f'allocated {torch.cuda.memory_allocated(device)/2**30:.1f} GiB')
+        else:
+            console.print('Bounded session streaming ready | one session on GPU at a time')
         for epoch in range(start_epoch,args.epochs):
             if STOP or (paths.run_root/'STOP').exists():
                 break
@@ -229,7 +315,8 @@ def run(args):
             exact = torch.zeros(3,device=device,dtype=torch.long)
             wall_start = perf_counter()
             gpu_ms = 0.
-            for shard,data in zip(train_shards,train_data):
+            for shard in train_shards:
+                data = _session_data(shard,resident,device,vocab)
                 generator = torch.Generator(device=device).manual_seed(args.seed+epoch*1000003+
                     int(shard.plan['date'].replace('-','')))
                 order = torch.randperm(data.rows,device=device,generator=generator)
@@ -269,6 +356,10 @@ def run(args):
                     if args.max_steps and global_step >= args.max_steps:
                         break
                 del batch,logits,value,loss,measure,index,order,generator
+                if resident is None:
+                    del data
+                    gc.collect()
+                    torch.cuda.empty_cache()
                 if args.max_steps and global_step >= args.max_steps:
                     break
             torch.cuda.synchronize()
@@ -280,7 +371,7 @@ def run(args):
                 samples_per_second=sums['samples']/max(elapsed,1e-9))
             if sums['samples'] == 0:
                 raise ValueError('No training examples were processed')
-            val = _run_validation(model,val_data,device,args.batch_size,
+            val = _run_validation(model,val_shards,resident,device,vocab,args.batch_size,
                 args.trade_weight,args.value_weight)
             report = {**{'train/'+key:float(value) for key,value in train_result.items()},
                 **{'val/'+key:float(value) for key,value in val.items()}}
@@ -297,8 +388,8 @@ def run(args):
             if args.replay_every and (epoch == 0 or (epoch+1)%args.replay_every == 0
                     or epoch+1 == args.epochs):
                 replay_start = perf_counter()
-                train_replays = _run_closed_loop(model,train_shards,train_data,device)
-                val_replays = _run_closed_loop(model,val_shards,val_data,device)
+                train_replays = _run_closed_loop(model,train_shards,resident,device,vocab)
+                val_replays = _run_closed_loop(model,val_shards,resident,device,vocab)
                 replay_report = dict(config_hash=config['config_hash'],epoch=epoch+1,
                     train=train_replays,validation=val_replays,
                     train_profit=sum(item['profit'] for item in train_replays),
@@ -385,12 +476,18 @@ def main(argv=None):
     parser.add_argument('--wandb-mode',choices=('disabled','auto','offline','online'),default='disabled')
     parser.add_argument('--wandb-project',default='rl-trading-v1')
     parser.add_argument('--wandb-entity',default='')
+    parser.add_argument('--data-mode',choices=('gpu_resident','session_stream'),
+        default='gpu_resident',help='Stream one verified session at a time when the dataset exceeds GPU memory')
+    parser.add_argument('--init-checkpoint',type=Path,
+        help='Warm-start a new run from a finished validation-qualified checkpoint_best_replay.pt')
     parser.add_argument('--resume',action='store_true')
     args = parser.parse_args(argv)
     if (args.epochs < 1 or args.batch_size < 1 or args.max_steps < 0 or args.archive_every < 1
             or args.replay_every < 0 or not 0 <= args.unknown_ticker_dropout < 1
             or not 0 < args.min_gpu_fraction <= 1):
         parser.error('Training budgets must be positive')
+    if args.init_checkpoint and args.resume:
+        parser.error('--init-checkpoint starts a new run and cannot be combined with --resume')
     return run(args)
 
 

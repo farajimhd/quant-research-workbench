@@ -8,6 +8,7 @@ import torch
 from research.rl_trading.v1.common import bounds, digest, file_hash
 from research.rl_trading.v1.features import FEATURE_NAMES, SECONDS
 from research.rl_trading.v1 import train, evaluate_supervised, evaluate_replay
+from research.rl_trading.v1.model import MarketPolicy
 from src.market_engine.level_book_store import write
 
 
@@ -62,6 +63,43 @@ def test_flat_or_losing_replay_cannot_be_selected_as_profitable():
     assert train._eligible_replay(report)
 
 
+def test_warm_start_transfers_ticker_identity_by_name(tmp_path):
+    source = tmp_path/'source'
+    (source/'checkpoints').mkdir(parents=True)
+    source_shard = tmp_path/'source-shard'
+    source_shard.mkdir()
+    contract = dict(top_n=1,history_seconds=4,max_lots=1,max_orders=1,
+        feature_names=FEATURE_NAMES)
+    write(source_shard/'plan.json',contract)
+    config = dict(config_hash='source-hash',feature_names=list(FEATURE_NAMES),
+        train_shards=[str(source_shard)],training=dict(epochs=2))
+    write(source/'config.json',config)
+    write(source/'best_closed_loop.json',dict(config_hash='source-hash',epoch=2,
+        val_profit=1.,validation=[{'buys':1}]))
+    old_vocab = {'A':1,'B':2}
+    old_model = MarketPolicy(features=len(FEATURE_NAMES),tickers=2,top_n=1,
+        max_lots=1,max_orders=1,d_model=16,layers=1,heads=4)
+    with torch.no_grad():
+        old_model.identity.weight[1].fill_(.25)
+        old_model.identity.weight[2].fill_(.5)
+        old_model.identity.weight[-1].fill_(.75)
+    saved = dict(config_hash='source-hash',epoch=1,model=old_model.state_dict(),
+        ticker_vocabulary=old_vocab)
+    torch.save(saved,source/'checkpoints/checkpoint_best_replay.pt')
+    torch.save(saved,source/'checkpoints/checkpoint_latest.pt')
+    new_vocab = {'B':1,'C':2,'A':3}
+    model = MarketPolicy(features=len(FEATURE_NAMES),tickers=3,top_n=1,
+        max_lots=1,max_orders=1,d_model=16,layers=1,heads=4)
+    new_before = model.identity.weight[2].detach().clone()
+    result = train._warm_start_model(model,new_vocab,contract,
+        source/'checkpoints/checkpoint_best_replay.pt')
+    assert result['reused_tickers'] == 2 and result['new_tickers'] == 1
+    assert torch.all(model.identity.weight[1] == .5)
+    assert torch.all(model.identity.weight[3] == .25)
+    assert torch.all(model.identity.weight[-1] == .75)
+    assert torch.equal(model.identity.weight[2],new_before)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required by training contract')
 def test_cuda_training_launcher_reads_disk_shards_and_checkpoints(tmp_path,monkeypatch,
                                                                    allow_cuda_pooling):
@@ -71,6 +109,7 @@ def test_cuda_training_launcher_reads_disk_shards_and_checkpoints(tmp_path,monke
     assert train.main(['--train-shards',str(train_root),'--val-shards',str(val_root),
         '--run-name','smoke','--epochs','1','--batch-size','2','--d-model','32',
         '--layers','1','--heads','4','--max-steps','1','--allow-segment',
+        '--data-mode','session_stream',
         '--value-weight','0.03','--no-require-gpu-bound','--wandb-mode','disabled']) == 0
     root = tmp_path/'rl-trading'/'v1'/'train'/'smoke'
     assert (root/'run_manifest.json').is_file()
