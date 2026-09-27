@@ -8,7 +8,9 @@ from typing import Any
 from uuid import UUID
 
 from src.trading_runtime.arte_journal_writer import (
-    CommittedPrefix, V2CommittedPrefix, VerifiedPrefix, _CONTRACTS,
+    ACKNOWLEDGEMENT, CANCEL, REPRICE, RISK_ACTION_TABLES,
+    PROTECTION_CHANGE_TABLES, PROTECTION_RECONCILIATION_TABLES,
+    V4_ALLOCATION, CommittedPrefix, V2CommittedPrefix, VerifiedPrefix, _CONTRACTS,
     _EVENT_DETAILS, _canonical_typed_content, _committed_batch_filter,
     _literal, _rows,
 )
@@ -37,6 +39,36 @@ class TypedJournalEvent:
     event: dict[str, Any]
     detail_family: str | None
     detail: dict[str, Any] | None
+
+
+# V4 supplements use the same event parent but replace or extend the V1
+# detail family. The writer seals these named tables in its V4 commit; review
+# must follow that exact contract rather than the legacy-only V1 map.
+_V4_EVENT_DETAILS = {
+    ("broker", "order_acknowledgement"): ACKNOWLEDGEMENT.name,
+    ("broker", "order_cancel_requested"): CANCEL.name,
+    ("command", "order_cancel"): CANCEL.name,
+    ("broker", "order_repriced"): REPRICE.name,
+    ("broker", "order_reprice_error"): REPRICE.name,
+    ("portfolio_management", "portfolio_allocation"): V4_ALLOCATION.name,
+    ("protection", "protection_change"): PROTECTION_CHANGE_TABLES[0].name,
+    ("order_management", "protection_reconciliation"):
+        PROTECTION_RECONCILIATION_TABLES[0].name,
+    ("risk", "kill_entry_order"): RISK_ACTION_TABLES[0].name,
+    ("risk", "emergency_flatten"): RISK_ACTION_TABLES[0].name,
+    ("snapshot", "portfolio"): "trading_backtest_account_snapshot_v2",
+    ("snapshot", "position"): "trading_backtest_position_snapshot_v2",
+}
+
+
+def _detail_family(prefix: VerifiedPrefix, kind: tuple[str, str]) -> str | None:
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+
+    if isinstance(prefix, V4CommittedPrefix) and kind in _V4_EVENT_DETAILS:
+        return _V4_EVENT_DETAILS[kind]
+    if kind in _EVENT_DETAILS:
+        return _EVENT_DETAILS[kind]
+    raise RuntimeError("Typed event page contains an unknown detail contract")
 
 
 def _verified_row(name: str, row: dict[str, Any]) -> dict[str, Any]:
@@ -85,9 +117,7 @@ def load_typed_event_page(
             raise RuntimeError("Typed event page differs from its committed prefix")
         previous = sequence
         kind = (event["category"], event["entity_type"])
-        if kind not in _EVENT_DETAILS:
-            raise RuntimeError("Typed event page contains an unknown detail contract")
-        family = _EVENT_DETAILS[kind]
+        family = _detail_family(prefix, kind)
         if (family == "trading_strategy_signal_v1"
                 and isinstance(prefix, (V2CommittedPrefix, V4CommittedPrefix))):
             family = "trading_strategy_signal_v2"
@@ -125,7 +155,8 @@ def load_typed_event_page(
                 or detail["run_id"] != event["run_id"]
                 or detail["event_month"] != event["event_month"]
                 or detail["batch_id"] != event["batch_id"]
-                or detail["account_id"] != event["account_id"]):
+                or ("account_id" in detail
+                    and detail["account_id"] != event["account_id"])):
             raise RuntimeError("Typed event detail differs from its parent")
         result.append(TypedJournalEvent(event, family, detail))
     return tuple(result)

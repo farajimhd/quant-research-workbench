@@ -4,8 +4,10 @@ import pytest
 
 from src.trading_runtime.arte_journal_projection import runtime_lifecycle_batch
 from src.trading_runtime.arte_journal_reader import (
-    load_typed_event_page, readonly_typed_journal_client,
+    _V4_EVENT_DETAILS, _detail_family, load_typed_event_page,
+    readonly_typed_journal_client,
 )
+from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from src.trading_runtime.arte_journal_writer import (
     load_committed_prefix, publish_typed_batch,
 )
@@ -15,6 +17,20 @@ from tests.test_arte_journal_writer import MemoryClient
 
 RUN = "live:DU1"
 AT = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+
+
+def test_v4_review_resolves_every_supplement_without_changing_legacy_map() -> None:
+    from src.trading_runtime.arte_journal_writer import _CONTRACTS
+
+    prefix = V4CommittedPrefix(
+        RUN, 1, "00000000-0000-0000-0000-000000000001",
+        "start", "completed", ("00000000-0000-0000-0000-000000000001",))
+    for kind, family in _V4_EVENT_DETAILS.items():
+        assert _detail_family(prefix, kind) == family
+        assert family in _CONTRACTS
+    assert _detail_family(prefix, ("lifecycle", "run")) == "trading_run_transition_v1"
+    with pytest.raises(RuntimeError, match="unknown detail contract"):
+        _detail_family(prefix, ("unknown", "unknown"))
 
 
 def test_typed_review_connection_is_journal_only_and_readonly(monkeypatch) -> None:
