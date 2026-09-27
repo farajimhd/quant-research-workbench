@@ -155,29 +155,46 @@ def verify_selected_approval(client: Any, keeper: ApprovalHeadReader, *,
             or expected_approval_id is not None
             and _uuid(expected_approval_id) != head.approval_id):
         raise ValueError("Strategy 1 Keeper approval head is invalid")
+    row = read_approval_row(client, mode=mode,
+                            approval_id=head.approval_id, release=release)
+    if row["content_hash"] != head.content_hash:
+        raise ValueError("Strategy 1 approved row differs from its Keeper head")
+    if keeper.read_head(mode) != head:
+        raise ValueError("Strategy 1 Keeper approval changed during cold read")
+    return row
+
+
+def read_approval_row(client: Any, *, mode: str, approval_id: str,
+                      release: CertifiedStrategyOneConfiguration,
+                      required: bool = True) -> dict[str, Any] | None:
+    """Read one exact typed row without treating an unselected row as approval."""
+    if type(mode) is not str or mode not in _MODES:
+        raise ValueError("Strategy 1 approval mode is invalid")
+    normalized_id = _uuid(approval_id)
+    if not isinstance(release, CertifiedStrategyOneConfiguration):
+        raise TypeError("Strategy 1 approval requires a certified release")
     from src.trading_runtime.arte_journal_writer import _literal, _rows
 
     columns = ",".join(name for name, _ in TABLE.columns)
     rows = _rows(client,
         f"SELECT {columns} FROM arte.{TABLE.name} "
         f"WHERE mode={_literal(mode)} "
-        f"AND approval_id=toUUID({_literal(head.approval_id)}) "
+        f"AND approval_id=toUUID({_literal(normalized_id)}) "
         "LIMIT 2 FORMAT JSONEachRow")
+    if not rows and not required:
+        return None
     if len(rows) != 1 or set(rows[0]) != {name for name, _ in TABLE.columns}:
         raise ValueError("Strategy 1 approved row is absent, duplicate, or untyped")
     row = dict(rows[0])
     if (type(row["schema_version"]) is not int or row["schema_version"] != 1
-            or _uuid(row["approval_id"]) != head.approval_id
+            or _uuid(row["approval_id"]) != normalized_id
             or row["mode"] != mode
             or _uuid(row["release_attempt_id"]) != release.attempt_id
             or _hash(row["release_content_hash"]) != release.payload_hash
             or _hash(row["release_node_hash"]) != release.node_hash
-            or _hash(row["content_hash"]) != head.content_hash
             or row != approval_row(
-                approval_id=head.approval_id, mode=mode, release=release,
+                approval_id=normalized_id, mode=mode, release=release,
                 approved_at_us=row["approved_at_us"],
                 approver_id=row["approver_id"])):
-        raise ValueError("Strategy 1 approved row differs from its release or Keeper head")
-    if keeper.read_head(mode) != head:
-        raise ValueError("Strategy 1 Keeper approval changed during cold read")
+        raise ValueError("Strategy 1 approved row differs from its release")
     return row
