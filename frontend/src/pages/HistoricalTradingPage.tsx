@@ -2,10 +2,11 @@ import { Modal } from "../app/components/Modal";
 import { FilteredV7Preparation } from "../app/components/FilteredV7Preparation";
 import { BacktestRecoveryState } from "../app/components/BacktestRecoveryState";
 import { BacktestRunHistory } from "../app/components/BacktestRunHistory";
+import { BacktestV4SavedReview, type V4Page } from "../app/components/BacktestV4SavedReview";
 import { ArrowLeft, CheckCircle2, CircleStop, Gauge, LoaderCircle, Pause, Play, RefreshCcw, Square, TriangleAlert, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { api } from "../api/client";
+import { api, type ApiError } from "../api/client";
 import "./HistoricalWorkspace.css";
 import { recoverBacktest } from "../app/backtestRecovery";
 import { TradingLaunchEvidence, TradingModeLaunch, TradingModeSelectField } from "../app/components/TradingModeLaunch";
@@ -134,6 +135,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [creating, setCreating] = useState(false);
   const [run, setRun] = useState<BacktestRun | null>(null);
+  const [v4ReviewPage, setV4ReviewPage] = useState<V4Page | null>(null);
   const [activeRunIdentity, setActiveRunIdentity] = useState<BacktestRunIdentity | null>(null);
   const [restoreError, setRestoreError] = useState("");
   const [restoreAttempt, setRestoreAttempt] = useState(0);
@@ -165,14 +167,54 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     if (run?.run_id === selectedRunId) return;
     const controller = new AbortController();
     setRestoreError("");
-    void recoverBacktest<BacktestRun>(selectedRunId, controller.signal)
-      .then((value) => { if (!controller.signal.aborted) setRun(value); })
-      .catch((reason) => {
-        if (!controller.signal.aborted) {
-          setRestoreError(reason instanceof Error ? reason.message : String(reason));
+    // Avoid issuing an immediately aborted inventory request during React's
+    // development mount/cleanup probe.
+    const timer = window.setTimeout(() => { void (async () => {
+      const openV4Review = async () => {
+        // The inventory is only a routing hint; this page is the authority.
+        const page = await api<V4Page>(`/api/trading/backtest/runs/${encodeURIComponent(selectedRunId)}/v4-terminal-page?after_sequence=0&limit=100`, {
+          signal: controller.signal, timeoutMs: 60_000,
+        });
+        if (page.schema_version !== "strategy-one-v4-terminal-review-page-v1" || page.run.run_id !== selectedRunId) {
+          throw new Error("Saved Strategy 1 review identity differs from the selected run.");
         }
-      });
-    return () => controller.abort();
+        if (!controller.signal.aborted) setV4ReviewPage(page);
+      };
+      try {
+        // Recent normalized runs are already listed by the backend. Route
+        // those directly to the cold reader without expected legacy 404s.
+        let listedV4 = false;
+        try {
+          const history = await api<{ rows: Array<{ run_id: string; journal_backend?: string; v4_review_available?: boolean }> }>(
+            "/api/trading/backtest/runs", { signal: controller.signal, timeoutMs: 60_000 });
+          const selected = history.rows.find(row => row.run_id === selectedRunId);
+          listedV4 = selected?.journal_backend === "arte_typed_journal_v4" && selected.v4_review_available === true;
+        } catch {
+          if (controller.signal.aborted) return;
+          // A history-list failure must not make a resident or older saved
+          // run unrecoverable. The exact-ID paths still validate authority.
+        }
+        if (listedV4) {
+          await openV4Review();
+          return;
+        }
+        const value = await recoverBacktest<BacktestRun>(selectedRunId, controller.signal);
+        if (!controller.signal.aborted) setRun(value);
+      } catch (reason) {
+        if (controller.signal.aborted) return;
+        if ((reason as ApiError)?.status === 404) {
+          try {
+            // An older V4 run can be outside the bounded recent-run inventory.
+            await openV4Review();
+            return;
+          } catch (reviewError) {
+            reason = reviewError;
+          }
+        }
+        if (!controller.signal.aborted) setRestoreError(reason instanceof Error ? reason.message : String(reason));
+      }
+    })(); }, 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
   }, [selectedRunId, restoreAttempt]);
 
   useEffect(() => {
@@ -191,6 +233,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     persistSelectedRun("");
     setSelectedRunId("");
     setRun(null);
+    setV4ReviewPage(null);
     setRestoreError("");
   }
 
@@ -444,6 +487,10 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       runtimeWorkspaceId="main"
     />;
   }
+
+  if (selectedRunId && v4ReviewPage?.run.run_id === selectedRunId) return <div className="backtest-v4-direct-review">
+    <BacktestV4SavedReview runId={selectedRunId} initialPage={v4ReviewPage} onClose={returnToSetup} />
+  </div>;
 
   if (selectedRunId) return <BacktestRecoveryState error={restoreError}
     onRetry={() => { setRestoreError(""); setRestoreAttempt(value => value + 1); }} onSetup={returnToSetup} />;

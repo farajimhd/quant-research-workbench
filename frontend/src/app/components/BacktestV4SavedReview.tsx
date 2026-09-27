@@ -11,8 +11,9 @@ type Account = {
   source_timestamp_ms: number;
 };
 
-type V4Page = {
+export type V4Page = {
   schema_version: "strategy-one-v4-terminal-review-page-v1";
+  run: { run_id: string };
   status: string;
   verified_sequence: number;
   market_cursor: { session_date: string; boundary_ms: number } | null;
@@ -53,18 +54,26 @@ function scalar(value: unknown): string {
   return value == null ? "—" : typeof value === "object" ? "Structured child evidence" : String(value);
 }
 
-export function BacktestV4SavedReview({ runId, onClose }: {
+export function BacktestV4SavedReview({ runId, onClose, initialPage }: {
   runId: string;
   onClose: () => void;
+  initialPage?: V4Page;
 }) {
   const [cursors, setCursors] = useState([0]);
   const [index, setIndex] = useState(0);
-  const [page, setPage] = useState<V4Page | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState<V4Page | null>(initialPage ?? null);
+  const [loading, setLoading] = useState(!initialPage);
   const [error, setError] = useState("");
   const afterSequence = cursors[index];
 
   useEffect(() => {
+    // A deep link has already cold-verified its first page. Reuse it rather
+    // than repeating a full journal audit during the same navigation.
+    if (initialPage && afterSequence === 0) {
+      setPage(initialPage);
+      setLoading(false);
+      return;
+    }
     const controller = new AbortController();
     setLoading(true);
     setError("");
@@ -78,7 +87,7 @@ export function BacktestV4SavedReview({ runId, onClose }: {
       if (!controller.signal.aborted) setLoading(false);
     });
     return () => controller.abort();
-  }, [runId, afterSequence]);
+  }, [runId, afterSequence, initialPage]);
 
   const accounts = Object.entries(page?.financial_accounts ?? {});
   return <section className="backtest-v4-review" aria-labelledby="backtest-v4-review-heading" aria-busy={loading}>

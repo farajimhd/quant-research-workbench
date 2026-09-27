@@ -53,6 +53,16 @@
 .backtest-history-actions button { white-space: nowrap; }
 .backtest-run-history [role="alert"] { color: var(--destructive); }
 .backtest-v4-review { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px; min-width: 0; }
+.backtest-v4-direct-review { height: 100%; min-height: 0; overflow: auto; padding: 16px; scrollbar-gutter: stable; }
+.backtest-v4-direct-review .backtest-v4-review { border: 1px solid var(--border); border-radius: 8px; margin: 0; padding: 16px; }
+.backtest-v4-review :is(header, footer) { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.backtest-v4-review header p { color: var(--muted-foreground); }
+.backtest-v4-review table { width: 100%; min-width: 760px; border-collapse: collapse; text-align: left; font-size: 12px; }
+.backtest-v4-review :is(th, td) { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.backtest-v4-review th { font-weight: 600; white-space: nowrap; }
+.backtest-v4-review td { max-width: 260px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.backtest-v4-review td small { display: block; color: var(--muted-foreground); margin-top: 4px; }
+.backtest-v4-review [role="alert"] { color: var(--destructive); }
 .backtest-v4-review h3 { margin: 0; font-size: 15px; }
 .backtest-v4-review h4 { margin: 18px 0 4px; font-size: 13px; }
 .backtest-v4-review details summary { cursor: pointer; }
