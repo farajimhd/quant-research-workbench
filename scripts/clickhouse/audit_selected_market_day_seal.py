@@ -25,7 +25,7 @@ from src.backend.backtest_market_data import (
     _MarketCertificateReader, readonly_clickhouse_client,
 )
 from src.trading_runtime.arte_market_day_cold_preflight import (
-    sealed_certified_market_day_plan,
+    cold_certified_market_day_plan, sealed_certified_market_day_plan,
 )
 from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
 from src.trading_runtime.keeper_session import open_workstation_keeper_session
@@ -33,7 +33,8 @@ from scripts.clickhouse.provision_fixed_backtest_v3_principals import _secret_pa
 from scripts.clickhouse.provision_trading_journal import _restrict_secret_file
 
 
-def audit(build_id: str, day: date) -> tuple[int, int, str]:
+def audit(build_id: str, day: date, *, compare_global: bool = False
+          ) -> tuple[int, int, str]:
     if (platform.node().upper() != "DESKTOP-SAAI85T"
             or re.fullmatch(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?", build_id) is None):
         raise ValueError("Selected-day audit requires workstation and exact build ID")
@@ -50,13 +51,23 @@ def audit(build_id: str, day: date) -> tuple[int, int, str]:
         reader = _MarketCertificateReader(http)
         with closing(open_workstation_keeper_session()) as session:
             keeper = MarketDayKeeperReader(session.client)
+            configuration = {"strategy": {"strategy_number": 1,
+                                          "execution_interval": "100ms"}}
             plan = sealed_certified_market_day_plan(
                 reader, keeper, build_id, sessions=(day.isoformat(),), tickers=(),
-                configuration={"strategy": {"strategy_number": 1,
-                                            "execution_interval": "100ms"}},
+                configuration=configuration,
                 read_client_factory=lambda: _MarketCertificateReader(
                     readonly_clickhouse_client(v3_read_principal=True)),
             )
+            if compare_global:
+                global_plan = cold_certified_market_day_plan(
+                    reader, keeper, build_id, sessions=(day.isoformat(),),
+                    tickers=(), configuration=configuration,
+                    read_client_factory=lambda: _MarketCertificateReader(
+                        readonly_clickhouse_client(v3_read_principal=True)),
+                )
+                if plan != global_plan:
+                    raise RuntimeError("Selected and global certified plans differ")
     return len(plan.tickers), len(plan.units), plan.token
 
 
@@ -64,10 +75,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-id", required=True)
     parser.add_argument("--session", required=True, type=date.fromisoformat)
+    parser.add_argument("--compare-global", action="store_true",
+                        help="also run the slower whole-build audit and require exact plan parity")
     args = parser.parse_args(argv)
     started = perf_counter()
     try:
-        tickers, units, token = audit(args.build_id, args.session)
+        tickers, units, token = audit(args.build_id, args.session,
+                                     compare_global=args.compare_global)
     except KeyboardInterrupt:
         print("Selected-day audit interrupted; no data was changed.", file=sys.stderr)
         return 130
@@ -80,7 +94,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"Selected-day audit passed: session={args.session.isoformat()} "
           f"tickers={tickers} product_units={units} token={token} "
-          f"elapsed_s={perf_counter() - started:.1f}; writes=0")
+          f"elapsed_s={perf_counter() - started:.1f} "
+          f"global_parity={'passed' if args.compare_global else 'not_run'}; writes=0")
     return 0
 
 
