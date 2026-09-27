@@ -331,6 +331,7 @@ class VerifiedStrategyOneOmsHead:
     group: Any
     source_intent: Any
     admission: Mapping[str, Any]
+    decision: Mapping[str, Any]
 
 
 def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
@@ -341,7 +342,8 @@ def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
     these states can be installed in an order manager or admit new orders.
     """
     from src.trading_runtime.arte_oms_projection import (
-        load_committed_oms_admission_page, load_latest_committed_oms_groups,
+        load_committed_oms_admission_page, load_committed_oms_decision_page,
+        load_latest_committed_oms_groups,
     )
     from src.trading_runtime.arte_intent_projection import (
         load_committed_strategy_intent_page,
@@ -386,6 +388,14 @@ def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
             read_client, cold.prefix, groups[offset:offset + 200]))
     if set(admissions) != {group.sequence for group in groups}:
         raise RuntimeError("Live OMS admission coverage is incomplete")
+    decisions = {}
+    for offset in range(0, len(groups), 200):
+        page = groups[offset:offset + 200]
+        decisions.update(load_committed_oms_decision_page(
+            read_client, cold.prefix, page,
+            {group.sequence: admissions[group.sequence] for group in page}))
+    if set(decisions) != set(admissions):
+        raise RuntimeError("Live OMS Portfolio decision coverage is incomplete")
     verified = []
     for group in groups:
         source = sources[group.intent_record_id]
@@ -402,6 +412,7 @@ def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
                        or order.ticker.upper() != source.intent.ticker.upper()
                        for order in group.orders)):
             raise RuntimeError("Live OMS head contradicts its normalized source intent")
-        verified.append(VerifiedStrategyOneOmsHead(group, source, admission))
+        verified.append(VerifiedStrategyOneOmsHead(
+            group, source, admission, decisions[group.sequence]))
     cold.barrier.assert_fenced(cold.run_id)
     return tuple(verified)

@@ -492,6 +492,7 @@ def test_strategy_one_live_oms_heads_are_fenced_and_strategy_pinned(monkeypatch)
                                  action="enter_long", metadata={}))
     admission = {"account_id": "DU1", "intent_id": "intent-1",
                  "ticker": "TEST", "action": "enter_long"}
+    decision = {"decision_id": "decision-1"}
     monkeypatch.setattr(oms, "load_latest_committed_oms_groups",
                         lambda _client, _prefix, **kwargs:
                         calls.append(("read", kwargs)) or (row,))
@@ -501,15 +502,19 @@ def test_strategy_one_live_oms_heads_are_fenced_and_strategy_pinned(monkeypatch)
     monkeypatch.setattr(oms, "load_committed_oms_admission_page",
                         lambda _client, _prefix, groups:
                         calls.append(("admission", len(groups))) or {2: admission})
+    monkeypatch.setattr(oms, "load_committed_oms_decision_page",
+                        lambda _client, _prefix, groups, admissions:
+                        calls.append(("decision", len(groups), len(admissions)))
+                        or {2: decision})
     assert bootstrap.recover_strategy_one_live_oms(
         cold=cold, read_client=object()) == (
-            bootstrap.VerifiedStrategyOneOmsHead(row, source, admission),)
+            bootstrap.VerifiedStrategyOneOmsHead(row, source, admission, decision),)
     assert calls == ["fence", ("read", {
         "allowed_accounts": frozenset({"DU1"}),
             "strategy_identity": (STRATEGY_ID, 1),
             "require_tactic": True}),
             ("intent", {"limit": 1, "record_ids": ("intent-record",)}),
-            ("admission", 1), "fence"]
+            ("admission", 1), ("decision", 1, 1), "fence"]
     row.group["strategy_revision"] = 2
     with pytest.raises(RuntimeError, match="differs from Strategy 1"):
         bootstrap.recover_strategy_one_live_oms(
@@ -545,6 +550,8 @@ def test_strategy_one_live_oms_rejects_contradictory_source_intent(monkeypatch):
                         lambda *_args, **_kwargs: {2: {
                             "account_id": "DU1", "intent_id": "intent-1",
                             "ticker": "TEST", "action": "enter_long"}})
+    monkeypatch.setattr(oms, "load_committed_oms_decision_page",
+                        lambda *_args, **_kwargs: {2: {}})
     with pytest.raises(RuntimeError, match="contradicts"):
         bootstrap.recover_strategy_one_live_oms(cold=cold, read_client=object())
     source.sequence = 1

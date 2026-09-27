@@ -610,6 +610,78 @@ def load_committed_oms_admission_page(
     return result
 
 
+def load_committed_oms_decision_page(
+    client: Any, prefix: VerifiedPrefix,
+    groups: tuple[RecoveredOmsGroupState, ...],
+    admissions: Mapping[int, Mapping[str, Any]], *, max_rows: int = 500,
+) -> dict[int, dict[str, Any]]:
+    """Join each recovered OMS head to its exact committed Portfolio approval."""
+    if (not _valid_prefix(prefix) or not groups
+            or not 1 <= len(groups) <= max_rows <= 4096
+            or set(admissions) != {group.sequence for group in groups}):
+        raise ValueError("OMS decision recovery needs exact bounded admissions")
+    ids = {str(admissions[group.sequence]["decision_id"]) for group in groups}
+    if not all(ids):
+        raise RuntimeError("OMS admission lacks its Portfolio decision identity")
+    sql_ids = ",".join(_literal(value) for value in sorted(ids))
+    name = "trading_portfolio_decision_v1"
+    columns = ",".join(column for column, _ in _CONTRACTS[name].columns)
+    rows = _verified_rows(name, _rows(client,
+        f"SELECT {columns} FROM arte.{name} "
+        f"WHERE run_id={_literal(prefix.run_id)} AND decision_id IN ({sql_ids}) "
+        f"{_committed_batch_filter(prefix)}"
+        f"LIMIT {max_rows + 1} FORMAT JSONEachRow"))
+    if len(rows) > max_rows:
+        raise RuntimeError("Committed OMS decisions exceed their row budget")
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        decision_id = str(row["decision_id"])
+        if decision_id in by_id:
+            raise RuntimeError("Committed OMS Portfolio decision is duplicated")
+        by_id[decision_id] = row
+    if set(by_id) != ids:
+        raise RuntimeError("Committed OMS Portfolio decision is missing")
+    event_columns = ",".join(column for column, _ in _CONTRACTS["trading_event_v1"].columns)
+    record_ids = ",".join(f"toUUID({_literal(str(UUID(str(row['record_id']))))})"
+                          for row in rows)
+    events = _verified_rows("trading_event_v1", _rows(client,
+        f"SELECT {event_columns} FROM arte.trading_event_v1 "
+        f"WHERE run_id={_literal(prefix.run_id)} AND record_id IN ({record_ids}) "
+        f"{_committed_batch_filter(prefix)}"
+        f"LIMIT {len(rows) + 1} FORMAT JSONEachRow"))
+    by_record = {str(UUID(str(row["record_id"]))): row for row in events}
+    if len(events) != len(rows) or len(by_record) != len(rows):
+        raise RuntimeError("Committed OMS Portfolio decision event is missing or duplicated")
+    result = {}
+    for group in groups:
+        admission = admissions[group.sequence]
+        decision = by_id[str(admission["decision_id"])]
+        event = by_record[str(UUID(str(decision["record_id"])))]
+        if (decision["account_id"] != group.group["account_id"]
+                or decision["decision_id"] != admission["decision_id"]
+                or decision["reservation_id"] != admission["reservation_id"]
+                or decision["account_key"] != admission["account_key"]
+                or decision["ticker"].upper() != admission["ticker"].upper()
+                or decision["action"] != admission["action"]
+                or decision["status"] not in {"approved", "resized"}
+                or not decision["policy_id"] or int(decision["policy_revision"]) < 1
+                or Decimal(str(decision["requested_quantity"]))
+                < Decimal(str(decision["approved_quantity"]))
+                or Decimal(str(decision["approved_quantity"])) <= 0
+                or Decimal(str(decision["approved_quantity"]))
+                != Decimal(str(admission["quantity"]))
+                or str(UUID(str(decision["batch_id"])))
+                != str(UUID(str(event["batch_id"])))
+                or event["account_id"] != decision["account_id"]
+                or event["entity_id"] != decision["decision_id"]
+                or (event["category"], event["entity_type"])
+                != ("portfolio_management", "portfolio_decision")
+                or int(event["sequence"]) >= group.sequence):
+            raise RuntimeError("Committed OMS Portfolio decision differs from admission")
+        result[group.sequence] = decision
+    return result
+
+
 def load_committed_oms_group_state_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 200, max_children: int = 4096,

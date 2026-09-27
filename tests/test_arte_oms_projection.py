@@ -15,7 +15,8 @@ from src.trading_runtime.arte_journal_writer import (
 )
 from src.trading_runtime.arte_oms_projection import (
     RecoveredOmsGroupState, _duration_ms, freeze_oms_group,
-    load_committed_oms_admission_page, load_committed_oms_group_state_page,
+    load_committed_oms_admission_page, load_committed_oms_decision_page,
+    load_committed_oms_group_state_page,
     load_latest_committed_oms_groups,
     oms_group_state_batch,
 )
@@ -130,6 +131,39 @@ def test_cold_oms_admission_joins_only_one_fenced_normalized_reservation() -> No
     client.tables[name][0]["quantity"] = "5.000000000000000000"
     with pytest.raises(RuntimeError, match="differs from its hash"):
         load_committed_oms_admission_page(client, prefix, (group, later))
+
+
+def test_oms_decision_page_requires_exact_approved_reservation(monkeypatch) -> None:
+    from src.trading_runtime import arte_oms_projection as projection
+
+    run_id, batch_id, record_id = "live:DU1", str(uuid4()), str(uuid4())
+    prefix = CommittedPrefix(run_id, 2, batch_id, "oms", "running", (batch_id,))
+    group = RecoveredOmsGroupState(
+        2, None, {"account_id": "DU1", "group_id": "group-1"},
+        (), (), (), (), (), ())
+    admission = {"decision_id": "decision-1", "reservation_id": "reservation-1",
+                 "account_key": "cash", "ticker": "AAA", "action": "enter_long",
+                 "quantity": "4"}
+    decision = {"record_id": record_id, "batch_id": batch_id,
+                "account_id": "DU1", "policy_id": "cash-policy",
+                "policy_revision": 1, "requested_quantity": "5",
+                "decision_id": "decision-1", "reservation_id": "reservation-1",
+                "account_key": "cash", "ticker": "AAA", "action": "enter_long",
+                "status": "resized", "approved_quantity": "4.000000000000000000"}
+    event = {"record_id": record_id, "batch_id": batch_id,
+             "account_id": "DU1",
+             "entity_id": "decision-1", "category": "portfolio_management",
+             "entity_type": "portfolio_decision", "sequence": 1}
+    monkeypatch.setattr(projection, "_verified_rows", lambda _name, rows: rows)
+    monkeypatch.setattr(projection, "_rows", lambda _client, sql:
+                        [decision] if "FROM arte.trading_portfolio_decision_v1" in sql
+                        else [event])
+    assert load_committed_oms_decision_page(
+        object(), prefix, (group,), {2: admission}) == {2: decision}
+    decision["approved_quantity"] = "5"
+    with pytest.raises(RuntimeError, match="differs from admission"):
+        load_committed_oms_decision_page(
+            object(), prefix, (group,), {2: admission})
 
 
 def test_oms_projection_uses_original_intent_and_normalized_admission() -> None:
