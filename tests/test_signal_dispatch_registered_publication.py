@@ -13,6 +13,7 @@ from src.backend.signal_dispatch_registered_publication import (
 )
 from src.backend.signal_dispatch_typed_cursor import (
     ACK, ACK_COMMIT, INTENT, INTENT_COMMIT, project_dispatch_ack,
+    read_committed_dispatch_prefix,
 )
 from src.trading_runtime.keeper_ownership import KeeperUnavailable
 from test_keeper_ownership import _Client, _Store
@@ -47,6 +48,16 @@ class _MemoryClient:
                              row["source_batch_sequence"] == sequence)
         raise AssertionError(sql)
 
+    def read_dispatch_rows(self, table_name: str, *, session_key: str,
+                           source_batch_sequence: int):
+        return [row for row in self.rows[table_name]
+                if row["session_key"] == session_key and
+                row["source_batch_sequence"] == source_batch_sequence]
+
+    def list_dispatch_commits(self, table_name: str, *, session_key: str):
+        return [row for row in self.rows[table_name]
+                if row["session_key"] == session_key]
+
 
 def _dispatch() -> SignalDispatchInsertDispatch:
     dispatch = SignalDispatchInsertDispatch(_Client(_Store(), 11))
@@ -70,9 +81,21 @@ def test_intent_then_ack_publishes_exact_typed_rows_and_cold_receipt() -> None:
     assert publish_registered_ack(
         client, dispatch, run_id=RUN, intents=intents,
         projected=acks) == acks["commit"]["content_hash"]
+    with pytest.raises(KeeperUnavailable, match="not cold-fenced"):
+        read_committed_dispatch_prefix(
+            client, session_key="2026-09-24",
+            source_commit_hashes=("b" * 64,),
+            configuration_revision_id="approved-revision-1",
+            registered_dispatch=dispatch)
     dispatch.close_for_cold(RUN)
     dispatch.assert_cold_receipts(RUN, {1: (
         intents["commit"]["content_hash"], acks["commit"]["content_hash"])})
+    recovered = read_committed_dispatch_prefix(
+        client, session_key="2026-09-24",
+        source_commit_hashes=("b" * 64,),
+        configuration_revision_id="approved-revision-1",
+        registered_dispatch=dispatch)
+    assert recovered == ((intents, acks),)
     assert {name: len(rows) for name, rows in client.rows.items()} == {
         INTENT.name: 1, INTENT_COMMIT.name: 1,
         ACK.name: 1, ACK_COMMIT.name: 1}

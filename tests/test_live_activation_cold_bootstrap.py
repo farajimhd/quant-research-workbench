@@ -26,6 +26,7 @@ from src.trading_runtime.arte_activation_projection import (
 from src.trading_runtime.arte_activation_insert_dispatch import (
     activation_insert_proof,
 )
+from src.backend.signal_dispatch_insert_dispatch import dispatch_run_id
 from tests.test_arte_activation_projection import _MemoryClient
 from tests.test_live_signal_work_completion import Keeper, Storage
 from tests.test_signal_dispatch_typed_cursor import ColdStorage
@@ -382,9 +383,16 @@ def test_attested_strategy_one_scope_cannot_read_legacy_activation_rows() -> Non
             assert receipts == {delivery["delivery_id"]: activation_insert_proof(
                 delivery["delivery_id"],
                 activation.rows["trading_activation_v1"][0]["content_hash"])}
+    class ClosedCursor:
+        def assert_cold_receipts(self, observed_run_id, receipts):
+            assert observed_run_id == dispatch_run_id(
+                SESSION.isoformat(), "approved-1")
+            assert len(receipts) == 1
+            assert all(len(value) == 64 for value in receipts[1])
     restored = read_attested_activation_prefix(
         activation, dispatch, completion, keeper,
         activation_run_id=run_id, activation_dispatch=ClosedDispatch(),
+        registered_dispatch=ClosedCursor(),
         **kwargs)
     assert [row["delivery_id"] for row in restored] == [delivery["delivery_id"]]
 

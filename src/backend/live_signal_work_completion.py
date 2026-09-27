@@ -201,6 +201,7 @@ def read_completed_dispatch_prefix(
     dispatch_storage: DispatchColdStorage, completion_storage: CompletionStorage,
     keeper: CompletionKeeper, *, session_key: str,
     source_commit_hashes: tuple[str, ...], configuration_revision_id: str,
+    registered_dispatch: Any | None = None,
 ) -> tuple[CompletionProof, ...]:
     """Verify every ACKed delivery in a verified source prefix is attested complete.
 
@@ -211,7 +212,8 @@ def read_completed_dispatch_prefix(
     batches = read_committed_dispatch_prefix(
         dispatch_storage, session_key=session_key,
         source_commit_hashes=source_commit_hashes,
-        configuration_revision_id=configuration_revision_id)
+        configuration_revision_id=configuration_revision_id,
+        registered_dispatch=registered_dispatch)
     proofs = []
     for intents, acks in batches:
         for ordinal in range(len(intents["intents"])):

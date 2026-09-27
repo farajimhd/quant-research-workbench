@@ -31,6 +31,7 @@ from src.trading_runtime.arte_activation_projection import (
 from src.trading_runtime.arte_activation_insert_dispatch import (
     ActivationInsertDispatch, activation_insert_proof,
 )
+from src.backend.signal_dispatch_insert_dispatch import SignalDispatchInsertDispatch
 
 
 class _BoundedSourceCommits:
@@ -166,6 +167,7 @@ def read_attested_activation_prefix(
     session_date: date, source_commit_hashes: tuple[str, ...],
     configuration_revision_id: str, activation_run_id: str = ACTIVATION_RUN_ID,
     activation_dispatch: ActivationInsertDispatch | None = None,
+    registered_dispatch: SignalDispatchInsertDispatch | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Restore only completed, Keeper-attested ACK identities, in source order.
 
@@ -175,14 +177,16 @@ def read_attested_activation_prefix(
     """
     if type(session_date) is not date:
         raise ValueError("activation receipt read requires a session date")
-    if activation_run_id != ACTIVATION_RUN_ID and activation_dispatch is None:
+    if activation_run_id != ACTIVATION_RUN_ID and (
+            activation_dispatch is None or registered_dispatch is None):
         raise ActivationRecoveryUnfenced(
             "Strategy 1 activation read lacks registered INSERT drain proof")
     proofs = read_completed_dispatch_prefix(
         dispatch_storage, completion_storage, completion_keeper,
         session_key=session_date.isoformat(),
         source_commit_hashes=source_commit_hashes,
-        configuration_revision_id=configuration_revision_id)
+        configuration_revision_id=configuration_revision_id,
+        registered_dispatch=registered_dispatch)
     seen_delivery: set[str] = set()
     seen_watch: set[tuple[str, str]] = set()
     dispatch_receipts: dict[str, str] = {}
@@ -234,6 +238,7 @@ def _cold_recover_activation_checkpoint_under_fence(
     receipt_defined: bool = False,
     activation_run_id: str = ACTIVATION_RUN_ID,
     activation_dispatch: ActivationInsertDispatch | None = None,
+    registered_dispatch: SignalDispatchInsertDispatch | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Read-only typed replacement prerequisite for the SQLite watch checkpoint.
 
@@ -286,6 +291,7 @@ def _cold_recover_activation_checkpoint_under_fence(
                          activation_run_id=activation_run_id)
     if receipt_defined:
         reader_kwargs["activation_dispatch"] = activation_dispatch
+        reader_kwargs["registered_dispatch"] = registered_dispatch
     watches = activation_reader(
         activation_client, dispatch_storage, completion_storage,
         completion_keeper, **reader_kwargs)
@@ -307,6 +313,7 @@ def audit_activation_checkpoint_under_cooperative_fences(
     receipt_defined: bool = False,
     activation_run_id: str = ACTIVATION_RUN_ID,
     activation_dispatch: ActivationInsertDispatch | None = None,
+    registered_dispatch: SignalDispatchInsertDispatch | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Diagnostic cold audit, not an admission or executable checkpoint.
 
@@ -341,7 +348,8 @@ def audit_activation_checkpoint_under_cooperative_fences(
             max_source_occurrences=max_source_occurrences,
             receipt_defined=receipt_defined,
             activation_run_id=activation_run_id,
-            activation_dispatch=activation_dispatch)
+            activation_dispatch=activation_dispatch,
+            registered_dispatch=registered_dispatch)
         if not source_keeper.is_current(session_key, owner_id=owner_id, epoch=epoch):
             raise RuntimeError("Signal Stream source owner fence lost during recovery")
         if not activation_fence.is_current(
@@ -367,6 +375,7 @@ def audit_receipt_defined_activation_prefix_under_fences(
     max_source_occurrences: int = 100_000,
     activation_run_id: str = ACTIVATION_RUN_ID,
     activation_dispatch: ActivationInsertDispatch | None = None,
+    registered_dispatch: SignalDispatchInsertDispatch | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Inactive causal-prefix audit; only attested receipts become visible."""
     return audit_activation_checkpoint_under_cooperative_fences(
@@ -380,7 +389,8 @@ def audit_receipt_defined_activation_prefix_under_fences(
         max_source_occurrences=max_source_occurrences,
         receipt_defined=True,
         activation_run_id=activation_run_id,
-        activation_dispatch=activation_dispatch)
+        activation_dispatch=activation_dispatch,
+        registered_dispatch=registered_dispatch)
 
 
 class ActivationRecoveryUnfenced(RuntimeError):

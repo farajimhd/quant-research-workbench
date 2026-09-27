@@ -245,6 +245,7 @@ def verify_dispatch_cursor(intents: Mapping[str, Any], acks: Mapping[str, Any]) 
 def read_committed_dispatch_prefix(
     storage: DispatchColdStorage, *, session_key: str,
     source_commit_hashes: tuple[str, ...], configuration_revision_id: str,
+    registered_dispatch: Any | None = None,
 ) -> tuple[tuple[dict[str, Any], dict[str, Any]], ...]:
     """Verify every dispatch batch through a separately verified source prefix.
 
@@ -294,4 +295,12 @@ def read_committed_dispatch_prefix(
         acks = {"acks": ack_rows, "commit": ack_commit}
         verify_dispatch_cursor(intents, acks)
         recovered.append((intents, acks))
+    if registered_dispatch is not None:
+        from src.backend.signal_dispatch_insert_dispatch import dispatch_run_id
+        run_id = dispatch_run_id(session_key, configuration_revision_id)
+        registered_dispatch.assert_cold_receipts(run_id, {
+            sequence: (intents["commit"]["content_hash"],
+                       acks["commit"]["content_hash"])
+            for sequence, (intents, acks) in enumerate(recovered, 1)
+        })
     return tuple(recovered)
