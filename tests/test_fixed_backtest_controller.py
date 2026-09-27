@@ -1069,6 +1069,33 @@ def test_fixed_journal_fences_at_completed_boundary_before_buffer_fills():
         at, nonblocking_fixed=True)
 
 
+def test_fixed_journal_starts_background_fence_before_terminal_session():
+    controller = object.__new__(ReplayRunController)
+    controller.run_id = RUN
+    controller._journal = BacktestMemoryJournal(run_id=RUN)
+    at = datetime(2026, 8, 18, 4, 0, 0, 100000, tzinfo=NY)
+    controller._source_cursor = {"session_date": DAY, "boundary_ms": 100}
+    controller._flush_passive_market_events = lambda: None
+    controller._next_action_after_sequence = None
+    controller._step_until = None
+    controller._fast_forward_until = None
+    controller._publish = AsyncMock()
+    controller._save_restart_checkpoint_responsive = AsyncMock()
+    controller._restart_checkpoint_interval_events = lambda: None
+    for index in range(1023):
+        controller._journal.append(
+            run_id=RUN, category="test", entity_type="frame",
+            entity_id=f"frame-{index}", event_time=at, payload={})
+    asyncio.run(controller._after_event(at))
+    controller._save_restart_checkpoint_responsive.assert_not_awaited()
+    controller._journal.append(
+        run_id=RUN, category="test", entity_type="frame",
+        entity_id="frame-1023", event_time=at, payload={})
+    asyncio.run(controller._after_event(at))
+    controller._save_restart_checkpoint_responsive.assert_awaited_once_with(
+        at, nonblocking_fixed=True)
+
+
 def test_fixed_signal_loader_uses_pinned_bars_without_event_fallback(monkeypatch):
     from src.backend import fixed_bar_signal, historical_signal_occurrence_service
 

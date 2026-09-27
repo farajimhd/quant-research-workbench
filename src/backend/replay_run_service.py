@@ -129,6 +129,10 @@ REPLAY_STATUSES = {
 TERMINAL_REPLAY_STATUSES = {"completed", "stopped", "failed"}
 PLAYBACK_SPEEDS = (1.0, 5.0, 30.0, 120.0, 0.0)
 REPLAY_RESTART_CHECKPOINT_INTERVAL_EVENTS = 25_000
+# A full Strategy 1 session emits far fewer than the journal's 65k capacity.
+# Fence a completed market boundary early enough for the writer to overlap
+# strategy execution instead of draining the entire prefix at terminal.
+FIXED_JOURNAL_FLUSH_RECORDS = 1_024
 DEFAULT_MAX_RESIDENT_RUNS = 32
 DEFAULT_HISTORY_FETCH_CONCURRENCY = 4
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
@@ -6772,7 +6776,9 @@ class ReplayRunController:
         await self._publish(force=transport_boundary)
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
         if (isinstance(self._journal, BacktestMemoryJournal)
-                and self._journal.pending_record_count >= self._journal.max_pending_records // 2
+                and self._journal.pending_record_count >= max(1, min(
+                    FIXED_JOURNAL_FLUSH_RECORDS,
+                    self._journal.max_pending_records // 2))
                 and bool(self._source_cursor)):
             # Fence only after a complete market boundary. This prevents the
             # bounded writer buffer from filling in a long all-ticker run and

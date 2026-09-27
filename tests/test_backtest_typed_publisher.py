@@ -467,6 +467,16 @@ def test_fixed_controller_v4_finish_captures_exact_terminal_actor_state():
         controller._journal = journal
         controller._journal_publisher = publisher
         controller._runtime_finished = False
+        controller._source_cursor = {"session_date": DAY.isoformat(),
+                                     "boundary_ms": 300_000, "sequence": 2}
+        controller._frame_cursor = {}
+        controller.current_time = AT
+
+        async def fence_cursor(event_time, *, checkpoint_status):
+            assert event_time == AT and checkpoint_status == "running"
+            await publisher.fence_checkpoint(boundary_id=f"{DAY.isoformat()}:300000")
+
+        controller._save_restart_checkpoint_responsive = fence_cursor
 
         async def finish(*, status):
             _append_broker_snapshot(journal)
