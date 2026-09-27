@@ -24,6 +24,10 @@ from src.trading_runtime.arte_journal_writer import (
 )
 
 
+# Matches the authoritative V4 commit verifier's per-commit event limit.
+_MAX_COMMIT_EVENTS = 1024
+
+
 def _profile(rows: list[dict]) -> tuple[str, ...]:
     if not rows:
         raise ValueError("No V4 commits exist for the requested run")
@@ -41,11 +45,11 @@ def _profile(rows: list[dict]) -> tuple[str, ...]:
         last = int(row["last_sequence"])
         if (str(UUID(str(row["prior_batch_id"]))) != previous_id
                 or first != previous_sequence + 1 or last - first + 1 != size
-                or not 1 <= size <= 512):
+                or not 1 <= size <= _MAX_COMMIT_EVENTS):
             raise ValueError(
                 "V4 commit header differs from the diagnostic's chain/batch bound: "
                 f"first={first} expected_first={previous_sequence + 1} "
-                f"last={last} events={size} bound=512 "
+                f"last={last} events={size} bound={_MAX_COMMIT_EVENTS} "
                 f"prior_matches={str(UUID(str(row['prior_batch_id']))) == previous_id}")
         cursor = str(row["source_cursor"])
         changes += cursor != previous_cursor
@@ -57,13 +61,13 @@ def _profile(rows: list[dict]) -> tuple[str, ...]:
             sum(2 <= size <= 7 for size in sizes),
             sum(8 <= size <= 63 for size in sizes),
             sum(64 <= size <= 255 for size in sizes),
-            sum(256 <= size <= 512 for size in sizes))
+            sum(256 <= size <= 1024 for size in sizes))
     return (
         f"V4 commits={len(rows)} events={sum(sizes)} "
         f"terminal={sum(statuses[state] for state in ('completed', 'stopped', 'failed'))}",
         f"Commit events: min={min(sizes)} median={statistics.median(sizes):g} "
         f"max={max(sizes)} mean={statistics.mean(sizes):.1f}",
-        "Commit size bins (1, 2-7, 8-63, 64-255, 256-512): "
+        "Commit size bins (1, 2-7, 8-63, 64-255, 256-1024): "
         + ", ".join(str(count) for count in bins),
         f"Cursor changes={changes} family_count_median={statistics.median(families):g}",
     )
