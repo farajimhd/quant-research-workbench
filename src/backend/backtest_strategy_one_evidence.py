@@ -91,7 +91,7 @@ class StrategyOneCausalEvidence:
             market_plan=market_plan, seed_plan=seed_plan,
             session=session, client=client,
             observe_completed_second=self.bos.observe_second,
-            prefetch_horizon_ms=300_000)
+            prefetch_horizon_ms=900_000)
         self.activations = ActivationCatalog()
         self._resistance: dict[str, ResistanceObservation] = {}
         self._completed_breaks: dict[str, tuple[ResistanceBreak, ...]] = {}

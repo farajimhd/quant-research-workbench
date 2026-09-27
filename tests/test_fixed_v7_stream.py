@@ -182,7 +182,8 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
     assert late._streams["TEST"].engine.bars_processed == 1
 
 
-def test_strategy_one_prefetch_never_consumes_future_second():
+@pytest.mark.parametrize("horizon_ms", (300_000, 900_000))
+def test_strategy_one_prefetch_never_consumes_future_second(horizon_ms):
     coverage = dict(ticker="TEST", session_date="2026-08-17",
                     available_at="2026-08-18 00:00:00.000000000", state="empty",
                     level_count=0, observation_count=0, input_policy="",
@@ -239,14 +240,14 @@ def test_strategy_one_prefetch_never_consumes_future_second():
         client = Client(future_close)
         cache = FixedV7Cache(
             market_plan=market, seed_plan=seeds, session=date(2026, 8, 18),
-            client=client, prefetch_horizon_ms=300_000)
+            client=client, prefetch_horizon_ms=horizon_ms)
         cache.strategy_one_levels("TEST", as_of=early)
         snapshots.append(cache._streams["TEST"].engine.hod)
         assert cache._streams["TEST"].engine.bars_processed == 1
         assert cache._last_loaded_second_ms["TEST"] == 301_000
         assert cache.last_completed_price_second("TEST")["close_int"] == 100050
         assert len([sql for sql in client.queries if "arte.bars_v1" in sql]) == 1
-        assert cache._prefetched_through_ms["TEST"] == 601_000
+        assert cache._prefetched_through_ms["TEST"] == 301_000 + horizon_ms
         with pytest.raises(RuntimeError, match="pinned buffer"):
             cache.advance_second("TEST", client.bars[1], at=later)
         cache.catch_up_seconds(("TEST",), at=later)
@@ -255,7 +256,8 @@ def test_strategy_one_prefetch_never_consumes_future_second():
         cache.catch_up_seconds(
             ("TEST",), at=datetime(2026, 8, 18, 4, 10, 2, tzinfo=NY))
         assert cache._streams["TEST"].engine.bars_processed == 3
-        assert len([sql for sql in client.queries if "arte.bars_v1" in sql]) == 2
+        assert len([sql for sql in client.queries if "arte.bars_v1" in sql]) == (
+            2 if horizon_ms == 300_000 else 1)
         assert all(sql.startswith("SELECT") for sql in client.queries)
     assert snapshots == [10.01, 10.01]
 

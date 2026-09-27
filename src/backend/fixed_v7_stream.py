@@ -127,7 +127,7 @@ class FixedV7Cache:
         if observe_completed_second is not None and not callable(observe_completed_second):
             raise TypeError("V7 completed-second observer must be callable")
         if (type(prefetch_horizon_ms) is not int or prefetch_horizon_ms < 0
-                or prefetch_horizon_ms > 300_000
+                or prefetch_horizon_ms > 900_000
                 or prefetch_horizon_ms % 1_000):
             raise ValueError("V7 lookahead buffer must be a bounded whole-second horizon")
         self._observe_completed_second = observe_completed_second
