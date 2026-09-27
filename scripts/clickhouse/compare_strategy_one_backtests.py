@@ -17,8 +17,10 @@ sys.dont_write_bytecode = True
 
 from scripts.clickhouse.smoke_strategy_one_backtest import _load_private_credentials
 from src.backend.backtest_v4_saved_review import load_v4_terminal_review_page
+from src.trading_runtime.arte_backtest_definition import load_backtest_definition
 from src.trading_runtime.arte_journal_writer import (
     _literal, _rows, backtest_v4_operator_client_from_env,
+    load_typed_run_context,
 )
 
 
@@ -82,13 +84,10 @@ def _explain_difference(client, left_id: str, right_id: str) -> None:
 
     price_rows = []
     for run_id in (left_id, right_id):
-        rows = _rows(client,
-            "SELECT source_build_id,parent_market_plan_token,price_plan_token,unit_count "
-            "FROM arte.trading_backtest_price_plan_v1 "
-            f"WHERE run_id={_literal(run_id)} LIMIT 2 FORMAT JSONEachRow")
-        if len(rows) > 1:
-            raise RuntimeError("Backtest price plan has duplicate run rows")
-        price_rows.append(rows[0] if rows else None)
+        context = load_typed_run_context(client, run_id)
+        definition = load_backtest_definition(
+            client, run_id, run_context=context)
+        price_rows.append(definition["price_plan"])
     if price_rows[0] is None or price_rows[1] is None:
         state = ("unpinned" if price_rows[0] is None else "pinned",
                  "unpinned" if price_rows[1] is None else "pinned")
