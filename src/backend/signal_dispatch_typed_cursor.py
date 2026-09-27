@@ -185,9 +185,32 @@ def project_dispatch_ack(
     ))}
 
 
+def verify_dispatch_intents(intents: Mapping[str, Any]) -> None:
+    """Validate the standalone intent fence before activation publication."""
+    rows, commit = intents["intents"], intents["commit"]
+    if (not isinstance(rows, list) or not isinstance(commit, Mapping)
+            or commit != _seal({key: value for key, value in commit.items()
+                                if key != "content_hash"})
+            or commit["intent_count"] != len(rows)
+            or commit["intent_hash"] != _hash(rows)):
+        raise ValueError("dispatch intent fence differs")
+    for ordinal, row in enumerate(rows):
+        if (row != _seal({key: value for key, value in row.items()
+                          if key != "content_hash"})
+                or row["ordinal"] != ordinal
+                or (row["session_key"], row["source_batch_sequence"])
+                != (commit["session_key"], commit["source_batch_sequence"])
+                or row["configuration_revision_id"]
+                != commit["configuration_revision_id"]
+                or row["source_cursor_commit_hash"]
+                != commit["source_cursor_commit_hash"]):
+            raise ValueError("dispatch intent row identity or order differs")
+
+
 def verify_dispatch_cursor(intents: Mapping[str, Any], acks: Mapping[str, Any]) -> None:
     """Cold exact verification; no FINAL or implicit duplicate suppression."""
     intent_rows, intent_commit = intents["intents"], intents["commit"]
+    verify_dispatch_intents(intents)
     ack_rows, ack_commit = acks["acks"], acks["commit"]
     if (intent_commit != _seal({key: value for key, value in intent_commit.items()
                                 if key != "content_hash"})
