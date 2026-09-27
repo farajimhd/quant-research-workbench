@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -163,6 +164,85 @@ class ArteChartReaderTests(unittest.TestCase):
         self.assertIn("(b.bucket_index+1)*1000<=14760000", client.sql)
         self.assertTrue(client.sql.startswith("SELECT "))
 
+    def test_run_pinned_chart_never_discovers_a_different_build(self):
+        client = _Client([{
+            "bucket_index": 14700, "open_int": 10000, "high_int": 11000,
+            "low_int": 9000, "close_int": 10500, "volume": 12,
+            "trade_count": 2, "notional": 12.5,
+        }])
+        kwargs = dict(
+            session=DAY, ticker="SUGP", timeframe="1s",
+            page_start=datetime(2026, 8, 18, 4, 5, tzinfo=NY),
+            page_end=datetime(2026, 8, 18, 4, 6, tzinfo=NY),
+            row_limit=10, stage="bars", indicator_columns=None,
+            include_market_signals=False, include_structure=False,
+            allow_persisted_bars=True, mode="backtest", pinned_plan=_plan(),
+        )
+        with (patch("src.backend.arte_chart_reader.certified_chart_plan",
+                    side_effect=AssertionError("unselected build lookup")),
+              patch("src.backend.arte_chart_reader._reader", return_value=client)):
+            page = chart_page(**kwargs)
+            self.assertEqual(page["token"], "token")
+            self.assertIn(BAR_ATTEMPT, client.sql)
+            with self.assertRaisesRegex(ValueError, "certified run scope"):
+                chart_page(**{**kwargs, "ticker": "OTHER"})
+
+    def test_run_linked_chart_passes_its_market_pin_through_cache(self):
+        from src.backend import app
+
+        plan = _plan()
+        controller = SimpleNamespace(
+            definition=SimpleNamespace(
+                configuration_revision={"payload": {"strategy": {"strategy_number": 1}}},
+                market_data_plan={"token": plan.token}, session_date=DAY),
+            _fixed_market_plan=plan,
+            current_time=datetime(2026, 8, 18, 4, 6, tzinfo=NY),
+        )
+        request = dict(symbol="SUGP", timeframe="1s", run_id="run-1",
+                       as_of="2026-08-18T04:06:00-04:00", row_limit=60,
+                       indicator_columns="bar_start", include_market_signals=False,
+                       include_structure=False, mode="backtest", stage="bars")
+        keys = []
+
+        def load(key, loader):
+            keys.append(key)
+            return loader()
+
+        with (patch.object(app.backtest_run_service, "get", return_value=controller),
+              patch.object(app._CANVAS_CHART_HISTORY_CACHE, "get_or_load",
+                           side_effect=load),
+              patch("src.backend.arte_chart_reader.chart_revision",
+                    side_effect=AssertionError("generic build lookup")),
+              patch.object(app, "_canvas_live_chart_history",
+                           return_value={"source": "pinned"}) as history):
+            page = app.trading_canvas_live_chart_history(**request)
+        self.assertEqual(page["source"], "pinned")
+        self.assertEqual(keys[0][-1], plan.token)
+        self.assertEqual(history.call_args.kwargs["pinned_market_plan"], plan)
+        self.assertEqual(history.call_args.kwargs["session_date"], DAY.isoformat())
+
+    def test_run_linked_chart_fails_closed_before_its_plan_is_ready(self):
+        from fastapi import HTTPException
+        from src.backend import app
+
+        controller = SimpleNamespace(
+            definition=SimpleNamespace(
+                configuration_revision={"payload": {"strategy": {"strategy_number": 1}}},
+                market_data_plan={"token": "run-token"}, session_date=DAY),
+            _fixed_market_plan=None,
+            current_time=datetime(2026, 8, 18, 4, 6, tzinfo=NY),
+        )
+        with (patch.object(app.backtest_run_service, "get", return_value=controller),
+              patch("src.backend.arte_chart_reader.chart_revision") as generic):
+            with self.assertRaises(HTTPException) as raised:
+                app.trading_canvas_live_chart_history(
+                    symbol="SUGP", timeframe="1s", run_id="run-1",
+                    as_of="2026-08-18T04:06:00-04:00", row_limit=60,
+                    indicator_columns="bar_start", include_market_signals=False,
+                    include_structure=False, mode="backtest", stage="bars")
+        self.assertIn("waiting for its certified run market plan", raised.exception.detail)
+        generic.assert_not_called()
+
     def test_missing_pinned_indicator_is_not_shown_as_zero(self):
         client = _Client([{
             "bucket_index": 14700, "open_int": 10000, "high_int": 11000,
@@ -240,11 +320,12 @@ class ArteChartReaderTests(unittest.TestCase):
                 as_of="2026-08-18T04:06:00-04:00", row_limit=60,
                 indicator_columns=["bar_start", "ema_9"],
                 include_market_signals=False, include_structure=False,
-                mode="backtest", stage="full",
+                mode="backtest", stage="full", pinned_market_plan=_plan(),
             )
         self.assertEqual(result["source"], "arte.market-day-core-v5")
         self.assertEqual(result["indicators"][0]["ema_9"], 1.04)
         persisted.assert_called_once()
+        self.assertEqual(persisted.call_args.kwargs["pinned_plan"], _plan())
         gateway.assert_not_called()
 
     def test_backtest_missing_persisted_page_never_triggers_qmd_build(self):

@@ -1717,6 +1717,7 @@ def historical_bar_history_before(
     stage: str = "full",
     mode: str = "live",
     full_session: bool = False,
+    pinned_market_plan: Any | None = None,
 ) -> dict[str, Any]:
     resolved_ticker = _historical_ticker(ticker)
     resolved_timeframe = _historical_timeframe(timeframe)
@@ -1837,6 +1838,7 @@ def historical_bar_history_before(
         include_market_signals=include_market_signals,
         include_structure=include_structure,
         allow_persisted_bars=allow_persisted_bars, mode=mode,
+        pinned_plan=pinned_market_plan,
     )
     if persisted is not None:
         bars = persisted["bars"]

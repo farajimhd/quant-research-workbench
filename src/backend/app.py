@@ -6410,9 +6410,21 @@ def trading_canvas_live_chart_history(
     if relative_volume_requested and mode != 'backtest':
         projected_columns = [column for column in projected_columns if column != 'session_relative_volume']
     controller = None
+    pinned_market_plan = None
     try:
         if run_id and mode == 'backtest':
             controller = backtest_run_service.get(run_id)
+            from src.backend.backtest_market_data import CertifiedMarketDayPlan
+            strategy = dict(dict(
+                controller.definition.configuration_revision.get('payload') or {}
+            ).get('strategy') or {})
+            if strategy.get('strategy_number') == 1:
+                pinned_market_plan = getattr(controller, '_fixed_market_plan', None)
+                if (not isinstance(pinned_market_plan, CertifiedMarketDayPlan)
+                        or pinned_market_plan.token != controller.definition.market_data_plan.get('token')):
+                    raise ValueError('Strategy 1 chart is waiting for its certified run market plan')
+                if session_date is None:
+                    session_date = controller.definition.session_date.isoformat()
             cutoff = datetime.fromisoformat(as_of.replace('Z', '+00:00')) if as_of else controller.current_time
             if cutoff is None or cutoff.tzinfo is None:
                 raise ValueError('Backtest chart requires an aware as-of cursor')
@@ -6444,13 +6456,16 @@ def trading_canvas_live_chart_history(
                     session_date=session_date, as_of=cutoff.isoformat(), before_bar=before_bar,
                     indicator_columns=['bar_start', *extra_columns], allow_persisted_bars=allow_persisted_bars,
                     include_market_signals=include_market_signals, include_structure=False, stage=stage,
-                    mode=mode, row_limit=row_limit, full_session=full_session) if extra_columns or relative_volume_requested else {}
+                    mode=mode, row_limit=row_limit, full_session=full_session,
+                    pinned_market_plan=pinned_market_plan) if extra_columns or relative_volume_requested else {}
                 return {**base, 'history': base.get('history', []), 'indicators': [*base.get('indicators', []), *timeline],
                     'indicators_available': True, 'market_signal_events': base.get('market_signal_events', []), 'structure_events': [],
                     'structure_level_history': [], 'indicator_provenance': {'authority': 'clickhouse-closing-book-1',
                     'database': build_id, 'fingerprint': controller.definition.experimental_structure_fingerprint}}
         arte_revision = ""
-        if session_date:
+        if pinned_market_plan is not None:
+            arte_revision = pinned_market_plan.token
+        elif session_date:
             from src.backend.arte_chart_reader import chart_revision
             arte_revision = chart_revision(
                 date.fromisoformat(session_date), ticker, timeframe,
@@ -6482,6 +6497,7 @@ def trading_canvas_live_chart_history(
                 mode=mode,
                 row_limit=row_limit,
                 full_session=full_session,
+                pinned_market_plan=pinned_market_plan,
             ),
         )
     except QmdServiceError as exc:
@@ -6506,6 +6522,7 @@ def _canvas_live_chart_history(
     mode: str,
     row_limit: int,
     full_session: bool,
+    pinned_market_plan=None,
 ) -> dict[str, Any]:
     before_date = date.fromisoformat(before) if before else datetime.now(ZoneInfo(EXCHANGE_TIME_ZONE)).date()
     return historical_bar_history_before(
@@ -6523,6 +6540,7 @@ def _canvas_live_chart_history(
         stage=stage,
         mode=mode,
         full_session=full_session,
+        pinned_market_plan=pinned_market_plan,
     )
 
 

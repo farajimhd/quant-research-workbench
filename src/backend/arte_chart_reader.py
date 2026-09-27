@@ -182,17 +182,34 @@ def chart_page(*, session: date, ticker: str, timeframe: str,
                page_start: datetime, page_end: datetime, row_limit: int,
                stage: str, indicator_columns: list[str] | None,
                include_market_signals: bool, include_structure: bool,
-               allow_persisted_bars: bool, mode: str) -> dict[str, Any] | None:
+               allow_persisted_bars: bool, mode: str,
+               pinned_plan: CertifiedMarketDayPlan | None = None) -> dict[str, Any] | None:
     if not eligible(timeframe=timeframe, stage=stage,
                     indicator_columns=indicator_columns,
                     include_market_signals=include_market_signals,
                     include_structure=include_structure,
                     allow_persisted_bars=allow_persisted_bars, mode=mode):
         return None
-    plan = certified_chart_plan(session, ticker, timeframe, mode=mode)
+    if pinned_plan is not None:
+        if (mode != "backtest" or not isinstance(pinned_plan, CertifiedMarketDayPlan)
+                or session.isoformat() not in pinned_plan.sessions
+                or ticker not in pinned_plan.tickers
+                or _RESOLUTIONS[timeframe] not in pinned_plan.required_resolutions_ms):
+            raise ValueError("Backtest chart differs from its certified run scope")
+        plan = pinned_plan
+    else:
+        plan = certified_chart_plan(session, ticker, timeframe, mode=mode)
     if plan is None:
         return None
-    units = {(unit.stage, unit.session_date, unit.ticker): unit for unit in plan.units}
+    selected_units = tuple(unit for unit in plan.units
+                           if unit.session_date == session.isoformat()
+                           and unit.ticker == ticker)
+    units = {(unit.stage, unit.session_date, unit.ticker): unit
+             for unit in selected_units}
+    if (len(selected_units) != 3 or len(units) != 3
+            or {unit.stage for unit in selected_units}
+            != {"bars", "technical", "broker_100ms"}):
+        raise ValueError("Backtest chart lacks exact pinned product stages")
     bars_unit = units[("bars", session.isoformat(), ticker)]
     technical_unit = units[("technical", session.isoformat(), ticker)]
     resolution = _RESOLUTIONS[timeframe]
