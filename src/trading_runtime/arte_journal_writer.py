@@ -242,7 +242,31 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
     if (not isinstance(keeper_session, ManagedKeeperSession)
             or not keeper_session.writable):
         raise RuntimeError("V4 Backtest runner needs a caller-owned writable Keeper session")
-    client = ClickHouseHttpClient(
+
+    class _V4RunnerClient(ClickHouseHttpClient):
+        def close(self) -> None:
+            # The writer joins its publication thread before closing this
+            # client. Borrowed detail connections therefore cannot outlive
+            # a failed or completed batch, and no connection is reused by a
+            # different run.
+            lanes = getattr(self, "v4_insert_lane_cache", ())
+            self.v4_insert_lane_cache = ()
+            first_error = None
+            for lane in lanes:
+                try:
+                    lane.close()
+                except BaseException as exc:
+                    if first_error is None:
+                        first_error = exc
+            try:
+                super().close()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+            if first_error is not None:
+                raise first_error
+
+    client = _V4RunnerClient(
         url, user, password, timeout_seconds=60, persistent=True,
         default_query_params={"max_threads": 2, "max_execution_time": 60},
     )
@@ -259,6 +283,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
         return lane
     client.v4_insert_lane_factory = new_detail_lane
     client.v4_insert_lane_limit = 4
+    client.v4_insert_lane_cache = tuple(new_detail_lane() for _ in range(4))
     return client
 
 

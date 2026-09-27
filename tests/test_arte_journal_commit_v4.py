@@ -79,6 +79,35 @@ def test_v4_detail_inserts_use_distinct_bounded_http_lanes(monkeypatch):
     assert {item[2] for item in identities} == {"table_a", "table_b", "table_c"}
 
 
+def test_v4_detail_inserts_borrow_persistent_lanes_across_batches(monkeypatch):
+    dispatch = object()
+    inserted = []
+    closed = []
+    lanes = tuple(SimpleNamespace(typed_insert_strict=True,
+                                  typed_insert_dispatch=dispatch)
+                  for _ in range(2))
+    for lane in lanes:
+        lane.close = lambda lane=lane: closed.append(lane)
+    monkeypatch.setattr(writer_module, "_insert",
+                        lambda lane, name, *_args, **_kwargs:
+                        inserted.append((lane, name)))
+    client = SimpleNamespace(typed_insert_dispatch=dispatch,
+                             v4_insert_lane_factory=lambda: pytest.fail(
+                                 "borrowed lane must not be recreated"),
+                             v4_insert_lane_limit=2,
+                             v4_insert_lane_cache=lanes)
+    for sequence in (8, 9):
+        _insert_detail_families_v4(client,
+            SimpleNamespace(batch_id=f"batch-{sequence}",
+                            last_sequence=sequence),
+            (("table_a", ({"record_id": "a"},)),
+             ("table_b", ({"record_id": "b"},))))
+    assert len(inserted) == 4
+    assert inserted.count((lanes[0], "table_a")) == 2
+    assert inserted.count((lanes[1], "table_b")) == 2
+    assert closed == []
+
+
 def test_v4_detail_lane_failure_drains_and_closes_all_lanes(monkeypatch):
     dispatch = object()
     closed = []

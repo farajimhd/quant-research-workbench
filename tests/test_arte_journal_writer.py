@@ -219,9 +219,15 @@ def test_v4_client_requires_isolated_runner_identity(monkeypatch) -> None:
         assert isinstance(client.typed_insert_dispatch,
                           TypedInsertDispatch)
         assert client.typed_insert_dispatch.keeper is session.client
+        assert len(client.v4_insert_lane_cache) == 4
+        assert len({id(lane) for lane in client.v4_insert_lane_cache}) == 4
+        assert all(lane is not client and lane.typed_insert_dispatch
+                   is client.typed_insert_dispatch
+                   for lane in client.v4_insert_lane_cache)
     finally:
         client.close()
         session.close()
+    assert client.v4_insert_lane_cache == ()
 
 
 def test_v4_context_client_requires_keeper_and_audits_journal_grants(monkeypatch):

@@ -1208,6 +1208,7 @@ def _insert_detail_families_v4(client, batch, pending):
 
     factory = getattr(client, "v4_insert_lane_factory", None)
     lane_limit = getattr(client, "v4_insert_lane_limit", 1)
+    cached_lanes = getattr(client, "v4_insert_lane_cache", None)
     if factory is None or len(pending) < 2:
         for name, rows in pending:
             _insert(client, name, tuple(rows), f"{batch.batch_id}:{name}:v4",
@@ -1219,14 +1220,19 @@ def _insert_detail_families_v4(client, batch, pending):
         raise ValueError("V4 detail INSERT lanes must be bounded and configured")
     lane_count = min(lane_limit, len(pending))
     lanes = []
+    borrowed = cached_lanes is not None
     try:
-        for _ in range(lane_count):
-            lane = factory()
+        if borrowed and (not isinstance(cached_lanes, tuple)
+                         or len(cached_lanes) != lane_limit):
+            raise ValueError("V4 cached detail lanes differ from their bound")
+        for index in range(lane_count):
+            lane = cached_lanes[index] if borrowed else factory()
             if (lane is client or any(lane is prior for prior in lanes)
                     or getattr(lane, "typed_insert_strict", False) is not True
                     or getattr(lane, "typed_insert_dispatch", None)
                     is not client.typed_insert_dispatch):
-                if lane is not client and all(lane is not prior for prior in lanes):
+                if (not borrowed and lane is not client
+                        and all(lane is not prior for prior in lanes)):
                     lane.close()
                 raise RuntimeError("V4 detail lane lacks an independent fenced client")
             lanes.append(lane)
@@ -1252,8 +1258,9 @@ def _insert_detail_families_v4(client, batch, pending):
             if errors:
                 raise errors[0]
     finally:
-        for lane in lanes:
-            lane.close()
+        if not borrowed:
+            for lane in lanes:
+                lane.close()
 
 
 def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
