@@ -28,6 +28,9 @@ from src.trading_runtime.arte_activation_projection import (
     ACTIVATION_RUN_ID, load_activation, load_day_activations, prepare_activation_rows,
     project_activation,
 )
+from src.trading_runtime.arte_activation_insert_dispatch import (
+    ActivationInsertDispatch, activation_insert_proof,
+)
 
 
 class _BoundedSourceCommits:
@@ -162,6 +165,7 @@ def read_attested_activation_prefix(
     completion_storage: CompletionStorage, completion_keeper: CompletionKeeper, *,
     session_date: date, source_commit_hashes: tuple[str, ...],
     configuration_revision_id: str, activation_run_id: str = ACTIVATION_RUN_ID,
+    activation_dispatch: ActivationInsertDispatch | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Restore only completed, Keeper-attested ACK identities, in source order.
 
@@ -171,6 +175,9 @@ def read_attested_activation_prefix(
     """
     if type(session_date) is not date:
         raise ValueError("activation receipt read requires a session date")
+    if activation_run_id != ACTIVATION_RUN_ID and activation_dispatch is None:
+        raise ActivationRecoveryUnfenced(
+            "Strategy 1 activation read lacks registered INSERT drain proof")
     proofs = read_completed_dispatch_prefix(
         dispatch_storage, completion_storage, completion_keeper,
         session_key=session_date.isoformat(),
@@ -178,6 +185,7 @@ def read_attested_activation_prefix(
         configuration_revision_id=configuration_revision_id)
     seen_delivery: set[str] = set()
     seen_watch: set[tuple[str, str]] = set()
+    dispatch_receipts: dict[str, str] = {}
     restored = []
     for proof in proofs:
         intents, acks = proof.materialize()
@@ -204,7 +212,13 @@ def read_attested_activation_prefix(
         if (parent["event_time"] != intent["event_time"]
                 or parent["content_hash"] != ack["activation_receipt_hash"]):
             raise ValueError("attested activation differs from ACK receipt")
+        if activation_dispatch is not None:
+            dispatch_receipts[delivery_id] = activation_insert_proof(
+                delivery_id, parent["content_hash"])
         restored.append(activation)
+    if activation_dispatch is not None:
+        activation_dispatch.assert_cold_receipts(
+            activation_run_id, dispatch_receipts)
     return tuple(restored)
 
 
@@ -219,6 +233,7 @@ def _cold_recover_activation_checkpoint_under_fence(
     max_source_occurrences: int = 100_000,
     receipt_defined: bool = False,
     activation_run_id: str = ACTIVATION_RUN_ID,
+    activation_dispatch: ActivationInsertDispatch | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Read-only typed replacement prerequisite for the SQLite watch checkpoint.
 
@@ -265,12 +280,15 @@ def _cold_recover_activation_checkpoint_under_fence(
         max_occurrences=max_source_occurrences)
     activation_reader = (read_attested_activation_prefix if receipt_defined
                          else cold_audit_activation_watches)
+    reader_kwargs = dict(session_date=session_date,
+                         source_commit_hashes=hashes,
+                         configuration_revision_id=configuration_revision_id,
+                         activation_run_id=activation_run_id)
+    if receipt_defined:
+        reader_kwargs["activation_dispatch"] = activation_dispatch
     watches = activation_reader(
         activation_client, dispatch_storage, completion_storage,
-        completion_keeper, session_date=session_date,
-        source_commit_hashes=hashes,
-        configuration_revision_id=configuration_revision_id,
-        activation_run_id=activation_run_id)
+        completion_keeper, **reader_kwargs)
     if source_keeper.read_head(session_key) != first:
         raise RuntimeError("Signal Stream Keeper head changed during activation recovery")
     return watches
@@ -288,6 +306,7 @@ def audit_activation_checkpoint_under_cooperative_fences(
     max_source_occurrences: int = 100_000,
     receipt_defined: bool = False,
     activation_run_id: str = ACTIVATION_RUN_ID,
+    activation_dispatch: ActivationInsertDispatch | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Diagnostic cold audit, not an admission or executable checkpoint.
 
@@ -321,7 +340,8 @@ def audit_activation_checkpoint_under_cooperative_fences(
             max_source_batches=max_source_batches,
             max_source_occurrences=max_source_occurrences,
             receipt_defined=receipt_defined,
-            activation_run_id=activation_run_id)
+            activation_run_id=activation_run_id,
+            activation_dispatch=activation_dispatch)
         if not source_keeper.is_current(session_key, owner_id=owner_id, epoch=epoch):
             raise RuntimeError("Signal Stream source owner fence lost during recovery")
         if not activation_fence.is_current(
@@ -346,6 +366,7 @@ def audit_receipt_defined_activation_prefix_under_fences(
     max_source_batches: int = 100_000,
     max_source_occurrences: int = 100_000,
     activation_run_id: str = ACTIVATION_RUN_ID,
+    activation_dispatch: ActivationInsertDispatch | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Inactive causal-prefix audit; only attested receipts become visible."""
     return audit_activation_checkpoint_under_cooperative_fences(
@@ -358,7 +379,8 @@ def audit_receipt_defined_activation_prefix_under_fences(
         max_source_batches=max_source_batches,
         max_source_occurrences=max_source_occurrences,
         receipt_defined=True,
-        activation_run_id=activation_run_id)
+        activation_run_id=activation_run_id,
+        activation_dispatch=activation_dispatch)
 
 
 class ActivationRecoveryUnfenced(RuntimeError):

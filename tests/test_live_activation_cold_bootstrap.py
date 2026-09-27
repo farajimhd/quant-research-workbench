@@ -23,6 +23,9 @@ from src.trading_runtime.arte_activation_projection import (
     prepare_activation_rows, project_activation,
     publish_activation, strategy_one_activation_run_id,
 )
+from src.trading_runtime.arte_activation_insert_dispatch import (
+    activation_insert_proof,
+)
 from tests.test_arte_activation_projection import _MemoryClient
 from tests.test_live_signal_work_completion import Keeper, Storage
 from tests.test_signal_dispatch_typed_cursor import ColdStorage
@@ -369,9 +372,20 @@ def test_attested_strategy_one_scope_cannot_read_legacy_activation_rows() -> Non
     with pytest.raises((ValueError, RuntimeError), match="Activation|activation"):
         read_attested_activation_prefix(
             activation, dispatch, completion, keeper, **kwargs)
+    with pytest.raises(ActivationRecoveryUnfenced, match="registered INSERT drain"):
+        read_attested_activation_prefix(
+            activation, dispatch, completion, keeper,
+            activation_run_id=run_id, **kwargs)
+    class ClosedDispatch:
+        def assert_cold_receipts(self, observed_run_id, receipts):
+            assert observed_run_id == run_id
+            assert receipts == {delivery["delivery_id"]: activation_insert_proof(
+                delivery["delivery_id"],
+                activation.rows["trading_activation_v1"][0]["content_hash"])}
     restored = read_attested_activation_prefix(
         activation, dispatch, completion, keeper,
-        activation_run_id=run_id, **kwargs)
+        activation_run_id=run_id, activation_dispatch=ClosedDispatch(),
+        **kwargs)
     assert [row["delivery_id"] for row in restored] == [delivery["delivery_id"]]
 
 
