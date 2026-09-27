@@ -3347,7 +3347,8 @@ class ReplayRunController:
                 assignments=self._strategy.assignments(),
                 client_factory=lambda: readonly_clickhouse_client(
                     market_stream=True, v3_read_principal=True),
-                before_boundary=before, finish_boundary=finish)
+                before_boundary=before, finish_boundary=finish,
+                stage_time=self._record_stage_time)
         except StopRequested:
             await self._finish("stopped")
             return

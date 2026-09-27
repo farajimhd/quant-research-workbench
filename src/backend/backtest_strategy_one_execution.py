@@ -81,6 +81,7 @@ async def run_certified_strategy_one_session(
     before_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     max_workers: int = 4,
+    stage_time: Callable[[str, float], None] | None = None,
 ) -> StrategyOneProposalCounts:
     """Compose the certified sparse route without legacy frames or events.
 
@@ -167,7 +168,8 @@ async def run_certified_strategy_one_session(
                 scheduler, entry, evidence, manager, runtime=runtime,
                 static_gate=surviving_gate, assignments=assignments,
                 before_boundary=before_boundary,
-                finish_boundary=finish_boundary)
+                finish_boundary=finish_boundary,
+                stage_time=stage_time)
         finally:
             scheduler.close()
 
@@ -180,6 +182,7 @@ async def run_strategy_one_fixed_session(
     assignments: Sequence[StrategyAssignment],
     before_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     finish_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
+    stage_time: Callable[[str, float], None] | None = None,
 ) -> StrategyOneProposalCounts:
     """Run one causal 100 ms session with broker-first global boundaries.
 
@@ -259,4 +262,4 @@ async def run_strategy_one_fixed_session(
         finish_boundary=finish_boundary,
         observe_activation=evidence.observe_activation,
         observe_completed_seconds=evidence.observe_completed_seconds,
-        static_gate=static_gate)
+        static_gate=static_gate, stage_time=stage_time)

@@ -180,6 +180,39 @@ def test_candidate_only_coordinator_has_no_per_boundary_thread_handoff(monkeypat
         finish_boundary=noop)) == 2
 
 
+def test_coordinator_stage_timing_preserves_candidate_order():
+    from time import perf_counter
+
+    stages = []
+    actions = []
+
+    async def record(action, *_args):
+        actions.append(action)
+
+    def stage_time(stage, started):
+        assert perf_counter() >= started
+        stages.append(stage)
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter((candidate("AAA", 100),)),
+        active_source=lambda _ticker, _after: iter(()))
+    assert asyncio.run(run_strategy_one_boundaries(
+        scheduler,
+        process_broker_boundary=lambda work: record("broker", work),
+        observe_completed_seconds=lambda work: record("v7", work),
+        evaluate_ticker=lambda ticker, rows, candidate_row: record(
+            "evaluate", ticker, rows, candidate_row),
+        financially_active_tickers=lambda: (),
+        finish_boundary=lambda work: record("finish", work),
+        stage_time=stage_time)) == 1
+    assert actions == ["broker", "v7", "evaluate", "finish"]
+    assert stages.count("strategy_one_scheduler") == 2
+    assert stages.count("strategy_one_broker") == 1
+    assert stages.count("strategy_one_v7_bos") == 1
+    assert stages.count("strategy_one_evaluation") == 1
+    assert stages.count("strategy_one_finish") == 1
+
+
 def _gate(*rows):
     facts = tuple(CandidateFact(ticker, boundary, boundary, None, "", None,
                                 "", "", "", False, None, None, "", None)

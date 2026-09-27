@@ -45,6 +45,7 @@ async def run_strategy_one_proposals(
     observe_completed_seconds: Callable[[StrategyOneBoundaryWork], Awaitable[None]],
     before_boundary: Callable[[StrategyOneBoundaryWork], Awaitable[None]] | None = None,
     static_gate: StrategyOneStaticGate | None = None,
+    stage_time: Callable[[str, float], None] | None = None,
 ) -> StrategyOneProposalCounts:
     """Dispatch certified entry proposals after broker liquidity at each clock."""
     if (not isinstance(scheduler, StrategyOneBoundaryScheduler)
@@ -145,6 +146,6 @@ async def run_strategy_one_proposals(
         finish_boundary=finish_boundary,
         observe_activation=observe_activation,
         observe_completed_seconds=observe_completed_seconds,
-        static_gate=static_gate)
+        static_gate=static_gate, stage_time=stage_time)
     return StrategyOneProposalCounts(
         completed, candidate_count, proposal_count, management_count)

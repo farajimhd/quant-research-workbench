@@ -12,6 +12,7 @@ import asyncio
 from dataclasses import dataclass
 from contextlib import closing
 from heapq import heappop, heappush
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterator, Mapping
 
 from src.backend.backtest_market_data import (
@@ -383,6 +384,7 @@ async def run_strategy_one_boundaries(
     observe_activation: Callable[[StrategyOneActivation], Awaitable[None]] | None = None,
     observe_completed_seconds: Callable[[StrategyOneBoundaryWork], Awaitable[None]] | None = None,
     static_gate: StrategyOneStaticGate | None = None,
+    stage_time: Callable[[str, float], None] | None = None,
 ) -> int:
     """One causal coordinator; market I/O cannot block the asyncio engine.
 
@@ -403,6 +405,26 @@ async def run_strategy_one_boundaries(
     from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
     if static_gate is not None and not isinstance(static_gate, StrategyOneStaticGate):
         raise TypeError("Strategy 1 coordinator needs a typed static gate")
+    if stage_time is not None and not callable(stage_time):
+        raise TypeError("Strategy 1 stage timer must be callable")
+
+    async def timed(stage: str, operation: Awaitable[Any]) -> Any:
+        if stage_time is None:
+            return await operation
+        started = perf_counter()
+        try:
+            return await operation
+        finally:
+            stage_time(stage, started)
+
+    def pop_next() -> StrategyOneBoundaryWork | None:
+        if stage_time is None:
+            return scheduler.pop_next()
+        started = perf_counter()
+        try:
+            return scheduler.pop_next()
+        finally:
+            stage_time("strategy_one_scheduler", started)
     pending_gate = ({(fact.ticker, fact.boundary_ms): int(mask)
                      for fact, mask in zip(static_gate.facts, static_gate.rejection_mask)}
                     if static_gate is not None else None)
@@ -412,7 +434,8 @@ async def run_strategy_one_boundaries(
     try:
         initial = financially_active_tickers()
         if initial != scheduler.active_tickers:
-            await asyncio.to_thread(scheduler.reconcile_financial_tickers, initial)
+            await timed("strategy_one_reconcile", asyncio.to_thread(
+                scheduler.reconcile_financial_tickers, initial))
         while True:
             # Candidate-only boundaries are already resident typed rows. A
             # thread round-trip per 100 ms candidate would erase much of the
@@ -420,9 +443,10 @@ async def run_strategy_one_boundaries(
             # a ClickHouse fetch while advancing their prefetched head.
             active = scheduler.active_tickers
             if set(active) - set(scheduler.exhausted_tickers):
-                work = await asyncio.to_thread(scheduler.pop_next)
+                work = await timed("strategy_one_scheduler", asyncio.to_thread(
+                    scheduler.pop_next))
             else:
-                work = scheduler.pop_next()
+                work = pop_next()
             if work is None:
                 if pending_gate:
                     raise ValueError("Strategy 1 static gate contains unseen candidates")
@@ -433,7 +457,7 @@ async def run_strategy_one_boundaries(
                         + ", ".join(remaining))
                 return count
             if before_boundary is not None:
-                await before_boundary(work)
+                await timed("strategy_one_control", before_boundary(work))
             candidates = {row.market_row["ticker"]: row
                           for row in work.candidate_rows}
             candidate_rejections = {}
@@ -446,15 +470,15 @@ async def run_strategy_one_boundaries(
             if work.broker_rows:
                 # All completed ticker rows reach the broker together. OMS
                 # may wake once on this causal boundary, never once per symbol.
-                await process_broker_boundary(work)
+                await timed("strategy_one_broker", process_broker_boundary(work))
             # The broker first consumes this completed boundary. V7 and BOS
             # then see its persisted 1s bar before activation/entry decisions.
             if observe_completed_seconds is not None:
-                await observe_completed_seconds(work)
+                await timed("strategy_one_v7_bos", observe_completed_seconds(work))
             if work.activation_rows and observe_activation is None:
                 raise RuntimeError("Strategy 1 activation callback is required")
             for activation in work.activation_rows:
-                await observe_activation(activation)
+                await timed("strategy_one_activation", observe_activation(activation))
             for ticker, resolutions in work.broker_rows:
                 if (ticker in candidate_rejections
                         and candidate_rejections[ticker] != 0
@@ -465,12 +489,13 @@ async def run_strategy_one_boundaries(
                 candidate = candidates.get(ticker)
                 if candidate_rejections.get(ticker, 0):
                     candidate = None
-                await evaluate_ticker(ticker, resolutions, candidate)
-            await finish_boundary(work)
+                await timed("strategy_one_evaluation", evaluate_ticker(
+                    ticker, resolutions, candidate))
+            await timed("strategy_one_finish", finish_boundary(work))
             desired = financially_active_tickers()
             if desired != scheduler.active_tickers:
-                await asyncio.to_thread(scheduler.reconcile_financial_tickers,
-                                        desired)
+                await timed("strategy_one_reconcile", asyncio.to_thread(
+                    scheduler.reconcile_financial_tickers, desired))
             count += 1
             if count % 256 == 0:
                 await asyncio.sleep(0)
