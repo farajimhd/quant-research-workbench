@@ -803,7 +803,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                             protection_reconciliation_row=None,
                             protection_reconciliation_actions=(),
                             protection_reconciliation_replies=(),
-                            broker_snapshot_rows=None) -> str:
+                            broker_snapshot_rows=None,
+                            _prepare_only=False):
     from src.trading_runtime.arte_journal_writer import (
         TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
         _sealed_families, _v4_family_table, _verify_commission_links, typed_row,
@@ -811,7 +812,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
     )
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 
-    if (not isinstance(batch, TypedJournalBatch)
+    if (type(_prepare_only) is not bool
+            or not isinstance(batch, TypedJournalBatch)
             or not 1 <= len(batch.events) <= 512
             or batch.status not in {"running", "completed", "stopped", "failed"}):
         raise ValueError("V4 publication needs one bounded typed event batch")
@@ -1100,6 +1102,10 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         families += (("trading_backtest_account_snapshot_v2", snapshot_accounts),)
     if snapshot_positions:
         families += (("trading_backtest_position_snapshot_v2", snapshot_positions),)
+    if _prepare_only:
+        # The compound transport rekeys these fully validated normalized
+        # families before one Keeper reservation. No query or INSERT has run.
+        return base_families, families
     commit, family_rows = prepare_commit_v4(
         run_id=batch.run_id, run_month=batch.run_month,
         attempt_id=batch.attempt_id, batch_id=batch.batch_id,

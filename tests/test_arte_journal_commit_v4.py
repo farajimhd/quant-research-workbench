@@ -8,6 +8,7 @@ from uuid import UUID
 import pytest
 
 from src.trading_runtime.arte_journal_commit_v4 import (
+    _publish_typed_batch_v4,
     load_verified_commit_v4, load_verified_v4_prefix, prepare_commit_v4,
     publish_base_typed_batch_v4, publish_broker_acknowledgement_batch_v4,
     publish_terminal_typed_batch_v4,
@@ -37,6 +38,22 @@ from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.replay_run_service import ReplayRunController, RunMode
 from src.trading_runtime.domain import CommissionEvent
 from tests.test_arte_journal_writer import MemoryClient, batch, captured
+
+
+def test_v4_prepare_only_seals_typed_families_without_transport():
+    item = batch()
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("V4 pure preparation must not query or write ClickHouse")
+
+    client = SimpleNamespace(
+        typed_insert_strict=True, typed_insert_dispatch=MemoryV4Dispatch(),
+        execute=forbidden)
+    base, families = _publish_typed_batch_v4(
+        client, item, _prepare_only=True)
+    assert dict(base)["trading_event_v1"][0]["record_id"] == item.events[0]["record_id"]
+    assert dict(families)["trading_event_v1"] == dict(base)["trading_event_v1"]
+    assert client.typed_insert_dispatch.timeline == []
 
 
 def test_v4_preflight_audits_one_exact_storage_union(monkeypatch):

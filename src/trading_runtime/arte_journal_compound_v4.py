@@ -141,3 +141,135 @@ def coalesce_v4_units(
            for parent, identity in nested_parents):
         raise ValueError("V4 scalar child has no normalized compound parent")
     return V4CompoundBatch(combined, tuple(units), children)
+
+
+def _publication_kwargs(unit: Any) -> dict[str, Any]:
+    if type(unit) is V4StrategyOneEntryBatch:
+        return {"strategy_one_entry_rows": unit.entry_evidence}
+    if type(unit) is V4PortfolioAllocationBatch:
+        return {"portfolio_allocation_row": unit.allocation}
+    if type(unit) is V4ReservationReasonBatch:
+        return {"reservation_reason_rows": unit.reasons}
+    if type(unit) is V4BrokerAcknowledgementBatch:
+        return {"broker_acknowledgement_row": unit.acknowledgement}
+    if type(unit) is V4OrderCancelBatch:
+        return {"order_cancel_row": unit.cancellation}
+    if type(unit) is V4OrderRepriceBatch:
+        return {"order_reprice_row": unit.repricing}
+    if type(unit) is V4RiskActionBatch:
+        return {"risk_action_row": unit.action, "risk_reply_rows": unit.replies}
+    if type(unit) is V4ProtectionChangeBatch:
+        return {"protection_change_row": unit.change,
+                "protection_entry_order_rows": unit.entry_orders}
+    if type(unit) is V4ProtectionReconciliationBatch:
+        return {"protection_reconciliation_row": unit.reconciliation,
+                "protection_reconciliation_actions": unit.actions,
+                "protection_reconciliation_replies": unit.replies}
+    if type(unit) is TypedJournalBatch:
+        return {}
+    raise TypeError("V4 compound contains an unsupported journal envelope")
+
+
+def prepare_compound_v4_families(
+    client: Any, compound: V4CompoundBatch,
+) -> tuple[tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
+           tuple[tuple[str, tuple[dict[str, Any], ...]], ...]]:
+    """Seal each original unit, then rekey its normalized rows to one batch.
+
+    This is still pure preparation. The caller must independently read back
+    every merged family before publishing a commit or advancing Keeper.
+    """
+    from .arte_journal_commit_v4 import (
+        ACKNOWLEDGEMENT, CANCEL, ENTRY_EVIDENCE, PROTECTION_CHANGE,
+        PROTECTION_ENTRY_ORDER, PROTECTION_RECONCILIATION,
+        RECONCILIATION_ACTION, RECONCILIATION_REPLY, REPRICE,
+        RESERVATION_REASON, RISK_ACTION, RISK_REPLY, V4_ALLOCATION,
+        _publish_typed_batch_v4, _sealed_strategy_one_entry_rows,
+        seal_portfolio_allocation_v3, seal_protection_changes_v3,
+        seal_protection_reconciliation_v4, seal_reservation_reason_family_v3,
+        seal_risk_action_v4,
+    )
+    from .arte_journal_writer import (
+        _FAMILIES, _sealed_families, _v4_family_table, typed_row,
+    )
+
+    if type(compound) is not V4CompoundBatch:
+        raise TypeError("V4 mixed preparation requires a compound batch")
+    table_for_key = {
+        "entry_evidence": ENTRY_EVIDENCE.name,
+        "allocations": V4_ALLOCATION.name,
+        "reservation_reasons": RESERVATION_REASON.name,
+        "acknowledgements": ACKNOWLEDGEMENT.name,
+        "cancellations": CANCEL.name,
+        "repricings": REPRICE.name,
+        "risk_actions": RISK_ACTION.name,
+        "risk_replies": RISK_REPLY.name,
+        "protection_changes": PROTECTION_CHANGE.name,
+        "protection_entry_orders": PROTECTION_ENTRY_ORDER.name,
+        "protection_reconciliations": PROTECTION_RECONCILIATION.name,
+        "reconciliation_actions": RECONCILIATION_ACTION.name,
+        "reconciliation_replies": RECONCILIATION_REPLY.name,
+    }
+    base_names = {_v4_family_table(name) for name, _, _, _ in _FAMILIES}
+    extra: dict[str, list[dict[str, Any]]] = {
+        name: [] for name in table_for_key.values()
+    }
+    for unit in compound.units:
+        base = unit if type(unit) is TypedJournalBatch else unit.base
+        _, micro_families = _publish_typed_batch_v4(
+            client, base, _prepare_only=True, **_publication_kwargs(unit))
+        for name, rows in micro_families:
+            if name in base_names:
+                continue
+            if name not in extra:
+                raise ValueError("V4 micro-unit prepared an unknown scalar family")
+            extra[name].extend(typed_row(name, {
+                **{key: value for key, value in row.items()
+                   if key != "content_hash"},
+                "batch_id": compound.base.batch_id,
+            }) for row in rows)
+    for key, name in table_for_key.items():
+        expected = tuple(typed_row(name, row) for row in compound.children[key])
+        if tuple(extra[name]) != expected:
+            raise ValueError("V4 compound lost a normalized scalar child")
+
+    ids = lambda name: tuple(row["record_id"] for row in extra[name])
+    base_families = _sealed_families(
+        compound.base,
+        v4_broker_ack_ids=ids(ACKNOWLEDGEMENT.name),
+        v4_allocation_ids=ids(V4_ALLOCATION.name),
+        v4_order_cancel_ids=ids(CANCEL.name),
+        v4_order_reprice_ids=ids(REPRICE.name),
+        v4_risk_action_ids=ids(RISK_ACTION.name),
+        v4_protection_ids=ids(PROTECTION_CHANGE.name),
+        v4_reconciliation_ids=ids(PROTECTION_RECONCILIATION.name),
+    )
+    if tuple(extra[ENTRY_EVIDENCE.name]) != _sealed_strategy_one_entry_rows(
+            compound.base, base_families, tuple(
+                {key: value for key, value in row.items() if key != "content_hash"}
+                for row in extra[ENTRY_EVIDENCE.name])):
+        raise ValueError("V4 compound entry evidence differs from its parent")
+    seal_portfolio_allocation_v3(
+        extra[V4_ALLOCATION.name], compound.base.events,
+        run_id=compound.base.run_id, batch_id=compound.base.batch_id)
+    seal_reservation_reason_family_v3(
+        extra[RESERVATION_REASON.name], compound.base.events,
+        compound.base.portfolio_reservation_events,
+        run_id=compound.base.run_id, batch_id=compound.base.batch_id)
+    seal_risk_action_v4(
+        extra[RISK_ACTION.name], extra[RISK_REPLY.name], compound.base.events,
+        run_id=compound.base.run_id, batch_id=compound.base.batch_id)
+    seal_protection_changes_v3(
+        extra[PROTECTION_CHANGE.name], extra[PROTECTION_ENTRY_ORDER.name],
+        compound.base.events, run_id=compound.base.run_id,
+        batch_id=compound.base.batch_id)
+    seal_protection_reconciliation_v4(
+        extra[PROTECTION_RECONCILIATION.name],
+        extra[RECONCILIATION_ACTION.name], extra[RECONCILIATION_REPLY.name],
+        compound.base.events, run_id=compound.base.run_id,
+        batch_id=compound.base.batch_id)
+    families = tuple((_v4_family_table(name), rows)
+                     for name, rows in base_families) + tuple(
+        (table_for_key[key], tuple(extra[table_for_key[key]]))
+        for key in _CHILD_KEYS if extra[table_for_key[key]])
+    return base_families, families
