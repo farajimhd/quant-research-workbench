@@ -117,18 +117,32 @@ def selected_market_inventory_fingerprint(
         raise RuntimeError("Selected market inventory repeats an active part")
     ids = ",".join(f"'{value}'" for value in build_ids)
     day_filter = ",".join(f"toDate('{value}')" for value in days)
+    # One ClickHouse request lets independent table scans run within the server
+    # instead of paying a network round-trip for every certificate family.
+    selections = []
     for name in _NAMES:
         scope = (f" AND session_date IN ({day_filter})" if name in {
             "bars_v1", "indicators_v1", "liquidity_100ms_v1"} else "")
-        selected = client.execute(
-            f"SELECT DISTINCT _part FROM arte.{name} WHERE build_id IN ({ids})"
-            f"{scope} ORDER BY _part FORMAT TabSeparated"
-        ).splitlines()
-        if len(set(selected)) != len(selected) or any(
-                not re.fullmatch(r"[A-Za-z0-9_]+", value) for value in selected):
+        selections.append(
+            f"SELECT DISTINCT '{name}' AS table_name, _part AS part_name "
+            f"FROM arte.{name} WHERE build_id IN ({ids}){scope}")
+    selected_rows = client.execute(
+        "SELECT table_name,part_name FROM (" + " UNION ALL ".join(selections)
+        + ") ORDER BY table_name,part_name FORMAT TabSeparated"
+    ).splitlines()
+    selected_by_table: dict[str, list[str]] = {name: [] for name in _NAMES}
+    prior: tuple[str, str] | None = None
+    for line in selected_rows:
+        fields = line.split("\t")
+        if (len(fields) != 2 or fields[0] not in selected_by_table
+                or not re.fullmatch(r"[A-Za-z0-9_]+", fields[1])
+                or (prior is not None and tuple(fields) <= prior)):
             raise RuntimeError("Selected market inventory returned invalid part names")
+        prior = (fields[0], fields[1])
+        selected_by_table[fields[0]].append(fields[1])
+    for name in _NAMES:
         digest.update(name.encode() + b"\0")
-        for part_name in selected:
+        for part_name in selected_by_table[name]:
             row = by_part.get((name, part_name))
             if row is None:
                 raise RuntimeError("Selected market part merged during inventory read")

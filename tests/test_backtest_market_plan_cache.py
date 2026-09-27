@@ -11,6 +11,7 @@ class InventoryClient:
         self.part_name = "part-1"
         self.unrelated_part_name = None
         self.disk_name = "live_market_ssd"
+        self.selected_queries = 0
 
     def execute(self, sql):
         if "FROM system.tables" in sql:
@@ -29,8 +30,10 @@ class InventoryClient:
                 rows.append(dict(table="bars_v1", name=self.unrelated_part_name,
                                  disk_name=self.disk_name, rows=20, bytes_on_disk=200,
                                  hash_of_all_files="b" * 32))
-        elif "SELECT DISTINCT _part FROM arte." in sql:
-            return self.part_name if "arte.bars_v1 " in sql else ""
+        elif sql.startswith("SELECT table_name,part_name FROM ("):
+            self.selected_queries += 1
+            assert all(f"FROM arte.{name} " in sql for name in subject._NAMES)
+            return f"bars_v1\t{self.part_name}"
         else:
             raise AssertionError(sql)
         return "\n".join(json.dumps(row) for row in rows)
@@ -53,6 +56,7 @@ def test_selected_inventory_ignores_unrelated_parts_but_fences_selected_parts():
     client.part_name = "part_1"
     args = (("a" * 64,), ("2026-08-18",))
     first = subject.selected_market_inventory_fingerprint(client, *args)
+    assert client.selected_queries == 1
     global_before = subject.market_inventory_fingerprint(client)
     client.unrelated_part_name = "part_2"
     assert subject.market_inventory_fingerprint(client) != global_before
