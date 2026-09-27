@@ -23,10 +23,13 @@ _TABLES = {**_OCCURRENCE, **_CURSOR}
 
 
 def _session(value: str) -> str:
-    if (type(value) is not str
-            or date.fromisoformat(value).isoformat() != value):
-        raise ValueError("Signal source read session is invalid")
-    return value
+    try:
+        if (type(value) is not str
+                or date.fromisoformat(value).isoformat() != value):
+            raise ValueError
+        return value
+    except ValueError as exc:
+        raise ValueError("Signal source read session is invalid") from exc
 
 
 def _event(value: str) -> str:

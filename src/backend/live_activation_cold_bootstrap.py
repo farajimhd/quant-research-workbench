@@ -192,6 +192,21 @@ def read_attested_activation_prefix(
         configuration_revision_id=configuration_revision_id,
         registered_dispatch=registered_dispatch,
         registered_completion=registered_completion)
+    strategy_one_rows: dict[str, dict[str, Any]] | None = None
+    if activation_run_id != ACTIVATION_RUN_ID:
+        # Strategy 1 has no legacy activation exception. Inventory all four
+        # normalized families even for an empty source prefix; unregistered
+        # or late rows must not be mistaken for an empty watch set.
+        day_rows = load_day_activations(
+            activation_client, session_date=session_date,
+            page_size=min(1024, len(proofs) + 1),
+            max_inventory_rows_per_family=len(proofs),
+            run_id=activation_run_id)
+        if len(day_rows) != len(proofs):
+            raise ValueError("Strategy 1 activation inventory differs from dispatch")
+        strategy_one_rows = {row["delivery_id"]: row for row in day_rows}
+        if len(strategy_one_rows) != len(day_rows):
+            raise ValueError("Strategy 1 activation inventory repeats delivery")
     seen_delivery: set[str] = set()
     seen_watch: set[tuple[str, str]] = set()
     dispatch_receipts: dict[str, str] = {}
@@ -206,10 +221,13 @@ def read_attested_activation_prefix(
             raise ValueError("attested activation prefix has duplicate delivery or watch")
         seen_delivery.add(delivery_id)
         seen_watch.add(watch)
-        activation = load_activation(
-            activation_client, session_date=session_date,
-            run_plan_id=intent["run_plan_id"], ticker=intent["ticker"],
-            event_id=intent["event_id"], run_id=activation_run_id)
+        activation = (strategy_one_rows.get(delivery_id)
+                      if strategy_one_rows is not None else load_activation(
+                          activation_client, session_date=session_date,
+                          run_plan_id=intent["run_plan_id"], ticker=intent["ticker"],
+                          event_id=intent["event_id"], run_id=activation_run_id))
+        if activation is None:
+            raise ValueError("Strategy 1 activation delivery is absent")
         if (activation["delivery_id"] != delivery_id
                 or any(activation.get(key) != intent[key] for key in (
                     "run_plan_id", "profile_id", "book_id", "ticker",
@@ -276,10 +294,15 @@ def _cold_recover_activation_checkpoint_under_fence(
         registered_completion.close_for_cold()
         activation_dispatch.close_for_cold(activation_run_id)
     first = source_keeper.read_head(session_key)
-    if (first.session_key != session_key or first.batch_sequence < 1
+    empty_source = first.batch_sequence == 0
+    if (first.session_key != session_key or first.batch_sequence < 0
             or first.batch_sequence > max_source_batches
-            or first.configuration_revision != configuration_revision_id
-            or first.source_revision != source_revision_id):
+            or (empty_source and (
+                source_fence is None or first.cursor_commit_hash != "0" * 64
+                or first.configuration_revision or first.source_revision))
+            or (not empty_source and (
+                first.configuration_revision != configuration_revision_id
+                or first.source_revision != source_revision_id))):
         raise ValueError("Signal Stream Keeper head differs from recovery scope")
     if source_fence is not None and source_fence != (
             first.batch_sequence, first.cursor_commit_hash):
@@ -304,7 +327,8 @@ def _cold_recover_activation_checkpoint_under_fence(
     if (any(type(value) is not str or len(value) != 64
             or any(char not in "0123456789abcdef" for char in value)
             for value in hashes)
-            or hashes[-1] != first.cursor_commit_hash):
+            or (hashes[-1] if hashes else "0" * 64)
+            != first.cursor_commit_hash):
         raise ValueError("Signal Stream commit prefix hash differs")
     _audit_source_orphans(
         source_commit_client, session_key=session_key,

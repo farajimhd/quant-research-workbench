@@ -59,3 +59,5 @@ def test_source_reader_checks_every_family_before_new_gate():
     assert len(client.sql) == 8
     assert all(sql.startswith("SELECT 1 FROM arte.signal_stream_")
                for sql in client.sql)
+    with pytest.raises(ValueError, match="read session"):
+        storage.has_any_source_rows(session_key="2026-09-24' OR 1=1")

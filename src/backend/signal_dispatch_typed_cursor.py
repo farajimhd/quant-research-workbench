@@ -260,7 +260,17 @@ def read_committed_dispatch_prefix(
         raise ValueError("dispatch cold scope is invalid")
     hashes = tuple(_hex(value) for value in source_commit_hashes)
     if not hashes:
-        raise ValueError("dispatch cold prefix lacks a sealed nonempty source bound")
+        inventory = getattr(storage, "has_any_dispatch_rows", None)
+        if registered_dispatch is None or not callable(inventory):
+            raise ValueError(
+                "dispatch cold prefix lacks a sealed nonempty source bound "
+                "or registered empty inventory")
+        if inventory(session_key=session_key):
+            raise ValueError("dispatch empty prefix has uncommitted rows")
+        from src.backend.signal_dispatch_insert_dispatch import dispatch_run_id
+        registered_dispatch.assert_cold_receipts(
+            dispatch_run_id(session_key, configuration_revision_id), {})
+        return ()
     listed_intents = [canonical_row(INTENT_COMMIT, row) for row in
                       storage.list_dispatch_commits(INTENT_COMMIT.name, session_key=session_key)]
     listed_acks = [canonical_row(ACK_COMMIT, row) for row in

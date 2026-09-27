@@ -16,6 +16,8 @@ from src.backend.live_activation_cold_bootstrap import (
     cold_recover_activation_checkpoint,
 )
 from src.backend.live_signal_completion_keeper import completion_resource
+from src.backend.signal_dispatch_clickhouse_storage import ClickHouseDispatchColdStorage
+from src.backend.signal_source_clickhouse_storage import ClickHouseSignalSourceReadStorage
 from src.backend.live_signal_work_completion import project_completion
 from src.backend.signal_dispatch_typed_cursor import (
     project_dispatch_ack, project_dispatch_intents,
@@ -487,6 +489,63 @@ def test_strategy_one_cold_audit_closes_all_insert_gates_before_source_read(
             registered_completion=PendingCompletion(),
             registered_source=Source())
     assert events == ["source-closed", "dispatch-closed", "completion-pending"]
+
+
+def test_registered_empty_strategy_one_session_has_no_activation_watch() -> None:
+    class EmptyClickHouse:
+        def execute(self, sql):
+            assert sql.startswith("SELECT ") and " FORMAT JSONEachRow" in sql
+            return ""
+    class Source:
+        def acquire_bootstrap_barrier(self):
+            return 0, "0" * 64
+        def assert_cold_prefix(self, fence):
+            assert fence == (0, "0" * 64)
+    class SourceKeeper:
+        def read_head(self, session_key):
+            assert session_key == SESSION.isoformat()
+            return SimpleNamespace(
+                session_key=session_key, batch_sequence=0,
+                cursor_commit_hash="0" * 64,
+                configuration_revision="", source_revision="")
+    class Dispatch:
+        def close_for_cold(self, run_id):
+            assert run_id == dispatch_run_id(SESSION.isoformat(), "approved-1")
+        def assert_cold_receipts(self, run_id, receipts):
+            assert receipts == {}
+    class Completion:
+        def close_for_cold(self):
+            pass
+        def assert_cold_receipts(self, receipts):
+            assert receipts == {}
+    class Activation:
+        def close_for_cold(self, run_id):
+            assert run_id == strategy_one_activation_run_id(
+                SESSION, mode="paper", run_plan_id="plan-1")
+        def assert_cold_receipts(self, run_id, receipts):
+            assert receipts == {}
+    run_id = strategy_one_activation_run_id(
+        SESSION, mode="paper", run_plan_id="plan-1")
+    def audit(client):
+        return _cold_recover_activation_checkpoint_under_fence(
+            client, ClickHouseSignalSourceReadStorage(client, {}), client,
+            SourceKeeper(), ClickHouseDispatchColdStorage(client),
+            Storage(), Keeper(), session_date=SESSION,
+            configuration_revision_id="approved-1",
+            source_revision_id="source-1", catalogs={}, receipt_defined=True,
+            activation_run_id=run_id, activation_dispatch=Activation(),
+            registered_dispatch=Dispatch(), registered_completion=Completion(),
+            registered_source=Source())
+    assert audit(EmptyClickHouse()) == ()
+    class OrphanActivation(EmptyClickHouse):
+        def execute(self, sql):
+            if (sql.startswith("SELECT DISTINCT run_plan_id,ticker,event_id ")
+                    and "FROM arte.trading_activation_v1" in sql):
+                return json.dumps({"run_plan_id": "plan-1", "ticker": "AAA",
+                                   "event_id": EVENT_ID})
+            return super().execute(sql)
+    with pytest.raises(RuntimeError, match="inventory exceeds expected"):
+        audit(OrphanActivation())
 
 
 def test_attested_prefix_rejects_missing_or_conflicting_receipt_rows() -> None:
