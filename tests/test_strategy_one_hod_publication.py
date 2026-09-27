@@ -83,3 +83,28 @@ def test_uncertain_insert_is_not_retried_as_a_source_read(monkeypatch):
                              on_source_retry=lambda: retried.append(True))
     assert len(derived) == 2
     assert retried == [True]
+
+
+def test_100ms_source_is_bounded_by_nonoverlapping_pinned_bucket_ranges():
+    scope = subject.HodPublicationScope(
+        SCOPE.build_id, SCOPE.session_date, SCOPE.ticker,
+        SCOPE.bars_attempt_id, SCOPE.candidate_attempt_id,
+        SCOPE.candidate_content_hash, SCOPE.seed_plan_token,
+        (2_100_000,))
+    class Reader:
+        def __init__(self):
+            self.queries = []
+        def iter_json_each_row(self, sql):
+            self.queries.append(sql)
+            yield {"bucket_index": 144_000 + (len(self.queries) - 1) * 10_000}
+    reader = Reader()
+    rows = list(subject._bars_100ms(reader, scope))
+    assert [row["bucket_index"] for row in rows] == [144_000, 154_000, 164_000]
+    assert len(reader.queries) == 3
+    for sql, start, end in zip(reader.queries,
+                               (144_000, 154_000, 164_000),
+                               (154_000, 164_000, 165_000), strict=True):
+        assert sql.lstrip().startswith("SELECT")
+        assert f"bucket_index>={start} AND bucket_index<{end}" in sql
+        assert "attempt_id=toUUID" in sql
+        assert "ORDER BY bucket_index FORMAT JSONEachRow" in sql

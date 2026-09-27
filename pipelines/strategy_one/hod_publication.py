@@ -148,17 +148,23 @@ def _verify_existing(client: Any, scope: HodPublicationScope) -> str | None:
 def _bars_100ms(client: Any, scope: HodPublicationScope) -> Iterator[dict]:
     last_bucket = (scope.candidate_boundaries[-1]
                    + SESSION_OPEN_OFFSET_MS) // 100
-    sql = f"""SELECT ticker,resolution_ms,bucket_index,price_valid,
-      extremes_valid,open_int,high_int,low_int,close_int
-      FROM arte.bars_v1 WHERE build_id={literal(scope.build_id)}
-      AND session_date=toDate({literal(scope.session_date)})
-      AND ticker={literal(scope.ticker)}
-      AND attempt_id=toUUID({literal(scope.bars_attempt_id)})
-      AND resolution_ms=100
-      AND bucket_index>={SESSION_OPEN_OFFSET_MS // 100}
-      AND bucket_index<{last_bucket}
-      ORDER BY bucket_index FORMAT JSONEachRow"""
-    yield from client.iter_json_each_row(sql)
+    # A full premarket JSONEachRow response can stay open while the consumer
+    # fits V7 for minutes. Bound each read by certified bucket range so an
+    # idle/proxy disconnect cannot discard an entire long-lived response.
+    first_bucket = SESSION_OPEN_OFFSET_MS // 100
+    for start in range(first_bucket, last_bucket, 10_000):
+        end = min(start + 10_000, last_bucket)
+        sql = f"""SELECT ticker,resolution_ms,bucket_index,price_valid,
+          extremes_valid,open_int,high_int,low_int,close_int
+          FROM arte.bars_v1 WHERE build_id={literal(scope.build_id)}
+          AND session_date=toDate({literal(scope.session_date)})
+          AND ticker={literal(scope.ticker)}
+          AND attempt_id=toUUID({literal(scope.bars_attempt_id)})
+          AND resolution_ms=100
+          AND bucket_index>={start} AND bucket_index<{end}
+          ORDER BY bucket_index FORMAT JSONEachRow"""
+        with closing(client.iter_json_each_row(sql)) as rows:
+            yield from rows
 
 
 def _derive(reader_100ms: Any, reader_1s: Any,
