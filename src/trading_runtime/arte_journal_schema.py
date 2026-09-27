@@ -1882,6 +1882,30 @@ def journal_permission_preflight(
         # grant must fail the required-table/privilege audit below.
         storage_preflight(client, tables=oms_tactic_tables)
         journal |= tactic_names
+    # Strategy 1 live configuration is a read-only, all-or-nothing extension.
+    # Never add these tables to journal: the runtime must not insert releases
+    # or approvals through its journal principal.
+    from src.trading_runtime.strategy_one_configuration_tree import (
+        NODE_TABLE as strategy_node_table,
+        RELEASE_TABLE as strategy_release_table,
+        verify_tables as verify_strategy_tables,
+    )
+    from src.backend.live_strategy_one_approval import TABLE as strategy_approval_table
+    strategy_read_names = frozenset({
+        strategy_node_table.split(".", 1)[1],
+        strategy_release_table.split(".", 1)[1],
+        strategy_approval_table.name,
+    })
+    observed_strategy_reads = {
+        name for name in strategy_read_names
+        if any(f"ON arte.{name} " in line for line in grant_lines)
+    }
+    if observed_strategy_reads:
+        if observed_strategy_reads != strategy_read_names:
+            raise ValueError("Strategy 1 live read grant set is incomplete")
+        verify_strategy_tables(client)
+        storage_preflight(client, tables=(strategy_approval_table,))
+        read_only_tables = read_only_tables | strategy_read_names
     required = journal | market | read_only_tables
     names = ",".join(f"'{name}'" for name in sorted(required))
     actual = _rows(client,

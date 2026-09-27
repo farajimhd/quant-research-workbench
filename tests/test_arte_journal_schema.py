@@ -278,6 +278,8 @@ def test_journal_principal_cannot_write_market_or_change_schema(
     from src.backend import live_signal_journal_preflight as staged_profile
     from src.backend.live_plan_membership import TABLES as membership_tables
     from src.trading_runtime.arte_oms_tactic_schema import TABLES as tactic_tables
+    from src.trading_runtime import strategy_one_configuration_tree as strategy_config
+    from src.backend.live_strategy_one_approval import TABLE as strategy_approval
     import src.trading_runtime.arte_journal_schema as schema_module
 
     market = {"bars_v1", "indicators_v1", "liquidity_100ms_v1",
@@ -287,6 +289,9 @@ def test_journal_principal_cannot_write_market_or_change_schema(
     staged_journal = {table.name for table in staged_profile.LIVE_SIGNAL_TABLES}
     membership_journal = {table.name for table in membership_tables}
     tactic_journal = {table.name for table in tactic_tables}
+    strategy_reads = {strategy_config.NODE_TABLE.split(".", 1)[1],
+                      strategy_config.RELEASE_TABLE.split(".", 1)[1],
+                      strategy_approval.name}
     unrelated = "unrelated_operator_table_v1"
 
     class Grants:
@@ -295,6 +300,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
         staged = False
         membership = False
         tactic = False
+        strategy_read_grants: frozenset[str] = frozenset()
         reference = False
         missing_select = ""
         calls: list[str]
@@ -311,7 +317,8 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                 assert "name IN (" in sql
                 tables = (market | journal | (staged_journal if self.staged else set())
                           | (membership_journal if self.membership else set())
-                          | (tactic_journal if self.tactic else set()))
+                          | (tactic_journal if self.tactic else set())
+                          | set(self.strategy_read_grants))
                 return "\n".join(json.dumps({"name": name}) for name in sorted(tables))
             if sql == "SELECT currentUser()":
                 return "journal_writer\n"
@@ -323,6 +330,8 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                             for name in sorted(writable)),
                           *(f"GRANT SELECT ON arte.{name} TO journal_writer"
                             for name in sorted(market)),
+                          *(f"GRANT SELECT ON arte.{name} TO journal_writer"
+                            for name in sorted(self.strategy_read_grants)),
                           *(f"GRANT SELECT ON system.{name} TO journal_writer"
                             for name in ("storage_policies", "tables", "columns", "parts",
                                          "data_skipping_indices"))]
@@ -341,7 +350,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                 writable = (journal | (staged_journal if self.staged else set())
                             | (membership_journal if self.membership else set())
                             | (tactic_journal if self.tactic else set()))
-                if privilege == "SELECT" and scope.removeprefix("arte.") in market | writable:
+                if privilege == "SELECT" and scope.removeprefix("arte.") in market | writable | self.strategy_read_grants:
                     return "1\n"
                 if privilege == "INSERT" and scope.removeprefix("arte.") in writable:
                     return "1\n"
@@ -385,6 +394,23 @@ def test_journal_principal_cannot_write_market_or_change_schema(
     journal_permission_preflight(client)
     assert checked_membership == [tactic_tables]
     client.tactic = False
+    checked_membership.clear()
+    checked_strategy: list[str] = []
+    monkeypatch.setattr(strategy_config, "verify_tables",
+                        lambda _client: checked_strategy.append("schema"))
+    client.strategy_read_grants = frozenset(strategy_reads)
+    journal_permission_preflight(client)
+    assert checked_strategy == ["schema"]
+    assert checked_membership == [(strategy_approval,)]
+    client.strategy_read_grants = frozenset({strategy_approval.name})
+    with pytest.raises(ValueError, match="grant set is incomplete"):
+        journal_permission_preflight(client)
+    client.strategy_read_grants = frozenset(strategy_reads)
+    client.grant_line = f"GRANT INSERT ON arte.{strategy_approval.name} TO journal_writer"
+    with pytest.raises(ValueError, match="unauthorized INSERT"):
+        journal_permission_preflight(client)
+    client.grant_line = ""
+    client.strategy_read_grants = frozenset()
     for grant in ("CHECK GRANT INSERT ON arte.bars_v1",
                   "CHECK GRANT INSERT ON arte.*",
                   "CHECK GRANT CREATE TABLE ON arte.*",
