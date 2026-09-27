@@ -18,7 +18,10 @@ from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, SESSION_OPEN_OFFSET_MS,
     iter_persisted_v7_seconds, market_day_boundary,
 )
-from src.backend.structural_v7_seed import CertifiedSeedPlan, load_seed, load_seeds_batch, split_evidence
+from src.backend.structural_v7_seed import (
+    CertifiedSeedPlan, load_seed, load_seeds_batch, split_evidence,
+    split_evidence_batch,
+)
 from src.market_engine.streaming_level_book import StreamingLevelBook, VERSION
 from src.market_engine.v7_qmd import projection
 
@@ -185,11 +188,12 @@ class FixedV7Cache:
             with closing(client):
                 seeds = load_seeds_batch(client, tickers=batch, session=self.session,
                     coverage={ticker: self._coverage[ticker] for ticker in batch})
+                splits = split_evidence_batch(client,
+                    seed_sessions={ticker: date.fromisoformat(seeds[ticker]["session"])
+                                   for ticker in batch}, session=self.session)
                 return {ticker: FixedV7Stream(
                     seeds[ticker], ticker=ticker, session=self.session,
-                    splits=split_evidence(client, ticker=ticker,
-                        seed_session=date.fromisoformat(seeds[ticker]["session"]),
-                        session=self.session), consume_seed=True)
+                    splits=splits[ticker], consume_seed=True)
                     for ticker in batch}
 
         batches = tuple(tuple(symbols[index:index + 8])

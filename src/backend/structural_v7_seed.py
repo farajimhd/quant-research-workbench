@@ -187,6 +187,12 @@ def split_evidence(client: Any, *, ticker: str, seed_session: date,
         f"AND execution_date<=toDate({_literal(session.isoformat())}) "
         f"AND inserted_at<=toDateTime64({_literal(_cutoff(session))},9,'UTC') "
         "ORDER BY execution_date,inserted_at FORMAT JSONEachRow")
+    return _decode_split_evidence(rows, ticker=ticker, seed_session=seed_session,
+                                  session=session)
+
+
+def _decode_split_evidence(rows: list[dict[str, Any]], *, ticker: str,
+                           seed_session: date, session: date) -> list[dict[str, Any]]:
     unique: dict[str, dict[str, Any]] = {}
     for row in rows:
         day = str(row["execution_date"])
@@ -203,6 +209,38 @@ def split_evidence(client: Any, *, ticker: str, seed_session: date,
         if previous is None or str(row["inserted_at"]) > str(previous["inserted_at"]):
             unique[day] = dict(row)
     return [unique[day] for day in sorted(unique)]
+
+
+def split_evidence_batch(client: Any, *, seed_sessions: dict[str, date],
+                         session: date) -> dict[str, list[dict[str, Any]]]:
+    """Read split evidence for a seed batch in one causal SELECT."""
+    tickers = tuple(seed_sessions)
+    if (not isinstance(session, date) or not 1 <= len(tickers) <= 8
+            or any(not isinstance(ticker, str) or not ticker
+                   or not isinstance(day, date) or day >= session
+                   for ticker, day in seed_sessions.items())):
+        raise ValueError("V7 split batch requires one to eight preceding seeds")
+    names = ",".join(_literal(ticker) for ticker in tickers)
+    earliest = min(seed_sessions.values())
+    rows = _rows(client,
+        "SELECT provider_ticker,execution_date,split_from,split_to,inserted_at "
+        "FROM q_live.market_stock_split_v1 FINAL "
+        f"WHERE provider_ticker IN ({names}) "
+        f"AND execution_date>toDate({_literal(earliest.isoformat())}) "
+        f"AND execution_date<=toDate({_literal(session.isoformat())}) "
+        f"AND inserted_at<=toDateTime64({_literal(_cutoff(session))},9,'UTC') "
+        "ORDER BY provider_ticker,execution_date,inserted_at FORMAT JSONEachRow")
+    grouped: dict[str, list[dict[str, Any]]] = {ticker: [] for ticker in tickers}
+    for row in rows:
+        ticker = str(row.get("provider_ticker") or "")
+        if ticker not in grouped:
+            raise ValueError("V7 split batch returned an unrequested ticker")
+        if date.fromisoformat(str(row["execution_date"])) > seed_sessions[ticker]:
+            grouped[ticker].append({key: row[key] for key in
+                ("execution_date", "split_from", "split_to", "inserted_at")})
+    return {ticker: _decode_split_evidence(grouped[ticker], ticker=ticker,
+                seed_session=seed_sessions[ticker], session=session)
+            for ticker in tickers}
 
 
 def load_seed(client: Any, *, ticker: str, session: date,

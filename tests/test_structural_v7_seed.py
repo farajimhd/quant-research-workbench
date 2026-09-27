@@ -6,7 +6,8 @@ import pytest
 from types import SimpleNamespace
 
 from src.backend.structural_v7_seed import (
-    _band_hash, certified_seed_plan, load_seed, load_seeds_batch, preceding_coverage, split_evidence,
+    _band_hash, certified_seed_plan, load_seed, load_seeds_batch, preceding_coverage,
+    split_evidence, split_evidence_batch,
 )
 from src.market_engine.derived_trade_policy import POLICY
 from src.market_engine.streaming_level_book import EXTRACTION_VERSION, StreamingLevelBook
@@ -81,6 +82,32 @@ def test_batched_seed_reads_preserve_single_ticker_decoding():
     assert len(client.queries) == 3
     assert "LIMIT 3" in client.queries[1]
     assert "LIMIT 7" in client.queries[2]
+
+
+def test_batched_splits_preserve_per_ticker_seed_window_and_shape():
+    class SplitClient:
+        def __init__(self):
+            self.queries = []
+
+        def execute(self, sql):
+            self.queries.append(sql)
+            rows = [
+                dict(provider_ticker="TEST", execution_date="2026-08-17",
+                     split_from=2, split_to=1, inserted_at="2026-08-17 10:00:00"),
+                dict(provider_ticker="OTHER", execution_date="2026-08-17",
+                     split_from=3, split_to=1, inserted_at="2026-08-17 10:00:00"),
+            ]
+            return "\n".join(json.dumps(row) for row in rows)
+
+    client = SplitClient()
+    result = split_evidence_batch(client, seed_sessions={
+        "TEST": date(2026, 8, 16), "OTHER": date(2026, 8, 17)},
+        session=date(2026, 8, 18))
+    assert len(result["TEST"]) == 1 and result["OTHER"] == []
+    assert set(result["TEST"][0]) == {
+        "execution_date", "split_from", "split_to", "inserted_at"}
+    assert len(client.queries) == 1
+    assert "provider_ticker IN" in client.queries[0]
 
 
 def test_legacy_seed_is_explicitly_provisional():
