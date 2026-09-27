@@ -305,8 +305,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_env_files(discover_env_files(PROJECT_ROOT), verbose=False)
 from src.backend.managed_backtest_credentials import load_managed_backtest_credentials
 load_managed_backtest_credentials()
-from src.backend.managed_live_strategy_one_credentials import load_managed_live_v4_credentials
-load_managed_live_v4_credentials()
 FRONTEND_DIST = frontend_dist_root()
 CHART_DISPLAY_ITEMS_NONE = "__none__"
 EXCHANGE_TIME_ZONE = MARKET_TIME_ZONE_NAME

@@ -194,8 +194,12 @@ def open_live_v4_client(
 def live_v4_client_from_env(*, lease: LiveV4KeeperLease) -> Any:
     """Open the provisioned live principal; never fall back to another user."""
     from research.mlops.clickhouse import ClickHouseHttpClient
+    from src.backend.managed_live_strategy_one_credentials import (
+        load_managed_live_v4_credentials,
+    )
     from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
 
+    load_managed_live_v4_credentials()
     endpoint = os.environ.get("STRATEGY_ONE_LIVE_V4_CLICKHOUSE_URL", "").strip()
     user = os.environ.get("STRATEGY_ONE_LIVE_V4_CLICKHOUSE_USER", "").strip()
     password = os.environ.get("STRATEGY_ONE_LIVE_V4_CLICKHOUSE_PASSWORD", "")

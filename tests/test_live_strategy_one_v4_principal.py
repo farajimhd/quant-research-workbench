@@ -150,6 +150,8 @@ def test_client_factory_requires_current_keeper_and_closes_on_failure(monkeypatc
 
 
 def test_live_v4_env_factory_has_no_other_principal_fallback(monkeypatch):
+    from src.backend import managed_live_strategy_one_credentials as managed
+    monkeypatch.setattr(managed, "load_managed_live_v4_credentials", lambda: False)
     for key in ("STRATEGY_ONE_LIVE_V4_CLICKHOUSE_URL",
                 "STRATEGY_ONE_LIVE_V4_CLICKHOUSE_USER",
                 "STRATEGY_ONE_LIVE_V4_CLICKHOUSE_PASSWORD"):
