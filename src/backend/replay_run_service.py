@@ -3958,7 +3958,13 @@ class ReplayRunController:
                         sequence += 1
                         prepared_groups.append((by_resolution, sequence))
                         if day in self._fixed_v7_caches and 1_000 in by_resolution:
-                            completed_seconds.append(by_resolution[1_000])
+                            # An inactive book catches up from certified 1s
+                            # bars at first use. Do not schedule a thread hop
+                            # for rows that advance no live V7 state.
+                            second = by_resolution[1_000]
+                            if self._fixed_v7_caches[day].has_stream(
+                                    str(second["ticker"])):
+                                completed_seconds.append(second)
                     if completed_seconds:
                         await asyncio.to_thread(
                             self._fixed_v7_caches[day].advance_seconds,
