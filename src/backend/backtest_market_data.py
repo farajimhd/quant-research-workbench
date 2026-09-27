@@ -285,9 +285,7 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
         discover_cold_certified_market_day_plan, market_day_fence_build_ids,
     )
     from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
-    from src.trading_runtime.keeper_session import (
-        market_proof_session, open_workstation_keeper_session,
-    )
+    from src.trading_runtime.keeper_session import open_workstation_keeper_session
     from src.backend.backtest_market_plan_cache import (
         MARKET_PLAN_CACHE, market_inventory_fingerprint,
         selected_market_inventory_fingerprint,
@@ -299,11 +297,7 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
             closing(readonly_clickhouse_client(v3_read_principal=True)))
         reader = _MarketCertificateReader(raw_reader)
         build_ids = market_day_fence_build_ids(reader, configuration)
-        # Real Keeper sessions are reused across control-plane preflights. The
-        # proofs below are still fetched on every call; no attestation is
-        # trusted merely because its transport connection remains open.
-        session = market_proof_session() if type(raw_reader) is ClickHouseHttpClient else (
-            stack.enter_context(closing(open_workstation_keeper_session())))
+        session = stack.enter_context(closing(open_workstation_keeper_session()))
         keeper = MarketDayKeeperReader(session.client)
         proofs = {build_id: keeper.load(build_id) for build_id in build_ids}
         days = tuple(str(day) for day in sessions)

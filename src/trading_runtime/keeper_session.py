@@ -6,7 +6,6 @@ Reconnect never rearms a claim without an explicit Keeper verification.
 """
 from __future__ import annotations
 
-import atexit
 from datetime import datetime, timezone
 from threading import Lock
 from time import monotonic
@@ -113,46 +112,6 @@ class ManagedKeeperSession:
         self.client.remove_listener(self._on_state)
         self.client.stop()
         self.client.close()
-
-
-class _MarketProofSessionCache:
-    """Reuse only the read-only market-proof connection, never lease state.
-
-    Callers must load fresh proofs on every preflight. A lost session is not
-    rearmed: the next acquisition opens a new one, and an in-flight read fails
-    closed through MarketDayKeeperReader.
-    """
-
-    def __init__(self) -> None:
-        self._lock = Lock()
-        self._session: ManagedKeeperSession | None = None
-
-    def get(self) -> ManagedKeeperSession:
-        with self._lock:
-            if self._session is not None and self._session.writable:
-                return self._session
-            old = self._session
-            self._session = None
-            if old is not None:
-                old.close()
-            self._session = open_workstation_keeper_session()
-            return self._session
-
-    def close(self) -> None:
-        with self._lock:
-            old = self._session
-            self._session = None
-        if old is not None:
-            old.close()
-
-
-_MARKET_PROOF_SESSION_CACHE = _MarketProofSessionCache()
-atexit.register(_MARKET_PROOF_SESSION_CACHE.close)
-
-
-def market_proof_session() -> ManagedKeeperSession:
-    """Get a process-local control-plane session for fresh certificate reads."""
-    return _MARKET_PROOF_SESSION_CACHE.get()
 
 
 def open_workstation_keeper_session(

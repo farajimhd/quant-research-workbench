@@ -5,35 +5,8 @@ import pytest
 
 from src.trading_runtime.keeper_ownership import KeeperUnavailable
 from src.trading_runtime.keeper_session import (
-    ManagedKeeperSession, _MarketProofSessionCache,
-    open_workstation_keeper_session,
+    ManagedKeeperSession, open_workstation_keeper_session,
 )
-
-
-def test_market_proof_cache_reuses_healthy_session_and_reopens_after_loss(monkeypatch):
-    from src.trading_runtime import keeper_session
-
-    clients = []
-
-    def open_session():
-        client = Client()
-        session = ManagedKeeperSession(client)
-        client.emit("CONNECTED")
-        clients.append(client)
-        return session
-
-    monkeypatch.setattr(keeper_session, "open_workstation_keeper_session", open_session)
-    cache = _MarketProofSessionCache()
-    first = cache.get()
-    assert cache.get() is first
-    assert len(clients) == 1
-    clients[0].emit("SUSPENDED")
-    second = cache.get()
-    assert second is not first
-    assert clients[0].stopped and clients[0].closed
-    assert len(clients) == 2
-    cache.close()
-    assert clients[1].stopped and clients[1].closed
 
 
 class Client:
