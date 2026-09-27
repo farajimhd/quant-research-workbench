@@ -277,6 +277,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
 ) -> None:
     from src.backend import live_signal_journal_preflight as staged_profile
     from src.backend.live_plan_membership import TABLES as membership_tables
+    from src.trading_runtime.arte_oms_tactic_schema import TABLES as tactic_tables
     import src.trading_runtime.arte_journal_schema as schema_module
 
     market = {"bars_v1", "indicators_v1", "liquidity_100ms_v1",
@@ -285,6 +286,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
     journal = {table.name for table in TABLES}
     staged_journal = {table.name for table in staged_profile.LIVE_SIGNAL_TABLES}
     membership_journal = {table.name for table in membership_tables}
+    tactic_journal = {table.name for table in tactic_tables}
     unrelated = "unrelated_operator_table_v1"
 
     class Grants:
@@ -292,6 +294,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
         grant_line = ""
         staged = False
         membership = False
+        tactic = False
         reference = False
         missing_select = ""
         calls: list[str]
@@ -307,13 +310,15 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                             if self.reference else "")
                 assert "name IN (" in sql
                 tables = (market | journal | (staged_journal if self.staged else set())
-                          | (membership_journal if self.membership else set()))
+                          | (membership_journal if self.membership else set())
+                          | (tactic_journal if self.tactic else set()))
                 return "\n".join(json.dumps({"name": name}) for name in sorted(tables))
             if sql == "SELECT currentUser()":
                 return "journal_writer\n"
             if sql == "SHOW GRANTS FINAL":
                 writable = (journal | (staged_journal if self.staged else set())
-                            | (membership_journal if self.membership else set()))
+                            | (membership_journal if self.membership else set())
+                            | (tactic_journal if self.tactic else set()))
                 grants = [*(f"GRANT SELECT, INSERT ON arte.{name} TO journal_writer"
                             for name in sorted(writable)),
                           *(f"GRANT SELECT ON arte.{name} TO journal_writer"
@@ -334,7 +339,8 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                 if sql == self.extra_grant:
                     return "1\n"
                 writable = (journal | (staged_journal if self.staged else set())
-                            | (membership_journal if self.membership else set()))
+                            | (membership_journal if self.membership else set())
+                            | (tactic_journal if self.tactic else set()))
                 if privilege == "SELECT" and scope.removeprefix("arte.") in market | writable:
                     return "1\n"
                 if privilege == "INSERT" and scope.removeprefix("arte.") in writable:
@@ -374,6 +380,11 @@ def test_journal_principal_cannot_write_market_or_change_schema(
     journal_permission_preflight(client)
     assert checked_membership == [membership_tables]
     client.membership = False
+    checked_membership.clear()
+    client.tactic = True
+    journal_permission_preflight(client)
+    assert checked_membership == [tactic_tables]
+    client.tactic = False
     for grant in ("CHECK GRANT INSERT ON arte.bars_v1",
                   "CHECK GRANT INSERT ON arte.*",
                   "CHECK GRANT CREATE TABLE ON arte.*",

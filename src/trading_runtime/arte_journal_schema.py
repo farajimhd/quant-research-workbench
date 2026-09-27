@@ -1874,6 +1874,14 @@ def journal_permission_preflight(
            for name in membership_names):
         storage_preflight(client, tables=live_membership_tables)
         journal |= membership_names
+    from .arte_oms_tactic_schema import TABLES as oms_tactic_tables
+    tactic_names = {table.name for table in oms_tactic_tables}
+    if any(f"ON arte.{name} " in line for line in grant_lines
+           for name in tactic_names):
+        # The two relational tables are one recovery contract. A partial
+        # grant must fail the required-table/privilege audit below.
+        storage_preflight(client, tables=oms_tactic_tables)
+        journal |= tactic_names
     required = journal | market | read_only_tables
     names = ",".join(f"'{name}'" for name in sorted(required))
     actual = _rows(client,
