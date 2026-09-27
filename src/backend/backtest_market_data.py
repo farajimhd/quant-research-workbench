@@ -309,7 +309,9 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
                    interval.milliseconds, resolutions)
             before = market_inventory_fingerprint(reader)
             cached = MARKET_PLAN_CACHE.get(key, proofs, before)
-            if cached is not None and market_inventory_fingerprint(reader) == before:
+            if (cached is not None
+                    and market_inventory_fingerprint(reader) == before
+                    and market_day_fence_build_ids(reader, configuration) == build_ids):
                 return cached
             # The producer may append a different build while this full cold
             # certificate is read. Pin the selected build's physical parts so
@@ -319,6 +321,20 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
                     reader, build_ids, days)
             except RuntimeError:
                 pass  # Unstable scoped metadata retains the full re-audit path.
+            if selected_before is not None:
+                cached = MARKET_PLAN_CACHE.get_selected(
+                    key, proofs, selected_before)
+                if cached is not None:
+                    try:
+                        selected_after = selected_market_inventory_fingerprint(
+                            reader, build_ids, days)
+                    except RuntimeError:
+                        pass
+                    else:
+                        if (selected_after == selected_before
+                                and market_day_fence_build_ids(
+                                    reader, configuration) == build_ids):
+                            return cached
         plan = discover_cold_certified_market_day_plan(
             reader, _MarketCertificateProofs(proofs),
             sessions=days,
@@ -338,8 +354,12 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
                         and market_day_fence_build_ids(reader, configuration) == build_ids):
                     # First audit was full and attested. Active parts that can
                     # contain its certificate or selected market rows did not
-                    # change; only another build's parts changed. Do not cache
-                    # this physically unstable global inventory.
+                    # change; only another build's parts changed. This exact
+                    # selected fingerprint can serve the next launch without
+                    # trusting the unrelated producer's global inventory.
+                    MARKET_PLAN_CACHE.put(
+                        key, proofs, after, plan,
+                        selected_fingerprint=selected_after)
                     return plan
                 # A producer may append another build while this certified
                 # build is being audited. Recheck the exact attested build and
@@ -353,7 +373,9 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
                     raise RuntimeError(
                         "Certified ARTE market plan changed during cold preflight")
                 return refreshed
-            MARKET_PLAN_CACHE.put(key, proofs, after, plan)
+            MARKET_PLAN_CACHE.put(
+                key, proofs, after, plan,
+                selected_fingerprint=selected_before)
         return plan
 
 

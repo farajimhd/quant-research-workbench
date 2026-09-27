@@ -146,23 +146,36 @@ class MarketPlanCache:
 
     def __init__(self) -> None:
         self._lock = Lock()
-        self._entry: tuple[tuple, tuple, str, Any] | None = None
+        self._entry: tuple[tuple, tuple, str, str | None, Any] | None = None
 
     def get(self, key: tuple, proofs: Mapping[str, Any], fingerprint: str) -> Any | None:
         identity = tuple(sorted(proofs.items()))
         with self._lock:
             if self._entry is None:
                 return None
-            saved_key, saved_proofs, saved_fingerprint, plan = self._entry
+            saved_key, saved_proofs, saved_fingerprint, _, plan = self._entry
             return (plan if key == saved_key and identity == saved_proofs
                     and fingerprint == saved_fingerprint else None)
 
+    def get_selected(self, key: tuple, proofs: Mapping[str, Any],
+                     fingerprint: str) -> Any | None:
+        """Reuse only the same previously audited selected-build parts."""
+        identity = tuple(sorted(proofs.items()))
+        with self._lock:
+            if self._entry is None:
+                return None
+            saved_key, saved_proofs, _, selected, plan = self._entry
+            return (plan if key == saved_key and identity == saved_proofs
+                    and selected is not None and fingerprint == selected else None)
+
     def put(self, key: tuple, proofs: Mapping[str, Any],
-            fingerprint: str, plan: Any) -> None:
+            fingerprint: str, plan: Any, *,
+            selected_fingerprint: str | None = None) -> None:
         if not proofs or any(proof is None for proof in proofs.values()):
             raise RuntimeError("Market plan cache requires attested Keeper proofs")
         with self._lock:
-            self._entry = (key, tuple(sorted(proofs.items())), fingerprint, plan)
+            self._entry = (key, tuple(sorted(proofs.items())), fingerprint,
+                           selected_fingerprint, plan)
 
 
 MARKET_PLAN_CACHE = MarketPlanCache()

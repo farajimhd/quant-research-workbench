@@ -67,10 +67,14 @@ def test_selected_inventory_ignores_unrelated_parts_but_fences_selected_parts():
 def test_market_plan_cache_requires_exact_keeper_and_inventory():
     cache = subject.MarketPlanCache()
     plan = object()
-    cache.put(("scope",), {"build": "proof"}, "fingerprint", plan)
+    cache.put(("scope",), {"build": "proof"}, "fingerprint", plan,
+              selected_fingerprint="selected")
     assert cache.get(("scope",), {"build": "proof"}, "fingerprint") is plan
+    assert cache.get_selected(("scope",), {"build": "proof"}, "selected") is plan
     assert cache.get(("scope",), {"build": "changed"}, "fingerprint") is None
+    assert cache.get_selected(("scope",), {"build": "changed"}, "selected") is None
     assert cache.get(("scope",), {"build": "proof"}, "changed") is None
+    assert cache.get_selected(("scope",), {"build": "proof"}, "changed") is None
     with pytest.raises(RuntimeError, match="attested"):
         cache.put(("scope",), {"build": None}, "fingerprint", plan)
 
@@ -101,10 +105,11 @@ def test_fixed_plan_reuses_only_unchanged_verified_snapshot(monkeypatch):
     monkeypatch.setattr(cold, "discover_cold_certified_market_day_plan",
                         lambda *_args, **_kwargs: generations.append(object()) or generations[-1])
     fingerprint = ["part-1"]
+    selected = ["selected-1"]
     monkeypatch.setattr(subject, "market_inventory_fingerprint",
                         lambda _reader: fingerprint[0])
     monkeypatch.setattr(subject, "selected_market_inventory_fingerprint",
-                        lambda *_args: "selected")
+                        lambda *_args: selected[0])
     monkeypatch.setattr(subject, "MARKET_PLAN_CACHE", subject.MarketPlanCache())
     args = dict(sessions=("2026-08-18",), tickers=("ABCD",),
                 configuration={"strategy": {"execution_interval": "100ms"}})
@@ -112,6 +117,9 @@ def test_fixed_plan_reuses_only_unchanged_verified_snapshot(monkeypatch):
     assert market.certified_market_plan_from_arte(**args) is first
     assert len(generations) == 1
     fingerprint[0] = "part-2"
+    assert market.certified_market_plan_from_arte(**args) is first
+    assert len(generations) == 1
+    selected[0] = "selected-2"
     assert market.certified_market_plan_from_arte(**args) is not first
     assert len(generations) == 2
 
@@ -168,7 +176,7 @@ def test_cold_plan_rechecks_pinned_build_during_unrelated_part_growth(
     assert cache._entry is None
 
 
-def test_unrelated_part_growth_reuses_full_audit_without_caching(monkeypatch):
+def test_unrelated_part_growth_reuses_full_audit_with_selected_fence(monkeypatch):
     from src.backend import backtest_market_data as market
     from src.trading_runtime import arte_market_day_cold_preflight as cold
     from src.trading_runtime import arte_market_day_keeper as keeper_module
@@ -194,7 +202,7 @@ def test_unrelated_part_growth_reuses_full_audit_without_caching(monkeypatch):
     monkeypatch.setattr(cold, "discover_cold_certified_market_day_plan",
                         lambda *_args, **_kwargs: scans.append(
                             SimpleNamespace(token="same")) or scans[-1])
-    inventory = iter(("before", "after"))
+    inventory = iter(("before", "after", "later"))
     monkeypatch.setattr(subject, "market_inventory_fingerprint",
                         lambda _reader: next(inventory))
     monkeypatch.setattr(subject, "selected_market_inventory_fingerprint",
@@ -205,4 +213,49 @@ def test_unrelated_part_growth_reuses_full_audit_without_caching(monkeypatch):
         sessions=("2026-08-18",), tickers=("ABCD",),
         configuration={"strategy": {"execution_interval": "100ms"}})
     assert plan is scans[0] and len(scans) == 1
-    assert cache._entry is None
+    assert cache._entry is not None
+    assert market.certified_market_plan_from_arte(
+        sessions=("2026-08-18",), tickers=("ABCD",),
+        configuration={"strategy": {"execution_interval": "100ms"}}) is plan
+    assert len(scans) == 1
+
+
+def test_selected_part_change_during_cache_recheck_forces_full_audit(monkeypatch):
+    from src.backend import backtest_market_data as market
+    from src.trading_runtime import arte_market_day_cold_preflight as cold
+    from src.trading_runtime import arte_market_day_keeper as keeper_module
+    from src.trading_runtime import keeper_session as session_module
+    from research.mlops import clickhouse
+
+    class Reader:
+        def close(self):
+            pass
+
+    class Session:
+        client = object()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
+    monkeypatch.setattr(market, "readonly_clickhouse_client", lambda **_: Reader())
+    monkeypatch.setattr(cold, "market_day_fence_build_ids", lambda *_: ("a" * 64,))
+    monkeypatch.setattr(session_module, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(keeper_module, "MarketDayKeeperReader",
+                        lambda _: SimpleNamespace(load=lambda _build: "proof"))
+    scans = []
+    monkeypatch.setattr(cold, "discover_cold_certified_market_day_plan",
+                        lambda *_args, **_kwargs: scans.append(
+                            SimpleNamespace(token="same")) or scans[-1])
+    global_part = ["part-1"]
+    monkeypatch.setattr(subject, "market_inventory_fingerprint",
+                        lambda _reader: global_part[0])
+    scoped = iter(("selected-1", "selected-1", "selected-2", "selected-2"))
+    monkeypatch.setattr(subject, "selected_market_inventory_fingerprint",
+                        lambda *_args: next(scoped))
+    monkeypatch.setattr(subject, "MARKET_PLAN_CACHE", subject.MarketPlanCache())
+    args = dict(sessions=("2026-08-18",), tickers=("ABCD",),
+                configuration={"strategy": {"execution_interval": "100ms"}})
+    first = market.certified_market_plan_from_arte(**args)
+    global_part[0] = "part-2"
+    assert market.certified_market_plan_from_arte(**args) is not first
+    assert len(scans) == 2  # selected change requires a fresh cold audit
