@@ -17,8 +17,14 @@ from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
 from src.trading_runtime.arte_journal_commit_v4 import (
     load_verified_v4_prefix, publish_base_typed_batch_v4,
     publish_broker_acknowledgement_batch_v4,
+    publish_oms_tactic_batch_v4,
+    publish_order_cancel_batch_v4,
+    publish_order_reprice_batch_v4,
+    publish_portfolio_allocation_batch_v4,
     publish_protection_change_batch_v4,
     publish_protection_reconciliation_batch_v4,
+    publish_reservation_reason_batch_v4,
+    publish_risk_action_batch_v4,
     publish_strategy_one_entry_batch_v4,
 )
 from src.trading_runtime.arte_journal_projection import project_journal_record
@@ -495,9 +501,35 @@ def test_strategy_one_approved_intent_reaches_causal_oms_without_sqlite():
                     return self._receipt(unit, lambda: publish_strategy_one_entry_batch_v4(
                         self.client, unit.base, entry_evidence=unit.entry_evidence))
 
+                def submit_oms_tactic_v4(self, unit):
+                    return self._receipt(unit, lambda: publish_oms_tactic_batch_v4(
+                        self.client, unit.base, tactic_state=unit.tactic_state,
+                        tactic_steps=unit.tactic_steps))
+
+                def submit_portfolio_allocation_v4(self, unit):
+                    return self._receipt(unit, lambda: publish_portfolio_allocation_batch_v4(
+                        self.client, unit.base, allocation=unit.allocation))
+
+                def submit_reservation_reason_v4(self, unit):
+                    return self._receipt(unit, lambda: publish_reservation_reason_batch_v4(
+                        self.client, unit.base, reasons=unit.reasons))
+
                 def submit_broker_acknowledgement_v4(self, unit):
                     return self._receipt(unit, lambda: publish_broker_acknowledgement_batch_v4(
                         self.client, unit.base, acknowledgement=unit.acknowledgement))
+
+                def submit_order_cancel_v4(self, unit):
+                    return self._receipt(unit, lambda: publish_order_cancel_batch_v4(
+                        self.client, unit.base, cancellation=unit.cancellation))
+
+                def submit_order_reprice_v4(self, unit):
+                    return self._receipt(unit, lambda: publish_order_reprice_batch_v4(
+                        self.client, unit.base, repricing=unit.repricing))
+
+                def submit_risk_action_v4(self, unit):
+                    return self._receipt(unit, lambda: publish_risk_action_batch_v4(
+                        self.client, unit.base, action=unit.action,
+                        replies=unit.replies))
 
                 def submit_protection_change_v4(self, unit):
                     return self._receipt(unit, lambda: publish_protection_change_batch_v4(

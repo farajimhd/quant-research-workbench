@@ -737,7 +737,7 @@ def test_fixed_controller_prepares_inactive_v4_without_disk_or_v2_terminal(monke
         run_mode = "backtest"
         journal_profile = "backtest_v4"
         coalesce_batches = False
-        max_events_per_commit = 512
+        max_events_per_commit = 1024
         def close(self):
             pass
     asyncio.run(controller._prepare_fixed_v4_journal_assembly(
