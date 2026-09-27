@@ -3109,15 +3109,23 @@ class ReplayRunController:
                 or self._resume_state is not None
                 or dict(configuration.get("strategy") or {}).get("strategy_number") != 1):
             raise RuntimeError("ClickHouse Backtest journal requires a new Backtest run")
-        plans = await self._fixed_strategy_one_plans()
+        plans_started = time.perf_counter()
+        try:
+            plans = await self._fixed_strategy_one_plans()
+        finally:
+            self._record_stage_time("strategy_one_journal_plans", plans_started)
         account_ids = historical_simulated_account_ids(
             mode=self.definition.mode, configuration=configuration)
         runtime_config = historical_runtime_config(
             mode=self.definition.mode, configuration=configuration,
             account_ids=account_ids, anchor_date=self.definition.session_date,
             run_id=self.run_id)
-        code_hash = await asyncio.to_thread(
-            backtest_code_hash, Path(__file__).resolve().parents[2])
+        code_hash_started = time.perf_counter()
+        try:
+            code_hash = await asyncio.to_thread(
+                backtest_code_hash, Path(__file__).resolve().parents[2])
+        finally:
+            self._record_stage_time("strategy_one_code_hash", code_hash_started)
         run, config = fixed_v4_context_rows(
             runtime_config, execution_interval=self.definition.execution_interval,
             configuration_hash=str(
@@ -3161,7 +3169,11 @@ class ReplayRunController:
                     keeper.close()
                 raise
 
-        assembly, keeper = await asyncio.to_thread(bootstrap)
+        bootstrap_started = time.perf_counter()
+        try:
+            assembly, keeper = await asyncio.to_thread(bootstrap)
+        finally:
+            self._record_stage_time("strategy_one_journal_bootstrap", bootstrap_started)
         self._fixed_v4_account_ids = account_ids
         try:
             self._attach_fixed_journal_assembly(assembly)
@@ -6877,7 +6889,11 @@ class ReplayRunController:
             and self._journal_publisher.writer.journal_profile == 'backtest_v4'
         )
         if v4_terminal:
-            await self._finish_fixed_v4(status)
+            terminal_started = time.perf_counter()
+            try:
+                await self._finish_fixed_v4(status)
+            finally:
+                self._record_stage_time("strategy_one_terminal", terminal_started)
         elif self._runtime is not None and not self._runtime_finished:
             await self._runtime.finish(status=status)
             self._runtime_finished = True
