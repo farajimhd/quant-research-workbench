@@ -1842,6 +1842,8 @@ def v4_storage_contracts() -> tuple[Any, ...]:
 
 def _v4_preflight(client: Any) -> None:
     """Opt-in normalized fence; leave the live V1 startup contract unchanged."""
+    from src.trading_runtime.arte_backtest_definition import TABLES as definition_tables
+
     installed = fixed_backtest_v2_contracts()
     # A storage_preflight scans active parts as well as schema. Audit the
     # union once: repeating that catalog scan for each family can dominate
@@ -1857,7 +1859,8 @@ def _v4_preflight(client: Any) -> None:
         *(table.name for table in PROTECTION_CHANGE_TABLES),
         *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
         "trading_backtest_account_snapshot_v2",
-        "trading_backtest_position_snapshot_v2"}
+        "trading_backtest_position_snapshot_v2",
+        *(table.name for table in definition_tables)}
     readonly = frozenset(table.name for table in installed) - writable
     journal_permission_preflight(
         client, journal_tables=writable, read_only_tables=readonly)
