@@ -4,6 +4,7 @@ import asyncio
 from concurrent.futures import Future
 from dataclasses import replace
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -37,11 +38,13 @@ class _Writer:
 
     def __init__(self) -> None:
         self.receipts: list[Future[str]] = []
+        self.batches = []
         self.submitted = asyncio.Event()
 
-    def submit(self, _batch):
+    def submit(self, batch):
         receipt: Future[str] = Future()
         self.receipts.append(receipt)
+        self.batches.append(batch)
         self.submitted.set()
         return receipt
 
@@ -142,6 +145,29 @@ def test_broker_request_must_match_every_durable_command_field(monkeypatch, chan
         with pytest.raises(ValueError, match="differs from broker requests"):
             dispatcher.submit(batch, "DU1", (replace(request, **change),))
         assert not writer.receipts and not broker.calls
+        await dispatcher.close()
+
+    asyncio.run(scenario())
+
+
+def test_command_admission_owns_snapshot_of_mutable_broker_raw(monkeypatch) -> None:
+    _install_audit(monkeypatch)
+
+    async def scenario() -> None:
+        writer, broker = _Writer(), _Broker()
+        dispatcher = ArteCommandDispatcher(writer, broker)
+        await dispatcher.start(None, "live:DU1")
+        batch, request = _command()
+        ticket = dispatcher.submit(batch, "DU1", (request,))
+        with pytest.raises(TypeError):
+            batch.order_commands[0]["limit_price"] = "99.99"
+        request.raw["price"] = 99.99
+        await asyncio.wait_for(writer.submitted.wait(), 1)
+        assert Decimal(writer.batches[0].order_commands[0]["limit_price"]) == Decimal("12.34")
+        writer.receipts[0].set_result(batch.batch_id)
+        await asyncio.wait_for(ticket, 1)
+        assert broker.calls[0][1][0].price == 12.34
+        assert broker.calls[0][1][0].raw == {}
         await dispatcher.close()
 
     asyncio.run(scenario())

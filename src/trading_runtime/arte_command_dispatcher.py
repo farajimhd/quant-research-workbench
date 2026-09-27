@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future as ThreadFuture
+from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
@@ -139,9 +140,13 @@ class ArteCommandDispatcher:
                 or any(not _command_matches_order(row, order)
                        for row, order in zip(batch.order_commands, orders))):
             raise ValueError("Typed command batch differs from broker requests")
+        # TypedJournalBatch already freezes row mappings at construction.
+        # OrderRequest.raw remains mutable, so own the broker request snapshot.
+        sealed_orders = deepcopy(orders)
         result: asyncio.Future[list[dict[str, Any]]] = asyncio.get_running_loop().create_future()
         try:
-            self._queue.put_nowait(_PendingCommand(batch, account_id, orders, result))
+            self._queue.put_nowait(_PendingCommand(
+                batch, account_id, sealed_orders, result))
         except asyncio.QueueFull as exc:
             self._admission_error = CommandQueueFull(
                 "Command queue is full; stop new order admission"
