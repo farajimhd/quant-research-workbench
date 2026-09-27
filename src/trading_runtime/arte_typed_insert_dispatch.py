@@ -974,7 +974,7 @@ class TypedInsertDispatch:
         txn.set_data(_gate_path(run_id), closed.wire(), version=version)
         if not _committed(txn.commit()):
             raise KeeperUnavailable("Typed dispatch cold barrier lost CAS race")
-        barrier = ColdDispatchBarrier(self, run_id, closed.epoch)
+        barrier = ColdDispatchBarrier(self, run_id, closed)
         barrier._assert_gate(run_id)
         return barrier
 
@@ -983,17 +983,25 @@ class TypedInsertDispatch:
 class ColdDispatchBarrier:
     authority: TypedInsertDispatch
     run_id: str
-    epoch: int
+    gate: _Gate
     prefix_verified: bool = False
     context_verified: bool = False
+
+    def __post_init__(self) -> None:
+        if (self.gate.mode != "closed" or self.gate.inflight
+                or self.gate.registered
+                or self.gate.active_batch_id != _ZERO_BATCH):
+            raise KeeperUnavailable("Typed dispatch cold barrier is not quiescent")
+
+    @property
+    def epoch(self) -> int:
+        return self.gate.epoch
 
     def _assert_gate(self, run_id: str) -> None:
         if run_id != self.run_id:
             raise KeeperUnavailable("Typed dispatch barrier run differs")
         gate, _ = self.authority._read_gate(run_id)
-        if gate != _Gate("closed", 0, self.epoch, gate.registered,
-                         gate.compacted_through, gate.compacted_batch_id,
-                         gate.compacted_commit_hash, gate.active_batch_id):
+        if gate != self.gate:
             raise KeeperUnavailable("Typed dispatch cold barrier was lost")
 
     def assert_fenced(self, run_id: str) -> None:
@@ -1159,16 +1167,15 @@ class ColdDispatchBarrier:
 
     def release(self) -> None:
         gate, version = self.authority._read_gate(self.run_id)
-        if gate != _Gate("closed", 0, self.epoch, gate.registered,
-                         gate.compacted_through, gate.compacted_batch_id,
-                         gate.compacted_commit_hash, gate.active_batch_id):
+        if gate != self.gate:
             raise KeeperUnavailable("Typed dispatch cold barrier was lost")
         txn = self.authority.keeper.transaction()
         txn.check(_gate_path(self.run_id), version=version)
         txn.set_data(_gate_path(self.run_id),
-                     _Gate("open", 0, self.epoch, gate.registered,
-                           gate.compacted_through, gate.compacted_batch_id,
-                           gate.compacted_commit_hash, gate.active_batch_id).wire(),
+                     _Gate("open", 0, self.epoch, self.gate.registered,
+                           self.gate.compacted_through, self.gate.compacted_batch_id,
+                           self.gate.compacted_commit_hash,
+                           self.gate.active_batch_id).wire(),
                      version=version)
         if not _committed(txn.commit()):
             raise KeeperUnavailable("Typed dispatch cold barrier release lost CAS race")

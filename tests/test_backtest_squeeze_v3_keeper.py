@@ -67,8 +67,8 @@ def test_retained_closed_v3_gate_is_reaudited_without_release(monkeypatch):
                         epoch=7), 1)
 
     class Barrier:
-        def __init__(self, authority, run_id, epoch):
-            assert authority is dispatch and run_id == RUN and epoch == 7
+        def __init__(self, authority, run_id, gate):
+            assert authority is dispatch and run_id == RUN and gate.epoch == 7
             self.prefix_verified = False
             self.context_verified = False
         def verify_run_context_receipt(self, client):

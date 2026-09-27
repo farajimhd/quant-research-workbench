@@ -8,7 +8,7 @@ import pytest
 from src.trading_runtime import arte_journal_writer as writer
 from src.trading_runtime import arte_admission_epoch_proof as admission_proof
 from src.trading_runtime.arte_typed_insert_dispatch import (
-    TypedInsertDispatch, typed_insert_query_id,
+    TypedInsertDispatch, _gate_path, typed_insert_query_id,
 )
 from src.trading_runtime.keeper_ownership import KeeperUnavailable
 
@@ -532,6 +532,22 @@ def test_cold_barrier_is_accepted_by_strict_admission_audit(monkeypatch) -> None
     barrier.release()
     with pytest.raises(KeeperUnavailable, match="barrier was lost"):
         barrier.assert_fenced("run-1")
+
+
+def test_cold_barrier_pins_exact_closed_gate_watermark() -> None:
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    barrier = authority.acquire_cold_barrier("run-1")
+    path = _gate_path("run-1")
+    wire, stat = authority.keeper.rows[path]
+    assert wire == barrier.gate.wire()
+    # Even a changed closed gate is not the one whose prefix was audited.
+    authority.keeper.rows[path] = (
+        replace(barrier.gate, registered=1).wire(), Stat(stat.version + 1))
+    with pytest.raises(KeeperUnavailable, match="barrier was lost"):
+        barrier._assert_gate("run-1")
+    with pytest.raises(KeeperUnavailable, match="barrier was lost"):
+        barrier.release()
 
 
 def test_v4_cold_barrier_accepts_only_empty_verified_prefix() -> None:

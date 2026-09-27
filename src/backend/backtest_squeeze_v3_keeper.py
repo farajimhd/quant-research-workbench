@@ -38,7 +38,7 @@ def verify_retained_v3_cold_gate(
     if (gate.mode != "closed" or gate.inflight or gate.registered
             or gate.active_batch_id != "00000000-0000-0000-0000-000000000000"):
         raise KeeperUnavailable("V3 retained cold gate is not quiescent")
-    barrier = ColdDispatchBarrier(dispatch, run_id, gate.epoch)
+    barrier = ColdDispatchBarrier(dispatch, run_id, gate)
     barrier.verify_run_context_receipt(client)
     prefix = load_verified_squeeze_v3_prefix(
         client, run_id, expected_market_plan_token=expected_market_plan_token,
