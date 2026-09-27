@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 from scripts.clickhouse import smoke_strategy_one_app_route as probe
 from src.backend import app
+from src.backend import fixed_v7_stream
 
 
 def _ready() -> dict:
@@ -56,3 +57,21 @@ def test_app_probe_runs_one_public_controller_without_files(
     assert request.initial_cash == 10_000
     assert request.experimental_structure_book == "level-book-v7"
     assert request.tickers == []
+
+
+def test_seed_diagnostic_restores_wrapped_worker_functions(monkeypatch, capsys) -> None:
+    seed = Mock(return_value={})
+    splits = Mock(return_value={})
+    book = Mock(return_value=None)
+    monkeypatch.setattr(fixed_v7_stream, "load_seeds_batch", seed)
+    monkeypatch.setattr(fixed_v7_stream, "split_evidence_batch", splits)
+    monkeypatch.setattr(fixed_v7_stream.FixedV7Stream, "__init__", book)
+    with probe._profile_v7_seeds(True):
+        assert fixed_v7_stream.load_seeds_batch() == {}
+        assert fixed_v7_stream.split_evidence_batch() == {}
+        fixed_v7_stream.FixedV7Stream.__new__(
+            fixed_v7_stream.FixedV7Stream).__init__()
+    assert fixed_v7_stream.load_seeds_batch is seed
+    assert fixed_v7_stream.split_evidence_batch is splits
+    assert fixed_v7_stream.FixedV7Stream.__init__ is book
+    assert "V7 seed seed_select_decode: calls=1" in capsys.readouterr().out

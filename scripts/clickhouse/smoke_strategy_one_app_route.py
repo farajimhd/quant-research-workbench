@@ -82,9 +82,51 @@ def _profile_v7_updates(enabled: bool):
             print(report.getvalue(), flush=True)
 
 
+@contextmanager
+def _profile_v7_seeds(enabled: bool):
+    """Time independent seed phases across worker lanes; retain no SQL or rows."""
+    if not enabled:
+        yield
+        return
+    from src.backend import fixed_v7_stream
+
+    original_seed = fixed_v7_stream.load_seeds_batch
+    original_splits = fixed_v7_stream.split_evidence_batch
+    original_book = fixed_v7_stream.FixedV7Stream.__init__
+    lock = Lock()
+    totals: dict[str, tuple[int, float, float]] = {}
+
+    def timed(label, function):
+        def call(*args, **kwargs):
+            started = perf_counter()
+            try:
+                return function(*args, **kwargs)
+            finally:
+                elapsed = perf_counter() - started
+                with lock:
+                    count, seconds, slowest = totals.get(label, (0, 0.0, 0.0))
+                    totals[label] = (count + 1, seconds + elapsed,
+                                     max(slowest, elapsed))
+        return call
+
+    fixed_v7_stream.load_seeds_batch = timed("seed_select_decode", original_seed)
+    fixed_v7_stream.split_evidence_batch = timed("split_select", original_splits)
+    fixed_v7_stream.FixedV7Stream.__init__ = timed("book_construct", original_book)
+    try:
+        yield
+    finally:
+        fixed_v7_stream.load_seeds_batch = original_seed
+        fixed_v7_stream.split_evidence_batch = original_splits
+        fixed_v7_stream.FixedV7Stream.__init__ = original_book
+        for label, (count, seconds, slowest) in sorted(totals.items()):
+            print(f"V7 seed {label}: calls={count} worker_s={seconds:.3f} "
+                  f"max_call_s={slowest:.3f}", flush=True)
+
+
 async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
                profile_v7: bool = False, profile_preflight: bool = False,
-               repeat_preflight: int = 1) -> None:
+               repeat_preflight: int = 1,
+               profile_v7_seeds: bool = False) -> None:
     from src.backend.app import (  # noqa: PLC0415
         BacktestRunCreateRequest, HistoricalPreflightRequest,
         _trading_historical_preflight_payload, backtest_run_service,
@@ -138,7 +180,9 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
         experimental_structure_book="level-book-v7",
     )
     sql_profile = _SqlCallProfile()
-    with _profile_v7_updates(profile_v7), _profile_sql_calls(sql_profile):
+    with (_profile_v7_updates(profile_v7),
+          _profile_v7_seeds(profile_v7_seeds),
+          _profile_sql_calls(sql_profile)):
         began = perf_counter()
         response = await trading_backtest_run_create(request)
         launch_s = perf_counter() - began
@@ -173,6 +217,8 @@ def main() -> None:
                         help="create and await one normalized ClickHouse Backtest run")
     parser.add_argument("--profile-v7", action="store_true",
                         help="profile completed-second V7 engine calls in memory")
+    parser.add_argument("--profile-v7-seeds", action="store_true",
+                        help="time V7 seed read, split read, and book construction lanes")
     parser.add_argument("--profile-preflight", action="store_true",
                         help="profile the read-only app preflight in memory")
     parser.add_argument("--repeat-preflight", type=int, default=1,
@@ -199,7 +245,7 @@ def main() -> None:
                       flush=True)
             await _run(args.session, args.ticker, args.minutes, args.cash,
                        args.apply, args.profile_v7, args.profile_preflight,
-                       args.repeat_preflight)
+                       args.repeat_preflight, args.profile_v7_seeds)
     asyncio.run(probes())
 
 
