@@ -56,6 +56,43 @@ def test_cold_read_accepts_exact_historical_proof_but_not_backtest_cutover() -> 
     assert not client.inserts
 
 
+def test_cold_audit_reuses_the_fully_verified_source_plan() -> None:
+    client, keeper = fixture()
+    calls = []
+    original = client.execute
+
+    def counted(sql):
+        calls.append(sql)
+        return original(sql)
+
+    client.execute = counted
+    audit = audit_attested_market_day_certificate(client, keeper, BUILD,
+                                                   sessions=(DAY,))
+    assert audit.source_plan == audit.certificate.source_plan
+    for table in SOURCE_TABLES:
+        assert sum(f"FROM arte.{table.name} " in sql for sql in calls) == 1
+
+
+def test_cold_audit_rejects_parts_changed_after_source_verification() -> None:
+    source, keeper = fixture()
+
+    class ChangingParts(FakeClickHouse):
+        snapshots = 0
+
+        def execute(self, sql):
+            if "FROM system.parts" in sql and "hash_of_all_files" in sql:
+                self.snapshots += 1
+                if self.snapshots == 2:
+                    self.rows["market_day_source_unit_v1"][0]["event_count"] += 1
+            return super().execute(sql)
+
+    client = ChangingParts()
+    client.rows = deepcopy(source.rows)
+    with pytest.raises(RuntimeError, match="parts changed during cold audit"):
+        audit_attested_market_day_certificate(client, keeper, BUILD,
+                                               sessions=(DAY,))
+
+
 def test_cold_read_rejects_unattested_and_mismatched_fence() -> None:
     client, _ = fixture()
     no_proof = MarketDayKeeperAuthority(FakeKeeper())

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+from hashlib import sha256
 import json
 import re
 
@@ -55,6 +56,11 @@ class FakeClickHouse:
         if "FROM system.parts" in sql:
             if "disk_name!='live_market_ssd'" in sql and self.disk == "live_market_ssd":
                 return ""
+            if "hash_of_all_files" in sql:
+                return "\n".join(json.dumps(dict(
+                    table=name, name=f"{name}_part_0", disk_name=self.disk,
+                    hash_of_all_files=sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest(),
+                )) for name, rows in self.rows.items() if rows and name in selected)
             return "\n".join(json.dumps(dict(table=name, disk_name=self.disk))
                 for name, rows in self.rows.items() if rows and name in selected)
         name = sql.split("FROM arte.", 1)[1].split(" ", 1)[0]

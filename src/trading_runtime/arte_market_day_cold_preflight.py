@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import replace
+from hashlib import sha256
 import json
 import re
 from typing import Any, Callable, Mapping
@@ -20,7 +21,6 @@ from src.trading_runtime.arte_market_day_keeper import (
 )
 from src.trading_runtime.arte_market_day_publisher import _placement, _read
 from src.trading_runtime.arte_market_day_source_plan import (
-    TABLES as SOURCE_TABLES, recover_source_plan,
     verify_canonical_source_plan_at_publication, verify_source_plan_storage,
 )
 
@@ -46,12 +46,34 @@ class MarketDayColdAudit:
                 and self.certificate_parts_on_ssd)
 
 
+def _certificate_part_snapshot(client: Any) -> str:
+    """Fence immutable certificate/source parts across the cold audit."""
+    names = tuple(table.name for table in TABLES)
+    quoted = ",".join(f"'{name}'" for name in names)
+    rows = [json.loads(line) for line in client.execute(
+        "SELECT table,name,disk_name,hash_of_all_files FROM system.parts "
+        "WHERE active AND database='arte' "
+        f"AND table IN ({quoted}) ORDER BY table,name FORMAT JSONEachRow"
+    ).splitlines() if line.strip()]
+    expected = {"table", "name", "disk_name", "hash_of_all_files"}
+    keys = [(row.get("table"), row.get("name")) for row in rows]
+    if (len(keys) != len(set(keys)) or any(
+            set(row) != expected or row["table"] not in names
+            or not isinstance(row["name"], str) or not row["name"]
+            or not str(row["hash_of_all_files"])
+            or row["disk_name"] != "live_market_ssd"
+            for row in rows)):
+        raise RuntimeError("Market-day certificate active parts are unstable or off SSD")
+    return sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def audit_attested_market_day_certificate(client: Any, keeper: Any,
                                            build_id: str, *, sessions: tuple[str, ...],
                                            read_client_factory: Callable[[], Any] | None = None,
                                            ) -> MarketDayColdAudit:
     """Fail closed on absent, partial, duplicate, unplaced or unattested facts."""
     _placement(client)
+    parts_before = _certificate_part_snapshot(client)
     certificate = verify_market_day_certificate(
         client, build_id, sessions=sessions,
         read_client_factory=read_client_factory)
@@ -61,11 +83,14 @@ def audit_attested_market_day_certificate(client: Any, keeper: Any,
         raise RuntimeError("Market-day cold audit lacks one final fence")
     proof = keeper.load(build_id)
     require_attested_inventory(proof, fences[0])
-    source_rows = {table.name: tuple(_read(client, table.name, build_id))
-                   for table in SOURCE_TABLES}
-    source_plan = recover_source_plan(source_rows, build_id,
-                                      expected_hash=proof.source_plan_hash)
+    # The certificate verifier has already read every source-plan family,
+    # checked its family hashes against the final fence, and reconstructed the
+    # typed plan. Re-reading those same large families adds no new authority;
+    # the active Backtest caller fences physical parts before and after audit.
+    source_plan = certificate.source_plan
     _placement(client)
+    if _certificate_part_snapshot(client) != parts_before:
+        raise RuntimeError("Market-day certificate parts changed during cold audit")
     return verify_source_plan_table_placement(
         client, MarketDayColdAudit(certificate, proof, True, source_plan,
                                    source_authority_verified=True))

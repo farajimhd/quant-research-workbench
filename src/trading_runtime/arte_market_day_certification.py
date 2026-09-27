@@ -120,6 +120,7 @@ class MarketDayCertificate:
     definition_hash: str
     scopes: tuple[tuple[str, str], ...]
     stages: tuple[tuple[str, str, str, str, int, str], ...]
+    source_plan: Mapping[str, Any]
 
 
 def verify_market_day_certificate(client: Any, build_id: str, *,
@@ -242,7 +243,7 @@ def verify_market_day_certificate(client: Any, build_id: str, *,
     return MarketDayCertificate(build_id, head["definition_hash"],
         tuple(sorted(scope_keys)), tuple(sorted((r["session_date"], r["ticker"],
             r["stage"], r["attempt_id"], int(r["output_rows"]), r["output_hash"])
-            for r in stages)))
+            for r in stages)), source_plan)
 
 
 def _utc(value: str) -> datetime:
