@@ -14,6 +14,7 @@ import platform
 import re
 import sys
 from time import perf_counter
+import traceback
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -60,7 +61,9 @@ def main(argv: list[str] | None = None) -> int:
         print("Selected-day audit interrupted; no data was changed.", file=sys.stderr)
         return 130
     except Exception as exc:
-        print(f"Selected-day audit blocked: {type(exc).__name__}; "
+        frame = traceback.extract_tb(exc.__traceback__)[-1]
+        print(f"Selected-day audit blocked: {type(exc).__name__} "
+              f"at {Path(frame.filename).name}:{frame.name}:{frame.lineno}; "
               "inspect read-only principal, seal, Keeper, and product coverage.",
               file=sys.stderr)
         return 1
