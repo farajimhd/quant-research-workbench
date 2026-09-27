@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pytest
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from src.trading_runtime import arte_live_sync_bootstrap as bootstrap
 from src.trading_runtime import arte_portfolio_sync as sync
@@ -10,6 +12,7 @@ from src.trading_runtime.arte_live_run_allocation import (
 )
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from src.trading_runtime.keeper_ownership import KeeperUnavailable, _ROOT
+from src.trading_runtime.portfolio import PortfolioAccountProfile, PortfolioPolicy
 from test_keeper_ownership import _Client, _Store
 
 
@@ -192,3 +195,67 @@ def test_cold_start_nonlive_context_stays_closed(monkeypatch):
             sync_dispatch=sync_dispatch, keeper=keeper,
             allocator=allocator, allocation=bound)
     assert sync_dispatch._read(RUN)[0].mode == "closed"
+
+
+def test_live_portfolio_cold_handoff_uses_latest_attested_account_heads(monkeypatch):
+    from src.trading_runtime import arte_portfolio_recovery as recovery_module
+    from src.trading_runtime.arte_portfolio_sync import KeeperSyncTransitionHead
+
+    checked = []
+    class Barrier:
+        def assert_fenced(self, run_id):
+            assert run_id == RUN
+            checked.append("fence")
+
+    head = (KeeperSyncTransitionHead(RUN, "DU1", 2, "a" * 64, 3), 4)
+    keeper = SimpleNamespace(load_portfolio_sync_transition_head=lambda *_: head)
+    cold = bootstrap.LiveSyncColdResult(
+        RUN, 2, {"mode": "live", "account_ids": ("DU1",)}, None, Barrier())
+    profile = PortfolioAccountProfile("paper-key", "DU1", "live", "cash",
+                                      PortfolioPolicy())
+    monkeypatch.setattr(bootstrap, "load_attested_portfolio_sync_transition",
+                        lambda *_args, **kwargs: checked.append(
+                            (kwargs["account_id"], kwargs["state_revision"])))
+    marker = object()
+    def recover(_client, **kwargs):
+        assert kwargs["state_revisions"] == {"DU1": 3}
+        assert kwargs["profiles"] == (profile,)
+        return marker
+    monkeypatch.setattr(recovery_module, "recover_portfolio_engine_state", recover)
+    assert bootstrap.recover_attested_live_portfolio(
+        cold=cold, read_client=object(), keeper=keeper, profiles=(profile,),
+        cutoff_at=datetime(2026, 8, 18, tzinfo=timezone.utc)) is marker
+    assert checked == ["fence", ("DU1", 3), "fence"]
+
+
+def test_live_portfolio_cold_handoff_rejects_missing_or_changed_head(monkeypatch):
+    from src.trading_runtime import arte_portfolio_recovery as recovery_module
+    from src.trading_runtime.arte_portfolio_sync import KeeperSyncTransitionHead
+
+    class Barrier:
+        def assert_fenced(self, _run_id):
+            return None
+
+    cold = bootstrap.LiveSyncColdResult(
+        RUN, 1, {"mode": "live", "account_ids": ("DU1",)}, None, Barrier())
+    profile = PortfolioAccountProfile("paper-key", "DU1", "live", "cash",
+                                      PortfolioPolicy())
+    heads = iter((None,))
+    keeper = SimpleNamespace(load_portfolio_sync_transition_head=lambda *_: next(heads))
+    cutoff = datetime(2026, 8, 18, tzinfo=timezone.utc)
+    with pytest.raises(RuntimeError, match="lacks an attested"):
+        bootstrap.recover_attested_live_portfolio(
+            cold=cold, read_client=object(), keeper=keeper,
+            profiles=(profile,), cutoff_at=cutoff)
+
+    old = (KeeperSyncTransitionHead(RUN, "DU1", 1, "a" * 64, 1), 3)
+    new = (KeeperSyncTransitionHead(RUN, "DU1", 2, "b" * 64, 2), 4)
+    heads = iter((old, new))
+    monkeypatch.setattr(bootstrap, "load_attested_portfolio_sync_transition",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(recovery_module, "recover_portfolio_engine_state",
+                        lambda *_args, **_kwargs: object())
+    with pytest.raises(RuntimeError, match="changed during recovery"):
+        bootstrap.recover_attested_live_portfolio(
+            cold=cold, read_client=object(), keeper=keeper,
+            profiles=(profile,), cutoff_at=cutoff)

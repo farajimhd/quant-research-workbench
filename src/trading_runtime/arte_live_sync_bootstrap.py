@@ -6,11 +6,15 @@ legacy run, including one missing either gate, cannot be repaired by this API.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from src.trading_runtime.arte_journal_writer import _literal, _rows
 from src.trading_runtime.arte_live_run_allocation import LiveRunAllocation, LiveRunAllocator
-from src.trading_runtime.arte_portfolio_sync import audit_attested_portfolio_sync_transitions
+from src.trading_runtime.arte_portfolio_sync import (
+    audit_attested_portfolio_sync_transitions,
+    load_attested_portfolio_sync_transition,
+)
 from src.trading_runtime.arte_portfolio_sync_dispatch import (
     PortfolioSyncDispatch, SyncColdBarrier, _Gate as _SyncGate,
     _gate_path as _sync_gate_path,
@@ -127,3 +131,56 @@ def verify_live_sync_cold_start(*, run_id: str, read_client: Any,
         read_client, keeper, run_id, quiescence=barrier)
     barrier.assert_fenced(run_id)
     return LiveSyncColdResult(run_id, count, context, prefix, barrier)
+
+
+def recover_attested_live_portfolio(*, cold: LiveSyncColdResult,
+                                    read_client: Any, keeper: Any,
+                                    profiles: tuple[Any, ...],
+                                    cutoff_at: datetime) -> Any:
+    """Recover every live account from its latest sealed sync revision.
+
+    The cold audit must have inspected the entire marker/fence inventory first.
+    A fresh run with no account snapshot cannot inherit a fabricated zero state;
+    initial broker synchronization is a separate durable publication step.
+    """
+    from src.trading_runtime.arte_portfolio_recovery import (
+        recover_portfolio_engine_state,
+    )
+    from src.trading_runtime.portfolio import PortfolioAccountProfile
+
+    if (not isinstance(cold, LiveSyncColdResult)
+            or type(cutoff_at) is not datetime or cutoff_at.tzinfo is None
+            or not profiles
+            or any(type(profile) is not PortfolioAccountProfile for profile in profiles)):
+        raise ValueError("Live portfolio recovery requires a cold proof and profiles")
+    accounts = tuple(profile.account_id for profile in profiles)
+    context_accounts = tuple(cold.context.get("account_ids") or ())
+    if (len(set(accounts)) != len(accounts)
+            or len(context_accounts) != len(accounts)
+            or set(accounts) != set(context_accounts)
+            or cold.context.get("mode") != "live"):
+        raise ValueError("Live portfolio profiles differ from the sealed run context")
+    cold.barrier.assert_fenced(cold.run_id)
+    heads = {}
+    revisions = {}
+    for account_id in accounts:
+        head = keeper.load_portfolio_sync_transition_head(cold.run_id, account_id)
+        if (head is None or head[0].run_id != cold.run_id
+                or head[0].account_id != account_id
+                or head[0].proof_count < 1 or head[0].last_revision < 1):
+            raise RuntimeError("Live account lacks an attested broker-sync revision")
+        heads[account_id] = head
+        revisions[account_id] = head[0].last_revision
+        load_attested_portfolio_sync_transition(
+            read_client, keeper, run_id=cold.run_id, account_id=account_id,
+            state_revision=revisions[account_id])
+    if sum(head[0].proof_count for head in heads.values()) != cold.transition_count:
+        raise RuntimeError("Live account heads differ from the audited sync inventory")
+    recovered = recover_portfolio_engine_state(
+        read_client, run_id=cold.run_id, profiles=profiles,
+        state_revisions=revisions, cutoff_at=cutoff_at)
+    if any(keeper.load_portfolio_sync_transition_head(cold.run_id, account_id)
+           != head for account_id, head in heads.items()):
+        raise RuntimeError("Live portfolio sync heads changed during recovery")
+    cold.barrier.assert_fenced(cold.run_id)
+    return recovered
