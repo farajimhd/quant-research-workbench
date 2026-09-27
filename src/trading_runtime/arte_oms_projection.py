@@ -468,6 +468,43 @@ class RecoveredOmsGroupState:
     cancel_oca_groups: tuple[str, ...]
 
 
+def load_latest_committed_oms_groups(
+    client: Any, prefix: VerifiedPrefix, *, page_size: int = 200,
+    max_transitions: int = 20_000,
+) -> tuple[RecoveredOmsGroupState, ...]:
+    """Cold-read one latest normalized state per OMS group, with a hard bound.
+
+    This is not broker reconciliation or permission to resubmit an order. Every
+    page is checked by the typed family reader against the committed prefix.
+    """
+    if (not _valid_prefix(prefix) or type(page_size) is not int
+            or not 1 <= page_size <= 500
+            or type(max_transitions) is not int or max_transitions < page_size):
+        raise ValueError("OMS cold inventory needs a verified bounded prefix")
+    latest: dict[tuple[str, str], RecoveredOmsGroupState] = {}
+    after = 0
+    transitions = 0
+    while True:
+        page = load_committed_oms_group_state_page(
+            client, prefix, after_sequence=after, limit=page_size)
+        if not page:
+            break
+        for item in page:
+            account_id = item.group["account_id"]
+            group_id = item.group["group_id"]
+            if (item.sequence <= after or item.sequence > prefix.last_sequence
+                    or not account_id or not group_id):
+                raise RuntimeError("OMS cold inventory has invalid transition order")
+            after = item.sequence
+            latest[(account_id, group_id)] = item
+            transitions += 1
+            if transitions > max_transitions:
+                raise RuntimeError("OMS cold inventory exceeds its transition bound")
+        if len(page) < page_size:
+            break
+    return tuple(sorted(latest.values(), key=lambda item: item.sequence))
+
+
 def _verified_rows(name: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for row in rows:
         content = {key: value for key, value in row.items() if key != "content_hash"}

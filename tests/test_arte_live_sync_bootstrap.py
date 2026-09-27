@@ -259,3 +259,30 @@ def test_live_portfolio_cold_handoff_rejects_missing_or_changed_head(monkeypatch
         bootstrap.recover_attested_live_portfolio(
             cold=cold, read_client=object(), keeper=keeper,
             profiles=(profile,), cutoff_at=cutoff)
+
+
+def test_strategy_one_live_oms_heads_are_fenced_and_strategy_pinned(monkeypatch):
+    from src.trading_runtime import arte_oms_projection as oms
+    from src.trading_runtime.strategy_one_contract import STRATEGY_ID
+
+    calls = []
+    class Barrier:
+        def assert_fenced(self, run_id):
+            assert run_id == RUN
+            calls.append("fence")
+
+    cold = bootstrap.LiveSyncColdResult(
+        RUN, 1, {"mode": "live", "account_ids": ("DU1",)},
+        object(), Barrier())
+    row = SimpleNamespace(group={
+        "account_id": "DU1", "strategy_id": STRATEGY_ID,
+        "strategy_revision": 1})
+    monkeypatch.setattr(oms, "load_latest_committed_oms_groups",
+                        lambda _client, _prefix: calls.append("read") or (row,))
+    assert bootstrap.recover_strategy_one_live_oms(
+        cold=cold, read_client=object()) == (row,)
+    assert calls == ["fence", "read", "fence"]
+    row.group["strategy_revision"] = 2
+    with pytest.raises(RuntimeError, match="differs from Strategy 1"):
+        bootstrap.recover_strategy_one_live_oms(
+            cold=cold, read_client=object())

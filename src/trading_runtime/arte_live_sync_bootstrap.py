@@ -184,3 +184,33 @@ def recover_attested_live_portfolio(*, cold: LiveSyncColdResult,
         raise RuntimeError("Live portfolio sync heads changed during recovery")
     cold.barrier.assert_fenced(cold.run_id)
     return recovered
+
+
+def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
+                                  read_client: Any) -> tuple[Any, ...]:
+    """Select normalized OMS heads under the same cold run fence.
+
+    Broker open-order and execution reconciliation remains mandatory before
+    these states can be installed in an order manager or admit new orders.
+    """
+    from src.trading_runtime.arte_oms_projection import (
+        load_latest_committed_oms_groups,
+    )
+    from src.trading_runtime.strategy_one_contract import (
+        STRATEGY_ID, STRATEGY_NUMBER,
+    )
+
+    if not isinstance(cold, LiveSyncColdResult) or cold.context.get("mode") != "live":
+        raise ValueError("Strategy 1 OMS recovery requires a cold live run")
+    accounts = tuple(cold.context.get("account_ids") or ())
+    if not accounts or len(set(accounts)) != len(accounts):
+        raise ValueError("Strategy 1 OMS recovery lacks exact account membership")
+    cold.barrier.assert_fenced(cold.run_id)
+    groups = load_latest_committed_oms_groups(read_client, cold.prefix)
+    if any(group.group["account_id"] not in accounts
+           or group.group["strategy_id"] != STRATEGY_ID
+           or group.group["strategy_revision"] != STRATEGY_NUMBER
+           for group in groups):
+        raise RuntimeError("Live OMS group differs from Strategy 1 run authority")
+    cold.barrier.assert_fenced(cold.run_id)
+    return groups

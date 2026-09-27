@@ -15,6 +15,7 @@ from src.trading_runtime.arte_journal_writer import (
 from src.trading_runtime.arte_oms_projection import (
     RecoveredOmsGroupState, _duration_ms, freeze_oms_group,
     load_committed_oms_admission_page, load_committed_oms_group_state_page,
+    load_latest_committed_oms_groups,
     oms_group_state_batch,
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
@@ -30,6 +31,30 @@ def test_oms_duration_precision_is_bounded_without_rounding_financial_fields() -
     assert _duration_ms(None) is None
     with pytest.raises(ValueError, match="duration"):
         _duration_ms(float("nan"))
+
+
+def test_latest_oms_cold_inventory_selects_latest_revision_and_bounds_history(monkeypatch):
+    from src.trading_runtime import arte_oms_projection as projection
+
+    first_id = str(uuid4())
+    prefix = CommittedPrefix("live:oms", 4, first_id, "bar:4", "running",
+                             (first_id,))
+    def state(sequence, group_id):
+        return RecoveredOmsGroupState(
+            sequence, None, {"account_id": "DU1", "group_id": group_id},
+            (), (), (), (), (), ())
+    pages = {0: (state(1, "A"), state(2, "B")),
+             2: (state(3, "A"), state(4, "C")), 4: ()}
+    monkeypatch.setattr(projection, "load_committed_oms_group_state_page",
+                        lambda _client, _prefix, *, after_sequence, limit:
+                        pages[after_sequence])
+    latest = load_latest_committed_oms_groups(
+        object(), prefix, page_size=2, max_transitions=4)
+    assert [(row.sequence, row.group["group_id"]) for row in latest] == [
+        (2, "B"), (3, "A"), (4, "C")]
+    with pytest.raises(RuntimeError, match="transition bound"):
+        load_latest_committed_oms_groups(
+            object(), prefix, page_size=2, max_transitions=3)
 
 
 def test_cold_oms_admission_joins_only_one_fenced_normalized_reservation() -> None:
@@ -207,6 +232,7 @@ def test_oms_group_projection_has_normalized_children_and_committed_fence() -> N
     assert len(client.tables["trading_oms_order_state_v1"]) == 2
     recovered = load_committed_oms_group_state_page(client, prefix)
     assert len(recovered) == 1
+    assert load_latest_committed_oms_groups(client, prefix) == recovered
     assert recovered[0].orders == orders
     assert recovered[0].order_batch_ordinals == (0, 1)
     assert recovered[0].order_slice_ids == ("entry", "stop")
