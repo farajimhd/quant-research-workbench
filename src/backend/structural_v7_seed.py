@@ -6,14 +6,13 @@ time.  Current-session observations are never read from these tables by Backtest
 from __future__ import annotations
 
 from collections import OrderedDict
-from copy import deepcopy
 from datetime import date, datetime, time, timezone
 from dataclasses import dataclass
 from hashlib import sha256
 import json
 from math import isfinite
 from threading import Lock
-from typing import Any
+from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
 from src.backend.backtest_market_data import assert_select_only
@@ -30,7 +29,10 @@ _COVERAGE = "arte.structural_level_coverage_v7"
 _BAND_CONFIG = {**BAND_CONFIG, "coverage": .8}
 _PROVISIONAL_INPUT_POLICY = "legacy-unfiltered"
 _SEED_CACHE_MAX_WEIGHT = 64 * 1024 * 1024
-_seed_cache: OrderedDict[tuple[str, ...], tuple[dict[str, Any], int]] = OrderedDict()
+_seed_cache: OrderedDict[
+    tuple[str, ...], tuple[tuple[dict[str, Any], ...],
+                           tuple[dict[str, Any], ...], int]
+] = OrderedDict()
 _seed_cache_weight = 0
 _seed_cache_lock = Lock()
 
@@ -45,30 +47,33 @@ def _seed_cache_key(session: date, row: dict[str, Any]) -> tuple[str, ...]:
         "band_config_hash")))
 
 
-def _cached_seed(key: tuple[str, ...]) -> dict[str, Any] | None:
+def _cached_seed(key: tuple[str, ...], *, ticker: str, session: date,
+                 pinned: dict[str, Any]) -> dict[str, Any] | None:
     with _seed_cache_lock:
         entry = _seed_cache.get(key)
         if entry is None:
             return None
         _seed_cache.move_to_end(key)
-        # The cached tree never leaves this lock without a private copy.
-        return deepcopy(entry[0])
+    # _assemble_seed reads but never mutates the private cached source rows.
+    # Each caller gets fresh mutable levels and observations to hand to V7.
+    return _assemble_seed(ticker, session, pinned, entry[0], entry[1])
 
 
-def _remember_seed(key: tuple[str, ...], seed: dict[str, Any], *,
-                   level_count: int, observation_count: int) -> None:
+def _remember_seed_rows(key: tuple[str, ...], *,
+                        levels: list[dict[str, Any]],
+                        observations: list[dict[str, Any]]) -> None:
     global _seed_cache_weight
     # Conservative bounded approximation for Python dictionaries and strings.
-    weight = 2048 + 2048 * level_count + 1024 * observation_count
+    weight = 2048 + 2048 * len(levels) + 1024 * len(observations)
     if weight > _SEED_CACHE_MAX_WEIGHT:
         return
     with _seed_cache_lock:
         if key in _seed_cache:
             return
         while _seed_cache and _seed_cache_weight + weight > _SEED_CACHE_MAX_WEIGHT:
-            _, (_, evicted_weight) = _seed_cache.popitem(last=False)
+            _, (_, _, evicted_weight) = _seed_cache.popitem(last=False)
             _seed_cache_weight -= evicted_weight
-        _seed_cache[key] = (deepcopy(seed), weight)
+        _seed_cache[key] = (tuple(levels), tuple(observations), weight)
         _seed_cache_weight += weight
 
 
@@ -308,8 +313,8 @@ def load_seed(client: Any, *, ticker: str, session: date,
 
 
 def _assemble_seed(ticker: str, session: date, pinned: dict[str, Any],
-                   levels: list[dict[str, Any]],
-                   observations: list[dict[str, Any]]) -> dict[str, Any]:
+                   levels: Sequence[dict[str, Any]],
+                   observations: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """One decoder for single and batched reads; preserve the seed digest."""
     if len(levels) != int(pinned["level_count"]) or len(observations) != int(pinned["observation_count"]):
         raise ValueError(f"Prior V7 rows differ from coverage: {session} {ticker}")
@@ -396,7 +401,9 @@ def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
             raise ValueError("Prior V7 coverage changed after preflight")
     keys = {ticker: _seed_cache_key(session, current[ticker]) for ticker in tickers}
     seeds = {ticker: seed for ticker in tickers
-             if (seed := _cached_seed(keys[ticker])) is not None}
+             if (seed := _cached_seed(keys[ticker], ticker=ticker,
+                                     session=session,
+                                     pinned=coverage[ticker])) is not None}
     missing = tuple(ticker for ticker in tickers if ticker not in seeds)
     if not missing:
         return {ticker: seeds[ticker] for ticker in tickers}
@@ -422,7 +429,6 @@ def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
                               grouped[ticker]["levels"],
                               grouped[ticker]["observations"])
         seeds[ticker] = seed
-        _remember_seed(keys[ticker], seed,
-                       level_count=int(coverage[ticker]["level_count"]),
-                       observation_count=int(coverage[ticker]["observation_count"]))
+        _remember_seed_rows(keys[ticker], levels=grouped[ticker]["levels"],
+                            observations=grouped[ticker]["observations"])
     return {ticker: seeds[ticker] for ticker in tickers}
