@@ -90,10 +90,14 @@ def _explain_difference(client, left_id: str, right_id: str) -> None:
             raise RuntimeError("Backtest price plan has duplicate run rows")
         price_rows.append(rows[0] if rows else None)
     if price_rows[0] is None or price_rows[1] is None:
-        print("Eligible-price lineage: at least one run predates the typed pin; "
-              "the source difference cannot be identified from these journals",
-              flush=True)
+        state = ("unpinned" if price_rows[0] is None else "pinned",
+                 "unpinned" if price_rows[1] is None else "pinned")
+        print(f"Eligible-price lineage: left={state[0]} right={state[1]}; "
+              "an unpinned run cannot prove its child price source", flush=True)
     else:
+        if price_rows[0] == price_rows[1]:
+            print("Eligible-price lineage: pinned and matching; "
+                  f"token={price_rows[0]['price_plan_token']}", flush=True)
         for field in ("source_build_id", "parent_market_plan_token",
                       "price_plan_token", "unit_count"):
             if price_rows[0][field] != price_rows[1][field]:
