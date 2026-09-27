@@ -152,7 +152,7 @@ def main() -> None:
             failed |= not match
             print(f"{table}: {'MATCH' if match else 'DIFFER'} "
                   f"left={len(left)} right={len(right)}", flush=True)
-        if failed and args.explain:
+        if args.explain:
             _explain_difference(client, args.left, args.right)
         if failed:
             raise SystemExit(1)
