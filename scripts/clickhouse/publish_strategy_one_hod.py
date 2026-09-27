@@ -24,7 +24,8 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
 
 from pipelines.strategy_one.hod_publication import (
-    HodReadbackMismatch, publish_unit,
+    HodReadbackMismatch, _child, _derive, _scope, _verify_existing,
+    publish_unit,
 )
 from research.mlops.clickhouse import ClickHouseHttpClient
 from scripts.clickhouse.provision_strategy_one_candidate_producer import (
@@ -84,6 +85,35 @@ def verify_session(*, session_date: str, build_id: str):
     print(f"Certified {len(tickers)} candidate ticker-days; "
           f"token {sealed.token}.", flush=True)
     return sealed
+
+
+def verify_recomputed_ticker(*, session_date: str, build_id: str,
+                             ticker: str) -> None:
+    """Compare a sealed ticker with today's causal derivation; write nothing."""
+    market, candidates, seeds, tickers = _plans(
+        session_date=session_date, build_id=build_id)
+    if ticker not in tickers:
+        raise ValueError("Requested ticker has no certified HOD candidates")
+    scope = _scope(market, candidates, seeds, ticker=ticker)
+    with closing(readonly_clickhouse_client(
+            market_stream=True, v3_read_principal=True)) as coverage_reader, \
+            closing(v3_client("read", market_stream=True,
+                              persistent=False)) as bars_reader, \
+            closing(v3_client("read", market_stream=True,
+                              persistent=False)) as seconds_reader:
+        attempt = _verify_existing(coverage_reader, scope)
+        if attempt is None:
+            raise RuntimeError("Ticker has no sealed HOD context to compare")
+        saved = _child(coverage_reader, scope, attempt)
+        recomputed = _derive(bars_reader, seconds_reader,
+                             market, seeds, scope)
+    if saved != recomputed:
+        first = next((index for index, (left, right) in enumerate(
+            zip(saved, recomputed, strict=True)) if left != right), None)
+        raise RuntimeError(
+            f"Sealed HOD context differs for {ticker}: first_boundary_index={first}")
+    print(f"HOD recomputation MATCH: {session_date} {ticker}, "
+          f"{len(saved)} certified boundaries; writes=0", flush=True)
 
 
 def publish_session(*, session_date: str, build_id: str,
@@ -199,17 +229,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--recompute-ticker", default="",
+                        help="read-only comparison against sealed HOD rows")
     parser.add_argument("--confirm-hod-publication", action="store_true")
     args = parser.parse_args(argv)
     try:
         day = date.fromisoformat(args.session_date).isoformat()
         if not 1 <= args.workers <= 16:
             raise ValueError("HOD workers must be within 1-16")
-        if args.apply and args.verify_only:
-            raise ValueError("--apply and --verify-only are mutually exclusive")
+        if sum(bool(value) for value in (
+                args.apply, args.verify_only, args.recompute_ticker)) > 1:
+            raise ValueError("--apply, --verify-only and --recompute-ticker are exclusive")
+        if args.recompute_ticker and (not args.recompute_ticker.isascii()
+                or not args.recompute_ticker.isalnum()
+                or args.recompute_ticker != args.recompute_ticker.upper()):
+            raise ValueError("Recompute ticker must be an uppercase ASCII symbol")
     except ValueError as exc:
         parser.error(str(exc))
-    if not args.apply and not args.verify_only:
+    if not args.apply and not args.verify_only and not args.recompute_ticker:
         print(f"DRY RUN: {day}, certified candidate ticker-days, "
               f"{args.workers} bounded workers; no connection or write.")
         print("Apply on DESKTOP-SAAI85T with --apply "
@@ -224,6 +261,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verify_only:
             verify_session(session_date=day, build_id=args.build_id)
+        elif args.recompute_ticker:
+            verify_recomputed_ticker(
+                session_date=day, build_id=args.build_id,
+                ticker=args.recompute_ticker)
         else:
             publish_session(session_date=day, build_id=args.build_id,
                             workers=args.workers)
