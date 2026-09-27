@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 
 from src.backend.backtest_strategy_one_evidence import (
-    StrategyOneCausalEvidence, StrategyOneManagementEvidence,
+    StrategyOneManagementEvidence,
 )
 from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
 from src.trading_runtime.strategy_engine import AssignmentStatus, StrategyPermissions
@@ -42,7 +42,7 @@ def _evidence(boundary, *, quote=True, breaks=()):
         tuple(_level(f"R{i}", 10 + i * .1) for i in range(1, 8)))
 
 
-class _Evidence(StrategyOneCausalEvidence):
+class _Evidence:
     def __init__(self):
         self.rows = {}
 
@@ -119,5 +119,20 @@ def test_first_held_boundary_cannot_order_same_bucket_break_after_fill():
         await manager.on_management(_financial(), {}, 31_000)
         assert runtime.calls == [("entry", 30_100)]
         assert manager._pending_breaks == {}
+
+    asyncio.run(run())
+
+
+def test_management_rejects_evidence_from_another_completed_boundary():
+    async def run():
+        source, runtime = _Evidence(), _Runtime()
+        manager = StrategyOneManagementRunner(
+            runtime=runtime, evidence=source, tick_for_ticker=lambda _: .01)
+        await manager.on_entry_proposal(_proposal())
+        await manager.on_management(_financial(), {}, 30_100)
+        source.rows[31_000] = _evidence(31_100)
+        with pytest.raises(ValueError, match="causal boundary"):
+            await manager.on_management(_financial(), {}, 31_000)
+        assert runtime.calls == [("entry", 30_100)]
 
     asyncio.run(run())

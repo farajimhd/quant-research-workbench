@@ -1,15 +1,18 @@
-"""Position-owned Strategy 1 management on the certified sparse bar tape.
+"""Position-owned Strategy 1 management on causal completed-bar evidence.
 
-This callback is for the numbered Backtest coordinator, not a market builder.
-It never creates bars, infers intrabucket order, or writes files. Shared
+Backtest and a future typed live adapter must use this one numbered rule
+implementation. The evidence source supplies completed bars and level inputs;
+this module never creates bars, infers intrabucket order, or writes files.
 Portfolio/OMS retains sole order authority and confirms protection changes.
 """
 from __future__ import annotations
 
 from math import isfinite
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
 
-from src.backend.backtest_strategy_one_evidence import StrategyOneCausalEvidence
+from src.trading_runtime.strategy_one_management_evidence import (
+    StrategyOneManagementEvidence,
+)
 from src.trading_runtime.strategy_one_position import (
     ProtectionState, ResistanceBreak, advance_protection,
 )
@@ -18,15 +21,25 @@ from src.trading_runtime.strategy_one_stateful import (
 )
 
 
+class StrategyOneManagementEvidenceSource(Protocol):
+    """One causal boundary contract, independent of market transport."""
+
+    async def management_evidence(
+        self, ticker: str, resolutions: Mapping[int, Mapping], *,
+        boundary_ms: int,
+    ) -> StrategyOneManagementEvidence: ...
+
+
 class StrategyOneManagementRunner:
     """Keep only active position state; abort on unowned or unconfirmed risk."""
 
-    def __init__(self, *, runtime: Any, evidence: StrategyOneCausalEvidence,
+    def __init__(self, *, runtime: Any,
+                 evidence: StrategyOneManagementEvidenceSource,
                  tick_for_ticker: Callable[[str], float],
                  max_pending_breaks: int = 256) -> None:
         if (not callable(getattr(runtime, "submit_strategy_one_proposal", None))
                 or not callable(getattr(runtime, "submit_strategy_one_protection", None))
-                or not isinstance(evidence, StrategyOneCausalEvidence)
+                or not callable(getattr(evidence, "management_evidence", None))
                 or not callable(tick_for_ticker)
                 or type(max_pending_breaks) is not int
                 or not 1 <= max_pending_breaks <= 65_536):
@@ -89,6 +102,10 @@ class StrategyOneManagementRunner:
             raise ValueError("Strategy 1 position management clock did not advance")
         evidence = await self.evidence.management_evidence(
             financial.ticker, resolutions, boundary_ms=boundary_ms)
+        if (type(evidence) is not StrategyOneManagementEvidence
+                or evidence.ticker != financial.ticker
+                or evidence.boundary_ms != boundary_ms):
+            raise ValueError("Strategy 1 management evidence crossed its causal boundary")
         pending = self._pending_breaks.setdefault(key, [])
         # A failed OMS acknowledgement retries the same completed boundary.
         # Preserve witnesses once, not once per retry.

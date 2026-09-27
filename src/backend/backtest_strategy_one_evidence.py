@@ -33,6 +33,9 @@ from src.trading_runtime.strategy_one_activation_state import (
 from src.trading_runtime.strategy_one_bos import (
     BosSupport, supported_completed_bos,
 )
+from src.trading_runtime.strategy_one_management_evidence import (
+    StrategyOneManagementEvidence,
+)
 from src.trading_runtime.strategy_one_position import (
     ProtectionTransition, ResistanceBreak,
 )
@@ -48,19 +51,6 @@ class StrategyOneEntryEvidence:
     bos: BosSnapshot
     bos_support: BosSupport | None
     protection: ProtectionTransition | None
-
-
-@dataclass(frozen=True, slots=True)
-class StrategyOneManagementEvidence:
-    ticker: str
-    boundary_ms: int
-    bid: float | None
-    ask: float | None
-    price_bearing_bar: bool
-    low_boundary_ms: int | None
-    low_int: int | None
-    breaks: tuple[ResistanceBreak, ...]
-    overhead_levels: tuple[Mapping, ...]
 
 
 class StrategyOneCausalEvidence:
