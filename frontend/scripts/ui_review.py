@@ -2394,10 +2394,13 @@ def capture(args: argparse.Namespace) -> int:
                     page.route('**/api/trading/backtest/configuration-options*', fulfill_json(json.dumps(dict(candidate_id='fixture-222', run_plan_id='fixture-plan', available_run_plans=[plan], error='', candidates=[dict(candidate_id='fixture-222', candidate_revision=222, label='Full session', content_hash='fixture')]))))
                     page.route('**/api/trading/backtest/structure-books', fulfill_json(json.dumps(dict(items=[dict(id='fixture-SUGP', ticker='SUGP', version='causal-level-book-v7-mle-1', start='2025-01-01', end='2026-09-12')]))))
                     page.route('**/api/trading/backtest/indicator-warmup', fulfill_json(json.dumps(dict(status='ready', items=[], ready_count=1, ticker_count=1))))
-                    page.route('**/api/trading/historical-preflight', fulfill_json(json.dumps(dict(configuration_revision_id='fixture-222', configuration_revision=222, run_plan_id='fixture-plan', strategy_run_ready=True, checks=[], window=dict(sessions=['2026-08-21'])))))
+                    page.route('**/api/trading/historical-preflight', fulfill_json(json.dumps(dict(configuration_revision_id='fixture-222', configuration_revision=222, run_plan_id='fixture-plan', strategy_run_ready=True, checks=[], window=dict(sessions=['2026-08-18'])))))
                     def capture_market_launch(route):
-                        full_market_requests.append(route.request.post_data_json)
-                        route.fulfill(status=400, content_type='application/json', body=json.dumps(dict(detail='UI test intercepted launch; no backtest created')))
+                        if route.request.method == 'POST':
+                            full_market_requests.append(route.request.post_data_json)
+                            route.fulfill(status=400, content_type='application/json', body=json.dumps(dict(detail='UI test intercepted launch; no backtest created')))
+                        else:
+                            route.fulfill(content_type='application/json', body=json.dumps(dict(rows=[])))
                     page.route('**/api/trading/backtest/runs', capture_market_launch)
                 if args.backtest_presets:
                     books=[dict(id='fixture_'+ticker,ticker=ticker,version='causal-swing-closing-book-6',start='2025-01-01',end='2026-09-04') for ticker in ('SUGP','JUNS')]
@@ -3360,22 +3363,22 @@ def capture(args: argparse.Namespace) -> int:
                         journal.get_by_role('tab',name=re.compile('^Overview')).click()
                         result['warmup_header_height']=before
                     if args.full_market_backtest and scenario['page']=='backtest-trading':
-                        page.get_by_role('button', name='Ticker preset', exact=True).click()
-                        page.get_by_role('option', name=re.compile('^Full market')).click()
+                        if page.locator('input[type=date]').input_value()!='2026-08-18':raise RuntimeError('Strategy 1 must open on the certified session')
                         if page.get_by_label('Tickers', exact=True).count():raise RuntimeError('Full market must not require a ticker list')
-                        if page.get_by_label('Start time', exact=True).input_value()!='04:00:00' or page.get_by_label('End time', exact=True).input_value()!='20:00:00':raise RuntimeError('Full market must default to the whole extended session')
+                        if page.get_by_label('Start time', exact=True).input_value()!='04:00:00' or page.get_by_label('End time', exact=True).input_value()!='09:30:00':raise RuntimeError('Strategy 1 must default to the full premarket')
+                        if page.get_by_role('button', name='Level book', exact=True).count():raise RuntimeError('Strategy 1 must not offer a legacy book override')
                         launch=page.get_by_role('button', name='Run Full-market Backtest', exact=True)
                         launch.click(timeout=args.timeout_ms)
                         page.wait_for_function("!document.querySelector('button[aria-label=\"Check readiness again\"]').disabled")
                         if len(full_market_requests)!=1:raise RuntimeError('Full market must create exactly one run')
                         request=full_market_requests[0]
-                        expected=dict(tickers=[], experimental_structure_book='level-book-v7', start_time='04:00:00', end_time='20:00:00', session_count=1, configuration_revision_id='fixture-222', run_plan_id='fixture-plan', new_order_activation_delay_ms=0)
+                        expected=dict(tickers=[], experimental_structure_book='level-book-v7', start_time='04:00:00', end_time='09:30:00', session_count=1, configuration_revision_id='fixture-222', run_plan_id='fixture-plan', new_order_activation_delay_ms=0)
                         if any(request.get(k)!=v for k,v in expected.items()):raise RuntimeError('Full market launch differs from canonical request: '+str(request))
-                        page.get_by_role('button', name='Ticker preset', exact=True).click()
-                        page.get_by_role('option', name='Custom tickers', exact=True).click()
+                        page.get_by_role('button', name='Ticker scope', exact=True).click()
+                        page.get_by_role('option', name=re.compile('^Selected tickers')).click()
                         page.get_by_label('Tickers', exact=True).fill('SUGP')
                         page.wait_for_function("[...document.querySelectorAll('button')].some(b=>b.textContent==='Run Backtest'&&!b.disabled)")
-                        page.get_by_role('button', name='Ticker preset', exact=True).click()
+                        page.get_by_role('button', name='Ticker scope', exact=True).click()
                         page.get_by_role('option', name=re.compile('^Full market')).click()
                         page.get_by_role('button', name='Check readiness again', exact=True).click()
                         page.wait_for_function("[...document.querySelectorAll('button')].some(b=>b.textContent==='Run Full-market Backtest'&&!b.disabled)")

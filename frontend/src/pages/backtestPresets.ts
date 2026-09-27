@@ -1,6 +1,8 @@
 export type BacktestTickerPreset = 'SUGP' | 'JUNS' | 'both' | 'all' | 'custom' | 'market';
 export type ValidationBook = { id: string; ticker: string; start: string; end: string; version: string; selection_contract?: string };
-export const DEFAULT_BACKTEST_DATE = '2026-08-21';
+// The only full-market Strategy 1 session currently certified end to end.
+// This is a launch convenience, never a substitute for backend preflight.
+export const DEFAULT_BACKTEST_DATE = '2026-08-18';
 
 export function v6BookFor(ticker: string, date: string, books: ValidationBook[]) {
   return books.filter(book => book.ticker === ticker && book.version === 'causal-level-book-v7-mle-1'

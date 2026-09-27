@@ -114,21 +114,21 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState(readSelectedRun);
   const [sessionDate, setSessionDate] = useState(DEFAULT_BACKTEST_DATE);
-  const [tickerPreset, setTickerPreset] = useState<BacktestTickerPreset>('SUGP');
+  const [tickerPreset, setTickerPreset] = useState<BacktestTickerPreset>('market');
   const [batchRuns, setBatchRuns] = useState<BacktestRun[]>([]);
   const [initialCash, setInitialCash] = useState(10_000);
-  const [structureBook, setStructureBook] = useState("");
+  const [structureBook, setStructureBook] = useState("level-book-v7");
   const [minimumPNorm, setMinimumPNorm] = useState(0.80);
   const [structureBooks, setStructureBooks] = useState<Array<{ id: string; ticker: string; start: string; end: string; version: string; selection_contract?: string }>>([]);
-  useEffect(() => { if (selectedRunId) return; let active = true; api<{ items: typeof structureBooks }>("/api/trading/backtest/structure-books")
+  useEffect(() => { if (selectedRunId || tickerPreset === 'market' || tickerPreset === 'custom') return; let active = true; api<{ items: typeof structureBooks }>("/api/trading/backtest/structure-books")
     .then((value) => { if (active) setStructureBooks(value.items); }).catch(() => { if (active) setError("Experimental level books could not be loaded."); });
     return () => { active = false; };
-  }, [selectedRunId]);
+  }, [selectedRunId, tickerPreset]);
   const [simulationProfile, setSimulationProfile] = useState<"baseline" | "stress">("baseline");
-  const [periodPreset, setPeriodPreset] = useState<BacktestPeriodPreset>("custom");
+  const [periodPreset, setPeriodPreset] = useState<BacktestPeriodPreset>("premarket");
   const [startTime, setStartTime] = useState("04:00:00");
-  const [endTime, setEndTime] = useState("04:30:00");
-  const [tickerInput, setTickerInput] = useState("SUGP");
+  const [endTime, setEndTime] = useState("09:30:00");
+  const [tickerInput, setTickerInput] = useState("");
   const batchPreset = tickerPreset === 'both' || tickerPreset === 'all';
   const fullMarket = tickerPreset === 'market';
   useEffect(() => {
@@ -138,9 +138,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }, [tickerPreset, sessionDate, structureBooks]);
   function chooseTickerPreset(value: string) {
     setTickerPreset(value as BacktestTickerPreset);
-    if (value === 'market') {
-      applyPeriodPreset('extended', setPeriodPreset, setStartTime, setEndTime);
-    }
+    if (value === 'market') applyPeriodPreset('premarket', setPeriodPreset, setStartTime, setEndTime);
   }
   const [preflight, setPreflight] = useState<HistoricalPreflight | null>(null);
   const [checking, setChecking] = useState(true);
@@ -165,11 +163,11 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const parsedTickers = useMemo(() => parseBacktestTickers(tickerInput), [tickerInput]);
   const normalizedTickers = useMemo(() => fullMarket ? [] : parsedTickers.tickers, [fullMarket, parsedTickers]);
   useEffect(() => {
-    if (fullMarket) { setStructureBook('level-book-v7'); return; }
+    if (fullMarket || tickerPreset === 'custom') { setStructureBook('level-book-v7'); return; }
     const selected = parseBacktestTickers(tickerInput);
     setStructureBook(selected.invalid.length === 0 && selected.tickers.length === 1
       ? v6BookFor(selected.tickers[0], sessionDate, structureBooks)?.id ?? '' : '');
-  }, [tickerInput, sessionDate, structureBooks, fullMarket]);
+  }, [tickerInput, sessionDate, structureBooks, fullMarket, tickerPreset]);
   const tickerReady = fullMarket || (normalizedTickers.length > 0 && normalizedTickers.length <= 100 && parsedTickers.invalid.length === 0);
   const periodReady = startTime >= "04:00:00" && endTime <= "20:00:00" && startTime < endTime;
   const anchorDate = nextIsoDate(sessionDate);
@@ -489,15 +487,16 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   };
   const requiresV7 = selectedPlan?.profile_id === 'v6-structural-support-recovery';
   const selectedBook = structureBooks.find(book => book.id === structureBook);
-  const booksReady = fullMarket ? structureBooks.length > 0 : batchPreset
+  const booksReady = fullMarket || tickerPreset === 'custom'
+    ? structureBook === 'level-book-v7' : batchPreset
     ? normalizedTickers.length > 0 && normalizedTickers.every(ticker => Boolean(v6BookFor(ticker,sessionDate,structureBooks)))
     : selectedBook
       ? normalizedTickers.length === 1 && selectedBook.ticker === normalizedTickers[0]
         && selectedBook.start <= sessionDate && sessionDate <= selectedBook.end
         && (!requiresV7 || selectedBook.version === 'causal-level-book-v7-mle-1')
       : normalizedTickers.length > 0 && normalizedTickers.every(ticker => Boolean(v6BookFor(ticker,sessionDate,structureBooks)));
-  const launchChecks = [configurationCheck, {id:'preset_books',label:fullMarket ? 'V7 coverage policy' : 'V7 book coverage',required:true,
-    status:booksReady ? 'ready' as const : 'blocked' as const, summary:fullMarket ? 'V7 catalog available. Before strategy preparation, the backend verifies preceding-session books and logs excluded tickers.' : booksReady ? 'Matching books available.' : 'A published V7 book covering this date is required for each selected ticker.',evidence:normalizedTickers}, ...(currentPreflight ? preflight?.checks ?? [] : [])];
+  const launchChecks = [configurationCheck, {id:'preset_books',label:'V7 coverage policy',required:true,
+    status:booksReady ? 'ready' as const : 'blocked' as const, summary:booksReady ? 'Automatic causal V7 selected; backend preflight certifies each required seed and structural input.' : 'Automatic causal V7 is required for Strategy 1.',evidence:normalizedTickers}, ...(currentPreflight ? preflight?.checks ?? [] : [])];
   const launchReady = Boolean(booksReady && currentPreflight && selectedPlan && !loadingOptions && !optionsError && preflight?.strategy_run_ready && tickerReady && periodReady && resolvedSessionMatches);
 
   return (
@@ -535,10 +534,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
                 options={configurationOptions?.available_run_plans.length ? configurationOptions.available_run_plans.map((plan) => ({ value: plan.run_plan_id, label: `${plan.name} · strategy r${plan.strategy_revision}`, description: plan.profile_id })) : [{ value: "", label: loadingOptions ? "Loading strategies…" : "No compatible strategies" }]}
                 value={runPlanId}
               />
-              <TradingModeSelectField label="Ticker preset" searchable value={tickerPreset} onChange={chooseTickerPreset}
-                options={[{value:'market',label:'Full market · shared portfolio',description:'The selected Run Plan’s signals admit tickers causally into one portfolio'}, {value:'SUGP',label:'SUGP'},{value:'JUNS',label:'JUNS'},
-                  {value:'both',label:'SUGP and JUNS · separate runs'},{value:'all',label:'All V7 tickers · separate runs',description:'Separate portfolio per ticker; up to 100 tickers'},
-                  {value:'custom',label:'Custom tickers'}]} help={fullMarket ? 'The selected Run Plan controls ticker admission; cash is shared across tickers.' : batchPreset ? 'Separate runs use the selected period and a V7 book for each ticker.' : 'Select a ticker to load its V7 book; the selected period is preserved.'} />
+              <TradingModeSelectField label="Ticker scope" value={tickerPreset} onChange={chooseTickerPreset}
+                options={[{value:'market',label:'Full market · shared portfolio',description:'Certified signals admit tickers causally into one portfolio'},
+                  {value:'custom',label:'Selected tickers · shared portfolio'}]} help="Both scopes use one shared simulated portfolio and automatic certified V7 inputs." />
               {fullMarket ? <p className="configuration-help">Tickers enter causally through Strategy 1's certified ARTE candidates and share portfolio cash. Missing market products or V7 coverage block preflight; Backtest does not build them.</p> : null}
               {tickerPreset === 'custom' ? <label className="configuration-field"><span>Tickers</span><textarea aria-label="Tickers" value={tickerInput} onChange={event => setTickerInput(event.target.value.toUpperCase())} /><small>Up to 100 symbols, separated by commas or spaces.</small></label> : null}
               {batchPreset ? <div className="configuration-help">{normalizedTickers.map(ticker => <p key={ticker}>{ticker} · {startTime.slice(0,5)}–{endTime.slice(0,5)} ET · {v6BookFor(ticker,sessionDate,structureBooks) ? 'V7 book selected' : 'V7 book unavailable'}</p>)}</div> : null}
@@ -548,10 +546,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <label className="configuration-field"><span>Start time · ET</span><input aria-label="Start time" max="19:59:59" min="04:00:00" onChange={(event) => { setPeriodPreset("custom"); setStartTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={startTime} /><small>No new strategy actions are admitted before this time.</small></label>
               <label className="configuration-field"><span>End time · ET</span><input aria-label="End time" max="20:00:00" min="04:00:01" onChange={(event) => { setPeriodPreset("custom"); setEndTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={endTime} /><small>The run stops at this exact New York boundary.</small></label>
               <label className="configuration-field"><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to the isolated simulated account for the full run.</small></label>
-              <TradingModeSelectField disabled={batchPreset || fullMarket} label="Level book" help="V7 loads each ticker's verified preceding-session checkpoint and refits adaptive MLE bands from causal completed 1s candles."
-                value={structureBook} onChange={(value) => { setTickerPreset('custom'); setStructureBook(value); const book = structureBooks.find((row) => row.id === value); if (book) setTickerInput(book.ticker); }}
-                options={fullMarket ? [{ label: 'Automatic V7 coverage check per ticker', value: 'level-book-v7' }] : [{ label: "Automatic V7 book per ticker", value: "" }, ...structureBooks.map((row) => ({ label: `Level book V7 - ${row.ticker} - ${row.start} to ${row.end}`, value: row.id }))]} />
-              <p className="configuration-help">V7 uses certified structural rows and causal completed 1-second bars. Missing coverage blocks the run; no legacy book is substituted.</p>
+              <p className="configuration-help">Automatic V7 uses certified structural rows and causal completed 1-second bars. Missing coverage blocks preflight; no legacy book is substituted.</p>
               <TradingModeSelectField help="Both use $0.005 per share with a $1 minimum commission. Approval requires positive stress results." label="Execution realism" onChange={(value) => setSimulationProfile(value as "baseline" | "stress")} options={[{ label: "Baseline · 25% participation · 5 bps slippage", value: "baseline" }, { label: "Stress · 10% participation · 10 bps slippage", value: "stress" }]} value={simulationProfile} />
               <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal engine</strong><span>{selectedPlan ? `Immutable Strategy ${selectedPlan.strategy_revision} · 100 ms completed-bar evaluation.` : "Loading the published strategy."} Launch checks require certified source data and current execution code. Results open in Charts &amp; Quotes with MACD, positions, lifecycle activity, and performance.</span></div></div>
     </TradingModeLaunch>
