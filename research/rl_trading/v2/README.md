@@ -39,7 +39,7 @@ V2 banks. V1 remains read-only; the finished V2 bank does not need V1 to train.
 The full V2 population is retained even when V1 covers only a subset.
 
 Cached rows skip indicator/reference extraction and V7 computation. They still
-fetch exact one-second close, price validity, volume and trade counts from the
+fetch exact one-second open and close, price validity, volume and trade counts from the
 pinned ARTE bars, because V1 does not store those raw execution fields together
 losslessly. V2 does not invert rounded log features or substitute V1 execution
 prices. Missing listings use full extraction. The first certified 1-second
@@ -134,10 +134,11 @@ sell_price = P * (1 - slippage_ratio)
 research_fee = max(minimum_fee, q * fill_price * fee_ratio + q * fee_per_share)
 ```
 
-An order chosen after second t executes against a fresh completed price at t+1;
-the observed t close is never used as a guaranteed same-time fill. This is an
-explicit one-second delayed price-bar approximation, not reconstructed NBBO or
-order-book matching. Arrival volume is used only by the execution transition,
+An order chosen after second t is simulated against the first trade price of
+the fresh t+1 bar, adjusted by the slippage model. The t+1 close is used only
+to mark equity after the transition; it does not set the fill price. This is a
+one-second delayed price-bar approximation, not reconstructed NBBO, an actual
+broker IOC fill, or order-book matching. Arrival volume is used only by the execution transition,
 never exposed early to the policy. Unfilled IOC quantities expire after that
 transition; forced exits are reissued until flat. There are no resting policy
 orders between decisions, so no hidden pending cash reservations. Consecutive
@@ -232,11 +233,16 @@ cursor replays metrics missed by W&B after a checkpointed crash. Resuming uses
 the same W&B run ID and requires the original run contract. W&B files stay under
 the run's external `wandb/` directory, and the API key is not stored in manifests.
 
-Training defaults to 1,000 iterations, four bounded environments, 256 rollout seconds, four PPO
+Training defaults to 1,000 iterations, four bounded environments, 512 rollout seconds, four PPO
 epochs, 32-row minibatches, and a small 64-wide encoder. Capital varies across
 0.5x/1x/2x the configured initial balance in training. Use `--capital-multipliers`
 to specify the intended range. Validation uses the configured initial balance.
 Validation runs at iteration 1, every 100 iterations, and the final iteration.
+It uses three fixed-seed stochastic rollouts per session, matching the sampled
+training policy while preserving training RNG state; selection uses their mean
+net return and reports fill count and fees. GAE uses gamma=1 and lambda=1 so
+observed rewards receive full weight within the 512-second rollout; the critic
+still bootstraps beyond that horizon.
 The CPU default supports laptop checks; CUDA is opt-in. Benchmark before scaling:
 the reference simulator is NumPy/CPU and is not claimed GPU-bound.
 

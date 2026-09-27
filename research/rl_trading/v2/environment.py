@@ -145,7 +145,7 @@ class TradingEnv:
         return c.base_slippage_ratio + c.impact_ratio*math.sqrt(participation) + c.volatility_slippage_ratio*volatility
 
     def _cost(self, ticker, quantity, side, previous):
-        price = float(self.session.arrays['prices'][ticker,self.t])
+        price = float(self.session.arrays['execution_open'][ticker,self.t])
         slip = self._slippage(ticker,quantity,previous)
         if not math.isfinite(slip) or slip >= 1:
             raise ValueError('Execution model outside calibrated domain: slippage >= 100%')
@@ -160,14 +160,16 @@ class TradingEnv:
             self.metrics['market_unavailable_orders'] += 1
             self.metrics['unfilled_orders'] += 1
             return
+        if a['execution_open'][ticker,self.t] <= 0:
+            raise ValueError('Fresh execution second has no opening price')
         if side == 1 and regular(self.t) and (
                 a['prior_close'][ticker] < PRIOR_CLOSE_MINIMUM
-                or not a['estimated_reference'][ticker,self.t] > 0):
+                or not a['estimated_reference'][ticker,previous] > 0):
             self.metrics['estimated_band_blocked_entries'] += 1
             self.metrics['unfilled_orders'] += 1
             return
         maximum = min(share_cap(float(a['prices'][ticker,previous])),
-                      share_cap(float(a['prices'][ticker,self.t])))
+                      share_cap(float(a['execution_open'][ticker,self.t])))
         quantity = math.floor(min(requested, maximum,
                             c.max_volume_participation*float(a['volume'][ticker,self.t])))
         if side == 1 and quantity > 0:
@@ -187,7 +189,7 @@ class TradingEnv:
             return
         fill, fee, slip = self._cost(ticker,quantity,side,previous)
         if side == 1 and regular(self.t):
-            bounds = buffered_bounds(float(a['estimated_reference'][ticker,self.t]))
+            bounds = buffered_bounds(float(a['estimated_reference'][ticker,previous]))
             if bounds is None or not bounds[0] < fill < bounds[1]:
                 self.metrics['estimated_band_blocked_entries'] += 1
                 self.metrics['unfilled_orders'] += 1
@@ -227,8 +229,8 @@ class TradingEnv:
         for name,cost in components.items():
             self.metrics[name] += cost
         self.metrics['fees'] += fee
-        self.metrics['slippage_dollars'] += quantity*float(a['prices'][ticker,self.t])*slip
-        self.metrics['traded_notional'] += quantity*float(a['prices'][ticker,self.t])
+        self.metrics['slippage_dollars'] += quantity*float(a['execution_open'][ticker,self.t])*slip
+        self.metrics['traded_notional'] += quantity*float(a['execution_open'][ticker,self.t])
         self.metrics['filled_orders'] += 1
         self.metrics['filled_shares'] += quantity
         self.metrics['partial_orders'] += int(quantity < requested)

@@ -62,27 +62,32 @@ def execution_arrays(bars):
     volume = np.zeros(SECONDS,dtype=np.float64)
     trades = np.zeros(SECONDS,dtype=np.float64)
     prices = np.zeros(SECONDS,dtype=np.float64)
+    execution_open = np.zeros(SECONDS,dtype=np.float64)
     fresh = np.zeros(SECONDS,dtype=bool)
     volume[index] = bars['volume'].to_numpy()
     trades[index] = bars['trade_count'].to_numpy()
     good = bars['price_valid'].to_numpy() == 1
     fresh[index[good]] = True
     prices[index[good]] = bars['close_int'].to_numpy()[good]/10000.
+    execution_open[index[good]] = bars['open_int'].to_numpy()[good]/10000.
+    if np.any(execution_open[index[good]] <= 0):
+        raise ValueError('Valid execution bars require a positive opening price')
     seen = np.maximum.accumulate(np.where(fresh,np.arange(SECONDS),0))
     prices = prices[seen]
     cumulative = np.concatenate(([0.],np.cumsum(trades)))
     ticks = np.arange(SECONDS)
     trades60 = cumulative[ticks+1]-cumulative[np.maximum(0,ticks-59)]
-    return dict(prices=prices,volume=volume,trades_60s=trades60,fresh=fresh)
+    return dict(prices=prices,execution_open=execution_open,
+                volume=volume,trades_60s=trades60,fresh=fresh)
 
 
 def read_execution_bars(client,source,day,ticker):
     where = arte_sql.selection(source['build_id'],day,ticker,
         source['units'][str(day)][ticker]['bars']['attempt_id'])
     return arte_source.frame(client,
-        f'SELECT bucket_index,close_int,price_valid,volume,trade_count FROM arte.bars_v1 WHERE {where} '
+        f'SELECT bucket_index,open_int,close_int,price_valid,volume,trade_count FROM arte.bars_v1 WHERE {where} '
         'AND resolution_ms=1000 ORDER BY bucket_index',
-        dict(bucket_index=pl.Int64,close_int=pl.Int64,price_valid=pl.Int64,
+        dict(bucket_index=pl.Int64,open_int=pl.Int64,close_int=pl.Int64,price_valid=pl.Int64,
              volume=pl.Float64,trade_count=pl.Int64))
 
 
