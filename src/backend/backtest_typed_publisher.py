@@ -29,6 +29,32 @@ from src.trading_runtime.arte_protection_reconciliation_v4 import (
 from src.trading_runtime.arte_risk_action_v4 import V4RiskActionBatch
 from src.trading_runtime.arte_portfolio_allocation_v4 import V4PortfolioAllocationBatch
 from src.trading_runtime.arte_reservation_reason_v4 import V4ReservationReasonBatch
+from src.trading_runtime.arte_journal_compound_v4 import (
+    V4CompoundBatch, coalesce_v4_units,
+)
+
+
+def _coalesce_v4_non_source_units(units: tuple) -> tuple:
+    """Keep strategy-intent revisions as individual committed source proofs."""
+    groups = []
+    pending = []
+    def flush() -> None:
+        if pending:
+            groups.append(coalesce_v4_units(tuple(pending))
+                          if len(pending) > 1 else pending[0])
+            pending.clear()
+
+    for unit in units:
+        base = unit if type(unit) is TypedJournalBatch else unit.base
+        if any(row["category"] == "strategy"
+               and row["entity_type"] == "strategy_intent"
+               for row in base.events):
+            flush()
+            groups.append(unit)
+        else:
+            pending.append(unit)
+    flush()
+    return tuple(groups)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +148,8 @@ class BacktestTypedJournalPublisher:
         return self._task
 
     def _prepare_batches(self, through_sequence: int) -> tuple[
-            TypedJournalBatch | V3SqueezeBatch | V4StrategyOneEntryBatch
+            TypedJournalBatch | V3SqueezeBatch | V4CompoundBatch
+            | V4StrategyOneEntryBatch
             | V4PortfolioAllocationBatch | V4ReservationReasonBatch
             | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
             | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
@@ -131,7 +158,7 @@ class BacktestTypedJournalPublisher:
         if not self._sequence < through_sequence <= self._sequence + self.batch_size:
             raise ValueError("Typed Backtest projection exceeds one commit budget")
         if self.writer.journal_profile == "backtest_v4":
-            return project_pending_backtest_v4_prefix(
+            units = project_pending_backtest_v4_prefix(
                 self.journal, attempt_id=self.attempt_id,
                 run_month=self.run_month, prior_sequence=self._sequence,
                 prior_batch_id=self._batch_id, source_cursor=self._source_cursor,
@@ -142,6 +169,7 @@ class BacktestTypedJournalPublisher:
                 published_sources=dict(self._committed_strategy_intents),
                 committed_order_lineage=dict(self._committed_order_lineage),
                 through_sequence=through_sequence)
+            return _coalesce_v4_non_source_units(units)
         if self.writer.journal_profile == "backtest_v3":
             from src.backend.backtest_squeeze_episode_v3 import coalesce_squeeze_units_v3
             units = project_pending_backtest_v3_prefix(
@@ -191,7 +219,8 @@ class BacktestTypedJournalPublisher:
                     raise RuntimeError("Typed Backtest projector changed the bounded prefix")
                 for unit in batches:
                     batch = unit.base if isinstance(
-                        unit, (V3SqueezeBatch, V4StrategyOneEntryBatch,
+                        unit, (V3SqueezeBatch, V4CompoundBatch,
+                               V4StrategyOneEntryBatch,
                                V4PortfolioAllocationBatch, V4ReservationReasonBatch,
                                V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
                                V4OrderRepriceBatch,
@@ -201,7 +230,9 @@ class BacktestTypedJournalPublisher:
                     if (batch.first_sequence != self._sequence + 1
                             or batch.prior_batch_id != self._batch_id):
                         raise RuntimeError("Typed Backtest batch chain is not contiguous")
-                    receipt = (self.writer.submit_strategy_one_entry_v4(unit)
+                    receipt = (self.writer.submit_compound_v4(unit)
+                               if isinstance(unit, V4CompoundBatch)
+                               else self.writer.submit_strategy_one_entry_v4(unit)
                                if isinstance(unit, V4StrategyOneEntryBatch)
                                else self.writer.submit_portfolio_allocation_v4(unit)
                                if isinstance(unit, V4PortfolioAllocationBatch)
@@ -227,59 +258,63 @@ class BacktestTypedJournalPublisher:
                     committed = await asyncio.wrap_future(receipt)
                     if str(UUID(str(committed))) != batch.batch_id:
                         raise RuntimeError("Typed Backtest writer changed an exclusive batch ID")
-                    if isinstance(unit, V4StrategyOneEntryBatch):
-                        from src.trading_runtime.strategy_one_intent import (
-                            strategy_one_entry_intent,
-                        )
+                    for source_unit in (unit.units if isinstance(
+                            unit, V4CompoundBatch) else (unit,)):
+                        source_batch = (source_unit if isinstance(source_unit,
+                            TypedJournalBatch) else source_unit.base)
+                        if isinstance(source_unit, V4StrategyOneEntryBatch):
+                            from src.trading_runtime.strategy_one_intent import (
+                                strategy_one_entry_intent,
+                            )
 
-                        parent_id = unit.base.events[0]["record_id"]
-                        sidecar = self.journal.strategy_one_entry_for_record(parent_id)
-                        if sidecar is None:
-                            raise RuntimeError("Committed Strategy 1 entry lost its source")
-                        proposal, session_date = sidecar
-                        intent = strategy_one_entry_intent(
-                            proposal, session_date=session_date)
-                        self._committed_strategy_intents[intent.intent_id] = (
-                            unit.base, intent)
-                    elif (self.writer.journal_profile == "backtest_v4"
-                          and batch.first_sequence == batch.last_sequence
-                          and len(batch.events) == 1):
-                        intent = self.journal.strategy_one_protection_for_record(
-                            batch.events[0]["record_id"])
-                        if intent is not None:
+                            parent_id = source_unit.base.events[0]["record_id"]
+                            sidecar = self.journal.strategy_one_entry_for_record(parent_id)
+                            if sidecar is None:
+                                raise RuntimeError("Committed Strategy 1 entry lost its source")
+                            proposal, session_date = sidecar
+                            intent = strategy_one_entry_intent(
+                                proposal, session_date=session_date)
                             self._committed_strategy_intents[intent.intent_id] = (
-                                batch, intent)
-                    if (self.writer.journal_profile == "backtest_v4"
-                            and len(batch.events) == 1
-                            and batch.events[0]["entity_type"] == "order_group_state"):
-                        from src.backend.backtest_typed_projection import (
-                            authorized_oms_lineage_transition,
-                            committed_oms_order_lineage,
-                        )
-                        event = batch.events[0]
-                        group = self.journal.oms_group_for_record(event["record_id"])
-                        if group is None:
-                            raise RuntimeError("Committed OMS order lost its frozen lineage")
-                        source_record, = self.journal.unfenced_records(
-                            after_sequence=batch.first_sequence - 1,
-                            through_sequence=batch.last_sequence)
-                        if source_record.record_id != event["record_id"]:
-                            raise RuntimeError("Committed OMS order changed journal identity")
-                        protection_proof = self.journal.oms_effective_protection_for_record(
-                            source_record)
-                        for key, lineage in committed_oms_order_lineage(
-                                group, run_id=batch.run_id,
-                                strategy_id=batch.oms_group_states[0]["strategy_id"],
-                                strategy_revision=batch.oms_group_states[0]["strategy_revision"],
-                                authorized_protection=protection_proof).items():
-                            if (key in self._committed_order_lineage
-                                    and self._committed_order_lineage[key] != lineage
-                                    and not authorized_oms_lineage_transition(
-                                        self._committed_order_lineage[key], lineage,
-                                        client_order_id=key,
-                                        proof=protection_proof.get(f"target:{key}"))):
-                                raise RuntimeError("Committed OMS order lineage changed without typed amendment")
-                            self._committed_order_lineage[key] = lineage
+                                source_unit.base, intent)
+                        elif (self.writer.journal_profile == "backtest_v4"
+                              and source_batch.first_sequence == source_batch.last_sequence
+                              and len(source_batch.events) == 1):
+                            intent = self.journal.strategy_one_protection_for_record(
+                                source_batch.events[0]["record_id"])
+                            if intent is not None:
+                                self._committed_strategy_intents[intent.intent_id] = (
+                                    source_batch, intent)
+                        if (self.writer.journal_profile == "backtest_v4"
+                                and len(source_batch.events) == 1
+                                and source_batch.events[0]["entity_type"] == "order_group_state"):
+                            from src.backend.backtest_typed_projection import (
+                                authorized_oms_lineage_transition,
+                                committed_oms_order_lineage,
+                            )
+                            event = source_batch.events[0]
+                            group = self.journal.oms_group_for_record(event["record_id"])
+                            if group is None:
+                                raise RuntimeError("Committed OMS order lost its frozen lineage")
+                            source_record, = self.journal.unfenced_records(
+                                after_sequence=source_batch.first_sequence - 1,
+                                through_sequence=source_batch.last_sequence)
+                            if source_record.record_id != event["record_id"]:
+                                raise RuntimeError("Committed OMS order changed journal identity")
+                            protection_proof = self.journal.oms_effective_protection_for_record(
+                                source_record)
+                            for key, lineage in committed_oms_order_lineage(
+                                    group, run_id=source_batch.run_id,
+                                    strategy_id=source_batch.oms_group_states[0]["strategy_id"],
+                                    strategy_revision=source_batch.oms_group_states[0]["strategy_revision"],
+                                    authorized_protection=protection_proof).items():
+                                if (key in self._committed_order_lineage
+                                        and self._committed_order_lineage[key] != lineage
+                                        and not authorized_oms_lineage_transition(
+                                            self._committed_order_lineage[key], lineage,
+                                            client_order_id=key,
+                                            proof=protection_proof.get(f"target:{key}"))):
+                                    raise RuntimeError("Committed OMS order lineage changed without typed amendment")
+                                self._committed_order_lineage[key] = lineage
                     self.journal.mark_fenced(batch.last_sequence)
                     self._sequence = batch.last_sequence
                     self._batch_id = batch.batch_id

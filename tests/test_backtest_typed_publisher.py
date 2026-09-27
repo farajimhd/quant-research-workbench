@@ -116,6 +116,22 @@ def test_v4_publisher_routes_broker_and_protection_in_sequence():
     class V4Writer(FakeWriter):
         journal_profile = "backtest_v4"
 
+        def submit_compound_v4(self, unit):
+            from src.trading_runtime.arte_journal_compound_v4 import (
+                prepare_compound_v4_families,
+            )
+            from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+
+            client = SimpleNamespace(
+                typed_insert_strict=True,
+                typed_insert_dispatch=TypedInsertDispatch(object()),
+                execute=lambda *_args, **_kwargs: pytest.fail(
+                    "compound preparation queried ClickHouse"))
+            prepare_compound_v4_families(client, unit)
+            self.kinds.append("compound")
+            self.compound_types = [type(row).__name__ for row in unit.units]
+            return FakeWriter.submit(self, unit.base)
+
         def submit_base_v4(self, batch):
             self.kinds.append("base")
             return FakeWriter.submit(self, batch)
@@ -158,11 +174,12 @@ def test_v4_publisher_routes_broker_and_protection_in_sequence():
         publisher = _publisher(journal, writer)
         receipt = await publisher.enqueue_pending()
         assert receipt.last_sequence == 4
-        assert writer.kinds == ["base", "broker", "protection"]
+        assert writer.kinds == ["compound"]
+        assert writer.compound_types == [
+            "TypedJournalBatch", "V4BrokerAcknowledgementBatch",
+            "V4ProtectionChangeBatch"]
         assert [(batch.first_sequence, batch.last_sequence)
-                for batch in writer.submitted] == [(1, 2), (3, 3), (4, 4)]
-        assert writer.submitted[1].prior_batch_id == writer.submitted[0].batch_id
-        assert writer.submitted[2].prior_batch_id == writer.submitted[1].batch_id
+                for batch in writer.submitted] == [(1, 4)]
         assert journal.pending_record_count == 0
 
     asyncio.run(exercise())

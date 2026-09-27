@@ -7,8 +7,9 @@ from uuid import UUID
 import pytest
 
 from src.trading_runtime.arte_journal_compound_v4 import (
-    coalesce_v4_units, prepare_compound_v4_families,
+    coalesce_v4_units, prepare_compound_v4_families, publish_compound_v4,
 )
+from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch, typed_row
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from src.trading_runtime.arte_portfolio_allocation_v4 import V4PortfolioAllocationBatch
@@ -20,6 +21,7 @@ from src.trading_runtime.arte_protection_reconciliation_v4 import (
     V4ProtectionReconciliationBatch,
 )
 from tests.test_arte_journal_writer import batch
+from tests.test_arte_journal_commit_v4 import attached_v4_client
 
 
 RUN = str(UUID(int=1))
@@ -149,3 +151,21 @@ def test_mixed_preparation_retains_broker_acknowledgement_child():
     ack, = dict(families)[ACKNOWLEDGEMENT.name]
     assert ack["record_id"] == source.record_id
     assert ack["batch_id"] == second_id
+
+
+def test_compound_publishes_one_cold_verified_commit_for_two_events():
+    first = batch()
+    second_id = str(UUID(int=407))
+    second_event = typed_row("trading_event_v1", {
+        **{key: value for key, value in first.events[0].items()
+           if key != "content_hash"},
+        "record_id": str(UUID(int=408)), "batch_id": second_id,
+        "sequence": 2,
+    })
+    second = replace(first, batch_id=second_id, prior_batch_id=first.batch_id,
+                     first_sequence=2, last_sequence=2, events=(second_event,))
+    client = attached_v4_client()
+    assert publish_compound_v4(client, coalesce_v4_units((first, second))) == second_id
+    prefix = load_verified_v4_prefix(client, first.run_id)
+    assert prefix.last_batch_id == second_id
+    assert prefix.last_sequence == 2

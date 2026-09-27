@@ -33,8 +33,10 @@ _CHILD_KEYS = (
 _EVENT_PARENT_KEYS = frozenset({
     "entry_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
-    "protection_changes", "protection_reconciliations",
+    "protection_changes", "protection_entry_orders",
+    "protection_reconciliations",
 })
+_MULTIROW_CHILD_KEYS = frozenset({"reservation_reasons", "protection_entry_orders"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +128,7 @@ def coalesce_v4_units(
             identity = str(UUID(str(source["record_id"])))
             if key in _EVENT_PARENT_KEYS and parent_id not in event_ids:
                 raise ValueError("V4 scalar child has no event parent")
-            if identity in child_ids[key]:
+            if identity in child_ids[key] and key not in _MULTIROW_CHILD_KEYS:
                 raise ValueError("V4 compound repeats a scalar child identity")
             child_ids[key].add(identity)
             if key not in _EVENT_PARENT_KEYS:
@@ -136,6 +138,22 @@ def coalesce_v4_units(
                    if name != "content_hash"},
                 "batch_id": combined.batch_id,
             })
+        if type(unit) is V4ProtectionChangeBatch:
+            # This legacy normalized parent seals child hashes. Rekeying the
+            # children changes those hashes even though their order IDs do not.
+            from hashlib import sha256
+
+            from src.backend.backtest_protection_change_v3 import ENTRY_ORDER
+            from .arte_journal_writer import typed_row
+            from .journal_contract import canonical_json
+
+            count = len(unit.entry_orders)
+            ordered = children["protection_entry_orders"][-count:] if count else ()
+            child_hashes = tuple(
+                (row["ordinal"], typed_row(ENTRY_ORDER.name, row)["content_hash"])
+                for row in ordered)
+            children["protection_changes"][-1]["entry_order_hash"] = sha256(
+                canonical_json(list(child_hashes)).encode()).hexdigest()
     all_ids = event_ids | set().union(*child_ids.values())
     if any(parent == identity or parent not in all_ids
            for parent, identity in nested_parents):
@@ -273,3 +291,11 @@ def prepare_compound_v4_families(
         (table_for_key[key], tuple(extra[table_for_key[key]]))
         for key in _CHILD_KEYS if extra[table_for_key[key]])
     return base_families, families
+
+
+def publish_compound_v4(client: Any, compound: V4CompoundBatch) -> str:
+    """Commit a mixed normalized prefix only after its full family graph seals."""
+    from .arte_journal_commit_v4 import _publish_sealed_batch_v4
+
+    base_families, families = prepare_compound_v4_families(client, compound)
+    return _publish_sealed_batch_v4(client, compound.base, base_families, families)

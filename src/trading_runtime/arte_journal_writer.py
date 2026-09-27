@@ -3405,6 +3405,25 @@ class ArteJournalWriter:
             self._accepted_writes = True
             return receipt
 
+    def submit_compound_v4(self, unit) -> Future[str]:
+        """Queue one bounded mixed V4 commit without caller-side network I/O."""
+        from .arte_journal_compound_v4 import V4CompoundBatch
+
+        if (self._journal_profile != "backtest_v4"
+                or type(unit) is not V4CompoundBatch
+                or unit.base.run_id != self._run_id):
+            raise ValueError("V4 compound requires its pinned Backtest writer")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
     def submit_strategy_one_entry_v4(self, unit: V4StrategyOneEntryBatch) -> Future[str]:
         """Queue the intent and its typed child without blocking execution."""
         if self._journal_profile != "backtest_v4" or not isinstance(
@@ -3773,6 +3792,8 @@ class ArteJournalWriter:
         return receipt
 
     def _run(self) -> None:
+        from .arte_journal_compound_v4 import V4CompoundBatch
+
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
             | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit | _TerminalBacktestUnit,
@@ -3811,6 +3832,7 @@ class ArteJournalWriter:
                 if (self._journal_profile in {"backtest_v2", "backtest_v3", "backtest_v4"}
                         and not isinstance(group[0][0],
                                            (TypedJournalBatch, V3SqueezeBatch,
+                                            V4CompoundBatch,
                                             V4StrategyOneEntryBatch,
                                             V4PortfolioAllocationBatch,
                                             V4ReservationReasonBatch,
@@ -3824,7 +3846,11 @@ class ArteJournalWriter:
                         and not (self._journal_profile == "backtest_v4"
                                  and isinstance(group[0][0], _TerminalBacktestUnit))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
-                if isinstance(group[0][0], V4RiskActionBatch):
+                if isinstance(group[0][0], V4CompoundBatch):
+                    from .arte_journal_compound_v4 import publish_compound_v4
+
+                    committed_id = publish_compound_v4(self._client, group[0][0])
+                elif isinstance(group[0][0], V4RiskActionBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_risk_action_batch_v4,
                     )

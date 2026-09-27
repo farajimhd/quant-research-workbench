@@ -1106,6 +1106,18 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         # The compound transport rekeys these fully validated normalized
         # families before one Keeper reservation. No query or INSERT has run.
         return base_families, families
+    return _publish_sealed_batch_v4(client, batch, base_families, families)
+
+
+def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
+    """Publish one sealed normalized family graph under a Keeper fence."""
+    from src.trading_runtime.arte_journal_writer import (
+        _CONTRACTS, _identity, _insert, _literal, _rows,
+        _verify_commission_links, _verify_exact_intent_uses,
+        _verify_order_context_links,
+    )
+
+    dispatch = client.typed_insert_dispatch
     commit, family_rows = prepare_commit_v4(
         run_id=batch.run_id, run_month=batch.run_month,
         attempt_id=batch.attempt_id, batch_id=batch.batch_id,
