@@ -26,7 +26,8 @@ from src.backend.backtest_strategy_one_evidence import StrategyOneCausalEvidence
 from src.backend.backtest_strategy_one_hod_store import CertifiedHodPlan
 from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
 from src.backend.backtest_strategy_one_scheduler import (
-    build_certified_strategy_one_scheduler, run_strategy_one_boundaries,
+    StrategyOneBoundaryWork, build_certified_strategy_one_scheduler,
+    run_strategy_one_boundaries,
 )
 from src.backend.structural_v7_seed import CertifiedSeedPlan
 from src.trading_runtime.strategy_one_entry_evidence_schema import TICK_SIZE
@@ -121,17 +122,17 @@ async def derive_unit(
             session=date.fromisoformat(scope.session_date),
             client=reader)
 
-        async def no_broker(ticker: str, rows: Mapping,
-                            boundary: int) -> None:
+        async def no_broker(work: StrategyOneBoundaryWork) -> None:
             # The scheduler presents each sparse candidate's completed 100ms
             # liquidity row to the broker callback before its decision. This
             # producer owns no broker or orders, but validates that row clock.
-            row = rows.get(100)
-            if (ticker != scope.ticker or row is None
-                    or row.get("ticker") != ticker
-                    or row.get("boundary_ms") != boundary
-                    or boundary not in scope.candidate_boundaries):
-                raise RuntimeError("Strategy 1 producer received active broker data")
+            for ticker, rows in work.broker_rows:
+                row = rows.get(100)
+                if (ticker != scope.ticker or row is None
+                        or row.get("ticker") != ticker
+                        or row.get("boundary_ms") != work.boundary_ms
+                        or work.boundary_ms not in scope.candidate_boundaries):
+                    raise RuntimeError("Strategy 1 producer received active broker data")
 
         async def evaluate(_ticker: str, _rows: Mapping, candidate: Any) -> None:
             if candidate is None:
@@ -147,7 +148,7 @@ async def derive_unit(
             return None
 
         count = await run_strategy_one_boundaries(
-            scheduler, process_broker_row=no_broker, evaluate_ticker=evaluate,
+            scheduler, process_broker_boundary=no_broker, evaluate_ticker=evaluate,
             financially_active_tickers=lambda: (), finish_boundary=finish,
             observe_activation=activate,
             observe_completed_seconds=evidence.observe_completed_seconds)
