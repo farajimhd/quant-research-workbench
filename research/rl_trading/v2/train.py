@@ -9,14 +9,16 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[3]))
 
 import argparse
 from dataclasses import fields
+import gc
 import json
 import random
 import time
+from types import SimpleNamespace
 import numpy as np
 import torch
 
 from research.rl_trading.v2.config import Config, VERSION
-from research.rl_trading.v2.data import MarketSession, chronological
+from research.rl_trading.v2.data import ARRAYS, DATA_VERSION, MarketSession, chronological
 from research.rl_trading.v2.environment import TradingEnv
 from research.rl_trading.v2.model import PortfolioPolicy, collate
 from research.rl_trading.v2.objectives import advantages, ppo_loss
@@ -57,6 +59,7 @@ def parser():
     p.add_argument('--session-order',choices=('random','cycle'),default='random')
     p.add_argument('--min-completed-episodes',type=int,default=0)
     p.add_argument('--selection-min-episodes',type=int,default=0)
+    p.add_argument('--stream-sessions',action='store_true')
     p.add_argument('--resume',action='store_true')
     p.add_argument('--allow-segment',action='store_true')
     p.add_argument('--wandb-mode',choices=('disabled','offline','online'),default='disabled')
@@ -66,7 +69,8 @@ def parser():
     return p
 
 
-def evaluate(policy, sessions, config, device, *, rollouts=3, seed=1917):
+def evaluate(policy, sessions, config, device, *, rollouts=3, seed=1917,
+             allow_segment=False):
     if rollouts < 1 or seed < 0:
         raise ValueError('Invalid fixed-seed validation contract')
     result = []
@@ -75,7 +79,9 @@ def evaluate(policy, sessions, config, device, *, rollouts=3, seed=1917):
     devices = [torch.cuda.current_device()] if torch.device(device).type == 'cuda' else []
     try:
         with torch.no_grad(), torch.random.fork_rng(devices=devices):
-            for session in sessions:
+            for source in sessions:
+                session = (source if isinstance(source,MarketSession) else
+                           MarketSession.load(source.root,allow_segment=allow_segment))
                 for replicate in range(rollouts):
                     # Common random numbers make checkpoint comparisons repeatable
                     # without changing the training RNG or hiding stochastic trades.
@@ -92,6 +98,10 @@ def evaluate(policy, sessions, config, device, *, rollouts=3, seed=1917):
                             last_report = time.monotonic()
                     summary = dict(date=session.plan['date'],replicate=replicate+1,**env.summary())
                     result.append(summary)
+                if session is not source:
+                    del env
+                    del session
+                    gc.collect()
     finally:
         policy.train(was_training)
     return result
@@ -152,6 +162,8 @@ def train(args):
             args.session_order != 'cycle' or args.capital_multipliers != [1.] or
             args.selection_min_episodes < 1):
         raise ValueError('Full-session campaign requires one 1x account, cycled sessions, and post-episode selection')
+    if args.stream_sessions and (args.environments != 1 or args.session_order != 'cycle'):
+        raise ValueError('Streamed sessions require one account and chronological cycling')
     if not args.run_name or Path(args.run_name).name != args.run_name or args.run_name in ('.','..'):
         raise ValueError('Run name must be a single directory name')
     config = Config(**{field.name:getattr(args,field.name) for field in fields(Config)})
@@ -159,6 +171,19 @@ def train(args):
     root.mkdir(parents=True,exist_ok=True)
     with exclusive(root/'train.lock'):
         return _train_locked(args,config,root)
+
+
+def _session_reference(path, *, allow_segment):
+    root = Path(path).resolve()
+    plan, complete = read(root/'plan.json'), read(root/'complete.json')
+    if (plan.get('version') != DATA_VERSION or plan.get('teacher_dependency') is not False
+            or plan.get('plan_hash') != digest({k:v for k,v in plan.items() if k != 'plan_hash'})
+            or complete.get('plan_hash') != plan['plan_hash']
+            or complete.get('listing_count') != len(plan['listings'])
+            or set(complete.get('files',{})) != {name+'.npy' for name in ARRAYS}
+            or (plan.get('segment') and not allow_segment)):
+        raise ValueError('Invalid streamed market certificate')
+    return SimpleNamespace(root=root,plan=plan,seconds=plan['rows'])
 
 
 def _train_locked(args, config, root):
@@ -169,9 +194,15 @@ def _train_locked(args, config, root):
     if args.device == 'cuda' and not torch.cuda.is_available():
         raise ValueError('CUDA requested but unavailable')
     torch.use_deterministic_algorithms(True)
-    sessions = [MarketSession.load(p,allow_segment=args.allow_segment) for p in args.train_sessions]
-    validation = [MarketSession.load(p,allow_segment=args.allow_segment) for p in args.val_sessions]
+    load = (lambda p: _session_reference(p,allow_segment=args.allow_segment)) if args.stream_sessions else (
+        lambda p: MarketSession.load(p,allow_segment=args.allow_segment))
+    sessions = [load(p) for p in args.train_sessions]
+    validation = [load(p) for p in args.val_sessions]
     chronological(sessions,validation)
+    if args.stream_sessions:
+        schemas = {tuple(source.plan['feature_names']) for source in sessions+validation}
+        if len(schemas) != 1:
+            raise ValueError('Streamed market feature schemas differ')
     if args.min_completed_episodes:
         required = sum(sessions[i % len(sessions)].seconds-1
             for i in range(args.min_completed_episodes))
@@ -211,7 +242,9 @@ def _train_locked(args, config, root):
         else:
             index = int(rng.integers(len(sessions)))
         cash = config.initial_cash*float(rng.choice(args.capital_multipliers))
-        return index,TradingEnv(sessions[index],config,initial_cash=cash)
+        session = (MarketSession.load(sessions[index].root,allow_segment=args.allow_segment)
+                   if args.stream_sessions else sessions[index])
+        return index,TradingEnv(session,config,initial_cash=cash)
 
     for _ in range(args.environments):
         index,env = new_env()
@@ -246,7 +279,9 @@ def _train_locked(args, config, root):
         session_indices = saved['session_indices']
         next_session_index = saved['next_session_index']
         for slot,index in enumerate(session_indices):
-            envs[slot] = TradingEnv(sessions[index],config)
+            session = (MarketSession.load(sessions[index].root,allow_segment=args.allow_segment)
+                       if args.stream_sessions else sessions[index])
+            envs[slot] = TradingEnv(session,config)
             envs[slot].load_state_dict(saved['environments'][slot])
     else:
         # Even interruption in the first rollout/validation has a restart point.
@@ -300,6 +335,10 @@ def _train_locked(args, config, root):
                             raise ValueError(f'Unresolved terminal holdings in training: {summary}')
                         summaries.append(dict(date=env.session.plan['date'],**summary))
                         completed_episodes += 1
+                        if args.stream_sessions:
+                            envs[slot] = None
+                            del env
+                            gc.collect()
                         session_indices[slot],envs[slot] = new_env()
                 if time.monotonic()-last_report > 20:
                     print(f'Iteration {iteration} rollout={step+1}/{args.rollout_steps} active={len(envs)} episodes={completed_episodes}',flush=True)
@@ -354,7 +393,8 @@ def _train_locked(args, config, root):
             if (completed_episodes >= args.selection_min_episodes and
                     (iteration == 1 or iteration % args.eval_every == 0 or iteration == args.iterations)):
                 result['validation'] = evaluate(policy,validation,config,args.device,
-                    rollouts=args.validation_rollouts,seed=args.validation_seed)
+                    rollouts=args.validation_rollouts,seed=args.validation_seed,
+                    allow_segment=args.allow_segment)
                 score = float(np.mean([x['net_return'] for x in result['validation']]))
                 valid = all(x['valid_terminal'] for x in result['validation'])
                 improved = valid and score > best

@@ -10,6 +10,10 @@ The single-account full-session experiment uses `--environments 1`,
 `--capital-multipliers 1`, `--session-order cycle`,
 `--min-completed-episodes 3`, and `--selection-min-episodes 1`. It replays the
 training dates in supplied chronological order at the configured initial cash.
+`--stream-sessions` retains only the active training bank in memory and opens
+each validation bank when needed; the stored plan/certificate is checked first,
+and each full array is hash-verified before its session is read. This avoids
+mapping all four large market banks throughout the run.
 PPO still updates from bounded consecutive one-second segments; the same account
 continues across those updates until the session ends. The iteration budget must
 cover the required complete sessions. Validation cannot select a checkpoint
