@@ -14,8 +14,13 @@ and identity-matched point-in-time reference features. It reuses V1's certified
 observation extraction functions unchanged and hashes their code. Database reads
 go through `ArteReader` with `readonly=1`, table-policy and actual part-placement
 checks. No flatfile/event fallback or ClickHouse writes are permitted.
-Missing V7 certification fails the build instead of silently excluding a listing;
-certified empty V7 is allowed. Extraction never requires a teacher population.
+Missing V7 certification fails the build by default; certified empty V7 is
+allowed. An explicit dated `--v7-exclusions` document can name the exact
+missing ticker/listing identity with reason `unresolved_identity_no_certified_v7`
+and evidence. The builder requires its entries to match the entire missing-seed
+set and pins its hash and entries in the V2 plan. This allows the documented
+LGHL identity exception to be visible rather than silently omitted. Extraction
+never requires a teacher population.
 The market-day certificate explicitly records tradable names with no canonical
 events; V2 requires every certified event-bearing listing and records the
 no-event count instead of inventing one-second bars for those names.

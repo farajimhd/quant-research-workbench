@@ -28,6 +28,27 @@ from research.rl_trading.v2.v1_cache import catalog, discover, copy_row
 from research.rl_trading.v2.build_workers import results
 from research.rl_trading.v1 import arte_sql
 
+V7_EXCLUSION_VERSION = 'rl-trading-v2-v7-exclusion-v1'
+
+
+def admit_v7_exclusions(path, day, listings, missing):
+    """Admit only an exact, dated, identity-pinned missing-seed exception."""
+    if not missing:
+        return listings, []
+    if path is None:
+        raise ValueError(f'Missing certified V7 for {len(missing)} listings; no silent universe exclusion: {missing[:12]}')
+    document = read(path)
+    rows = document.get('exclusions', [])
+    by_ticker = {row['ticker']:row for row in rows}
+    listed = {x['ticker']:x for x in listings}
+    if (document.get('version') != V7_EXCLUSION_VERSION or document.get('date') != str(day)
+            or len(by_ticker) != len(rows) or set(by_ticker) != set(missing)
+            or any(row.get('listing_id') != str(listed[ticker]['listing_id'])
+                   or row.get('reason') != 'unresolved_identity_no_certified_v7'
+                   or not row.get('evidence') for ticker,row in by_ticker.items())):
+        raise ValueError('V7 exclusion must exactly name unresolved certified identities and missing seeds')
+    return [x for x in listings if x['ticker'] not in by_ticker], [by_ticker[x] for x in sorted(by_ticker)]
+
 
 def bank_hash(array):
     return sha256(np.ascontiguousarray(array).tobytes()).hexdigest()
@@ -136,6 +157,8 @@ def main(argv=None):
     p.add_argument('--workers',type=int,default=2,help='Bounded independent listing processes (1-16)')
     p.add_argument('--v1-shards',type=Path,nargs='+',
         help='Certified V1 banks/overlays; default discovers completed local date banks')
+    p.add_argument('--v7-exclusions',type=Path,
+        help='Dated, exact identity-pinned unresolved V7 exclusions; default fails closed')
     args = p.parse_args(argv)
     if not 1 <= args.query_threads <= 4 or not 1 <= args.workers <= 16:
         p.error('query threads must be 1-4 and workers 1-16')
@@ -154,19 +177,19 @@ def main(argv=None):
             raise ValueError('V2 requires every certified event-bearing listing and explicit no-event exclusions')
         candidates = args.v1_shards if args.v1_shards is not None else [
             path.parent for path in discover(runtime.parents[1],args.date)]
+        missing = missing_seeds(client,args.date,[x['ticker'] for x in listings])
+        listings,v7_exclusions = admit_v7_exclusions(args.v7_exclusions,args.date,listings,missing)
         cached,cache_report = catalog(candidates,source=source,day=args.date,listings=listings)
         for item in cache_report:
             print(f'V1 cache: {item}',flush=True)
-        uncached = [x['ticker'] for x in listings if str(x['listing_id']) not in cached]
-        missing = missing_seeds(client,args.date,uncached) if uncached else []
-        if missing:
-            raise ValueError(f'Missing certified V7 for {len(missing)} listings; no silent universe exclusion: {missing[:12]}')
         plan = dict(version=DATA_VERSION,date=str(args.date),listings=listings,population=population,
             source_build_id=source['build_id'],source_definition_hash=source['definition_hash'],
             source_units=source['units'][str(args.date)],feature_names=list(FEATURE_NAMES),
             clock='completed_second',step_us=1000000,first_us=bounds(args.date)[0],rows=SECONDS,
             segment=False,teacher_dependency=False,source_manifest_hash=file_hash(args.manifest),
             band_policy='causal-prior-close-rolling-5m-v1',
+            v7_exclusions=v7_exclusions,
+            v7_exclusion_document_hash=file_hash(args.v7_exclusions) if v7_exclusions else None,
             v1_market_cache=cache_report,
             code=code_identity())
         plan['plan_hash'] = digest(plan)

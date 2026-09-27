@@ -58,6 +58,26 @@ def lookup(cache):
     return v1_cache.catalog([root],source=source,day=date(2026,8,20),listings=listings)
 
 
+def test_missing_v7_exclusion_is_exact_dated_and_identity_pinned(tmp_path):
+    listings = [dict(ticker='A',listing_id='a'),dict(ticker='B',listing_id='b')]
+    day = date(2026,8,20)
+    with pytest.raises(ValueError,match='Missing certified V7'):
+        build_data.admit_v7_exclusions(None,day,listings,['B'])
+    document = dict(version=build_data.V7_EXCLUSION_VERSION,date=str(day),
+        exclusions=[dict(ticker='B',listing_id='b',
+            reason='unresolved_identity_no_certified_v7',evidence='TASK-0208')])
+    path = tmp_path/'exclusions.json'
+    write(path,document)
+    admitted,excluded = build_data.admit_v7_exclusions(path,day,listings,['B'])
+    assert admitted == listings[:1] and excluded == document['exclusions']
+    for changed in (dict(document,date='2026-08-21'),
+                    dict(document,exclusions=[dict(document['exclusions'][0],listing_id='wrong')]),
+                    dict(document,exclusions=[])):
+        write(path,changed)
+        with pytest.raises(ValueError,match='exactly name'):
+            build_data.admit_v7_exclusions(path,day,listings,['B'])
+
+
 def test_cache_copies_only_matching_market_rows_without_teacher_arrays(cache):
     root,_,_,features = cache
     rows,report = lookup(cache)
@@ -221,7 +241,7 @@ def test_builder_mixes_v1_copy_and_missing_listing_then_resumes(cache,tmp_path,m
     args = ['--manifest',str(root/'plan.json'),'--ledger',str(tmp_path/'ledger'),
         '--date','2026-08-20','--v1-shards',str(root),'--workers','1']
     assert build_data.main(args) == 0
-    assert fetched == [('bars','A'),('features','B')] and seeds == ['B']
+    assert fetched == [('bars','A'),('features','B')] and seeds == ['A','B']
     output = next((tmp_path/'rl-trading/v2/market/2026-08-20').iterdir())
     session = MarketSession.load(output)
     np.testing.assert_array_equal(session.arrays['features'][0],features[0])
