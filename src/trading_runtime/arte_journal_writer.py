@@ -35,6 +35,7 @@ from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
+from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 from src.trading_runtime.arte_portfolio_allocation_v4 import (
     ALLOCATION as V4_ALLOCATION, V4PortfolioAllocationBatch,
 )
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
 
 
 _CONTRACTS = {table.name: table for table in TABLES}
+_CONTRACTS.update({table.name: table for table in OMS_TACTIC_TABLES})
 _CONTRACTS[ENTRY_EVIDENCE.name] = ENTRY_EVIDENCE
 _CONTRACTS[ACKNOWLEDGEMENT.name] = ACKNOWLEDGEMENT
 _CONTRACTS[CANCEL.name] = CANCEL
