@@ -10,18 +10,27 @@ from src.trading_runtime.arte_journal_compound_v4 import (
     coalesce_v4_units, prepare_compound_v4_families, publish_compound_v4,
 )
 from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+from src.backend.backtest_typed_publisher import (
+    _coalesce_v4_units, _committed_intent_source,
+)
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch, typed_row
+from src.trading_runtime.arte_intent_projection import strategy_intent_batch
+from src.trading_runtime.arte_oms_projection import oms_group_state_batch
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from src.trading_runtime.arte_portfolio_allocation_v4 import V4PortfolioAllocationBatch
 from src.trading_runtime.arte_broker_acknowledgement_v4 import (
     ACKNOWLEDGEMENT, broker_acknowledgement_batch_v4,
 )
 from src.trading_runtime.journal_contract import JournalRecord
+from src.trading_runtime.ibkr_schema import OrderRequest
+from src.trading_runtime.order_management import _ManagedOrderGroup, OrderManagementState
+from src.trading_runtime.strategy_orders import StrategyOrderPlan
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     V4ProtectionReconciliationBatch,
 )
 from tests.test_arte_journal_writer import batch
 from tests.test_arte_journal_commit_v4 import attached_v4_client
+from tests.test_arte_intent_projection import intent
 
 
 RUN = str(UUID(int=1))
@@ -169,3 +178,45 @@ def test_compound_publishes_one_cold_verified_commit_for_two_events():
     prefix = load_verified_v4_prefix(client, first.run_id)
     assert prefix.last_batch_id == second_id
     assert prefix.last_sequence == 2
+
+
+def test_compound_can_cold_verify_intent_and_its_causal_oms_consumer():
+    at = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
+    source_intent = intent()
+    first = strategy_intent_batch(
+        source_intent, run_id=RUN, run_month=date(2026, 8, 1),
+        account_id="DU1", attempt_id=ATTEMPT, batch_id=str(UUID(int=411)),
+        prior_batch_id=NIL, sequence=1, source_cursor="start",
+        run_status="running", recorded_at=at)
+    order = OrderRequest(acctId="DU1", conid=123, cOID="entry-1",
+                         ticker="test", orderType="LMT", side="BUY",
+                         quantity=5, price=12.5)
+    group = _ManagedOrderGroup(
+        "group-1", source_intent, "DU1", StrategyOrderPlan((order,)),
+        OrderManagementState.CREATED, at, at, [order], remaining_quantity=5.)
+    second = oms_group_state_batch(
+        group, run_id=RUN, run_month=date(2026, 8, 1),
+        attempt_id=ATTEMPT, batch_id=str(UUID(int=412)),
+        prior_batch_id=first.batch_id, sequence=2, source_cursor="start",
+        run_status="running", strategy_id="strategy-1", strategy_revision=1,
+        recorded_at=at, published_intent_batch=first,
+        committed_intent_batch_id=first.batch_id)
+    client = attached_v4_client()
+    compound = coalesce_v4_units((first, second))
+    assert _coalesce_v4_units((first, second)) == (compound,)
+    assert publish_compound_v4(client, compound) == second.batch_id
+    prefix = load_verified_v4_prefix(client, RUN)
+    assert prefix.last_sequence == 2
+    assert prefix.batch_ids == (second.batch_id,)
+    committed_source = _committed_intent_source(
+        compound.base, first.events[0]["record_id"])
+    assert committed_source.batch_id == prefix.last_batch_id
+    assert committed_source.events[0]["batch_id"] == prefix.last_batch_id
+    later = oms_group_state_batch(
+        group, run_id=RUN, run_month=date(2026, 8, 1),
+        attempt_id=ATTEMPT, batch_id=str(UUID(int=413)),
+        prior_batch_id=second.batch_id, sequence=3, source_cursor="start",
+        run_status="running", strategy_id="strategy-1", strategy_revision=1,
+        recorded_at=at, published_intent_batch=committed_source,
+        committed_intent_batch_id=second.batch_id)
+    assert later.intent_uses[0]["intent_record_id"] == first.events[0]["record_id"]

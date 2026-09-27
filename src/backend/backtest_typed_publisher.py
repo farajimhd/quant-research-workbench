@@ -34,27 +34,35 @@ from src.trading_runtime.arte_journal_compound_v4 import (
 )
 
 
-def _coalesce_v4_non_source_units(units: tuple) -> tuple:
-    """Keep strategy-intent revisions as individual committed source proofs."""
-    groups = []
-    pending = []
-    def flush() -> None:
-        if pending:
-            groups.append(coalesce_v4_units(tuple(pending))
-                          if len(pending) > 1 else pending[0])
-            pending.clear()
+def _coalesce_v4_units(units: tuple) -> tuple:
+    """Commit a bounded causal prefix, including same-batch intent consumers.
 
-    for unit in units:
-        base = unit if type(unit) is TypedJournalBatch else unit.base
-        if any(row["category"] == "strategy"
-               and row["entity_type"] == "strategy_intent"
-               for row in base.events):
-            flush()
-            groups.append(unit)
-        else:
-            pending.append(unit)
-    flush()
-    return tuple(groups)
+    The V4 family seal verifies the exact earlier intent revision in the same
+    batch (or an already committed batch). There is no external broker in a
+    Backtest, so the intent and its simulated OMS action share one durability
+    boundary without weakening live order admission.
+    """
+    return (coalesce_v4_units(units) if len(units) > 1 else units[0],)
+
+
+def _committed_intent_source(batch: TypedJournalBatch,
+                             record_id: str) -> TypedJournalBatch:
+    """Pin one source revision to the actual committed compound batch ID."""
+    events = tuple(row for row in batch.events if row["record_id"] == record_id)
+    intents = tuple(row for row in batch.intents if row["record_id"] == record_id)
+    slices = tuple(row for row in batch.intent_slices
+                   if row["parent_record_id"] == record_id)
+    if (len(events) != 1 or len(intents) != 1
+            or events[0]["category"] != "strategy"
+            or events[0]["entity_type"] != "strategy_intent"
+            or any(row["batch_id"] != batch.batch_id
+                   for row in (*events, *intents, *slices))):
+        raise RuntimeError("Committed V4 intent source is not one normalized revision")
+    sequence = int(events[0]["sequence"])
+    return TypedJournalBatch(
+        batch.run_id, batch.run_month, batch.attempt_id, batch.batch_id,
+        batch.prior_batch_id, sequence, sequence, batch.source_cursor,
+        batch.status, events, intents=intents, intent_slices=slices)
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,7 +177,7 @@ class BacktestTypedJournalPublisher:
                 published_sources=dict(self._committed_strategy_intents),
                 committed_order_lineage=dict(self._committed_order_lineage),
                 through_sequence=through_sequence)
-            return _coalesce_v4_non_source_units(units)
+            return _coalesce_v4_units(units)
         if self.writer.journal_profile == "backtest_v3":
             from src.backend.backtest_squeeze_episode_v3 import coalesce_squeeze_units_v3
             units = project_pending_backtest_v3_prefix(
@@ -275,7 +283,9 @@ class BacktestTypedJournalPublisher:
                             intent = strategy_one_entry_intent(
                                 proposal, session_date=session_date)
                             self._committed_strategy_intents[intent.intent_id] = (
-                                source_unit.base, intent)
+                                _committed_intent_source(
+                                    batch, source_unit.base.events[0]["record_id"]),
+                                intent)
                         elif (self.writer.journal_profile == "backtest_v4"
                               and source_batch.first_sequence == source_batch.last_sequence
                               and len(source_batch.events) == 1):
@@ -283,7 +293,9 @@ class BacktestTypedJournalPublisher:
                                 source_batch.events[0]["record_id"])
                             if intent is not None:
                                 self._committed_strategy_intents[intent.intent_id] = (
-                                    source_batch, intent)
+                                    _committed_intent_source(
+                                        batch, source_batch.events[0]["record_id"]),
+                                    intent)
                         if (self.writer.journal_profile == "backtest_v4"
                                 and len(source_batch.events) == 1
                                 and source_batch.events[0]["entity_type"] == "order_group_state"):
