@@ -18,7 +18,7 @@ from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, SESSION_OPEN_OFFSET_MS,
     iter_persisted_v7_seconds, market_day_boundary,
 )
-from src.backend.structural_v7_seed import CertifiedSeedPlan, load_seed, split_evidence
+from src.backend.structural_v7_seed import CertifiedSeedPlan, load_seed, load_seeds_batch, split_evidence
 from src.market_engine.streaming_level_book import StreamingLevelBook, VERSION
 from src.market_engine.v7_qmd import projection
 
@@ -178,23 +178,26 @@ class FixedV7Cache:
         if len(symbols) > 64:
             return 0
 
-        def prepare(ticker: str) -> tuple[str, FixedV7Stream]:
+        def prepare(batch: tuple[str, ...]) -> dict[str, FixedV7Stream]:
             client = client_factory()
             if client is None or not callable(getattr(client, "close", None)):
                 raise TypeError("V7 seed lane needs a closable read client")
             with closing(client):
-                seed = load_seed(client, ticker=ticker, session=self.session,
-                                 coverage=self._coverage[ticker])
-                splits = split_evidence(client, ticker=ticker,
-                                        seed_session=date.fromisoformat(seed["session"]),
-                                        session=self.session)
-            return ticker, FixedV7Stream(
-                seed, ticker=ticker, session=self.session,
-                splits=splits, consume_seed=True)
+                seeds = load_seeds_batch(client, tickers=batch, session=self.session,
+                    coverage={ticker: self._coverage[ticker] for ticker in batch})
+                return {ticker: FixedV7Stream(
+                    seeds[ticker], ticker=ticker, session=self.session,
+                    splits=split_evidence(client, ticker=ticker,
+                        seed_session=date.fromisoformat(seeds[ticker]["session"]),
+                        session=self.session), consume_seed=True)
+                    for ticker in batch}
 
-        with ThreadPoolExecutor(max_workers=min(max_workers, len(symbols)),
+        batches = tuple(tuple(symbols[index:index + 8])
+                        for index in range(0, len(symbols), 8))
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(batches)),
                                 thread_name_prefix="v7-seed-read") as pool:
-            prepared = dict(pool.map(prepare, symbols))
+            prepared = {ticker: stream for batch in pool.map(prepare, batches)
+                        for ticker, stream in batch.items()}
         if len(prepared) != len(symbols):
             raise RuntimeError("V7 seed preloading lost a ticker")
         self._preloaded_streams.update(prepared)

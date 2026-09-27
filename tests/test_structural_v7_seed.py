@@ -6,7 +6,7 @@ import pytest
 from types import SimpleNamespace
 
 from src.backend.structural_v7_seed import (
-    _band_hash, certified_seed_plan, load_seed, preceding_coverage, split_evidence,
+    _band_hash, certified_seed_plan, load_seed, load_seeds_batch, preceding_coverage, split_evidence,
 )
 from src.market_engine.derived_trade_policy import POLICY
 from src.market_engine.streaming_level_book import EXTRACTION_VERSION, StreamingLevelBook
@@ -54,6 +54,33 @@ def test_typed_seed_is_accepted_by_streaming_engine():
     engine = StreamingLevelBook(seed, ticker="TEST", session="2026-08-18",
         start=1787039999.0, end=1787097600.0)
     assert len(engine.rows) == 1
+
+
+def test_batched_seed_reads_preserve_single_ticker_decoding():
+    class BatchClient(Client):
+        def execute(self, sql):
+            result = super().execute(sql)
+            rows = [json.loads(line) for line in result.splitlines()]
+            if "ticker IN" in sql:
+                rows = [{**row, "ticker": ticker} for ticker in ("TEST", "OTHER")
+                        for row in rows]
+                if "structural_levels_v7" in sql:
+                    rows = [{**row, "level_id": f"{row['ticker']}-one"} for row in rows]
+                elif "structural_level_observations_v7" in sql:
+                    rows = [{**row, "level_id": f"{row['ticker']}-one"} for row in rows]
+            return "\n".join(json.dumps(row) for row in rows)
+
+    client = BatchClient()
+    pinned = {ticker: {**client.coverage, "ticker": ticker}
+              for ticker in ("TEST", "OTHER")}
+    seeds = load_seeds_batch(client, tickers=("TEST", "OTHER"),
+                             session=date(2026, 8, 18), coverage=pinned)
+    assert set(seeds) == {"TEST", "OTHER"}
+    assert all(len(seed["levels"][0]["observations"]) == 3 for seed in seeds.values())
+    assert all(sql.startswith("SELECT") for sql in client.queries)
+    assert len(client.queries) == 3
+    assert "LIMIT 3" in client.queries[1]
+    assert "LIMIT 7" in client.queries[2]
 
 
 def test_legacy_seed_is_explicitly_provisional():

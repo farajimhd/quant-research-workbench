@@ -220,6 +220,13 @@ def load_seed(client: Any, *, ticker: str, session: date,
                    "ORDER BY level_id FORMAT JSONEachRow")
     observations = _rows(client, f"SELECT * FROM {_OBSERVATIONS} FINAL WHERE {predicate} "
                          "ORDER BY level_id,observation_id FORMAT JSONEachRow")
+    return _assemble_seed(ticker, session, pinned, levels, observations)
+
+
+def _assemble_seed(ticker: str, session: date, pinned: dict[str, Any],
+                   levels: list[dict[str, Any]],
+                   observations: list[dict[str, Any]]) -> dict[str, Any]:
+    """One decoder for single and batched reads; preserve the seed digest."""
     if len(levels) != int(pinned["level_count"]) or len(observations) != int(pinned["observation_count"]):
         raise ValueError(f"Prior V7 rows differ from coverage: {session} {ticker}")
     by_id: dict[str, dict[str, Any]] = {}
@@ -273,3 +280,52 @@ def load_seed(client: Any, *, ticker: str, session: date,
     }
     seed["checkpoint_hash"] = digest(seed)
     return seed
+
+
+def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
+                     coverage: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Recheck and decode at most eight prior books with three bounded SELECTs.
+
+    This only changes the read shape. Every ticker still uses the exact
+    single-seed decoder and its independent coverage/count/hash checks.
+    """
+    if (not isinstance(session, date) or type(tickers) is not tuple
+            or not 1 <= len(tickers) <= 8 or len(set(tickers)) != len(tickers)
+            or any(not isinstance(ticker, str) or not ticker for ticker in tickers)
+            or set(coverage) != set(tickers)):
+        raise ValueError("V7 batch requires one to eight distinct certified tickers")
+    names = ",".join(_literal(ticker) for ticker in tickers)
+    cutoff = _literal(_cutoff(session))
+    current_rows = _rows(client,
+        f"SELECT * FROM {_COVERAGE} FINAL WHERE ticker IN ({names}) "
+        f"AND available_at<=toDateTime64({cutoff},9,'UTC') "
+        "ORDER BY ticker,available_at DESC LIMIT 1 BY ticker FORMAT JSONEachRow")
+    current = {str(row["ticker"]): row for row in current_rows}
+    if len(current_rows) != len(tickers) or set(current) != set(tickers):
+        raise ValueError("V7 batch coverage changed after preflight")
+    for ticker in tickers:
+        _validate_coverage(current[ticker], ticker=ticker, session=session)
+        if any(current[ticker].get(key) != coverage[ticker].get(key) for key in
+               ("session_date", "available_at", "source_checkpoint_hash",
+                "source_plan_hash")):
+            raise ValueError("Prior V7 coverage changed after preflight")
+    predicate = (f"ticker IN ({names}) AND valid_from<=toDateTime64({cutoff},9,'UTC') "
+                 f"AND (isNull(valid_to) OR valid_to>toDateTime64({cutoff},9,'UTC'))")
+    grouped: dict[str, dict[str, list[dict[str, Any]]]] = {
+        ticker: {"levels": [], "observations": []} for ticker in tickers}
+    for table, order, family in (
+        (_LEVELS, "ticker,level_id", "levels"),
+        (_OBSERVATIONS, "ticker,level_id,observation_id", "observations"),
+    ):
+        expected = sum(int(coverage[ticker]["level_count" if family == "levels"
+                            else "observation_count"]) for ticker in tickers)
+        for row in _rows(client, f"SELECT * FROM {table} FINAL WHERE {predicate} "
+                         f"ORDER BY {order} LIMIT {expected + 1} FORMAT JSONEachRow"):
+            ticker = str(row.get("ticker") or "")
+            if ticker not in grouped:
+                raise ValueError("V7 batch returned an unrequested ticker")
+            grouped[ticker][family].append(row)
+    return {ticker: _assemble_seed(ticker, session, coverage[ticker],
+                                  grouped[ticker]["levels"],
+                                  grouped[ticker]["observations"])
+            for ticker in tickers}
