@@ -21,6 +21,12 @@ REQUEST = "22222222-2222-4222-8222-222222222222"
 RUN = f"live:v2:{NAMESPACE}:{1:020d}"
 
 
+def _empty_facts(_client, sql):
+    if "FROM system.columns" in sql:
+        return [{"table": name} for name in sorted(bootstrap._EXISTING_TABLES)]
+    return []
+
+
 class Writer:
     typed_insert_strict = True
 
@@ -43,7 +49,7 @@ def _setup():
 def test_fresh_live_bootstrap_creates_both_gates_once(monkeypatch):
     keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
     reads = []
-    monkeypatch.setattr(bootstrap, "_rows", lambda _client, sql: reads.append(sql) or [])
+    monkeypatch.setattr(bootstrap, "_rows", lambda client, sql: reads.append(sql) or _empty_facts(client, sql))
     with pytest.raises(ValueError, match="distinct strict typed authorities"):
         bootstrap.initialize_new_live_sync_run(
             run_id=RUN, writer_client=writer, read_client=object(),
@@ -56,7 +62,7 @@ def test_fresh_live_bootstrap_creates_both_gates_once(monkeypatch):
         owner_id="live-run-controller",
         core_dispatch=core, sync_dispatch=sync_dispatch,
         allocator=allocator, allocation=allocation)
-    assert len(reads) == len(bootstrap._EXISTING_TABLES)
+    assert len(reads) == len(bootstrap._EXISTING_TABLES) + 1
     assert writer.typed_sync_insert_dispatch is sync_dispatch
     assert core._read_gate(RUN)[0].mode == "open"
     assert sync_dispatch._read(RUN)[0].mode == "open"
@@ -70,7 +76,8 @@ def test_fresh_live_bootstrap_creates_both_gates_once(monkeypatch):
 
 def test_existing_ch_run_and_partial_keeper_gate_fail_closed(monkeypatch):
     keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
-    monkeypatch.setattr(bootstrap, "_rows", lambda _client, _sql: [{"run_id": RUN}])
+    monkeypatch.setattr(bootstrap, "_rows", lambda client, sql: (
+        _empty_facts(client, sql) if "FROM system.columns" in sql else [{"run_id": RUN}]))
     with pytest.raises(KeeperUnavailable, match="already has ClickHouse facts"):
         bootstrap.initialize_new_live_sync_run(
             run_id=RUN, writer_client=writer, read_client=object(),
@@ -79,7 +86,7 @@ def test_existing_ch_run_and_partial_keeper_gate_fail_closed(monkeypatch):
             allocator=allocator, allocation=allocation)
     assert writer.__dict__.get("typed_sync_insert_dispatch") is None
     core.initialize_new_run(RUN)  # Simulates an older run lacking the sync gate.
-    monkeypatch.setattr(bootstrap, "_rows", lambda _client, _sql: [])
+    monkeypatch.setattr(bootstrap, "_rows", _empty_facts)
     with pytest.raises(KeeperUnavailable, match="already exist"):
         bootstrap.initialize_new_live_sync_run(
             run_id=RUN, writer_client=writer, read_client=object(),
@@ -90,9 +97,49 @@ def test_existing_ch_run_and_partial_keeper_gate_fail_closed(monkeypatch):
         sync_dispatch._read(RUN)
 
 
+def test_fresh_live_run_rejects_orphans_in_new_typed_families(monkeypatch):
+    keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
+    def rows(client, sql):
+        if "FROM system.columns" in sql:
+            return [*(_empty_facts(client, sql)),
+                    {"table": "trading_strategy_signal_v1"}]
+        return ([{"run_id": RUN}] if "arte.trading_strategy_signal_v1" in sql
+                else [])
+    monkeypatch.setattr(bootstrap, "_rows", rows)
+    with pytest.raises(KeeperUnavailable, match="already has ClickHouse facts"):
+        bootstrap.initialize_new_live_sync_run(
+            run_id=RUN, writer_client=writer, read_client=object(),
+            owner_id="live-run-controller", core_dispatch=core,
+            sync_dispatch=sync_dispatch, allocator=allocator,
+            allocation=allocation)
+    assert writer.__dict__.get("typed_sync_insert_dispatch") is None
+    with pytest.raises(KeeperUnavailable, match="absent"):
+        core._read_gate(RUN)
+
+
+@pytest.mark.parametrize("inventory", [
+    [],
+    [{"table": "trading_run_v1"}],
+    [{"table": name} for name in sorted(bootstrap._EXISTING_TABLES)]
+    + [{"table": "trading_run_v1"}],
+    [{"table": name} for name in sorted(bootstrap._EXISTING_TABLES)]
+    + [{"table": "trading_bad;DROP"}],
+])
+def test_fresh_live_run_requires_unambiguous_fact_inventory(monkeypatch, inventory):
+    keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
+    monkeypatch.setattr(bootstrap, "_rows", lambda _client, _sql: inventory)
+    with pytest.raises(KeeperUnavailable, match="inventory is incomplete or ambiguous"):
+        bootstrap.initialize_new_live_sync_run(
+            run_id=RUN, writer_client=writer, read_client=object(),
+            owner_id="live-run-controller", core_dispatch=core,
+            sync_dispatch=sync_dispatch, allocator=allocator,
+            allocation=allocation)
+    assert writer.__dict__.get("typed_sync_insert_dispatch") is None
+
+
 def test_lost_gate_transaction_response_stays_bound_but_unattached(monkeypatch):
     keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
-    monkeypatch.setattr(bootstrap, "_rows", lambda _client, _sql: [])
+    monkeypatch.setattr(bootstrap, "_rows", _empty_facts)
     original = keeper.transaction
     def lost_response():
         txn = original()
@@ -117,7 +164,7 @@ def test_lost_gate_transaction_response_stays_bound_but_unattached(monkeypatch):
 
 def test_cold_start_closes_sync_before_core_and_requires_live_context(monkeypatch):
     keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
-    monkeypatch.setattr(bootstrap, "_rows", lambda _client, _sql: [])
+    monkeypatch.setattr(bootstrap, "_rows", _empty_facts)
     bootstrap.initialize_new_live_sync_run(
         run_id=RUN, writer_client=writer, read_client=object(),
         owner_id="live-run-controller",
@@ -173,7 +220,7 @@ def test_cold_start_missing_sync_gate_never_claims_recovery():
 
 def test_cold_start_nonlive_context_stays_closed(monkeypatch):
     keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
-    monkeypatch.setattr(bootstrap, "_rows", lambda _client, _sql: [])
+    monkeypatch.setattr(bootstrap, "_rows", _empty_facts)
     bootstrap.initialize_new_live_sync_run(
         run_id=RUN, writer_client=writer, read_client=object(),
         owner_id="live-run-controller",

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import re
 from typing import Any
 
 from src.trading_runtime.arte_journal_writer import _literal, _rows
@@ -30,6 +31,27 @@ _EXISTING_TABLES = (
     "trading_run_v1", "trading_run_context_commit_v1", "trading_commit_v1",
     "trading_portfolio_sync_snapshot_marker_v1", "trading_portfolio_sync_fence_v1",
 )
+
+
+def _run_fact_tables(client: Any) -> tuple[str, ...]:
+    """Inventory every installed normalized trading family with run identity.
+
+    A stale child fact can exist without a run/context row after an interrupted
+    insert. Checking only the core tables would let a fresh allocation collide
+    with that orphan; new typed families must be covered automatically.
+    """
+    rows = _rows(client,
+        "SELECT table FROM system.columns WHERE database='arte' "
+        "AND startsWith(table,'trading_') AND name='run_id' "
+        "ORDER BY table FORMAT JSONEachRow")
+    names = tuple(str(row.get("table") or "") for row in rows)
+    if (len(names) != len(set(names)) or tuple(sorted(names)) != names
+            or not set(_EXISTING_TABLES) <= set(names)
+            or any(set(row) != {"table"} or
+                   re.fullmatch(r"trading_[a-z0-9_]+", name) is None
+                   for row, name in zip(rows, names))):
+        raise KeeperUnavailable("Live run fact-table inventory is incomplete or ambiguous")
+    return names
 
 
 def initialize_new_live_sync_run(*, run_id: str, writer_client: Any,
@@ -60,7 +82,7 @@ def initialize_new_live_sync_run(*, run_id: str, writer_client: Any,
             or getattr(writer_client, "typed_sync_insert_dispatch", None) is not None):
         raise ValueError("Fresh live sync requires distinct strict typed authorities")
     allocator.assert_status(allocation, "allocated")
-    for table in _EXISTING_TABLES:
+    for table in _run_fact_tables(read_client):
         rows = _rows(read_client,
             f"SELECT run_id FROM arte.{table} WHERE run_id={_literal(run_id)} "
             "LIMIT 1 FORMAT JSONEachRow")
