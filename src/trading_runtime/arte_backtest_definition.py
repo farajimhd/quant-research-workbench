@@ -52,6 +52,17 @@ ASSIGNMENT = TableContract(
      ("content_hash", "FixedString(64)")),
     "toYYYYMM(run_month)", "run_id, ordinal",
 )
+PRICE_PLAN = TableContract(
+    "trading_backtest_price_plan_v1",
+    (("run_id", "String"), ("run_month", "Date"),
+     ("definition_hash", "FixedString(64)"),
+     ("source_build_id", "String"),
+     ("parent_market_plan_token", "FixedString(64)"),
+     ("price_plan_token", "FixedString(64)"),
+     ("unit_count", "UInt32"),
+     ("content_hash", "FixedString(64)")),
+    "toYYYYMM(run_month)", "run_id",
+)
 COMMIT = TableContract(
     "trading_backtest_definition_commit_v1",
     (("run_id", "String"), ("run_month", "Date"),
@@ -61,7 +72,7 @@ COMMIT = TableContract(
      ("assignment_hash", "FixedString(64)")),
     "toYYYYMM(run_month)", "run_id",
 )
-TABLES = (DEFINITION, TICKER, ASSIGNMENT, COMMIT)
+TABLES = (DEFINITION, TICKER, ASSIGNMENT, PRICE_PLAN, COMMIT)
 
 
 def _digest(value: Any) -> str:
@@ -182,6 +193,25 @@ def prepare_backtest_definition(
     assignments = tuple(_sealed({**common, "ordinal": index,
                                  "assignment_id": assignment_id})
                         for index, assignment_id in enumerate(definition.assignment_ids))
+    price_token = definition.market_data_plan.get("price_level_plan_token")
+    price_count = definition.market_data_plan.get("price_level_unit_count")
+    if (price_token is None) != (price_count is None):
+        raise ValueError("Backtest eligible-price token and unit count must travel together")
+    price_plan = None
+    if price_token is not None:
+        parent_token = definition.market_data_plan["token"]
+        source_build = definition.market_data_plan.get("build_id")
+        if (not _HEX.fullmatch(str(parent_token))
+                or not _HEX.fullmatch(str(price_token))
+                or not isinstance(source_build, str) or not source_build
+                or type(price_count) is not int or not 0 < price_count < 2**32):
+            raise ValueError("Backtest eligible-price authority is incomplete")
+        price_plan = _sealed({
+            **common, "definition_hash": parent["content_hash"],
+            "source_build_id": source_build,
+            "parent_market_plan_token": parent_token,
+            "price_plan_token": price_token, "unit_count": price_count,
+        })
     if (len(tickers) >= 2**32 or len(assignments) >= 2**32
             or len({row["ticker"] for row in tickers}) != len(tickers)
             or len({row["assignment_id"] for row in assignments}) != len(assignments)
@@ -197,17 +227,19 @@ def prepare_backtest_definition(
                                     for row in assignments]),
     }
     return {"definition": parent, "tickers": tickers,
-            "assignments": assignments, "commit": commit}
+            "assignments": assignments, "price_plan": price_plan,
+            "commit": commit}
 
 
 def verify_backtest_definition_rows(
     *, definitions: tuple[Mapping[str, Any], ...],
     tickers: tuple[Mapping[str, Any], ...],
     assignments: tuple[Mapping[str, Any], ...],
+    price_plans: tuple[Mapping[str, Any], ...] = (),
     commits: tuple[Mapping[str, Any], ...],
 ) -> dict[str, Any]:
     """Cold-verify one exact immutable parent and its ordered child population."""
-    if len(definitions) != 1 or len(commits) != 1:
+    if len(definitions) != 1 or len(commits) != 1 or len(price_plans) > 1:
         raise ValueError("Backtest definition lacks one parent and commit")
     parent = _canonical_stored_row(DEFINITION, definitions[0])
     tickers = tuple(sorted(
@@ -218,9 +250,13 @@ def verify_backtest_definition_rows(
         (_canonical_stored_row(ASSIGNMENT, row) for row in assignments),
         key=lambda row: row["ordinal"],
     ))
+    price_plan = (_canonical_stored_row(PRICE_PLAN, price_plans[0])
+                  if price_plans else None)
     commit = _canonical_stored_row(COMMIT, commits[0])
     for table, rows in ((DEFINITION, (parent,)), (TICKER, tickers),
-                        (ASSIGNMENT, assignments), (COMMIT, (commit,))):
+                        (ASSIGNMENT, assignments),
+                        (PRICE_PLAN, (price_plan,) if price_plan else ()),
+                        (COMMIT, (commit,))):
         for row in rows:
             if (row["run_id"] != parent["run_id"]
                     or str(row["run_month"]) != str(parent["run_month"])):
@@ -230,6 +266,13 @@ def verify_backtest_definition_rows(
                            if key != "content_hash"}
                 if _digest(content) != row["content_hash"]:
                     raise ValueError(f"Backtest {table.name} content hash differs")
+    if price_plan is not None and (
+            price_plan["definition_hash"] != parent["content_hash"]
+            or not _HEX.fullmatch(price_plan["parent_market_plan_token"])
+            or not _HEX.fullmatch(price_plan["price_plan_token"])
+            or not price_plan["source_build_id"]
+            or not 0 < price_plan["unit_count"] < 2**32):
+        raise ValueError("Backtest eligible-price authority differs from definition")
     if (len(tickers) >= 2**32 or len(assignments) >= 2**32
             or [int(row["ordinal"]) for row in tickers] != list(range(len(tickers)))
             or [int(row["ordinal"]) for row in assignments] != list(range(len(assignments)))
@@ -261,7 +304,8 @@ def verify_backtest_definition_rows(
     if commit != expected:
         raise ValueError("Backtest definition commit differs from its rows")
     return {"definition": parent, "tickers": tickers,
-            "assignments": assignments, "commit": commit}
+            "assignments": assignments, "price_plan": price_plan,
+            "commit": commit}
 
 
 def load_backtest_definition(
@@ -276,7 +320,8 @@ def load_backtest_definition(
         raise ValueError("Backtest definition needs a verified shared run context")
     families = {}
     for key, table in (("definitions", DEFINITION), ("tickers", TICKER),
-                       ("assignments", ASSIGNMENT), ("commits", COMMIT)):
+                       ("assignments", ASSIGNMENT),
+                       ("price_plans", PRICE_PLAN), ("commits", COMMIT)):
         columns = ",".join(name for name, _ in table.columns)
         families[key] = tuple(_rows(client,
             f"SELECT {columns} FROM arte.{table.name} "
@@ -296,6 +341,9 @@ def load_backtest_definition(
             or type(interval_ms) is not int or not 100 <= interval_ms < 2**32
             or interval_ms % 100
             or not run_context.get("market_plan_token")
+            or (verified["price_plan"] is not None
+                and verified["price_plan"]["parent_market_plan_token"]
+                != run_context["market_plan_token"])
             or not _HEX.fullmatch(str(run_context.get("configuration_hash") or ""))):
         raise RuntimeError("Backtest definition differs from shared run authority")
     return verified
@@ -371,6 +419,7 @@ def publish_backtest_definition(client: Any, run_id: str,
         (DEFINITION, (prepared["definition"],)),
         (TICKER, prepared["tickers"]),
         (ASSIGNMENT, prepared["assignments"]),
+        (PRICE_PLAN, (prepared["price_plan"],) if prepared["price_plan"] else ()),
         (COMMIT, (prepared["commit"],)),
     ):
         identity = (lambda row: row["ordinal"]) if table in (TICKER, ASSIGNMENT) else (

@@ -80,6 +80,26 @@ def _explain_difference(client, left_id: str, right_id: str) -> None:
             print(f"  {field}:\n    left:  {snapshots[0][field]}"
                   f"\n    right: {snapshots[1][field]}", flush=True)
 
+    price_rows = []
+    for run_id in (left_id, right_id):
+        rows = _rows(client,
+            "SELECT source_build_id,parent_market_plan_token,price_plan_token,unit_count "
+            "FROM arte.trading_backtest_price_plan_v1 "
+            f"WHERE run_id={_literal(run_id)} LIMIT 2 FORMAT JSONEachRow")
+        if len(rows) > 1:
+            raise RuntimeError("Backtest price plan has duplicate run rows")
+        price_rows.append(rows[0] if rows else None)
+    if price_rows[0] is None or price_rows[1] is None:
+        print("Eligible-price lineage: at least one run predates the typed pin; "
+              "the source difference cannot be identified from these journals",
+              flush=True)
+    else:
+        for field in ("source_build_id", "parent_market_plan_token",
+                      "price_plan_token", "unit_count"):
+            if price_rows[0][field] != price_rows[1][field]:
+                print(f"Eligible-price {field}:\n    left:  {price_rows[0][field]}"
+                      f"\n    right: {price_rows[1][field]}", flush=True)
+
     def fill_counts(run_id: str) -> dict[tuple[str, str, str], tuple[int, str, str]]:
         rows = _rows(client,
             "SELECT broker_order_id,ticker,side,count() AS fills,"

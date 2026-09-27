@@ -37,7 +37,9 @@ def _definition(**changes):
         configuration_revision={"revision_id": "revision-1",
                                 "content_hash": "a" * 64},
         execution_interval="100ms",
-        market_data_plan={"token": "certified-plan", "build_id": "build-1",
+        market_data_plan={"token": "c" * 64, "build_id": "build-1",
+                          "price_level_plan_token": "d" * 64,
+                          "price_level_unit_count": 2,
                           "execution_interval": {"milliseconds": 100}},
         causal_v7_plan={"token": "causal-plan", "build_id": "build-1",
                         "catalog_hash": "b" * 64},
@@ -109,20 +111,26 @@ def test_fixed_definition_is_typed_ordered_and_contains_no_json_or_blob():
         "assignment-a", "assignment-b"]
     assert prepared["commit"]["definition_hash"] == parent["content_hash"]
     assert parent["run_month"] == RUN_MONTH.isoformat()
+    assert prepared["price_plan"]["parent_market_plan_token"] == "c" * 64
+    assert prepared["price_plan"]["price_plan_token"] == "d" * 64
+    assert prepared["price_plan"]["definition_hash"] == parent["content_hash"]
     assert prepared == prepare_backtest_definition(
         "run-1", _definition(), run_month=RUN_MONTH)
     assert verify_backtest_definition_rows(
         definitions=(prepared["definition"],), tickers=prepared["tickers"],
         assignments=prepared["assignments"],
+        price_plans=(prepared["price_plan"],),
         commits=(prepared["commit"],)) == prepared
     stored_parent = {**parent, "initial_cash": "100000"}
     assert verify_backtest_definition_rows(
         definitions=(stored_parent,), tickers=prepared["tickers"],
         assignments=prepared["assignments"],
+        price_plans=(prepared["price_plan"],),
         commits=(prepared["commit"],)) == prepared
     assert verify_backtest_definition_rows(
         definitions=(stored_parent,), tickers=tuple(reversed(prepared["tickers"])),
         assignments=tuple(reversed(prepared["assignments"])),
+        price_plans=(prepared["price_plan"],),
         commits=(prepared["commit"],)) == prepared
     assert all("storage_policy = 'live_market_ssd'" in table.ddl()
                for table in TABLES)
@@ -147,6 +155,25 @@ def test_definition_rejects_missing_identity_and_imprecise_scalars():
             mode=RunMode.REPLAY, archived_review_only=True), run_month=RUN_MONTH)
     with pytest.raises(ValueError, match="normal fixed"):
         prepare_backtest_definition("run-1", _definition(), run_month=date(2026, 9, 2))
+    for missing in ("price_level_plan_token", "price_level_unit_count"):
+        market = dict(_definition().market_data_plan)
+        market.pop(missing)
+        with pytest.raises(ValueError, match="eligible-price token and unit count"):
+            prepare_backtest_definition("run-1", _definition(
+                market_data_plan=market), run_month=RUN_MONTH)
+
+
+def test_older_definition_without_price_child_stays_readable_but_unpinned():
+    market = dict(_definition().market_data_plan)
+    market.pop("price_level_plan_token")
+    market.pop("price_level_unit_count")
+    prepared = prepare_backtest_definition(
+        "run-1", _definition(market_data_plan=market), run_month=RUN_MONTH)
+    assert prepared["price_plan"] is None
+    assert verify_backtest_definition_rows(
+        definitions=(prepared["definition"],), tickers=prepared["tickers"],
+        assignments=prepared["assignments"], commits=(prepared["commit"],)
+    )["price_plan"] is None
 
 
 def test_empty_explicit_ticker_list_pins_market_plan_population():
@@ -164,6 +191,7 @@ def test_cold_definition_rejects_tampered_or_duplicate_membership():
             definitions=(parent or prepared["definition"],),
             tickers=tickers if tickers is not None else prepared["tickers"],
             assignments=prepared["assignments"],
+            price_plans=(prepared["price_plan"],),
             commits=(commit or prepared["commit"],))
     with pytest.raises(ValueError, match="content hash differs"):
         verify(parent={**prepared["definition"], "initial_cash": "1"})
@@ -171,6 +199,18 @@ def test_cold_definition_rejects_tampered_or_duplicate_membership():
         verify(tickers=(prepared["tickers"][0], prepared["tickers"][0]))
     with pytest.raises(ValueError, match="commit differs"):
         verify(commit={**prepared["commit"], "assignment_count": 0})
+    with pytest.raises(ValueError, match="content hash differs"):
+        verify_backtest_definition_rows(
+            definitions=(prepared["definition"],), tickers=prepared["tickers"],
+            assignments=prepared["assignments"],
+            price_plans=({**prepared["price_plan"], "price_plan_token": "e" * 64},),
+            commits=(prepared["commit"],))
+    with pytest.raises(ValueError, match="one parent and commit"):
+        verify_backtest_definition_rows(
+            definitions=(prepared["definition"],), tickers=prepared["tickers"],
+            assignments=prepared["assignments"],
+            price_plans=(prepared["price_plan"], prepared["price_plan"]),
+            commits=(prepared["commit"],))
 
 
 def test_cold_loader_reads_only_exact_definition_tables_and_run_identity():
@@ -178,6 +218,7 @@ def test_cold_loader_reads_only_exact_definition_tables_and_run_identity():
     names = {"trading_backtest_definition_v1": [prepared["definition"]],
              "trading_backtest_ticker_v1": prepared["tickers"],
              "trading_backtest_assignment_v1": prepared["assignments"],
+             "trading_backtest_price_plan_v1": [prepared["price_plan"]],
              "trading_backtest_definition_commit_v1": [prepared["commit"]]}
     class Client:
         queries = []
@@ -190,10 +231,10 @@ def test_cold_loader_reads_only_exact_definition_tables_and_run_identity():
     context = {"run_id": "run-1", "run_month": RUN_MONTH.isoformat(),
                "mode": "backtest", "session_date": "2026-08-18",
                "evaluation_interval_ms": 100,
-               "market_plan_token": "certified-plan",
+               "market_plan_token": "c" * 64,
                "configuration_hash": "a" * 64}
     assert load_backtest_definition(client, "run-1", run_context=context) == prepared
-    assert len(client.queries) == 4
+    assert len(client.queries) == 5
     with pytest.raises(RuntimeError, match="shared run authority"):
         load_backtest_definition(client, "run-1", run_context={
             **context, "market_plan_token": ""})
@@ -214,7 +255,7 @@ def test_definition_publisher_is_commit_last_idempotent_and_keeper_fenced(monkey
         "run_id": "run-1", "run_month": RUN_MONTH.isoformat(),
         "mode": "backtest", "session_date": "2026-08-18",
         "evaluation_interval_ms": 100,
-        "market_plan_token": "certified-plan",
+        "market_plan_token": "c" * 64,
         "configuration_hash": "a" * 64,
     }
     monkeypatch.setattr(journal_writer, "load_typed_run_context",
@@ -269,7 +310,7 @@ def test_definition_publisher_resumes_exact_partial_rows_without_duplication(mon
                             "run_id": "run-1", "run_month": RUN_MONTH.isoformat(),
                             "mode": "backtest", "session_date": "2026-08-18",
                             "evaluation_interval_ms": 100,
-                            "market_plan_token": "certified-plan",
+                            "market_plan_token": "c" * 64,
                             "configuration_hash": "a" * 64,
                         })
     prepared = prepare_backtest_definition("run-1", _definition(), run_month=RUN_MONTH)
