@@ -131,6 +131,9 @@ class BacktestMarketDataTests(unittest.TestCase):
         reader = Closed()
         session = Closed()
         session.client = object()
+        def discover_while_keeper_open(*_args, **_kwargs):
+            self.assertFalse(session.closed)
+            return "certified"
         with (patch("src.backend.backtest_market_data.readonly_clickhouse_client",
                     return_value=reader) as open_reader,
               patch("src.trading_runtime.arte_market_day_cold_preflight.market_day_fence_build_ids",
@@ -140,7 +143,7 @@ class BacktestMarketDataTests(unittest.TestCase):
               patch("src.trading_runtime.arte_market_day_keeper.MarketDayKeeperReader",
                     return_value=Mock(load=Mock(return_value="attested"))) as keeper_reader,
               patch("src.trading_runtime.arte_market_day_cold_preflight.discover_cold_certified_market_day_plan",
-                    return_value="certified") as discover):
+                    side_effect=discover_while_keeper_open) as discover):
             result = certified_market_plan_from_arte(
                 sessions=[date(2026, 8, 18)], tickers=["SUGP"], configuration={})
         self.assertEqual(result, "certified")
@@ -150,7 +153,7 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertIs(discover.call_args.kwargs["use_seals"], True)
         self.assertTrue(session.closed)
         self.assertEqual(discover.call_args.args[1].load("a" * 64), "attested")
-        keeper_reader.return_value.load.assert_called_once_with("a" * 64)
+        self.assertIs(discover.call_args.args[1], keeper_reader.return_value)
         fence_ids.assert_called_once()
         self.assertTrue(reader.closed and session.closed)
 

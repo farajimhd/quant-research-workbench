@@ -8,14 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import ExitStack, closing
 from datetime import date, datetime, time, timedelta
 import hashlib
 from http.client import RemoteDisconnected
 import json
 import os
 import re
-from types import MappingProxyType
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
@@ -293,12 +292,14 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
     )
     from research.mlops.clickhouse import ClickHouseHttpClient
 
-    with closing(readonly_clickhouse_client(v3_read_principal=True)) as raw_reader:
+    with ExitStack() as stack:
+        raw_reader = stack.enter_context(
+            closing(readonly_clickhouse_client(v3_read_principal=True)))
         reader = _MarketCertificateReader(raw_reader)
         build_ids = market_day_fence_build_ids(reader, configuration)
-        with closing(open_workstation_keeper_session()) as session:
-            keeper = MarketDayKeeperReader(session.client)
-            proofs = {build_id: keeper.load(build_id) for build_id in build_ids}
+        session = stack.enter_context(closing(open_workstation_keeper_session()))
+        keeper = MarketDayKeeperReader(session.client)
+        proofs = {build_id: keeper.load(build_id) for build_id in build_ids}
         days = tuple(str(day) for day in sessions)
         symbols = tuple(tickers)
         cacheable = isinstance(raw_reader, ClickHouseHttpClient)
@@ -337,7 +338,7 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
                                     reader, configuration) == build_ids):
                             return cached
         plan = discover_cold_certified_market_day_plan(
-            reader, _MarketCertificateProofs(proofs),
+            reader, keeper,
             sessions=days,
             tickers=symbols, configuration=configuration,
             expected_build_ids=build_ids,
@@ -372,7 +373,7 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
                 # product hashes instead of treating an unrelated part change
                 # as missing data. Never cache a physically unstable inventory.
                 refreshed = discover_cold_certified_market_day_plan(
-                    reader, _MarketCertificateProofs(proofs),
+                    reader, keeper,
                     sessions=days, tickers=symbols, configuration=configuration,
                     expected_build_ids=build_ids,
                     use_seals=True,
@@ -386,16 +387,6 @@ def certified_market_plan_from_arte(*, sessions: Sequence[date | str],
                 key, proofs, after, plan,
                 selected_fingerprint=selected_before)
         return plan
-
-
-class _MarketCertificateProofs:
-    """Immutable Keeper proofs captured before the expensive ClickHouse audit."""
-
-    def __init__(self, proofs: Mapping[str, Any]) -> None:
-        self._proofs = MappingProxyType(dict(proofs))
-
-    def load(self, build_id: str) -> Any:
-        return self._proofs.get(build_id)
 
 
 class _MarketCertificateReader:
