@@ -155,7 +155,7 @@ class Arguments(unittest.TestCase):
                         ('feature_tradable_universe_snapshot_v2','feature_tradable_universe_snapshot_coverage_v2')]
                 if label == 'market_day_metadata_tables':
                     return [{'name':name,'storage_policy':'live_market_ssd'} for name in
-                        ('market_day_build_fence_v1',*self.extra)]
+                        ('market_day_build_fence_v1','market_day_session_seal_v1',*self.extra)]
                 return []
 
         B.storage_preflight(Client(),'arte')

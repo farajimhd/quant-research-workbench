@@ -31,10 +31,14 @@ sys.path.insert(0, str(ROOT))
 from pipelines.market_sip.events import market_day_sql as sql
 from research.mlops.clickhouse import ClickHouseHttpClient
 from src.trading_runtime.arte_market_day_certification import TABLES as CERTIFICATE_TABLES
+from src.trading_runtime.arte_market_day_session_seal import SESSION_SEAL
 
 RUNTIME = Path("D:/TradingML/runtimes")
 DEFAULT_ENV = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\secrets\.env")
 RESUME_COMPATIBLE_CONTROLLER_HASHES = frozenset({
+    # The July 30-August 17 controller completed all units before a newly
+    # installed, producer-owned session-seal table failed final preflight.
+    "27febe11c53cfe0bd36ac3040a0370a71ed16ae884941cca3c05f6a42436c9f1",
     # The three-table V5 controller before the bounded dense-ticker memory fix.
     "cbeca10448af0b758fbb91ca9925cf7121966f728bf043a06d7b53f82dc3fc11",
     "994988b4804edf179707684409e3b981046bb26d78d46a7f60420499a79099b3",
@@ -374,7 +378,7 @@ def storage_preflight(client, db, require_tables=False):
         raise ValueError("Dated tradable universe has parts outside live_market_ssd")
     names=('bars_v1','indicators_v1','liquidity_100ms_v1')
     metadata=client.query(f"SELECT name,storage_policy FROM system.tables WHERE database={sql.literal(db)} AND startsWith(name,'market_day_')",'market_day_metadata_tables')
-    certificate_names={table.name for table in CERTIFICATE_TABLES}
+    certificate_names={table.name for table in CERTIFICATE_TABLES} | {SESSION_SEAL.name}
     unknown=sorted(row['name'] for row in metadata if row['name'] not in certificate_names)
     if unknown:
         raise ValueError('Unknown legacy market-day tables require explicit review: '+','.join(unknown))
