@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import Future as ThreadFuture
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -39,6 +40,49 @@ class _PendingCommand:
     account_id: str
     orders: tuple[OrderRequest, ...]
     result: asyncio.Future[list[dict[str, Any]]]
+
+
+def _command_matches_order(row: Any, order: OrderRequest) -> bool:
+    """Match every broker-effective field to its committed typed command."""
+    def amount(value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        try:
+            result = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+        return result if result.is_finite() else None
+
+    fields = (
+        ("account_id", order.acctId), ("client_order_id", order.cOID),
+        ("conid", order.conid), ("ticker", order.ticker),
+        ("side", order.side), ("order_type", order.orderType),
+        ("time_in_force", order.tif), ("security_type", order.secType),
+        ("listing_exchange", order.listingExchange),
+        ("parent_broker_order_id", order.parentId or ""),
+        ("trailing_type", order.trailingType or ""),
+        ("external_operator", order.extOperator or ""),
+        ("referrer", order.referrer or ""),
+        ("broker_strategy", order.strategy or ""),
+    )
+    flags = (
+        ("outside_rth", order.outsideRTH),
+        ("single_group", order.isSingleGroup),
+        ("manual_indicator", order.manualIndicator),
+    )
+    prices = (
+        ("quantity", order.quantity), ("cash_quantity", order.cashQty),
+        ("limit_price", order.price), ("aux_price", order.auxPrice),
+        ("trailing_amount", order.trailingAmt),
+    )
+    return (not order.strategyParameters
+            and all(key.startswith("canonical_") for key in order.raw)
+            and all(str(row[key]) == str(value) for key, value in fields)
+            and all(int(row[key]) == int(value) for key, value in flags)
+            and all((value is None or amount(value) is not None)
+                    and amount(row[key]) == amount(value)
+                    and (row[key] is None) == (value is None)
+                    for key, value in prices))
 
 
 class ArteCommandDispatcher:
@@ -92,8 +136,7 @@ class ArteCommandDispatcher:
         if (batch.status != "running" or not orders
                 or len(batch.order_commands) != len(orders)
                 or any(order.acctId != account_id for order in orders)
-                or any(str(row["account_id"]) != account_id
-                       or str(row["client_order_id"]) != order.cOID
+                or any(not _command_matches_order(row, order)
                        for row, order in zip(batch.order_commands, orders))):
             raise ValueError("Typed command batch differs from broker requests")
         result: asyncio.Future[list[dict[str, Any]]] = asyncio.get_running_loop().create_future()

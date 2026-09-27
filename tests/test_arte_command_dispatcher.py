@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from uuid import uuid4
 
@@ -122,6 +123,28 @@ def test_command_lane_rejects_coalescing_writer() -> None:
     writer.coalesce_batches = True
     with pytest.raises(ValueError, match="non-coalesced"):
         ArteCommandDispatcher(writer, _Broker())
+
+
+@pytest.mark.parametrize("change", [
+    {"price": 12.35}, {"quantity": 6}, {"side": "SELL"},
+    {"orderType": "MKT", "price": None}, {"outsideRTH": True},
+    {"parentId": "unexpected-parent"}, {"price": float("nan")},
+    {"raw": {"price": 1.0}},
+])
+def test_broker_request_must_match_every_durable_command_field(monkeypatch, change) -> None:
+    _install_audit(monkeypatch)
+
+    async def scenario() -> None:
+        writer, broker = _Writer(), _Broker()
+        dispatcher = ArteCommandDispatcher(writer, broker)
+        await dispatcher.start(None, "live:DU1")
+        batch, request = _command()
+        with pytest.raises(ValueError, match="differs from broker requests"):
+            dispatcher.submit(batch, "DU1", (replace(request, **change),))
+        assert not writer.receipts and not broker.calls
+        await dispatcher.close()
+
+    asyncio.run(scenario())
 
 
 def test_failed_persistence_never_sends_and_poisons_lane(monkeypatch) -> None:
