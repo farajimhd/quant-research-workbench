@@ -5,6 +5,7 @@ from src.trading_runtime.arte_journal_schema import (
     V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
 )
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
+from src.backend.live_strategy_one_approval import TABLE as STRATEGY_ONE_APPROVAL
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES,
     ENTRY_REPRICE_REJECTED, PROTECTED_EXIT_SATISFIED, PROTECTION_CHANGE_TABLES,
@@ -35,6 +36,23 @@ def test_missing_plan_checks_installed_contracts_and_emits_only_missing_ddl(
     assert len(ddl) == len(missing)
     assert all("CREATE TABLE IF NOT EXISTS arte." in statement
                and "live_market_ssd" in statement for statement in ddl)
+
+
+def test_strategy_one_approval_is_separate_typed_read_only_plan(monkeypatch):
+    class Client:
+        def execute(self, sql):
+            assert sql.startswith("SELECT name FROM system.tables")
+            return ""
+
+    assert plan.profile_contracts("live-strategy-one-approval") == (
+        STRATEGY_ONE_APPROVAL,)
+    monkeypatch.setattr(plan, "storage_preflight",
+                        lambda *_args, **_kwargs: None)
+    missing, ddl = plan.plan_missing(
+        Client(), profile="live-strategy-one-approval")
+    assert missing == (STRATEGY_ONE_APPROVAL.name,)
+    assert ddl == (STRATEGY_ONE_APPROVAL.ddl(),)
+    assert "live_market_ssd" in ddl[0] and "JSON" not in ddl[0]
 
 
 def test_missing_plan_fails_if_existing_table_is_incompatible(monkeypatch):

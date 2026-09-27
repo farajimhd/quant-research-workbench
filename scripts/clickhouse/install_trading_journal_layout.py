@@ -862,7 +862,8 @@ def main() -> int:
     parser.add_argument("--url", default="http://DESKTOP-SAAI85T:18123")
     parser.add_argument("--apply", action="store_true",
                         help="apply requested table DDL after exact preflight")
-    parser.add_argument("--profile", choices=("fixed-v2", "fixed-v3", "commit-v4"),
+    parser.add_argument("--profile", choices=("fixed-v2", "fixed-v3", "commit-v4",
+                                              "live-strategy-one-approval"),
                         default="fixed-v2", help="exact journal table layout")
     parser.add_argument("--upgrade-v3-reservation-reason", action="store_true",
                         help="verify or install the empty-fence V3 reason upgrade")

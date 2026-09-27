@@ -82,6 +82,26 @@ def test_v4_commit_install_is_opt_in_and_has_no_row_writes(monkeypatch):
                for sql in client.statements) == 2
 
 
+def test_strategy_one_approval_install_is_opt_in_and_no_row_writes(monkeypatch):
+    client = Client()
+    contracts = install.profile_contracts("live-strategy-one-approval")
+    monkeypatch.setattr(install, "plan_missing",
+                        lambda _, *, profile: ((contracts[0].name,), ())
+                        if profile == "live-strategy-one-approval"
+                        else pytest.fail("wrong profile"))
+    verified = []
+    monkeypatch.setattr(install, "storage_preflight",
+                        lambda _, *, tables: verified.append(tuple(t.name for t in tables)))
+    assert install.install_missing(client, apply=False,
+                                   profile="live-strategy-one-approval") == (0, 0)
+    assert all(sql.startswith("SELECT ") for sql in client.statements)
+    assert install.install_missing(client, apply=True,
+                                   profile="live-strategy-one-approval") == (0, 1)
+    assert verified == [(contracts[0].name,), (contracts[0].name,)]
+    assert len([sql for sql in client.statements if sql.startswith("CREATE TABLE")]) == 1
+    assert not any(sql.startswith("INSERT ") for sql in client.statements)
+
+
 def test_cli_defaults_to_read_only_plan_on_workstation(monkeypatch, capsys):
     client = Client()
     monkeypatch.setattr(install.platform, "node", lambda: "DESKTOP-SAAI85T")
