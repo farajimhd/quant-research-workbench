@@ -9,7 +9,8 @@ from uuid import UUID
 import pytest
 
 from src.trading_runtime.arte_journal_commit_v4 import (
-    _existing_detail_identities_v4, _publish_typed_batch_v4,
+    _batched_detail_rows_v4, _existing_detail_identities_v4,
+    _publish_typed_batch_v4,
     load_verified_commit_v4, load_verified_v4_prefix, prepare_commit_v4,
     publish_base_typed_batch_v4, publish_broker_acknowledgement_batch_v4,
     publish_terminal_typed_batch_v4,
@@ -80,6 +81,41 @@ def test_v4_clickhouse_detail_existence_uses_one_bounded_family_read(monkeypatch
                     "content_hash": "a" * 64}]
     with pytest.raises(RuntimeError, match="foreign family"):
         _existing_detail_identities_v4(reader, source, families)
+
+
+def test_v4_hot_detail_readback_batches_complete_typed_rows():
+    class UnionReader:
+        def __init__(self, rows):
+            self.rows = rows
+            self.queries = []
+
+        def execute(self, sql):
+            self.queries.append(sql)
+            return "\n".join(json.dumps(row) for row in self.rows)
+
+    specs = (
+        ("trading_event_v1", ("record_id", "content_hash"), 1),
+        ("trading_strategy_intent_v1", ("record_id", "content_hash"), 1),
+    )
+    reader = UnionReader([
+        {"family_name": "trading_event_v1",
+         "payload": json.dumps(["00000000-0000-0000-0000-000000000001", "a" * 64])},
+        {"family_name": "trading_strategy_intent_v1",
+         "payload": json.dumps(["00000000-0000-0000-0000-000000000002", "b" * 64])},
+    ])
+    rows = _batched_detail_rows_v4(reader, specs, "WHERE run_id='r' ")
+    assert rows["trading_event_v1"][0]["content_hash"] == "a" * 64
+    assert rows["trading_strategy_intent_v1"][0]["content_hash"] == "b" * 64
+    assert len(reader.queries) == 1
+    assert reader.queries[0].count(" LIMIT 2)") == 2
+    assert " UNION ALL " in reader.queries[0]
+    assert reader.queries[0].endswith(" FORMAT JSONEachRow")
+    reader.rows = [{"family_name": "foreign", "payload": "[]"}]
+    with pytest.raises(RuntimeError, match="foreign family"):
+        _batched_detail_rows_v4(reader, specs, "WHERE run_id='r' ")
+    reader.rows = [{"family_name": "trading_event_v1", "payload": "[1]"}]
+    with pytest.raises(RuntimeError, match="invalid columns"):
+        _batched_detail_rows_v4(reader, specs, "WHERE run_id='r' ")
 
 
 def test_v4_prepare_only_seals_typed_families_without_transport():

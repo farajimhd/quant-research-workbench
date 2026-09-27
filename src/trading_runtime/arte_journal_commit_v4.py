@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
+import json
 import re
 from typing import Mapping, Sequence
 from uuid import UUID
@@ -290,6 +291,7 @@ def load_verified_commit_v4(
 def _load_verified_details_v4(
     client, *, run_id: str, batch_id: str,
     family_rows: Sequence[Mapping], max_rows_per_family: int,
+    batched_readback: bool = False,
 ) -> dict[str, list[tuple[str, str]]]:
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _canonical_typed_content, _literal, _rows,
@@ -299,6 +301,7 @@ def _load_verified_details_v4(
                f"AND batch_id=toUUID({_literal(batch_id)}) ")
     details = {}
     related_rows = {}
+    family_specs = []
     for family in family_rows:
         name = str(family["family_name"])
         contract = _CONTRACTS.get(name)
@@ -309,10 +312,19 @@ def _load_verified_details_v4(
                 or type(family["row_count"]) is not int
                 or not 1 <= family["row_count"] <= max_rows_per_family):
             raise RuntimeError("V4 commit names an unbounded or untyped family")
-        columns = ",".join(column for column, _ in contract.columns)
-        rows = _rows(client, f"SELECT {columns} FROM arte.{name} "
-                     f"{filters}LIMIT {family['row_count'] + 1} FORMAT JSONEachRow")
-        if len(rows) != family["row_count"]:
+        if name in {spec[0] for spec in family_specs}:
+            raise RuntimeError("V4 commit repeats a typed family")
+        family_specs.append((name, tuple(column for column, _ in contract.columns),
+                             family["row_count"]))
+    row_sets = (
+        _batched_detail_rows_v4(client, family_specs, filters)
+        if batched_readback else None
+    )
+    for name, column_names, row_count in family_specs:
+        rows = (row_sets[name] if row_sets is not None else _rows(
+            client, f"SELECT {','.join(column_names)} FROM arte.{name} "
+            f"{filters}LIMIT {row_count + 1} FORMAT JSONEachRow"))
+        if len(rows) != row_count:
             raise RuntimeError("V4 detail readback has missing or excess rows")
         identities = []
         for row in rows:
@@ -496,6 +508,41 @@ def _load_verified_details_v4(
         if covered != snapshot_events:
             raise RuntimeError("V4 broker snapshot readback lacks complete coverage")
     return details
+
+
+def _batched_detail_rows_v4(client, family_specs, filters):
+    """Read complete typed rows in bounded UNIONs; JSON is transport only.
+
+    The stored rows remain normalized. Each row is reconstructed using its
+    authoritative table contract, then checked by the unchanged canonical
+    hash and cross-family validators in _load_verified_details_v4.
+    """
+    from src.trading_runtime.arte_journal_writer import _literal, _rows
+
+    row_sets = {name: [] for name, _, _ in family_specs}
+    for start in range(0, len(family_specs), 8):
+        group = family_specs[start:start + 8]
+        allowed = {name: columns for name, columns, _ in group}
+        selects = [
+            f"(SELECT {_literal(name)} AS family_name, "
+            f"toJSONString(tuple({','.join(columns)})) AS payload "
+            f"FROM arte.{name} {filters}LIMIT {row_count + 1})"
+            for name, columns, row_count in group
+        ]
+        for envelope in _rows(client, " UNION ALL ".join(selects)
+                              + " FORMAT JSONEachRow"):
+            name = envelope.get("family_name")
+            if name not in allowed or type(envelope.get("payload")) is not str:
+                raise RuntimeError("V4 batched detail readback has a foreign family")
+            try:
+                values = json.loads(envelope["payload"])
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("V4 batched detail readback is malformed") from exc
+            columns = allowed[name]
+            if type(values) is not list or len(values) != len(columns):
+                raise RuntimeError("V4 batched detail readback has invalid columns")
+            row_sets[name].append(dict(zip(columns, values, strict=True)))
+    return row_sets
 
 
 def _verify_prior_commit_v4(client, batch) -> None:
@@ -1214,7 +1261,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
                     dispatch_sequence=batch.last_sequence)
     actual_details = _load_verified_details_v4(
         client, run_id=batch.run_id, batch_id=batch.batch_id,
-        family_rows=family_rows, max_rows_per_family=65_536)
+        family_rows=family_rows, max_rows_per_family=65_536,
+        batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)))
     verify_commit_v4(commit, family_rows, actual_details)
 
     family_columns = ",".join(name for name, _ in

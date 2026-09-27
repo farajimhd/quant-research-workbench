@@ -248,6 +248,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
     )
     client.typed_insert_dispatch = TypedInsertDispatch(keeper_session.client)
     client.typed_insert_strict = True
+    client.v4_batched_detail_readback = True
     return client
 
 
