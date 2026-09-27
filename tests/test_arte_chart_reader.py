@@ -46,6 +46,20 @@ def _plan():
 
 
 class ArteChartReaderTests(unittest.TestCase):
+    def test_backtest_chart_uses_dedicated_read_only_principal(self):
+        from src.backend import arte_chart_reader
+
+        client = _Client([])
+        arte_chart_reader._reader.cache_clear()
+        try:
+            with patch("src.backend.backtest_v3_clients.v3_client",
+                       return_value=client) as factory:
+                self.assertIs(arte_chart_reader._reader("backtest"), client)
+            factory.assert_called_once_with("read")
+        finally:
+            arte_chart_reader._reader.cache_clear()
+            arte_chart_reader._open_readers.remove(client)
+
     def test_chart_plan_uses_only_fenced_typed_arte_rows(self):
         from src.backend import arte_chart_reader
         arte_chart_reader._plan_cache.clear()

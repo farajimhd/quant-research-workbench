@@ -34,8 +34,9 @@ _INDICATORS = frozenset({
     "rsi_14", "atr_14",
 })
 _NY = ZoneInfo("America/New_York")
-_plan_cache: dict[tuple[date, str, str], tuple[float, CertifiedMarketDayPlan | None]] = {}
+_plan_cache: dict[tuple[str, date, str, str], tuple[float, CertifiedMarketDayPlan | None]] = {}
 _plan_lock = Lock()
+_open_readers: list[Any] = []
 _FENCED_PLAN_TTL_SECONDS = 120.0
 _MISSING_PLAN_TTL_SECONDS = 2.0
 
@@ -44,13 +45,21 @@ def _literal(value: str) -> str:
     return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-@lru_cache(maxsize=1)
-def _reader():
+@lru_cache(maxsize=2)
+def _reader(authority: str = "general"):
+    if authority == "backtest":
+        from src.backend.backtest_v3_clients import v3_client
+
+        client = v3_client("read")
+        _open_readers.append(client)
+        return client
+    if authority != "general":
+        raise ValueError("ARTE chart reader authority is invalid")
     from research.mlops.clickhouse import (
         ClickHouseHttpClient, default_clickhouse_password,
         default_clickhouse_url, default_clickhouse_user,
     )
-    return ClickHouseHttpClient(
+    client = ClickHouseHttpClient(
         os.environ.get("ARTE_CHART_CLICKHOUSE_URL") or default_clickhouse_url(),
         os.environ.get("ARTE_CHART_CLICKHOUSE_USER") or default_clickhouse_user(),
         os.environ.get("ARTE_CHART_CLICKHOUSE_PASSWORD") or default_clickhouse_password(),
@@ -58,11 +67,15 @@ def _reader():
         default_query_params={"readonly": 1, "max_threads": 2,
                               "max_execution_time": 15},
     )
+    _open_readers.append(client)
+    return client
 
 
 def _close_reader() -> None:
-    if _reader.cache_info().currsize:
-        _reader().close()
+    for client in _open_readers:
+        client.close()
+    _open_readers.clear()
+    _reader.cache_clear()
 
 
 atexit.register(_close_reader)
@@ -79,9 +92,11 @@ def eligible(*, timeframe: str, stage: str, indicator_columns: list[str] | None,
                  or set(indicator_columns or ()).issubset(_INDICATORS)))
 
 
-def certified_chart_plan(session: date, ticker: str, timeframe: str) -> CertifiedMarketDayPlan | None:
+def certified_chart_plan(session: date, ticker: str, timeframe: str, *,
+                         mode: str = "general") -> CertifiedMarketDayPlan | None:
     """Resolve one late-fenced typed ARTE build without SQLite or disk authority."""
-    key = (session, ticker, timeframe)
+    authority = "backtest" if mode == "backtest" else "general"
+    key = (authority, session, ticker, timeframe)
     now = monotonic()
     with _plan_lock:
         cached = _plan_cache.get(key)
@@ -89,7 +104,7 @@ def certified_chart_plan(session: date, ticker: str, timeframe: str) -> Certifie
             return cached[1]
     if timeframe not in _RESOLUTIONS or not re.fullmatch(r"[A-Z0-9.\-]{1,24}", ticker):
         raise ValueError("ARTE chart scope is invalid")
-    rows = [json.loads(line) for line in _reader().execute(assert_select_only(
+    rows = [json.loads(line) for line in _reader(authority).execute(assert_select_only(
         "SELECT s.build_id,f.definition_hash,s.stage,s.attempt_id,"
         "s.source_hash,s.output_rows,s.output_hash "
         "FROM arte.market_day_stage_certificate_v1 s "
@@ -159,7 +174,7 @@ def chart_revision(session: date, ticker: str, timeframe: str, *, stage: str,
                     include_structure=include_structure,
                     allow_persisted_bars=allow_persisted_bars, mode=mode):
         return ""
-    plan = certified_chart_plan(session, ticker, timeframe)
+    plan = certified_chart_plan(session, ticker, timeframe, mode=mode)
     return plan.token if plan else ""
 
 
@@ -174,7 +189,7 @@ def chart_page(*, session: date, ticker: str, timeframe: str,
                     include_structure=include_structure,
                     allow_persisted_bars=allow_persisted_bars, mode=mode):
         return None
-    plan = certified_chart_plan(session, ticker, timeframe)
+    plan = certified_chart_plan(session, ticker, timeframe, mode=mode)
     if plan is None:
         return None
     units = {(unit.stage, unit.session_date, unit.ticker): unit for unit in plan.units}
@@ -215,7 +230,9 @@ def chart_page(*, session: date, ticker: str, timeframe: str,
         + f"AND (b.bucket_index+1)*{resolution}<={end_ms + SESSION_OPEN_OFFSET_MS} "
         + f"ORDER BY b.bucket_index DESC LIMIT {row_limit + 1} FORMAT JSONEachRow"
     )
-    rows = [json.loads(line) for line in _reader().execute(query).splitlines() if line.strip()]
+    rows = [json.loads(line) for line in _reader(
+        "backtest" if mode == "backtest" else "general").execute(query).splitlines()
+            if line.strip()]
     has_more = len(rows) > row_limit
     selected = list(reversed(rows[:row_limit]))
     bars: list[dict[str, Any]] = []
