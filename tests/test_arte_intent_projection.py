@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import fields, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import json
 from math import nan
@@ -412,6 +412,12 @@ def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent(
         strategy_intent_content_hash=source_hash,
     )
     second = order_command_batch(replace(flat, raw=raw), **args)
+    with pytest.raises(ValueError, match="requires exact typed intent lineage"):
+        order_command_batch(flat, **args)
+    with pytest.raises(ValueError, match="precedes its typed source intent"):
+        order_command_batch(replace(flat, raw=raw), **{
+            **args, "created_at": source.event_time - timedelta(seconds=1),
+        })
     client = MemoryClient()
     publish_typed_batch(client, first)
     publish_typed_batch(client, second)

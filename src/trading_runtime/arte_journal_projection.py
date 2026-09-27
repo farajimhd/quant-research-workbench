@@ -1539,6 +1539,9 @@ def order_command_batch(
     Exact Strategy 1 lineage may be derived from its typed source intent and
     this flat order; arbitrary metadata and broker algo parameters still fail.
     """
+    if ((strategy_id, strategy_revision) == (STRATEGY_ONE_ID, STRATEGY_NUMBER)
+            and not request.raw):
+        raise ValueError("Strategy 1 command requires exact typed intent lineage")
     if request.strategyParameters:
         raise ValueError("Order command has unmodeled nested broker or strategy evidence")
     if request.raw:
@@ -1550,6 +1553,8 @@ def order_command_batch(
                 or source_intent.ticker.upper() != request.ticker.upper()
                 or not order_group_id or not policy_version):
             raise ValueError("Order command has unmodeled nested broker or strategy evidence")
+        if created_at.tzinfo is None or source_intent.event_time > created_at:
+            raise ValueError("Strategy 1 command precedes its typed source intent")
         from src.trading_runtime.arte_intent_projection import project_strategy_intent
 
         source_record_id = str(UUID(strategy_intent_record_id))

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from src.trading_runtime.arte_journal_writer import (
@@ -75,11 +76,15 @@ def load_committed_strategy_one_command_page(
     for command in commands:
         context = contexts[str(command["record_id"])]
         source = by_source[context["source_intent_record_id"]]
+        created_at = datetime.fromisoformat(str(command["created_at"]).replace(" ", "T"))
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
         if (source.batch_id != context["source_intent_batch_id"]
                 or source.sequence != context["source_intent_sequence"]
                 or source.account_id != command["account_id"]
                 or source.intent.intent_id != context["strategy_intent_id"]
                 or source.intent.ticker.upper() != str(command["ticker"]).upper()
+                or source.intent.event_time > created_at
                 or source.intent.metadata):
             raise RuntimeError("Recovered command differs from exact typed source intent")
         flat = OrderRequest(
