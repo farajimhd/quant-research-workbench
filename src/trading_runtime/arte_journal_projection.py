@@ -1575,7 +1575,17 @@ def order_command_batch(
             flat, source_intent, run_id=run_id,
             strategy_id=strategy_id, strategy_revision=strategy_revision)
         if request.raw != expected:
-            raise ValueError("Order command canonical lineage differs from typed intent")
+            mismatched = [key for key in sorted(set(request.raw) | set(expected))
+                          if request.raw.get(key) != expected.get(key)]
+            if "canonical_metadata" in mismatched:
+                actual_meta = request.raw.get("canonical_metadata")
+                expected_meta = expected.get("canonical_metadata")
+                if isinstance(actual_meta, dict) and isinstance(expected_meta, dict):
+                    mismatched.extend("canonical_metadata." + key for key in sorted(
+                        set(actual_meta) | set(expected_meta))
+                        if actual_meta.get(key) != expected_meta.get(key))
+            raise ValueError("Order command canonical lineage differs from typed intent: "
+                             + ",".join(mismatched[:8]))
         request = flat
     if (not command_id or not request.cOID or not run_id
             or created_at.tzinfo is None or recorded_at.tzinfo is None
