@@ -369,20 +369,32 @@ def _verify_stored_row(name: str, row: dict[str, Any]) -> dict[str, Any]:
 def load_committed_strategy_intent_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 200, max_slices: int = 4096,
+    record_ids: tuple[str, ...] | None = None,
 ) -> tuple[RecoveredIntent, ...]:
     """Read one bounded, fully typed intent page from a verified prefix."""
     if not _valid_prefix(prefix):
         raise ValueError("Intent recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 500 or max_slices < 1:
         raise ValueError("Intent recovery page bounds are invalid")
+    wanted: set[str] | None = None
+    if record_ids is not None:
+        wanted = {str(UUID(value)) for value in record_ids}
+        if not wanted or len(wanted) != len(record_ids) or len(wanted) > limit:
+            raise ValueError("Exact intent recovery identities are invalid")
     event_columns = ",".join(column for column, _ in _CONTRACTS["trading_event_v1"].columns)
+    exact_filter = ("AND record_id IN (" + ",".join(
+        f"toUUID({_literal(value)})" for value in sorted(wanted)
+    ) + ") ") if wanted is not None else ""
     events = _rows(client,
         f"SELECT {event_columns} FROM arte.trading_event_v1 "
         f"WHERE run_id={_literal(prefix.run_id)} "
         f"AND sequence>{after_sequence} AND sequence<={prefix.last_sequence} "
         "AND category='strategy' AND entity_type='strategy_intent' "
+        f"{exact_filter}"
         f"{_committed_batch_filter(prefix)}"
         f"ORDER BY sequence LIMIT {limit} FORMAT JSONEachRow")
+    if wanted is not None and {str(UUID(str(row["record_id"]))) for row in events} != wanted:
+        raise RuntimeError("Exact committed intent revision is missing")
     if not events:
         return ()
     ids = [str(UUID(str(row["record_id"]))) for row in events]

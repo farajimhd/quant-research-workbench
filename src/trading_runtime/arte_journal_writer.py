@@ -2787,6 +2787,12 @@ def load_committed_order_command_page(
                 or str(detail["event_month"]) != str(event["event_month"])
                 or str(detail["account_id"]) != str(event["account_id"])):
             raise RuntimeError("Committed command page differs from its event envelope")
+        content = {key: value for key, value in detail.items() if key != "content_hash"}
+        digest = sha256(canonical_json(_canonical_typed_content(
+            "trading_order_command_v1", content, stored_utc=True,
+        )).encode("utf-8")).hexdigest()
+        if digest != str(detail["content_hash"]):
+            raise RuntimeError("Committed order command differs from its row hash")
         prior = sequence
         result.append({"sequence": sequence, "event_time": event["event_time"],
                        **detail})
@@ -2796,8 +2802,9 @@ def load_committed_order_command_page(
 def load_committed_order_context_page(
     client: Any, prefix: VerifiedPrefix,
     commands: tuple[dict[str, Any], ...],
+    *, include_source: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Join at most one typed strategy context to each committed command."""
+    """Join typed contexts; optionally expose their verified source revision."""
     if not _valid_prefix(prefix):
         raise ValueError("Order recovery requires a verified committed prefix")
     if not commands or len(commands) > 1000:
@@ -2937,6 +2944,15 @@ def load_committed_order_context_page(
                     or source["entity_type"] != "strategy_intent"
                     or int(source["sequence"]) >= int(command["sequence"])):
                 raise RuntimeError("Strategy command intent is not an earlier committed event")
+            if include_source:
+                if parent_id not in uses_by_parent:
+                    raise RuntimeError("Exact intent-revision link required for command recovery")
+                context = dict(context)
+                context["source_intent_record_id"] = str(UUID(str(intent["record_id"])))
+                context["source_intent_batch_id"] = str(UUID(str(intent["batch_id"])))
+                context["source_intent_content_hash"] = str(intent["content_hash"])
+                context["source_intent_sequence"] = int(source["sequence"])
+                contexts[parent_id] = context
     return contexts
 
 

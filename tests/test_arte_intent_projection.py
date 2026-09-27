@@ -18,6 +18,7 @@ from src.trading_runtime.arte_journal_writer import (
     load_committed_prefix, publish_typed_batch, _sealed_families,
 )
 from src.trading_runtime.arte_journal_projection import order_command_batch
+from src.trading_runtime.arte_command_recovery import load_committed_strategy_one_command_page
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.execution_policies import (
     ExecutionEnvelope, ExecutionPolicy, ExecutionPolicyName,
@@ -372,6 +373,14 @@ def test_command_context_uses_exact_intent_revision_when_id_repeats():
     contexts = load_committed_order_context_page(client, prefix, commands)
     assert len(contexts) == 1
     assert third.intent_uses[0]["intent_record_id"] == second.intents[0]["record_id"]
+    exact = load_committed_strategy_intent_page(
+        client, prefix, record_ids=(second.intents[0]["record_id"],),
+    )
+    assert len(exact) == 1 and exact[0].intent == revised
+    with pytest.raises(RuntimeError, match="Exact committed intent revision is missing"):
+        load_committed_strategy_intent_page(
+            client, prefix, record_ids=(str(uuid4()),),
+        )
 
 
 def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent():
@@ -417,6 +426,18 @@ def test_strategy_one_order_lineage_is_exactly_derived_from_sealed_typed_intent(
     assert canonical_runtime_order_raw(
         flat, recovered, run_id=run_id, strategy_id=STRATEGY_ID,
         strategy_revision=STRATEGY_NUMBER) == raw
+    cold = load_committed_strategy_one_command_page(client, prefix)
+    assert len(cold) == 1
+    assert cold[0].request == replace(flat, raw=raw)
+    assert cold[0].request.raw == raw
+    assert cold[0].request.to_cpapi() == flat.to_cpapi()
+    assert load_committed_strategy_one_command_page(
+        client, prefix, after_sequence=2) == ()
+    command_row = client.tables["trading_order_command_v1"][0]
+    command_row["limit_price"] = "13.0000000000"
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_committed_strategy_one_command_page(client, prefix)
+    command_row["limit_price"] = "12.5000000000"
     with pytest.raises(ValueError, match="canonical lineage differs"):
         order_command_batch(replace(flat, raw={**raw, "unmodeled": 1}), **args)
     with pytest.raises(ValueError, match="sealed typed row"):

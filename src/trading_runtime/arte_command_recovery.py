@@ -6,14 +6,17 @@ bounded and absence from it never proves that a command was not delivered.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from src.trading_runtime.arte_journal_writer import (
     load_committed_order_command_page, load_committed_order_context_page,
-    load_committed_order_transition_page, load_committed_prefix,
+    load_committed_order_transition_page, load_committed_prefix, VerifiedPrefix,
 )
-from src.trading_runtime.ibkr_schema import Execution, LiveOrder
+from src.trading_runtime.arte_intent_projection import load_committed_strategy_intent_page
+from src.trading_runtime.ibkr_schema import Execution, LiveOrder, OrderRequest
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+from src.trading_runtime.strategy_orders import canonical_runtime_order_raw
 
 
 class RecoveryBroker(Protocol):
@@ -36,6 +39,78 @@ class CommandRecoveryAudit:
     def admission_safe(self) -> bool:
         # Seeing an order or execution is not yet a complete OMS state recovery.
         return self.committed_run_status == "running" and self.committed_commands == 0
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveredStrategyOneCommand:
+    sequence: int
+    command_id: str
+    request: OrderRequest
+
+
+def load_committed_strategy_one_command_page(
+    client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0, limit: int = 200,
+) -> tuple[RecoveredStrategyOneCommand, ...]:
+    """Cold-read exact Strategy 1 commands; never dispatch them automatically."""
+    if not 1 <= limit <= 200:
+        raise ValueError("Strategy 1 command recovery page bound is invalid")
+    commands = load_committed_order_command_page(
+        client, prefix, after_sequence=after_sequence, limit=limit,
+    )
+    if not commands:
+        return ()
+    if any((str(command["strategy_id"]), int(command["strategy_revision"])) != (
+            STRATEGY_ID, STRATEGY_NUMBER) for command in commands):
+        raise RuntimeError("Command page contains a non-Strategy-1 command")
+    contexts = load_committed_order_context_page(
+        client, prefix, commands, include_source=True,
+    )
+    source_ids = tuple(sorted({context["source_intent_record_id"]
+                               for context in contexts.values()}))
+    sources = load_committed_strategy_intent_page(
+        client, prefix, limit=limit, record_ids=source_ids,
+    )
+    by_source = {source.record_id: source for source in sources}
+    recovered = []
+    for command in commands:
+        context = contexts[str(command["record_id"])]
+        source = by_source[context["source_intent_record_id"]]
+        if (source.batch_id != context["source_intent_batch_id"]
+                or source.sequence != context["source_intent_sequence"]
+                or source.account_id != command["account_id"]
+                or source.intent.intent_id != context["strategy_intent_id"]
+                or source.intent.ticker.upper() != str(command["ticker"]).upper()
+                or source.intent.metadata):
+            raise RuntimeError("Recovered command differs from exact typed source intent")
+        flat = OrderRequest(
+            acctId=str(command["account_id"]), conid=int(command["conid"]),
+            orderType=str(command["order_type"]), side=str(command["side"]),
+            quantity=(float(command["quantity"]) if command["quantity"] is not None else None),
+            cashQty=(float(command["cash_quantity"]) if command["cash_quantity"] is not None else None),
+            secType=str(command["security_type"]), cOID=str(command["client_order_id"]),
+            parentId=str(command["parent_broker_order_id"]) or None,
+            ticker=str(command["ticker"]), tif=str(command["time_in_force"]),
+            outsideRTH=bool(int(command["outside_rth"])),
+            price=(float(command["limit_price"]) if command["limit_price"] is not None else None),
+            auxPrice=(float(command["aux_price"]) if command["aux_price"] is not None else None),
+            trailingAmt=(float(command["trailing_amount"]) if command["trailing_amount"] is not None else None),
+            trailingType=str(command["trailing_type"]) or None,
+            listingExchange=str(command["listing_exchange"]),
+            isSingleGroup=bool(int(command["single_group"])),
+            manualIndicator=bool(int(command["manual_indicator"])),
+            extOperator=str(command["external_operator"]) or None,
+            referrer=str(command["referrer"]) or None,
+            strategy=str(command["broker_strategy"]) or None,
+        )
+        raw = canonical_runtime_order_raw(
+            flat, source.intent, run_id=prefix.run_id,
+            strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
+        )
+        recovered.append(RecoveredStrategyOneCommand(
+            int(command["sequence"]), str(command["command_id"]),
+            replace(flat, raw=raw),
+        ))
+    return tuple(recovered)
 
 
 async def audit_committed_commands(
