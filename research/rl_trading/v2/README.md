@@ -16,6 +16,9 @@ go through `ArteReader` with `readonly=1`, table-policy and actual part-placemen
 checks. No flatfile/event fallback or ClickHouse writes are permitted.
 Missing V7 certification fails the build instead of silently excluding a listing;
 certified empty V7 is allowed. Extraction never requires a teacher population.
+The market-day certificate explicitly records tradable names with no canonical
+events; V2 requires every certified event-bearing listing and records the
+no-event count instead of inventing one-second bars for those names.
 
 The builder automatically discovers completed V1 banks under the configured
 local runtime's `rl-trading-shards/<date>/*`. `--v1-shards <paths...>` selects
@@ -34,7 +37,9 @@ Cached rows skip indicator/reference extraction and V7 computation. They still
 fetch exact one-second close, price validity, volume and trade counts from the
 pinned ARTE bars, because V1 does not store those raw execution fields together
 losslessly. V2 does not invert rounded log features or substitute V1 execution
-prices. Missing listings use full extraction. The halt sidecar is still required.
+prices. Missing listings use full extraction. The first certified 1-second
+technical row also supplies the prior-session close when the market-day builder
+has a carried prior seed; an absent/zero seed blocks regular-session entry.
 
 `--workers 2` defaults to two spawned listing processes (range 1–16), each with
 `--query-threads 2` (range 1–4). At most one task per worker is admitted; results
@@ -149,7 +154,7 @@ rollout chunks bootstrap the critic and do not reset account state. Both trainin
 and validation report fees, slippage dollars/ratios, partial/unfilled orders,
 forced fills, turnover notional, net return, and drawdown.
 
-## Learned exits and halt data
+## Learned exits and estimated regular-session bands
 
 On entry the policy samples stop distance (default range 0.1%–50%) and target
 distance (0.1%–200%) relative to actual entry fill. These configurable bounds
@@ -162,24 +167,26 @@ and target-triggered sales may fill below the target. PPO learns both distances
 from net account rewards. No holding-age penalty is applied; gamma remains 1.
 A smaller gamma discounts future rewards but cannot enforce a maximum hold.
 
-Market datasets now require `--status-sidecar`, a certified ingestion-owned
-`ingestion-market-status-asof-v1` directory with `complete.json` and `events.jsonl`.
-The certificate must cover the exact session/population, identify the canonical
-SIP table and source certificate, and hash/count its events. Each event contains
-listing_id, effective_us, available_us and state (0 unknown, 1 trading, 2 halted).
-Policy observations use first-available time; execution uses effective time so
-delayed notifications cannot create impossible fills. Only the former enters
-features. Unknown status blocks new exposure; halted markets cannot fill orders.
-Time since an observed halt and existing price/liquidity features support learning
-avoidance, but future halts are not predictable with certainty.
+This version does not require a halt-status sidecar. During 09:30–16:00 ET it
+blocks new entries for listings whose certified preceding close is below $0.75
+or unavailable. A research band reference starts at that prior close and then
+uses a trailing five-minute volume-weighted average of *completed* regular
+one-second closes. The estimated bounds are 5% around that reference, with a
+0.5% inward buffer for stop and target levels. The policy samples both bracket
+distances, but a regular-session entry and its effective stop/target must fit
+inside the current estimated bounds. Existing long positions can still exit
+when the prior close was below $0.75. Effective thresholds are clipped again
+as the estimated reference changes; original learned distances are retained.
 
-**Upstream dependency:** this change implements and tests the sidecar consumer,
-not its canonical-ingestion producer. Certified historical status data must be
-provided before building real V2 sessions; old datasets/checkpoints are rejected.
-Missing trades are never treated as evidence of a halt or permission to trade.
-A halt lasting through the session can prevent liquidation; such an episode
-fails explicitly rather than pretending the account is flat. Production handling
-of that residual exposure is outside this research implementation.
+These are **not official SIP LULD bands**: one-second close/volume aggregates
+cannot reproduce the eligible-transaction mean, official opening anchor,
+security tier, published updates, or an exchange trading pause. The price-only
+simulator requires a fresh eligible bar and positive volume to fill; absence of
+prints is not labeled as a halt. Stops/targets are next-second simulated exits,
+not broker-held protection and cannot guarantee liquidation through a halt.
+Report any backtest outcome as an estimated-band research result, not an
+executable or halt-safe return. The separate status-sidecar reader remains
+available for a later certified-status dataset but is not used in this version.
 
 ## Laptop commands
 
@@ -190,9 +197,9 @@ synchronizes workstation services. The runtime root must already exist.
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
 $py = 'C:\Users\g835l\miniconda3\envs\ml4t\python.exe'
-# These extraction commands query the configured ARTE endpoint: do not run them
-# against the busy workstation during V1 training. Use certified local sessions.
-& $py -B research/rl_trading/v2/build_data.py --date 2026-08-20 --manifest <local-build-manifest> --ledger <local-build-ledger> --status-sidecar <certified-local-status-directory> --workers 2 --query-threads 2
+# These laptop commands issue bounded read-only queries against the certified
+# ARTE endpoint; they start no process on the workstation.
+& $py -B research/rl_trading/v2/build_data.py --date 2026-08-20 --manifest <local-build-manifest> --ledger <local-build-ledger> --workers 2 --query-threads 2
 & $py -B research/rl_trading/v2/run_train.py --train-sessions <earlier-v2-session-roots> --val-sessions <later-v2-session-roots> --run-name ppo-v2-seed17 --device cpu
 & $py -B research/rl_trading/v2/evaluate.py --run <v2-run-root> --test-sessions <strictly-later-v2-session-roots> --device cpu
 ```

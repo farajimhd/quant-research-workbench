@@ -5,7 +5,9 @@ import numpy as np
 
 from research.rl_trading.v2.config import Config, share_cap
 from research.rl_trading.v2.fees import charges
-from research.rl_trading.v2.market_status import TRADING, HALTED
+from research.rl_trading.v2.estimated_luld import (
+    PRIOR_CLOSE_MINIMUM, ESTIMATED_BAND_RATIO, BRACKET_BUFFER_RATIO,
+    buffered_bounds, regular)
 
 ACCOUNT_FEATURES = 6
 POSITION_FEATURES = 12
@@ -29,7 +31,6 @@ class TradingEnv:
         self.target_price = np.zeros(self.session.n)
         self.exit_reason = np.zeros(self.session.n,dtype=np.int8)  # rank/session=1,stop=2,target=3
         self.entry_second = np.full(self.session.n,-1,dtype=np.int64)
-        self.last_halt_second = np.full(self.session.n,-1,dtype=np.int64)
         self.recent = deque()
         self.recent_shares = np.zeros(self.session.n)
         self.peak = self.initial
@@ -38,8 +39,8 @@ class TradingEnv:
                             filled_orders=0, partial_orders=0, unfilled_orders=0,
                             forced_fills=0, requested_shares=0., filled_shares=0.,
                             commission=0.,sec=0.,taf=0.,cat=0.,venue=0.,
-                            stop_fills=0,target_fills=0,halt_blocked_orders=0,
-                            halted_position_seconds=0,unknown_position_seconds=0)
+                            stop_fills=0,target_fills=0,market_unavailable_orders=0,
+                            estimated_band_blocked_entries=0)
         self.last_fills = []
         self.done = False
         return self.observe()
@@ -59,16 +60,27 @@ class TradingEnv:
         self.forced &= self.quantity > 0
         self.exit_reason[self.forced & (self.exit_reason == 0)] = 1
         a = self.session.arrays
-        self.last_halt_second[a['status'][:,self.t] == HALTED] = self.t
+        stop_price, target_price = self._effective_brackets(self.t)
         # An armed threshold uses only the current completed price. Triggered
         # instructions execute in the next transition, never retroactively.
-        executable_observation = a['fresh'][:,self.t] & (a['status'][:,self.t] == TRADING)
-        stop = (self.quantity>0) & (self.stop_price>0) & (a['prices'][:,self.t] <= self.stop_price) & executable_observation
-        target = (self.quantity>0) & (self.target_price>0) & (a['prices'][:,self.t] >= self.target_price) & executable_observation & ~stop
+        executable_observation = a['fresh'][:,self.t]
+        stop = (self.quantity>0) & (stop_price>0) & (a['prices'][:,self.t] <= stop_price) & executable_observation
+        target = (self.quantity>0) & (target_price>0) & (a['prices'][:,self.t] >= target_price) & executable_observation & ~stop
         self.exit_reason[stop & (self.exit_reason != 2)] = 2
         self.exit_reason[target & ~self.forced] = 3
         self.forced |= stop | target
         return order, cutoff
+
+    def _effective_brackets(self, second):
+        stop, target = self.stop_price, self.target_price
+        if not regular(second):
+            return stop, target
+        reference = self.session.arrays['estimated_reference'][:,second]
+        valid = reference > 0
+        lower = reference*(1-ESTIMATED_BAND_RATIO+BRACKET_BUFFER_RATIO)
+        upper = reference*(1+ESTIMATED_BAND_RATIO-BRACKET_BUFFER_RATIO)
+        return np.where(valid & (stop>0),np.maximum(stop,lower),stop), np.where(
+            valid & (target>0),np.minimum(target,upper),target)
 
     def observe(self):
         order, cutoff = self._membership()
@@ -84,6 +96,7 @@ class TradingEnv:
         if equity <= 0 or not math.isfinite(equity):
             raise ValueError('Account equity is nonpositive or nonfinite')
         prices = a['prices'][ids,self.t]
+        stop_price,target_price = self._effective_brackets(self.t)
         weights = self.quantity[ids]*prices/equity
         unrealized = np.divide(prices, self.basis[ids], out=np.ones(len(ids)), where=self.basis[ids]>0)-1
         position = np.column_stack((weights, unrealized,
@@ -91,10 +104,10 @@ class TradingEnv:
             self.quantity[ids]/np.maximum(a['volume_60s'][ids,self.t],1),
             np.log1p(equity/np.maximum(prices*a['volume_60s'][ids,self.t],1)),
             self.recent_shares[ids]/np.maximum(a['volume_60s'][ids,self.t],1),
-            np.where(self.quantity[ids]>0,(prices-self.stop_price[ids])/np.maximum(prices,1e-12),0),
-            np.where(self.quantity[ids]>0,(self.target_price[ids]-prices)/np.maximum(prices,1e-12),0),
-            a['status'][ids,self.t]/2.,
-            np.where(self.last_halt_second[ids]>=0,np.minimum(self.t-self.last_halt_second[ids],3600)/3600.,-1.),
+            np.where(self.quantity[ids]>0,(prices-stop_price[ids])/np.maximum(prices,1e-12),0),
+            np.where(self.quantity[ids]>0,(target_price[ids]-prices)/np.maximum(prices,1e-12),0),
+            np.where(regular(self.t),np.log1p(a['prior_close'][ids]),0),
+            np.where(regular(self.t),a['estimated_reference'][ids,self.t]/np.maximum(prices,1e-12)-1,0),
             np.where(self.entry_second[ids]>=0,(self.t-self.entry_second[ids])/(self.session.seconds-1),0))).astype(np.float32)
         position[~valid] = 0
         time = np.arange(self.t-self.config.history_seconds+1,self.t+1)
@@ -106,7 +119,11 @@ class TradingEnv:
         mask[:,0] = True
         mask[:,1] = (valid & (rank[ids] <= self.config.entry_rank) & ~self.forced[ids]
                       & (self.cash > 0) & (weights < self.config.max_ticker_weight)
+                      & a['fresh'][ids,self.t]
                       & (self.t < cutoff) & (self.t < self.session.seconds-2))
+        if regular(self.t):
+            mask[:,1] &= ((a['prior_close'][ids] >= PRIOR_CLOSE_MINIMUM)
+                           & (a['estimated_reference'][ids,self.t] > 0))
         mask[:,2] = mask[:,3] = valid & (self.quantity[ids]>0) & ~self.forced[ids]
         return dict(ids=ids, valid=valid, market=market, position=position,
                     account=np.asarray([self.cash/equity, 1-self.cash/equity,
@@ -138,11 +155,14 @@ class TradingEnv:
     def _execute(self, ticker, requested, side, previous, budget=None, bracket=None):
         a, c = self.session.arrays, self.config
         self.metrics['requested_shares'] += requested
-        if a['execution_status'][ticker,self.t] != TRADING:
-            self.metrics['halt_blocked_orders'] += 1
+        if not a['fresh'][ticker,self.t] or a['volume'][ticker,self.t] <= 0:
+            self.metrics['market_unavailable_orders'] += 1
             self.metrics['unfilled_orders'] += 1
             return
-        if not a['fresh'][ticker,self.t] or a['volume'][ticker,self.t] <= 0:
+        if side == 1 and regular(self.t) and (
+                a['prior_close'][ticker] < PRIOR_CLOSE_MINIMUM
+                or not a['estimated_reference'][ticker,self.t] > 0):
+            self.metrics['estimated_band_blocked_entries'] += 1
             self.metrics['unfilled_orders'] += 1
             return
         maximum = min(share_cap(float(a['prices'][ticker,previous])),
@@ -165,6 +185,22 @@ class TradingEnv:
             self.metrics['unfilled_orders'] += 1
             return
         fill, fee, slip = self._cost(ticker,quantity,side,previous)
+        if side == 1 and regular(self.t):
+            bounds = buffered_bounds(float(a['estimated_reference'][ticker,self.t]))
+            if bounds is None or not bounds[0] < fill < bounds[1]:
+                self.metrics['estimated_band_blocked_entries'] += 1
+                self.metrics['unfilled_orders'] += 1
+                return
+            if self.quantity[ticker] == 0:
+                if bracket is None:
+                    raise ValueError('New positions require sampled stop and target distances')
+                stop = max(fill*(1-bracket[0]),bounds[0])
+                target = min(fill*(1+bracket[1]),bounds[1])
+                if not stop < fill < target:
+                    self.metrics['estimated_band_blocked_entries'] += 1
+                    self.metrics['unfilled_orders'] += 1
+                    return
+                bracket = (1-stop/fill,target/fill-1)
         if side == -1 and quantity*fill-fee+self.cash < -1e-9:
             self.metrics['unfilled_orders'] += 1
             return
@@ -238,8 +274,6 @@ class TradingEnv:
         scale = min(1., self.cash/total) if total else 1.
         buys = {i:budget*scale for i,budget in buys.items()}
         self.t += 1
-        self.metrics['halted_position_seconds'] += int(np.count_nonzero((self.quantity>0) & (a['execution_status'][:,self.t] == HALTED)))
-        self.metrics['unknown_position_seconds'] += int(np.count_nonzero((self.quantity>0) & (a['execution_status'][:,self.t] == 0)))
         self.last_fills = []
         while self.recent and self.recent[0][0] <= self.t-60:
             _,ticker,quantity = self.recent.popleft()

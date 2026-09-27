@@ -1,4 +1,4 @@
-"""Broker fee examples and causal learned-exit/halt regression cases."""
+"""Broker fee examples and causal learned-exit/estimated-band regression cases."""
 import json
 import numpy as np
 import pytest
@@ -8,6 +8,7 @@ from research.rl_trading.v2.environment import TradingEnv
 from research.rl_trading.v2.fees import charges
 from research.rl_trading.v2.market_status import StatusSidecar, VERSION
 from research.rl_trading.v2.model import PortfolioPolicy, collate
+from research.rl_trading.v2 import estimated_luld
 from research.rl_trading.v2.io import write, file_hash
 from test_rl_trading_v2 import market, config, act
 
@@ -80,45 +81,37 @@ def test_adding_shares_does_not_reset_or_widen_bracket():
     assert (env.stop_price[0],env.target_price[0],env.entry_second[0]) == (stop,target,entered)
 
 
-def test_known_halt_blocks_entry_and_fill_even_with_prints():
+def test_regular_session_rejects_prior_close_below_75_cents(monkeypatch):
+    monkeypatch.setattr(estimated_luld,'REGULAR_FIRST',1)
+    monkeypatch.setattr(estimated_luld,'REGULAR_LAST',10)
     session = market(n=1)
-    session.arrays['status'][0,1:4] = 2
-    session.arrays['execution_status'][0,1:4] = 2
+    session.arrays['prior_close'][0] = .7499
     env = TradingEnv(session,config())
-    bracket_buy(env)
-    assert env.quantity[0] == 0
-    assert env.metrics['halt_blocked_orders'] == 1
-    assert not env.observe()['action_mask'][:,1].any()
     act(env)
-    act(env)
-    act(env)
+    assert not env.observe()['action_mask'][0,1]
+    session.arrays['prior_close'][0] = .75
     assert env.observe()['action_mask'][0,1]
 
 
-def test_unknown_status_blocks_entries_without_calling_it_a_halt():
-    session = market(n=1)
-    session.arrays['status'][:] = 0
-    env = TradingEnv(session,config())
-    assert not env.observe()['valid'].any()
-    assert not env.observe()['action_mask'][:,1].any()
-    assert env.last_halt_second[0] == -1
+def test_entry_brackets_are_clipped_inside_estimated_regular_bands(monkeypatch):
+    monkeypatch.setattr(estimated_luld,'REGULAR_FIRST',1)
+    monkeypatch.setattr(estimated_luld,'REGULAR_LAST',10)
+    env = TradingEnv(market(n=1),config())
+    bracket_buy(env,stop=.1,target=.2)
+    assert env.quantity[0] > 0
+    assert env.stop_price[0] == pytest.approx(5*(1-.05+.005))
+    assert env.target_price[0] == pytest.approx(5*(1+.05-.005))
 
 
-def test_held_halt_remains_exposed_and_reopens_at_actual_price():
-    session = market(n=1)
-    session.arrays['status'][0,2:5] = 2
-    session.arrays['execution_status'][0,2:5] = 2
-    session.arrays['prices'][0,5:] = 3.
-    env = TradingEnv(session,config())
-    bracket_buy(env)
-    for _ in range(3):
-        act(env)
-        assert env.quantity[0] == 1000
-    act(env)
-    assert env.quantity[0] == 0
-    assert env.last_fills[0]['price'] == 3.
-    assert env.metrics['halted_position_seconds'] == 3
-    assert env.equity == 8000
+def test_reference_uses_only_completed_regular_session_bars(monkeypatch):
+    monkeypatch.setattr(estimated_luld,'REGULAR_FIRST',1)
+    monkeypatch.setattr(estimated_luld,'REGULAR_LAST',4)
+    prices = np.asarray([100.,5.,6.,7.,8.,50.])
+    volume = np.ones(len(prices))
+    fresh = np.ones(len(prices),dtype=bool)
+    reference = estimated_luld.reference_series(prices,volume,fresh,5.)
+    np.testing.assert_allclose(reference[:5],[5.,5.,5.5,6.,6.5])
+    assert reference[5] == reference[4]
 
 
 def test_stop_target_samples_participate_in_ppo_gradient():
@@ -151,12 +144,10 @@ def test_status_sidecar_uses_available_time_not_future_effective_time(tmp_path):
     np.testing.assert_array_equal(sidecar.states('L000',execution=True)[:6],[1,2,2,2,2,1])
 
 
-def test_unannounced_halt_blocks_fills_without_leaking_into_policy():
+def test_unavailable_execution_bar_does_not_fill_without_halt_inference():
     session = market(n=1)
-    session.arrays['execution_status'][0,1:4] = 2
-    session.arrays['status'][0,3:4] = 2
+    session.arrays['fresh'][0,1] = False
     env = TradingEnv(session,config())
     bracket_buy(env)
     assert env.quantity[0] == 0
-    assert env.observe()['action_mask'][0,1]
-    assert env.last_halt_second[0] == -1
+    assert env.metrics['market_unavailable_orders'] == 1

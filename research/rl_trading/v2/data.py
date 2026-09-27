@@ -4,10 +4,12 @@ from pathlib import Path
 import numpy as np
 
 from research.rl_trading.v1.common import bounds, digest, file_hash
+from research.rl_trading.v2.estimated_luld import PRIOR_CLOSE_MINIMUM, regular
 from research.rl_trading.v2.io import read
 
-DATA_VERSION = 'rl-trading-v2-market-status-2'
-ARRAYS = ('features', 'prices', 'volume', 'volume_60s', 'trades_60s', 'fresh', 'status', 'execution_status')
+DATA_VERSION = 'rl-trading-v2-estimated-luld-1'
+ARRAYS = ('features', 'prices', 'volume', 'volume_60s', 'trades_60s',
+          'fresh', 'estimated_reference', 'prior_close')
 
 
 class MarketSession:
@@ -24,7 +26,8 @@ class MarketSession:
             raise ValueError('Require causal one-second market observations')
         for name in ARRAYS:
             a = arrays[name]
-            if name != 'features' and a.shape != (self.n, self.seconds):
+            expected = (self.n,) if name == 'prior_close' else (self.n, self.seconds)
+            if name != 'features' and a.shape != expected:
                 raise ValueError('Invalid market array shape: ' + name)
             for start in range(0, self.n, 16):
                 chunk = a[start:start+16]
@@ -34,9 +37,8 @@ class MarketSession:
                     raise ValueError('Fresh observations require a positive price')
         if arrays['fresh'].dtype != np.bool_:
             raise ValueError('Fresh price contract is invalid')
-        for name in ('status','execution_status'):
-            if arrays[name].dtype != np.uint8 or np.any(arrays[name] > 2):
-                raise ValueError('Market status must be UNKNOWN=0, TRADING=1, or HALTED=2')
+        if arrays['estimated_reference'].dtype != np.float32 or arrays['prior_close'].dtype != np.float32:
+            raise ValueError('Estimated LULD price precision is invalid')
         self.lexical = np.argsort(np.asarray(self.ids), kind='stable')
 
     @classmethod
@@ -53,8 +55,8 @@ class MarketSession:
         if plan['segment'] and not allow_segment:
             raise ValueError('Segment data requires explicit --allow-segment')
         if not plan['segment']:
-            if not plan.get('market_status',{}).get('source_certificate_hash'):
-                raise ValueError('Full sessions require certified causal market status')
+            if plan.get('band_policy') != 'causal-prior-close-rolling-5m-v1':
+                raise ValueError('Full sessions require the versioned estimated-band policy')
             left, right = bounds(date.fromisoformat(plan['date']))
             if plan['first_us'] != left or plan['rows'] != (right-left)//1000000+1:
                 raise ValueError('Full session must cover 04:00 through 20:00 ET')
@@ -75,9 +77,11 @@ class MarketSession:
         for lag in range(1, min(second, config.max_price_age_seconds)+1):
             observed |= a['fresh'][:,second-lag]
         eligible = (observed & (a['prices'][:,second] > 0)
-                    & (a['status'][:,second] == 1)
                     & (a['volume_60s'][:,second] >= config.min_volume_60s)
                     & (a['trades_60s'][:,second] >= config.min_trades_60s))
+        if regular(second):
+            eligible &= ((a['prior_close'] >= PRIOR_CLOSE_MINIMUM)
+                         & (a['estimated_reference'][:,second] > 0))
         indices = self.lexical[eligible[self.lexical]]
         return indices[np.argsort(-a['volume_60s'][indices,second], kind='stable')]
 

@@ -23,7 +23,7 @@ from research.mlops.env import load_env_files
 from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.rl_trading.v2.data import ARRAYS, DATA_VERSION, MarketSession
 from research.rl_trading.v2.io import output_root, read, write, code_identity
-from research.rl_trading.v2.market_status import StatusSidecar
+from research.rl_trading.v2.estimated_luld import reference_series
 from research.rl_trading.v2.v1_cache import catalog, discover, copy_row
 from research.rl_trading.v2.build_workers import results
 from research.rl_trading.v1 import arte_sql
@@ -65,6 +65,22 @@ def read_execution_bars(client,source,day,ticker):
              volume=pl.Float64,trade_count=pl.Int64))
 
 
+def read_prior_close(client,source,day,ticker):
+    """First pinned technical row carries the certified preceding close or zero."""
+    where = arte_sql.selection(source['build_id'],day,ticker,
+        source['units'][str(day)][ticker]['technical']['attempt_id'])
+    rows = arte_source.frame(client,
+        f'SELECT previous_close FROM arte.indicators_v1 WHERE {where} '
+        'AND resolution_ms=1000 ORDER BY bucket_index LIMIT 1',
+        dict(previous_close=pl.Float64))
+    if len(rows) != 1:
+        return np.float32(0.)
+    value = float(rows['previous_close'][0])
+    if not np.isfinite(value) or value < 0:
+        raise ValueError(f'Invalid certified preceding close: {day} {ticker}')
+    return np.float32(value)
+
+
 def extract(client, source, day, listing, cached=None):
     ticker = listing['ticker']
     verify = arte_source.verify_listing if cached is None else verify_execution_source
@@ -78,19 +94,23 @@ def extract(client, source, day, listing, cached=None):
         values,reference = copy_row(cached)
         bars = read_execution_bars(client,source,day,ticker)
     values.update(execution_arrays(bars))
+    values['prior_close'] = read_prior_close(client,source,day,ticker)
+    values['estimated_reference'] = reference_series(values['prices'],values['volume'],
+        values['fresh'],values['prior_close'])
     verify(client,source,day,ticker)
     return values,reference
 
 
 def verify_execution_source(client,source,day,ticker):
-    saved = source['units'][str(day)][ticker]['bars']
-    where = arte_sql.selection(source['build_id'],day,ticker,saved['attempt_id'])
-    actual = arte_sql.query(client,
-        'SELECT count() AS n,uniqExact((resolution_ms,bucket_index)) AS unique_keys,'
-        f'sum(cityHash64(tuple(*))) AS hash FROM arte.bars_v1 WHERE {where}')[0]
-    if (int(actual['n']) != saved['output_rows'] or int(actual['n']) != int(actual['unique_keys'])
-            or str(actual['hash']) != saved['output_hash']):
-        raise ValueError('Cached V1 supplemental bars differ from source certificate')
+    for stage,table in (('bars','bars_v1'),('technical','indicators_v1')):
+        saved = source['units'][str(day)][ticker][stage]
+        where = arte_sql.selection(source['build_id'],day,ticker,saved['attempt_id'])
+        actual = arte_sql.query(client,
+            'SELECT count() AS n,uniqExact((resolution_ms,bucket_index)) AS unique_keys,'
+            f'sum(cityHash64(tuple(*))) AS hash FROM arte.{table} WHERE {where}')[0]
+        if (int(actual['n']) != saved['output_rows'] or int(actual['n']) != int(actual['unique_keys'])
+                or str(actual['hash']) != saved['output_hash']):
+            raise ValueError(f'Cached V1 supplemental {stage} differ from source certificate')
 
 
 def worker(job):
@@ -116,8 +136,6 @@ def main(argv=None):
     p.add_argument('--workers',type=int,default=2,help='Bounded independent listing processes (1-16)')
     p.add_argument('--v1-shards',type=Path,nargs='+',
         help='Certified V1 banks/overlays; default discovers completed local date banks')
-    p.add_argument('--status-sidecar',type=Path,required=True,
-                   help='Certified canonical-ingestion halt/resumption sidecar; never inferred from bars')
     args = p.parse_args(argv)
     if not 1 <= args.query_threads <= 4 or not 1 <= args.workers <= 16:
         p.error('query threads must be 1-4 and workers 1-16')
@@ -129,10 +147,11 @@ def main(argv=None):
         arte_source.storage_check(client)
         storage_check(client)
         listings,population = arte_source.population(client,source,args.date)
-        if len(listings) != int(population['certificate']['tradable_count']):
-            raise ValueError('V2 requires the entire certified tradable population, not a build subset')
-        status = StatusSidecar(args.status_sidecar,day=str(args.date),listings=listings,
-                               first_us=bounds(args.date)[0],seconds=SECONDS)
+        selected = int(population['selected_ticker_days'])
+        without_events = int(population['tradable_without_canonical_events'])
+        if (len(listings) != selected or selected + without_events !=
+                int(population['certificate']['tradable_count'])):
+            raise ValueError('V2 requires every certified event-bearing listing and explicit no-event exclusions')
         candidates = args.v1_shards if args.v1_shards is not None else [
             path.parent for path in discover(runtime.parents[1],args.date)]
         cached,cache_report = catalog(candidates,source=source,day=args.date,listings=listings)
@@ -147,7 +166,7 @@ def main(argv=None):
             source_units=source['units'][str(args.date)],feature_names=list(FEATURE_NAMES),
             clock='completed_second',step_us=1000000,first_us=bounds(args.date)[0],rows=SECONDS,
             segment=False,teacher_dependency=False,source_manifest_hash=file_hash(args.manifest),
-            market_status=status.certificate,
+            band_policy='causal-prior-close-rolling-5m-v1',
             v1_market_cache=cache_report,
             code=code_identity())
         plan['plan_hash'] = digest(plan)
@@ -161,8 +180,11 @@ def main(argv=None):
             write(root/'plan.json',plan)
             arrays = {}
             for name in ARRAYS:
-                shape = (len(listings),SECONDS,len(FEATURE_NAMES)) if name == 'features' else (len(listings),SECONDS)
-                dtype = np.float32 if name == 'features' else np.bool_ if name == 'fresh' else np.uint8 if name in ('status','execution_status') else np.float64
+                shape = ((len(listings),SECONDS,len(FEATURE_NAMES)) if name == 'features'
+                         else (len(listings),) if name == 'prior_close'
+                         else (len(listings),SECONDS))
+                dtype = (np.float32 if name in ('features','estimated_reference','prior_close')
+                         else np.bool_ if name == 'fresh' else np.float64)
                 path = root/(name+'.npy')
                 arrays[name] = np.load(path,mmap_mode='r+') if path.exists() else np.lib.format.open_memmap(path,mode='w+',dtype=dtype,shape=shape)
                 if arrays[name].shape != shape or arrays[name].dtype != dtype:
@@ -196,8 +218,6 @@ def main(argv=None):
                 for job,(values,reference) in results(jobs,worker,workers=args.workers,
                         stopped=lambda:(root/'STOP').exists()):
                     index,listing = job['index'],job['listing']
-                    values['status'] = status.states(listing['listing_id'])
-                    values['execution_status'] = status.states(listing['listing_id'],execution=True)
                     for name,value in values.items():
                         arrays[name][index] = value
                         arrays[name].flush()

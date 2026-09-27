@@ -25,7 +25,8 @@ def cache(tmp_path,monkeypatch):
     monkeypatch.setattr(v1_cache,'SECONDS',8)
     names = list(v1_cache.FEATURE_NAMES)
     listings = [dict(ticker='A',listing_id='a'),dict(ticker='B',listing_id='b')]
-    units = {x['ticker']:dict(bars=dict(attempt_id='pinned')) for x in listings}
+    units = {x['ticker']:dict(bars=dict(attempt_id='pinned'),
+                              technical=dict(attempt_id='pinned-technical')) for x in listings}
     source = dict(build_id='build',definition_hash='definition',units={'2026-08-20':units})
     p1 = publish(tmp_path/'p1',dict(date='2026-08-20',source_build_id='build',
         source_definition_hash='definition',source_units=units))
@@ -133,6 +134,7 @@ def test_cached_extraction_never_fetches_features_or_reference(cache,monkeypatch
         monkeypatch.setattr(build_data,name,forbidden)
     monkeypatch.setattr(build_data,'verify_execution_source',lambda *a:None)
     monkeypatch.setattr(build_data,'read_execution_bars',lambda *a:bars)
+    monkeypatch.setattr(build_data,'read_prior_close',lambda *a:np.float32(5.))
     values,_ = build_data.extract(None,cache[1],date(2026,8,20),cache[2][0],rows['a'])
     np.testing.assert_array_equal(values['features'],cache[3][0])
     assert values['prices'][1] == 1.2345 and values['prices'][3] == 2
@@ -195,7 +197,9 @@ def test_builder_mixes_v1_copy_and_missing_listing_then_resumes(cache,tmp_path,m
     monkeypatch.setattr(build_data.arte_source,'load_build',lambda *a:source)
     monkeypatch.setattr(build_data.arte_source,'storage_check',lambda *a:None)
     monkeypatch.setattr(build_data,'storage_check',lambda *a:None)
-    monkeypatch.setattr(build_data.arte_source,'population',lambda *a:(listings,{'certificate':{'tradable_count':2}}))
+    monkeypatch.setattr(build_data.arte_source,'population',lambda *a:(listings,{
+        'certificate':{'tradable_count':2},'selected_ticker_days':2,
+        'tradable_without_canonical_events':0}))
     seeds = []
     monkeypatch.setattr(build_data,'missing_seeds',lambda c,d,t:seeds.extend(t) or [])
     monkeypatch.setattr(build_data.arte_source,'verify_listing',lambda *a:None)
@@ -211,20 +215,11 @@ def test_builder_mixes_v1_copy_and_missing_listing_then_resumes(cache,tmp_path,m
         return bars,None
     monkeypatch.setattr(build_data,'read_execution_bars',raw)
     monkeypatch.setattr(build_data,'read_arte_seconds',full)
+    monkeypatch.setattr(build_data,'read_prior_close',lambda *a:np.float32(5.))
     monkeypatch.setattr(build_data,'read_reference',lambda *a:({},[],{},{}))
     monkeypatch.setattr(build_data,'encode',lambda *a:(np.zeros_like(features[0]),np.zeros(seconds)))
-    status = tmp_path/'status'
-    status.mkdir()
-    first = bounds(date(2026,8,20))[0]
-    (status/'events.jsonl').write_text('\n'.join(json.dumps(dict(listing_id=x['listing_id'],
-        effective_us=first,available_us=first,state=1)) for x in listings),encoding='utf-8')
-    write(status/'complete.json',dict(version=VERSION,state='complete',date='2026-08-20',
-        authority_table='market_sip_compact.events_2026',producer_owner='canonical_ingestion',
-        source_certificate_hash='fixture',first_us=first,end_us=first+(seconds-1)*1000000,
-        listing_ids=['a','b'],clock='provider_effective_and_first_available',event_count=2,
-        events_hash=file_hash(status/'events.jsonl')))
     args = ['--manifest',str(root/'plan.json'),'--ledger',str(tmp_path/'ledger'),
-        '--date','2026-08-20','--status-sidecar',str(status),'--v1-shards',str(root),'--workers','1']
+        '--date','2026-08-20','--v1-shards',str(root),'--workers','1']
     assert build_data.main(args) == 0
     assert fetched == [('bars','A'),('features','B')] and seeds == ['B']
     output = next((tmp_path/'rl-trading/v2/market/2026-08-20').iterdir())

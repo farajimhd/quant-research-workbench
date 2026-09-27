@@ -21,8 +21,8 @@ def market(n=3, seconds=12, day='2026-08-20', prices=None):
         volume=np.full((n,seconds),100000.,dtype=np.float64),
         volume_60s=np.broadcast_to(np.arange(n,0,-1)[:,None]*100000.,(n,seconds)).copy(),
         trades_60s=np.full((n,seconds),100.),fresh=np.ones((n,seconds),dtype=bool),
-        status=np.ones((n,seconds),dtype=np.uint8),
-        execution_status=np.ones((n,seconds),dtype=np.uint8))
+        estimated_reference=np.full((n,seconds),5.,dtype=np.float32),
+        prior_close=np.full(n,5.,dtype=np.float32))
     arrays['features'][:,:,0] = np.log(price)
     plan = dict(version=DATA_VERSION,date=day,clock='completed_second',step_us=1000000,
         first_us=bounds(date.fromisoformat(day))[0],rows=seconds,segment=True,
@@ -137,6 +137,7 @@ def test_stale_price_does_not_fill_and_unresolved_terminal_is_reported():
     session.arrays['fresh'][0,1] = False
     act(env,0,1)
     assert not env.quantity.any() and env.metrics['unfilled_orders'] == 1
+    session.arrays['fresh'][0,1] = True
     act(env,0,1)
     session.arrays['fresh'][0,3:] = False
     while not env.done:
@@ -305,32 +306,22 @@ def test_direct_builder_restart_and_certificate_without_teacher(tmp_path,monkeyp
     monkeypatch.setattr(build_data.arte_source,'storage_check',lambda c:None)
     monkeypatch.setattr(build_data,'storage_check',lambda c:None)
     monkeypatch.setattr(build_data,'missing_seeds',lambda *a:[])
-    monkeypatch.setattr(build_data.arte_source,'population',lambda *a:(listings,{'certificate':{'tradable_count':3}}))
+    monkeypatch.setattr(build_data.arte_source,'population',lambda *a:(listings,{
+        'certificate':{'tradable_count':4},'selected_ticker_days':3,
+        'tradable_without_canonical_events':1}))
     monkeypatch.setattr(build_data,'FEATURE_NAMES',tuple(session.plan['feature_names']))
     # Exercise full-day disk contract with a tiny feature count and zeroed market.
     seconds = build_data.SECONDS
     calls = []
     def extraction(c,s,d,listing):
         calls.append(listing['ticker'])
-        arrays = {name:np.zeros((seconds,3) if name == 'features' else seconds,
-                  dtype=np.bool_ if name == 'fresh' else np.float32 if name == 'features' else np.float64)
+        arrays = {name:np.zeros((seconds,3) if name == 'features' else () if name == 'prior_close' else seconds,
+                  dtype=np.bool_ if name == 'fresh' else np.float32 if name in ('features','prior_close','estimated_reference') else np.float64)
                   for name in ARRAYS}
         return arrays,{'certificate':'test'}
     monkeypatch.setattr(build_data,'extract',extraction)
-    sidecar = tmp_path/'status'
-    from research.rl_trading.v2.market_status import VERSION as STATUS_VERSION
-    sidecar.mkdir()
-    import json
-    start = bounds(date(2026,8,20))[0]
-    (sidecar/'events.jsonl').write_text('\n'.join(json.dumps(dict(listing_id=x['listing_id'],
-        effective_us=start,available_us=start,state=1)) for x in listings),encoding='utf-8')
-    write(sidecar/'complete.json',dict(version=STATUS_VERSION,state='complete',date='2026-08-20',
-        authority_table='market_sip_compact.events_2026',producer_owner='canonical_ingestion',
-        source_certificate_hash='test-source',first_us=start,end_us=start+(seconds-1)*1000000,
-        listing_ids=[x['listing_id'] for x in listings],clock='provider_effective_and_first_available',
-        event_count=3,events_hash=file_hash(sidecar/'events.jsonl')))
     args = ['--manifest',str(manifest),'--ledger',str(tmp_path/'unused.db'),'--date','2026-08-20',
-            '--status-sidecar',str(sidecar),'--workers','1']
+            '--workers','1']
     assert build_data.main(args) == 0
     assert calls == [x['ticker'] for x in listings]
     assert build_data.main(args) == 0
@@ -343,8 +334,10 @@ def test_direct_builder_restart_and_certificate_without_teacher(tmp_path,monkeyp
     assert build_data.main(args) == 0
     assert len(calls) == 3
     # A selected source build must never masquerade as the full candidate population.
-    monkeypatch.setattr(build_data.arte_source,'population',lambda *a:(listings,{'certificate':{'tradable_count':4}}))
-    with pytest.raises(ValueError,match='entire certified'):
+    monkeypatch.setattr(build_data.arte_source,'population',lambda *a:(listings,{
+        'certificate':{'tradable_count':5},'selected_ticker_days':3,
+        'tradable_without_canonical_events':1}))
+    with pytest.raises(ValueError,match='every certified event-bearing'):
         build_data.main(args)
 
 
@@ -358,6 +351,7 @@ def test_direct_extraction_price_clock_and_rolling_activity(monkeypatch):
     monkeypatch.setattr(build_data,'read_reference',lambda *a:({},[],{},{}))
     monkeypatch.setattr(build_data,'read_arte_seconds',lambda *a:(bars,None))
     monkeypatch.setattr(build_data,'encode',lambda *a:(np.zeros((build_data.SECONDS,3)),np.zeros(build_data.SECONDS)))
+    monkeypatch.setattr(build_data,'read_prior_close',lambda *a:np.float32(5.))
     arrays,_ = build_data.extract(None,{},date(2026,8,20),{'ticker':'A'})
     assert calls == ['A','A']
     assert arrays['prices'][0] == 0

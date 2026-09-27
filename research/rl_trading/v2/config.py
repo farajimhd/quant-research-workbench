@@ -2,7 +2,7 @@
 from dataclasses import asdict, dataclass
 import math
 
-VERSION = 'rl-trading-v2-ppo-brackets-2'
+VERSION = 'rl-trading-v2-ppo-estimated-luld-1'
 # Upper bounds are inclusive, except the first band which excludes $1.
 SHARE_CAPS = ((1., 40000), (5., 35000), (10., 30000), (20., 25000),
               (50., 20000), (None, 15000))
@@ -68,10 +68,17 @@ class Config:
 
     def manifest(self):
         from research.rl_trading.v2.fees import SCHEDULE
+        from research.rl_trading.v2.estimated_luld import (
+            PRIOR_CLOSE_MINIMUM, WINDOW_SECONDS, ESTIMATED_BAND_RATIO,
+            BRACKET_BUFFER_RATIO)
         return dict(version=VERSION, **asdict(self), share_caps=SHARE_CAPS,
                     fee_schedule=SCHEDULE if self.commission_model != 'research' else None,
                     bracket_trigger='completed_second_close_then_next_second_IOC',
-                    bracket_update='sample_on_entry_only; adds_preserve_existing_prices',
+                    bracket_update='sample_on_entry; regular-hours effective levels clipped to estimated bands',
+                    estimated_luld=dict(prior_close_minimum=PRIOR_CLOSE_MINIMUM,
+                        window_seconds=WINDOW_SECONDS,band_ratio=ESTIMATED_BAND_RATIO,
+                        bracket_buffer_ratio=BRACKET_BUFFER_RATIO,
+                        provenance='research proxy from prior close and completed regular-session bars; not official SIP bands'),
                     duration_preference='none; gamma=1; session_only',
                     execution_assumptions='uncalibrated_price_only', latency_seconds=1,
                     order_type='next_second_IOC', reward='delta_equity_over_initial_equity')
