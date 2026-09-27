@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 import json
 import math
+import re
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,29 @@ class ActivationProjection:
 
 _ACTIVATION_CONTRACTS = {table.name: table for table in ACTIVATION_TABLES}
 ACTIVATION_RUN_ID = "live-strategy-runtime:activations"
+
+
+def strategy_one_activation_run_id(session_date: date, *, mode: str,
+                                   run_plan_id: str) -> str:
+    """Keep new Strategy 1 watches outside legacy activation run authority.
+
+    This identity alone is not a publication permit. A Strategy 1 writer must
+    still use registered Keeper-fenced INSERTs and a cold drain barrier.
+    """
+    if (type(session_date) is not date or type(mode) is not str
+            or mode not in {"paper", "live"}
+            or not isinstance(run_plan_id, str) or not run_plan_id.strip()
+            or run_plan_id != run_plan_id.strip()
+            or len(run_plan_id) > 256):
+        raise ValueError("Strategy 1 activation run scope is invalid")
+    plan_hash = sha256(run_plan_id.encode("utf-8")).hexdigest()
+    return f"strategy-one:{mode}:{session_date.isoformat()}:{plan_hash}"
+
+
+def _activation_run_id(value: str) -> str:
+    if (not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9:._-]{1,128}", value)):
+        raise ValueError("Activation run identity is invalid")
+    return value
 
 
 def _scalar(value: Any) -> tuple[str, str]:
@@ -240,14 +264,16 @@ def _untyped_value(row: Mapping[str, Any]) -> tuple[str, str]:
     return _scalar(bool(value))
 
 
-def prepare_activation_rows(projected: ActivationProjection) -> dict[str, tuple[dict[str, Any], ...]]:
+def prepare_activation_rows(projected: ActivationProjection, *,
+                            run_id: str = ACTIVATION_RUN_ID
+                            ) -> dict[str, tuple[dict[str, Any], ...]]:
     """Seal one normalized activation and its independent late commit fence."""
     delivery = dict(projected.delivery)
     at = datetime.fromisoformat(delivery["event_time"].replace("Z", "+00:00"))
     if at.tzinfo is None:
         raise ValueError("Activation time must be timezone-aware")
     session_date = at.astimezone(ZoneInfo("America/New_York")).date().isoformat()
-    identity = {"run_id": ACTIVATION_RUN_ID, "session_date": session_date,
+    identity = {"run_id": _activation_run_id(run_id), "session_date": session_date,
                 "run_plan_id": delivery["run_plan_id"],
                 "ticker": delivery["ticker"], "event_id": delivery["event_id"]}
     evidence = tuple(_sealed({**identity, "field_key": key,
@@ -358,6 +384,8 @@ def publish_activation(client: Any, projected: ActivationProjection, *,
     storage/grant preflight. This primitive verifies claim currency before and
     after each potentially blocking database operation; it never releases it.
     """
+    # This legacy publisher must never write a new Strategy 1 run identity.
+    # Strategy 1 needs a registered typed-dispatch operation before each INSERT.
     prepared = prepare_activation_rows(projected)
     parent = prepared["trading_activation_v1"][0]
     identity = {key: str(parent[key]) for key in ("run_id", "session_date", "run_plan_id", "ticker", "event_id")}
@@ -419,9 +447,10 @@ def publish_activation(client: Any, projected: ActivationProjection, *,
 
 
 def load_activation(client: Any, *, session_date: date, run_plan_id: str,
-                    ticker: str, event_id: str) -> dict[str, Any]:
+                    ticker: str, event_id: str,
+                    run_id: str = ACTIVATION_RUN_ID) -> dict[str, Any]:
     """Restore only a complete, hash-verified activation."""
-    identity = {"run_id": ACTIVATION_RUN_ID, "session_date": session_date.isoformat(),
+    identity = {"run_id": _activation_run_id(run_id), "session_date": session_date.isoformat(),
                 "run_plan_id": run_plan_id,
                 "ticker": ticker, "event_id": event_id}
     rows = _verify_rows(client, identity, require_commit=True)
@@ -442,7 +471,9 @@ def load_activation(client: Any, *, session_date: date, run_plan_id: str,
 
 
 def load_session_activations(client: Any, *, session_date: date,
-                             run_plan_id: str, ticker: str) -> tuple[dict[str, Any], ...]:
+                             run_plan_id: str, ticker: str,
+                             run_id: str = ACTIVATION_RUN_ID
+                             ) -> tuple[dict[str, Any], ...]:
     """Audit every current-session row for one plan/ticker before replay.
 
     Enumerating all families exposes prepared-only parents and orphan evidence,
@@ -451,7 +482,7 @@ def load_session_activations(client: Any, *, session_date: date,
     if (type(session_date) is not date or not isinstance(run_plan_id, str)
             or not run_plan_id or not isinstance(ticker, str) or not ticker):
         raise ValueError("Activation recovery requires a session, run plan, and ticker")
-    identity = {"run_id": ACTIVATION_RUN_ID, "session_date": session_date.isoformat(),
+    identity = {"run_id": _activation_run_id(run_id), "session_date": session_date.isoformat(),
                 "run_plan_id": run_plan_id, "ticker": ticker}
     where = " AND ".join(f"{key}={_literal(value)}" for key, value in identity.items())
     event_ids: set[str] = set()
@@ -469,13 +500,15 @@ def load_session_activations(client: Any, *, session_date: date,
         if len(event_ids) > 4096:
             raise RuntimeError("Activation session audit exceeds bounded event limit")
     return tuple(load_activation(client, session_date=session_date,
-                                 run_plan_id=run_plan_id, ticker=ticker, event_id=event_id)
+                                 run_plan_id=run_plan_id, ticker=ticker, event_id=event_id,
+                                 run_id=run_id)
                  for event_id in sorted(event_ids))
 
 
 def load_day_activations(client: Any, *, session_date: date,
                          page_size: int = 1024,
                          max_inventory_rows_per_family: int = 100_000,
+                         run_id: str = ACTIVATION_RUN_ID,
                          ) -> tuple[dict[str, Any], ...]:
     """Discover and audit every current-day activation, including orphan rows.
 
@@ -489,12 +522,13 @@ def load_day_activations(client: Any, *, session_date: date,
             or not 0 <= max_inventory_rows_per_family <= 100_000):
         raise ValueError("Activation day inventory requires a date and bounded page")
     day = session_date.isoformat()
+    run_id = _activation_run_id(run_id)
     identities: set[tuple[str, str]] = set()
     for name in _ACTIVATION_CONTRACTS:
         after = ("", "", "")
         inventory_rows = 0
         while True:
-            where = (f"run_id={_literal(ACTIVATION_RUN_ID)} "
+            where = (f"run_id={_literal(run_id)} "
                      f"AND session_date={_literal(day)}")
             if after != ("", "", ""):
                 cursor = ",".join(_literal(value) for value in after)
@@ -531,7 +565,8 @@ def load_day_activations(client: Any, *, session_date: date,
     restored = []
     for run_plan_id, ticker in sorted(identities):
         matches = load_session_activations(client, session_date=session_date,
-                                           run_plan_id=run_plan_id, ticker=ticker)
+                                           run_plan_id=run_plan_id, ticker=ticker,
+                                           run_id=run_id)
         if len(matches) != 1:
             raise RuntimeError("Activation day has zero or multiple committed watches for one plan/ticker")
         restored.append(matches[0])

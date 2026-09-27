@@ -10,6 +10,7 @@ from src.trading_runtime.arte_activation_projection import (
     ACTIVATION_TABLES, _sealed, load_activation, load_day_activations,
     load_session_activations, prepare_activation_rows,
     project_activation, publish_activation, restore_activation,
+    strategy_one_activation_run_id,
 )
 from src.trading_runtime.strategy_activation import strategy_observation_from_signal_occurrence
 
@@ -99,6 +100,30 @@ def _publish(client, projected, keeper=None):
 
 
 class ActivationProjectionTests(unittest.TestCase):
+    def test_strategy_one_run_identity_is_separate_from_legacy_rows(self) -> None:
+        day = date(2026, 8, 21)
+        new_run = strategy_one_activation_run_id(
+            day, mode="paper", run_plan_id="plan-1")
+        self.assertNotEqual(new_run, strategy_one_activation_run_id(
+            day, mode="live", run_plan_id="plan-1"))
+        self.assertNotEqual(new_run, strategy_one_activation_run_id(
+            day, mode="paper", run_plan_id="plan-2"))
+        projected = project_activation(_delivery())
+        old_parent = prepare_activation_rows(projected)["trading_activation_v1"][0]
+        new_parent = prepare_activation_rows(
+            projected, run_id=new_run)["trading_activation_v1"][0]
+        self.assertNotEqual(old_parent["run_id"], new_parent["run_id"])
+        self.assertNotEqual(old_parent["content_hash"], new_parent["content_hash"])
+        client = _MemoryClient()
+        _publish(client, projected)
+        self.assertEqual(load_day_activations(
+            client, session_date=day, run_id=new_run), ())
+        self.assertEqual(len(load_day_activations(client, session_date=day)), 1)
+        with self.assertRaisesRegex(ValueError, "run scope"):
+            strategy_one_activation_run_id(day, mode="paper", run_plan_id=" plan-1")
+        with self.assertRaisesRegex(ValueError, "run identity"):
+            prepare_activation_rows(projected, run_id="bad run")
+
     def test_restored_evidence_preserves_strategy_observation(self) -> None:
         source = _delivery()
         projected = project_activation(source)
