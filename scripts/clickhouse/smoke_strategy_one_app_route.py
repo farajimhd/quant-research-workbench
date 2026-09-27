@@ -177,18 +177,30 @@ def main() -> None:
                         help="profile the read-only app preflight in memory")
     parser.add_argument("--repeat-preflight", type=int, default=1,
                         help="repeat identical read-only preflight in one process")
+    parser.add_argument("--repeat-runs", type=int, default=1,
+                        help="run one or two full app probes in this process to compare warm reuse; requires --apply")
     args = parser.parse_args()
     if (not 1 <= args.minutes <= 330 or not 1 <= args.repeat_preflight <= 5
+            or not 1 <= args.repeat_runs <= 2
             or not 1_000 <= args.cash <= 1_000_000_000
             or args.cash != args.cash or args.cash in (float("inf"), float("-inf"))
             or (args.ticker and (not args.ticker.isascii()
                                  or not args.ticker.isalnum()))):
         parser.error("require 1..330 minutes, 1,000..1,000,000,000 finite cash, "
                      "and an optional ASCII ticker")
+    if args.repeat_runs > 1 and not args.apply:
+        parser.error("--repeat-runs requires --apply")
     _load_private_credentials()
-    asyncio.run(_run(args.session, args.ticker, args.minutes, args.cash,
-                     args.apply, args.profile_v7, args.profile_preflight,
-                     args.repeat_preflight))
+    async def probes() -> None:
+        for number in range(1, args.repeat_runs + 1):
+            if args.repeat_runs > 1:
+                phase = "cold" if number == 1 else "warm"
+                print(f"App probe {number}/{args.repeat_runs} ({phase} process)",
+                      flush=True)
+            await _run(args.session, args.ticker, args.minutes, args.cash,
+                       args.apply, args.profile_v7, args.profile_preflight,
+                       args.repeat_preflight)
+    asyncio.run(probes())
 
 
 if __name__ == "__main__":

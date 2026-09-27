@@ -1,4 +1,5 @@
 """The integration probe reports normalized journal work without dumping rows."""
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -123,3 +124,25 @@ def test_sql_profile_restores_client_after_failure(monkeypatch):
                                          "SELECT x FROM arte.trading_event_v1")
     assert ClickHouseHttpClient.execute is failing
     assert profile._bins["journal_read"][0] == 1
+
+
+def test_app_probe_repeats_only_apply_runs_in_one_process(monkeypatch, capsys):
+    from scripts.clickhouse import smoke_strategy_one_app_route as probe
+
+    calls = []
+    monkeypatch.setattr(probe, "_load_private_credentials",
+                        lambda: calls.append("credentials"))
+    async def run(*args):
+        calls.append(args)
+    monkeypatch.setattr(probe, "_run", run)
+    monkeypatch.setattr(sys, "argv", ["probe", "--minutes", "1",
+                                       "--apply", "--repeat-runs", "2"])
+    probe.main()
+    assert calls[0] == "credentials"
+    assert len(calls) == 3 and calls[1] == calls[2]
+    assert capsys.readouterr().out.splitlines() == [
+        "App probe 1/2 (cold process)", "App probe 2/2 (warm process)"]
+    monkeypatch.setattr(sys, "argv", ["probe", "--repeat-runs", "2"])
+    with pytest.raises(SystemExit, match="2"):
+        probe.main()
+    assert len(calls) == 3
