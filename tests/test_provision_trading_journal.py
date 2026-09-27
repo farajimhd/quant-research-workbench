@@ -97,6 +97,41 @@ def test_signal_only_plan_does_not_reconcile_legacy_grants(
                             fixed_backtest_v2=True)
 
 
+def test_signal_only_apply_preserves_existing_v2_grant_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Admin:
+        def __init__(self):
+            self.calls = []
+        def execute(self, sql):
+            self.calls.append(sql)
+            if sql.startswith("SELECT count() FROM system.users"):
+                return "1\n"
+            assert sql in provision.staged_grants(provision.PRINCIPAL)
+            return ""
+    class Writer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def execute(self, sql):
+            assert sql == "SELECT currentUser()"
+            return provision.PRINCIPAL
+    admin = Admin()
+    audits = []
+    monkeypatch.setattr(provision.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(provision, "SECRET_ROOT", tmp_path)
+    monkeypatch.setattr(provision, "_admin_client", lambda _url: admin)
+    monkeypatch.setattr(provision, "_credential", lambda *_args, **_kwargs: "private")
+    monkeypatch.setattr(provision, "ClickHouseHttpClient", Writer)
+    monkeypatch.setattr(provision, "staged_live_signal_storage_preflight",
+                        lambda _client: None)
+    monkeypatch.setattr(provision, "fixed_backtest_v2_preflight",
+                        lambda _client: audits.append("verified"))
+    provision.provision("http://127.0.0.1:8123", apply=True,
+                        staged_live_signal_only=True)
+    assert audits == ["verified", "verified"]
+    assert admin.calls[1:] == list(provision.staged_grants(provision.PRINCIPAL))
+
+
 def test_fixed_v2_apply_rejects_missing_layout_before_credentials_or_grants(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

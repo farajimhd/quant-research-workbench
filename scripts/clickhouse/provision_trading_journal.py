@@ -242,10 +242,10 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
         writer = ClickHouseHttpClient(url, PRINCIPAL, password, timeout_seconds=20)
         if writer.execute("SELECT currentUser()").strip() != PRINCIPAL:
             raise RuntimeError("Journal credential authenticated as the wrong user")
-        journal_permission_preflight(writer)
+        fixed_backtest_v2_preflight(writer)
         for statement in grants:
             client.execute(statement)
-        journal_permission_preflight(writer)
+        fixed_backtest_v2_preflight(writer)
         print("Live-signal table grants verified; no legacy or market grants changed")
         return
     grants = _grants(staged_live_signal=staged_live_signal,
