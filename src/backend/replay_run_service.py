@@ -3030,7 +3030,7 @@ class ReplayRunController:
         self, *, read_client, writer_client, terminal_client,
         attempt_id: str, writer_factory, projection_certifier,
         parent_market_plan, execution_market_plan, expected_config,
-        batch_size: int = 512, queue_capacity: int = 8,
+        batch_size: int = 1024, queue_capacity: int = 8,
     ) -> None:
         """Inactive V4 handoff from a strict, pre-published run context."""
         from src.backend.backtest_fixed_journal_bootstrap import (

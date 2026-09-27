@@ -267,7 +267,7 @@ def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(mo
         run_mode = "backtest"
         journal_profile = "backtest_v4"
         coalesce_batches = False
-        max_events_per_commit = 512
+        max_events_per_commit = 1024
         def close(self):
             pass
     assembly = bootstrap.assemble_fixed_v4_journal(
@@ -277,6 +277,7 @@ def test_v4_bootstrap_requires_strict_writer_and_attaches_without_v2_terminal(mo
         expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
         writer_factory=lambda client, **kwargs: Writer())
     assert assembly.terminal_authority is None
+    assert assembly.publisher.batch_size == 1024
     assert checked[-1] == (writer_client, "v4")
     assert len(checked) == 4  # Injected factories still need assembly's audit.
     controller = object.__new__(ReplayRunController)
@@ -316,7 +317,7 @@ def test_v4_assembly_does_not_repeat_real_writer_constructor_preflight(monkeypat
         run_mode = "backtest"
         journal_profile = "backtest_v4"
         coalesce_batches = False
-        max_events_per_commit = 512
+        max_events_per_commit = 1024
 
         def __init__(self, _client, **_kwargs):
             calls.append("constructor audit")

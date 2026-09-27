@@ -365,7 +365,7 @@ def assemble_fixed_v4_journal(
     expected_config: dict[str, Any], fixed_market_parent_plan: object,
     fixed_market_execution_plan: object, expected_market_start: datetime,
     writer_factory: Callable[..., ArteJournalWriter],
-    batch_size: int = 512, queue_capacity: int = 8,
+    batch_size: int = 1024, queue_capacity: int = 8,
 ) -> FixedJournalAssembly:
     """Build one bounded memory-to-Keeper writer lane; never open the gate."""
     if (not isinstance(token, FixedV4JournalPreflightToken)
@@ -421,7 +421,7 @@ def publish_and_assemble_fixed_v4_journal(
     expected_market_start: datetime,
     projection_certifier: Callable[[], str],
     writer_factory: Callable[..., ArteJournalWriter],
-    batch_size: int = 512, queue_capacity: int = 8,
+    batch_size: int = 1024, queue_capacity: int = 8,
 ) -> FixedJournalAssembly:
     """Publish a new fenced context and assemble V4 with no local persistence.
 
