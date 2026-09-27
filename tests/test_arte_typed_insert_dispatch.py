@@ -132,6 +132,23 @@ class Client:
         return ""
 
 
+def test_typed_ack_does_not_rewrite_shared_gate() -> None:
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run("run-1")
+    reserve_direct(authority)
+    gate_versions = []
+
+    class TrackingClient(Client):
+        def execute(self, sql, *, query_id=None):
+            gate_versions.append(authority._read_gate("run-1")[1])
+            return super().execute(sql, query_id=query_id)
+
+    authority.execute_typed_insert(
+        TrackingClient(authority), run_id="run-1", table="trading_event_v1",
+        token="batch-1", sql=SQL, batch_id=BATCH_ID, batch_last_sequence=1)
+    assert authority._read_gate("run-1")[1] == gate_versions[0]
+
+
 def test_acknowledged_insert_blocks_cold_until_explicit_parent_seal() -> None:
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run("run-1")

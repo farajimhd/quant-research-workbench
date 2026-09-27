@@ -551,12 +551,9 @@ class TypedInsertDispatch:
                 raise KeeperUnavailable("Typed dispatch operation changed before acknowledgement")
             txn = self.keeper.transaction()
             txn.check(_gate_path(run_id), version=version)
-            txn.set_data(_gate_path(run_id),
-                         _Gate("open", gate.inflight, gate.epoch,
-                               gate.registered, gate.compacted_through,
-                               gate.compacted_batch_id, gate.compacted_commit_hash,
-                               gate.active_batch_id).wire(),
-                         version=version)
+            # ACK changes only this operation. Checking the gate's version
+            # fences a concurrent close; rewriting identical gate bytes would
+            # needlessly invalidate other independent family ACKs.
             txn.set_data(path, completed, version=stat.version)
             if _committed(txn.commit()):
                 return
