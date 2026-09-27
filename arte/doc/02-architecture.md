@@ -23,7 +23,7 @@ ARTE-owned flatfile-import generation, or a completed REST generation. The
 source catalogue pins capabilities and coverage; it does not silently prefer
 one source when overlapping payloads differ. The flatfile importer must be a
 Rust/ClickHouse rewrite of the required `download_update_events` semantics.
-Its write target remains open and no existing-yearly-table write is approved.
+It writes ARTE-owned source tables; no existing-yearly-table write is approved.
 
 ARTE may read `market_sip_compact.events_YYYY` but may not import code,
 configuration, services, or caches from the parent app at runtime. Historical

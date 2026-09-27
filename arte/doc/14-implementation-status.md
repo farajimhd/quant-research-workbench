@@ -2,12 +2,20 @@
 
 Status: partial implementation. This is not the complete ARTE system.
 
+An offline historical-update planner now enumerates source, eligible-trade,
+liquidity, bars, indicators, V7, halt, estimated-LULD, readback, and publication
+stages. A bounded Rust historical estimator emits sparse changes on a 500 ms
+grid. `schemas/026-historical-update.sql` defines unapplied candidate source,
+estimated-LULD, halt, and publication tables. No flatfile importer, derived
+writer, connected orchestration, migration, or workstation deployment is
+implemented by this slice. Its plan explicitly cannot execute connected work.
+
 ## Current historical-source correction
 
 The earlier REST-only source plan is superseded. Current design permits
 certified read-only `market_sip_compact.events_YYYY`, requires an ARTE-owned
 Rust/ClickHouse flatfile ingestion path, and retains REST for recent repair.
-The importer's write target is not approved. Current ARTE replay loading and
+The user selected ARTE-owned source tables for new imports. Current ARTE replay loading and
 projection code still implements its REST certificate path; it does not yet
 select or reconcile certified yearly compact and flatfile-import sources.
 The delayed-trade `event_meta` capability and source-day reporting revision
@@ -3918,9 +3926,9 @@ not prove provider, broker, or ClickHouse compatibility.
 - Durable maintenance jobs, source certification and repair/publication integration.
 - Read-only certified yearly compact source loading, delayed-trade capability
   checks, and reconciliation with the current REST certificate path.
-- Rust/ClickHouse flatfile digestion after the importer write target is decided.
-- Adoption and parity validation of existing `arte` V7 interval/coverage/
-  builder checkpoints and market-day bar/indicator generations.
+- Rust/ClickHouse flatfile digestion into the approved ARTE-owned source tables.
+- Adoption and parity validation of approved `arte` V7 V2 level/observation/
+  coverage and `bars_v1`/`indicators_v1`/`liquidity_100ms_v1` generations.
 - Final event schema and migrations after source-identity validation.
 - Complete broker session, warning chain, pacing, protection and restart integration.
 - Reference service, broker gateway and browser-login dependency packaging.

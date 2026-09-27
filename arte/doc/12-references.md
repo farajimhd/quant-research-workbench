@@ -56,8 +56,8 @@ imports or evidence that connected acceptance has passed.
 |---|---|
 | `pipelines/market_sip/flatfiles/download_update_events.py` | Certified source-day import, compact event encoding and delayed-reporting flags; rewrite required semantics in ARTE Rust/ClickHouse |
 | `pipelines/market_sip/events/trade_reporting_flags.py` and `docs/trade_reporting_flags.md` | `event_meta` evaluated/delayed bits, unknown handling and source-day reporting revision |
-| `research/level_book/v7/clickhouse_persistence.py` and `docs/architecture/LEVEL_BOOK_V7_PERSISTENCE.md` | Existing `arte` V7 half-open intervals, coverage fence, terminal builder checkpoint and historical availability |
-| `scripts/build_market_day.py` and `docs/market_day_builder.md` | Existing persisted `arte` market-day bars/technical products, source/build/attempt identity and storage checks |
+| `research/level_book/v7/direct_publisher.py` and `docs/architecture/LEVEL_BOOK_V7_PERSISTENCE.md` | Approved V7 V2 level/observation intervals, coverage fence, historical availability, and current whole-ticker restart behavior |
+| `scripts/build_market_day.py` and `docs/market_day_builder.md` | Approved persisted `arte.bars_v1`, `indicators_v1`, and `liquidity_100ms_v1`, with source/build/attempt identity and storage checks |
 
 Before extraction, inventory and copy or reimplement each required behavior
 inside ARTE with source hashes. After extraction, the listed paths are not

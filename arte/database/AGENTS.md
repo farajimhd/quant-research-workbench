@@ -5,8 +5,8 @@ Read `../doc/03-events.md`, `../doc/04-data-lifecycle.md`, and
 
 - ARTE writers target its configured database. Certified yearly compact
   events are permitted read-only historical input. The Rust/ClickHouse
-  flatfile importer's write target remains undecided; do not add a yearly
-  table writer without explicit approval.
+  flatfile importer targets ARTE-owned source tables; do not add a yearly
+  compact-table writer.
 - Use explicit `live_market_ssd` policy for operational tables and verify
   actual part placement. `default` and policies routing to it are forbidden.
 - Validate source identity and revision semantics before finalizing event

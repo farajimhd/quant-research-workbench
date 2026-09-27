@@ -25,7 +25,7 @@ and strategy acceptance remain separate approvals.
 
 - The project root is temporary inside the current repository and portable later.
 - Existing parent source files are not modified. Yearly compact tables remain
-  read-only until the importer write target is explicitly decided.
+  read-only; the new flatfile importer targets ARTE-owned source tables.
 - Historical preparation may read certified yearly compact events, ingest
   flatfiles through ARTE-owned Rust/ClickHouse code, or use REST for recent
   repair; Live uses WebSocket.
@@ -57,7 +57,7 @@ and strategy acceptance remain separate approvals.
 | Event key | REST/WS sequence correspondence, scope and corrections | Final event DDL and canonical writers |
 | Enrichment layout | Minimal storage, as-known replay and read cost | Final revision/enrichment implementation |
 | Acquisition scope | Universe, historical depth, entitlement, cost and throughput | Broad REST backfill |
-| Flatfile import target | Decide whether an ARTE-owned importer writes only ARTE source tables or may append to yearly compact tables; prove isolation and recovery | Any importer writer |
+| Flatfile import implementation | Prove ARTE-owned source schema, parser/codec parity, isolation, recovery and publication | Connected importer writer |
 | Existing archive capability | Yearly source-day certificates, `event_meta` reporting revision, field support, point-in-time identity | Read-only archive admission |
 | Existing derived products | Approved `arte` market-day builds and V7 V2 interval/coverage, exact source/calculation compatibility | Backtest and next-session seed admission |
 | Cross-channel order | Precision ties and stable merge contract | Historical parity claims |

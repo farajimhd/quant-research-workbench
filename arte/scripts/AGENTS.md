@@ -10,8 +10,8 @@ Read `../doc/10-deployment.md` and `../doc/08-performance-operations.md`.
   parent paths, parent launchers, caches, or generated logs in a release.
 - Package the Rust/ClickHouse flatfile digestion and read-only yearly compact
   source adapter as ARTE components. Do not invoke the parent's Python
-  `download_update_events` script. Keep its intended write target blocked
-  until the operator approves a reviewed migration/ingestion contract.
+  `download_update_events` script. New imports target ARTE-owned source
+  tables. Keep yearly compact tables read-only.
 - Install immutable versioned releases. Compare component and configuration
   fingerprints before restarting; leave compatible services running. Disarm,
   drain, reconcile, and verify broker protection before any live replacement.

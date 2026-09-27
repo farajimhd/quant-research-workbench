@@ -5,9 +5,18 @@ use std::io::{self, Read};
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str){
-        None|Some("help")|Some("--help")=>{println!("ARTE - Automated Real-Time Trading Engine\n\nOffline commands:\n  version\n  replay-market <interval-ns> <workers>   JSON trade array on stdin\n  check-policies <manifest.json> <expected-manifest-sha256> <policies.json> [--json]\n\nService startup is not enabled in this implementation slice.\nMarket replay is not a strategy-performance backtest.\nPolicy preflight does not authorize trading.");Ok(())},
+        None|Some("help")|Some("--help")=>{println!("ARTE - Automated Real-Time Trading Engine\n\nOffline commands:\n  version\n  replay-market <interval-ns> <workers>   JSON trade array on stdin\n  plan-historical-update                JSON request on stdin; no writes\n  check-policies <manifest.json> <expected-manifest-sha256> <policies.json> [--json]\n\nService startup is not enabled in this implementation slice.\nMarket replay is not a strategy-performance backtest.\nPolicy preflight does not authorize trading.");Ok(())},
         Some("check-policies")=>{println!("{}",policies::run(&args)?);Ok(())},
         Some("version")=>{println!("ARTE {}",env!("CARGO_PKG_VERSION"));Ok(())},
+        Some("plan-historical-update")=>{
+            if args.len()!=1{return Err("usage: arte plan-historical-update < request.json".into());}
+            let mut input=String::new();
+            io::stdin().take(4*1024*1024+1).read_to_string(&mut input).map_err(|e|e.to_string())?;
+            if input.len()>4*1024*1024{return Err("historical update request exceeds 4 MiB".into());}
+            let request:arte_core::historical_update::Request=serde_json::from_str(&input).map_err(|e|e.to_string())?;
+            let plan=request.plan().map_err(|e|e.to_string())?;
+            println!("{}",serde_json::to_string(&plan).map_err(|e|e.to_string())?);Ok(())
+        },
         Some("replay-market")=>{
             if args.len()!=3{return Err("usage: arte replay-market <interval-ns> <workers>".into());}
             let interval=args[1].parse().map_err(|_|"invalid interval")?;let workers=args[2].parse().map_err(|_|"invalid workers")?;

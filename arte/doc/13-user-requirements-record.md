@@ -445,5 +445,15 @@ The user asked whether historical LULD can be estimated and whether a new
 historical updater can be used for the pending week. An estimated historical
 mode is possible but is not official-band evidence. The new updater has not
 been implemented or authorized for connected operation in this temporary
-repository. Neither question changes the Live official-band gate or the
-undecided import destination.
+repository. Neither question changes the Live official-band gate. The import
+destination was undecided at that point and is resolved below.
+
+## Historical updater implementation decision
+
+The user selected ARTE-owned source tables for new Rust/ClickHouse flatfile
+imports. Existing yearly compact tables remain read-only. The user requested
+that the historical update include source acquisition, approved market-day
+products, V7, halt episodes, and a 500 ms estimated-LULD indicator. The
+estimated indicator is a labeled historical model, not official live order
+evidence. This supersedes the open import-destination sentence above without
+rewriting that earlier decision record.

@@ -11,8 +11,8 @@ Certified `market_sip_compact.events_YYYY` may supply read-only historical
 trades and quotes. ARTE must not call the parent app or its Python
 `download_update_events` at runtime. The ARTE distribution must implement
 the required flatfile digestion semantics in Rust and ClickHouse. The
-importer's destination remains an open design decision; no existing yearly
-table write is authorized by this document. REST supplies recent missing
+importer's destination is ARTE-owned source tables; existing yearly compact
+tables remain read-only. REST supplies recent missing
 coverage and gap repair. WebSocket supplies Live.
 
 The old prohibition on reading legacy events is superseded. The prohibition
@@ -22,9 +22,7 @@ consumers read only pinned certified ClickHouse products. Only the ingestion
 authority may open raw flatfiles while acquiring and verifying a source day.
 
 Database roles separate ingestion, live journals, backtest output, and read-only UI.
-ARTE consumer roles have no write permission on legacy databases. A separate
-ingestion-role proposal is required if the importer is ever approved to append
-to yearly tables.
+ARTE roles have no write permission on legacy databases.
 Operational tables use explicit `live_market_ssd` storage. Verify table policy and
 actual part placement before writers start. An unavailable policy blocks startup.
 
@@ -40,7 +38,7 @@ actual part placement before writers start. An unavailable policy blocks startup
 3. For missing or outage-affected source days, schedule ARTE's Rust/ClickHouse
    flatfile digestion when a complete source file is available. The imported
    generation, destination, identity mapping, and publication time must be
-   pinned. The write target must be approved before implementation.
+   pinned. New imports target ARTE-owned source tables.
 4. Use bounded REST workers for recent missing intervals and same-day repair.
    Follow pagination to completion, including equal-timestamp boundaries.
 5. Reconcile overlapping sources by event identity, payload revision, and
@@ -56,7 +54,7 @@ The original REST-only eight-stage plan is retained in steps 1, 4–8 for its
 bounded pagination, validation, and publication requirements. REST is no longer
 the sole historical source.
 
-### Flatfile importer decision still required
+### ARTE-owned flatfile importer
 
 ARTE will reimplement the required `download_update_events` semantics in Rust
 and ClickHouse. The parser, normalized columns, condition/reporting rules,
@@ -65,14 +63,12 @@ restart-safe publication must be pinned independently of the Python source.
 Transform and validate bulk rows in bounded ClickHouse/vectorized stages where
 appropriate; Rust owns orchestration, provenance, and exact readback checks.
 
-| Possible destination | Benefit | Required evidence before approval |
-|---|---|---|
-| ARTE-owned source tables | No writes to expensive existing yearly tables; new source key need not use a dense ordinal | Avoid overlap duplication, reconcile archive/ARTE/REST generations, prove Backtest and derived-builder reads |
-| Append-only yearly compact tables | One existing historical archive and direct reuse of compatible market-day/V7 builders | Port exact ordinal allocation and compact codec, coordinate the sole writer, preserve existing rows/schema, prove restart-safe append and source-day certification |
-
-Neither destination is approved yet. Do not create a writer or expand database
-permissions until the user chooses after reviewing the detailed contract.
-Existing yearly compact reads remain read-only in the meantime.
+The user selected ARTE-owned source tables. Preserve exact source-file row
+identity without adding a dense canonical ordinal. Reconcile overlapping
+archive, ARTE, REST, and WebSocket generations by verified identity and
+publication time. Existing yearly compact reads remain read-only. The older
+append-to-yearly option is superseded. An unapplied candidate source schema
+is in `schemas/026-historical-update.sql`; it is not an authorized migration.
 
 Retries resume the failed stage. Derived failure does not require reacquiring an
 already certified source interval. Certification reports exactly which checks ran.
@@ -228,8 +224,12 @@ queries must not expose an end that was unknown at the requested cutoff.
 Missing halt evidence is unknown, not trading-active. This table is proposed,
 not yet implemented or approved as a specific physical schema.
 
-Keep official LULD band updates separate from technical indicators and from
-estimated bands. Live official updates can be recorded as sparse timestamped
+Keep official LULD band updates separate from the historical estimated-LULD
+indicator. The estimated indicator evaluates a complete 500 ms grid and
+persists compact transitions in `arte.estimated_luld_500ms_v1` after source
+and policy certification. It must read eligible trade prices, not infer an
+unweighted LULD reference from volume-weighted 100 ms liquidity rows.
+Live official updates can be recorded as sparse timestamped
 intervals with provider, instrument, session, lower/upper prices, effective
 and receive/availability clocks, and source coverage. A historical estimate
 may be computed from causally available trades and versioned LULD-plan rules,
@@ -237,7 +237,9 @@ but must be labeled `estimated` and carry uncertainty. It cannot certify the
 SIP's actual disseminated band or satisfy Live's official-band safety gate.
 Trades/quotes or flatfiles alone do not establish complete official historical
 LULD coverage. Backtests must name the chosen official, estimated, or
-unavailable mode and never silently substitute one for another.
+unavailable mode and never silently substitute one for another. The first
+Rust model implements a bounded rolling reference and explicit width policy;
+opening/reopening and tier rules still need versioned inputs and validation.
 
 ## Nonblocking market persistence
 

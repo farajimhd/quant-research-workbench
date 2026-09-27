@@ -46,8 +46,8 @@ Zero latency is not a promise. Rust performance does not prove trading correctne
 | R21 | Named laptop/workstation profiles and selective service restart | [Deployment](10-deployment.md) |
 | R22 | Copy and reduce UI; support Backtest, Debug, and Live | [App contracts](09-app-contracts.md) |
 | R23 | Extract this root into a new repository after the initial implementation | [Deployment](10-deployment.md) |
-| R24 | Preserve existing `arte` V7 interval, coverage, and builder-checkpoint authority | [V7 state](05-v7-state.md) |
-| R25 | Consume certified persisted `arte` bars and indicators for fast Backtest | [Validation](07-backtest-validation.md) |
+| R24 | Preserve approved `arte` V7 V2 level, observation, and coverage authority | [V7 state](05-v7-state.md) |
+| R25 | Consume certified `arte.bars_v1`, `indicators_v1`, and `liquidity_100ms_v1` for fast Backtest | [Validation](07-backtest-validation.md) |
 
 ## Scope exclusions
 
@@ -62,7 +62,7 @@ Zero latency is not a promise. Rust performance does not prove trading correctne
 The old archive remains unchanged and may be read only with matching
 certification and capability evidence. The existing importer is outside this
 project; ARTE reimplements required flatfile digestion in Rust and ClickHouse.
-Its write target needs a separate design decision.
+The user selected ARTE-owned source tables as its write target.
 REST remains available for recent missing coverage and gap repair.
 Large historical acquisition is an explicit capacity and cost gate.
 

@@ -38,8 +38,8 @@ Keep Market Data Engine (MDE) as the market-data component name.
   script. Only the ingestion authority may open raw flatfiles; strategies,
   Backtest, charts, V7, and repair consumers read certified ClickHouse products.
 - Keep existing `market_sip_compact.events_YYYY` rows and schema unchanged.
-  The new importer's write target is undecided. Do not grant ARTE a legacy
-  write path without a separate explicit decision.
+  The user selected ARTE-owned source tables for new flatfile imports. Do not
+  grant ARTE a legacy yearly-table write path.
 - REST remains the recent historical/gap-repair path; WebSocket remains Live.
 - Write ARTE operational tables to the configured `arte` database using the
   explicit `live_market_ssd` policy. Validate actual part placement. Never

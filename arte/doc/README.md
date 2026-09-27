@@ -8,7 +8,7 @@ The current design admits certified `market_sip_compact.events_YYYY` as a
 read-only historical source. ARTE also needs an independent Rust/ClickHouse
 flatfile digestion path for missing or outage-affected source days. It must
 reimplement the required `download_update_events` semantics without executing
-that Python script. The new importer's write target remains undecided.
+that Python script. The new importer targets ARTE-owned source tables.
 REST repairs recent gaps; WebSocket carries Live. Historical consumers use certified ClickHouse
 products, not raw flatfiles. This revision supersedes the earlier REST-only
 historical-source boundary. It does not make the parent application a runtime

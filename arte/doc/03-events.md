@@ -4,7 +4,7 @@
 
 One logical event interface may resolve multiple certified physical sources:
 the read-only `market_sip_compact.events_YYYY` archive, an ARTE-owned
-flatfile-import generation after its write target is approved, and ARTE's
+flatfile-import generation in ARTE-owned source tables, and ARTE's
 WebSocket/REST event generations. The run pins one reconciled generation and
 its source manifests for each required interval. A table name or maximum
 date is not a coverage certificate. Overlap is resolved by verified event

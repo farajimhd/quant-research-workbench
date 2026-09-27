@@ -18,6 +18,8 @@ pub mod dependency_plan;
 pub mod event_boolean;
 pub mod event_order;
 pub mod event_storage;
+pub mod estimated_luld;
+pub mod historical_update;
 pub mod events;
 pub mod exact_bars;
 pub mod execution_events;

@@ -25,7 +25,7 @@ and `../../../../doc/05-v7-state.md` for the affected table.
 - Keep queries bounded by instrument, session, interval, and required columns.
   Verify schema compatibility, storage policy, and part placement before
   starting writers; an `IF NOT EXISTS` statement is not migration proof.
-- Preserve compatible existing `arte` V7 interval/coverage/builder-checkpoint
-  tables and market-day bars/technical products. Read only complete certified
+- Preserve the approved `arte` V7 V2 level/observation/coverage tables and
+  `bars_v1`, `indicators_v1`, `liquidity_100ms_v1`. Read only complete certified
   generations with matching source/reporting, calculation, availability, and
   attempt identities. Do not create a duplicate checkpoint authority.

@@ -6,8 +6,9 @@ Read `../../../../doc/05-v7-state.md` and the relevant parts of
 - Keep completed-session historical V7 and intraday causal streaming V7 as
   distinct outputs. Only certified historical computation may publish a
   next-session seed. Streaming snapshots are audit/recovery state, not seeds.
-- Preserve the existing `arte` historical V7 interval, coverage-fence, and
-  terminal builder-checkpoint contract as the starting persisted authority.
+- Preserve the approved `arte` historical V7 V2 level/observation intervals
+  and coverage fence as the starting persisted authority. Its direct producer
+  has no terminal builder-checkpoint table; incremental recovery needs design.
   A new Rust historical implementation needs source/condition/split/numerical
   and discrete decision parity before replacing it; no parallel seed store
   may become authoritative by default.
