@@ -311,7 +311,7 @@ def publish_backtest_definition(client: Any, run_id: str,
     A partial insert is replayed by exact row identity, not overwritten.
     """
     from src.backend.backtest_market_data import ExecutionInterval
-    from src.trading_runtime.arte_journal_schema import fixed_backtest_v2_preflight
+    from src.trading_runtime.arte_journal_writer import _v4_preflight
     from src.trading_runtime.arte_journal_writer import (
         _literal, _rows, load_typed_run_context,
     )
@@ -335,7 +335,7 @@ def publish_backtest_definition(client: Any, run_id: str,
             raise KeeperUnavailable("Backtest definition launch claim is no longer current")
 
     require_claim()
-    fixed_backtest_v2_preflight(client)
+    _v4_preflight(client)
     context = load_typed_run_context(client, run_id)
     interval = ExecutionInterval.parse(definition.execution_interval)
     if (context.get("mode") != "backtest"

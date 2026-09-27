@@ -208,7 +208,7 @@ def test_cold_loader_reads_only_exact_definition_tables_and_run_identity():
 
 
 def test_definition_publisher_is_commit_last_idempotent_and_keeper_fenced(monkeypatch):
-    monkeypatch.setattr(journal_schema, "fixed_backtest_v2_preflight",
+    monkeypatch.setattr(journal_writer, "_v4_preflight",
                         lambda _client: None)
     context = {
         "run_id": "run-1", "run_month": RUN_MONTH.isoformat(),
@@ -262,7 +262,7 @@ def test_definition_publisher_is_commit_last_idempotent_and_keeper_fenced(monkey
 
 
 def test_definition_publisher_resumes_exact_partial_rows_without_duplication(monkeypatch):
-    monkeypatch.setattr(journal_schema, "fixed_backtest_v2_preflight",
+    monkeypatch.setattr(journal_writer, "_v4_preflight",
                         lambda _client: None)
     monkeypatch.setattr(journal_writer, "load_typed_run_context",
                         lambda _client, _run_id: {
