@@ -62,6 +62,8 @@ def derive_hod_context(
     state = HodObservation()
     output = []
     next_candidate = 0
+    projected_input_stamp: float | None = None
+    projected_levels: tuple[Mapping, ...] = ()
     for source in bars_100ms:
         bucket, boundary = _boundary(
             source, ticker=ticker, resolution_ms=100,
@@ -80,11 +82,19 @@ def derive_hod_context(
                 if int(next_second.get("extremes_valid") or 0) != 1:
                     raise ValueError("Strategy 1 HOD V7 second lacks valid extremes")
                 stream.update_second(next_second,
-                    at=market_day_boundary(day, second_boundary))
+                    completed_second_ms=second_boundary)
             next_second = next(seconds_iter, None)
-        levels = stream.strategy_one_levels(
-            as_of=market_day_boundary(day, boundary),
-            seed_policy=seed_policy)
+        # V7 geometry changes only after a completed 1s input. The 100ms
+        # state machine still checks freshness at *every* bar, including an
+        # invalid/missing second; never carry a stale level past its clock.
+        if projected_input_stamp != stream.engine.as_of:
+            projected_levels = stream.strategy_one_levels(
+                as_of=market_day_boundary(day, boundary),
+                seed_policy=seed_policy)
+            projected_input_stamp = stream.engine.as_of
+        now_stamp = stream.engine.start + boundary / 1_000
+        levels = (projected_levels if 0 < stream.engine.as_of <= now_stamp
+                  and now_stamp - stream.engine.as_of <= 1.000001 else ())
         bar = dict(source, boundary_ms=boundary)
         state = observe_completed_hod(state, bar, admitted_levels=levels)
         if boundary == candidate_boundaries[next_candidate]:
