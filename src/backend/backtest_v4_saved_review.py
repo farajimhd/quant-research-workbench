@@ -35,7 +35,18 @@ def _terminal_financial_accounts(client, prefix, account_ids: tuple[str, ...]) -
         f"WHERE run_id={_literal(prefix.run_id)} "
         f"AND batch_id=toUUID({_literal(prefix.last_batch_id)}) "
         f"LIMIT {len(account_ids) + 1} FORMAT JSONEachRow")
-    verified = _verify_rows(table, tuple(rows))
+    # JSONEachRow renders an integral Float64 (notably 0.0) as JSON 0. Its
+    # Python representation is int even though the column authority is Float64.
+    float_fields = tuple(name for name, kind in _CONTRACTS[table].columns
+                         if kind == "Float64")
+    canonical_rows = []
+    for row in rows:
+        if any(type(row.get(name)) not in (int, float) for name in float_fields):
+            raise RuntimeError("Saved review financial Float64 wire value is invalid")
+        canonical_rows.append({**row, **{
+            name: float(row[name]) for name in float_fields
+        }})
+    verified = _verify_rows(table, tuple(canonical_rows))
     if (len(verified) != len(account_ids)
             or {row["account_id"] for row in verified} != set(account_ids)
             or any(row["run_id"] != prefix.run_id

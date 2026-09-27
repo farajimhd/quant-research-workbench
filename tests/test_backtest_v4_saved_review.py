@@ -8,6 +8,7 @@ import pytest
 from src.backend import backtest_v4_saved_review as review
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from src.backend.typed_backtest_review_core import AuditedSessionCache
+from src.backend.backtest_terminal_v2_fence import seal_v2_row
 
 
 RUN = "00000000-0000-0000-0000-000000000001"
@@ -155,3 +156,21 @@ def test_subsequent_page_reuses_audited_prefix_but_rechecks_head(monkeypatch):
     review.load_v4_terminal_review_page(client, RUN, after_sequence=1,
                                         limit=1, cache=cache)
     assert calls == {"audit": 1, "snapshot": 1, "head": 4, "events": 2}
+
+
+def test_financial_account_verifies_integral_float64_wire_values(monkeypatch):
+    sealed = seal_v2_row("trading_backtest_account_snapshot_v2", {
+        "record_id": RUN, "run_id": RUN, "event_month": "2026-08-01",
+        "batch_id": BATCH, "snapshot_id": BATCH,
+        "account_id": "SIM-01-A", "currency": "USD",
+        "source_timestamp_ms": 1787069400000,
+        "net_liquidation": 100000.0, "total_cash_value": 100000.0,
+        "buying_power": 100000.0, "gross_position_value": 0.0,
+        "available_funds": 100000.0, "excess_liquidity": 100000.0,
+        "expected_position_count": 0, "position_set_sha256": "a" * 64,
+    })
+    monkeypatch.setattr(review, "_rows", lambda _client, _sql:
+                        [{**sealed, "gross_position_value": 0}])
+    result = review._terminal_financial_accounts(Client(), _prefix(),
+                                                 ("SIM-01-A",))
+    assert result["SIM-01-A"]["gross_position_value"] == 0.0
