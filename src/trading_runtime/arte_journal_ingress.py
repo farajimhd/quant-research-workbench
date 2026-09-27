@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import deque
 from concurrent.futures import Future, InvalidStateError
 from copy import deepcopy
-from datetime import timezone
+from datetime import date, timezone
 from queue import Empty, Full, Queue
 from threading import Lock, Thread
 from time import sleep
@@ -17,8 +17,10 @@ from typing import Any, Callable, Mapping
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.trading_runtime.arte_journal_projection import project_journal_record
-from src.trading_runtime.arte_journal_writer import JournalQueueFull, TypedJournalBatch
-from src.trading_runtime.journal_contract import JournalRecord
+from src.trading_runtime.arte_journal_writer import (
+    JournalQueueFull, TypedJournalBatch, V4StrategyOneEntryBatch,
+)
+from src.trading_runtime.journal_contract import JournalRecord, canonical_json
 
 
 class JournalIngressFull(RuntimeError):
@@ -77,7 +79,8 @@ class TypedJournalIngress:
         self._prior_batch_id = prior_batch_id
         self._projection_context = context
         self._projector = projector
-        self._queue: Queue[tuple[JournalRecord, str, Future[str]] | None] = Queue(capacity)
+        self._queue: Queue[tuple[JournalRecord, str, Future[str],
+                                 tuple[Any, date] | None] | None] = Queue(capacity)
         self._lock = Lock()
         self._error: BaseException | None = None
         self._closed = False
@@ -106,14 +109,47 @@ class TypedJournalIngress:
             record.entity_type, record.entity_id, record.account_id,
             deepcopy(record.payload),
         )
+        return self._enqueue(frozen, source_cursor, None)
+
+    def submit_strategy_one_entry(
+        self, record: JournalRecord, *, proposal: Any,
+        session_date: date, source_cursor: str,
+    ) -> Future[str]:
+        """Queue an entry and its scalar child; projection stays off the actor."""
+        from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
+
+        if (not self._live_v4 or not isinstance(record, JournalRecord)
+                or not isinstance(proposal, StrategyOneEntryProposal)
+                or type(session_date) is not date
+                or not callable(getattr(self._writer,
+                                        "submit_strategy_one_entry_v4", None))
+                or (record.category, record.entity_type) !=
+                   ("strategy", "strategy_intent")
+                or not isinstance(source_cursor, str) or not source_cursor
+                or source_cursor.lstrip().startswith(("{", "["))
+                or record.event_time.tzinfo is None
+                or record.recorded_at.tzinfo is None):
+            raise ValueError("Live Strategy 1 entry requires its typed causal source")
+        UUID(record.record_id)
+        frozen = JournalRecord(
+            record.record_id, record.run_id, record.sequence,
+            record.event_time, record.recorded_at, record.category,
+            record.entity_type, record.entity_id, record.account_id,
+            deepcopy(record.payload),
+        )
+        return self._enqueue(frozen, source_cursor,
+                             (deepcopy(proposal), session_date))
+
+    def _enqueue(self, frozen: JournalRecord, source_cursor: str,
+                 entry_source: tuple[Any, date] | None) -> Future[str]:
         with self._lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("Typed journal ingress is unavailable") from self._error
-            if record.run_id != self._run_id or record.sequence != self._next_sequence:
+            if frozen.run_id != self._run_id or frozen.sequence != self._next_sequence:
                 raise ValueError("Typed journal ingress requires a contiguous run sequence")
             receipt: Future[str] = Future()
             try:
-                self._queue.put_nowait((frozen, source_cursor, receipt))
+                self._queue.put_nowait((frozen, source_cursor, receipt, entry_source))
             except Full as exc:
                 raise JournalIngressFull("Typed ingress is full; stop new admission") from exc
             self._next_sequence += 1
@@ -131,7 +167,7 @@ class TypedJournalIngress:
                 if item is None:
                     self._queue.task_done()
                     break
-                record, cursor, receipt = item
+                record, cursor, receipt, entry_source = item
                 try:
                     batch_id = str(uuid5(
                         NAMESPACE_URL,
@@ -153,10 +189,40 @@ class TypedJournalIngress:
                             or batch.prior_batch_id != self._prior_batch_id
                             or batch.source_cursor != cursor):
                         raise ValueError("Typed projection changed ingress identity")
+                    if entry_source is not None:
+                        from src.trading_runtime.arte_strategy_one_entry_journal import (
+                            project_strategy_one_entry_evidence,
+                        )
+                        from src.trading_runtime.strategy_one_intent import (
+                            strategy_one_entry_intent,
+                        )
+
+                        proposal, session_date = entry_source
+                        intent = strategy_one_entry_intent(
+                            proposal, session_date=session_date)
+                        payload = {key: value for key, value in record.payload.items()
+                                   if key not in {"strategy_id", "strategy_revision",
+                                                  "correlation_id", "causation_id"}}
+                        if (record.account_id != proposal.account_id
+                                or record.entity_id != intent.intent_id
+                                or canonical_json(payload) != canonical_json(intent.payload())
+                                or len(batch.intents) != 1
+                                or batch.intents[0]["intent_id"] != intent.intent_id):
+                            raise ValueError("Live Strategy 1 entry differs from its typed intent")
+                        evidence = project_strategy_one_entry_evidence(
+                            proposal, intent, session_date=session_date,
+                            run_id=batch.run_id, batch_id=batch.batch_id,
+                            parent_record_id=record.record_id)
+                        unit = V4StrategyOneEntryBatch(batch, (evidence,))
+                    else:
+                        unit = batch
                     while True:
                         try:
-                            writer_receipt = (self._writer.submit_base_v4(batch)
-                                              if self._live_v4 else self._writer.submit(batch))
+                            writer_receipt = (
+                                self._writer.submit_strategy_one_entry_v4(unit)
+                                if entry_source is not None else
+                                self._writer.submit_base_v4(unit)
+                                if self._live_v4 else self._writer.submit(unit))
                             break
                         except JournalQueueFull:
                             # Only this worker waits. The producer remains

@@ -11,6 +11,8 @@ from src.trading_runtime.arte_journal_ingress import (
 )
 from src.trading_runtime.arte_journal_writer import JournalQueueFull, TypedJournalBatch
 from src.trading_runtime.journal_contract import JournalRecord
+from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+from src.trading_runtime.strategy_one_stateful import StrategyOneEntryProposal
 
 
 AT = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
@@ -299,3 +301,81 @@ def test_live_v4_ingress_requires_matching_pinned_mode():
             first_sequence=1, prior_batch_id=ZERO,
             projection_context={"expected_mode": "live"},
         )
+
+
+def test_live_v4_entry_ingress_seals_proposal_off_actor_before_receipt():
+    class LiveWriter(Writer):
+        journal_profile = "live_v4"
+        run_mode = "live"
+
+        def submit_base_v4(self, unit):
+            raise AssertionError("Entry must not use the base writer method")
+
+        def submit_strategy_one_entry_v4(self, unit):
+            receipt = Writer.submit(self, unit)
+            receipt.set_result(unit.base.batch_id)
+            return receipt
+
+    proposal = StrategyOneEntryProposal(
+        "assignment-1", "DU1", "AAA", 31_000, 30_000, 10.01, 9.89,
+        12., "R4", .5, 30_000, "S1",
+    )
+    session = date(2026, 8, 18)
+    intent = strategy_one_entry_intent(proposal, session_date=session)
+    config = {"strategy_id": "early-squeeze-strategy", "strategy_revision": 1}
+    source = JournalRecord(
+        str(uuid4()), "run-1", 1, intent.event_time, AT,
+        "strategy", "strategy_intent", intent.intent_id, "DU1",
+        {**intent.payload(), **config},
+    )
+    writer = LiveWriter()
+    ingress = TypedJournalIngress(
+        writer, run_id="run-1", attempt_id=str(uuid4()),
+        first_sequence=1, prior_batch_id=ZERO,
+        projection_context={"expected_mode": "live", "expected_config": config},
+    )
+    receipt = ingress.submit_strategy_one_entry(
+        source, proposal=proposal, session_date=session,
+        source_cursor="boundary-31000")
+    ingress.close()
+    assert receipt.result() == writer.batches[0].base.batch_id
+    assert writer.batches[0].base.intents[0]["intent_id"] == intent.intent_id
+    assert writer.batches[0].entry_evidence[0]["boundary_ms"] == 31_000
+
+
+def test_live_v4_entry_ingress_rejects_changed_proposal_without_publication():
+    class LiveWriter(Writer):
+        journal_profile = "live_v4"
+        run_mode = "live"
+
+        def submit_base_v4(self, unit):
+            raise AssertionError("Entry must not use the base writer method")
+
+        def submit_strategy_one_entry_v4(self, unit):
+            raise AssertionError("Changed source must fail before publication")
+
+    proposal = StrategyOneEntryProposal(
+        "assignment-1", "DU1", "AAA", 31_000, 30_000, 10.01, 9.89,
+        12., "R4", .5, 30_000, "S1",
+    )
+    session = date(2026, 8, 18)
+    intent = strategy_one_entry_intent(proposal, session_date=session)
+    config = {"strategy_id": "early-squeeze-strategy", "strategy_revision": 1}
+    source = JournalRecord(
+        str(uuid4()), "run-1", 1, intent.event_time, AT,
+        "strategy", "strategy_intent", intent.intent_id, "DU1",
+        {**intent.payload(), **config},
+    )
+    ingress = TypedJournalIngress(
+        LiveWriter(), run_id="run-1", attempt_id=str(uuid4()),
+        first_sequence=1, prior_batch_id=ZERO,
+        projection_context={"expected_mode": "live", "expected_config": config},
+    )
+    from dataclasses import replace
+    receipt = ingress.submit_strategy_one_entry(
+        source, proposal=replace(proposal, initial_target=13.),
+        session_date=session, source_cursor="boundary-31000")
+    with pytest.raises(RuntimeError, match="did not drain"):
+        ingress.close()
+    with pytest.raises(ValueError, match="differs from its typed intent"):
+        receipt.result()
