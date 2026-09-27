@@ -59,10 +59,8 @@ def test_typed_seed_is_accepted_by_streaming_engine():
     assert len(engine.rows) == 1
 
 
-@pytest.mark.parametrize("tickers", [
-    ("TEST", "OTHER"), tuple(f"T{i}" for i in range(16)),
-])
-def test_batched_seed_reads_preserve_single_ticker_decoding(tickers):
+def test_batched_seed_reads_preserve_single_ticker_decoding():
+    tickers = ("TEST", "OTHER")
     class BatchClient(Client):
         def execute(self, sql):
             result = super().execute(sql)
@@ -95,9 +93,8 @@ def test_batched_seed_reads_preserve_single_ticker_decoding(tickers):
         load_seeds_batch(client, tickers=tickers,
                          session=date(2026, 8, 18), coverage=wrong_count)
     assert len(client.queries) == 4  # No row read after changed coverage.
-    with pytest.raises(ValueError, match="one to sixteen"):
-        load_seeds_batch(client, tickers=(*tickers, "EXTRA")
-                         if len(tickers) == 16 else tuple(f"X{i}" for i in range(17)),
+    with pytest.raises(ValueError, match="one to eight"):
+        load_seeds_batch(client, tickers=tuple(f"X{i}" for i in range(9)),
                          session=date(2026, 8, 18), coverage={})
 
 

@@ -225,11 +225,11 @@ def split_evidence_batch(client: Any, *, seed_sessions: dict[str, date],
                          session: date) -> dict[str, list[dict[str, Any]]]:
     """Read split evidence for a seed batch in one causal SELECT."""
     tickers = tuple(seed_sessions)
-    if (not isinstance(session, date) or not 1 <= len(tickers) <= 16
+    if (not isinstance(session, date) or not 1 <= len(tickers) <= 8
             or any(not isinstance(ticker, str) or not ticker
                    or not isinstance(day, date) or day >= session
                    for ticker, day in seed_sessions.items())):
-        raise ValueError("V7 split batch requires one to sixteen preceding seeds")
+        raise ValueError("V7 split batch requires one to eight preceding seeds")
     names = ",".join(_literal(ticker) for ticker in tickers)
     earliest = min(seed_sessions.values())
     rows = _rows(client,
@@ -334,16 +334,16 @@ def _assemble_seed(ticker: str, session: date, pinned: dict[str, Any],
 
 def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
                      coverage: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Recheck and decode at most sixteen prior books with three bounded SELECTs.
+    """Recheck and decode at most eight prior books with three bounded SELECTs.
 
     This only changes the read shape. Every ticker still uses the exact
     single-seed decoder and its independent coverage/count/hash checks.
     """
     if (not isinstance(session, date) or type(tickers) is not tuple
-            or not 1 <= len(tickers) <= 16 or len(set(tickers)) != len(tickers)
+            or not 1 <= len(tickers) <= 8 or len(set(tickers)) != len(tickers)
             or any(not isinstance(ticker, str) or not ticker for ticker in tickers)
             or set(coverage) != set(tickers)):
-        raise ValueError("V7 batch requires one to sixteen distinct certified tickers")
+        raise ValueError("V7 batch requires one to eight distinct certified tickers")
     names = ",".join(_literal(ticker) for ticker in tickers)
     cutoff = _literal(_cutoff(session))
     current_rows = _rows(client,
