@@ -246,3 +246,56 @@ def test_external_writer_contention_retries_without_a_local_receipt():
     available.set()
     ingress.close()
     assert receipt.result() == writer.batches[0].batch_id
+
+
+def test_live_v4_ingress_uses_explicit_base_writer_and_rejects_special_families():
+    class LiveWriter(Writer):
+        journal_profile = "live_v4"
+        run_mode = "live"
+
+        def submit(self, _projected):
+            raise AssertionError("Live V4 must not use the legacy writer method")
+
+        def submit_base_v4(self, projected):
+            receipt = Writer.submit(self, projected)
+            receipt.set_result(projected.batch_id)
+            return receipt
+
+    writer = LiveWriter()
+    config = {"mode": "live"}
+    ingress = TypedJournalIngress(
+        writer, run_id="run-1", attempt_id=str(uuid4()),
+        first_sequence=1, prior_batch_id=ZERO,
+        projection_context={"expected_mode": "live", "expected_config": config},
+    )
+    with pytest.raises(ValueError, match="specialized typed source"):
+        ingress.submit(record(1), source_cursor="live:1")
+    with pytest.raises(ValueError, match="recovery anchor"):
+        ingress.submit(JournalRecord(
+            str(uuid4()), "run-1", 1, AT, AT, "lifecycle", "run", "run-1", "",
+            {"status": "completed", "processed_events": 0},
+        ), source_cursor="live:1")
+    source = JournalRecord(
+        str(uuid4()), "run-1", 1, AT, AT, "lifecycle", "run", "run-1", "",
+        {"status": "running", "config": config},
+    )
+    receipt = ingress.submit(source, source_cursor="live:1")
+    ingress.close()
+    assert receipt.result() == writer.batches[0].batch_id
+    assert writer.batches[0].run_transitions[0]["status"] == "running"
+
+
+def test_live_v4_ingress_requires_matching_pinned_mode():
+    class LiveWriter(Writer):
+        journal_profile = "live_v4"
+        run_mode = "paper"
+
+        def submit_base_v4(self, projected):
+            raise AssertionError("Mode mismatch must fail before publication")
+
+    with pytest.raises(ValueError, match="pinned mode"):
+        TypedJournalIngress(
+            LiveWriter(), run_id="run-1", attempt_id=str(uuid4()),
+            first_sequence=1, prior_batch_id=ZERO,
+            projection_context={"expected_mode": "live"},
+        )

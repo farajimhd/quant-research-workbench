@@ -25,6 +25,14 @@ class JournalIngressFull(RuntimeError):
     """The producer must stop new admission; no accepted fact was dropped."""
 
 
+_LIVE_V4_BASE_KINDS = frozenset({
+    ("lifecycle", "run"),
+    ("broker", "connection_state"),
+    ("risk", "risk_snapshot"),
+    ("risk", "continuous_risk_state"),
+})
+
+
 def _settle(receipt: Future[str], *, result: str | None = None,
             error: BaseException | None = None) -> None:
     try:
@@ -55,12 +63,19 @@ class TypedJournalIngress:
             raise ValueError("Typed ingress run, sequence, or capacity is invalid")
         UUID(attempt_id)
         UUID(prior_batch_id)
+        context = deepcopy(dict(projection_context or {}))
+        live_v4 = getattr(writer, "journal_profile", None) == "live_v4"
+        if live_v4 and (getattr(writer, "run_mode", None) not in {"live", "paper"}
+                        or context.get("expected_mode") != writer.run_mode
+                        or not callable(getattr(writer, "submit_base_v4", None))):
+            raise ValueError("Live V4 ingress needs its pinned mode and base writer")
         self._writer = writer
+        self._live_v4 = live_v4
         self._run_id = run_id
         self._attempt_id = attempt_id
         self._next_sequence = first_sequence
         self._prior_batch_id = prior_batch_id
-        self._projection_context = deepcopy(dict(projection_context or {}))
+        self._projection_context = context
         self._projector = projector
         self._queue: Queue[tuple[JournalRecord, str, Future[str]] | None] = Queue(capacity)
         self._lock = Lock()
@@ -77,6 +92,11 @@ class TypedJournalIngress:
                 or record.recorded_at.tzinfo is None):
             raise ValueError("Typed ingress needs a record and scalar source cursor")
         UUID(record.record_id)
+        if self._live_v4 and (record.category, record.entity_type) not in _LIVE_V4_BASE_KINDS:
+            raise ValueError("Live V4 base ingress requires a specialized typed source")
+        if (self._live_v4 and (record.category, record.entity_type) == ("lifecycle", "run")
+                and record.payload.get("status") != "running"):
+            raise ValueError("Live V4 terminal lifecycle requires its recovery anchor")
         # Runtime payload dictionaries can be mutated after submission. Snapshot
         # caller-owned data before taking the admission lock so large evidence
         # payloads do not serialize unrelated realtime producers.
@@ -135,7 +155,8 @@ class TypedJournalIngress:
                         raise ValueError("Typed projection changed ingress identity")
                     while True:
                         try:
-                            writer_receipt = self._writer.submit(batch)
+                            writer_receipt = (self._writer.submit_base_v4(batch)
+                                              if self._live_v4 else self._writer.submit(batch))
                             break
                         except JournalQueueFull:
                             # Only this worker waits. The producer remains
