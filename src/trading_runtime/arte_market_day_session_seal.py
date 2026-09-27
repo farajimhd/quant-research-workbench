@@ -71,16 +71,20 @@ def _validated_family(
 
 def prepare_session_seal(
     certificate: MarketDayCertificate, proof: BuildAttestation, *,
-    session_date: date, families: Mapping[str, Sequence[Mapping[str, Any]]],
+    session_date: date,
+    families: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Derive one day from a fully verified global certificate, never raw events."""
     day = session_date.isoformat()
+    if families is None and isinstance(certificate, MarketDayCertificate):
+        families = (certificate.session_families or {}).get(day)
     if (not isinstance(certificate, MarketDayCertificate)
             or not isinstance(proof, BuildAttestation)
             or certificate.build_id != proof.build_id
             or certificate.definition_hash != proof.definition_hash
             or _digest(certificate.source_plan) != proof.source_plan_hash
             or certificate.session_hashes is None
+            or families is None
             or set(families) != set(_FAMILIES)):
         raise ValueError("Session seal lacks a verified global V5 root")
     require_attested_inventory(proof, dict(certificate.fence))
@@ -186,6 +190,9 @@ class MarketDaySessionSealClient:
     def __init__(self, http_client: Any) -> None:
         self.http_client = http_client
 
+    def close(self) -> None:
+        self.http_client.close()
+
     def execute(self, sql: str) -> str:
         if not sql.lstrip().upper().startswith("SELECT "):
             raise ValueError("Session-seal read transport is SELECT-only")
@@ -198,6 +205,34 @@ class MarketDaySessionSealClient:
             self.http_client, "arte", SESSION_SEAL.name,
             [name for name, _ in SESSION_SEAL.columns], [dict(row)],
         )
+
+
+def inspect_session_seal(
+    client: Any, keeper: MarketDayKeeperReader,
+    proof: BuildAttestation, row: Mapping[str, Any],
+) -> str:
+    """Return absent, row_unsealed, or committed; conflicting state fails."""
+    receipt = session_seal_receipt(row)
+    verify_session_seal_row(row, proof, receipt)
+    stored = _read_one(client, build_id=proof.build_id, day=row["session_date"])
+    try:
+        observed, _ = keeper.client.get(_receipt_path(proof.build_id, row["session_date"]))
+    except Exception as exc:
+        if type(exc).__name__ == "NoNodeError":
+            observed = None
+        else:
+            raise KeeperUnavailable("Session-seal Keeper status is uncertain") from exc
+    if stored is None:
+        if observed is not None:
+            raise RuntimeError("Session seal has Keeper receipt without ClickHouse row")
+        return "absent"
+    if stored != dict(row):
+        raise RuntimeError("Session seal has a conflicting ClickHouse row")
+    if observed is None:
+        return "row_unsealed"
+    if observed != receipt:
+        raise KeeperUnavailable("Session seal has a conflicting Keeper receipt")
+    return "committed"
 
 
 def publish_session_seal(

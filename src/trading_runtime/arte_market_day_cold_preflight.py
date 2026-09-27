@@ -70,13 +70,15 @@ def _certificate_part_snapshot(client: Any) -> str:
 def audit_attested_market_day_certificate(client: Any, keeper: Any,
                                            build_id: str, *, sessions: tuple[str, ...],
                                            read_client_factory: Callable[[], Any] | None = None,
+                                           include_session_hashes: bool = False,
                                            ) -> MarketDayColdAudit:
     """Fail closed on absent, partial, duplicate, unplaced or unattested facts."""
     _placement(client)
     parts_before = _certificate_part_snapshot(client)
     certificate = verify_market_day_certificate(
         client, build_id, sessions=sessions,
-        read_client_factory=read_client_factory)
+        read_client_factory=read_client_factory,
+        include_session_hashes=include_session_hashes)
     fence_name = TABLES[-1].name
     fences = _read(client, fence_name, build_id)
     if len(fences) != 1:

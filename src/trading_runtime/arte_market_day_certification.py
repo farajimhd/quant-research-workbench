@@ -123,6 +123,7 @@ class MarketDayCertificate:
     source_plan: Mapping[str, Any]
     fence: Mapping[str, Any]
     session_hashes: Mapping[str, Mapping[str, tuple[int, str]]] | None = None
+    session_families: Mapping[str, Mapping[str, tuple[Mapping[str, Any], ...]]] | None = None
 
 
 def verify_market_day_certificate(client: Any, build_id: str, *,
@@ -244,6 +245,7 @@ def verify_market_day_certificate(client: Any, build_id: str, *,
                 ("seed_count", len(seeds))))):
         raise RuntimeError("Market-day final fence does not seal complete typed inventory")
     session_hashes = None
+    session_families = None
     if include_session_hashes:
         selected_families = (
             ("market_day_planned_scope_v1", "session_date"),
@@ -260,10 +262,15 @@ def verify_market_day_certificate(client: Any, build_id: str, *,
                   for name, rows in by_family.items()}
             for day, by_family in grouped.items()
         }
+        session_families = {
+            day: {name: tuple(rows) for name, rows in by_family.items()}
+            for day, by_family in grouped.items()
+        }
     return MarketDayCertificate(build_id, head["definition_hash"],
         tuple(sorted(scope_keys)), tuple(sorted((r["session_date"], r["ticker"],
             r["stage"], r["attempt_id"], int(r["output_rows"]), r["output_hash"])
-            for r in stages)), source_plan, fence, session_hashes)
+            for r in stages)), source_plan, fence, session_hashes,
+        session_families)
 
 
 def _utc(value: str) -> datetime:

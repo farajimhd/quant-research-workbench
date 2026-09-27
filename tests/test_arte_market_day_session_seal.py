@@ -10,7 +10,7 @@ import pytest
 from src.trading_runtime.arte_market_day_certification import verify_market_day_certificate
 from src.trading_runtime.arte_market_day_keeper import BuildAttestation
 from src.trading_runtime.arte_market_day_session_seal import (
-    SESSION_SEAL, MarketDaySessionSealClient, load_session_seal,
+    SESSION_SEAL, MarketDaySessionSealClient, inspect_session_seal, load_session_seal,
     prepare_session_seal, publish_session_seal, session_seal_receipt,
     read_sealed_session_families, verify_session_seal_row,
 )
@@ -42,6 +42,8 @@ def test_session_seal_is_typed_normalized_and_root_bound():
     certificate, proof, families = source()
     row = prepare_session_seal(certificate, proof,
                                session_date=date.fromisoformat(DAY), families=families)
+    assert prepare_session_seal(certificate, proof,
+                                session_date=date.fromisoformat(DAY)) == row
     assert set(row) == {name for name, _ in SESSION_SEAL.columns}
     assert SESSION_SEAL.partition == "toYYYYMM(session_date)"
     assert SESSION_SEAL.order == "build_id,session_date"
@@ -129,9 +131,14 @@ def test_session_seal_publishes_once_and_cold_reads_exact_receipt(monkeypatch):
     monkeypatch.setattr(
         "src.trading_runtime.arte_market_day_session_seal.insert_json_each_row", insert)
     publisher = MarketDaySessionSealClient(http)
+    assert inspect_session_seal(publisher, keeper, proof, row) == "absent"
+    http.seal_rows.append(deepcopy(row))
+    assert inspect_session_seal(publisher, keeper, proof, row) == "row_unsealed"
+    http.seal_rows.clear()
     publish_session_seal(publisher, keeper, proof, row)
     publish_session_seal(publisher, keeper, proof, row)
     assert writes == [row]
+    assert inspect_session_seal(publisher, keeper, proof, row) == "committed"
     assert load_session_seal(publisher, keeper, proof, date.fromisoformat(DAY)) == row
     selected = read_sealed_session_families(
         publisher, proof, row, session_seal_receipt(row))
