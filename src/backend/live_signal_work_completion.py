@@ -202,6 +202,7 @@ def read_completed_dispatch_prefix(
     keeper: CompletionKeeper, *, session_key: str,
     source_commit_hashes: tuple[str, ...], configuration_revision_id: str,
     registered_dispatch: Any | None = None,
+    registered_completion: Any | None = None,
 ) -> tuple[CompletionProof, ...]:
     """Verify every ACKed delivery in a verified source prefix is attested complete.
 
@@ -209,19 +210,34 @@ def read_completed_dispatch_prefix(
     succeeded. This cannot establish whole-session coverage without a sealed
     source head and a stable cold-read snapshot.
     """
+    if registered_completion is not None:
+        # Freeze registration before any ClickHouse read. An unacknowledged
+        # INSERT cannot pass this barrier even if its row is not yet visible.
+        registered_completion.close_for_cold()
     batches = read_committed_dispatch_prefix(
         dispatch_storage, session_key=session_key,
         source_commit_hashes=source_commit_hashes,
         configuration_revision_id=configuration_revision_id,
         registered_dispatch=registered_dispatch)
     proofs = []
+    completion_receipts: dict[str, str] = {}
     for intents, acks in batches:
         for ordinal in range(len(intents["intents"])):
             proof = prepare_completion_proof(intents, acks, ordinal=ordinal)
-            if read_exact_completion(completion_storage, intents, acks,
-                                     ordinal=ordinal, keeper=keeper) is None:
+            completed = read_exact_completion(completion_storage, intents, acks,
+                                              ordinal=ordinal, keeper=keeper)
+            if completed is None:
                 raise ValueError("ACKed signal work completion is absent or uncertain")
+            row = completed.row
+            resource = completion_resource(
+                row["session_key"], row["source_batch_sequence"],
+                row["ordinal"], row["delivery_id"])
+            if resource in completion_receipts:
+                raise ValueError("duplicate completion resource in dispatch prefix")
+            completion_receipts[resource] = row["content_hash"]
             proofs.append(proof)
+    if registered_completion is not None:
+        registered_completion.assert_cold_receipts(completion_receipts)
     return tuple(proofs)
 
 
@@ -237,6 +253,10 @@ class CompletionPublicationQueue:
                  owner_id: str, capacity: int = 128) -> None:
         if type(capacity) is not int or capacity < 1:
             raise ValueError("completion publication capacity is invalid")
+        if getattr(storage, "registered_transport", False) and not all(
+                callable(getattr(storage, name, None)) for name in (
+                    "seal_completion_row", "assert_existing_completion_row")):
+            raise ValueError("registered completion storage lacks seal authority")
         self._storage = storage
         self._keeper = keeper
         if not isinstance(owner_id, str) or not owner_id or any(
@@ -312,6 +332,8 @@ class CompletionPublicationQueue:
                     self._storage, frozen_intents, frozen_acks,
                     ordinal=proof.ordinal, keeper=self._keeper)
                 if prior is not None:
+                    if getattr(self._storage, "registered_transport", False):
+                        self._storage.assert_existing_completion_row(prior.row)
                     projected = prior
                 else:
                     if self._keeper.completion_proof_exists(resource):
@@ -339,6 +361,9 @@ class CompletionPublicationQueue:
                         ordinal=proof.ordinal, keeper=self._keeper)
                     if confirmed != projected:
                         raise RuntimeError("completion attested readback differs")
+                    if getattr(self._storage, "registered_transport", False):
+                        self._storage.seal_completion_row(
+                            projected.row, keeper=self._keeper)
                 if not self._keeper.release_completion_claim(
                         resource, owner_id=self._owner_id, epoch=epoch):
                     raise RuntimeError("completion Keeper release failed")

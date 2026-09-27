@@ -389,10 +389,23 @@ def test_attested_strategy_one_scope_cannot_read_legacy_activation_rows() -> Non
                 SESSION.isoformat(), "approved-1")
             assert len(receipts) == 1
             assert all(len(value) == 64 for value in receipts[1])
+    class ClosedCompletion:
+        def __init__(self):
+            self.closed = False
+        def close_for_cold(self):
+            self.closed = True
+        def assert_cold_receipts(self, receipts):
+            assert self.closed
+            row = completion.rows[0]
+            resource = completion_resource(
+                row["session_key"], row["source_batch_sequence"],
+                row["ordinal"], row["delivery_id"])
+            assert receipts == {resource: row["content_hash"]}
     restored = read_attested_activation_prefix(
         activation, dispatch, completion, keeper,
         activation_run_id=run_id, activation_dispatch=ClosedDispatch(),
         registered_dispatch=ClosedCursor(),
+        registered_completion=ClosedCompletion(),
         **kwargs)
     assert [row["delivery_id"] for row in restored] == [delivery["delivery_id"]]
 

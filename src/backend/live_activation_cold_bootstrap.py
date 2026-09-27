@@ -168,6 +168,7 @@ def read_attested_activation_prefix(
     configuration_revision_id: str, activation_run_id: str = ACTIVATION_RUN_ID,
     activation_dispatch: ActivationInsertDispatch | None = None,
     registered_dispatch: SignalDispatchInsertDispatch | None = None,
+    registered_completion: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Restore only completed, Keeper-attested ACK identities, in source order.
 
@@ -178,7 +179,8 @@ def read_attested_activation_prefix(
     if type(session_date) is not date:
         raise ValueError("activation receipt read requires a session date")
     if activation_run_id != ACTIVATION_RUN_ID and (
-            activation_dispatch is None or registered_dispatch is None):
+            activation_dispatch is None or registered_dispatch is None
+            or registered_completion is None):
         raise ActivationRecoveryUnfenced(
             "Strategy 1 activation read lacks registered INSERT drain proof")
     proofs = read_completed_dispatch_prefix(
@@ -186,7 +188,8 @@ def read_attested_activation_prefix(
         session_key=session_date.isoformat(),
         source_commit_hashes=source_commit_hashes,
         configuration_revision_id=configuration_revision_id,
-        registered_dispatch=registered_dispatch)
+        registered_dispatch=registered_dispatch,
+        registered_completion=registered_completion)
     seen_delivery: set[str] = set()
     seen_watch: set[tuple[str, str]] = set()
     dispatch_receipts: dict[str, str] = {}
@@ -239,6 +242,7 @@ def _cold_recover_activation_checkpoint_under_fence(
     activation_run_id: str = ACTIVATION_RUN_ID,
     activation_dispatch: ActivationInsertDispatch | None = None,
     registered_dispatch: SignalDispatchInsertDispatch | None = None,
+    registered_completion: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Read-only typed replacement prerequisite for the SQLite watch checkpoint.
 
@@ -292,6 +296,7 @@ def _cold_recover_activation_checkpoint_under_fence(
     if receipt_defined:
         reader_kwargs["activation_dispatch"] = activation_dispatch
         reader_kwargs["registered_dispatch"] = registered_dispatch
+        reader_kwargs["registered_completion"] = registered_completion
     watches = activation_reader(
         activation_client, dispatch_storage, completion_storage,
         completion_keeper, **reader_kwargs)
@@ -314,6 +319,7 @@ def audit_activation_checkpoint_under_cooperative_fences(
     activation_run_id: str = ACTIVATION_RUN_ID,
     activation_dispatch: ActivationInsertDispatch | None = None,
     registered_dispatch: SignalDispatchInsertDispatch | None = None,
+    registered_completion: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Diagnostic cold audit, not an admission or executable checkpoint.
 
@@ -349,7 +355,8 @@ def audit_activation_checkpoint_under_cooperative_fences(
             receipt_defined=receipt_defined,
             activation_run_id=activation_run_id,
             activation_dispatch=activation_dispatch,
-            registered_dispatch=registered_dispatch)
+            registered_dispatch=registered_dispatch,
+            registered_completion=registered_completion)
         if not source_keeper.is_current(session_key, owner_id=owner_id, epoch=epoch):
             raise RuntimeError("Signal Stream source owner fence lost during recovery")
         if not activation_fence.is_current(
@@ -376,6 +383,7 @@ def audit_receipt_defined_activation_prefix_under_fences(
     activation_run_id: str = ACTIVATION_RUN_ID,
     activation_dispatch: ActivationInsertDispatch | None = None,
     registered_dispatch: SignalDispatchInsertDispatch | None = None,
+    registered_completion: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Inactive causal-prefix audit; only attested receipts become visible."""
     return audit_activation_checkpoint_under_cooperative_fences(
@@ -390,7 +398,8 @@ def audit_receipt_defined_activation_prefix_under_fences(
         receipt_defined=True,
         activation_run_id=activation_run_id,
         activation_dispatch=activation_dispatch,
-        registered_dispatch=registered_dispatch)
+        registered_dispatch=registered_dispatch,
+        registered_completion=registered_completion)
 
 
 class ActivationRecoveryUnfenced(RuntimeError):
