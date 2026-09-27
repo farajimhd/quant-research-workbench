@@ -120,6 +120,11 @@ class ActivationInsertDispatch:
             raise KeeperUnavailable("Activation dispatch run is absent") from exc
         return _decode(wire), stat.version
 
+    def assert_open(self, run_id: str) -> None:
+        gate, _ = self._read(run_id)
+        if gate.mode != "open" or gate.active_delivery_hash != _ZERO:
+            raise KeeperUnavailable("Activation dispatch is not ready for new publication")
+
     def _cas(self, run_id: str, version: int, gate: _Gate) -> bool:
         txn = self.keeper.transaction()
         txn.check(_gate_path(run_id), version=version)
