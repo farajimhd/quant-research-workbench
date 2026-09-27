@@ -203,6 +203,16 @@ class TypedJournalIngress:
                         from src.trading_runtime.arte_protection_change_v4 import (
                             protection_change_batch_v4,
                         )
+                        config = self._projection_context.get("expected_config")
+                        strategy = (config.get("strategy", config)
+                                    if isinstance(config, dict) else None)
+                        if (not isinstance(strategy, dict)
+                                or record.payload.get("strategy_id") !=
+                                   strategy.get("strategy_id")
+                                or record.payload.get("strategy_revision") !=
+                                   strategy.get("strategy_revision")):
+                            raise ValueError(
+                                "Live protection differs from pinned strategy")
                         unit = protection_change_batch_v4(
                             record,
                             run_month=record.event_time.astimezone(timezone.utc).date().replace(day=1),

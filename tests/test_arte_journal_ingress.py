@@ -473,7 +473,11 @@ def test_live_v4_protection_ingress_commits_numbered_rows_off_actor():
     ingress = TypedJournalIngress(
         LiveWriter(), run_id="run-1", attempt_id=str(uuid4()),
         first_sequence=1, prior_batch_id=ZERO,
-        projection_context={"expected_mode": "live"},
+        projection_context={
+            "expected_mode": "live",
+            "expected_config": {"strategy_id": "early-squeeze-strategy",
+                                "strategy_revision": 1},
+        },
     )
     receipt = ingress.submit_protection_change(
         source, source_cursor="boundary-31000")
@@ -483,3 +487,36 @@ def test_live_v4_protection_ingress_commits_numbered_rows_off_actor():
     assert len(client.tables[TABLES[0].name]) == 1
     assert len(client.tables[TABLES[1].name]) == 2
     assert load_verified_v4_prefix(client, "run-1").last_sequence == 1
+
+
+def test_live_v4_protection_ingress_rejects_unpinned_strategy():
+    class LiveWriter(Writer):
+        journal_profile = "live_v4"
+        run_mode = "live"
+
+        def submit_base_v4(self, unit):
+            raise AssertionError("Wrong strategy must not be published")
+
+        def submit_protection_change_v4(self, unit):
+            raise AssertionError("Wrong strategy must not be published")
+
+    source = JournalRecord(
+        str(uuid4()), "run-1", 1, AT, AT,
+        "protection", "protection_change", "broker-1", "DU1",
+        {"strategy_id": "other", "strategy_revision": 1},
+    )
+    ingress = TypedJournalIngress(
+        LiveWriter(), run_id="run-1", attempt_id=str(uuid4()),
+        first_sequence=1, prior_batch_id=ZERO,
+        projection_context={
+            "expected_mode": "live",
+            "expected_config": {"strategy_id": "early-squeeze-strategy",
+                                "strategy_revision": 1},
+        },
+    )
+    receipt = ingress.submit_protection_change(
+        source, source_cursor="boundary-31000")
+    with pytest.raises(RuntimeError, match="did not drain"):
+        ingress.close()
+    with pytest.raises(ValueError, match="pinned strategy"):
+        receipt.result()
