@@ -212,8 +212,8 @@ class FixedV7Cache:
                     splits=splits[ticker], consume_seed=True)
                     for ticker in batch}
 
-        batches = tuple(tuple(symbols[index:index + 8])
-                        for index in range(0, len(symbols), 8))
+        batches = tuple(tuple(symbols[index:index + 16])
+                        for index in range(0, len(symbols), 16))
         with ThreadPoolExecutor(max_workers=min(max_workers, len(batches)),
                                 thread_name_prefix="v7-seed-read") as pool:
             prepared = {ticker: stream for batch in pool.map(prepare, batches)

@@ -59,13 +59,16 @@ def test_typed_seed_is_accepted_by_streaming_engine():
     assert len(engine.rows) == 1
 
 
-def test_batched_seed_reads_preserve_single_ticker_decoding():
+@pytest.mark.parametrize("tickers", [
+    ("TEST", "OTHER"), tuple(f"T{i}" for i in range(16)),
+])
+def test_batched_seed_reads_preserve_single_ticker_decoding(tickers):
     class BatchClient(Client):
         def execute(self, sql):
             result = super().execute(sql)
             rows = [json.loads(line) for line in result.splitlines()]
             if "ticker IN" in sql:
-                rows = [{**row, "ticker": ticker} for ticker in ("TEST", "OTHER")
+                rows = [{**row, "ticker": ticker} for ticker in tickers
                         for row in rows]
                 if "structural_levels_v7" in sql:
                     rows = [{**row, "level_id": f"{row['ticker']}-one"} for row in rows]
@@ -75,23 +78,27 @@ def test_batched_seed_reads_preserve_single_ticker_decoding():
 
     client = BatchClient()
     pinned = {ticker: {**client.coverage, "ticker": ticker}
-              for ticker in ("TEST", "OTHER")}
-    seeds = load_seeds_batch(client, tickers=("TEST", "OTHER"),
+              for ticker in tickers}
+    seeds = load_seeds_batch(client, tickers=tickers,
                              session=date(2026, 8, 18), coverage=pinned)
-    assert set(seeds) == {"TEST", "OTHER"}
+    assert set(seeds) == set(tickers)
     assert all(len(seed["levels"][0]["observations"]) == 3 for seed in seeds.values())
     assert all(sql.startswith("SELECT") for sql in client.queries)
     assert len(client.queries) == 3
     assert all("SELECT * FROM arte.structural_level" not in sql
                for sql in client.queries[1:])
-    assert "LIMIT 3" in client.queries[1]
-    assert "LIMIT 7" in client.queries[2]
+    assert f"LIMIT {len(tickers) + 1}" in client.queries[1]
+    assert f"LIMIT {3 * len(tickers) + 1}" in client.queries[2]
     wrong_count = {ticker: dict(row) for ticker, row in pinned.items()}
-    wrong_count["TEST"]["observation_count"] = 4
+    wrong_count[tickers[0]]["observation_count"] = 4
     with pytest.raises(ValueError, match="changed after preflight"):
-        load_seeds_batch(client, tickers=("TEST", "OTHER"),
+        load_seeds_batch(client, tickers=tickers,
                          session=date(2026, 8, 18), coverage=wrong_count)
     assert len(client.queries) == 4  # No row read after changed coverage.
+    with pytest.raises(ValueError, match="one to sixteen"):
+        load_seeds_batch(client, tickers=(*tickers, "EXTRA")
+                         if len(tickers) == 16 else tuple(f"X{i}" for i in range(17)),
+                         session=date(2026, 8, 18), coverage={})
 
 
 def test_batched_splits_preserve_per_ticker_seed_window_and_shape():
