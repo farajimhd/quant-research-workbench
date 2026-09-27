@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 import os
 from pathlib import Path
 import platform
 import sys
+from threading import Lock
 from time import perf_counter
 import traceback
 
@@ -64,6 +66,52 @@ def _print_completed_profile(controller) -> None:
           f"worker_s={metrics['publish_ns_total'] / 1e9:.3f} "
           f"max_unit_s={metrics['publish_ns_max'] / 1e9:.3f} "
           f"queue_capacity={metrics['queue_capacity']}", flush=True)
+
+
+class _SqlCallProfile:
+    """Per-process HTTP timing; SQL text and credentials are never retained."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._bins: dict[str, tuple[int, float]] = {}
+
+    @staticmethod
+    def category(sql: str) -> str:
+        journal = "arte.trading_" in sql.lower()
+        insert = sql.lstrip().upper().startswith("INSERT ")
+        return ("journal" if journal else "market_or_control") + (
+            "_insert" if insert else "_read")
+
+    def record(self, sql: str, elapsed: float) -> None:
+        category = self.category(sql)
+        with self._lock:
+            calls, seconds = self._bins.get(category, (0, 0.0))
+            self._bins[category] = (calls + 1, seconds + elapsed)
+
+    def print_summary(self) -> None:
+        for category, (calls, seconds) in sorted(self._bins.items()):
+            print(f"ClickHouse {category}: calls={calls} "
+                  f"client_s={seconds:.3f}", flush=True)
+
+
+@contextmanager
+def _profile_sql_calls(profile: _SqlCallProfile):
+    from research.mlops.clickhouse import ClickHouseHttpClient
+
+    original = ClickHouseHttpClient.execute
+
+    def timed_execute(client, sql, *args, **kwargs):
+        started = perf_counter()
+        try:
+            return original(client, sql, *args, **kwargs)
+        finally:
+            profile.record(sql, perf_counter() - started)
+
+    ClickHouseHttpClient.execute = timed_execute
+    try:
+        yield
+    finally:
+        ClickHouseHttpClient.execute = original
 
 
 async def _run(day: date, ticker: str, *, apply: bool, minutes: int) -> None:
@@ -118,10 +166,12 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int) -> None:
 
     controller._open_fixed_journal = traced_open_journal
     began = perf_counter()
-    await controller.start()
-    if controller._task is None:
-        raise RuntimeError("Public Backtest start did not schedule execution")
-    await controller._task
+    sql_profile = _SqlCallProfile()
+    with _profile_sql_calls(sql_profile):
+        await controller.start()
+        if controller._task is None:
+            raise RuntimeError("Public Backtest start did not schedule execution")
+        await controller._task
     elapsed = perf_counter() - began
     print(f"Strategy 1 probe run_id={controller.run_id} "
           f"status={controller.status} elapsed_s={elapsed:.3f} "
@@ -132,6 +182,7 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int) -> None:
     if controller.run_dir.exists():
         raise RuntimeError("Strategy 1 integration wrote a run-local directory")
     _print_completed_profile(controller)
+    sql_profile.print_summary()
 
 
 def main() -> None:
