@@ -285,6 +285,26 @@ def test_backtest_resume_rejects_before_legacy_journal_access(
     assert not (run_dir / "journal.sqlite3").exists()
 
 
+def test_strategy_one_saved_resume_reports_missing_normalized_recovery(
+    monkeypatch, tmp_path,
+):
+    from src.backend import replay_run_service
+
+    run_dir = tmp_path / RUN
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(json.dumps({
+        "journal_backend": "arte_typed_journal_v1", "run": {"status": "stopped"},
+    }), encoding="utf-8")
+    definition = SimpleNamespace(mode=RunMode.BACKTEST, execution_interval="100ms")
+    monkeypatch.setattr(replay_run_service, "_definition_from_manifest",
+                        lambda *_a, **_k: definition)
+    monkeypatch.setattr(replay_run_service, "_backtest_launch_blocker", lambda _d: "")
+    monkeypatch.setattr(replay_run_service.TradingJournal, "__init__", lambda *_a, **_k:
+                        pytest.fail("SQLite opened"))
+    with pytest.raises(RuntimeError, match="ClickHouse checkpoint recovery"):
+        asyncio.run(ReplayRunService(runtime_root=tmp_path).resume(RUN))
+
+
 def test_future_fixed_manifest_names_typed_journal_without_legacy_identity(
     monkeypatch, tmp_path,
 ):

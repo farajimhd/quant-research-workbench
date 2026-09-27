@@ -5940,7 +5940,7 @@ async def trading_backtest_run_resume(run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Backtest run not found") from exc
     except ReplayRunCapacityError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

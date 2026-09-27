@@ -8994,7 +8994,11 @@ class ReplayRunService:
             # A saved run must obey the same admission gate as a new one.
             # In particular, never open its legacy SQLite journal or retired
             # bt_* ClickHouse tables before start() rejects execution.
-            raise RuntimeError(_backtest_launch_blocker(definition))
+            blocker = _backtest_launch_blocker(definition)
+            raise RuntimeError(blocker or (
+                "Strategy 1 Backtest resume is unavailable until normalized "
+                "ClickHouse checkpoint recovery is implemented; start a new run"
+            ))
         if backend == "sqlite_v1" and journal_path.is_file():
             journal = TradingJournal(journal_path)
             try:
