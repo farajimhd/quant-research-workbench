@@ -10,6 +10,7 @@ import pytest
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
 from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
+from src.trading_runtime.arte_journal_compound_v4 import publish_compound_v4
 from src.trading_runtime.arte_journal_commit_v4 import (
     load_verified_v4_prefix, publish_base_typed_batch_v4,
 )
@@ -97,6 +98,11 @@ def test_protection_source_is_isolated_and_fenced_without_blob():
         def submit_base_v4(self, batch):
             result = Future()
             result.set_result(publish_base_typed_batch_v4(self.client, batch))
+            return result
+
+        def submit_compound_v4(self, batch):
+            result = Future()
+            result.set_result(publish_compound_v4(self.client, batch))
             return result
 
     async def publish():
