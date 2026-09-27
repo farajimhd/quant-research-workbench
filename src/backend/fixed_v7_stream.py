@@ -299,7 +299,9 @@ class FixedV7Cache:
                     self._stage_time("strategy_one_v7_seed", seed_started)
         else:
             after_ms = self._last_loaded_second_ms[ticker]
+        engine_update_seconds = 0.0
         def consume(row: Mapping[str, Any]) -> None:
+            nonlocal engine_update_seconds
             if str(row.get("ticker") or "") != ticker:
                 raise ValueError("V7 catch-up changed ticker scope")
             second_ms = ((int(row["bucket_index"]) + 1) * 1_000
@@ -308,8 +310,10 @@ class FixedV7Cache:
                     or second_ms > completed_ms or second_ms % 1_000):
                 raise ValueError("V7 completed second duplicated or crossed its causal clock")
             if int(row.get("price_valid") or 0) and int(row.get("extremes_valid") or 0):
-                stream.update_second(
-                    row, at=market_day_boundary(self.session, second_ms))
+                update_started = perf_counter() if self._stage_time is not None else 0.0
+                stream.update_second(row, at=market_day_boundary(self.session, second_ms))
+                if update_started:
+                    engine_update_seconds += perf_counter() - update_started
                 self._last_completed_second_rows[ticker] = {
                     **row, "boundary_ms": second_ms,
                     "session_date": self.session.isoformat()}
@@ -364,6 +368,10 @@ class FixedV7Cache:
                 consume(row)
         if seconds_started:
             self._stage_time("strategy_one_v7_seconds", seconds_started)
+            if engine_update_seconds:
+                # Nested CPU subset of v7_seconds, not an additional run cost.
+                self._stage_time("strategy_one_v7_engine_update",
+                                 perf_counter() - engine_update_seconds)
         self._streams[ticker] = stream
         self._last_loaded_second_ms[ticker] = completed_ms
         return stream

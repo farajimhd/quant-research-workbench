@@ -174,6 +174,7 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
     assert all(sql.startswith("SELECT") for sql in client.queries)
     later = datetime(2026, 8, 18, 4, 5, 2, tzinfo=NY)
     cache.strategy_one_levels("TEST", as_of=later)
+    assert "strategy_one_v7_engine_update" in stages
     assert observed_seconds == [("TEST", 14700, 301_000),
                                 ("TEST", 14701, 302_000)]
     assert cache._streams["TEST"].engine.bars_processed == 2
