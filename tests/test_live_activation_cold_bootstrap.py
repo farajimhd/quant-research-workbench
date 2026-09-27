@@ -471,6 +471,22 @@ def test_strategy_one_cold_audit_closes_all_insert_gates_before_source_read(
                           "completion-closed", "activation-closed",
                           "keeper-read", "clickhouse-read"]
     assert events[-1] == "source-verified"
+    events.clear()
+    class PendingCompletion:
+        def close_for_cold(self):
+            events.append("completion-pending")
+            raise RuntimeError("unacknowledged completion INSERT")
+    with pytest.raises(RuntimeError, match="unacknowledged"):
+        _cold_recover_activation_checkpoint_under_fence(
+            object(), object(), object(), SourceKeeper(), object(), object(),
+            object(), session_date=SESSION,
+            configuration_revision_id="approved-1",
+            source_revision_id="source-1", catalogs={}, receipt_defined=True,
+            activation_run_id=run_id, activation_dispatch=Activation(),
+            registered_dispatch=Dispatch(),
+            registered_completion=PendingCompletion(),
+            registered_source=Source())
+    assert events == ["source-closed", "dispatch-closed", "completion-pending"]
 
 
 def test_attested_prefix_rejects_missing_or_conflicting_receipt_rows() -> None:
