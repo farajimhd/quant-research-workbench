@@ -17,6 +17,10 @@ before the first completed training session. Episode and validation summaries
 separate policy pass/buy/reduce/close decisions, discretionary fills/costs, and
 realized P&L from discretionary versus mandatory exits. These are diagnostics;
 the reward remains net change in account equity without an additional fee tax.
+Validation records an unfilled end-of-session position as an invalid terminal
+rollout; such a checkpoint cannot be selected, even if its marked equity is high.
+Training still stops if its own account cannot finish flat, since resetting that
+account would falsely assume an executable liquidation.
 
 ## Market and observation contract
 
