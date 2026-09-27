@@ -24,8 +24,10 @@ def load_strategy_one_v4_history(client, *, limit: int = 32) -> list[dict]:
     if type(limit) is not int or not 1 <= limit <= 100:
         raise ValueError("V4 history limit must be between 1 and 100")
     contexts = _rows(client, """
-        SELECT r.run_id,r.run_month,r.session_date,r.started_at,
-               r.configuration_hash,c.strategy_id,c.strategy_revision
+        SELECT r.run_id AS run_id,r.run_month AS run_month,
+               r.session_date AS session_date,r.started_at AS started_at,
+               r.configuration_hash AS configuration_hash,
+               c.strategy_id AS strategy_id,c.strategy_revision AS strategy_revision
         FROM arte.trading_run_v1 AS r
         INNER JOIN arte.trading_runtime_config_v1 AS c
           ON r.run_id=c.run_id AND r.run_month=c.run_month
