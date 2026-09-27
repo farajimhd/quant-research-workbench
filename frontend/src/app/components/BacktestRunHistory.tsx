@@ -2,10 +2,15 @@ import { useEffect, useState } from "react";
 import { api } from "../../api/client";
 import type { CanvasReplayRun } from "../replayRun";
 
-type RunRow = Pick<CanvasReplayRun, "run_id" | "created_at" | "status" | "session_date" | "current_time" | "processed_events" | "checkpoint" | "tickers"> & {
+type RunRow = Pick<CanvasReplayRun, "run_id" | "created_at" | "status" | "session_date" | "checkpoint" | "tickers"> & {
+  current_time?: string | null;
+  processed_events?: number | null;
   configuration_revision?: number;
   configuration_label?: string;
   resident?: boolean;
+  journal_backend?: string;
+  journal_sequence?: number;
+  review_available?: boolean;
 };
 
 const PAGE_SIZE = 10;
@@ -59,7 +64,7 @@ export function BacktestRunHistory({ onReview, onResumed }: {
 
   const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   return <section className="backtest-run-history" aria-labelledby="backtest-history-heading" aria-busy={loading}>
-    <header><div><h2 id="backtest-history-heading">Recent backtests</h2><p>Newest created first · Times in ET · Resume continues the saved run.</p></div>
+    <header><div><h2 id="backtest-history-heading">Recent backtests</h2><p>Newest created first · Times in ET.</p></div>
       <button className="button secondary compact" type="button" disabled={loading || Boolean(busy)} onClick={() => setRefresh(value => value + 1)}>{loading ? "Loading…" : "Refresh runs"}</button></header>
     {error ? <p role="alert">Could not refresh backtests: {error}{rows.length ? " Showing the previously loaded list." : ""}</p> : null}
     {!rows.length ? <p role="status">{loading ? "Loading recent backtests…" : error ? "Use Refresh runs to try again." : "No saved backtests yet."}</p> : <>
@@ -68,15 +73,17 @@ export function BacktestRunHistory({ onReview, onResumed }: {
         <tbody>{rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map(row => {
           const paused = row.status === "paused" && row.resident;
           const resumable = paused || (row.status !== "completed" && (row.status === "stopped" || row.status === "failed" || row.resident === false) && row.checkpoint?.resume_supported);
+          const reviewable = row.review_available !== false;
+          const recordedV4 = row.journal_backend === "arte_typed_journal_v4";
           return <tr key={row.run_id}>
             <td><time dateTime={row.created_at}>{dateTime(row.created_at)}</time></td>
             <td><strong title={row.run_id}>{row.run_id.slice(0, 8)}</strong><small>{row.configuration_revision ? `Candidate ${row.configuration_revision}` : "Candidate unavailable"}</small><small>{row.configuration_label}</small></td>
             <td>{row.tickers?.length ? row.tickers.join(", ") : "Configured universe"}<small>{row.session_date || "—"}</small></td>
-            <td>{row.status.replaceAll("_", " ")}{row.resident === false && !["completed", "stopped", "failed"].includes(row.status) ? <small>Saved status · not active</small> : null}</td>
-            <td>{(row.processed_events ?? 0).toLocaleString()} events<small>Through {dateTime(row.current_time)}</small></td>
-            <td><div className="backtest-history-actions"><button className="button secondary compact" type="button" disabled={Boolean(busy)} aria-label={`Review backtest ${row.run_id.slice(0, 8)}`} onClick={() => onReview(row.run_id)}>Review</button>
+            <td>{row.status.replaceAll("_", " ")}{recordedV4 ? <small>ClickHouse record · review not yet available</small> : row.resident === false && !["completed", "stopped", "failed"].includes(row.status) ? <small>Saved status · not active</small> : null}</td>
+            <td>{recordedV4 ? `${(row.journal_sequence ?? 0).toLocaleString()} journal records` : `${(row.processed_events ?? 0).toLocaleString()} events`}{!recordedV4 ? <small>Through {dateTime(row.current_time ?? "")}</small> : null}</td>
+            <td><div className="backtest-history-actions"><button className="button secondary compact" type="button" disabled={!reviewable || Boolean(busy)} aria-label={`Review backtest ${row.run_id.slice(0, 8)}`} onClick={() => onReview(row.run_id)}>Review</button>
               <button className="button secondary compact" type="button" disabled={!resumable || Boolean(busy)} aria-label={`Resume backtest ${row.run_id.slice(0, 8)}`} onClick={() => void resume(row)}>{busy === row.run_id ? "Resuming…" : "Resume"}</button></div>
-              <small>{paused ? "Paused in memory" : resumable ? `Checkpoint: ${(row.checkpoint?.processed_events ?? 0).toLocaleString()} events` : row.status === "completed" ? "Completed" : ["stopped", "failed"].includes(row.status) || row.resident === false ? "No resumable checkpoint" : "Run is active"}</small>
+              <small>{recordedV4 ? "Review and resume await verified ClickHouse recovery" : paused ? "Paused in memory" : resumable ? `Checkpoint: ${(row.checkpoint?.processed_events ?? 0).toLocaleString()} events` : row.status === "completed" ? "Completed" : ["stopped", "failed"].includes(row.status) || row.resident === false ? "No resumable checkpoint" : "Run is active"}</small>
               {actionError?.runId === row.run_id ? <p role="alert">{actionError.message} Refresh runs before retrying.</p> : null}
             </td>
           </tr>;

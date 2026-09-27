@@ -9151,6 +9151,14 @@ class ReplayRunService:
             )
             for controller in self._runs.values()
         }
+        if include_durable and os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_USER"):
+            from src.backend.backtest_v4_history import load_strategy_one_v4_history
+            from src.trading_runtime.arte_journal_writer import (
+                backtest_v4_operator_client_from_env,
+            )
+            with closing(backtest_v4_operator_client_from_env()) as client:
+                for durable in load_strategy_one_v4_history(client):
+                    rows.setdefault(durable["run_id"], durable)
         if include_durable and self.runtime_root.is_dir():
             for run_dir in self.runtime_root.iterdir():
                 if not run_dir.is_dir() or run_dir.name in rows:
@@ -9162,7 +9170,9 @@ class ReplayRunService:
                 except (OSError, TypeError, ValueError, json.JSONDecodeError):
                     continue
         for run_id, row in tuple(rows.items()):
-            if row.get("mode") == RunMode.BACKTEST.value and row.get("status") == "completed":
+            if (row.get("mode") == RunMode.BACKTEST.value
+                    and row.get("status") == "completed"
+                    and row.get("journal_backend") != "arte_typed_journal_v4"):
                 rows[run_id] = _completed_backtest_selection_projection(
                     self.runtime_root / run_id,
                     row,
