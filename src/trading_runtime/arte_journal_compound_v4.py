@@ -53,7 +53,7 @@ class V4CompoundBatch:
     def __post_init__(self) -> None:
         if (self.base.status != "running" or len(self.units) < 2
                 or set(self.children) != set(_CHILD_KEYS)
-                or len(self.base.events) > 512
+                or len(self.base.events) > 1024
                 or len(self.base.events)
                    != self.base.last_sequence - self.base.first_sequence + 1):
             raise ValueError("V4 compound lacks a bounded contiguous event prefix")
@@ -101,7 +101,7 @@ def coalesce_v4_units(
 ) -> V4CompoundBatch:
     """Rekey adjacent unpublished micro-units without mutating source rows."""
     if (len(units) < 2 or type(max_events) is not int
-            or not 2 <= max_events <= 512):
+            or not 2 <= max_events <= 1024):
         raise ValueError("V4 compound needs two or more bounded units")
     bases = []
     for unit in units:

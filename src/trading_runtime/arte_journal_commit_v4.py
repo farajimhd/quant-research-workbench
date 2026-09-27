@@ -887,7 +887,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
 
     if (type(_prepare_only) is not bool
             or not isinstance(batch, TypedJournalBatch)
-            or not 1 <= len(batch.events) <= 512
+            or not 1 <= len(batch.events) <= 1024
             or batch.status not in {"running", "completed", "stopped", "failed"}):
         raise ValueError("V4 publication needs one bounded typed event batch")
     if (getattr(client, "typed_insert_strict", False) is not True

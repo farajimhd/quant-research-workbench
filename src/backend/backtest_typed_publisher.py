@@ -35,7 +35,7 @@ from src.trading_runtime.arte_journal_compound_v4 import (
 from src.trading_runtime.arte_oms_tactic_projection import V4OmsTacticBatch
 
 
-def _coalesce_v4_units(units: tuple) -> tuple:
+def _coalesce_v4_units(units: tuple, *, max_events: int = 512) -> tuple:
     """Commit a bounded causal prefix, including same-batch intent consumers.
 
     The V4 family seal verifies the exact earlier intent revision in the same
@@ -43,7 +43,8 @@ def _coalesce_v4_units(units: tuple) -> tuple:
     Backtest, so the intent and its simulated OMS action share one durability
     boundary without weakening live order admission.
     """
-    return (coalesce_v4_units(units) if len(units) > 1 else units[0],)
+    return (coalesce_v4_units(units, max_events=max_events)
+            if len(units) > 1 else units[0],)
 
 
 def _committed_intent_source(batch: TypedJournalBatch,
@@ -178,7 +179,7 @@ class BacktestTypedJournalPublisher:
                 published_sources=dict(self._committed_strategy_intents),
                 committed_order_lineage=dict(self._committed_order_lineage),
                 through_sequence=through_sequence)
-            return _coalesce_v4_units(units)
+            return _coalesce_v4_units(units, max_events=self.batch_size)
         if self.writer.journal_profile == "backtest_v3":
             from src.backend.backtest_squeeze_episode_v3 import coalesce_squeeze_units_v3
             units = project_pending_backtest_v3_prefix(
