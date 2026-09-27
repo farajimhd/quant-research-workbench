@@ -8,9 +8,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import re
-from typing import Any
+from typing import Any, Mapping
 
-from src.trading_runtime.arte_journal_writer import _literal, _rows
+from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
+from src.trading_runtime.arte_journal_writer import (
+    _CONTRACTS, _RUN_CONFIG_FIELDS, _literal, _rows, _wire_row, typed_row,
+)
 from src.trading_runtime.arte_live_run_allocation import LiveRunAllocation, LiveRunAllocator
 from src.trading_runtime.arte_portfolio_sync import (
     audit_attested_portfolio_sync_transitions,
@@ -25,6 +28,7 @@ from src.trading_runtime.arte_typed_insert_dispatch import (
     _gate_path as _core_gate_path,
 )
 from src.trading_runtime.keeper_ownership import KeeperUnavailable, _ROOT, _committed, _identity
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
 
 _EXISTING_TABLES = (
@@ -52,6 +56,66 @@ def _run_fact_tables(client: Any) -> tuple[str, ...]:
                    for row, name in zip(rows, names))):
         raise KeeperUnavailable("Live run fact-table inventory is incomplete or ambiguous")
     return names
+
+
+def validate_new_strategy_one_live_context(
+    run: Mapping[str, Any], config: Mapping[str, Any],
+    account_ids: tuple[str, ...], release: CertifiedStrategyOneConfiguration,
+) -> str:
+    """Reject incompatible typed facts before creating Keeper gates or CH rows.
+
+    This only validates a proposed context. Operator approval, allocation,
+    broker reconciliation and durable journal receipts are separate gates.
+    """
+    if (not isinstance(release, CertifiedStrategyOneConfiguration)
+            or not isinstance(run, Mapping) or not isinstance(config, Mapping)
+            or set(run) != {name for name, _ in _CONTRACTS["trading_run_v1"].columns}
+            or set(config) != _RUN_CONFIG_FIELDS):
+        raise ValueError("Strategy 1 live context is not fully typed")
+    strategy = release.payload.get("strategy")
+    plan = release.payload.get("run_plan")
+    if (not isinstance(strategy, Mapping) or not isinstance(plan, Mapping)
+            or strategy.get("strategy_id") != STRATEGY_ID
+            or strategy.get("strategy_number") != STRATEGY_NUMBER
+            or strategy.get("revision") != STRATEGY_NUMBER
+            or strategy.get("execution_interval") != "100ms"
+            or run.get("mode") != "live"
+            or run.get("evaluation_interval_ms") != 100
+            or run.get("configuration_hash") != release.payload_hash
+            or config.get("strategy_id") != STRATEGY_ID
+            or type(config.get("strategy_revision")) is not int
+            or config["strategy_revision"] != STRATEGY_NUMBER
+            or config.get("run_plan_id") != plan.get("run_plan_id")
+            or config.get("anchor_date") != run.get("session_date")
+            or config.get("safety_supervisor_enabled") is not True
+            or type(config.get("checkpoint_interval_events")) is not int
+            or config["checkpoint_interval_events"] < 1
+            or any(type(config.get(key)) is not bool for key in (
+                "safety_supervisor_enabled", "write_progress_checkpoints"))
+            or type(account_ids) is not tuple or not 1 <= len(account_ids) <= 65535
+            or any(type(account) is not str or not account.strip()
+                   for account in account_ids)
+            or len(set(account_ids)) != len(account_ids)):
+        raise ValueError("Strategy 1 live run differs from its numbered release")
+    if (not isinstance(run.get("run_id"), str) or not run["run_id"].startswith("live:v2:")
+            or any(re.fullmatch(r"[0-9a-f]{64}", str(run.get(field))) is None
+                   for field in ("configuration_hash", "code_hash"))):
+        raise ValueError("Strategy 1 live run identity or code hash is invalid")
+    wire = _wire_row("trading_run_v1", run)
+    if wire["run_month"] != wire["started_at"][:7] + "-01":
+        raise ValueError("Strategy 1 live run month differs from UTC start")
+    typed_row("trading_runtime_config_v1", {
+        "run_id": run["run_id"], "run_month": wire["run_month"],
+        **{key: (int(value) if key in {
+            "safety_supervisor_enabled", "write_progress_checkpoints"} else value)
+           for key, value in config.items()},
+    })
+    for ordinal, account in enumerate(account_ids):
+        typed_row("trading_run_account_v1", {
+            "run_id": run["run_id"], "run_month": wire["run_month"],
+            "ordinal": ordinal, "account_id": account,
+        })
+    return run["run_id"]
 
 
 def initialize_new_live_sync_run(*, run_id: str, writer_client: Any,

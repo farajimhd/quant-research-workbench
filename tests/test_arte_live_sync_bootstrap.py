@@ -13,12 +13,64 @@ from src.trading_runtime.arte_live_run_allocation import (
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from src.trading_runtime.keeper_ownership import KeeperUnavailable, _ROOT
 from src.trading_runtime.portfolio import PortfolioAccountProfile, PortfolioPolicy
+from src.trading_runtime.strategy_one_contract import STRATEGY_ID
+from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
 from test_keeper_ownership import _Client, _Store
 
 
 NAMESPACE = "11111111-1111-4111-8111-111111111111"
 REQUEST = "22222222-2222-4222-8222-222222222222"
 RUN = f"live:v2:{NAMESPACE}:{1:020d}"
+
+
+def _release():
+    return CertifiedStrategyOneConfiguration(
+        REQUEST, "a" * 64, "b" * 64, "candidate-350", "c" * 64,
+        "d" * 64, {"strategy": {
+            "strategy_id": STRATEGY_ID, "strategy_number": 1,
+            "revision": 1, "execution_interval": "100ms"},
+            "run_plan": {"run_plan_id": "plan-1"}})
+
+
+def _live_context():
+    run = dict(run_id=RUN, run_month="2026-08-01", mode="live",
+               evaluation_interval_ms=100, session_date="2026-08-18",
+               configuration_hash="a" * 64, code_hash="b" * 64,
+               market_plan_token="", started_at="2026-08-18T08:00:00+00:00")
+    config = dict(strategy_id=STRATEGY_ID, strategy_revision=1,
+                  anchor_date="2026-08-18", run_plan_id="plan-1",
+                  safety_supervisor_enabled=True,
+                  checkpoint_interval_events=100,
+                  write_progress_checkpoints=True)
+    return run, config
+
+
+def test_live_context_is_typed_and_bound_to_numbered_release():
+    run, config = _live_context()
+    assert bootstrap.validate_new_strategy_one_live_context(
+        run, config, ("DU1",), _release()) == RUN
+
+
+@pytest.mark.parametrize("run_change,config_change,accounts", [
+    ({"mode": "backtest"}, {}, ("DU1",)),
+    ({"evaluation_interval_ms": 200}, {}, ("DU1",)),
+    ({"configuration_hash": "f" * 64}, {}, ("DU1",)),
+    ({"run_month": "2026-09-01"}, {}, ("DU1",)),
+    ({}, {"strategy_revision": 2}, ("DU1",)),
+    ({}, {"run_plan_id": "wrong"}, ("DU1",)),
+    ({}, {"anchor_date": "2026-08-19"}, ("DU1",)),
+    ({}, {"safety_supervisor_enabled": False}, ("DU1",)),
+    ({}, {}, ("DU1", "DU1")),
+    ({}, {}, ()),
+])
+def test_live_context_rejects_unapproved_identity_or_account_scope(
+    run_change, config_change, accounts,
+):
+    run, config = _live_context()
+    with pytest.raises(ValueError, match="Strategy 1 live"):
+        bootstrap.validate_new_strategy_one_live_context(
+            {**run, **run_change}, {**config, **config_change},
+            accounts, _release())
 
 
 def _empty_facts(_client, sql):
