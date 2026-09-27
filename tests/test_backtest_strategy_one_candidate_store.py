@@ -170,3 +170,53 @@ def test_shorter_session_certifies_full_product_then_exposes_only_causal_prefix(
         certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
                                through_boundary_ms=29_900,
                                client=Reader(changed=True))
+
+
+def test_candidate_plan_reuses_only_stable_verified_parts(monkeypatch):
+    from research.mlops import clickhouse
+    from src.backend import backtest_market_plan_cache as cache_module
+    from src.backend import backtest_strategy_one_candidate_store as subject
+
+    monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
+    parts = ["parts-1"]
+    monkeypatch.setattr(cache_module, "product_inventory_fingerprint",
+                        lambda _client, _names: parts[0])
+    monkeypatch.setattr(subject, "CANDIDATE_PLAN_CACHE",
+                        cache_module.FingerprintPlanCache())
+    reader = Reader()
+    first = certify_candidate_plan(
+        _market(), candidate_rule_digest=RULE_DIGEST,
+        through_boundary_ms=THROUGH, client=reader)
+    query_count = len(reader.queries)
+    assert certify_candidate_plan(
+        _market(), candidate_rule_digest=RULE_DIGEST,
+        through_boundary_ms=THROUGH, client=reader) is first
+    assert len(reader.queries) == query_count + 2  # table policy and placement
+    with pytest.raises(ValueError):
+        first.prepared[0].stop_low_int.setflags(write=True)
+    parts[0] = "parts-2"
+    reader.changed = True
+    with pytest.raises(RuntimeError, match="differ from coverage"):
+        certify_candidate_plan(
+            _market(), candidate_rule_digest=RULE_DIGEST,
+            through_boundary_ms=THROUGH, client=reader)
+
+
+def test_candidate_plan_does_not_cache_a_changing_cold_inventory(monkeypatch):
+    from research.mlops import clickhouse
+    from src.backend import backtest_market_plan_cache as cache_module
+    from src.backend import backtest_strategy_one_candidate_store as subject
+
+    monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
+    fingerprints = iter(("parts-1", "parts-2", "parts-2", "parts-2"))
+    monkeypatch.setattr(cache_module, "product_inventory_fingerprint",
+                        lambda _client, _names: next(fingerprints))
+    monkeypatch.setattr(subject, "CANDIDATE_PLAN_CACHE",
+                        cache_module.FingerprintPlanCache())
+    reader = Reader()
+    certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
+                           through_boundary_ms=THROUGH, client=reader)
+    first_count = len(reader.queries)
+    certify_candidate_plan(_market(), candidate_rule_digest=RULE_DIGEST,
+                           through_boundary_ms=THROUGH, client=reader)
+    assert len(reader.queries) > first_count + 2

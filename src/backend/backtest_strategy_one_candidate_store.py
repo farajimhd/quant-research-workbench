@@ -16,6 +16,7 @@ from uuid import UUID
 import numpy as np
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, _literal
+from src.backend.backtest_market_plan_cache import FingerprintPlanCache
 from src.backend.backtest_strategy_one_candidate_contract import (
     VALUE_FIELDS, validate_candidate_rows,
 )
@@ -28,6 +29,9 @@ from src.trading_runtime.strategy_one_candidate_schema import (
 
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _STAGES = ("bars", "technical", "broker_100ms")
+_CANDIDATE_TABLE_NAMES = tuple(name.rsplit(".", 1)[1]
+                               for name in (CANDIDATE_TABLE, COVERAGE_TABLE))
+CANDIDATE_PLAN_CACHE = FingerprintPlanCache()
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +52,20 @@ class CertifiedCandidatePlan:
     coverage: tuple[CandidateCoverage, ...]
     prepared: tuple[PreparedStrategyOneTicker, ...]
     token: str
+
+
+def _immutable_prepared(row: PreparedStrategyOneTicker) -> PreparedStrategyOneTicker:
+    """Detach cached column arrays onto immutable byte-backed storage."""
+    def frozen(value: np.ndarray) -> np.ndarray:
+        contiguous = np.ascontiguousarray(value)
+        return np.frombuffer(contiguous.tobytes(), dtype=contiguous.dtype).reshape(
+            contiguous.shape)
+
+    return PreparedStrategyOneTicker(
+        row.ticker, row.source_rows, frozen(row.row_index),
+        frozen(row.boundary_ms), frozen(row.episode_start_ms),
+        frozen(row.macd_boundary_ms), frozen(row.stop_bar_boundary_ms),
+        frozen(row.stop_low_int))
 
 
 def project_candidate_plan(
@@ -160,6 +178,19 @@ def certify_candidate_plan(market: CertifiedMarketDayPlan, *,
     if set(scoped) != expected or any(set(value) != set(_STAGES)
                                      for value in scoped.values()):
         raise ValueError("Strategy 1 market plan has incomplete source coverage")
+    from research.mlops.clickhouse import ClickHouseHttpClient
+    from src.backend.backtest_market_plan_cache import product_inventory_fingerprint
+    cache_key = sha256("\0".join((
+        market.token, candidate_rule_digest, scan_query_sha256,
+        str(through_boundary_ms),
+    )).encode()).hexdigest()
+    before = None
+    if isinstance(client, ClickHouseHttpClient):
+        before = product_inventory_fingerprint(client, _CANDIDATE_TABLE_NAMES)
+        cached = CANDIDATE_PLAN_CACHE.get(cache_key, before)
+        if (cached is not None
+                and product_inventory_fingerprint(client, _CANDIDATE_TABLE_NAMES) == before):
+            return cached
     all_coverage: list[CandidateCoverage] = []
     all_prepared: list[PreparedStrategyOneTicker] = []
     ordered = sorted(scoped)
@@ -247,9 +278,13 @@ def certify_candidate_plan(market: CertifiedMarketDayPlan, *,
     coverage = tuple(all_coverage)
     base_token = _token(market.build_id, candidate_rule_digest,
                         scan_query_sha256, coverage)
-    return CertifiedCandidatePlan(market.build_id, candidate_rule_digest,
-                                  scan_query_sha256, coverage,
-                                  tuple(all_prepared),
-                                  (base_token if through_boundary_ms == 57_600_000
-                                   else sha256((base_token + ":through:" +
-                                                str(through_boundary_ms)).encode()).hexdigest()))
+    result = CertifiedCandidatePlan(
+        market.build_id, candidate_rule_digest, scan_query_sha256,
+        coverage, tuple(_immutable_prepared(row) for row in all_prepared),
+        (base_token if through_boundary_ms == 57_600_000
+         else sha256((base_token + ":through:" +
+                      str(through_boundary_ms)).encode()).hexdigest()))
+    if (before is not None
+            and product_inventory_fingerprint(client, _CANDIDATE_TABLE_NAMES) == before):
+        CANDIDATE_PLAN_CACHE.put(cache_key, before, result)
+    return result
