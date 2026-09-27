@@ -33,6 +33,7 @@ class BacktestMemoryJournal:
         self._strategy_one_protection: dict[str, Any] = {}
         self._oms_groups: dict[str, Any] = {}
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
+        self._order_requests: dict[str, Any] = {}
         # Admission evidence is the immutable creation fact, never the mutable
         # reservation state after a fill, release, or cancellation.
         self._reservation_creations: dict[tuple[str, str], dict[str, Any]] = {}
@@ -129,6 +130,36 @@ class BacktestMemoryJournal:
     def strategy_one_protection_for_record(self, record_id: str) -> Any | None:
         with self._lock:
             return self._strategy_one_protection.get(record_id)
+
+    def append_strategy_order_command(
+        self, *, order_request: Any, run_id: str, category: str,
+        entity_type: str, entity_id: str, payload: dict[str, Any],
+        account_id: str, event_time: datetime,
+    ) -> JournalRecord:
+        """Retain the original typed order until its normalized command is fenced."""
+        from src.trading_runtime.ibkr_schema import OrderRequest
+
+        if (not isinstance(order_request, OrderRequest)
+                or run_id != self.run_id or category != "command"
+                or entity_type != "order" or not order_request.raw
+                or order_request.acctId != account_id
+                or order_request.cOID != entity_id
+                or not payload.get("strategy_intent_id")
+                or not payload.get("order_group_id")
+                or any(payload.get(key) != value
+                       for key, value in order_request.to_cpapi().items())):
+            raise ValueError("Strategy order command lacks its original typed request")
+        with self._lock:
+            record = self.append(
+                run_id=run_id, category=category, entity_type=entity_type,
+                entity_id=entity_id, payload=payload, account_id=account_id,
+                event_time=event_time)
+            self._order_requests[record.record_id] = deepcopy(order_request)
+            return record
+
+    def order_request_for_record(self, record_id: str) -> Any | None:
+        with self._lock:
+            return self._order_requests.get(record_id)
 
     def append_oms_group_transition(
         self, *, group: Any, run_id: str, category: str, entity_type: str,
@@ -289,6 +320,7 @@ class BacktestMemoryJournal:
                     self._strategy_one_protection.pop(record.record_id, None)
                     self._oms_groups.pop(record.record_id, None)
                     self._oms_admissions.pop(record.record_id, None)
+                    self._order_requests.pop(record.record_id, None)
                 del self._records[:discard]
                 self._base_sequence = sequence
             self._fenced_sequence = sequence
@@ -627,6 +659,7 @@ class BacktestMemoryJournal:
         with self._lock:
             self._closed = True
             self._strategy_one_entries.clear()
+            self._order_requests.clear()
             self._oms_groups.clear()
             self._oms_admissions.clear()
             self._reservation_creations.clear()

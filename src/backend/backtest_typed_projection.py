@@ -161,7 +161,56 @@ def project_pending_backtest_v4_prefix(
         kind = (record.category, record.entity_type)
         if kind == ("checkpoint", "market_boundary"):
             cursor = record.entity_id
-        if kind in {("risk", "kill_entry_order"),
+        if (kind == ("command", "order")
+                and (expected_config or {}).get("strategy_revision") == 1
+                and (expected_config or {}).get("strategy_id") ==
+                    "early-squeeze-strategy"):
+            from src.trading_runtime.arte_journal_projection import order_command_batch
+            from src.trading_runtime.arte_journal_writer import _sealed_families
+
+            request = journal.order_request_for_record(record.record_id)
+            payload = record.payload
+            source = sources.get(str(payload.get("strategy_intent_id") or ""))
+            if (request is None or source is None
+                    or not source[0].intents or source[0].first_sequence >= sequence
+                    or record.entity_id != request.cOID
+                    or record.account_id != request.acctId
+                    or payload.get("strategy_id") != "early-squeeze-strategy"
+                    or payload.get("strategy_revision") != 1
+                    or payload.get("intent_id") != source[1].intent_id
+                    or payload.get("ticker") != request.ticker
+                    or any(payload.get(key) != value
+                           for key, value in request.to_cpapi().items())):
+                raise RuntimeError("Strategy 1 command lacks its exact typed source")
+            policy_version = payload.get("policy_version")
+            if type(policy_version) is int:
+                if not 0 <= policy_version <= 0xFFFFFFFF:
+                    raise ValueError("Strategy 1 command policy revision is invalid")
+                policy_version = str(policy_version)
+            sealed_source = dict(_sealed_families(source[0]))[
+                "trading_strategy_intent_v1"]
+            if len(sealed_source) != 1:
+                raise RuntimeError("Strategy 1 command source is not one typed intent")
+            unit = order_command_batch(
+                request, run_id=record.run_id, run_month=run_month,
+                attempt_id=attempt, batch_id=batch_id,
+                prior_batch_id=previous, sequence=sequence,
+                source_cursor=cursor, run_status="running",
+                command_id=record.entity_id, created_at=record.event_time,
+                recorded_at=record.recorded_at,
+                strategy_id="early-squeeze-strategy", strategy_revision=1,
+                strategy_intent_id=source[1].intent_id,
+                order_group_id=str(payload.get("order_group_id") or ""),
+                policy_version=policy_version,
+                strategy_intent_record_id=source[0].intents[0]["record_id"],
+                strategy_intent_content_hash=sealed_source[0]["content_hash"],
+                source_intent=source[1], source_intent_batch_id=source[0].batch_id,
+                record_id=record.record_id, event_category=record.category,
+                event_entity_type=record.entity_type,
+                correlation_id=str(payload.get("correlation_id") or ""),
+                causation_id=str(payload.get("causation_id") or ""),
+            )
+        elif kind in {("risk", "kill_entry_order"),
                     ("risk", "emergency_flatten")}:
             from src.trading_runtime.arte_risk_action_v4 import risk_action_batch_v4
             unit = risk_action_batch_v4(

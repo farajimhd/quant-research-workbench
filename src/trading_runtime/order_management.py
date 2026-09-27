@@ -1789,6 +1789,7 @@ class OrderManagementEngine:
                     "order_group_id": group.group_id,
                     "policy_version": self.policy.version,
                 },
+                order_request=request if request.raw else None,
             )
         response: list[dict[str, Any]] = []
         response_request_indexes: list[int] = []
@@ -4254,6 +4255,7 @@ class OrderManagementEngine:
         payload: dict[str, Any],
         *,
         group_snapshot: _ManagedOrderGroup | None = None,
+        order_request: OrderRequest | None = None,
     ) -> None:
         enriched = dict(payload)
         group_id = str(enriched.get("order_group_id") or "")
@@ -4288,6 +4290,11 @@ class OrderManagementEngine:
                 or lineage["causation_id"],
             )
         append = self.journal.append
+        if order_request is not None:
+            append_order = getattr(self.journal, "append_strategy_order_command", None)
+            if append_order is not None:
+                append = lambda **kwargs: append_order(
+                    order_request=order_request, **kwargs)
         if group_snapshot is not None:
             append_oms = getattr(self.journal, "append_oms_group_transition", None)
             if append_oms is not None:

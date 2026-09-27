@@ -2,6 +2,7 @@
 import asyncio
 from concurrent.futures import Future
 from datetime import date
+from dataclasses import replace
 from uuid import UUID
 
 import pytest
@@ -18,6 +19,48 @@ from test_strategy_one_protection_intent import (
 from src.trading_runtime.strategy_one_protection_intent import (
     strategy_one_protection_intents,
 )
+
+
+def test_strategy_one_command_uses_original_typed_request_and_intent_lineage():
+    from src.trading_runtime.ibkr_schema import OrderRequest
+    from src.trading_runtime.strategy_one_intent import strategy_one_entry_intent
+    from src.trading_runtime.strategy_orders import canonical_runtime_order_raw
+    from test_strategy_one_intent import _proposal
+
+    run_id = str(UUID(int=907))
+    journal = BacktestMemoryJournal(run_id=run_id)
+    proposal = _proposal()
+    intent = strategy_one_entry_intent(proposal, session_date=date(2026, 8, 18))
+    journal.append_strategy_one_intent(
+        intent=intent, proposal=proposal, session_date=date(2026, 8, 18),
+        account_id="DU1", strategy_id="early-squeeze-strategy",
+        strategy_revision=1)
+    flat = OrderRequest(acctId="DU1", conid=123, cOID="client-1",
+                        ticker="AAA", orderType="LMT", side="BUY",
+                        quantity=5, price=10.01)
+    request = replace(flat, raw=canonical_runtime_order_raw(
+        flat, intent, run_id=run_id,
+        strategy_id="early-squeeze-strategy", strategy_revision=1))
+    command = journal.append_strategy_order_command(
+        order_request=request, run_id=run_id, category="command",
+        entity_type="order", entity_id="client-1", account_id="DU1",
+        event_time=intent.event_time,
+        payload={**flat.to_cpapi(), "strategy_intent_id": intent.intent_id,
+                 "order_group_id": "group-1", "policy_version": 1,
+                 "strategy_id": "early-squeeze-strategy", "strategy_revision": 1,
+                 "ticker": "AAA", "intent_id": intent.intent_id,
+                 "action": "enter_long"})
+    units = project_pending_backtest_v4_prefix(
+        journal, attempt_id=str(UUID(int=908)), run_month=date(2026, 8, 1),
+        prior_sequence=0, source_cursor="2026-08-18:31000",
+        expected_config={"strategy_id": "early-squeeze-strategy",
+                         "strategy_revision": 1}, through_sequence=2)
+    assert len(units) == 2
+    assert units[1].events[0]["record_id"] == command.record_id
+    assert units[1].order_commands[0]["client_order_id"] == "client-1"
+    assert units[1].intent_uses[0]["intent_record_id"] == units[0].base.intents[0]["record_id"]
+    journal.mark_fenced(2)
+    assert journal.order_request_for_record(command.record_id) is None
 
 
 def test_protection_source_is_isolated_and_fenced_without_blob():
