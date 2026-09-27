@@ -145,6 +145,23 @@ class Arguments(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'SSD'):
             B.storage_preflight(Client(),'db')
 
+    def test_storage_accepts_typed_certificates_but_rejects_unknown_legacy_tables(self):
+        class Client:
+            def __init__(self, extra=()): self.extra=extra
+            def query(self, _query, label):
+                if label == 'storage_policy': return [{'disks':['live_market_ssd']}]
+                if label == 'population_policy':
+                    return [{'name':name,'storage_policy':'live_market_ssd'} for name in
+                        ('feature_tradable_universe_snapshot_v2','feature_tradable_universe_snapshot_coverage_v2')]
+                if label == 'market_day_metadata_tables':
+                    return [{'name':name,'storage_policy':'live_market_ssd'} for name in
+                        ('market_day_build_fence_v1',*self.extra)]
+                return []
+
+        B.storage_preflight(Client(),'arte')
+        with self.assertRaisesRegex(ValueError,'Unknown legacy market-day tables'):
+            B.storage_preflight(Client(('market_day_unreviewed_v0',)),'arte')
+
     def test_plan_selects_only_dated_tradable_ticker_days(self):
         days=['2026-09-18']
 

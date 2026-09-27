@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT))
 
 from pipelines.market_sip.events import market_day_sql as sql
 from research.mlops.clickhouse import ClickHouseHttpClient
+from src.trading_runtime.arte_market_day_certification import TABLES as CERTIFICATE_TABLES
 
 RUNTIME = Path("D:/TradingML/runtimes")
 DEFAULT_ENV = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\secrets\.env")
@@ -372,9 +373,16 @@ def storage_preflight(client, db, require_tables=False):
     if misplaced_universe:
         raise ValueError("Dated tradable universe has parts outside live_market_ssd")
     names=('bars_v1','indicators_v1','liquidity_100ms_v1')
-    legacy=client.query(f"SELECT name FROM system.tables WHERE database={sql.literal(db)} AND startsWith(name,'market_day_')",'legacy_tables')
-    if legacy:
-        raise ValueError('Legacy market_day_* tables remain; remove them explicitly before the V1 rebuild')
+    metadata=client.query(f"SELECT name,storage_policy FROM system.tables WHERE database={sql.literal(db)} AND startsWith(name,'market_day_')",'market_day_metadata_tables')
+    certificate_names={table.name for table in CERTIFICATE_TABLES}
+    unknown=sorted(row['name'] for row in metadata if row['name'] not in certificate_names)
+    if unknown:
+        raise ValueError('Unknown legacy market-day tables require explicit review: '+','.join(unknown))
+    if any(row['storage_policy'] != sql.POLICY for row in metadata):
+        raise ValueError('Market-day certificate table has an incorrect storage policy')
+    misplaced_metadata=client.query(f"SELECT table,disk_name FROM system.parts WHERE active AND database={sql.literal(db)} AND startsWith(table,'market_day_') AND disk_name!='live_market_ssd' LIMIT 1",'market_day_metadata_parts')
+    if misplaced_metadata:
+        raise ValueError('Market-day certificate parts are not on live_market_ssd')
     rows = client.query(f"SELECT name,storage_policy FROM system.tables WHERE database={sql.literal(db)} AND name IN {names}", "table_policies")
     if any(row["storage_policy"] != sql.POLICY for row in rows):
         raise ValueError("Existing market-data table has an incorrect storage policy; explicit migration required")
