@@ -47,6 +47,25 @@ def _load_private_credentials() -> None:
             os.environ[key] = value
 
 
+def _print_completed_profile(controller) -> None:
+    """Report bounded wall stages and writer work, without dumping journal data."""
+    for name, row in sorted(controller._stage_timings.items()):
+        print(f"Stage {name}: calls={row['calls']} "
+              f"wall_s={row['seconds']:.3f} "
+              f"max_call_s={row['maximum_seconds']:.3f}", flush=True)
+    metrics = getattr(controller, "_journal_writer_final_metrics", None)
+    if (not isinstance(metrics, dict) or metrics.get("committed_units", 0) < 1
+            or metrics.get("failed_units") != 0 or metrics.get("failed")
+            or metrics.get("queue_depth") != 0):
+        raise RuntimeError("Completed Backtest lacks a drained typed journal profile")
+    print("Journal writer: "
+          f"committed_units={metrics['committed_units']} "
+          f"failed_units={metrics['failed_units']} "
+          f"worker_s={metrics['publish_ns_total'] / 1e9:.3f} "
+          f"max_unit_s={metrics['publish_ns_max'] / 1e9:.3f} "
+          f"queue_capacity={metrics['queue_capacity']}", flush=True)
+
+
 async def _run(day: date, ticker: str, *, apply: bool, minutes: int) -> None:
     from src.backend.replay_run_service import (
         ReplayRunController, ReplayRunDefinition, backtest_preflight,
@@ -112,6 +131,7 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int) -> None:
         raise RuntimeError("Strategy 1 integration run did not complete")
     if controller.run_dir.exists():
         raise RuntimeError("Strategy 1 integration wrote a run-local directory")
+    _print_completed_profile(controller)
 
 
 def main() -> None:
