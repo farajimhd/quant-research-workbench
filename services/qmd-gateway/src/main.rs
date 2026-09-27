@@ -13,8 +13,8 @@ use qmd_core::event::MarketEvent;
 use qmd_core::gapfill::{run_gap_fill_service, run_startup_maintenance, GapFillService};
 use qmd_core::indicator_reconciliation::IndicatorReconciler;
 use qmd_core::indicators::{
-    load_live_market_structure_references, spawn_indicator_engines, IndicatorClickHouseWriter,
-    IndicatorRow, SharedIndicatorStore,
+    load_live_market_structure_references, spawn_indicator_engines, CompletedBarIndicator,
+    IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore,
 };
 use qmd_core::intraday_bars::{
     run_intraday_bar_reconciliation_service, spawn_intraday_bar_service,
@@ -37,6 +37,7 @@ use qmd_core::structure_focus::StructureFocusCoordinator;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::Arc;
 use std::{error::Error, io};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::time::{sleep, timeout, Duration};
@@ -220,6 +221,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         broadcast::channel::<ScannerRowDelta>(10_000);
     let (live_market_state_sender, _live_market_state_receiver) =
         broadcast::channel::<LiveSymbolMarketStateEvent>(10_000);
+    let (completed_indicator_sender, _) = broadcast::channel::<Arc<CompletedBarIndicator>>(2_048);
     let intraday_bar_service = spawn_intraday_bar_service(
         config.clone(),
         metrics.clone(),
@@ -356,6 +358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.indicator_bar_channel_capacity,
         indicator_writer_sender,
         scanner_router.clone(),
+        completed_indicator_sender.clone(),
         metrics.clone(),
     );
     let (live_market_state_router, live_market_state_task) = spawn_live_market_state_service(
@@ -452,6 +455,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config: config.clone(),
         events: event_sender,
         indicators,
+        completed_indicators: completed_indicator_sender,
         indicator_reconciler,
         live_market_state,
         live_market_state_events: live_market_state_sender,

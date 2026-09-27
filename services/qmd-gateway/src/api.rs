@@ -15,7 +15,7 @@ use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_taxonomy_catalog, IndicatorTaxonomyEntry};
 use crate::indicator_reconciliation::IndicatorReconciler;
 use crate::indicators::{
-    IndicatorScannerSnapshot, IndicatorSnapshot, SharedIndicatorStore,
+    CompletedBarIndicator, IndicatorScannerSnapshot, IndicatorSnapshot, SharedIndicatorStore,
     INDICATOR_CALCULATION_REVISION, INDICATOR_SCHEMA_VERSION,
 };
 use crate::intraday_bars::{
@@ -76,6 +76,7 @@ pub struct AppState {
     pub config: GatewayConfig,
     pub events: broadcast::Sender<MarketEvent>,
     pub indicators: SharedIndicatorStore,
+    pub completed_indicators: broadcast::Sender<Arc<CompletedBarIndicator>>,
     pub indicator_reconciler: IndicatorReconciler,
     pub live_market_state: SharedLiveMarketStateStore,
     pub live_market_state_events: broadcast::Sender<LiveSymbolMarketStateEvent>,
@@ -332,6 +333,10 @@ pub fn app(state: AppState) -> Router {
         .route("/stream/condition-bars/{ticker}", get(condition_bar_stream))
         .route("/stream/macro-bars/{ticker}", get(macro_bar_stream))
         .route("/stream/indicators/{ticker}", get(indicator_stream))
+        .route(
+            "/stream/completed-indicators",
+            get(completed_indicator_stream),
+        )
         .layer(CorsLayer::permissive())
         .layer(middleware::from_fn(
             crate::request_identity::preserve_request_identity,
@@ -742,18 +747,33 @@ async fn send_resnapshot_required(
 #[cfg(test)]
 mod shutdown_tests {
     use super::{
-        build_attention, intraday_bar_history_sql, live_feed_is_stale,
+        build_attention, completed_pair_is_causal, intraday_bar_history_sql, live_feed_is_stale,
         live_feed_requires_attention, live_market_state_history_sql,
         parse_indicator_projection_fields, resnapshot_required_frame,
         retain_indicator_projection_fields, retained_query_date_bounds, scanner_sequence_gap,
         valid_shutdown_token,
     };
     use crate::config::GatewayConfig;
+    use crate::indicators::{BarIndicatorCalculator, CompletedBarIndicator};
     use crate::maintenance::SharedMaintenanceState;
     use crate::market_calendar::MarketCalendarClient;
     use crate::metrics::{QueueFailureKind, SharedMetrics};
+    use crate::scanner::tests::base_bar;
     use chrono::{NaiveDate, TimeZone, Utc};
     use serde_json::json;
+
+    #[test]
+    fn execution_pair_rejects_forming_or_mismatched_bar() {
+        let bar = base_bar();
+        let indicator = BarIndicatorCalculator::new().apply_bar(&bar);
+        let mut pair = CompletedBarIndicator { bar, indicator };
+        assert!(completed_pair_is_causal(&pair));
+        pair.bar.is_closed = false;
+        assert!(!completed_pair_is_causal(&pair));
+        pair.bar.is_closed = true;
+        pair.indicator.bar_end += chrono::Duration::milliseconds(100);
+        assert!(!completed_pair_is_causal(&pair));
+    }
 
     #[test]
     fn shutdown_requires_the_configured_non_empty_token() {
@@ -2664,6 +2684,56 @@ async fn indicator_stream(
         )
         .await;
     })
+}
+
+/// Execution-only completed pairs. Unlike the chart snapshot streams this
+/// route has no forming `current` row and no timer-driven resampling. A lag is
+/// terminal: consumers must recover from certified persisted state before
+/// making another decision, never silently skip a completed boundary.
+async fn completed_indicator_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |mut socket| async move {
+        let mut receiver = state.completed_indicators.subscribe();
+        loop {
+            match receiver.recv().await {
+                Ok(pair) => {
+                    if !completed_pair_is_causal(pair.as_ref()) {
+                        let _ = socket
+                            .send(Message::Text(
+                                r#"{"error":"completed-indicator-identity-mismatch"}"#.into(),
+                            ))
+                            .await;
+                        break;
+                    }
+                    let Ok(text) = serde_json::to_string(pair.as_ref()) else {
+                        break;
+                    };
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let _ = socket
+                        .send(Message::Text(
+                            r#"{"error":"completed-indicator-gap"}"#.into(),
+                        ))
+                        .await;
+                    break;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
+}
+
+fn completed_pair_is_causal(pair: &CompletedBarIndicator) -> bool {
+    pair.bar.is_closed
+        && pair.bar.sym == pair.indicator.sym
+        && pair.bar.timeframe == pair.indicator.timeframe
+        && pair.bar.bar_start == pair.indicator.bar_start
+        && pair.bar.bar_end == pair.indicator.bar_end
 }
 
 async fn event_stream(

@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock as StdRwLock};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 
 const STRUCTURE_CHECKPOINT_BATCH_LIMIT: usize = 256;
@@ -732,6 +732,15 @@ pub struct IndicatorRow {
     pub qmd_structure_events: Vec<GenericStructureEvent>,
     #[serde(skip_serializing)]
     pub microstructure_interval: MicrostructureIntervalFeatures,
+}
+
+/// One causal execution input: the indicator was computed from this exact
+/// finalized bar. Chart snapshots may contain forming rows and are not an
+/// execution feed. This wire message is not a persistence authority.
+#[derive(Clone, Debug, Serialize)]
+pub struct CompletedBarIndicator {
+    pub bar: BarRow,
+    pub indicator: IndicatorRow,
 }
 
 impl IndicatorRow {
@@ -2699,6 +2708,7 @@ pub fn spawn_indicator_engines(
     bar_channel_capacity: usize,
     writer_sender: mpsc::Sender<IndicatorRow>,
     scanner_sender: ScannerPrimitiveRouter,
+    completed_sender: broadcast::Sender<Arc<CompletedBarIndicator>>,
     metrics: SharedMetrics,
 ) -> IndicatorEventRouter {
     let shard_count = indicators.shard_count();
@@ -2719,6 +2729,7 @@ pub fn spawn_indicator_engines(
             bar_receiver,
             writer_sender.clone(),
             scanner_sender.clone(),
+            completed_sender.clone(),
             metrics.clone(),
         ));
     }
@@ -2784,6 +2795,7 @@ async fn run_indicator_engine(
     mut bar_receiver: mpsc::Receiver<BarRow>,
     writer_sender: mpsc::Sender<IndicatorRow>,
     scanner_sender: ScannerPrimitiveRouter,
+    completed_sender: broadcast::Sender<Arc<CompletedBarIndicator>>,
     metrics: SharedMetrics,
 ) {
     loop {
@@ -2808,6 +2820,17 @@ async fn run_indicator_engine(
                         let row = shard.apply_bar(bar).await;
                         if !row.close.is_finite() || row.close <= 0.0 {
                             continue;
+                        }
+                        // Broadcast only the exact completed source pair. A
+                        // slow subscriber sees Lagged and must stop/recover;
+                        // publication never waits on a WebSocket consumer.
+                        if completed_sender.receiver_count() > 0 {
+                            let _ = completed_sender.send(Arc::new(
+                                CompletedBarIndicator {
+                                    bar: source_bar.clone(),
+                                    indicator: row.clone(),
+                                },
+                            ));
                         }
                         if scanner_sender
                             .send_observation(source_bar, row.clone())
