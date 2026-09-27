@@ -157,6 +157,117 @@ def test_live_publication_recertifies_release_before_keeper_create(monkeypatch):
         core._read_gate(RUN)
 
 
+def test_cold_preparation_composes_approval_recovery_and_broker_audit(monkeypatch):
+    release = _release()
+    calls = []
+
+    class Barrier:
+        def assert_fenced(self, run_id):
+            assert run_id == RUN
+            calls.append("fenced")
+
+    cold = bootstrap.LiveSyncColdResult(
+        RUN, 1, {"mode": "live", "configuration_hash": release.payload_hash,
+                 "strategy_id": STRATEGY_ID, "strategy_revision": 1,
+                 "evaluation_interval_ms": 100, "code_hash": "b" * 64,
+                 "run_plan_id": "plan-1",
+                 "anchor_date": "2026-08-18", "session_date": "2026-08-18"},
+        object(), Barrier())
+    portfolio = object()
+    audit = bootstrap.StrategyOneColdBrokerAudit(object(), object())
+    monkeypatch.setattr(bootstrap, "certify_strategy_one_configuration",
+                        lambda _client: calls.append("release") or release)
+    monkeypatch.setattr(bootstrap, "verify_selected_approval",
+                        lambda *_args, **_kwargs: calls.append("approval") or {
+                            "approval_id": "selected"})
+    monkeypatch.setattr(bootstrap, "verify_live_sync_cold_start",
+                        lambda **_kwargs: calls.append("cold") or cold)
+    monkeypatch.setattr(bootstrap, "recover_attested_live_portfolio",
+                        lambda **_kwargs: calls.append("portfolio") or portfolio)
+    monkeypatch.setattr(bootstrap, "recover_strategy_one_live_oms",
+                        lambda **_kwargs: calls.append("oms") or ())
+    async def broker_audit(**_kwargs):
+        calls.append("broker")
+        return audit
+    monkeypatch.setattr(bootstrap, "audit_recovered_strategy_one_live_oms",
+                        broker_audit)
+    prepared = asyncio.run(bootstrap.prepare_strategy_one_live_cold_start(
+        run_id=RUN, read_client=object(), core_dispatch=object(),
+        sync_dispatch=object(), keeper=object(), allocator=object(),
+        allocation=object(), release=release,
+        approval_reader=SimpleNamespace(read_head=lambda _mode: None),
+        profiles=(), cutoff_at=datetime.now(timezone.utc), broker=object(),
+        expected_code_hash="b" * 64))
+    assert prepared == bootstrap.StrategyOneLiveColdPreparation(
+        cold, portfolio, (), audit)
+    assert calls == ["cold", "release", "approval", "portfolio", "oms",
+                     "broker", "fenced", "release", "approval", "fenced"]
+
+
+def test_cold_preparation_rejects_changed_approval_after_broker_audit(monkeypatch):
+    release = _release()
+    selected = iter(({"approval_id": "selected"}, {"approval_id": "revoked"}))
+    monkeypatch.setattr(bootstrap, "certify_strategy_one_configuration",
+                        lambda _client: release)
+    monkeypatch.setattr(bootstrap, "verify_selected_approval",
+                        lambda *_args, **_kwargs: next(selected))
+    cold = bootstrap.LiveSyncColdResult(
+        RUN, 1, {"mode": "live", "configuration_hash": release.payload_hash,
+                 "strategy_id": STRATEGY_ID, "strategy_revision": 1,
+                 "evaluation_interval_ms": 100, "code_hash": "b" * 64,
+                 "run_plan_id": "plan-1",
+                 "anchor_date": "2026-08-18", "session_date": "2026-08-18"},
+        object(),
+        SimpleNamespace(assert_fenced=lambda _run_id: None))
+    monkeypatch.setattr(bootstrap, "verify_live_sync_cold_start",
+                        lambda **_kwargs: cold)
+    monkeypatch.setattr(bootstrap, "recover_attested_live_portfolio",
+                        lambda **_kwargs: object())
+    monkeypatch.setattr(bootstrap, "recover_strategy_one_live_oms",
+                        lambda **_kwargs: ())
+    async def broker_audit(**_kwargs):
+        return bootstrap.StrategyOneColdBrokerAudit(object(), object())
+    monkeypatch.setattr(bootstrap, "audit_recovered_strategy_one_live_oms",
+                        broker_audit)
+    with pytest.raises(RuntimeError, match="approval changed"):
+        asyncio.run(bootstrap.prepare_strategy_one_live_cold_start(
+            run_id=RUN, read_client=object(), core_dispatch=object(),
+            sync_dispatch=object(), keeper=object(), allocator=object(),
+            allocation=object(), release=release,
+            approval_reader=SimpleNamespace(read_head=lambda _mode: None),
+            profiles=(), cutoff_at=datetime.now(timezone.utc), broker=object(),
+            expected_code_hash="b" * 64))
+
+
+def test_cold_preparation_rejects_code_drift_before_state_recovery(monkeypatch):
+    release = _release()
+    calls = []
+    cold = bootstrap.LiveSyncColdResult(
+        RUN, 1, {"mode": "live", "configuration_hash": release.payload_hash,
+                 "strategy_id": STRATEGY_ID, "strategy_revision": 1,
+                 "evaluation_interval_ms": 100, "code_hash": "f" * 64,
+                 "run_plan_id": "plan-1", "anchor_date": "2026-08-18",
+                 "session_date": "2026-08-18"}, object(),
+        SimpleNamespace(assert_fenced=lambda _run_id: None))
+    monkeypatch.setattr(bootstrap, "verify_live_sync_cold_start",
+                        lambda **_kwargs: calls.append("cold") or cold)
+    monkeypatch.setattr(bootstrap, "certify_strategy_one_configuration",
+                        lambda _client: release)
+    monkeypatch.setattr(bootstrap, "verify_selected_approval",
+                        lambda *_args, **_kwargs: {"approval_id": "selected"})
+    monkeypatch.setattr(bootstrap, "recover_attested_live_portfolio",
+                        lambda **_kwargs: pytest.fail("portfolio recovery reached"))
+    with pytest.raises(RuntimeError, match="differs from its approved release"):
+        asyncio.run(bootstrap.prepare_strategy_one_live_cold_start(
+            run_id=RUN, read_client=object(), core_dispatch=object(),
+            sync_dispatch=object(), keeper=object(), allocator=object(),
+            allocation=object(), release=release,
+            approval_reader=SimpleNamespace(read_head=lambda _mode: None),
+            profiles=(), cutoff_at=datetime.now(timezone.utc), broker=object(),
+            expected_code_hash="b" * 64))
+    assert calls == ["cold"]
+
+
 def _empty_facts(_client, sql):
     if "FROM system.columns" in sql:
         return [{"table": name} for name in sorted(bootstrap._EXISTING_TABLES)]

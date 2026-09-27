@@ -447,3 +447,71 @@ async def audit_recovered_strategy_one_live_oms(
         read_client, cold.prefix, heads, broker)
     cold.barrier.assert_fenced(cold.run_id)
     return StrategyOneColdBrokerAudit(open_audit, fill_audit)
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyOneLiveColdPreparation:
+    """Read-only recovered state under closed Keeper transport gates.
+
+    This is evidence for a later admission decision, never an order permit.
+    Neither the recovered portfolio nor OMS heads may be installed into a
+    running engine until their separately attested admission contract exists.
+    """
+
+    cold: LiveSyncColdResult
+    portfolio: Any
+    oms_heads: tuple[VerifiedStrategyOneOmsHead, ...]
+    broker_audit: StrategyOneColdBrokerAudit
+
+
+async def prepare_strategy_one_live_cold_start(
+    *, run_id: str, read_client: Any, core_dispatch: TypedInsertDispatch,
+    sync_dispatch: PortfolioSyncDispatch, keeper: Any,
+    allocator: LiveRunAllocator, allocation: LiveRunAllocation,
+    release: CertifiedStrategyOneConfiguration,
+    approval_reader: ApprovalHeadReader, profiles: tuple[Any, ...],
+    cutoff_at: datetime, broker: Any, expected_code_hash: str,
+) -> StrategyOneLiveColdPreparation:
+    """Compose the existing typed recovery gates without SQLite or orders.
+
+    After argument validation, recovery failures leave the sync/core dispatch
+    gates closed. The selected
+    approval is checked both before and after broker reconciliation so a
+    revoked or changed release cannot be mistaken for an admission permit.
+    """
+    if (not isinstance(release, CertifiedStrategyOneConfiguration)
+            or not callable(getattr(approval_reader, "read_head", None))
+            or type(expected_code_hash) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", expected_code_hash) is None):
+        raise ValueError("Strategy 1 cold start requires a typed approved release")
+    cold = verify_live_sync_cold_start(
+        run_id=run_id, read_client=read_client,
+        core_dispatch=core_dispatch, sync_dispatch=sync_dispatch,
+        keeper=keeper, allocator=allocator, allocation=allocation)
+    if certify_strategy_one_configuration(read_client) != release:
+        raise ValueError("Strategy 1 live release changed before cold recovery")
+    selected = verify_selected_approval(
+        read_client, approval_reader, mode="live", release=release)
+    if (cold.context.get("configuration_hash") != release.payload_hash
+            or cold.context.get("strategy_id") != STRATEGY_ID
+            or cold.context.get("strategy_revision") != STRATEGY_NUMBER
+            or cold.context.get("evaluation_interval_ms") != 100
+            or cold.context.get("code_hash") != expected_code_hash
+            or cold.context.get("run_plan_id") !=
+            release.payload["run_plan"]["run_plan_id"]
+            or cold.context.get("anchor_date") != cold.context.get("session_date")):
+        raise RuntimeError("Strategy 1 cold run differs from its approved release")
+    portfolio = recover_attested_live_portfolio(
+        cold=cold, read_client=read_client, keeper=keeper,
+        profiles=profiles, cutoff_at=cutoff_at)
+    heads = recover_strategy_one_live_oms(cold=cold, read_client=read_client)
+    audit = await audit_recovered_strategy_one_live_oms(
+        cold=cold, heads=heads, read_client=read_client, broker=broker)
+    cold.barrier.assert_fenced(run_id)
+    if (certify_strategy_one_configuration(read_client) != release
+            or verify_selected_approval(
+                read_client, approval_reader, mode="live", release=release)
+            != selected):
+        raise RuntimeError("Strategy 1 live approval changed during cold recovery")
+    cold.barrier.assert_fenced(run_id)
+    return StrategyOneLiveColdPreparation(cold, portfolio, heads, audit)
