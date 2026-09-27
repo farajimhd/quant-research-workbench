@@ -89,6 +89,7 @@ class _SqlCallProfile:
     def __init__(self) -> None:
         self._lock = Lock()
         self._bins: dict[str, tuple[int, float]] = {}
+        self._v7_stream_reads = 0
 
     @staticmethod
     def category(sql: str) -> str:
@@ -105,10 +106,17 @@ class _SqlCallProfile:
             calls, seconds = self._bins.get(category, (0, 0.0))
             self._bins[category] = (calls + 1, seconds + elapsed)
 
+    def record_stream(self, sql: str) -> None:
+        if self.category(sql) == "v7_completed_second_read":
+            with self._lock:
+                self._v7_stream_reads += 1
+
     def print_summary(self) -> None:
         for category, (calls, seconds) in sorted(self._bins.items()):
             print(f"ClickHouse {category}: calls={calls} "
                   f"client_s={seconds:.3f}", flush=True)
+        print(f"ClickHouse v7_completed_second_stream: "
+              f"calls={self._v7_stream_reads}; timing=not_measured", flush=True)
 
 
 @contextmanager
@@ -116,6 +124,7 @@ def _profile_sql_calls(profile: _SqlCallProfile):
     from research.mlops.clickhouse import ClickHouseHttpClient
 
     original = ClickHouseHttpClient.execute
+    original_stream = ClickHouseHttpClient.iter_json_each_row
 
     def timed_execute(client, sql, *args, **kwargs):
         started = perf_counter()
@@ -124,11 +133,18 @@ def _profile_sql_calls(profile: _SqlCallProfile):
         finally:
             profile.record(sql, perf_counter() - started)
 
+    def counted_stream(client, sql, *args, **kwargs):
+        result = original_stream(client, sql, *args, **kwargs)
+        profile.record_stream(sql)
+        return result
+
     ClickHouseHttpClient.execute = timed_execute
+    ClickHouseHttpClient.iter_json_each_row = counted_stream
     try:
         yield
     finally:
         ClickHouseHttpClient.execute = original
+        ClickHouseHttpClient.iter_json_each_row = original_stream
 
 
 async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
