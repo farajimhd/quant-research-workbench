@@ -1089,6 +1089,9 @@ def test_submission_never_waits_for_network_or_queue_space(monkeypatch) -> None:
         assert finished["committed_units"] == 2
         assert finished["failed_units"] == 0
         assert finished["publish_ns_total"] >= finished["publish_ns_max"] > 0
+        assert finished["publish_by_unit"]["TypedJournalBatch"]["units"] == 2
+        assert (finished["publish_by_unit"]["TypedJournalBatch"]["publish_ns_total"]
+                == finished["publish_ns_total"])
     finally:
         release.set()
         journal.close()

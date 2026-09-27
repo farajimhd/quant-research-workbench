@@ -69,6 +69,18 @@ def _print_completed_profile(controller) -> None:
           f"worker_s={metrics['publish_ns_total'] / 1e9:.3f} "
           f"max_unit_s={metrics['publish_ns_max'] / 1e9:.3f} "
           f"queue_capacity={metrics['queue_capacity']}", flush=True)
+    by_unit = metrics.get("publish_by_unit")
+    if (not isinstance(by_unit, dict)
+            or sum(row["units"] for row in by_unit.values())
+            != metrics["committed_units"]
+            or sum(row["publish_ns_total"] for row in by_unit.values())
+            != metrics["publish_ns_total"]):
+        raise RuntimeError("Journal family timings do not reconcile with committed units")
+    for family, row in sorted(
+            by_unit.items(), key=lambda item: -item[1]["publish_ns_total"]):
+        print(f"  {family}: units={row['units']} "
+              f"worker_s={row['publish_ns_total'] / 1e9:.3f} "
+              f"max_s={row['publish_ns_max'] / 1e9:.3f}", flush=True)
 
 
 def _profile_preflight_call(call, **kwargs):

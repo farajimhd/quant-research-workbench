@@ -3397,6 +3397,7 @@ class ArteJournalWriter:
         self._failed_units = 0
         self._publish_ns_total = 0
         self._publish_ns_max = 0
+        self._publish_by_unit: dict[str, dict[str, int]] = {}
         self._thread = Thread(target=self._run, name="arte-journal-writer", daemon=False)
         self._thread.start()
 
@@ -3420,7 +3421,7 @@ class ArteJournalWriter:
     def journal_profile(self) -> str:
         return self._journal_profile
 
-    def metrics(self) -> dict[str, int | bool]:
+    def metrics(self) -> dict[str, Any]:
         """Cheap control-plane snapshot; never waits for the persistence worker."""
         with self._metrics_lock:
             return {
@@ -3430,6 +3431,8 @@ class ArteJournalWriter:
                 "failed_units": self._failed_units,
                 "publish_ns_total": self._publish_ns_total,
                 "publish_ns_max": self._publish_ns_max,
+                "publish_by_unit": {name: dict(values) for name, values
+                                    in self._publish_by_unit.items()},
                 "failed": self._error is not None,
             }
 
@@ -4078,6 +4081,14 @@ class ArteJournalWriter:
                     self._committed_units += len(group)
                     self._publish_ns_total += elapsed_ns
                     self._publish_ns_max = max(self._publish_ns_max, elapsed_ns)
+                    family = type(group[0][0]).__name__
+                    by_unit = self._publish_by_unit.setdefault(
+                        family, {"units": 0, "publish_ns_total": 0,
+                                 "publish_ns_max": 0})
+                    by_unit["units"] += len(group)
+                    by_unit["publish_ns_total"] += elapsed_ns
+                    by_unit["publish_ns_max"] = max(
+                        by_unit["publish_ns_max"], elapsed_ns)
                 for _, receipt in group:
                     if receipt.cancelled():
                         continue

@@ -25,6 +25,13 @@ def test_completed_profile_reports_wall_and_writer_units(capsys):
             "queue_depth": 0, "queue_capacity": 8,
             "publish_ns_total": 2_500_000_000,
             "publish_ns_max": 1_000_000_000,
+            "publish_by_unit": {
+                "TypedJournalBatch": {"units": 3,
+                                      "publish_ns_total": 1_500_000_000,
+                                      "publish_ns_max": 750_000_000},
+                "V4StrategyOneEntryBatch": {"units": 1,
+                                            "publish_ns_total": 1_000_000_000,
+                                            "publish_ns_max": 1_000_000_000}},
         },
     )
     _print_completed_profile(controller)
@@ -32,6 +39,8 @@ def test_completed_profile_reports_wall_and_writer_units(capsys):
         "Stage execute: calls=1 wall_s=12.500 max_call_s=12.500",
         "Journal writer: committed_units=4 failed_units=0 "
         "worker_s=2.500 max_unit_s=1.000 queue_capacity=8",
+        "  TypedJournalBatch: units=3 worker_s=1.500 max_s=0.750",
+        "  V4StrategyOneEntryBatch: units=1 worker_s=1.000 max_s=1.000",
     ]
 
 
@@ -49,6 +58,18 @@ def test_completed_profile_rejects_unsettled_writer(change):
             _stage_timings={}, _journal_writer_final_metrics=metrics))
 
 
+def test_completed_profile_rejects_unreconciled_family_timings():
+    metrics = dict(committed_units=1, failed_units=0, failed=False,
+                   queue_depth=0, queue_capacity=8,
+                   publish_ns_total=10, publish_ns_max=10,
+                   publish_by_unit={"TypedJournalBatch": {
+                       "units": 1, "publish_ns_total": 9,
+                       "publish_ns_max": 9}})
+    with pytest.raises(RuntimeError, match="do not reconcile"):
+        _print_completed_profile(SimpleNamespace(
+            _stage_timings={}, _journal_writer_final_metrics=metrics))
+
+
 def test_sql_profile_keeps_only_bounded_categories(capsys):
     profile = _SqlCallProfile()
     profile.record("SELECT x FROM arte.trading_event_v1", 1.25)
@@ -59,6 +80,7 @@ def test_sql_profile_keeps_only_bounded_categories(capsys):
         "ClickHouse journal_insert: calls=1 client_s=0.750",
         "ClickHouse journal_read: calls=1 client_s=1.250",
         "ClickHouse market_or_control_read: calls=1 client_s=0.500",
+        "ClickHouse v7_completed_second_stream: calls=0; timing=not_measured",
     ]
 
 
