@@ -142,6 +142,68 @@ def test_oms_tactic_grants_are_opt_in_and_exact(
     assert checked == [TABLES, TABLES]
 
 
+def test_strategy_one_live_read_grants_are_three_exact_selects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Admin:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql):
+            self.calls.append(sql)
+            if sql.startswith("SELECT count() FROM system.users"):
+                return "1\n"
+            assert sql in provision._strategy_one_live_read_grants()
+            return ""
+
+    class Reader:
+        def __init__(self, *_args, **_kwargs):
+            self.calls = []
+
+        def execute(self, sql):
+            self.calls.append(sql)
+            if sql == "SELECT currentUser()":
+                return provision.PRINCIPAL
+            assert sql == "SELECT approval_id FROM arte.live_strategy_one_approval_v1 LIMIT 0"
+            return ""
+
+    admin = Admin()
+    reader = Reader()
+    checked = []
+    monkeypatch.setattr(provision.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(provision, "SECRET_ROOT", tmp_path)
+    monkeypatch.setattr(provision, "_admin_client", lambda _url: admin)
+    monkeypatch.setattr(provision, "_credential", lambda *_args, **_kwargs: "private")
+    monkeypatch.setattr(provision, "ClickHouseHttpClient", lambda *_args, **_kwargs: reader)
+    monkeypatch.setattr(provision, "verify_strategy_one_configuration_tables",
+                        lambda client: checked.append(("config", client)))
+    monkeypatch.setattr(provision, "storage_preflight",
+                        lambda client, *, tables: checked.append(("approval", client, tables)))
+    monkeypatch.setattr(provision, "certify_strategy_one_configuration",
+                        lambda client: checked.append(("release", client)))
+    monkeypatch.setattr(provision, "fixed_backtest_v2_preflight",
+                        lambda client: checked.append(("journal", client)))
+    grants = provision._strategy_one_live_read_grants()
+    assert len(grants) == 3 and all(
+        grant.startswith("GRANT SELECT ON arte.") and "INSERT" not in grant
+        for grant in grants)
+    provision.provision("http://127.0.0.1:8123", apply=False,
+                        strategy_one_live_read_only=True)
+    assert len(admin.calls) == 1
+    provision.provision("http://127.0.0.1:8123", apply=True,
+                        strategy_one_live_read_only=True)
+    assert admin.calls[2:] == list(grants)
+    assert checked == [
+        ("config", admin), ("approval", admin, (provision.STRATEGY_ONE_APPROVAL_TABLE,)),
+        ("config", reader), ("approval", reader, (provision.STRATEGY_ONE_APPROVAL_TABLE,)),
+        ("release", reader), ("journal", reader),
+    ]
+    with pytest.raises(ValueError, match="cannot be combined"):
+        provision.provision("http://127.0.0.1:8123", apply=False,
+                            strategy_one_live_read_only=True,
+                            fixed_backtest_v2=True)
+
+
 def test_signal_only_apply_preserves_existing_v2_grant_surface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

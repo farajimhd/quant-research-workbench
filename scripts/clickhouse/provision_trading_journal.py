@@ -33,6 +33,13 @@ from src.backend.live_signal_journal_preflight import (
 )
 from src.backend.live_plan_membership import TABLES as LIVE_PLAN_MEMBERSHIP_TABLES
 from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
+from src.trading_runtime.strategy_one_configuration_tree import (
+    NODE_TABLE as STRATEGY_ONE_NODE_TABLE,
+    RELEASE_TABLE as STRATEGY_ONE_RELEASE_TABLE,
+    verify_tables as verify_strategy_one_configuration_tables,
+)
+from src.backend.live_strategy_one_approval import TABLE as STRATEGY_ONE_APPROVAL_TABLE
+from src.backend.backtest_strategy_one_configuration import certify_strategy_one_configuration
 
 
 PRINCIPAL = "trading_journal_writer"
@@ -41,6 +48,18 @@ SECRET_PATH = SECRET_ROOT / "trading_journal.env"
 SETTINGS_PATH = SECRET_ROOT / ".env"
 SYSTEM_READ_TABLES = ("storage_policies", "tables", "columns", "parts",
                       "data_skipping_indices")
+STRATEGY_ONE_LIVE_READ_TABLES = (
+    STRATEGY_ONE_NODE_TABLE.split(".", 1)[1],
+    STRATEGY_ONE_RELEASE_TABLE.split(".", 1)[1],
+    STRATEGY_ONE_APPROVAL_TABLE.name,
+)
+
+
+def _strategy_one_live_read_grants() -> tuple[str, ...]:
+    return tuple(
+        f"GRANT SELECT ON arte.{name} TO {PRINCIPAL}"
+        for name in STRATEGY_ONE_LIVE_READ_TABLES
+    )
 
 
 def _restrict_secret_file(path: Path) -> None:
@@ -206,7 +225,8 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
               staged_live_plan_membership: bool = False,
               fixed_backtest_v2: bool = False,
               staged_live_signal_only: bool = False,
-              oms_execution_tactic_only: bool = False) -> None:
+              oms_execution_tactic_only: bool = False,
+              strategy_one_live_read_only: bool = False) -> None:
     if platform.node().upper() != "DESKTOP-SAAI85T":
         raise RuntimeError("Provisioning must run on DESKTOP-SAAI85T")
     if not SECRET_ROOT.is_dir():
@@ -229,6 +249,34 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
     if present not in {"0", "1"}:
         raise RuntimeError("ClickHouse principal inventory is inconsistent")
     print(f"Journal principal: {'present' if present == '1' else 'absent'}")
+    if strategy_one_live_read_only:
+        if any((staged_live_signal, staged_live_signal_only,
+                staged_live_plan_membership, fixed_backtest_v2,
+                oms_execution_tactic_only)):
+            raise ValueError("Strategy 1 live reads cannot be combined with another profile")
+        if present != "1":
+            raise RuntimeError("Strategy 1 live reads require an existing journal principal")
+        grants = _strategy_one_live_read_grants()
+        print(f"Required grants: {len(grants)} exact SELECT-only live release grants")
+        if not apply:
+            print("Plan only; no credential or ClickHouse state changed")
+            return
+        verify_strategy_one_configuration_tables(client)
+        storage_preflight(client, tables=(STRATEGY_ONE_APPROVAL_TABLE,))
+        password = _credential(SECRET_PATH, account_exists=True)
+        reader = ClickHouseHttpClient(url, PRINCIPAL, password, timeout_seconds=20)
+        if reader.execute("SELECT currentUser()").strip() != PRINCIPAL:
+            raise RuntimeError("Journal credential authenticated as the wrong user")
+        for statement in grants:
+            client.execute(statement)
+        verify_strategy_one_configuration_tables(reader)
+        storage_preflight(reader, tables=(STRATEGY_ONE_APPROVAL_TABLE,))
+        certify_strategy_one_configuration(reader)
+        reader.execute(
+            f"SELECT approval_id FROM arte.{STRATEGY_ONE_APPROVAL_TABLE.name} LIMIT 0")
+        fixed_backtest_v2_preflight(reader)
+        print("Strategy 1 release and approval SELECT grants verified; no INSERT grants changed")
+        return
     if oms_execution_tactic_only:
         if any((staged_live_signal, staged_live_signal_only,
                 staged_live_plan_membership, fixed_backtest_v2)):
@@ -327,6 +375,8 @@ def main() -> int:
                         help="grant only preprovisioned live-signal tables; leave all other grants unchanged")
     parser.add_argument("--oms-execution-tactic-only", action="store_true",
                         help="grant only preprovisioned normalized OMS tactic tables")
+    parser.add_argument("--strategy-one-live-read-only", action="store_true",
+                        help="grant only Strategy 1 release and approval SELECT access")
     parser.add_argument("--inspect-effective-grants", action="store_true",
                         help="print the existing journal principal's effective grants without changes")
     parser.add_argument("--staged-live-plan-membership", action="store_true",
@@ -359,7 +409,8 @@ def main() -> int:
                   staged_live_plan_membership=args.staged_live_plan_membership,
                   fixed_backtest_v2=args.fixed_backtest_v2,
                   staged_live_signal_only=args.staged_live_signal_only,
-                  oms_execution_tactic_only=args.oms_execution_tactic_only)
+                  oms_execution_tactic_only=args.oms_execution_tactic_only,
+                  strategy_one_live_read_only=args.strategy_one_live_read_only)
     except Exception as exc:
         print(f"Journal provisioning failed: {exc}", file=sys.stderr)
         return 1
