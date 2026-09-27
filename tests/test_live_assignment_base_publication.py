@@ -29,13 +29,19 @@ class FakeBaseStorage:
             raise TimeoutError("unknown server outcome")
 
 
+class CurrentRoster:
+    def is_current(self, *, owner_id, epoch):
+        return owner_id == "publisher" and epoch == 3
+
+
 def _publish(storage, keeper, assignment, **extra):
     return publish_base_revision(
         storage, keeper, assignment, owner_id="publisher",
         state_storage=object(), state_admission=object(),
         parameter_storage=object(),
         parameter_admission=object(), parameter_content_hash=HASH_A,
-        state_content_hash=HASH_B, **{**CHILD_REFS, **extra})
+        state_content_hash=HASH_B,
+        **{**CHILD_REFS, "roster_fence": CurrentRoster(), "roster_epoch": 3, **extra})
 
 
 def test_publication_orders_child_proof_insert_readback_then_keeper_head(monkeypatch):
@@ -137,7 +143,7 @@ def test_base_publication_compares_canonical_typed_clock_without_mutating_assign
     assert assignment.state["last_observed_at"] == "2026-09-24T13:00:00+00:00"
 
 
-def test_base_publication_optional_roster_fence_fails_before_insert(monkeypatch):
+def test_base_publication_requires_current_roster_fence_before_insert(monkeypatch):
     assignment = _assignment()
     monkeypatch.setattr(
         "src.backend.live_assignment_base_publication.recover_attested_assignment",
@@ -149,4 +155,7 @@ def test_base_publication_optional_roster_fence_fails_before_insert(monkeypatch)
     with pytest.raises(RuntimeError, match="roster owner fence"):
         _publish(storage, keeper, assignment,
                  roster_fence=LostRoster(), roster_epoch=3)
+    assert storage.events == []
+    with pytest.raises(ValueError, match="required"):
+        _publish(storage, keeper, assignment, roster_fence=None)
     assert storage.events == []

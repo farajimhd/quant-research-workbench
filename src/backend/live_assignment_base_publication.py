@@ -38,15 +38,14 @@ def publish_base_revision(
     parameter_content_hash: str, state_snapshot_id: str,
     state_snapshot_revision: int, state_session: str, state_run_id: str,
     state_content_hash: str,
-    roster_fence: RosterOwnerFence | None = None,
-    roster_epoch: int | None = None,
+    roster_fence: RosterOwnerFence,
+    roster_epoch: int,
 ) -> AssignmentHead:
     """Synchronous control-plane only; never call from a market callback."""
     assignment_id = assignment.assignment_id
-    if (roster_fence is None) != (roster_epoch is None):
-        raise ValueError("roster owner fence and epoch must be supplied together")
-    if roster_fence is not None and not roster_fence.is_current(
-            owner_id=owner_id, epoch=roster_epoch):
+    if roster_fence is None or roster_epoch is None:
+        raise ValueError("roster owner fence and epoch are required")
+    if not roster_fence.is_current(owner_id=owner_id, epoch=roster_epoch):
         raise RuntimeError("roster owner fence is not current")
     epoch = keeper.acquire(assignment_id, owner_id=owner_id)
     if epoch is None:
@@ -94,8 +93,7 @@ def publish_base_revision(
             raise ValueError("assignment differs from its attested typed children")
         if not keeper.is_current(assignment_id, owner_id=owner_id, epoch=epoch):
             raise RuntimeError("assignment base Keeper owner fence lost")
-        if roster_fence is not None and not roster_fence.is_current(
-                owner_id=owner_id, epoch=roster_epoch):
+        if not roster_fence.is_current(owner_id=owner_id, epoch=roster_epoch):
             raise RuntimeError("roster owner fence lost before base insert")
         try:
             storage.insert_base(row)
@@ -112,8 +110,7 @@ def publish_base_revision(
                 parameter_storage=parameter_storage,
                 parameter_admission=parameter_admission,
             )
-            if roster_fence is not None and not roster_fence.is_current(
-                    owner_id=owner_id, epoch=roster_epoch):
+            if not roster_fence.is_current(owner_id=owner_id, epoch=roster_epoch):
                 raise RuntimeError("roster owner fence lost after base attestation")
             return confirmed
         except BaseException as exc:
