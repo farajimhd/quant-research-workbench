@@ -1,5 +1,6 @@
 """Strategy 1 commit family authority stays tabular and exact."""
 import json
+from threading import Barrier, Lock, get_ident
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -10,6 +11,7 @@ import pytest
 
 from src.trading_runtime.arte_journal_commit_v4 import (
     _batched_detail_rows_v4, _existing_detail_identities_v4,
+    _insert_detail_families_v4,
     _publish_typed_batch_v4,
     load_verified_commit_v4, load_verified_v4_prefix, prepare_commit_v4,
     publish_base_typed_batch_v4, publish_broker_acknowledgement_batch_v4,
@@ -40,6 +42,89 @@ from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.replay_run_service import ReplayRunController, RunMode
 from src.trading_runtime.domain import CommissionEvent
 from tests.test_arte_journal_writer import MemoryClient, batch, captured
+
+
+def test_v4_detail_inserts_use_distinct_bounded_http_lanes(monkeypatch):
+    dispatch = object()
+    closed = []
+    lanes = []
+    identities = set()
+    lock = Lock()
+    barrier = Barrier(3, timeout=5)
+
+    def factory():
+        lane = SimpleNamespace(typed_insert_strict=True,
+                               typed_insert_dispatch=dispatch)
+        lane.close = lambda: closed.append(lane)
+        lanes.append(lane)
+        return lane
+
+    def insert(lane, name, rows, token, **kwargs):
+        with lock:
+            identities.add((id(lane), get_ident(), name, token))
+        barrier.wait()
+
+    monkeypatch.setattr(writer_module, "_insert", insert)
+    client = SimpleNamespace(typed_insert_dispatch=dispatch,
+                             v4_insert_lane_factory=factory,
+                             v4_insert_lane_limit=3)
+    batch_row = SimpleNamespace(batch_id="batch-1", last_sequence=8)
+    _insert_detail_families_v4(client, batch_row, (
+        ("table_a", ({"record_id": "a"},)),
+        ("table_b", ({"record_id": "b"},)),
+        ("table_c", ({"record_id": "c"},)),
+    ))
+    assert len(lanes) == len(closed) == len(identities) == 3
+    assert {item[0] for item in identities} == {id(lane) for lane in lanes}
+    assert {item[2] for item in identities} == {"table_a", "table_b", "table_c"}
+
+
+def test_v4_detail_lane_failure_drains_and_closes_all_lanes(monkeypatch):
+    dispatch = object()
+    closed = []
+    inserted = []
+
+    def factory():
+        lane = SimpleNamespace(typed_insert_strict=True,
+                               typed_insert_dispatch=dispatch)
+        lane.close = lambda: closed.append(lane)
+        return lane
+
+    def insert(lane, name, rows, token, **kwargs):
+        inserted.append(name)
+        if name == "table_a":
+            raise RuntimeError("ambiguous INSERT")
+
+    monkeypatch.setattr(writer_module, "_insert", insert)
+    client = SimpleNamespace(typed_insert_dispatch=dispatch,
+                             v4_insert_lane_factory=factory,
+                             v4_insert_lane_limit=2)
+    with pytest.raises(RuntimeError, match="ambiguous INSERT"):
+        _insert_detail_families_v4(
+            client, SimpleNamespace(batch_id="batch-1", last_sequence=8),
+            (("table_a", ({"record_id": "a"},)),
+             ("table_b", ({"record_id": "b"},))))
+    assert sorted(inserted) == ["table_a", "table_b"]
+    assert len(closed) == 2
+
+
+def test_v4_detail_lane_rejects_shared_connection_before_insert(monkeypatch):
+    dispatch = object()
+    inserted = []
+    lane = SimpleNamespace(typed_insert_strict=True,
+                           typed_insert_dispatch=dispatch)
+    lane.close = lambda: None
+    monkeypatch.setattr(writer_module, "_insert",
+                        lambda *args, **kwargs: inserted.append(args))
+    client = SimpleNamespace(typed_insert_dispatch=dispatch,
+                             v4_insert_lane_factory=lambda: lane,
+                             v4_insert_lane_limit=2)
+    with pytest.raises(RuntimeError, match="independent fenced client"):
+        _insert_detail_families_v4(
+            client, SimpleNamespace(batch_id="batch-1", last_sequence=8),
+            (("table_a", ({"record_id": "a"},)),
+             ("table_b", ({"record_id": "b"},))))
+    assert inserted == []
 
 
 def test_v4_clickhouse_detail_existence_uses_one_bounded_family_read(monkeypatch):

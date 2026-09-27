@@ -249,6 +249,16 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None) -> Any:
     client.typed_insert_dispatch = TypedInsertDispatch(keeper_session.client)
     client.typed_insert_strict = True
     client.v4_batched_detail_readback = True
+    def new_detail_lane() -> ClickHouseHttpClient:
+        lane = ClickHouseHttpClient(
+            url, user, password, timeout_seconds=60, persistent=True,
+            default_query_params={"max_threads": 2, "max_execution_time": 60},
+        )
+        lane.typed_insert_dispatch = client.typed_insert_dispatch
+        lane.typed_insert_strict = True
+        return lane
+    client.v4_insert_lane_factory = new_detail_lane
+    client.v4_insert_lane_limit = 4
     return client
 
 

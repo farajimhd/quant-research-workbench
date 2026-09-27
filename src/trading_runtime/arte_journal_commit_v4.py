@@ -7,6 +7,7 @@ unique commit, its complete child-family set, and the detail-row readback.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
@@ -1195,6 +1196,66 @@ def _existing_detail_identities_v4(client, batch, families):
     return {name: sorted(identities) for name, identities in by_name.items()}
 
 
+def _insert_detail_families_v4(client, batch, pending):
+    """Insert independent detail families in bounded lanes, before any commit.
+
+    Every lane has its own HTTP connection. The shared Keeper dispatch registers
+    each exact INSERT; a failed lane leaves the batch uncommitted and fenced.
+    The caller still performs complete typed readback before publishing a
+    family set or cursor. Fake and older clients retain the serial path.
+    """
+    from src.trading_runtime.arte_journal_writer import _insert
+
+    factory = getattr(client, "v4_insert_lane_factory", None)
+    lane_limit = getattr(client, "v4_insert_lane_limit", 1)
+    if factory is None or len(pending) < 2:
+        for name, rows in pending:
+            _insert(client, name, tuple(rows), f"{batch.batch_id}:{name}:v4",
+                    dispatch_batch_id=batch.batch_id,
+                    dispatch_sequence=batch.last_sequence)
+        return
+    if (type(lane_limit) is not int or not 2 <= lane_limit <= 4
+            or not callable(factory)):
+        raise ValueError("V4 detail INSERT lanes must be bounded and configured")
+    lane_count = min(lane_limit, len(pending))
+    lanes = []
+    try:
+        for _ in range(lane_count):
+            lane = factory()
+            if (lane is client or any(lane is prior for prior in lanes)
+                    or getattr(lane, "typed_insert_strict", False) is not True
+                    or getattr(lane, "typed_insert_dispatch", None)
+                    is not client.typed_insert_dispatch):
+                if lane is not client and all(lane is not prior for prior in lanes):
+                    lane.close()
+                raise RuntimeError("V4 detail lane lacks an independent fenced client")
+            lanes.append(lane)
+
+        def publish_lane(lane, work):
+            for name, rows in work:
+                _insert(lane, name, tuple(rows), f"{batch.batch_id}:{name}:v4",
+                        dispatch_batch_id=batch.batch_id,
+                        dispatch_sequence=batch.last_sequence)
+
+        groups = tuple(tuple(pending[index::lane_count])
+                       for index in range(lane_count))
+        with ThreadPoolExecutor(max_workers=lane_count,
+                                thread_name_prefix="v4-detail-insert") as pool:
+            futures = tuple(pool.submit(publish_lane, lane, work)
+                            for lane, work in zip(lanes, groups, strict=True))
+            errors = []
+            for future in futures:
+                try:
+                    future.result()
+                except BaseException as exc:
+                    errors.append(exc)
+            if errors:
+                raise errors[0]
+    finally:
+        for lane in lanes:
+            lane.close()
+
+
 def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
     from src.trading_runtime.arte_journal_writer import (
@@ -1250,6 +1311,7 @@ def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
         last_sequence=batch.last_sequence)
 
     existing_identities = _existing_detail_identities_v4(client, batch, families)
+    pending = []
     for name, rows in families:
         if not rows:
             continue
@@ -1258,9 +1320,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families) -> str:
         if identities and identities != expected:
             raise RuntimeError("V4 typed detail conflicts with a prior attempt")
         if not identities:
-            _insert(client, name, tuple(rows), f"{batch.batch_id}:{name}:v4",
-                    dispatch_batch_id=batch.batch_id,
-                    dispatch_sequence=batch.last_sequence)
+            pending.append((name, rows))
+    _insert_detail_families_v4(client, batch, pending)
     actual_details = _load_verified_details_v4(
         client, run_id=batch.run_id, batch_id=batch.batch_id,
         family_rows=family_rows, max_rows_per_family=65_536,
