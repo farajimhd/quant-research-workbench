@@ -416,3 +416,23 @@ def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
             group, source, admission, decisions[group.sequence]))
     cold.barrier.assert_fenced(cold.run_id)
     return tuple(verified)
+
+
+async def audit_recovered_strategy_one_live_oms(
+    *, cold: LiveSyncColdResult, heads: tuple[VerifiedStrategyOneOmsHead, ...],
+    broker: Any,
+) -> Any:
+    """Check open broker bindings without mutating OMS or admitting orders."""
+    from src.trading_runtime.arte_oms_broker_audit import (
+        audit_strategy_one_open_oms_bindings,
+    )
+
+    if (not isinstance(cold, LiveSyncColdResult)
+            or cold.context.get("mode") != "live"
+            or any(not isinstance(head, VerifiedStrategyOneOmsHead)
+                   for head in heads)):
+        raise ValueError("Broker OMS audit requires verified cold live heads")
+    cold.barrier.assert_fenced(cold.run_id)
+    audit = await audit_strategy_one_open_oms_bindings(heads, broker)
+    cold.barrier.assert_fenced(cold.run_id)
+    return audit
