@@ -10,10 +10,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 from contextlib import contextmanager
+import cProfile
 from datetime import date, datetime, time, timedelta
+from io import StringIO
 import os
 from pathlib import Path
 import platform
+import pstats
 import sys
 from threading import Lock
 from time import perf_counter
@@ -68,6 +71,18 @@ def _print_completed_profile(controller) -> None:
           f"queue_capacity={metrics['queue_capacity']}", flush=True)
 
 
+def _profile_preflight_call(call, **kwargs):
+    """Profile the worker-thread preflight itself, not its asyncio caller."""
+    profile = cProfile.Profile()
+    try:
+        return profile.runcall(call, **kwargs)
+    finally:
+        output = StringIO()
+        pstats.Stats(profile, stream=output).sort_stats("cumulative").print_stats(25)
+        print("Preflight call profile (top 25 cumulative seconds):", flush=True)
+        print(output.getvalue(), flush=True)
+
+
 class _SqlCallProfile:
     """Per-process HTTP timing; SQL text and credentials are never retained."""
 
@@ -114,7 +129,8 @@ def _profile_sql_calls(profile: _SqlCallProfile):
         ClickHouseHttpClient.execute = original
 
 
-async def _run(day: date, ticker: str, *, apply: bool, minutes: int) -> None:
+async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
+               profile_preflight: bool = False) -> None:
     from src.backend.replay_run_service import (
         ReplayRunController, ReplayRunDefinition, backtest_preflight,
     )
@@ -127,7 +143,9 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int) -> None:
                 + timedelta(minutes=minutes)).time()
     began = perf_counter()
     preflight = await asyncio.to_thread(
-        backtest_preflight, anchor_date=day + timedelta(days=1),
+        _profile_preflight_call if profile_preflight else backtest_preflight,
+        **({"call": backtest_preflight} if profile_preflight else {}),
+        anchor_date=day + timedelta(days=1),
         session_count=1, start_time=time(4), end_time=end_time,
         tickers=selected, configuration_revision=revision)
     window = tuple(preflight["window"]["sessions"])
@@ -194,6 +212,8 @@ def main() -> None:
     parser.add_argument("--minutes", type=int, default=10,
                         help="whole minutes from 04:00 ET, at most 330")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--profile-preflight", action="store_true",
+                        help="show the slowest preflight calls; does not create market data")
     args = parser.parse_args()
     if args.ticker and (not args.ticker.isascii() or not args.ticker.isalnum()):
         raise ValueError("Integration ticker must be an ASCII market symbol")
@@ -201,7 +221,7 @@ def main() -> None:
         raise ValueError("Integration horizon must be one to 330 minutes")
     _load_private_credentials()
     asyncio.run(_run(args.session, args.ticker, apply=args.apply,
-                     minutes=args.minutes))
+                     minutes=args.minutes, profile_preflight=args.profile_preflight))
 
 
 if __name__ == "__main__":

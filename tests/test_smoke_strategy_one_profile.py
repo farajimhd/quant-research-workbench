@@ -4,8 +4,16 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.clickhouse.smoke_strategy_one_backtest import (
-    _SqlCallProfile, _print_completed_profile, _profile_sql_calls,
+    _SqlCallProfile, _print_completed_profile, _profile_preflight_call,
+    _profile_sql_calls,
 )
+
+
+def test_preflight_call_profile_preserves_result_and_reports_bounded_calls(capsys):
+    assert _profile_preflight_call(lambda *, value: value + 1, value=2) == 3
+    output = capsys.readouterr().out
+    assert "Preflight call profile (top 25 cumulative seconds):" in output
+    assert "function calls" in output
 
 
 def test_completed_profile_reports_wall_and_writer_units(capsys):
