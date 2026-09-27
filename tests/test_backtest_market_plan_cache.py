@@ -117,7 +117,7 @@ def test_fixed_plan_reuses_only_unchanged_verified_snapshot(monkeypatch):
     monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
     monkeypatch.setattr(market, "readonly_clickhouse_client", lambda **_: Reader())
     monkeypatch.setattr(cold, "market_day_fence_build_ids", lambda *_: ("a" * 64,))
-    monkeypatch.setattr(session_module, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(session_module, "market_proof_session", Session)
     monkeypatch.setattr(keeper_module, "MarketDayKeeperReader",
                         lambda _: SimpleNamespace(load=lambda _build: "proof"))
     generations = []
@@ -166,7 +166,7 @@ def test_cold_plan_rechecks_pinned_build_during_unrelated_part_growth(
     monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
     monkeypatch.setattr(market, "readonly_clickhouse_client", lambda **_: Reader())
     monkeypatch.setattr(cold, "market_day_fence_build_ids", lambda *_: ("a" * 64,))
-    monkeypatch.setattr(session_module, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(session_module, "market_proof_session", Session)
     monkeypatch.setattr(keeper_module, "MarketDayKeeperReader",
                         lambda _: SimpleNamespace(load=lambda _build: "proof"))
     fingerprints = iter(("before", "after"))
@@ -214,7 +214,7 @@ def test_unrelated_part_growth_reuses_full_audit_with_selected_fence(monkeypatch
     monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
     monkeypatch.setattr(market, "readonly_clickhouse_client", lambda **_: Reader())
     monkeypatch.setattr(cold, "market_day_fence_build_ids", lambda *_: ("a" * 64,))
-    monkeypatch.setattr(session_module, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(session_module, "market_proof_session", Session)
     monkeypatch.setattr(keeper_module, "MarketDayKeeperReader",
                         lambda _: SimpleNamespace(load=lambda _build: "proof"))
     scans = []
@@ -258,7 +258,7 @@ def test_selected_part_change_during_cache_recheck_forces_full_audit(monkeypatch
     monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
     monkeypatch.setattr(market, "readonly_clickhouse_client", lambda **_: Reader())
     monkeypatch.setattr(cold, "market_day_fence_build_ids", lambda *_: ("a" * 64,))
-    monkeypatch.setattr(session_module, "open_workstation_keeper_session", Session)
+    monkeypatch.setattr(session_module, "market_proof_session", Session)
     monkeypatch.setattr(keeper_module, "MarketDayKeeperReader",
                         lambda _: SimpleNamespace(load=lambda _build: "proof"))
     scans = []
