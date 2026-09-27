@@ -246,6 +246,20 @@ def prepare_compound_v4_families(
                    if key != "content_hash"},
                 "batch_id": compound.base.batch_id,
             }) for row in rows)
+    # The protection parent includes a digest of its child rows. All other
+    # scalar columns must match micro-preparation exactly; only that digest
+    # changes when the child's batch ID is rekeyed.
+    protection_name = PROTECTION_CHANGE.name
+    for index, source in enumerate(compound.children["protection_changes"]):
+        prepared = extra[protection_name][index]
+        if any(prepared[key] != value for key, value in source.items()
+               if key != "entry_order_hash"):
+            raise ValueError("V4 protection parent changed outside its child seal")
+        extra[protection_name][index] = typed_row(protection_name, {
+            **{key: value for key, value in prepared.items()
+               if key != "content_hash"},
+            "entry_order_hash": source["entry_order_hash"],
+        })
     for key, name in table_for_key.items():
         expected = tuple(typed_row(name, row) for row in compound.children[key])
         if tuple(extra[name]) != expected:
