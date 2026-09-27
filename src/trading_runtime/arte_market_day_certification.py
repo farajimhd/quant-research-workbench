@@ -228,11 +228,12 @@ def verify_market_day_certificate(client: Any, build_id: str, *,
                 or (int(row["mode"]) == 0 and any(prior[1:]))
                 or (int(row["mode"]) == 1 and any(not value for value in prior))):
             raise RuntimeError("Market-day seed provenance conflicts with technical attempt")
-    checks = (("header_hash", family_hash(header)), ("scope_hash", family_hash(scopes)),
+    scope_digest = family_hash(scopes)
+    checks = (("header_hash", family_hash(header)), ("scope_hash", scope_digest),
               ("stage_hash", family_hash(stages)), ("seed_hash", family_hash(seeds)))
     if (fence["definition_hash"] != head["definition_hash"]
             or any(fence[key] != digest for key, digest in checks)
-            or head["scope_hash"] != family_hash(scopes)
+            or head["scope_hash"] != scope_digest
             or int(head["scope_count"]) != len(scopes)
             or any(int(fence[key]) != length for key, length in (
                 ("scope_count", len(scopes)), ("stage_count", len(stages)),
