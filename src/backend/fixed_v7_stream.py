@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import deque
 from datetime import date, datetime
 from math import prod
+from time import perf_counter
 from typing import Any, Callable, Mapping, Sequence
 
 from src.backend.swing_book_source import session_bounds
@@ -118,7 +119,8 @@ class FixedV7Cache:
     def __init__(self, *, market_plan: CertifiedMarketDayPlan,
                  seed_plan: CertifiedSeedPlan, session: date, client: Any,
                  observe_completed_second: Callable[[str, Mapping[str, Any], int], None] | None = None,
-                 prefetch_horizon_ms: int = 0) -> None:
+                 prefetch_horizon_ms: int = 0,
+                 stage_time: Callable[[str, float], None] | None = None) -> None:
         if session.isoformat() not in market_plan.sessions or seed_plan.build_id != market_plan.build_id:
             raise ValueError("V7 seed and bar plans do not share the requested session/build")
         self.market_plan = market_plan
@@ -126,11 +128,14 @@ class FixedV7Cache:
         self.client = client
         if observe_completed_second is not None and not callable(observe_completed_second):
             raise TypeError("V7 completed-second observer must be callable")
+        if stage_time is not None and not callable(stage_time):
+            raise TypeError("V7 stage timer must be callable")
         if (type(prefetch_horizon_ms) is not int or prefetch_horizon_ms < 0
                 or prefetch_horizon_ms > 900_000
                 or prefetch_horizon_ms % 1_000):
             raise ValueError("V7 lookahead buffer must be a bounded whole-second horizon")
         self._observe_completed_second = observe_completed_second
+        self._stage_time = stage_time
         self._prefetch_horizon_ms = prefetch_horizon_ms
         self._coverage = {row["ticker"]: row for row in seed_plan.units
                           if row["backtest_session"] == session.isoformat()}
@@ -235,12 +240,15 @@ class FixedV7Cache:
             pinned = self._coverage.get(ticker)
             if pinned is None:
                 raise ValueError("V7 seed ticker is outside the certified population")
+            seed_started = perf_counter() if self._stage_time is not None else 0.0
             seed = load_seed(self.client, ticker=ticker, session=self.session, coverage=pinned)
             splits = split_evidence(self.client, ticker=ticker,
                                     seed_session=date.fromisoformat(seed["session"]),
                                     session=self.session)
             stream = FixedV7Stream(seed, ticker=ticker, session=self.session,
                                    splits=splits, consume_seed=True)
+            if self._stage_time is not None:
+                self._stage_time("strategy_one_v7_seed", seed_started)
         else:
             after_ms = self._last_loaded_second_ms[ticker]
         def consume(row: Mapping[str, Any]) -> None:
@@ -263,6 +271,8 @@ class FixedV7Cache:
                 self._observe_completed_second(ticker, row, second_ms)
             self._last_observed_second_ms[ticker] = second_ms
 
+        seconds_started = (perf_counter() if completed_ms > after_ms
+                           and self._stage_time is not None else 0.0)
         if completed_ms > after_ms and self._prefetch_horizon_ms:
             buffered = self._prefetched.setdefault(ticker, deque())
             while buffered:
@@ -304,6 +314,8 @@ class FixedV7Cache:
                 client=self.client,
             ):
                 consume(row)
+        if seconds_started:
+            self._stage_time("strategy_one_v7_seconds", seconds_started)
         self._streams[ticker] = stream
         self._last_loaded_second_ms[ticker] = completed_ms
         return stream
@@ -319,5 +331,9 @@ class FixedV7Cache:
         if pinned is None:
             raise ValueError("Strategy 1 V7 ticker lacks pinned prior coverage")
         policy = str(pinned["input_policy"]) if int(pinned["level_count"]) else POLICY
-        return self._stream(ticker, as_of=as_of).strategy_one_levels(
-            as_of=as_of, seed_policy=policy)
+        stream = self._stream(ticker, as_of=as_of)
+        started = perf_counter() if self._stage_time is not None else 0.0
+        result = stream.strategy_one_levels(as_of=as_of, seed_policy=policy)
+        if started:
+            self._stage_time("strategy_one_v7_projection", started)
+        return result

@@ -11,7 +11,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import date
 from math import isfinite
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, market_day_boundary,
@@ -69,7 +69,8 @@ class StrategyOneCausalEvidence:
     def __init__(self, *, market_plan: CertifiedMarketDayPlan,
                  seed_plan: CertifiedSeedPlan, pivot_plan: CertifiedPivotPlan,
                  hod_plan: CertifiedHodPlan,
-                 session: date, client: Any) -> None:
+                 session: date, client: Any,
+                 stage_time: Callable[[str, float], None] | None = None) -> None:
         if (not isinstance(market_plan, CertifiedMarketDayPlan)
                 or not isinstance(seed_plan, CertifiedSeedPlan)
                 or not isinstance(pivot_plan, CertifiedPivotPlan)
@@ -91,7 +92,7 @@ class StrategyOneCausalEvidence:
             market_plan=market_plan, seed_plan=seed_plan,
             session=session, client=client,
             observe_completed_second=self.bos.observe_second,
-            prefetch_horizon_ms=900_000)
+            prefetch_horizon_ms=900_000, stage_time=stage_time)
         self.activations = ActivationCatalog()
         self._resistance: dict[str, ResistanceObservation] = {}
         self._completed_breaks: dict[str, tuple[ResistanceBreak, ...]] = {}

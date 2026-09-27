@@ -160,7 +160,8 @@ async def run_certified_strategy_one_session(
                 # together; only scheduler I/O is horizon-projected.
                 market_plan=evidence_market, seed_plan=seeds,
                 pivot_plan=pivots, hod_plan=hod,
-                session=date.fromisoformat(projected.sessions[0]), client=reader)
+                session=date.fromisoformat(projected.sessions[0]), client=reader,
+                stage_time=stage_time)
             manager = StrategyOneManagementRunner(
                 runtime=runtime, evidence=evidence,
                 tick_for_ticker=ticks.__getitem__)

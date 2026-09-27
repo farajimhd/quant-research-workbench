@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 import asyncio
 import json
 import re
+from time import perf_counter
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -136,8 +137,13 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
                            "v7-token", True)
     client = Client()
     observed_seconds = []
+    stages = []
+    def stage_time(stage, started):
+        assert perf_counter() >= started
+        stages.append(stage)
     cache = FixedV7Cache(market_plan=market, seed_plan=v7,
                          session=date(2026, 8, 18), client=client,
+                         stage_time=stage_time,
                          observe_completed_second=lambda ticker, row, boundary:
                          observed_seconds.append((ticker, row["bucket_index"], boundary)))
     assert not cache.has_stream("TEST")
@@ -150,6 +156,9 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
         assert cache.strategy_one_levels("TEST", as_of=before) == ()
     assert cache.context("TEST", as_of=before, price=10.0)["qmd_structure_unified_levels"] == []
     assert cache.has_stream("TEST")
+    assert "strategy_one_v7_seed" in stages
+    assert "strategy_one_v7_seconds" in stages
+    assert "strategy_one_v7_projection" in stages
     assert cache._streams["TEST"].engine.bars_processed == 0
     assert cache.last_completed_price_second("TEST") is None
     completed = datetime(2026, 8, 18, 4, 5, 1, tzinfo=NY)
