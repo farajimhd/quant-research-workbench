@@ -78,12 +78,30 @@ def main() -> None:
             "FROM arte.trading_commit_v4 "
             f"WHERE run_id={_literal(args.run_id)} "
             "ORDER BY first_sequence,batch_id LIMIT 10001 FORMAT JSONEachRow")
+        singleton_families = _rows(client,
+            "SELECT e.category,e.entity_type,count() AS commits "
+            "FROM arte.trading_event_v1 e "
+            "INNER JOIN arte.trading_commit_v4 c "
+            "ON e.run_id=c.run_id AND e.batch_id=c.batch_id "
+            f"WHERE c.run_id={_literal(args.run_id)} AND c.event_count=1 "
+            "GROUP BY e.category,e.entity_type "
+            "ORDER BY commits DESC,e.category,e.entity_type "
+            "LIMIT 33 FORMAT JSONEachRow")
     finally:
         client.close()
     if len(rows) > 10_000:
         raise RuntimeError("V4 commit profile exceeds its 10,000-row bound")
     for line in _profile(rows):
         print(line, flush=True)
+    if len(singleton_families) > 32:
+        raise RuntimeError("V4 singleton family inventory exceeds its bound")
+    for row in singleton_families:
+        if (set(row) != {"category", "entity_type", "commits"}
+                or not isinstance(row["commits"], int)
+                or row["commits"] < 1):
+            raise RuntimeError("V4 singleton family inventory is malformed")
+        print(f"Singleton {row['category']}/{row['entity_type']}: "
+              f"commits={row['commits']}", flush=True)
 
 
 if __name__ == "__main__":
