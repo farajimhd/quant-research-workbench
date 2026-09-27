@@ -47,12 +47,9 @@ class MarketDayColdAudit:
                 and self.certificate_parts_on_ssd)
 
 
-def _certificate_part_snapshot(client: Any, *, include_market: bool = False) -> str:
+def _certificate_part_snapshot(client: Any) -> str:
     """Fence immutable certificate/source parts across the cold audit."""
     names = tuple(table.name for table in TABLES)
-    if include_market:
-        names += ("market_day_session_seal_v1", "bars_v1", "indicators_v1",
-                  "liquidity_100ms_v1")
     quoted = ",".join(f"'{name}'" for name in names)
     rows = [json.loads(line) for line in client.execute(
         "SELECT table,name,disk_name,hash_of_all_files FROM system.parts "
@@ -291,7 +288,6 @@ def sealed_certified_market_day_plan(client: Any, keeper: Any, build_id: str, *,
     _placement(client)
     verify_source_plan_storage(client)
     _market_product_placement(client)
-    parts_before = _certificate_part_snapshot(client, include_market=True)
     fences = _read(client, TABLES[-1].name, build_id)
     if len(fences) != 1:
         raise RuntimeError("Sealed plan lacks one final build fence")
@@ -341,11 +337,14 @@ def sealed_certified_market_day_plan(client: Any, keeper: Any, build_id: str, *,
     plan = CertifiedMarketDayPlan(interval, build_id, proof.definition_hash,
         days, ordered_tickers, units, resolutions, token=_stable_hash(payload))
     verify_market_day_plan(plan, client, read_client_factory=read_client_factory)
+    # Merges change physical part names without changing sealed logical rows.
+    # Exact selected-family and product hashes above are the content fence;
+    # recheck placement and Keeper identity without pinning part filenames.
     _placement(client)
+    verify_source_plan_storage(client)
+    _market_product_placement(client)
     if keeper.load(build_id) != proof:
         raise RuntimeError("Sealed market-day Keeper proof changed during preflight")
-    if _certificate_part_snapshot(client, include_market=True) != parts_before:
-        raise RuntimeError("Sealed market-day active parts changed during preflight")
     return plan
 
 
