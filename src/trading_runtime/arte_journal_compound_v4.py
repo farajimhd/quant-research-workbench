@@ -249,7 +249,7 @@ def prepare_compound_v4_families(
     for key, name in table_for_key.items():
         expected = tuple(typed_row(name, row) for row in compound.children[key])
         if tuple(extra[name]) != expected:
-            raise ValueError("V4 compound lost a normalized scalar child")
+            raise ValueError(f"V4 compound lost normalized {name} children")
 
     ids = lambda name: tuple(row["record_id"] for row in extra[name])
     base_families = _sealed_families(
