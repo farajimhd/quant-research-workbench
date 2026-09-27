@@ -279,7 +279,11 @@ class TypedInsertDispatch:
                 break
         else:
             raise KeeperUnavailable("Portfolio policy dispatch CAS contended")
-        client.execute(sql, query_id=query_id)
+        registered = getattr(client, "execute_registered_insert", None)
+        if registered is None:
+            client.execute(sql, query_id=query_id)
+        else:
+            registered(sql, query_id=query_id)
         for _ in range(8):
             observed = self._read_policy_gate(policy_hash)
             if observed is None or observed[0].mode != "publishing":
@@ -543,7 +547,11 @@ class TypedInsertDispatch:
         else:
             raise KeeperUnavailable("Typed dispatch gate CAS contended")
         # Do not catch/clear transport errors: the server may still commit.
-        client.execute(sql, query_id=query_id)
+        registered = getattr(client, "execute_registered_insert", None)
+        if registered is None:
+            client.execute(sql, query_id=query_id)
+        else:
+            registered(sql, query_id=query_id)
         for attempt in range(_ACK_CAS_ATTEMPTS):
             gate, version = self._read_gate(run_id)
             if gate.mode != "open" or gate.inflight < 1:

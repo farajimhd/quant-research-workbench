@@ -7,9 +7,11 @@ grant, credential, or ClickHouse row operation is performed by this module.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from hashlib import sha256
 import os
 import platform
+import re
 from typing import Any, Callable
 
 from src.trading_runtime.arte_journal_schema import (
@@ -91,6 +93,7 @@ class LiveV4PrincipalPlan:
                for name in sorted(self.select_system)])
 
 
+@lru_cache(maxsize=1)
 def desired_plan() -> LiveV4PrincipalPlan:
     family = frozenset(_v4_family_table(name) for name, _, _, _ in _FAMILIES
                        if name not in _EXCLUDED_FAMILY)
@@ -161,6 +164,79 @@ class LiveV4KeeperLease:
                                   epoch=self.epoch)
 
 
+class LiveV4WriterClient:
+    """Keep ordinary live-client calls read-only; dispatch owns INSERT calls.
+
+    This is an application guard, not a substitute for the Keeper operation
+    receipt or the dedicated ClickHouse principal's exact grants.
+    """
+
+    def __init__(self, raw: Any, lease: LiveV4KeeperLease) -> None:
+        self._raw = raw
+        self.live_v4_lease = lease
+        self.typed_insert_strict = True
+        self.typed_insert_dispatch: Any = None
+        self.typed_sync_insert_dispatch: Any = None
+
+    def execute(self, sql: str, **kwargs: Any) -> Any:
+        grant_audit = sql == "SHOW GRANTS FINAL"
+        select = isinstance(sql, str) and re.match(
+            r"^\s*(?:SELECT|WITH)\b", sql, re.IGNORECASE)
+        mutation = isinstance(sql, str) and re.search(
+            r"\b(?:INSERT|ALTER|CREATE|DROP|TRUNCATE|OPTIMIZE|"
+            r"KILL|GRANT|REVOKE|ATTACH|DETACH)\b", sql, re.IGNORECASE)
+        if not grant_audit and (not select or mutation or ";" in sql):
+            raise RuntimeError("Live V4 direct ClickHouse mutation is forbidden")
+        return self._raw.execute(sql, **kwargs)
+
+    def execute_registered_insert(self, sql: str, *, query_id: str) -> Any:
+        self.live_v4_lease.assert_current()
+        match = re.match(r"^INSERT INTO arte\.([a-z][a-z0-9_]*) \(", sql)
+        if (match is None or match.group(1) not in desired_plan().insert_arte
+                or not re.fullmatch(r"arte_(?:typed|sync)_[0-9a-f]{64}", query_id)
+                or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1" not in sql):
+            raise RuntimeError("Live V4 INSERT lacks a registered typed dispatch contract")
+        table = match.group(1)
+        digest = sha256(sql.encode()).hexdigest()
+        if query_id.startswith("arte_typed_"):
+            from src.trading_runtime.arte_typed_insert_dispatch import _operation_path
+
+            dispatch = self.typed_insert_dispatch
+            if dispatch is None or dispatch.keeper is not self.live_v4_lease.owner._session.client:
+                raise RuntimeError("Live V4 typed dispatch authority is missing")
+            gate, _ = dispatch._read_gate(self.live_v4_lease.run_id)
+            try:
+                value, _ = dispatch.keeper.get(_operation_path(
+                    self.live_v4_lease.run_id, query_id))
+                fields = value.decode("ascii").split("\n")
+            except Exception as exc:
+                raise RuntimeError("Live V4 typed INSERT lacks a Keeper operation") from exc
+            if (gate.mode != "open" or gate.inflight < 1 or len(fields) != 9
+                    or fields[:4] != ["3", self.live_v4_lease.run_id, table, query_id]
+                    or fields[5] != digest or fields[8] != "pending"):
+                raise RuntimeError("Live V4 typed INSERT is not pending in Keeper")
+        else:
+            from src.trading_runtime.arte_portfolio_sync_dispatch import _query_id
+
+            dispatch = self.typed_sync_insert_dispatch
+            if dispatch is None or dispatch.keeper is not self.live_v4_lease.owner._session.client:
+                raise RuntimeError("Live V4 sync dispatch authority is missing")
+            gate, _ = dispatch._read(self.live_v4_lease.run_id)
+            operation = (gate.marker if table == "trading_portfolio_sync_snapshot_marker_v1"
+                         else gate.fence if table == "trading_portfolio_sync_fence_v1"
+                         else None)
+            if (gate.mode != "open" or operation is None
+                    or operation.status != "pending" or operation.sql_hash != digest
+                    or query_id != _query_id(self.live_v4_lease.run_id,
+                                             gate.account_id, gate.revision, table)):
+                raise RuntimeError("Live V4 sync INSERT is not pending in Keeper")
+        self.live_v4_lease.assert_current()
+        return self._raw.execute(sql, query_id=query_id)
+
+    def close(self) -> None:
+        self._raw.close()
+
+
 def open_live_v4_client(
     *, lease: LiveV4KeeperLease | None, endpoint: str,
     credential_user: str, credential_password: str,
@@ -175,17 +251,16 @@ def open_live_v4_client(
             or len(credential_password) < 40:
         raise ValueError("Live V4 requires its own private principal credential")
     lease.assert_current()
-    client = client_factory(endpoint, credential_user, credential_password)
+    raw = client_factory(endpoint, credential_user, credential_password)
     try:
-        live_v4_preflight(client)
+        live_v4_preflight(raw)
         lease.assert_current()
         from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+        client = LiveV4WriterClient(raw, lease)
         client.typed_insert_dispatch = TypedInsertDispatch(lease.owner._session.client)
-        client.typed_insert_strict = True
-        client.live_v4_lease = lease
         return client
     except BaseException:
-        close = getattr(client, "close", None)
+        close = getattr(raw, "close", None)
         if callable(close):
             close()
         raise

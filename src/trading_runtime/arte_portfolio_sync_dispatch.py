@@ -164,7 +164,12 @@ class PortfolioSyncDispatch:
             raise KeeperUnavailable("Portfolio sync INSERT reservation contended")
         # A lost transport response must leave pending state forever; row
         # visibility alone cannot disprove delayed completion.
-        client.execute(sql, query_id=_query_id(run_id, account_id, revision, table))
+        query_id = _query_id(run_id, account_id, revision, table)
+        registered = getattr(client, "execute_registered_insert", None)
+        if registered is None:
+            client.execute(sql, query_id=query_id)
+        else:
+            registered(sql, query_id=query_id)
         for _ in range(8):
             gate, version = self._read(run_id)
             if (gate.mode != "open" or (gate.account_id, gate.revision) !=

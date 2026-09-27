@@ -21,10 +21,15 @@ class Client:
     def __init__(self, user=live.PRINCIPAL):
         self.user = user
         self.closed = False
+        self.inserts = []
 
-    def execute(self, sql):
-        assert sql == "SELECT currentUser()"
-        return self.user
+    def execute(self, sql, **kwargs):
+        if sql == "SELECT currentUser()":
+            return self.user
+        if sql.startswith("SELECT"):
+            return "selected"
+        self.inserts.append((sql, kwargs))
+        return "inserted"
 
     def close(self):
         self.closed = True
@@ -123,14 +128,66 @@ def test_client_factory_requires_current_keeper_and_closes_on_failure(monkeypatc
             credential_password="x" * 40, client_factory=factory)
     assert calls == []
     lease = _lease()
-    assert live.open_live_v4_client(
+    guarded = live.open_live_v4_client(
         lease=lease, endpoint=live.MANAGED_URL, credential_user=live.PRINCIPAL,
-        credential_password="x" * 40, client_factory=factory) is client
-    assert client.live_v4_lease is lease
-    assert client.typed_insert_strict is True
-    assert isinstance(client.typed_insert_dispatch, TypedInsertDispatch)
-    assert client.typed_insert_dispatch.keeper is lease.owner._session.client
+        credential_password="x" * 40, client_factory=factory)
+    assert isinstance(guarded, live.LiveV4WriterClient)
+    assert guarded.live_v4_lease is lease
+    assert guarded.typed_insert_strict is True
+    assert isinstance(guarded.typed_insert_dispatch, TypedInsertDispatch)
+    assert guarded.typed_insert_dispatch.keeper is lease.owner._session.client
     assert not client.closed
+    assert guarded.execute("SELECT currentUser()") == live.PRINCIPAL
+    assert guarded.execute("SELECT name FROM system.tables") == "selected"
+    with pytest.raises(RuntimeError, match="direct ClickHouse mutation"):
+        guarded.execute("INSERT INTO arte.trading_run_v1 VALUES (1)")
+    with pytest.raises(RuntimeError, match="direct ClickHouse mutation"):
+        guarded.execute("WITH 1 AS x INSERT INTO arte.trading_run_v1 VALUES (x)")
+    with pytest.raises(RuntimeError, match="direct ClickHouse mutation"):
+        guarded.execute("SELECT 1; SYSTEM FLUSH LOGS")
+    assert not client.inserts
+    sql = ("INSERT INTO arte.trading_run_v1 (run_id) SETTINGS "
+           "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1 "
+           "FORMAT JSONEachRow\n{}")
+    from src.trading_runtime.arte_typed_insert_dispatch import (
+        _Gate, _ZERO_BATCH, _gate_path, _operation_path, _operation_wire,
+    )
+    run_id = lease.run_id
+    query_id = "arte_typed_" + "a" * 64
+    with pytest.raises(RuntimeError, match="run gate is absent"):
+        guarded.execute_registered_insert(sql, query_id=query_id)
+    keeper = lease.owner._session.client
+    keeper.create(_gate_path(run_id),
+                  _Gate("open", 1, 1, 1, 0, _ZERO_BATCH, "0" * 64,
+                        _ZERO_BATCH).wire())
+    keeper.create(_operation_path(run_id, query_id),
+                  _operation_wire(run_id, "trading_run_v1", query_id,
+                                  "token", sql, _ZERO_BATCH, 0, "pending"))
+    assert guarded.execute_registered_insert(
+        sql, query_id=query_id) == "inserted"
+    assert client.inserts == [(sql, {"query_id": query_id})]
+    from hashlib import sha256
+    from src.trading_runtime.arte_portfolio_sync_dispatch import (
+        PortfolioSyncDispatch, _Gate as SyncGate, _Operation,
+        _gate_path as sync_gate_path, _query_id as sync_query_id,
+    )
+    account = "account-1"
+    sync_sql = ("INSERT INTO arte.trading_portfolio_sync_snapshot_marker_v1 "
+                "(run_id) SETTINGS "
+                "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1 "
+                "FORMAT JSONEachRow\n{}")
+    guarded.typed_sync_insert_dispatch = PortfolioSyncDispatch(keeper)
+    sync_id = sync_query_id(run_id, account, 1,
+                            "trading_portfolio_sync_snapshot_marker_v1")
+    keeper.create(sync_gate_path(run_id), SyncGate(
+        account_id=account, revision=1,
+        marker=_Operation("pending", sha256(sync_sql.encode()).hexdigest(),
+                          "b" * 64)).wire())
+    assert guarded.execute_registered_insert(sync_sql, query_id=sync_id) == "inserted"
+    assert client.inserts[-1] == (sync_sql, {"query_id": sync_id})
+    assert lease.release()
+    with pytest.raises(RuntimeError, match="lease lost"):
+        guarded.execute_registered_insert(sync_sql, query_id=sync_id)
     client = Client()
     lease = _lease()
     def lose(value):
@@ -147,6 +204,30 @@ def test_client_factory_requires_current_keeper_and_closes_on_failure(monkeypatc
             lease=_lease(), endpoint="http://other:18123",
             credential_user=live.PRINCIPAL, credential_password="x" * 40,
             client_factory=factory)
+
+
+def test_live_typed_dispatch_uses_guarded_registered_insert(monkeypatch):
+    from src.trading_runtime.arte_typed_insert_dispatch import _ZERO_BATCH
+
+    monkeypatch.setattr(live.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(live, "live_v4_preflight", lambda _client: None)
+    lease = _lease()
+    raw = Client()
+    guarded = live.open_live_v4_client(
+        lease=lease, endpoint=live.MANAGED_URL, credential_user=live.PRINCIPAL,
+        credential_password="x" * 40,
+        client_factory=lambda *_args: raw)
+    guarded.typed_insert_dispatch.initialize_new_run(lease.run_id)
+    sql = ("INSERT INTO arte.trading_run_v1 (run_id) SETTINGS "
+           "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+           "insert_deduplication_token='run-test' FORMAT JSONEachRow\n{}")
+    guarded.typed_insert_dispatch.execute_typed_insert(
+        guarded, run_id=lease.run_id, table="trading_run_v1",
+        token="run-test", sql=sql, batch_id=_ZERO_BATCH,
+        batch_last_sequence=0)
+    assert len(raw.inserts) == 1
+    assert raw.inserts[0][0] == sql
+    assert raw.inserts[0][1]["query_id"].startswith("arte_typed_")
 
 
 def test_live_v4_env_factory_has_no_other_principal_fallback(monkeypatch):
