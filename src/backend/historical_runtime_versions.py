@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 import os
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,19 @@ def backend_source_fingerprint() -> str:
 
 
 LOADED_BACKEND_FINGERPRINT = backend_source_fingerprint()
+
+
+@lru_cache(maxsize=2)
+def _loaded_strategy_one_projection(certificate_fn: Any, source_fingerprint: str) -> str:
+    """Reuse AST proof only for the exact source bytes rehashed at preflight.
+
+    The backend fingerprint covers every default V4 projection source. The
+    callable is part of the key so injected test/projection implementations
+    cannot inherit a certificate issued by another implementation.
+    """
+    if source_fingerprint != LOADED_BACKEND_FINGERPRINT:
+        raise RuntimeError("Backend source changed after startup")
+    return certificate_fn()
 
 
 def expected_structure_checkpoint_set() -> str:
@@ -111,7 +125,8 @@ def fixed_strategy_one_runtime_version_check(
     certificate = ""
     if not problems:
         try:
-            certificate = certify_strategy_one_v4_projection()
+            certificate = _loaded_strategy_one_projection(
+                certify_strategy_one_v4_projection, current)
         except (OSError, RuntimeError, ValueError) as exc:
             problems.append(f"Strategy 1 journal projection is incomplete: {exc}")
     return {
