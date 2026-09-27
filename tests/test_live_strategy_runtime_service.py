@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from src.backend.live_strategy_runtime_service import (
-    LiveStrategyRuntimeSupervisor, RetryableSignalWorkError,
+    LiveStrategyRuntimeSupervisor, RetryableSignalWorkError, _build_runtime,
 )
 from src.backend.live_signal_work_completion import (
     prepare_completion_proof, project_completion,
@@ -18,6 +18,17 @@ from tests.test_live_signal_work_completion import Keeper, Storage, _proof_input
 
 
 class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_strategy_one_cannot_construct_legacy_sqlite_runtime(self) -> None:
+        from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+        snapshot = {"payload": {"strategy": {
+            "strategy_id": STRATEGY_ID, "revision": STRATEGY_NUMBER}}}
+        with patch("src.backend.live_strategy_runtime_service.trading_journal",
+                   side_effect=AssertionError("SQLite journal opened")), patch(
+                "src.backend.live_strategy_runtime_service.strategy_executor",
+                side_effect=AssertionError("legacy strategy constructed")):
+            with self.assertRaisesRegex(RuntimeError, "SQLite is forbidden"):
+                await _build_runtime(snapshot, object())
+
     async def test_live_mode_cannot_start_sqlite_fallback_without_typed_authority(self) -> None:
         with patch.dict(os.environ, {"TRADING_STRATEGY_RUNTIME_MODE": "live",
                                   "TRADING_SIGNAL_DELIVERY_AUTHORITY": "sqlite"}), patch(

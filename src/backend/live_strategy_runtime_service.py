@@ -727,6 +727,12 @@ async def _build_runtime(
 ) -> dict[str, Any]:
     configuration = dict(snapshot["payload"])
     strategy_config = dict(configuration["strategy"])
+    from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+    if (str(strategy_config["strategy_id"]), int(strategy_config["revision"])) == (
+            STRATEGY_ID, STRATEGY_NUMBER):
+        # Strategy 1's journal authority is typed ClickHouse/ Keeper. This
+        # legacy runtime constructs a SQLite journal; never admit Strategy 1.
+        raise RuntimeError("Strategy 1 live journal cutover is incomplete; SQLite is forbidden")
     registration = strategy_executor(
         str(strategy_config["strategy_id"]), int(strategy_config["revision"])
     )
