@@ -15,15 +15,51 @@ def advantages(rewards, values, dones, bootstrap, *, gamma=1., gae_lambda=.95):
     return result, result+np.asarray(values,dtype=np.float32)
 
 
+def ticker_returns(trajectory, population, *, gae_lambda=.95):
+    """Causal local reward-to-go over one rollout, keyed by stable listing index."""
+    if not 0 < gae_lambda <= 1:
+        raise ValueError('Invalid ticker return trace')
+    tail = np.zeros(population,dtype=np.float32)
+    result = [None]*len(trajectory)
+    for index in reversed(range(len(trajectory))):
+        row = trajectory[index]
+        if row['done']:
+            tail.fill(0)
+        tail *= gae_lambda
+        ids = np.asarray(row['ids'],dtype=np.int64)
+        rewards = np.asarray(row['ticker_rewards'],dtype=np.float32)
+        if (ids.ndim != 1 or rewards.shape != ids.shape or
+                np.any(ids < 0) or np.any(ids >= population) or len(np.unique(ids)) != len(ids)):
+            raise ValueError('Invalid ticker reward identities')
+        tail[ids] += rewards
+        result[index] = tail[ids].copy()
+    return result
+
+
 def ppo_loss(logprob, old_logprob, advantage, value, returns, entropy,
-             *, clip=.2, value_weight=.5, entropy_weight=.001):
+             *, clip=.2, value_weight=.5, entropy_weight=.001, token_mask=None):
     logratio = logprob-old_logprob
     ratio = torch.exp(logratio)
-    policy = -torch.minimum(ratio*advantage,ratio.clamp(1-clip,1+clip)*advantage).mean()
+    if token_mask is not None:
+        if logratio.ndim != 2 or token_mask.shape != logratio.shape:
+            raise ValueError('Per-ticker PPO requires an aligned token mask')
+        if advantage.ndim == 1:
+            advantage = advantage.unsqueeze(1)
+        if advantage.shape != logratio.shape:
+            raise ValueError('Per-ticker PPO advantage must align with token actions')
+        weight = token_mask.to(logratio.dtype)
+        denominator = weight.sum().clamp_min(1)
+        policy = -(torch.minimum(ratio*advantage,
+                    ratio.clamp(1-clip,1+clip)*advantage)*weight).sum()/denominator
+        mean_entropy = (entropy*weight).sum()/denominator
+        kl = ((((ratio-1)-logratio)*weight).sum()/denominator).detach()
+    else:
+        policy = -torch.minimum(ratio*advantage,ratio.clamp(1-clip,1+clip)*advantage).mean()
+        mean_entropy = entropy.mean()
+        kl = ((ratio-1)-logratio).mean().detach()
     critic = (value-returns).square().mean()
-    loss = policy+value_weight*critic-entropy_weight*entropy.mean()
+    loss = policy+value_weight*critic-entropy_weight*mean_entropy
     if not torch.isfinite(loss):
         raise ValueError('Nonfinite PPO objective')
-    kl = ((ratio-1)-logratio).mean().detach()
     return loss, dict(policy_loss=float(policy.detach()),value_loss=float(critic.detach()),
-                       entropy=float(entropy.mean().detach()),approx_kl=float(kl))
+                       entropy=float(mean_entropy.detach()),approx_kl=float(kl))

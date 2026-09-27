@@ -7,8 +7,8 @@ from research.rl_trading.v1.common import bounds, digest, file_hash
 from research.rl_trading.v2.estimated_luld import PRIOR_CLOSE_MINIMUM, regular
 from research.rl_trading.v2.io import read
 
-DATA_VERSION = 'rl-trading-v2-estimated-luld-1'
-ARRAYS = ('features', 'prices', 'volume', 'volume_60s', 'trades_60s',
+DATA_VERSION = 'rl-trading-v2-execution-open-2'
+ARRAYS = ('features', 'prices', 'execution_open', 'volume', 'volume_60s', 'trades_60s',
           'fresh', 'estimated_reference', 'prior_close')
 
 
@@ -35,6 +35,9 @@ class MarketSession:
                     raise ValueError('Invalid market values: ' + name)
                 if name == 'fresh' and np.any(chunk & (arrays['prices'][start:start+16] <= 0)):
                     raise ValueError('Fresh observations require a positive price')
+                if name == 'execution_open' and np.any(
+                        arrays['fresh'][start:start+16] & (chunk <= 0)):
+                    raise ValueError('Fresh observations require a positive execution open')
         if arrays['fresh'].dtype != np.bool_:
             raise ValueError('Fresh price contract is invalid')
         if arrays['estimated_reference'].dtype != np.float32 or arrays['prior_close'].dtype != np.float32:

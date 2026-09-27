@@ -10,7 +10,7 @@ from research.rl_trading.v2.config import Config, share_cap
 from research.rl_trading.v2.data import MarketSession, DATA_VERSION, ARRAYS
 from research.rl_trading.v2.environment import TradingEnv
 from research.rl_trading.v2.model import PortfolioPolicy, collate
-from research.rl_trading.v2.objectives import advantages
+from research.rl_trading.v2.objectives import advantages, ticker_returns, ppo_loss
 from research.rl_trading.v2.io import write, read
 from research.rl_trading.v2 import train, evaluate
 
@@ -18,6 +18,7 @@ from research.rl_trading.v2 import train, evaluate
 def market(n=3, seconds=12, day='2026-08-20', prices=None):
     price = np.full((n,seconds),5.,dtype=np.float64) if prices is None else np.asarray(prices,dtype=np.float64)
     arrays = dict(features=np.zeros((n,seconds,3),dtype=np.float32),prices=price,
+        execution_open=price.copy(),
         volume=np.full((n,seconds),100000.,dtype=np.float64),
         volume_60s=np.broadcast_to(np.arange(n,0,-1)[:,None]*100000.,(n,seconds)).copy(),
         trades_60s=np.full((n,seconds),100.),fresh=np.ones((n,seconds),dtype=bool),
@@ -201,6 +202,29 @@ def test_model_equivariance_and_sampled_probability_reproduction():
     torch.testing.assert_close(logprob,recomputed)
 
 
+def test_policy_scheduler_selects_one_discretionary_action_or_passes():
+    obs = TradingEnv(market(),config()).observe()
+    policy = PortfolioPolicy(3,width=16,heads=2)
+    with torch.no_grad():
+        policy.trade_gate.weight.zero_()
+        policy.trade_gate.bias.fill_(2.)
+    batch = collate([obs])
+    modes,sizes,logprob,_,_ = policy.action(batch,deterministic=True)
+    assert int((modes != 0).sum()) == 1
+    _,_,recomputed,_,_ = policy.action(batch,modes,sizes)
+    torch.testing.assert_close(logprob,recomputed)
+    (-recomputed.mean()).backward()
+    assert policy.trade_gate.bias.grad.abs().sum() > 0
+    assert policy.actor.weight.grad[1:].abs().sum() > 0
+    order = np.array([2,0,1])
+    permuted = {key:(value[order] if key != 'account' else value) for key,value in obs.items()}
+    other,_,_,_,_ = policy.action(collate([permuted]),deterministic=True)
+    torch.testing.assert_close(modes[:,order],other)
+    empty = TradingEnv(market(),replace(config(),min_volume_60s=1e9)).observe()
+    passed,_,score,_,_ = policy.action(collate([empty]))
+    assert torch.count_nonzero(passed) == 0 and torch.isfinite(score).all()
+
+
 def test_empty_universe_and_padding_are_finite():
     session = market()
     session.arrays['volume_60s'][:] = 0
@@ -216,6 +240,53 @@ def test_advantages_bootstrap_chunks_but_not_terminal():
     np.testing.assert_allclose(ret,[6.,5.])
     adv,ret = advantages([1.,2.],[.5,.5],[False,True],999.,gae_lambda=1.)
     np.testing.assert_allclose(ret,[3.,2.])
+
+
+def test_per_ticker_ppo_kl_and_entropy_do_not_scale_with_universe_width():
+    one = torch.full((1,1),.01,requires_grad=True)
+    wide = torch.full((1,1000),.01,requires_grad=True)
+    wide_mask = torch.ones_like(wide,dtype=torch.bool)
+    wide_mask[:,-1] = False
+    value = torch.zeros(1)
+    single_loss,single = ppo_loss(one,torch.zeros_like(one),torch.ones_like(one),value,value,
+        torch.ones_like(one),token_mask=torch.ones_like(one,dtype=torch.bool))
+    wide_loss,many = ppo_loss(wide,torch.zeros_like(wide),torch.ones_like(wide),value,value,
+        torch.ones_like(wide),token_mask=wide_mask)
+    assert many['approx_kl'] == pytest.approx(single['approx_kl'])
+    assert many['entropy'] == pytest.approx(single['entropy'])
+    assert many['policy_loss'] == pytest.approx(single['policy_loss'])
+    wide_loss.backward()
+    assert wide.grad[0,-1] == 0
+    assert wide.grad[0,0] != 0
+
+
+def test_ticker_reward_reconciles_and_uses_stable_listing_identity():
+    env = TradingEnv(market(n=2,seconds=5,prices=[[5,5,5,5,5],[5,6,7,8,9]]),config())
+    first = env.observe()
+    modes = np.zeros(len(first['ids']),dtype=np.int64)
+    sizes = np.full((len(modes),3),.5)
+    ticker = int(np.flatnonzero(first['ids'] == 1)[0])
+    modes[ticker] = 1
+    _,reward,_,_ = env.step(modes,sizes)
+    assert env.last_reward_by_ticker.sum() == pytest.approx(reward)
+    assert env.last_reward_by_ticker[0] == 0
+    second = env.observe()
+    _,reward,_,_ = env.step(np.zeros(len(second['ids']),dtype=np.int64),
+        np.full((len(second['ids']),3),.5))
+    assert env.last_reward_by_ticker.sum() == pytest.approx(reward)
+    assert env.last_reward_by_ticker[1] > 0
+    third = env.observe()
+    modes = np.zeros(len(third['ids']),dtype=np.int64)
+    _,reward,_,_ = env.step(modes,np.full((len(modes),3),.5))
+    assert env.last_reward_by_ticker.sum() == pytest.approx(reward)
+    assert env.quantity[1] == 0
+    trajectory = [dict(ids=np.array([1,0]),ticker_rewards=np.array([1.,0.]),done=False),
+        dict(ids=np.array([0,1]),ticker_rewards=np.array([0.,2.]),done=True),
+        dict(ids=np.array([1]),ticker_rewards=np.array([4.]),done=False)]
+    local = ticker_returns(trajectory,2,gae_lambda=1.)
+    np.testing.assert_allclose(local[0],[3.,0.])
+    np.testing.assert_allclose(local[1],[0.,2.])
+    np.testing.assert_allclose(local[2],[4.])
 
 
 def save_market(root,session):
@@ -275,6 +346,31 @@ def test_arrival_band_cap_and_fees_are_applied_on_both_sides():
     act(env,0,3)
     assert env.metrics['fees'] == 350
     assert env.equity == pytest.approx(env.initial-350)
+
+
+def test_fill_uses_next_second_open_without_exposing_it_to_decision():
+    session = market(n=1,seconds=12)
+    session.arrays['execution_open'][0,1] = 6.
+    env = TradingEnv(session,config(initial_cash=1000.))
+    assert env.observe()['market'][0,-1,0] == pytest.approx(np.log(5.))
+    act(env,0,1,size=.5)
+    assert env.last_fills[0]['price'] == pytest.approx(6.)
+    assert env.session.arrays['prices'][0,1] == 5.
+
+
+def test_validation_samples_fixed_policy_rollouts_without_changing_training_rng():
+    session = market(n=1,seconds=12)
+    policy = PortfolioPolicy(3,width=16,heads=2)
+    with torch.no_grad():
+        policy.trade_gate.weight.zero_()
+        policy.trade_gate.bias.fill_(3.)
+    before = torch.get_rng_state().clone()
+    first = train.evaluate(policy,[session],config(),device='cpu',rollouts=2,seed=41)
+    assert torch.equal(before,torch.get_rng_state())
+    second = train.evaluate(policy,[session],config(),device='cpu',rollouts=2,seed=41)
+    assert first == second
+    assert len(first) == 2 and all(row['valid_terminal'] for row in first)
+    assert sum(row['filled_orders'] for row in first) > 0
 
 
 def test_order_volume_limits_partial_fills():
@@ -345,7 +441,8 @@ def test_direct_extraction_price_clock_and_rolling_activity(monkeypatch):
     import polars as pl
     from research.rl_trading.v2 import build_data
     bars = pl.DataFrame(dict(bucket_index=[14400,14401,14460],price_valid=[1,0,1],
-        close_int=[50000,990000,60000],volume=[100.,200.,300.],trade_count=[2,3,4]))
+        open_int=[49000,990000,61000],close_int=[50000,990000,60000],
+        volume=[100.,200.,300.],trade_count=[2,3,4]))
     calls = []
     monkeypatch.setattr(build_data.arte_source,'verify_listing',lambda *a:calls.append(a[-1]))
     monkeypatch.setattr(build_data,'read_reference',lambda *a:({},[],{},{}))
@@ -357,6 +454,7 @@ def test_direct_extraction_price_clock_and_rolling_activity(monkeypatch):
     assert arrays['prices'][0] == 0
     assert arrays['prices'][1] == 5 and arrays['prices'][2] == 5
     assert arrays['prices'][60] == 5 and arrays['prices'][61] == 6
+    assert arrays['execution_open'][1] == 4.9 and arrays['execution_open'][61] == 6.1
     assert not arrays['fresh'][2] and arrays['fresh'][61]
     assert arrays['trades_60s'][60] == 5
     assert arrays['trades_60s'][61] == 7
