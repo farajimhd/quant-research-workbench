@@ -1,9 +1,7 @@
-"""Draft decision rules for the first user-facing Strategy number.
+"""Immutable decision rules for the first user-facing Strategy number.
 
-This module is deliberately not registered as an executable Strategy. The
-disk-free fixed Backtest path and its integration tests are not yet complete.
-Registering it now would advertise a strategy that cannot obey its declared
-input and execution contracts.
+The 100ms fixed Backtest consumes certified ARTE inputs and persists its
+normalized journal only through the Keeper-fenced ClickHouse V4 path.
 
 STRATEGY CREATION RULES (also enforced at publication/preflight boundaries):
 * A trading-behavior change creates the next Strategy number. Never alter the
@@ -35,7 +33,7 @@ from .early_squeeze_fast import below
 
 STRATEGY_NUMBER = 1
 STRATEGY_ID = "early-squeeze-strategy"
-PUBLICATION_STATUS = "draft_fixed_runtime_not_integrated"
+PUBLICATION_STATUS = "backtest_100ms_v4"
 EVALUATION_INTERVAL = "100ms"
 REQUIRED_INPUTS = (
     "arte.bars_v1@100ms",

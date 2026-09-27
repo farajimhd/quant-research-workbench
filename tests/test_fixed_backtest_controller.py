@@ -75,6 +75,30 @@ def test_backtest_start_rejects_before_legacy_journal_or_disk_write(tmp_path, mo
     assert not controller.run_dir.exists()
 
 
+def test_public_backtest_gate_admits_only_immutable_strategy_one_100ms():
+    from src.backend.replay_run_service import _backtest_launch_blocker
+    from src.backend.backtest_market_data import (
+        EVENT_EXECUTION_BLOCKER, FIXED_EXECUTION_BLOCKER,
+    )
+
+    selected = {"strategy_number": 1, "revision": 1,
+                "execution_interval": "100ms"}
+    def definition(strategy, interval="100ms"):
+        return SimpleNamespace(execution_interval=interval,
+                               configuration_revision={"payload": {
+                                   "strategy": strategy}})
+
+    assert _backtest_launch_blocker(definition(selected)) == ""
+    assert _backtest_launch_blocker(definition({**selected, "revision": 2})) == (
+        FIXED_EXECUTION_BLOCKER)
+    assert _backtest_launch_blocker(definition({**selected, "strategy_number": 350})) == (
+        FIXED_EXECUTION_BLOCKER)
+    assert _backtest_launch_blocker(definition(selected, "200ms")) == (
+        FIXED_EXECUTION_BLOCKER)
+    assert _backtest_launch_blocker(definition(selected, "events")) == (
+        EVENT_EXECUTION_BLOCKER)
+
+
 def test_admitted_backtest_start_creates_no_local_authority(tmp_path, monkeypatch):
     from src.backend import replay_run_service
 

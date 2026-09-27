@@ -1111,6 +1111,13 @@ def _backtest_launch_blocker(definition: ReplayRunDefinition) -> str:
         EVENT_EXECUTION_BLOCKER, FIXED_EXECUTION_BLOCKER, ExecutionInterval,
     )
     interval = ExecutionInterval.parse(definition.execution_interval)
+    strategy = dict(dict(getattr(definition, "configuration_revision", {}).get("payload") or {}).get(
+        "strategy") or {})
+    if (interval.kind == "fixed" and interval.milliseconds == 100
+            and strategy.get("strategy_number") == 1
+            and strategy.get("revision") == 1
+            and strategy.get("execution_interval") == "100ms"):
+        return ""
     return FIXED_EXECUTION_BLOCKER if interval.kind == "fixed" else EVENT_EXECUTION_BLOCKER
 
 
@@ -10981,9 +10988,14 @@ def backtest_preflight(
         if bool(row.get("enabled", True))
         and str(row.get("signal_stream_id") or "") in selected_signal_stream_ids
     ]
-    strategy_one_fixed = (execution_interval.kind == "fixed"
-                          and dict(configuration.get("strategy") or {}).get(
-                              "strategy_number") == 1)
+    selected_strategy = dict(configuration.get("strategy") or {})
+    strategy_one_fixed = (
+        execution_interval.kind == "fixed"
+        and execution_interval.milliseconds == 100
+        and selected_strategy.get("strategy_number") == 1
+        and selected_strategy.get("revision") == 1
+        and selected_strategy.get("execution_interval") == "100ms"
+    )
     if strategy_one_fixed:
         # STRATEGY CREATION RULE: the numbered scanner is code-owned and its
         # materialized candidate seal is the signal authority. A historical
@@ -11244,10 +11256,15 @@ def backtest_preflight(
         checks.append({
             "id": "fixed_execution_contract",
             "label": "Causal fixed-interval execution",
-            "status": "blocked",
+            "status": "ready" if strategy_one_fixed else "blocked",
             "required": True,
-            "summary": FIXED_EXECUTION_BLOCKER,
-            "evidence": "native_bar_strategy_and_broker_equivalence_pending",
+            "summary": (
+                "Immutable Strategy 1 uses certified completed bars, causal V7, "
+                "persisted liquidity-bar broker matching, and normalized V4 journal."
+                if strategy_one_fixed else FIXED_EXECUTION_BLOCKER),
+            "evidence": (
+                "strategy_one_fixed_100ms_v4"
+                if strategy_one_fixed else "native_bar_strategy_and_broker_equivalence_pending"),
         })
     else:
         from src.backend.backtest_market_data import EVENT_EXECUTION_BLOCKER
@@ -11608,8 +11625,11 @@ def backtest_preflight(
         {
             "id": "runtime_storage",
             "label": "Disk-free Backtest journal",
-            "status": "blocked",
+            "status": "ready" if strategy_one_fixed else "blocked",
             "summary": (
+                "Strategy 1 persists its normalized V4 journal in ClickHouse and "
+                "uses Keeper-fenced publication; no run-local authority is created."
+                if strategy_one_fixed else
                 "Fixed Backtest still has run-local manifest and journal paths; "
                 "typed ClickHouse state and recovery must replace them before execution."
                 if execution_interval.kind == "fixed"

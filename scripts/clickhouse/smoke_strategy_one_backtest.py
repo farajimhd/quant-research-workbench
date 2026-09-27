@@ -1,8 +1,8 @@
-"""Bounded workstation integration probe for the still-gated fixed Backtest.
+"""Bounded workstation integration probe for the public Strategy 1 Backtest.
 
-This deliberately invokes the real private controller path after full market
-preflight, without changing the public launch blocker. --apply persists a new
-normalized ClickHouse test journal, never a run-local file or market product.
+This invokes the public controller start path after full market preflight.
+--apply persists a new normalized ClickHouse test journal, never a run-local
+file or market product.
 It is for integration validation only, not a user-facing launch workaround.
 """
 from __future__ import annotations
@@ -66,13 +66,11 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int) -> None:
     window = tuple(preflight["window"]["sessions"])
     if window != (day.isoformat(),):
         raise RuntimeError("Strategy 1 integration selected a different exchange day")
-    allowed_blockers = {"fixed_execution_contract", "runtime_storage"}
     blocked = {row["id"]: row["summary"] for row in preflight["checks"]
-               if row.get("required", True) and row["status"] != "ready"
-               and row["id"] not in allowed_blockers}
+               if row.get("required", True) and row["status"] != "ready"}
     print(f"Preflight {day} {ticker or 'full-market'}: {perf_counter()-began:.3f}s; "
           f"unresolved={tuple(blocked)}", flush=True)
-    if blocked:
+    if blocked or not preflight["ready"]:
         raise RuntimeError("Strategy 1 integration lacks a required input: "
                            + "; ".join(f"{key}: {value}" for key, value in blocked.items()))
     if not apply:
@@ -101,7 +99,10 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int) -> None:
 
     controller._open_fixed_journal = traced_open_journal
     began = perf_counter()
-    await controller._run()
+    await controller.start()
+    if controller._task is None:
+        raise RuntimeError("Public Backtest start did not schedule execution")
+    await controller._task
     elapsed = perf_counter() - began
     print(f"Strategy 1 probe run_id={controller.run_id} "
           f"status={controller.status} elapsed_s={elapsed:.3f} "
