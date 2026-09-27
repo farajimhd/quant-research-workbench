@@ -564,8 +564,9 @@ def test_strategy_one_live_oms_rejects_contradictory_source_intent(monkeypatch):
         bootstrap.recover_strategy_one_live_oms(cold=cold, read_client=object())
 
 
-def test_cold_oms_broker_audit_keeps_fence_across_snapshot() -> None:
+def test_cold_oms_broker_audit_keeps_fence_across_snapshot(monkeypatch) -> None:
     from src.trading_runtime.arte_oms_broker_audit import OmsOpenBindingAudit
+    from src.trading_runtime import arte_oms_fill_audit as fills
 
     calls = []
     class Barrier:
@@ -583,7 +584,12 @@ def test_cold_oms_broker_audit_keeps_fence_across_snapshot() -> None:
     group = SimpleNamespace(group={"account_id": "DU1"}, orders=(),
                             broker_bindings=())
     head = bootstrap.VerifiedStrategyOneOmsHead(group, object(), {}, {})
+    async def recent(_client, _prefix, _heads, _broker):
+        calls.append("fills")
+        return fills.RecentFillAudit(0, 0, 0)
+    monkeypatch.setattr(fills, "audit_strategy_one_recent_fills", recent)
     result = asyncio.run(bootstrap.audit_recovered_strategy_one_live_oms(
-        cold=cold, heads=(head,), broker=Broker()))
-    assert result == OmsOpenBindingAudit(1, 0, 0, 0)
-    assert calls == ["fence", "broker", "fence"]
+        cold=cold, heads=(head,), read_client=object(), broker=Broker()))
+    assert result == bootstrap.StrategyOneColdBrokerAudit(
+        OmsOpenBindingAudit(1, 0, 0, 0), fills.RecentFillAudit(0, 0, 0))
+    assert calls == ["fence", "broker", "fills", "fence"]

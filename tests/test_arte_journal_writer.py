@@ -872,6 +872,11 @@ def test_execution_and_commission_pages_require_fenced_typed_details() -> None:
     fees = load_committed_commission_page(client, prefix)
     assert len(fills) == len(fees) == 1
     assert fills[0]["sequence"] == 1 and fills[0]["execution_id"] == "fill-1"
+    assert load_committed_execution_page(
+        client, prefix, limit=2, execution_ids=("fill-1",)) == fills
+    with pytest.raises(RuntimeError, match="Exact committed execution"):
+        load_committed_execution_page(
+            client, prefix, limit=2, execution_ids=("missing-fill",))
     assert fees[0]["sequence"] == 2 and fees[0]["commission"] == "1.2500000000"
     assert load_committed_execution_page(client, prefix, after_sequence=1) == ()
     assert load_committed_commission_page(client, prefix, after_sequence=2) == ()

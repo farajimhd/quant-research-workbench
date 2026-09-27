@@ -418,13 +418,22 @@ def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
     return tuple(verified)
 
 
+@dataclass(frozen=True, slots=True)
+class StrategyOneColdBrokerAudit:
+    open_bindings: Any
+    recent_fills: Any
+
+
 async def audit_recovered_strategy_one_live_oms(
     *, cold: LiveSyncColdResult, heads: tuple[VerifiedStrategyOneOmsHead, ...],
-    broker: Any,
-) -> Any:
-    """Check open broker bindings without mutating OMS or admitting orders."""
+    read_client: Any, broker: Any,
+) -> StrategyOneColdBrokerAudit:
+    """Check open bindings and recent fills without admitting orders."""
     from src.trading_runtime.arte_oms_broker_audit import (
         audit_strategy_one_open_oms_bindings,
+    )
+    from src.trading_runtime.arte_oms_fill_audit import (
+        audit_strategy_one_recent_fills,
     )
 
     if (not isinstance(cold, LiveSyncColdResult)
@@ -433,6 +442,8 @@ async def audit_recovered_strategy_one_live_oms(
                    for head in heads)):
         raise ValueError("Broker OMS audit requires verified cold live heads")
     cold.barrier.assert_fenced(cold.run_id)
-    audit = await audit_strategy_one_open_oms_bindings(heads, broker)
+    open_audit = await audit_strategy_one_open_oms_bindings(heads, broker)
+    fill_audit = await audit_strategy_one_recent_fills(
+        read_client, cold.prefix, heads, broker)
     cold.barrier.assert_fenced(cold.run_id)
-    return audit
+    return StrategyOneColdBrokerAudit(open_audit, fill_audit)

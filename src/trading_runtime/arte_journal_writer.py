@@ -3029,12 +3029,13 @@ def load_committed_order_transition_page(
 
 def load_committed_execution_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
-    limit: int = 500,
+    limit: int = 500, execution_ids: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Read committed fill evidence without admitting interrupted inserts."""
     return _load_committed_execution_detail_page(
         client, prefix, "fill", "trading_execution_v1",
         after_sequence=after_sequence, limit=limit,
+        execution_ids=execution_ids,
     )
 
 
@@ -3244,11 +3245,23 @@ def load_committed_commission_page(
 def _load_committed_execution_detail_page(
     client: Any, prefix: VerifiedPrefix, entity_type: str, table: str,
     *, after_sequence: int, limit: int,
+    execution_ids: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, Any], ...]:
     if not _valid_prefix(prefix):
         raise ValueError("Execution recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 1000:
         raise ValueError("Execution recovery page bounds are invalid")
+    wanted = None
+    if execution_ids is not None:
+        wanted = set(execution_ids)
+        if (entity_type != "fill" or after_sequence != 0
+                or not wanted or len(wanted) != len(execution_ids)
+                or len(wanted) >= limit
+                or any(not isinstance(item, str) or not item for item in wanted)):
+            raise ValueError("Exact execution recovery IDs are invalid")
+    exact_filter = ("AND entity_id IN (" + ",".join(
+        _literal(item) for item in sorted(wanted)) + ") "
+        if wanted is not None else "")
     events = _rows(client,
         "SELECT record_id,batch_id,sequence,event_month,account_id,event_time,entity_id "
         "FROM arte.trading_event_v1 "
@@ -3257,8 +3270,13 @@ def _load_committed_execution_detail_page(
         f"AND sequence<={int(prefix.last_sequence)} "
         "AND category='execution' "
         f"AND entity_type={_literal(entity_type)} "
+        f"{exact_filter}"
         f"{_committed_batch_filter(prefix)}"
         f"ORDER BY sequence LIMIT {int(limit)} FORMAT JSONEachRow")
+    if wanted is not None and (
+            len(events) != len(wanted)
+            or {str(row["entity_id"]) for row in events} != wanted):
+        raise RuntimeError("Exact committed execution is missing or duplicated")
     if not events:
         return ()
     ids = tuple(str(UUID(str(row["record_id"]))) for row in events)
