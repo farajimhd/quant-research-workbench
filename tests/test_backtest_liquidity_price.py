@@ -10,6 +10,8 @@ from src.trading_runtime.eligible_price_contract import (
 from src.backend.backtest_liquidity_price import (
     PriceLevelPlan, PriceLevelUnit, certify_price_level_plan,
 )
+from src.backend import backtest_liquidity_price as price_subject
+from src.backend import backtest_market_plan_cache as plan_cache
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit,
     iter_market_day_rows, market_day_source_sqls,
@@ -107,6 +109,47 @@ def test_legacy_coverage_float_sum_drift_is_not_a_false_blocker():
 def test_legacy_integer_volume_literal_is_preserved_for_digest():
     unit = certify_price_level_plan(_plan(), Reader(integer_legacy=True)).units[0]
     assert unit.published_volume_text == "40"
+
+
+def test_price_certificate_cache_reuses_only_unchanged_clickhouse_parts(monkeypatch):
+    from research.mlops import clickhouse
+
+    class CacheReader(Reader):
+        part_name = "price-part-1"
+        disk_name = "live_market_ssd"
+
+        def execute(self, query):
+            if "FROM system.tables" in query and "uuid" in query:
+                return "\n".join(json.dumps(dict(
+                    name=name, uuid=f"uuid-{name}", storage_policy="live_market_ssd",
+                    metadata_modification_time="2026-09-25 00:00:00"))
+                    for name in plan_cache._PRICE_NAMES)
+            if "FROM system.columns" in query:
+                return "\n".join(json.dumps(dict(
+                    table=name, name="source_build_id", type="String", position=1))
+                    for name in plan_cache._PRICE_NAMES)
+            if "FROM system.parts" in query and "hash_of_all_files" in query:
+                return json.dumps(dict(
+                    table=plan_cache._PRICE_NAMES[0], name=self.part_name,
+                    disk_name=self.disk_name, rows=2, bytes_on_disk=100,
+                    hash_of_all_files="a" * 32))
+            return super().execute(query)
+
+    monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", CacheReader)
+    monkeypatch.setattr(price_subject, "PRICE_PLAN_CACHE",
+                        plan_cache.FingerprintPlanCache())
+    reader = CacheReader()
+    first = certify_price_level_plan(_plan(), reader)
+    assert certify_price_level_plan(_plan(), reader) is first
+    assert sum("FROM arte.liquidity_execution_price_100ms_v1" in query
+               for query in reader.queries) == 1
+    reader.part_name = "price-part-2"
+    assert certify_price_level_plan(_plan(), reader) is not first
+    assert sum("FROM arte.liquidity_execution_price_100ms_v1" in query
+               for query in reader.queries) == 2
+    reader.disk_name = "default"
+    with pytest.raises(RuntimeError, match="outside SSD"):
+        certify_price_level_plan(_plan(), reader)
 
 
 def test_pinned_price_levels_join_and_decode_without_market_writes():

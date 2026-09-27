@@ -16,7 +16,8 @@ from src.trading_runtime.arte_market_day_certification import TABLES as CERTIFIC
 
 _NAMES = tuple(sorted({table.name for table in CERTIFICATE_TABLES} |
                       {"bars_v1", "indicators_v1", "liquidity_100ms_v1"}))
-_SQL_NAMES = ",".join(f"'{name}'" for name in _NAMES)
+_PRICE_NAMES = ("liquidity_execution_price_100ms_v1",
+                "liquidity_execution_price_coverage_v1")
 _QUERIES = (
     ("table", "name,uuid,storage_policy,metadata_modification_time",
      "system.tables", "name", "name"),
@@ -27,23 +28,26 @@ _QUERIES = (
 )
 
 
-def market_inventory_fingerprint(client: Any) -> str:
-    """Hash every schema and active-part identity required by a cached plan."""
-    digest = sha256(b"arte-market-plan-inventory-v1\0")
+def _inventory_fingerprint(client: Any, names: tuple[str, ...], domain: bytes) -> str:
+    """Hash schema and active parts; absent or off-policy metadata fails closed."""
+    sql_names = ",".join(f"'{name}'" for name in names)
+    digest = sha256(domain + b"\0")
     for label, columns, system_table, key, ordering in _QUERIES:
         condition = "AND active " if label == "part" else ""
         sql = (f"SELECT {columns} FROM {system_table} WHERE database='arte' "
-               f"AND {key} IN ({_SQL_NAMES}) {condition}"
+               f"AND {key} IN ({sql_names}) {condition}"
                f"ORDER BY {ordering} FORMAT JSONEachRow")
         response = client.execute(sql)
         rows = [json.loads(line) for line in response.splitlines() if line.strip()]
         expected_columns = set(columns.split(","))
-        if any(set(row) != expected_columns or row[key] not in _NAMES
+        if any(set(row) != expected_columns or row[key] not in names
                for row in rows):
             raise RuntimeError("Market inventory contains malformed metadata")
-        if label == "table" and {row["name"] for row in rows} != set(_NAMES):
+        if label == "table" and ({row["name"] for row in rows} != set(names)
+                                 or any(row["storage_policy"] != "live_market_ssd"
+                                        for row in rows)):
             raise RuntimeError("Market inventory omits a required table")
-        if label == "column" and {row["table"] for row in rows} != set(_NAMES):
+        if label == "column" and {row["table"] for row in rows} != set(names):
             raise RuntimeError("Market inventory omits a required column layout")
         if label == "part" and any(row["disk_name"] != "live_market_ssd"
                                    for row in rows):
@@ -53,6 +57,17 @@ def market_inventory_fingerprint(client: Any) -> str:
             digest.update(json.dumps(row, sort_keys=True, separators=(",", ":"))
                           .encode() + b"\n")
     return digest.hexdigest()
+
+
+def market_inventory_fingerprint(client: Any) -> str:
+    """Hash every schema and active-part identity required by a cached plan."""
+    return _inventory_fingerprint(client, _NAMES, b"arte-market-plan-inventory-v1")
+
+
+def price_inventory_fingerprint(client: Any) -> str:
+    """Independently fence the two passive-fill price product tables."""
+    return _inventory_fingerprint(client, _PRICE_NAMES,
+                                  b"arte-price-plan-inventory-v1")
 
 
 class MarketPlanCache:
@@ -80,3 +95,27 @@ class MarketPlanCache:
 
 
 MARKET_PLAN_CACHE = MarketPlanCache()
+
+
+class FingerprintPlanCache:
+    """One in-process plan; a verified active-part snapshot is mandatory per hit."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._entry: tuple[str, str, Any] | None = None
+
+    def get(self, token: str, fingerprint: str) -> Any | None:
+        with self._lock:
+            if self._entry is None:
+                return None
+            saved_token, saved_fingerprint, plan = self._entry
+            return plan if (token, fingerprint) == (saved_token, saved_fingerprint) else None
+
+    def put(self, token: str, fingerprint: str, plan: Any) -> None:
+        if not token or not fingerprint:
+            raise ValueError("Verified plan cache requires a token and inventory")
+        with self._lock:
+            self._entry = (token, fingerprint, plan)
+
+
+PRICE_PLAN_CACHE = FingerprintPlanCache()

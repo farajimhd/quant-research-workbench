@@ -14,6 +14,9 @@ from typing import Any
 from uuid import UUID
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, _literal
+from src.backend.backtest_market_plan_cache import (
+    PRICE_PLAN_CACHE, price_inventory_fingerprint,
+)
 from src.trading_runtime.eligible_price_contract import (
     matches_summary_digest, summary_digest, volumes_match,
 )
@@ -77,6 +80,27 @@ def certify_price_level_plan(market: CertifiedMarketDayPlan,
     """Certify exact child attempts in bounded grouped SELECTs before execution."""
     if market.execution_interval.kind != "fixed" or not market.units:
         raise ValueError("Price levels require a pinned fixed market-day plan")
+    from research.mlops.clickhouse import ClickHouseHttpClient
+
+    # Only the real, read-only ClickHouse client participates in process-local
+    # reuse. Fake clients and producer-side callers always execute the audit.
+    cacheable = isinstance(client, ClickHouseHttpClient)
+    if cacheable:
+        before = price_inventory_fingerprint(client)
+        cached = PRICE_PLAN_CACHE.get(market.token, before)
+        if cached is not None and price_inventory_fingerprint(client) == before:
+            return cached
+    plan = _certify_price_level_plan_uncached(market, client)
+    if cacheable:
+        after = price_inventory_fingerprint(client)
+        if after != before:
+            raise RuntimeError("ARTE passive-fill price inventory changed during certification")
+        PRICE_PLAN_CACHE.put(market.token, after, plan)
+    return plan
+
+
+def _certify_price_level_plan_uncached(market: CertifiedMarketDayPlan,
+                                      client: Any) -> PriceLevelPlan:
     table_names = ("liquidity_execution_price_100ms_v1",
                    "liquidity_execution_price_coverage_v1")
     catalog = _rows(client, "SELECT name,storage_policy FROM system.tables "
