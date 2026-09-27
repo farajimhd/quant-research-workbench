@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -10,6 +11,7 @@ from src.backend.live_activation_cold_bootstrap import (
     _audit_source_orphans, ActivationRecoveryUnfenced,
     audit_activation_checkpoint_under_cooperative_fences,
     audit_receipt_defined_activation_prefix_under_fences,
+    _cold_recover_activation_checkpoint_under_fence,
     cold_audit_activation_watches, read_attested_activation_prefix,
     cold_recover_activation_checkpoint,
 )
@@ -408,6 +410,67 @@ def test_attested_strategy_one_scope_cannot_read_legacy_activation_rows() -> Non
         registered_completion=ClosedCompletion(),
         **kwargs)
     assert [row["delivery_id"] for row in restored] == [delivery["delivery_id"]]
+
+
+def test_strategy_one_cold_audit_closes_all_insert_gates_before_source_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.backend.live_activation_cold_bootstrap as subject
+
+    events = []
+    head = SimpleNamespace(session_key=SESSION.isoformat(), batch_sequence=1,
+                           cursor_commit_hash="b" * 64,
+                           configuration_revision="approved-1",
+                           source_revision="source-1")
+    class Source:
+        def acquire_bootstrap_barrier(self):
+            events.append("source-closed")
+            return 1, "b" * 64
+        def assert_cold_prefix(self, fence):
+            assert fence == (1, "b" * 64)
+            events.append("source-verified")
+    class Dispatch:
+        def close_for_cold(self, run_id):
+            assert run_id == dispatch_run_id(SESSION.isoformat(), "approved-1")
+            events.append("dispatch-closed")
+    class Completion:
+        def close_for_cold(self):
+            events.append("completion-closed")
+    class Activation:
+        def close_for_cold(self, run_id):
+            assert run_id == strategy_one_activation_run_id(
+                SESSION, mode="paper", run_plan_id="plan-1")
+            events.append("activation-closed")
+    class SourceKeeper:
+        def read_head(self, session_key):
+            assert session_key == SESSION.isoformat()
+            events.append("keeper-read")
+            return head
+    class Bounded:
+        def __init__(self, *_args, **_kwargs):
+            events.append("clickhouse-read")
+        def list_cursor_commits(self, *, session_key):
+            return [{"batch_sequence": 1, "content_hash": "b" * 64}]
+    monkeypatch.setattr(subject, "_BoundedSourceCommits", Bounded)
+    monkeypatch.setattr(subject, "recover_committed_head", lambda *_args, **_kwargs:
+                        SimpleNamespace(sequence=1, content_hash="b" * 64))
+    monkeypatch.setattr(subject, "_audit_source_orphans", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(subject, "read_attested_activation_prefix",
+                        lambda *_args, **_kwargs: ())
+    run_id = strategy_one_activation_run_id(
+        SESSION, mode="paper", run_plan_id="plan-1")
+    result = _cold_recover_activation_checkpoint_under_fence(
+        object(), object(), object(), SourceKeeper(), object(), object(), object(),
+        session_date=SESSION, configuration_revision_id="approved-1",
+        source_revision_id="source-1", catalogs={}, receipt_defined=True,
+        activation_run_id=run_id, activation_dispatch=Activation(),
+        registered_dispatch=Dispatch(), registered_completion=Completion(),
+        registered_source=Source())
+    assert result == ()
+    assert events[:6] == ["source-closed", "dispatch-closed",
+                          "completion-closed", "activation-closed",
+                          "keeper-read", "clickhouse-read"]
+    assert events[-1] == "source-verified"
 
 
 def test_attested_prefix_rejects_missing_or_conflicting_receipt_rows() -> None:

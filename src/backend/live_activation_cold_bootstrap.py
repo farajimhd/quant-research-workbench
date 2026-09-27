@@ -31,7 +31,9 @@ from src.trading_runtime.arte_activation_projection import (
 from src.trading_runtime.arte_activation_insert_dispatch import (
     ActivationInsertDispatch, activation_insert_proof,
 )
-from src.backend.signal_dispatch_insert_dispatch import SignalDispatchInsertDispatch
+from src.backend.signal_dispatch_insert_dispatch import (
+    SignalDispatchInsertDispatch, dispatch_run_id,
+)
 
 
 class _BoundedSourceCommits:
@@ -243,6 +245,7 @@ def _cold_recover_activation_checkpoint_under_fence(
     activation_dispatch: ActivationInsertDispatch | None = None,
     registered_dispatch: SignalDispatchInsertDispatch | None = None,
     registered_completion: Any | None = None,
+    registered_source: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Read-only typed replacement prerequisite for the SQLite watch checkpoint.
 
@@ -256,12 +259,32 @@ def _cold_recover_activation_checkpoint_under_fence(
             or not 1 <= max_source_occurrences <= 100_000):
         raise ValueError("activation checkpoint session or bound is invalid")
     session_key = session_date.isoformat()
+    if ((receipt_defined and activation_run_id != ACTIVATION_RUN_ID
+         and registered_source is None)
+            or (registered_source is not None and (
+                registered_dispatch is None or registered_completion is None
+                or activation_dispatch is None))):
+        raise ActivationRecoveryUnfenced(
+            "Strategy 1 cold audit requires every registered INSERT drain")
+    source_fence = None
+    if registered_source is not None:
+        # The whole write graph is closed before the first ClickHouse SELECT.
+        # Pending HTTP responses prevent their respective barriers from closing.
+        source_fence = registered_source.acquire_bootstrap_barrier()
+        registered_dispatch.close_for_cold(
+            dispatch_run_id(session_key, configuration_revision_id))
+        registered_completion.close_for_cold()
+        activation_dispatch.close_for_cold(activation_run_id)
     first = source_keeper.read_head(session_key)
     if (first.session_key != session_key or first.batch_sequence < 1
             or first.batch_sequence > max_source_batches
             or first.configuration_revision != configuration_revision_id
             or first.source_revision != source_revision_id):
         raise ValueError("Signal Stream Keeper head differs from recovery scope")
+    if source_fence is not None and source_fence != (
+            first.batch_sequence, first.cursor_commit_hash):
+        raise ActivationRecoveryUnfenced(
+            "Signal Stream registered INSERT prefix differs from Keeper head")
     bounded_storage = _BoundedSourceCommits(
         source_storage, source_commit_client, limit=max_source_batches + 1)
     recovered = recover_committed_head(
@@ -302,6 +325,8 @@ def _cold_recover_activation_checkpoint_under_fence(
         completion_keeper, **reader_kwargs)
     if source_keeper.read_head(session_key) != first:
         raise RuntimeError("Signal Stream Keeper head changed during activation recovery")
+    if source_fence is not None:
+        registered_source.assert_cold_prefix(source_fence)
     return watches
 
 
@@ -320,12 +345,14 @@ def audit_activation_checkpoint_under_cooperative_fences(
     activation_dispatch: ActivationInsertDispatch | None = None,
     registered_dispatch: SignalDispatchInsertDispatch | None = None,
     registered_completion: Any | None = None,
+    registered_source: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Diagnostic cold audit, not an admission or executable checkpoint.
 
-    A ClickHouse INSERT already sent before a Keeper session loss may land
-    after both cooperative locks were reacquired and this inventory finished.
-    No current MergeTree table atomically enforces the Keeper epoch.
+    The optional registered gate set drains known writer lanes before row
+    inventory. It does not prove that every old deployment used those lanes,
+    nor does it recover assignment, broker, or execution state. Without the
+    complete registered set, old in-flight INSERTs can arrive after this scan.
     """
     if (type(session_date) is not date or type(owner_id) is not str
             or not owner_id or any(char in owner_id for char in "\r\n\x00")):
@@ -356,7 +383,8 @@ def audit_activation_checkpoint_under_cooperative_fences(
             activation_run_id=activation_run_id,
             activation_dispatch=activation_dispatch,
             registered_dispatch=registered_dispatch,
-            registered_completion=registered_completion)
+            registered_completion=registered_completion,
+            registered_source=registered_source)
         if not source_keeper.is_current(session_key, owner_id=owner_id, epoch=epoch):
             raise RuntimeError("Signal Stream source owner fence lost during recovery")
         if not activation_fence.is_current(
@@ -384,6 +412,7 @@ def audit_receipt_defined_activation_prefix_under_fences(
     activation_dispatch: ActivationInsertDispatch | None = None,
     registered_dispatch: SignalDispatchInsertDispatch | None = None,
     registered_completion: Any | None = None,
+    registered_source: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Inactive causal-prefix audit; only attested receipts become visible."""
     return audit_activation_checkpoint_under_cooperative_fences(
@@ -399,7 +428,8 @@ def audit_receipt_defined_activation_prefix_under_fences(
         activation_run_id=activation_run_id,
         activation_dispatch=activation_dispatch,
         registered_dispatch=registered_dispatch,
-        registered_completion=registered_completion)
+        registered_completion=registered_completion,
+        registered_source=registered_source)
 
 
 class ActivationRecoveryUnfenced(RuntimeError):

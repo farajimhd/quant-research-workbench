@@ -216,3 +216,11 @@ class SignalSourceInsertDispatch:
             if self._cas(run_id, version, replace(gate, mode="open")):
                 return
         raise KeeperUnavailable("Signal source cold release CAS contended")
+
+    def assert_cold_prefix(self, run_id: str, *, sequence: int,
+                           commit_hash: str) -> None:
+        gate, _ = self._read(run_id)
+        if (gate.mode != "closed" or gate.active or gate.status != "empty"
+                or gate.sequence - 1 != sequence
+                or gate.last_commit_hash != commit_hash):
+            raise KeeperUnavailable("Signal source cold prefix changed")

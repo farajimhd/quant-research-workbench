@@ -61,6 +61,12 @@ class RegisteredSignalSourceStorage:
         self._dispatch.release_cold_barrier(
             self.run_id, sequence=fence[0], commit_hash=fence[1])
 
+    def assert_cold_prefix(self, fence: tuple[int, str]) -> None:
+        if (not isinstance(fence, tuple) or len(fence) != 2):
+            raise ValueError("Registered source cold fence is invalid")
+        self._dispatch.assert_cold_prefix(
+            self.run_id, sequence=fence[0], commit_hash=fence[1])
+
     def begin_batch(self, batch: Any) -> None:
         if (self._active_sequence is not None
                 or batch.session_key != self._session_key
