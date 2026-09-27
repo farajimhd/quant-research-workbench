@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from datetime import datetime, timezone
+from dataclasses import replace
 from types import SimpleNamespace
 
 from src.trading_runtime import arte_live_sync_bootstrap as bootstrap
@@ -71,6 +72,88 @@ def test_live_context_rejects_unapproved_identity_or_account_scope(
         bootstrap.validate_new_strategy_one_live_context(
             {**run, **run_change}, {**config, **config_change},
             accounts, _release())
+
+
+def test_approved_live_context_publishes_after_approval_and_binds_keeper(
+    monkeypatch,
+):
+    keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
+    run, config = _live_context()
+    context = {"run_id": RUN, "mode": "live", "account_ids": ("DU1",)}
+    calls = []
+    monkeypatch.setattr(bootstrap, "_rows", _empty_facts)
+    monkeypatch.setattr(bootstrap, "certify_strategy_one_configuration",
+                        lambda _client: _release())
+    def approval(*_args, **_kwargs):
+        calls.append("approval")
+        return {"content_hash": "e" * 64}
+    def publish_run(_writer, row):
+        assert core._read_gate(RUN)[0].mode == "open"
+        assert sync_dispatch._read(RUN)[0].mode == "open"
+        assert row == run
+        calls.append("run")
+    def publish_context(_writer, *, run_id, config, account_ids):
+        assert (run_id, account_ids) == (RUN, ("DU1",))
+        calls.append("context")
+    def bind(_client, _dispatch, receipt):
+        assert receipt.status == "gates_bound"
+        calls.append("bind")
+        return replace(receipt, status="context_bound", context_hash="f" * 64)
+    monkeypatch.setattr(bootstrap, "verify_selected_approval", approval)
+    monkeypatch.setattr(bootstrap, "publish_typed_run", publish_run)
+    monkeypatch.setattr(bootstrap, "publish_typed_run_context", publish_context)
+    monkeypatch.setattr(allocator, "bind_context", bind)
+    monkeypatch.setattr(allocator, "verify_context_bound", lambda *_args: context)
+    monkeypatch.setattr(bootstrap, "load_typed_run_context", lambda *_args: context)
+    bound = bootstrap.publish_new_strategy_one_live_context(
+        run=run, config=config, account_ids=("DU1",), release=_release(),
+        approval_reader=object(), writer_client=writer, read_client=object(),
+        terminal_client=object(), owner_id="live-run-controller",
+        core_dispatch=core, sync_dispatch=sync_dispatch,
+        allocator=allocator, allocation=allocation)
+    assert bound.status == "context_bound"
+    assert calls == ["approval", "run", "context", "bind", "approval"]
+
+
+def test_live_publication_rejects_changed_terminal_context(monkeypatch):
+    keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
+    run, config = _live_context()
+    monkeypatch.setattr(bootstrap, "_rows", _empty_facts)
+    monkeypatch.setattr(bootstrap, "certify_strategy_one_configuration",
+                        lambda _client: _release())
+    monkeypatch.setattr(bootstrap, "verify_selected_approval",
+                        lambda *_args, **_kwargs: {"content_hash": "e" * 64})
+    monkeypatch.setattr(bootstrap, "publish_typed_run", lambda *_args: None)
+    monkeypatch.setattr(bootstrap, "publish_typed_run_context", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(allocator, "bind_context", lambda *_args: replace(
+        allocation, status="context_bound", context_hash="f" * 64))
+    monkeypatch.setattr(allocator, "verify_context_bound", lambda *_args: {
+        "run_id": RUN, "mode": "live", "account_ids": ("DU1",)})
+    monkeypatch.setattr(bootstrap, "load_typed_run_context", lambda *_args: {
+        "run_id": RUN, "mode": "live", "account_ids": ("WRONG",)})
+    with pytest.raises(KeeperUnavailable, match="changed after publication"):
+        bootstrap.publish_new_strategy_one_live_context(
+            run=run, config=config, account_ids=("DU1",), release=_release(),
+            approval_reader=object(), writer_client=writer, read_client=object(),
+            terminal_client=object(), owner_id="live-run-controller",
+            core_dispatch=core, sync_dispatch=sync_dispatch,
+            allocator=allocator, allocation=allocation)
+
+
+def test_live_publication_recertifies_release_before_keeper_create(monkeypatch):
+    keeper, core, sync_dispatch, writer, allocator, allocation = _setup()
+    run, config = _live_context()
+    monkeypatch.setattr(bootstrap, "certify_strategy_one_configuration",
+                        lambda _client: replace(_release(), payload_hash="f" * 64))
+    with pytest.raises(ValueError, match="certified ClickHouse rows"):
+        bootstrap.publish_new_strategy_one_live_context(
+            run=run, config=config, account_ids=("DU1",), release=_release(),
+            approval_reader=object(), writer_client=writer, read_client=object(),
+            terminal_client=object(), owner_id="live-run-controller",
+            core_dispatch=core, sync_dispatch=sync_dispatch,
+            allocator=allocator, allocation=allocation)
+    with pytest.raises(KeeperUnavailable, match="absent"):
+        core._read_gate(RUN)
 
 
 def _empty_facts(_client, sql):

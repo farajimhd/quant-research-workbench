@@ -6,13 +6,21 @@ legacy run, including one missing either gate, cannot be repaired by this API.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import datetime
 import re
 from typing import Any, Mapping
 
-from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
+from src.backend.backtest_strategy_one_configuration import (
+    CertifiedStrategyOneConfiguration, certify_strategy_one_configuration,
+)
+from src.backend.live_strategy_one_approval import (
+    ApprovalHeadReader, verify_selected_approval,
+)
 from src.trading_runtime.arte_journal_writer import (
-    _CONTRACTS, _RUN_CONFIG_FIELDS, _literal, _rows, _wire_row, typed_row,
+    _CONTRACTS, _RUN_CONFIG_FIELDS, _literal, _rows, _wire_row,
+    load_typed_run_context, publish_typed_run, publish_typed_run_context,
+    typed_row,
 )
 from src.trading_runtime.arte_live_run_allocation import LiveRunAllocation, LiveRunAllocator
 from src.trading_runtime.arte_portfolio_sync import (
@@ -173,6 +181,51 @@ def initialize_new_live_sync_run(*, run_id: str, writer_client: Any,
     core_dispatch._read_gate(run_id)
     sync_dispatch._read(run_id)
     writer_client.typed_sync_insert_dispatch = sync_dispatch
+
+
+def publish_new_strategy_one_live_context(
+    *, run: Mapping[str, Any], config: Mapping[str, Any],
+    account_ids: tuple[str, ...], release: CertifiedStrategyOneConfiguration,
+    approval_reader: ApprovalHeadReader, writer_client: Any,
+    read_client: Any, terminal_client: Any, owner_id: str,
+    core_dispatch: TypedInsertDispatch, sync_dispatch: PortfolioSyncDispatch,
+    allocator: LiveRunAllocator, allocation: LiveRunAllocation,
+) -> LiveRunAllocation:
+    """Publish one approved typed live context, without enabling trading.
+
+    Every irreversible operation follows local validation and a Keeper-selected
+    approval read. Any ambiguous INSERT or changed approval leaves the run
+    fenced for operator reconciliation; it is never retried under a new ID.
+    """
+    run_id = validate_new_strategy_one_live_context(
+        run, config, account_ids, release)
+    if (len({id(writer_client), id(read_client), id(terminal_client)}) != 3
+            or not isinstance(allocation, LiveRunAllocation)
+            or run_id != allocation.run_id or owner_id != allocation.owner_id):
+        raise ValueError("Strategy 1 live publication lacks distinct allocated authorities")
+    if certify_strategy_one_configuration(read_client) != release:
+        raise ValueError("Strategy 1 live release differs from certified ClickHouse rows")
+    selected = verify_selected_approval(
+        read_client, approval_reader, mode="live", release=release)
+    initialize_new_live_sync_run(
+        run_id=run_id, writer_client=writer_client,
+        read_client=read_client, owner_id=owner_id,
+        core_dispatch=core_dispatch, sync_dispatch=sync_dispatch,
+        allocator=allocator, allocation=allocation)
+    publish_typed_run(writer_client, run)
+    publish_typed_run_context(
+        writer_client, run_id=run_id, config=config, account_ids=account_ids)
+    bound = allocator.bind_context(
+        read_client, core_dispatch, replace(allocation, status="gates_bound"))
+    context = allocator.verify_context_bound(read_client, core_dispatch, bound)
+    if (context != load_typed_run_context(terminal_client, run_id)
+            or context.get("mode") != "live"
+            or tuple(context.get("account_ids") or ()) != account_ids
+            or certify_strategy_one_configuration(read_client) != release
+            or verify_selected_approval(
+                read_client, approval_reader, mode="live", release=release) != selected):
+        raise KeeperUnavailable("Strategy 1 live context or approval changed after publication")
+    return bound
 
 
 @dataclass(frozen=True)
