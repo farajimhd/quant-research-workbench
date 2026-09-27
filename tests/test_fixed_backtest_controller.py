@@ -1096,6 +1096,23 @@ def test_fixed_journal_starts_background_fence_before_terminal_session():
         at, nonblocking_fixed=True)
 
 
+def test_fixed_journal_close_retains_only_worker_metrics():
+    controller = object.__new__(ReplayRunController)
+    closed = []
+    controller._journal_writer = SimpleNamespace(
+        close=lambda: closed.append("writer"),
+        metrics=lambda: {"committed_units": 4, "publish_ns_total": 123})
+    controller._journal_publisher = object()
+    controller._journal = SimpleNamespace(close=lambda: closed.append("journal"))
+    controller._fixed_keeper_session = None
+    asyncio.run(controller._close_fixed_journal())
+    assert closed == ["writer", "journal"]
+    assert controller._journal_writer is None
+    assert controller._journal_publisher is None
+    assert controller._journal_writer_final_metrics == {
+        "committed_units": 4, "publish_ns_total": 123}
+
+
 def test_fixed_signal_loader_uses_pinned_bars_without_event_fallback(monkeypatch):
     from src.backend import fixed_bar_signal, historical_signal_occurrence_service
 

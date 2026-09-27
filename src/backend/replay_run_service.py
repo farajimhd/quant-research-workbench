@@ -1844,7 +1844,7 @@ class ReplayRunController:
                 "journal_writer": (
                     journal_writer.metrics()
                     if callable(getattr(journal_writer, 'metrics', None))
-                    else {}),
+                    else dict(getattr(self, '_journal_writer_final_metrics', {}))),
                 "scope": "inclusive wall time; journal work is included in execution stages"},
             "preparation_stage": self._preparation_stage,
             "preparation_progress": {
@@ -3200,7 +3200,12 @@ class ReplayRunController:
         self._fixed_keeper_session = None
         try:
             if writer is not None:
-                await asyncio.to_thread(writer.close)
+                try:
+                    await asyncio.to_thread(writer.close)
+                finally:
+                    metrics = getattr(writer, 'metrics', None)
+                    if callable(metrics):
+                        self._journal_writer_final_metrics = metrics()
         finally:
             try:
                 if self._journal is not None:
