@@ -45,6 +45,7 @@ from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
 from src.trading_runtime.arte_portfolio_allocation_v4 import ALLOCATION as V4_ALLOCATION
 from src.trading_runtime.arte_reservation_reason_v4 import RESERVATION_REASON
+from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 from src.trading_runtime.arte_risk_action_v4 import TABLES as RISK_ACTION_TABLES
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     TABLES as PROTECTION_RECONCILIATION_TABLES,
@@ -65,6 +66,7 @@ def desired_plan() -> PrincipalPlan:
             ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
             ACKNOWLEDGEMENT.name, CANCEL.name,
             REPRICE.name,
+            *(table.name for table in OMS_TACTIC_TABLES),
             *(table.name for table in RISK_ACTION_TABLES),
             *(table.name for table in PROTECTION_CHANGE_TABLES),
             *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
@@ -77,6 +79,7 @@ def desired_plan() -> PrincipalPlan:
                                           RESERVATION_REASON,
                                           ACKNOWLEDGEMENT, CANCEL,
                                           REPRICE,
+                                          *OMS_TACTIC_TABLES,
                                           *RISK_ACTION_TABLES,
                                           *PROTECTION_CHANGE_TABLES,
                                           *PROTECTION_RECONCILIATION_TABLES))
@@ -123,6 +126,7 @@ def apply_with_clients(*, admin: Any, credential: Callable[..., str],
     storage_preflight(admin, tables=fixed_backtest_v2_contracts())
     storage_preflight(admin, tables=V4_COMMIT_TABLES)
     storage_preflight(admin, tables=(ENTRY_EVIDENCE,))
+    storage_preflight(admin, tables=OMS_TACTIC_TABLES)
     password = credential(account_exists=present == "1")
     if not isinstance(password, str) or len(password) < 40:
         raise RuntimeError("V4 requires a private credential of at least 40 characters")

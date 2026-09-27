@@ -24,6 +24,7 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                 ACKNOWLEDGEMENT.name,
                 provision.CANCEL.name,
                 provision.REPRICE.name,
+                *(table.name for table in provision.OMS_TACTIC_TABLES),
                 *(table.name for table in provision.RISK_ACTION_TABLES),
                 *(table.name for table in PROTECTION_CHANGE_TABLES),
                 *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
@@ -42,6 +43,7 @@ def test_v4_plan_has_exact_typed_append_surface_and_no_market_writes():
                                      ACKNOWLEDGEMENT,
                                      provision.CANCEL,
                                      provision.REPRICE,
+                                     *provision.OMS_TACTIC_TABLES,
                                      *provision.RISK_ACTION_TABLES,
                                  *PROTECTION_CHANGE_TABLES,
                                  *PROTECTION_RECONCILIATION_TABLES)) | MARKET_READ_TABLES
