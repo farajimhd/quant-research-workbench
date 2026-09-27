@@ -183,7 +183,8 @@ def chart_page(*, session: date, ticker: str, timeframe: str,
                stage: str, indicator_columns: list[str] | None,
                include_market_signals: bool, include_structure: bool,
                allow_persisted_bars: bool, mode: str,
-               pinned_plan: CertifiedMarketDayPlan | None = None) -> dict[str, Any] | None:
+               pinned_plan: CertifiedMarketDayPlan | None = None,
+               read_client: Any | None = None) -> dict[str, Any] | None:
     if not eligible(timeframe=timeframe, stage=stage,
                     indicator_columns=indicator_columns,
                     include_market_signals=include_market_signals,
@@ -247,8 +248,9 @@ def chart_page(*, session: date, ticker: str, timeframe: str,
         + f"AND (b.bucket_index+1)*{resolution}<={end_ms + SESSION_OPEN_OFFSET_MS} "
         + f"ORDER BY b.bucket_index DESC LIMIT {row_limit + 1} FORMAT JSONEachRow"
     )
-    rows = [json.loads(line) for line in _reader(
-        "backtest" if mode == "backtest" else "general").execute(query).splitlines()
+    reader = read_client if read_client is not None else _reader(
+        "backtest" if mode == "backtest" else "general")
+    rows = [json.loads(line) for line in reader.execute(query).splitlines()
             if line.strip()]
     has_more = len(rows) > row_limit
     selected = list(reversed(rows[:row_limit]))

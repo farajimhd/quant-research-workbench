@@ -5893,6 +5893,42 @@ async def trading_backtest_v4_terminal_page(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/api/trading/backtest/runs/{run_id}/v4-chart")
+async def trading_backtest_v4_chart(
+    run_id: str, ticker: str, timeframe: str = "1s",
+    before_boundary_ms: int | None = Query(default=None, ge=1, le=57_600_000),
+    row_limit: int = Query(default=1000, ge=1, le=5000),
+    indicator_columns: str = "",
+) -> dict[str, Any]:
+    """Cold, pinned, SELECT-only bars and indicators for a completed V4 run."""
+    try:
+        normalized = str(uuid.UUID(run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Backtest run id") from exc
+    columns = tuple(value.strip() for value in indicator_columns.split(",") if value.strip())
+
+    def read_page() -> dict[str, Any]:
+        from contextlib import closing
+        from src.backend.backtest_market_data import readonly_clickhouse_client
+        from src.backend.backtest_v4_chart import cold_v4_chart_page
+        from src.trading_runtime.arte_journal_writer import (
+            backtest_v4_operator_client_from_env,
+        )
+        with closing(backtest_v4_operator_client_from_env()) as journal_client, \
+                closing(readonly_clickhouse_client(v3_read_principal=True)) as market_client:
+            return cold_v4_chart_page(
+                journal_client, market_client, run_id=normalized,
+                ticker=ticker, timeframe=timeframe,
+                before_boundary_ms=before_boundary_ms, row_limit=row_limit,
+                indicator_columns=columns,
+            )
+
+    try:
+        return await asyncio.to_thread(read_page)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/backtest/runs/{run_id}/typed-running-page")
 async def trading_backtest_typed_running_page(
     run_id: str,
