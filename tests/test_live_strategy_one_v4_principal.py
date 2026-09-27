@@ -149,6 +149,27 @@ def test_client_factory_requires_current_keeper_and_closes_on_failure(monkeypatc
             client_factory=factory)
 
 
+def test_live_v4_env_factory_has_no_other_principal_fallback(monkeypatch):
+    for key in ("STRATEGY_ONE_LIVE_V4_CLICKHOUSE_URL",
+                "STRATEGY_ONE_LIVE_V4_CLICKHOUSE_USER",
+                "STRATEGY_ONE_LIVE_V4_CLICKHOUSE_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    with pytest.raises(RuntimeError, match="credential is unavailable"):
+        live.live_v4_client_from_env(lease=_lease())
+    monkeypatch.setenv("STRATEGY_ONE_LIVE_V4_CLICKHOUSE_URL", live.MANAGED_URL)
+    monkeypatch.setenv("STRATEGY_ONE_LIVE_V4_CLICKHOUSE_USER", "backtest_v4_runner")
+    monkeypatch.setenv("STRATEGY_ONE_LIVE_V4_CLICKHOUSE_PASSWORD", "x" * 48)
+    with pytest.raises(RuntimeError, match="credential is unavailable"):
+        live.live_v4_client_from_env(lease=_lease())
+    monkeypatch.setenv("STRATEGY_ONE_LIVE_V4_CLICKHOUSE_USER", live.PRINCIPAL)
+    observed = []
+    monkeypatch.setattr(live, "open_live_v4_client", lambda **kwargs:
+                        observed.append(kwargs) or "client")
+    assert live.live_v4_client_from_env(lease=_lease()) == "client"
+    assert observed[0]["endpoint"] == live.MANAGED_URL
+    assert observed[0]["credential_user"] == live.PRINCIPAL
+
+
 def test_keeper_live_run_owner_rejects_replacement_and_collision():
     lease = _lease()
     lease.assert_current()

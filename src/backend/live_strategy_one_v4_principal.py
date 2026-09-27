@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+import os
 import platform
 from typing import Any, Callable
 
@@ -188,3 +189,23 @@ def open_live_v4_client(
         if callable(close):
             close()
         raise
+
+
+def live_v4_client_from_env(*, lease: LiveV4KeeperLease) -> Any:
+    """Open the provisioned live principal; never fall back to another user."""
+    from research.mlops.clickhouse import ClickHouseHttpClient
+    from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
+
+    endpoint = os.environ.get("STRATEGY_ONE_LIVE_V4_CLICKHOUSE_URL", "").strip()
+    user = os.environ.get("STRATEGY_ONE_LIVE_V4_CLICKHOUSE_USER", "").strip()
+    password = os.environ.get("STRATEGY_ONE_LIVE_V4_CLICKHOUSE_PASSWORD", "")
+    if endpoint != MANAGED_URL or user != PRINCIPAL or len(password) < 40:
+        raise RuntimeError("Provisioned Strategy 1 live V4 credential is unavailable")
+    transport = workstation_ipv4_transport(endpoint)
+    return open_live_v4_client(
+        lease=lease, endpoint=endpoint, credential_user=user,
+        credential_password=password,
+        client_factory=lambda _endpoint, identity, secret: ClickHouseHttpClient(
+            transport, identity, secret, timeout_seconds=60, persistent=True,
+            default_query_params={"max_threads": 2, "max_execution_time": 60}),
+    )
