@@ -11506,6 +11506,7 @@ def backtest_preflight(
                     # regenerate a missing strategy input inside Backtest.
                     from src.backend.backtest_strategy_one_plan import (
                         certify_independent_strategy_one_products,
+                        complete_strategy_one_seed_payload,
                     )
                     from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
                     from src.trading_runtime.strategy_one_pivot_schema import PRODUCT_DIGEST
@@ -11568,13 +11569,8 @@ def backtest_preflight(
                 causal_v7_plan = {}
                 causal_v7_error = str(exc)
             v7_check = next(row for row in checks if row["id"] == "causal_v7_seed")
-            seed_ready = bool(
-                causal_v7_plan.get("build_id") == certified.build_id
-                and re.fullmatch(r"[0-9a-f]{64}", str(causal_v7_plan.get("token") or ""))
-                and re.fullmatch(r"[0-9a-f]{64}", str(causal_v7_plan.get("catalog_hash") or ""))
-                and causal_v7_plan.get("market_projection_token") == projected.token
-                and causal_v7_plan.get("parent_market_plan_token") == certified.token
-            )
+            seed_ready = complete_strategy_one_seed_payload(
+                causal_v7_plan, certified, projected)
             if not seed_ready and not causal_v7_error:
                 causal_v7_error = "Strategy 1 V7 seed certificate is incomplete"
                 causal_v7_plan = {}

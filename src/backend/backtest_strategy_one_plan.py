@@ -9,6 +9,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import dataclass
+import re
 from typing import Any, Callable, Mapping
 
 from src.backend.backtest_liquidity_price import PriceLevelPlan
@@ -50,6 +51,26 @@ class StrategyOneFixedPlans:
     seeds: CertifiedSeedPlan
     hod: CertifiedHodPlan
     entry: CertifiedEntryEvidencePlan
+
+
+def complete_strategy_one_seed_payload(
+    payload: Mapping[str, Any], market: CertifiedMarketDayPlan,
+    execution: CertifiedMarketDayPlan,
+) -> bool:
+    """Projection markers alone cannot stand in for a typed V7 seed proof."""
+    digest = re.compile(r"[0-9a-f]{64}\Z")
+    return bool(
+        isinstance(payload, Mapping)
+        and payload.get("schema_version") == "typed-v7-seed-plan-v1"
+        and payload.get("build_id") == market.build_id == execution.build_id
+        and type(payload.get("unit_count")) is int
+        and payload["unit_count"] == len(execution.tickers)
+        and type(payload.get("provisional")) is bool
+        and digest.fullmatch(str(payload.get("token") or ""))
+        and digest.fullmatch(str(payload.get("catalog_hash") or ""))
+        and payload.get("market_projection_token") == execution.token
+        and payload.get("parent_market_plan_token") == market.token
+    )
 
 
 def certify_independent_strategy_one_products(

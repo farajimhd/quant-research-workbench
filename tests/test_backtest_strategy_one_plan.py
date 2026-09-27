@@ -16,6 +16,30 @@ from src.backend.backtest_strategy_one_pivot_store import CertifiedPivotPlan
 from src.backend.structural_v7_seed import CertifiedSeedPlan
 
 
+def test_projection_markers_cannot_replace_a_v7_seed_certificate():
+    market = CertifiedMarketDayPlan(
+        ExecutionInterval.fixed(100), "build", "d" * 64,
+        ("2026-08-18",), ("AAA",), (), (100,), "m" * 64)
+    execution = CertifiedMarketDayPlan(
+        market.execution_interval, market.build_id, market.definition_hash,
+        market.sessions, market.tickers, market.units,
+        market.required_resolutions_ms, "x" * 64)
+    payload = CertifiedSeedPlan(
+        "build", "c" * 64, ({"ticker": "AAA"},), "a" * 64, True,
+    ).payload()
+    payload.update(market_projection_token=execution.token,
+                   parent_market_plan_token=market.token)
+    assert subject.complete_strategy_one_seed_payload(payload, market, execution)
+    for missing in ("build_id", "catalog_hash", "token", "unit_count",
+                    "market_projection_token", "parent_market_plan_token"):
+        assert not subject.complete_strategy_one_seed_payload(
+            {key: value for key, value in payload.items() if key != missing},
+            market, execution)
+    assert not subject.complete_strategy_one_seed_payload(
+        {"market_projection_token": execution.token,
+         "parent_market_plan_token": market.token}, market, execution)
+
+
 def test_full_session_seals_are_checked_before_a_launch_bundle(monkeypatch):
     market = CertifiedMarketDayPlan(
         ExecutionInterval.fixed(100), "build", "d" * 64,
