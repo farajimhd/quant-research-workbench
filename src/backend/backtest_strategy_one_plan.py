@@ -52,6 +52,53 @@ class StrategyOneFixedPlans:
     entry: CertifiedEntryEvidencePlan
 
 
+def certify_independent_strategy_one_products(
+    market: CertifiedMarketDayPlan, candidates: CertifiedCandidatePlan,
+    selected: tuple[str, ...], execution: CertifiedMarketDayPlan, *,
+    client_factory: Callable[[], Any],
+    seed_client_factory: Callable[[], Any] | None = None,
+    pool: ThreadPoolExecutor | None = None,
+) -> tuple[CertifiedPivotPlan, CertifiedActivationPlan, CertifiedSeedPlan]:
+    """Certify independent V7 inputs concurrently, each on its own read socket."""
+    if (not isinstance(market, CertifiedMarketDayPlan)
+            or not isinstance(candidates, CertifiedCandidatePlan)
+            or not isinstance(execution, CertifiedMarketDayPlan)
+            or len(market.sessions) != 1
+            or candidates.source_build_id != market.build_id
+            or execution.build_id != market.build_id
+            or execution.sessions != market.sessions
+            or tuple(execution.tickers) != tuple(selected)
+            or not selected or len(set(selected)) != len(selected)
+            or not callable(client_factory)
+            or (seed_client_factory is not None
+                and not callable(seed_client_factory))):
+        raise ValueError("Strategy 1 independent certificate scope is invalid")
+
+    def read(factory, operation):
+        reader = factory()
+        if reader is None or not callable(getattr(reader, "close", None)):
+            raise TypeError("Strategy 1 certificate needs a closable read client")
+        with closing(reader):
+            return operation(reader)
+
+    def collect(workers):
+        pivot_future = workers.submit(read, client_factory, lambda reader:
+            certify_pivot_plan(market, session_date=market.sessions[0],
+                               candidate_tickers=selected, client=reader))
+        activation_future = workers.submit(read, client_factory, lambda reader:
+            load_strategy_one_activations(market, candidates, client=reader))
+        seed_future = workers.submit(read, seed_client_factory or client_factory,
+                                     lambda reader: certified_seed_plan(execution, reader))
+        return (pivot_future.result(), activation_future.result(),
+                seed_future.result())
+
+    if pool is not None:
+        return collect(pool)
+    with ThreadPoolExecutor(max_workers=3,
+                            thread_name_prefix="strategy-one-seals") as workers:
+        return collect(workers)
+
+
 def certify_strategy_one_fixed_plans(
     market: CertifiedMarketDayPlan, prices: PriceLevelPlan, *,
     market_pins: Mapping[str, Any], v7_pins: Mapping[str, Any],
@@ -101,21 +148,13 @@ def certify_strategy_one_fixed_plans(
             raise RuntimeError("Strategy 1 zero-candidate terminal authority is not typed")
         execution = project_market_day_plan(market, selected)
         projected_prices = prices.projected(execution)
-        pivot_future = pool.submit(
-            read, lambda plan, reader: certify_pivot_plan(
-                plan, session_date=plan.sessions[0],
-                candidate_tickers=selected, client=reader), market)
-        activation_future = pool.submit(
-            read, lambda plan, reader: load_strategy_one_activations(
-                plan, candidates, client=reader), market)
-        seed_future = pool.submit(read, certified_seed_plan, execution)
-        pivots = pivot_future.result()
+        pivots, activations, seeds = certify_independent_strategy_one_products(
+            market, candidates, selected, execution,
+            client_factory=client_factory, pool=pool)
         if pivots.token != market_pins.get("strategy_one_pivot_token"):
             raise ValueError("Strategy 1 pivot seal changed")
-        activations = activation_future.result()
         if activations.token != market_pins.get("strategy_one_activation_token"):
             raise ValueError("Strategy 1 activation seal changed")
-        seeds = seed_future.result()
         if (seeds.token != v7_pins.get("token")
                 or seeds.catalog_hash != v7_pins.get("catalog_hash")
                 or seeds.provisional != v7_pins.get("provisional")):

@@ -11504,8 +11504,9 @@ def backtest_preflight(
                     # STRATEGY CREATION RULE: candidates are producer-owned,
                     # immutable, and certified before Backtest launch. Never
                     # regenerate a missing strategy input inside Backtest.
-                    from src.backend.backtest_strategy_one_activation import load_strategy_one_activations
-                    from src.backend.backtest_strategy_one_pivot_store import certify_pivot_plan
+                    from src.backend.backtest_strategy_one_plan import (
+                        certify_independent_strategy_one_products,
+                    )
                     from src.backend.backtest_strategy_one_preparation import strategy_one_v7_tickers
                     from src.trading_runtime.strategy_one_pivot_schema import PRODUCT_DIGEST
                     if len(certified.sessions) != 1:
@@ -11522,23 +11523,22 @@ def backtest_preflight(
                     projection_tickers = strategy_one_v7_tickers(candidate_plan.prepared)
                     if not projection_tickers:
                         raise ValueError("Strategy 1 has no candidate; zero-candidate terminal authority is not typed")
-                    with closing(readonly_clickhouse_client(
-                            market_stream=True, v3_read_principal=True)) as pivot_reader:
-                        pivot_plan = certify_pivot_plan(
-                            certified, session_date=certified.sessions[0],
-                            candidate_tickers=projection_tickers,
-                            client=pivot_reader)
+                    projected = project_market_day_plan(certified, projection_tickers)
+                    pivot_plan, activation_plan, seed_plan = (
+                        certify_independent_strategy_one_products(
+                            certified, candidate_plan, projection_tickers, projected,
+                            client_factory=lambda: readonly_clickhouse_client(
+                                market_stream=True, v3_read_principal=True),
+                            seed_client_factory=lambda: readonly_clickhouse_client(
+                                v3_read_principal=True)))
                     market_data_plan["strategy_one_pivot_token"] = pivot_plan.token
                     market_data_plan["strategy_one_pivot_digest"] = PRODUCT_DIGEST
-                    with closing(readonly_clickhouse_client(
-                            market_stream=True, v3_read_principal=True)) as activation_reader:
-                        activation_plan = load_strategy_one_activations(
-                            certified, candidate_plan, client=activation_reader)
                     market_data_plan["strategy_one_activation_token"] = activation_plan.token
-                projected = (project_market_day_plan(certified, projection_tickers)
-                             if projection_tickers else certified)
-                with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
-                    seed_plan = certified_seed_plan(projected, reader)
+                else:
+                    projected = (project_market_day_plan(certified, projection_tickers)
+                                 if projection_tickers else certified)
+                    with closing(readonly_clickhouse_client(v3_read_principal=True)) as reader:
+                        seed_plan = certified_seed_plan(projected, reader)
                     causal_v7_plan = seed_plan.payload()
                 if dict(configuration.get("strategy") or {}).get("strategy_number") == 1:
                     from src.backend.backtest_strategy_one_hod_store import certify_hod_plan
