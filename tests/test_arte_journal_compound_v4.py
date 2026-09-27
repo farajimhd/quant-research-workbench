@@ -15,7 +15,12 @@ from src.backend.backtest_typed_publisher import (
 )
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch, typed_row
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
-from src.trading_runtime.arte_oms_projection import oms_group_state_batch
+from src.trading_runtime.arte_oms_projection import (
+    load_committed_oms_group_state_page, oms_group_state_batch,
+)
+from src.trading_runtime.arte_oms_tactic_projection import (
+    V4OmsTacticBatch, tactic_rows,
+)
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from src.trading_runtime.arte_portfolio_allocation_v4 import V4PortfolioAllocationBatch
 from src.trading_runtime.arte_broker_acknowledgement_v4 import (
@@ -23,7 +28,10 @@ from src.trading_runtime.arte_broker_acknowledgement_v4 import (
 )
 from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.ibkr_schema import OrderRequest
-from src.trading_runtime.order_management import _ManagedOrderGroup, OrderManagementState
+from src.trading_runtime.order_management import (
+    _ManagedOrderGroup, OrderManagementState, ExecutionQuote,
+    ExecutionTactic, ExecutionUrgency, PriceStep,
+)
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 from src.trading_runtime.arte_protection_reconciliation_v4 import (
     V4ProtectionReconciliationBatch,
@@ -194,6 +202,9 @@ def test_compound_can_cold_verify_intent_and_its_causal_oms_consumer():
     group = _ManagedOrderGroup(
         "group-1", source_intent, "DU1", StrategyOrderPlan((order,)),
         OrderManagementState.CREATED, at, at, [order], remaining_quantity=5.)
+    group.tactic = ExecutionTactic(
+        ExecutionUrgency.URGENT, "BUY", (PriceStep(0, 12.5), PriceStep(200, 12.6)),
+        ExecutionQuote(12.4, 12.6, at, 0.01), 200)
     second = oms_group_state_batch(
         group, run_id=RUN, run_month=date(2026, 8, 1),
         attempt_id=ATTEMPT, batch_id=str(UUID(int=412)),
@@ -201,13 +212,23 @@ def test_compound_can_cold_verify_intent_and_its_causal_oms_consumer():
         run_status="running", strategy_id="strategy-1", strategy_revision=1,
         recorded_at=at, published_intent_batch=first,
         committed_intent_batch_id=first.batch_id)
+    tactic_state, tactic_steps = tactic_rows(
+        group.tactic, group_record_id=second.events[0]["record_id"],
+        run_id=RUN, event_month="2026-08-01", batch_id=second.batch_id,
+        account_id="DU1")
+    second_unit = V4OmsTacticBatch(second, tactic_state, tactic_steps)
     client = attached_v4_client()
-    compound = coalesce_v4_units((first, second))
-    assert _coalesce_v4_units((first, second)) == (compound,)
+    compound = coalesce_v4_units((first, second_unit))
+    assert _coalesce_v4_units((first, second_unit)) == (compound,)
     assert publish_compound_v4(client, compound) == second.batch_id
     prefix = load_verified_v4_prefix(client, RUN)
     assert prefix.last_sequence == 2
     assert prefix.batch_ids == (second.batch_id,)
+    assert len(client.tables["trading_oms_execution_tactic_v1"]) == 1
+    assert len(client.tables["trading_oms_execution_step_v1"]) == 2
+    recovered, = load_committed_oms_group_state_page(
+        client, prefix, require_tactic=True)
+    assert recovered.tactic == group.tactic and recovered.tactic_recorded
     committed_source = _committed_intent_source(
         compound.base, first.events[0]["record_id"])
     assert committed_source.batch_id == prefix.last_batch_id

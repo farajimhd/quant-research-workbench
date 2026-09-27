@@ -32,6 +32,7 @@ from src.trading_runtime.arte_reservation_reason_v4 import V4ReservationReasonBa
 from src.trading_runtime.arte_journal_compound_v4 import (
     V4CompoundBatch, coalesce_v4_units,
 )
+from src.trading_runtime.arte_oms_tactic_projection import V4OmsTacticBatch
 
 
 def _coalesce_v4_units(units: tuple) -> tuple:
@@ -229,6 +230,7 @@ class BacktestTypedJournalPublisher:
                     batch = unit.base if isinstance(
                         unit, (V3SqueezeBatch, V4CompoundBatch,
                                V4StrategyOneEntryBatch,
+                               V4OmsTacticBatch,
                                V4PortfolioAllocationBatch, V4ReservationReasonBatch,
                                V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
                                V4OrderRepriceBatch,
@@ -242,6 +244,8 @@ class BacktestTypedJournalPublisher:
                                if isinstance(unit, V4CompoundBatch)
                                else self.writer.submit_strategy_one_entry_v4(unit)
                                if isinstance(unit, V4StrategyOneEntryBatch)
+                               else self.writer.submit_oms_tactic_v4(unit)
+                               if isinstance(unit, V4OmsTacticBatch)
                                else self.writer.submit_portfolio_allocation_v4(unit)
                                if isinstance(unit, V4PortfolioAllocationBatch)
                                else self.writer.submit_reservation_reason_v4(unit)

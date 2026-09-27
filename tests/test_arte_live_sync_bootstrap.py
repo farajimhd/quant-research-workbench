@@ -274,7 +274,7 @@ def test_strategy_one_live_oms_heads_are_fenced_and_strategy_pinned(monkeypatch)
     cold = bootstrap.LiveSyncColdResult(
         RUN, 1, {"mode": "live", "account_ids": ("DU1",)},
         object(), Barrier())
-    row = SimpleNamespace(group={
+    row = SimpleNamespace(tactic_recorded=True, group={
         "account_id": "DU1", "strategy_id": STRATEGY_ID,
         "strategy_revision": 1})
     monkeypatch.setattr(oms, "load_latest_committed_oms_groups",
@@ -284,7 +284,8 @@ def test_strategy_one_live_oms_heads_are_fenced_and_strategy_pinned(monkeypatch)
         cold=cold, read_client=object()) == (row,)
     assert calls == ["fence", ("read", {
         "allowed_accounts": frozenset({"DU1"}),
-        "strategy_identity": (STRATEGY_ID, 1)}), "fence"]
+            "strategy_identity": (STRATEGY_ID, 1),
+            "require_tactic": True}), "fence"]
     row.group["strategy_revision"] = 2
     with pytest.raises(RuntimeError, match="differs from Strategy 1"):
         bootstrap.recover_strategy_one_live_oms(

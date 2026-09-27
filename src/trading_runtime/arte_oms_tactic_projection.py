@@ -7,17 +7,40 @@ under the same committed group revision before using them for live recovery.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Mapping
+from types import MappingProxyType
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .arte_journal_projection import _exact_decimal
-from .arte_journal_writer import _canonical_typed_content, typed_row
+from .arte_journal_writer import TypedJournalBatch, _canonical_typed_content, typed_row
 from .journal_contract import canonical_json
 from .order_management import ExecutionQuote, ExecutionTactic, ExecutionUrgency, PriceStep
 
 PARENT_TABLE = "trading_oms_execution_tactic_v1"
 STEP_TABLE = "trading_oms_execution_step_v1"
+
+
+@dataclass(frozen=True, slots=True)
+class V4OmsTacticBatch:
+    """Immutable one-event V4 envelope; ClickHouse work stays on the writer."""
+
+    base: TypedJournalBatch
+    tactic_state: Mapping[str, Any]
+    tactic_steps: tuple[Mapping[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        if (self.base.status != "running" or len(self.base.events) != 1
+                or len(self.base.oms_group_states) != 1):
+            raise ValueError("OMS tactic envelope requires one running group revision")
+        state = MappingProxyType(dict(self.tactic_state))
+        steps = tuple(MappingProxyType(dict(row)) for row in self.tactic_steps)
+        seal_oms_tactic_rows(
+            (state,), steps, self.base.oms_group_states, self.base.events,
+            run_id=self.base.run_id, batch_id=self.base.batch_id)
+        object.__setattr__(self, "tactic_state", state)
+        object.__setattr__(self, "tactic_steps", steps)
 
 
 def tactic_rows(
@@ -127,7 +150,7 @@ def seal_oms_tactic_rows(
     steps: tuple[Mapping[str, Any], ...],
     groups: tuple[Mapping[str, Any], ...],
     events: tuple[Mapping[str, Any], ...],
-    *, run_id: str, batch_id: str, stored_utc: bool = False,
+    *, run_id: str, batch_id: str | None, stored_utc: bool = False,
 ) -> None:
     """Require one exact tactic state per represented OMS group revision."""
     group_by_id = {str(UUID(str(row["record_id"]))): row for row in groups}
@@ -152,7 +175,8 @@ def seal_oms_tactic_rows(
                 or parent["account_id"] != group["account_id"]
                 or parent["event_month"] != group["event_month"]
                 or parent["run_id"] != run_id
-                or str(UUID(str(parent["batch_id"]))) != str(UUID(batch_id))
+                or (batch_id is not None and
+                    str(UUID(str(parent["batch_id"]))) != str(UUID(batch_id)))
                 or any(parent[key] != group[key] for key in ("run_id", "batch_id"))):
             raise ValueError("OMS tactic parent differs from its committed group")
         seen.add(group_id)

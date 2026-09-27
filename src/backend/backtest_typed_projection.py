@@ -6,7 +6,7 @@ the fixed Backtest launch remains blocked until typed recovery is complete.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Mapping
 from uuid import UUID, NAMESPACE_URL, uuid5
 
@@ -14,6 +14,9 @@ from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.arte_journal_writer import V3SqueezeBatch
+from src.trading_runtime.arte_oms_tactic_projection import (
+    V4OmsTacticBatch, tactic_rows,
+)
 from src.trading_runtime.arte_journal_writer import (
     V4BrokerAcknowledgementBatch, V4OrderCancelBatch, V4OrderRepriceBatch,
     V4ProtectionChangeBatch,
@@ -115,6 +118,7 @@ def project_pending_backtest_v4_prefix(
     committed_order_lineage: Mapping[str, tuple] | None = None,
     through_sequence: int,
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
+           | V4OmsTacticBatch
            | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
            | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
            | V4ProtectionReconciliationBatch | V4PortfolioAllocationBatch
@@ -298,6 +302,12 @@ def project_pending_backtest_v4_prefix(
                     or unit.events[0]["entity_id"] != record.entity_id
                     or unit.events[0]["account_id"] != record.account_id):
                 raise RuntimeError("V4 OMS typed event differs from its journal source")
+            tactic_state, tactic_steps = tactic_rows(
+                group.tactic, group_record_id=record.record_id,
+                run_id=record.run_id,
+                event_month=record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01"),
+                batch_id=batch_id, account_id=group.account_id)
+            unit = V4OmsTacticBatch(unit, tactic_state, tactic_steps)
             for client_order_id, lineage in committed_oms_order_lineage(
                     group, run_id=record.run_id,
                     strategy_id=record.payload["strategy_id"],

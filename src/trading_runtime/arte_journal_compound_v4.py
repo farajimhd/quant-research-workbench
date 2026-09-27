@@ -21,6 +21,9 @@ from .arte_portfolio_allocation_v4 import V4PortfolioAllocationBatch
 from .arte_protection_reconciliation_v4 import V4ProtectionReconciliationBatch
 from .arte_reservation_reason_v4 import V4ReservationReasonBatch
 from .arte_risk_action_v4 import V4RiskActionBatch
+from .arte_oms_tactic_projection import (
+    V4OmsTacticBatch, PARENT_TABLE, STEP_TABLE, seal_oms_tactic_rows,
+)
 
 
 _CHILD_KEYS = (
@@ -28,13 +31,13 @@ _CHILD_KEYS = (
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "risk_replies", "protection_changes", "protection_entry_orders",
     "protection_reconciliations", "reconciliation_actions",
-    "reconciliation_replies",
+    "reconciliation_replies", "oms_tactics", "oms_tactic_steps",
 )
 _EVENT_PARENT_KEYS = frozenset({
     "entry_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "protection_changes", "protection_entry_orders",
-    "protection_reconciliations",
+    "protection_reconciliations", "oms_tactics",
 })
 _MULTIROW_CHILD_KEYS = frozenset({"reservation_reasons", "protection_entry_orders"})
 
@@ -65,6 +68,9 @@ class V4CompoundBatch:
 def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
     if type(unit) is TypedJournalBatch:
         return ()
+    if type(unit) is V4OmsTacticBatch:
+        return (("oms_tactics", unit.tactic_state),) + tuple(
+            ("oms_tactic_steps", row) for row in unit.tactic_steps)
     if type(unit) is V4StrategyOneEntryBatch:
         return tuple(("entry_evidence", row) for row in unit.entry_evidence)
     if type(unit) is V4PortfolioAllocationBatch:
@@ -162,6 +168,8 @@ def coalesce_v4_units(
 
 
 def _publication_kwargs(unit: Any) -> dict[str, Any]:
+    if type(unit) is V4OmsTacticBatch:
+        return {"oms_tactic_rows": (unit.tactic_state, unit.tactic_steps)}
     if type(unit) is V4StrategyOneEntryBatch:
         return {"strategy_one_entry_rows": unit.entry_evidence}
     if type(unit) is V4PortfolioAllocationBatch:
@@ -227,6 +235,8 @@ def prepare_compound_v4_families(
         "protection_reconciliations": PROTECTION_RECONCILIATION.name,
         "reconciliation_actions": RECONCILIATION_ACTION.name,
         "reconciliation_replies": RECONCILIATION_REPLY.name,
+        "oms_tactics": PARENT_TABLE,
+        "oms_tactic_steps": STEP_TABLE,
     }
     base_names = {_v4_family_table(name) for name, _, _, _ in _FAMILIES}
     extra: dict[str, list[dict[str, Any]]] = {
@@ -300,6 +310,12 @@ def prepare_compound_v4_families(
         extra[RECONCILIATION_ACTION.name], extra[RECONCILIATION_REPLY.name],
         compound.base.events, run_id=compound.base.run_id,
         batch_id=compound.base.batch_id)
+    if extra[PARENT_TABLE] or extra[STEP_TABLE]:
+        seal_oms_tactic_rows(
+            tuple(extra[PARENT_TABLE]), tuple(extra[STEP_TABLE]),
+            dict(base_families)["trading_oms_group_state_v1"],
+            dict(base_families)["trading_event_v1"],
+            run_id=compound.base.run_id, batch_id=compound.base.batch_id)
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families) + tuple(
         (table_for_key[key], tuple(extra[table_for_key[key]]))

@@ -682,6 +682,12 @@ def publish_strategy_one_entry_batch_v4(client, batch, *, entry_evidence) -> str
         client, batch, strategy_one_entry_rows=entry_evidence)
 
 
+def publish_oms_tactic_batch_v4(client, batch, *, tactic_state, tactic_steps=()) -> str:
+    """Commit one OMS group revision with its exact normalized tactic graph."""
+    return _publish_typed_batch_v4(
+        client, batch, oms_tactic_rows=(tactic_state, tuple(tactic_steps)))
+
+
 def publish_broker_acknowledgement_batch_v4(client, batch, *, acknowledgement) -> str:
     """Commit the exact broker reply and its event in one V4 family fence."""
     return _publish_typed_batch_v4(
@@ -857,6 +863,7 @@ def _validate_strategy_one_entry_link(row, parent, event, run_id, batch_id):
 
 
 def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
+                            oms_tactic_rows=None,
                             portfolio_allocation_row=None,
                             reservation_reason_rows=(),
                             broker_acknowledgement_row=None,
@@ -890,6 +897,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
     dispatch = client.typed_insert_dispatch
     if sum(bool(value) for value in (
             strategy_one_entry_rows, portfolio_allocation_row,
+            oms_tactic_rows,
             reservation_reason_rows,
             broker_acknowledgement_row, order_cancel_row,
             order_reprice_row,
@@ -1137,8 +1145,41 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         v4_snapshot_position_ids=tuple(row["record_id"] for row in snapshot_positions))
     entry_rows = _sealed_strategy_one_entry_rows(
         batch, base_families, strategy_one_entry_rows)
+    tactic_states = ()
+    tactic_steps = ()
+    if oms_tactic_rows is not None:
+        from .arte_oms_tactic_projection import (
+            PARENT_TABLE, STEP_TABLE, seal_oms_tactic_rows,
+        )
+
+        if (len(batch.events) != 1 or len(batch.oms_group_states) != 1
+                or not isinstance(oms_tactic_rows, tuple)
+                or len(oms_tactic_rows) != 2):
+            raise ValueError("V4 OMS tactic needs one group revision")
+        parent_source, step_sources = oms_tactic_rows
+        tactic_states = (typed_row(PARENT_TABLE, {
+            key: value for key, value in parent_source.items()
+            if key != "content_hash"}),)
+        tactic_steps = tuple(typed_row(STEP_TABLE, {
+            key: value for key, value in source.items()
+            if key != "content_hash"}) for source in step_sources)
+        if ("content_hash" in parent_source
+                and tactic_states[0]["content_hash"] != parent_source["content_hash"]
+                or any("content_hash" in source
+                       and source["content_hash"] != sealed["content_hash"]
+                       for source, sealed in zip(step_sources, tactic_steps))):
+            raise ValueError("V4 OMS tactic differs from its scalar seal")
+        seal_oms_tactic_rows(
+            tactic_states, tactic_steps,
+            dict(base_families)["trading_oms_group_state_v1"],
+            dict(base_families)["trading_event_v1"],
+            run_id=batch.run_id, batch_id=batch.batch_id)
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families)
+    if tactic_states:
+        families += ((PARENT_TABLE, tactic_states),)
+    if tactic_steps:
+        families += ((STEP_TABLE, tactic_steps),)
     if entry_rows:
         families += ((ENTRY_EVIDENCE.name, entry_rows),)
     if allocation_rows:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import fields, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -18,6 +19,8 @@ from src.trading_runtime.arte_oms_projection import (
     load_latest_committed_oms_groups,
     oms_group_state_batch,
 )
+from src.trading_runtime.arte_oms_tactic_projection import tactic_rows
+from src.trading_runtime.arte_journal_commit_v4 import _publish_typed_batch_v4
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.order_management import (
     _ManagedOrderGroup, OrderManagementState, ExecutionQuote,
@@ -27,6 +30,7 @@ from src.trading_runtime.signals import CapitalRequest
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 from tests.test_arte_intent_projection import intent
 from tests.test_arte_journal_writer import MemoryClient
+from tests.test_arte_journal_commit_v4 import MemoryV4Dispatch
 
 
 def test_oms_duration_precision_is_bounded_without_rounding_financial_fields() -> None:
@@ -49,7 +53,8 @@ def test_latest_oms_cold_inventory_selects_latest_revision_and_bounds_history(mo
     pages = {0: (state(1, "A"), state(2, "B")),
              2: (state(3, "A"), state(4, "C")), 4: ()}
     monkeypatch.setattr(projection, "load_committed_oms_group_state_page",
-                        lambda _client, _prefix, *, after_sequence, limit:
+                        lambda _client, _prefix, *, after_sequence, limit,
+                        require_tactic:
                         pages[after_sequence])
     latest = load_latest_committed_oms_groups(
         object(), prefix, page_size=2, max_transitions=4)
@@ -73,7 +78,8 @@ def test_latest_oms_cold_inventory_rejects_foreign_earlier_revision(monkeypatch)
             (), (), (), (), (), ())
     pages = {0: (state(1, "foreign"), state(2, "strategy-1")), 2: ()}
     monkeypatch.setattr(projection, "load_committed_oms_group_state_page",
-                        lambda _client, _prefix, *, after_sequence, limit:
+                        lambda _client, _prefix, *, after_sequence, limit,
+                        require_tactic:
                         pages[after_sequence])
     with pytest.raises(RuntimeError, match="pinned run authority"):
         load_latest_committed_oms_groups(
@@ -175,6 +181,17 @@ def test_oms_projection_uses_original_intent_and_normalized_admission() -> None:
     assert batch.events[0]["correlation_id"] == "corr-1"
     assert batch.oms_group_states[0]["strategy_intent_id"] == original.intent_id
     assert Decimal(batch.oms_order_states[0]["quantity"]) == 4
+    tactic_state, tactic_steps = tactic_rows(
+        frozen.tactic, group_record_id=transition_id, run_id=run_id,
+        event_month="2026-08-01", batch_id=second_id, account_id="DU1")
+    client = SimpleNamespace(typed_insert_strict=True,
+                             typed_insert_dispatch=MemoryV4Dispatch(),
+                             execute=lambda *_args: pytest.fail("pure preparation queried ClickHouse"))
+    _, prepared = _publish_typed_batch_v4(
+        client, batch, oms_tactic_rows=(tactic_state, tactic_steps),
+        _prepare_only=True)
+    assert dict(prepared)["trading_oms_execution_tactic_v1"][0] == tactic_state
+    assert dict(prepared)["trading_oms_execution_step_v1"] == tactic_steps
     with pytest.raises(ValueError, match="normalized admission"):
         oms_group_state_batch(
             frozen, run_id=run_id, run_month=date(2026, 8, 1),

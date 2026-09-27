@@ -2,7 +2,8 @@
 
 The live strategy still carries open-ended order raw metadata and broker algo
 parameters. Those inputs fail closed until named typed child contracts exist.
-Tactic and broker-state-fingerprint recovery also remain outside this stage.
+V4 tactic rows are cold-recoverable; broker-state fingerprints and external
+broker reconciliation remain outside this stage.
 """
 from __future__ import annotations
 
@@ -469,6 +470,8 @@ class RecoveredOmsGroupState:
     broker_bindings: tuple[dict[str, Any], ...]
     warning_message_ids: tuple[str, ...]
     cancel_oca_groups: tuple[str, ...]
+    tactic: ExecutionTactic | None = None
+    tactic_recorded: bool = False
 
 
 def load_latest_committed_oms_groups(
@@ -476,6 +479,7 @@ def load_latest_committed_oms_groups(
     max_transitions: int = 20_000,
     allowed_accounts: frozenset[str] | None = None,
     strategy_identity: tuple[str, int] | None = None,
+    require_tactic: bool = False,
 ) -> tuple[RecoveredOmsGroupState, ...]:
     """Cold-read one latest normalized state per OMS group, with a hard bound.
 
@@ -502,7 +506,8 @@ def load_latest_committed_oms_groups(
     transitions = 0
     while True:
         page = load_committed_oms_group_state_page(
-            client, prefix, after_sequence=after, limit=page_size)
+            client, prefix, after_sequence=after, limit=page_size,
+            require_tactic=require_tactic)
         if not page:
             break
         for item in page:
@@ -609,6 +614,7 @@ def load_committed_oms_group_state_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 200, max_children: int = 4096,
     require_intent_revision: bool = True,
+    require_tactic: bool = False,
 ) -> tuple[RecoveredOmsGroupState, ...]:
     """Cold-read a bounded, fence-certified OMS group page without disk state."""
     if not _valid_prefix(prefix):
@@ -660,6 +666,40 @@ def load_committed_oms_group_state_page(
     if (sum(len(rows) for rows in children.values()) != declared_children + len(links)
             or declared_children + len(links) > max_children):
         raise RuntimeError("Committed OMS page has missing or excess child rows")
+    tactic_by_group: dict[str, ExecutionTactic | None] = {}
+    if require_tactic:
+        from .arte_oms_tactic_projection import (
+            PARENT_TABLE, STEP_TABLE, seal_oms_tactic_rows, tactic_from_rows,
+        )
+
+        tactic_states = family(PARENT_TABLE, children=True)
+        if len(tactic_states) != len(groups):
+            raise RuntimeError("Committed OMS page lacks one tactic state per group")
+        tactic_ids = tuple(str(UUID(str(row["record_id"])))
+                           for row in tactic_states)
+        tactic_sql = ",".join(f"toUUID({_literal(value)})" for value in tactic_ids)
+        columns = ",".join(column for column, _ in _CONTRACTS[STEP_TABLE].columns)
+        tactic_steps = _verified_rows(STEP_TABLE, _rows(client,
+            f"SELECT {columns} FROM arte.{STEP_TABLE} "
+            f"WHERE run_id={_literal(prefix.run_id)} "
+            f"AND parent_record_id IN ({tactic_sql}) "
+            f"{_committed_batch_filter(prefix)}"
+            f"LIMIT {max_children + 1} FORMAT JSONEachRow"))
+        if len(tactic_steps) + declared_children + len(links) + len(groups) > max_children:
+            raise RuntimeError("Committed OMS tactic page exceeds its child budget")
+        seal_oms_tactic_rows(
+            tuple(tactic_states), tuple(tactic_steps), tuple(groups),
+            tuple({**row, "category": "order_management",
+                   "entity_type": "order_group_state"} for row in events),
+            run_id=prefix.run_id, batch_id=None,
+            stored_utc=True)
+        for parent in tactic_states:
+            parent_id = str(UUID(str(parent["record_id"])))
+            selected = tuple(sorted((row for row in tactic_steps
+                                     if str(UUID(str(row["parent_record_id"]))) == parent_id),
+                                    key=lambda row: int(row["ordinal"])))
+            tactic_by_group[str(UUID(str(parent["parent_record_id"])))] = (
+                tactic_from_rows(parent, selected, stored_utc=True))
     source_by_id: dict[str, dict[str, Any]] = {}
     source_events: dict[str, dict[str, Any]] = {}
     if links:
@@ -771,5 +811,6 @@ def load_committed_oms_group_state_page(
             tuple(binding_rows),
             tuple(row["message_id"] for row in warning_rows),
             tuple(row["oca_group"] for row in cancel_rows),
+            tactic_by_group.get(parent_id), require_tactic,
         ))
     return tuple(result)

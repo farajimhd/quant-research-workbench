@@ -1829,6 +1829,7 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     contracts = (*installed, *V4_COMMIT_TABLES, ENTRY_EVIDENCE, V4_ALLOCATION,
                  RESERVATION_REASON,
                  ACKNOWLEDGEMENT, CANCEL, REPRICE, *RISK_ACTION_TABLES,
+                 *OMS_TACTIC_TABLES,
                  *PROTECTION_CHANGE_TABLES,
                  *PROTECTION_RECONCILIATION_TABLES)
     by_name = {}
@@ -1851,6 +1852,7 @@ def _v4_preflight(client: Any) -> None:
     ) | frozenset(table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
         ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
         ACKNOWLEDGEMENT.name, CANCEL.name, REPRICE.name,
+        *(table.name for table in OMS_TACTIC_TABLES),
         *(table.name for table in RISK_ACTION_TABLES),
         *(table.name for table in PROTECTION_CHANGE_TABLES),
         *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
@@ -3515,6 +3517,25 @@ class ArteJournalWriter:
             self._accepted_writes = True
             return receipt
 
+    def submit_oms_tactic_v4(self, unit) -> Future[str]:
+        """Queue one group+tactic graph without network I/O on the actor."""
+        from .arte_oms_tactic_projection import V4OmsTacticBatch
+
+        if (self._journal_profile != "backtest_v4"
+                or type(unit) is not V4OmsTacticBatch
+                or unit.base.run_id != self._run_id):
+            raise ValueError("OMS tactic needs the pinned V4 writer")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
     def submit_portfolio_allocation_v4(
         self, unit: V4PortfolioAllocationBatch,
     ) -> Future[str]:
@@ -3866,6 +3887,7 @@ class ArteJournalWriter:
 
     def _run(self) -> None:
         from .arte_journal_compound_v4 import V4CompoundBatch
+        from .arte_oms_tactic_projection import V4OmsTacticBatch
 
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
@@ -3907,6 +3929,7 @@ class ArteJournalWriter:
                                            (TypedJournalBatch, V3SqueezeBatch,
                                             V4CompoundBatch,
                                             V4StrategyOneEntryBatch,
+                                            V4OmsTacticBatch,
                                             V4PortfolioAllocationBatch,
                                             V4ReservationReasonBatch,
                                             V4BrokerAcknowledgementBatch,
@@ -3978,6 +4001,14 @@ class ArteJournalWriter:
                     unit = group[0][0]
                     committed_id = publish_strategy_one_entry_batch_v4(
                         self._client, unit.base, entry_evidence=unit.entry_evidence)
+                elif isinstance(group[0][0], V4OmsTacticBatch):
+                    from src.trading_runtime.arte_journal_commit_v4 import (
+                        publish_oms_tactic_batch_v4,
+                    )
+                    unit = group[0][0]
+                    committed_id = publish_oms_tactic_batch_v4(
+                        self._client, unit.base, tactic_state=unit.tactic_state,
+                        tactic_steps=unit.tactic_steps)
                 elif isinstance(group[0][0], V4PortfolioAllocationBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_portfolio_allocation_batch_v4,

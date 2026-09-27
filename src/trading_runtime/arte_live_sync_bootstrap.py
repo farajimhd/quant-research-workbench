@@ -208,10 +208,12 @@ def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
     cold.barrier.assert_fenced(cold.run_id)
     groups = load_latest_committed_oms_groups(
         read_client, cold.prefix, allowed_accounts=frozenset(accounts),
-        strategy_identity=(STRATEGY_ID, STRATEGY_NUMBER))
+        strategy_identity=(STRATEGY_ID, STRATEGY_NUMBER),
+        require_tactic=True)
     if any(group.group["account_id"] not in accounts
            or group.group["strategy_id"] != STRATEGY_ID
            or group.group["strategy_revision"] != STRATEGY_NUMBER
+           or not group.tactic_recorded
            for group in groups):
         raise RuntimeError("Live OMS group differs from Strategy 1 run authority")
     cold.barrier.assert_fenced(cold.run_id)

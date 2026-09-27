@@ -21,6 +21,7 @@ from src.trading_runtime.arte_journal_commit_v4 import (
 from src.trading_runtime.arte_journal_schema import (
     TABLES, V4_COMMIT_TABLES, fixed_backtest_v2_contracts,
 )
+from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 from src.trading_runtime.arte_journal_writer import _sealed_families
 from src.trading_runtime.arte_journal_writer import ArteJournalWriter
 from src.trading_runtime import arte_journal_writer as writer_module
@@ -1190,8 +1191,9 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
         table.name for table in (*fixed_backtest_v2_contracts(),
                                  *V4_COMMIT_TABLES, ENTRY_EVIDENCE, V4_ALLOCATION,
                                  RESERVATION_REASON,
-                                 ACKNOWLEDGEMENT, CANCEL, REPRICE,
-                                 *RISK_ACTION_TABLES,
+                                     ACKNOWLEDGEMENT, CANCEL, REPRICE,
+                                     *OMS_TACTIC_TABLES,
+                                     *RISK_ACTION_TABLES,
                                  *PROTECTION_CHANGE_TABLES,
                                  *PROTECTION_RECONCILIATION_TABLES)}
     from src.trading_runtime.arte_journal_schema import PORTFOLIO_SNAPSHOT_WRITE_TABLES
@@ -1201,6 +1203,7 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
             ENTRY_EVIDENCE.name, V4_ALLOCATION.name, RESERVATION_REASON.name,
             ACKNOWLEDGEMENT.name, CANCEL.name,
             REPRICE.name,
+            *(table.name for table in OMS_TACTIC_TABLES),
             *(table.name for table in RISK_ACTION_TABLES),
             *(table.name for table in PROTECTION_CHANGE_TABLES),
             *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
