@@ -471,6 +471,8 @@ class RecoveredOmsGroupState:
 def load_latest_committed_oms_groups(
     client: Any, prefix: VerifiedPrefix, *, page_size: int = 200,
     max_transitions: int = 20_000,
+    allowed_accounts: frozenset[str] | None = None,
+    strategy_identity: tuple[str, int] | None = None,
 ) -> tuple[RecoveredOmsGroupState, ...]:
     """Cold-read one latest normalized state per OMS group, with a hard bound.
 
@@ -479,7 +481,18 @@ def load_latest_committed_oms_groups(
     """
     if (not _valid_prefix(prefix) or type(page_size) is not int
             or not 1 <= page_size <= 500
-            or type(max_transitions) is not int or max_transitions < page_size):
+            or type(max_transitions) is not int or max_transitions < page_size
+            or allowed_accounts is not None and (
+                type(allowed_accounts) is not frozenset or not allowed_accounts
+                or any(type(account) is not str or not account
+                       for account in allowed_accounts))
+            or strategy_identity is not None and (
+                type(strategy_identity) is not tuple
+                or len(strategy_identity) != 2
+                or type(strategy_identity[0]) is not str
+                or not strategy_identity[0]
+                or type(strategy_identity[1]) is not int
+                or strategy_identity[1] < 1)):
         raise ValueError("OMS cold inventory needs a verified bounded prefix")
     latest: dict[tuple[str, str], RecoveredOmsGroupState] = {}
     after = 0
@@ -495,6 +508,12 @@ def load_latest_committed_oms_groups(
             if (item.sequence <= after or item.sequence > prefix.last_sequence
                     or not account_id or not group_id):
                 raise RuntimeError("OMS cold inventory has invalid transition order")
+            if (allowed_accounts is not None
+                    and account_id not in allowed_accounts
+                    or strategy_identity is not None
+                    and (item.group["strategy_id"], item.group["strategy_revision"])
+                    != strategy_identity):
+                raise RuntimeError("OMS cold transition differs from pinned run authority")
             after = item.sequence
             latest[(account_id, group_id)] = item
             transitions += 1

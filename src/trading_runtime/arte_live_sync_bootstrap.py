@@ -206,7 +206,9 @@ def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
     if not accounts or len(set(accounts)) != len(accounts):
         raise ValueError("Strategy 1 OMS recovery lacks exact account membership")
     cold.barrier.assert_fenced(cold.run_id)
-    groups = load_latest_committed_oms_groups(read_client, cold.prefix)
+    groups = load_latest_committed_oms_groups(
+        read_client, cold.prefix, allowed_accounts=frozenset(accounts),
+        strategy_identity=(STRATEGY_ID, STRATEGY_NUMBER))
     if any(group.group["account_id"] not in accounts
            or group.group["strategy_id"] != STRATEGY_ID
            or group.group["strategy_revision"] != STRATEGY_NUMBER

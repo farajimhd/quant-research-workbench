@@ -57,6 +57,28 @@ def test_latest_oms_cold_inventory_selects_latest_revision_and_bounds_history(mo
             object(), prefix, page_size=2, max_transitions=3)
 
 
+def test_latest_oms_cold_inventory_rejects_foreign_earlier_revision(monkeypatch):
+    from src.trading_runtime import arte_oms_projection as projection
+
+    identity = str(uuid4())
+    prefix = CommittedPrefix("live:oms", 2, identity, "bar:2", "running",
+                             (identity,))
+    def state(sequence, strategy):
+        return RecoveredOmsGroupState(
+            sequence, None, {"account_id": "DU1", "group_id": "A",
+                             "strategy_id": strategy, "strategy_revision": 1},
+            (), (), (), (), (), ())
+    pages = {0: (state(1, "foreign"), state(2, "strategy-1")), 2: ()}
+    monkeypatch.setattr(projection, "load_committed_oms_group_state_page",
+                        lambda _client, _prefix, *, after_sequence, limit:
+                        pages[after_sequence])
+    with pytest.raises(RuntimeError, match="pinned run authority"):
+        load_latest_committed_oms_groups(
+            object(), prefix, page_size=2,
+            allowed_accounts=frozenset({"DU1"}),
+            strategy_identity=("strategy-1", 1))
+
+
 def test_cold_oms_admission_joins_only_one_fenced_normalized_reservation() -> None:
     run_id, batch_id, record_id = "backtest:admission-read", str(uuid4()), str(uuid4())
     intent_id = "intent-1"
