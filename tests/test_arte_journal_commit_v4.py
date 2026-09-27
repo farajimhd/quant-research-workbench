@@ -1197,6 +1197,7 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
                                  *PROTECTION_CHANGE_TABLES,
                                  *PROTECTION_RECONCILIATION_TABLES)}
     from src.trading_runtime.arte_journal_schema import PORTFOLIO_SNAPSHOT_WRITE_TABLES
+    from src.trading_runtime.arte_backtest_definition import TABLES as BACKTEST_DEFINITION_TABLES
     writable = frozenset(writer_module._v4_family_table(table)
                          for table, _, _, _ in writer_module._FAMILIES) | \
         frozenset(table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
@@ -1208,7 +1209,8 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
             *(table.name for table in PROTECTION_CHANGE_TABLES),
             *(table.name for table in PROTECTION_RECONCILIATION_TABLES),
             "trading_backtest_account_snapshot_v2",
-            "trading_backtest_position_snapshot_v2"}
+            "trading_backtest_position_snapshot_v2",
+            *(table.name for table in BACKTEST_DEFINITION_TABLES)}
     assert observed[1] == (
         writable, frozenset(table.name for table in fixed_backtest_v2_contracts()) - writable)
 
