@@ -354,6 +354,14 @@ class BacktestTypedJournalPublisher:
             return waiter.result()
         return await self._drain()
 
+    @staticmethod
+    def _observe_chained_failure(task: asyncio.Task[TypedBacktestReceipt]) -> None:
+        # The checkpoint receipt is the caller-facing failure channel. Reading
+        # the duplicate chained-task exception prevents a spurious unhandled
+        # task report; awaiting this task still raises the same exception.
+        if not task.cancelled():
+            task.exception()
+
     def enqueue_checkpoint(self, *, boundary_id: str,
                            status: str = "running") -> asyncio.Future[TypedBacktestReceipt]:
         """Return immediately; resolve only after this exact cursor is durable."""
@@ -378,6 +386,7 @@ class BacktestTypedJournalPublisher:
             else:
                 self._task = asyncio.create_task(
                     self._drain_after_active(active, waiter))
+                self._task.add_done_callback(self._observe_chained_failure)
         except BaseException:
             self._checkpoint_waiters.pop()
             waiter.cancel()
