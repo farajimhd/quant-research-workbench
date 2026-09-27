@@ -224,7 +224,8 @@ def _profile_sql_calls(profile: _SqlCallProfile):
 
 async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
                profile_preflight: bool = False,
-               profile_execution: bool = False) -> None:
+               profile_execution: bool = False,
+               preflight_repeats: int = 1) -> None:
     from src.backend.replay_run_service import (
         ReplayRunController, ReplayRunDefinition, backtest_preflight,
     )
@@ -235,23 +236,36 @@ async def _run(day: date, ticker: str, *, apply: bool, minutes: int,
     selected = (ticker,) if ticker else ()
     end_time = (datetime.combine(day, time(4))
                 + timedelta(minutes=minutes)).time()
-    began = perf_counter()
-    preflight = await asyncio.to_thread(
-        _profile_preflight_call if profile_preflight else backtest_preflight,
-        **({"call": backtest_preflight} if profile_preflight else {}),
-        anchor_date=day + timedelta(days=1),
-        session_count=1, start_time=time(4), end_time=end_time,
-        tickers=selected, configuration_revision=revision)
-    window = tuple(preflight["window"]["sessions"])
-    if window != (day.isoformat(),):
-        raise RuntimeError("Strategy 1 integration selected a different exchange day")
-    blocked = {row["id"]: row["summary"] for row in preflight["checks"]
-               if row.get("required", True) and row["status"] != "ready"}
-    print(f"Preflight {day} {ticker or 'full-market'}: {perf_counter()-began:.3f}s; "
-          f"unresolved={tuple(blocked)}", flush=True)
-    if blocked or not preflight["ready"]:
-        raise RuntimeError("Strategy 1 integration lacks a required input: "
-                           + "; ".join(f"{key}: {value}" for key, value in blocked.items()))
+    if preflight_repeats not in (1, 2) or (apply and preflight_repeats != 1):
+        raise ValueError("Read-only preflight repeats must be one or two")
+    preflight = None
+    first_tokens = None
+    for repeat in range(preflight_repeats):
+        began = perf_counter()
+        current = await asyncio.to_thread(
+            _profile_preflight_call if profile_preflight else backtest_preflight,
+            **({"call": backtest_preflight} if profile_preflight else {}),
+            anchor_date=day + timedelta(days=1),
+            session_count=1, start_time=time(4), end_time=end_time,
+            tickers=selected, configuration_revision=revision)
+        window = tuple(current["window"]["sessions"])
+        if window != (day.isoformat(),):
+            raise RuntimeError("Strategy 1 integration selected a different exchange day")
+        blocked = {row["id"]: row["summary"] for row in current["checks"]
+                   if row.get("required", True) and row["status"] != "ready"}
+        print(f"Preflight {repeat+1}/{preflight_repeats} {day} "
+              f"{ticker or 'full-market'}: {perf_counter()-began:.3f}s; "
+              f"unresolved={tuple(blocked)}", flush=True)
+        if blocked or not current["ready"]:
+            raise RuntimeError("Strategy 1 integration lacks a required input: "
+                               + "; ".join(f"{key}: {value}" for key, value in blocked.items()))
+        tokens = (current["market_data_plan"]["token"],
+                  current["causal_v7_plan"]["token"])
+        if first_tokens is not None and tokens != first_tokens:
+            raise RuntimeError("Repeated preflight changed its certified source plans")
+        first_tokens = tokens
+        preflight = current
+    assert preflight is not None
     if not apply:
         print("Plan only: no typed journal or run was created", flush=True)
         return
@@ -325,9 +339,13 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--profile-preflight", action="store_true",
                         help="show the slowest preflight calls; does not create market data")
+    parser.add_argument("--preflight-repeats", type=int, choices=(1, 2), default=1,
+                        help="repeat read-only preflight in one process to measure cache reuse")
     parser.add_argument("--profile-execution", action="store_true",
                         help="show main event-loop calls; profile overhead affects wall time")
     args = parser.parse_args()
+    if args.apply and args.preflight_repeats != 1:
+        parser.error("Repeated preflight is read-only; omit --apply")
     if args.ticker and (not args.ticker.isascii() or not args.ticker.isalnum()):
         raise ValueError("Integration ticker must be an ASCII market symbol")
     if not 1 <= args.minutes <= 330:
@@ -335,7 +353,8 @@ def main() -> None:
     _load_private_credentials()
     asyncio.run(_run(args.session, args.ticker, apply=args.apply,
                      minutes=args.minutes, profile_preflight=args.profile_preflight,
-                     profile_execution=args.profile_execution))
+                     profile_execution=args.profile_execution,
+                     preflight_repeats=args.preflight_repeats))
 
 
 if __name__ == "__main__":
