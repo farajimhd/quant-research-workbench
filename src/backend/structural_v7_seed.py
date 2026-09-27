@@ -24,6 +24,16 @@ _NY = ZoneInfo("America/New_York")
 _LEVELS = "arte.structural_levels_v7"
 _OBSERVATIONS = "arte.structural_level_observations_v7"
 _COVERAGE = "arte.structural_level_coverage_v7"
+_LEVEL_COLUMNS = (
+    "ticker,level_id,origin_session,price,lower,upper,association_radius,"
+    "lifecycle,historical,role,parent_level_id,transition_from,"
+    "fit_status,fit_count,fit_distribution,fit_center,fit_scale,fit_lower,"
+    "fit_upper,fit_resolution,fit_coverage,fit_degrees_of_freedom,"
+    "fit_scale_at_floor"
+)
+_OBSERVATION_COLUMNS = (
+    "ticker,observation_id,level_id,price,resolution,at,resolved_at,role,session_date"
+)
 _BAND_CONFIG = {**BAND_CONFIG, "coverage": .8}
 _PROVISIONAL_INPUT_POLICY = "legacy-unfiltered"
 
@@ -256,9 +266,9 @@ def load_seed(client: Any, *, ticker: str, session: date,
     cutoff = _literal(_cutoff(session))
     predicate = (f"ticker={_literal(ticker)} AND valid_from<=toDateTime64({cutoff},9,'UTC') "
                  f"AND (isNull(valid_to) OR valid_to>toDateTime64({cutoff},9,'UTC'))")
-    levels = _rows(client, f"SELECT * FROM {_LEVELS} FINAL WHERE {predicate} "
+    levels = _rows(client, f"SELECT {_LEVEL_COLUMNS} FROM {_LEVELS} FINAL WHERE {predicate} "
                    "ORDER BY level_id FORMAT JSONEachRow")
-    observations = _rows(client, f"SELECT * FROM {_OBSERVATIONS} FINAL WHERE {predicate} "
+    observations = _rows(client, f"SELECT {_OBSERVATION_COLUMNS} FROM {_OBSERVATIONS} FINAL WHERE {predicate} "
                          "ORDER BY level_id,observation_id FORMAT JSONEachRow")
     return _assemble_seed(ticker, session, pinned, levels, observations)
 
@@ -354,13 +364,14 @@ def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
                  f"AND (isNull(valid_to) OR valid_to>toDateTime64({cutoff},9,'UTC'))")
     grouped: dict[str, dict[str, list[dict[str, Any]]]] = {
         ticker: {"levels": [], "observations": []} for ticker in tickers}
-    for table, order, family in (
-        (_LEVELS, "ticker,level_id", "levels"),
-        (_OBSERVATIONS, "ticker,level_id,observation_id", "observations"),
+    for table, columns, order, family in (
+        (_LEVELS, _LEVEL_COLUMNS, "ticker,level_id", "levels"),
+        (_OBSERVATIONS, _OBSERVATION_COLUMNS,
+         "ticker,level_id,observation_id", "observations"),
     ):
         expected = sum(int(coverage[ticker]["level_count" if family == "levels"
                             else "observation_count"]) for ticker in tickers)
-        for row in _rows(client, f"SELECT * FROM {table} FINAL WHERE {predicate} "
+        for row in _rows(client, f"SELECT {columns} FROM {table} FINAL WHERE {predicate} "
                          f"ORDER BY {order} LIMIT {expected + 1} FORMAT JSONEachRow"):
             ticker = str(row.get("ticker") or "")
             if ticker not in grouped:

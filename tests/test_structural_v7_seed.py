@@ -52,6 +52,8 @@ def test_typed_seed_is_accepted_by_streaming_engine():
     assert len(seed["levels"][0]["observations"]) == 3
     assert seed["source_checkpoint_hash"] == "a" * 64
     assert all(sql.lstrip().startswith("SELECT") for sql in client.queries)
+    assert all("SELECT * FROM arte.structural_level" not in sql
+               for sql in client.queries[2:])
     engine = StreamingLevelBook(seed, ticker="TEST", session="2026-08-18",
         start=1787039999.0, end=1787097600.0)
     assert len(engine.rows) == 1
@@ -80,6 +82,8 @@ def test_batched_seed_reads_preserve_single_ticker_decoding():
     assert all(len(seed["levels"][0]["observations"]) == 3 for seed in seeds.values())
     assert all(sql.startswith("SELECT") for sql in client.queries)
     assert len(client.queries) == 3
+    assert all("SELECT * FROM arte.structural_level" not in sql
+               for sql in client.queries[1:])
     assert "LIMIT 3" in client.queries[1]
     assert "LIMIT 7" in client.queries[2]
     wrong_count = {ticker: dict(row) for ticker, row in pinned.items()}
