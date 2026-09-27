@@ -327,6 +327,37 @@ def _family_hash(rows: tuple[Mapping[str, Any], ...]) -> str:
     return _hash(sorted((str(row.get("field_key") or ""), row["content_hash"]) for row in rows))
 
 
+def prepare_activation_commit_row(
+    prepared: Mapping[str, tuple[Mapping[str, Any], ...]], *,
+    committed_at: datetime,
+) -> dict[str, Any]:
+    """Seal the same normalized late fence for legacy and registered writers."""
+    if not isinstance(committed_at, datetime) or committed_at.tzinfo is None:
+        raise ValueError("Activation commit time must be timezone-aware")
+    if set(prepared) != {
+        "trading_activation_v1", "trading_activation_evidence_v1",
+        "trading_activation_field_evidence_v1",
+    } or len(prepared["trading_activation_v1"]) != 1:
+        raise ValueError("Activation commit requires one complete prepared family")
+    parent = prepared["trading_activation_v1"][0]
+    identity = {key: str(parent[key]) for key in (
+        "run_id", "session_date", "run_plan_id", "ticker", "event_id")}
+    if any(any(str(row.get(key)) != value for key, value in identity.items())
+           for family in prepared.values() for row in family):
+        raise ValueError("Activation commit family identity differs")
+    if (len(prepared["trading_activation_evidence_v1"]) != parent["evidence_count"]
+            or len(prepared["trading_activation_field_evidence_v1"])
+            != parent["field_evidence_count"]):
+        raise ValueError("Activation commit family counts differ")
+    return _sealed({
+        **identity, "parent_hash": parent["content_hash"],
+        "evidence_hash": _family_hash(prepared["trading_activation_evidence_v1"]),
+        "field_evidence_hash": _family_hash(
+            prepared["trading_activation_field_evidence_v1"]),
+        "committed_at": committed_at.astimezone(timezone.utc).isoformat(),
+    })
+
+
 def _verify_rows(client: Any, identity: Mapping[str, str], *, require_commit: bool) -> dict[str, tuple[dict[str, Any], ...]]:
     result = {name: _stored(client, name, identity) for name in _ACTIVATION_CONTRACTS}
     parents, commits = result["trading_activation_v1"], result["trading_activation_commit_v1"]
@@ -434,10 +465,8 @@ def publish_activation(client: Any, projected: ActivationProjection, *,
            != tuple(sorted(row["content_hash"] for row in prepared[name]))
            for name in prepared):
         raise RuntimeError("Activation rows did not become durable")
-    commit = _sealed({**identity, "parent_hash": parent["content_hash"],
-                      "evidence_hash": _family_hash(prepared["trading_activation_evidence_v1"]),
-                      "field_evidence_hash": _family_hash(prepared["trading_activation_field_evidence_v1"]),
-                      "committed_at": datetime.now(timezone.utc).isoformat()})
+    commit = prepare_activation_commit_row(
+        prepared, committed_at=datetime.now(timezone.utc))
     _insert(client, "trading_activation_commit_v1", (commit,),
             f"activation:{parent['content_hash']}:commit")
     require_claim()

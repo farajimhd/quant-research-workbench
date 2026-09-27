@@ -19,7 +19,8 @@ from src.backend.signal_dispatch_typed_cursor import (
     project_dispatch_ack, project_dispatch_intents,
 )
 from src.trading_runtime.arte_activation_projection import (
-    ACTIVATION_RUN_ID, _family_hash, _sealed, prepare_activation_rows, project_activation,
+    ACTIVATION_RUN_ID, prepare_activation_commit_row,
+    prepare_activation_rows, project_activation,
     publish_activation, strategy_one_activation_run_id,
 )
 from tests.test_arte_activation_projection import _MemoryClient
@@ -68,16 +69,9 @@ def _case(*, activation_run_id: str = ACTIVATION_RUN_ID):
         for table, rows in prepared.items():
             activation_client.rows[table].extend(rows)
         activation_hash = activation_client.rows["trading_activation_v1"][0]["content_hash"]
-        parent = prepared["trading_activation_v1"][0]
-        identity = {key: parent[key] for key in (
-            "run_id", "session_date", "run_plan_id", "ticker", "event_id")}
-        activation_client.rows["trading_activation_commit_v1"].append(_sealed({
-            **identity, "parent_hash": activation_hash,
-            "evidence_hash": _family_hash(prepared["trading_activation_evidence_v1"]),
-            "field_evidence_hash": _family_hash(
-                prepared["trading_activation_field_evidence_v1"]),
-            "committed_at": datetime.now(timezone.utc).isoformat(),
-        }))
+        activation_client.rows["trading_activation_commit_v1"].append(
+            prepare_activation_commit_row(
+                prepared, committed_at=datetime.now(timezone.utc)))
     assert activation_hash == prepare_activation_rows(
         projected, run_id=activation_run_id)[
         "trading_activation_v1"][0]["content_hash"]

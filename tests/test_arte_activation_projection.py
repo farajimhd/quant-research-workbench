@@ -3,12 +3,13 @@ from __future__ import annotations
 import unittest
 import json
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from src.trading_runtime.arte_activation_projection import (
     ACTIVATION_TABLES, _sealed, load_activation, load_day_activations,
-    load_session_activations, prepare_activation_rows,
+    load_session_activations, prepare_activation_commit_row,
+    prepare_activation_rows,
     project_activation, publish_activation, restore_activation,
     strategy_one_activation_run_id,
 )
@@ -100,6 +101,26 @@ def _publish(client, projected, keeper=None):
 
 
 class ActivationProjectionTests(unittest.TestCase):
+    def test_strategy_one_commit_contract_preserves_run_scope(self) -> None:
+        run_id = strategy_one_activation_run_id(
+            date(2026, 8, 21), mode="paper", run_plan_id="plan-1")
+        prepared = prepare_activation_rows(
+            project_activation(_delivery()), run_id=run_id)
+        committed_at = datetime(2026, 8, 21, 4, 11,
+                                tzinfo=timezone(timedelta(hours=-4)))
+        row = prepare_activation_commit_row(prepared, committed_at=committed_at)
+        self.assertEqual(row["run_id"], run_id)
+        self.assertEqual(row["parent_hash"],
+                         prepared["trading_activation_v1"][0]["content_hash"])
+        self.assertEqual(row["committed_at"],
+                         "2026-08-21T08:11:00.000000+00:00")
+        with self.assertRaisesRegex(ValueError, "timezone-aware"):
+            prepare_activation_commit_row(
+                prepared, committed_at=datetime(2026, 8, 21, 8, 11))
+        damaged = {**prepared, "trading_activation_evidence_v1": ()}
+        with self.assertRaisesRegex(ValueError, "counts differ"):
+            prepare_activation_commit_row(damaged, committed_at=committed_at)
+
     def test_strategy_one_run_identity_is_separate_from_legacy_rows(self) -> None:
         day = date(2026, 8, 21)
         new_run = strategy_one_activation_run_id(
