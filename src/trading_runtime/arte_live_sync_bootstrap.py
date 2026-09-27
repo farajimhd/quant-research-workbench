@@ -326,15 +326,24 @@ def recover_attested_live_portfolio(*, cold: LiveSyncColdResult,
     return recovered
 
 
+@dataclass(frozen=True, slots=True)
+class VerifiedStrategyOneOmsHead:
+    group: Any
+    source_intent: Any
+
+
 def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
-                                  read_client: Any) -> tuple[Any, ...]:
-    """Select normalized OMS heads under the same cold run fence.
+                                  read_client: Any) -> tuple[VerifiedStrategyOneOmsHead, ...]:
+    """Select normalized OMS heads and exact source intents under one fence.
 
     Broker open-order and execution reconciliation remains mandatory before
     these states can be installed in an order manager or admit new orders.
     """
     from src.trading_runtime.arte_oms_projection import (
         load_latest_committed_oms_groups,
+    )
+    from src.trading_runtime.arte_intent_projection import (
+        load_committed_strategy_intent_page,
     )
     from src.trading_runtime.strategy_one_contract import (
         STRATEGY_ID, STRATEGY_NUMBER,
@@ -356,5 +365,31 @@ def recover_strategy_one_live_oms(*, cold: LiveSyncColdResult,
            or not group.tactic_recorded
            for group in groups):
         raise RuntimeError("Live OMS group differs from Strategy 1 run authority")
+    if any(not isinstance(group.intent_record_id, str)
+           or not group.intent_record_id for group in groups):
+        raise RuntimeError("Live OMS group lacks its exact typed source intent")
+    source_ids = tuple(sorted({group.intent_record_id for group in groups}))
+    sources = {}
+    for offset in range(0, len(source_ids), 200):
+        page_ids = source_ids[offset:offset + 200]
+        for source in load_committed_strategy_intent_page(
+                read_client, cold.prefix, limit=len(page_ids), record_ids=page_ids):
+            if source.record_id in sources:
+                raise RuntimeError("Live OMS source intent was recovered twice")
+            sources[source.record_id] = source
+    if set(sources) != set(source_ids):
+        raise RuntimeError("Live OMS source intent coverage is incomplete")
+    verified = []
+    for group in groups:
+        source = sources[group.intent_record_id]
+        if (source.sequence >= group.sequence
+                or source.account_id != group.group["account_id"]
+                or source.intent.intent_id != group.group["strategy_intent_id"]
+                or source.intent.metadata
+                or any(order.acctId != source.account_id
+                       or order.ticker.upper() != source.intent.ticker.upper()
+                       for order in group.orders)):
+            raise RuntimeError("Live OMS head contradicts its normalized source intent")
+        verified.append(VerifiedStrategyOneOmsHead(group, source))
     cold.barrier.assert_fenced(cold.run_id)
-    return groups
+    return tuple(verified)

@@ -470,6 +470,7 @@ def test_live_portfolio_cold_handoff_rejects_missing_or_changed_head(monkeypatch
 
 def test_strategy_one_live_oms_heads_are_fenced_and_strategy_pinned(monkeypatch):
     from src.trading_runtime import arte_oms_projection as oms
+    from src.trading_runtime import arte_intent_projection as intents
     from src.trading_runtime.strategy_one_contract import STRATEGY_ID
 
     calls = []
@@ -481,19 +482,56 @@ def test_strategy_one_live_oms_heads_are_fenced_and_strategy_pinned(monkeypatch)
     cold = bootstrap.LiveSyncColdResult(
         RUN, 1, {"mode": "live", "account_ids": ("DU1",)},
         object(), Barrier())
-    row = SimpleNamespace(tactic_recorded=True, group={
+    row = SimpleNamespace(tactic_recorded=True, sequence=2,
+                          intent_record_id="intent-record", orders=(), group={
         "account_id": "DU1", "strategy_id": STRATEGY_ID,
-        "strategy_revision": 1})
+        "strategy_revision": 1, "strategy_intent_id": "intent-1"})
+    source = SimpleNamespace(record_id="intent-record", sequence=1,
+                             account_id="DU1", intent=SimpleNamespace(
+                                 intent_id="intent-1", ticker="TEST", metadata={}))
     monkeypatch.setattr(oms, "load_latest_committed_oms_groups",
                         lambda _client, _prefix, **kwargs:
                         calls.append(("read", kwargs)) or (row,))
+    monkeypatch.setattr(intents, "load_committed_strategy_intent_page",
+                        lambda _client, _prefix, **kwargs:
+                        calls.append(("intent", kwargs)) or (source,))
     assert bootstrap.recover_strategy_one_live_oms(
-        cold=cold, read_client=object()) == (row,)
+        cold=cold, read_client=object()) == (
+            bootstrap.VerifiedStrategyOneOmsHead(row, source),)
     assert calls == ["fence", ("read", {
         "allowed_accounts": frozenset({"DU1"}),
             "strategy_identity": (STRATEGY_ID, 1),
-            "require_tactic": True}), "fence"]
+            "require_tactic": True}),
+            ("intent", {"limit": 1, "record_ids": ("intent-record",)}), "fence"]
     row.group["strategy_revision"] = 2
     with pytest.raises(RuntimeError, match="differs from Strategy 1"):
         bootstrap.recover_strategy_one_live_oms(
             cold=cold, read_client=object())
+
+
+def test_strategy_one_live_oms_rejects_contradictory_source_intent(monkeypatch):
+    from src.trading_runtime import arte_oms_projection as oms
+    from src.trading_runtime import arte_intent_projection as intents
+    from src.trading_runtime.strategy_one_contract import STRATEGY_ID
+
+    class Barrier:
+        def assert_fenced(self, _run_id):
+            pass
+
+    cold = bootstrap.LiveSyncColdResult(
+        RUN, 1, {"mode": "live", "account_ids": ("DU1",)},
+        object(), Barrier())
+    group = SimpleNamespace(tactic_recorded=True, sequence=2,
+                            intent_record_id="intent-record", orders=(), group={
+                                "account_id": "DU1", "strategy_id": STRATEGY_ID,
+                                "strategy_revision": 1,
+                                "strategy_intent_id": "intent-1"})
+    source = SimpleNamespace(record_id="intent-record", sequence=3,
+                             account_id="DU1", intent=SimpleNamespace(
+                                 intent_id="intent-1", ticker="TEST", metadata={}))
+    monkeypatch.setattr(oms, "load_latest_committed_oms_groups",
+                        lambda *_args, **_kwargs: (group,))
+    monkeypatch.setattr(intents, "load_committed_strategy_intent_page",
+                        lambda *_args, **_kwargs: (source,))
+    with pytest.raises(RuntimeError, match="contradicts"):
+        bootstrap.recover_strategy_one_live_oms(cold=cold, read_client=object())
