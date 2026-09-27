@@ -404,6 +404,27 @@ def test_validation_samples_fixed_policy_rollouts_without_changing_training_rng(
     assert sum(row['filled_orders'] for row in first) > 0
 
 
+def test_validation_records_unfillable_terminal_without_selecting_it():
+    session = market(n=1,seconds=12)
+    session.arrays['fresh'][0,2:] = False
+    session.arrays['volume'][0,2:] = 0
+    class BuyOnly:
+        training = True
+        def eval(self):
+            self.training = False
+        def train(self, value):
+            self.training = value
+        def action(self, batch):
+            modes = torch.zeros((1,1),dtype=torch.long)
+            if batch['action_mask'][0,0,1]:
+                modes[0,0] = 1
+            return modes,torch.full((1,1,3),.5),None,None,None
+    result = train.evaluate(BuyOnly(),[session],config(),device='cpu',rollouts=1)
+    assert len(result) == 1
+    assert not result[0]['valid_terminal']
+    assert result[0]['open_positions'] == 1
+
+
 def test_order_volume_limits_partial_fills():
     session = market(n=1)
     session.arrays['volume'][0,1] = 1000

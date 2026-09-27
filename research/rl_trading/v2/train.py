@@ -91,8 +91,6 @@ def evaluate(policy, sessions, config, device, *, rollouts=3, seed=1917):
                             print(f"Validation {session.plan['date']} replicate={replicate+1}/{rollouts} second={env.t}/{session.seconds-1}",flush=True)
                             last_report = time.monotonic()
                     summary = dict(date=session.plan['date'],replicate=replicate+1,**env.summary())
-                    if not summary['valid_terminal']:
-                        raise ValueError(f"Unresolved terminal liquidation: {summary}")
                     result.append(summary)
     finally:
         policy.train(was_training)
@@ -123,6 +121,8 @@ def wandb_metrics(result):
             report['train/'+name+'_mean'] = float(np.mean([x[name] for x in summaries]))
     if 'validation_mean_return' in result:
         report['validation/net_return_mean'] = result['validation_mean_return']
+        report['validation/valid_terminal_fraction'] = float(np.mean(
+            [x['valid_terminal'] for x in result['validation']]))
         report['validation/max_drawdown_mean'] = float(np.mean([x['max_drawdown'] for x in result['validation']]))
         report['validation/fees_mean'] = float(np.mean([x['fees'] for x in result['validation']]))
         report['validation/filled_orders_mean'] = float(np.mean([x['filled_orders'] for x in result['validation']]))
@@ -356,9 +356,12 @@ def _train_locked(args, config, root):
                 result['validation'] = evaluate(policy,validation,config,args.device,
                     rollouts=args.validation_rollouts,seed=args.validation_seed)
                 score = float(np.mean([x['net_return'] for x in result['validation']]))
-                improved = score > best
-                best = max(best,score)
+                valid = all(x['valid_terminal'] for x in result['validation'])
+                improved = valid and score > best
+                if improved:
+                    best = score
                 result['validation_mean_return'] = score
+                result['validation_all_flat'] = valid
             result['elapsed_seconds'] = time.monotonic()-began
             payload = snapshot(iteration)
             _save(latest,payload)
@@ -373,9 +376,10 @@ def _train_locked(args, config, root):
                 failed=0,retried=0,skipped=0))
             print(f"Iteration {iteration}/{args.iterations} steps={len(rows)} updates={len(measures)} episodes={completed_episodes} validation={result.get('validation_mean_return','not scheduled')} seconds={result['elapsed_seconds']:.1f}",flush=True)
             if args.min_completed_episodes and completed_episodes >= args.min_completed_episodes:
-                write(root/'status.json',dict(status='complete',iteration=iteration,active=0,
+                status = 'complete' if best > -float('inf') else 'no_valid_checkpoint'
+                write(root/'status.json',dict(status=status,iteration=iteration,active=0,
                     completed_episodes=completed_episodes,failed=0))
-                return 0
+                return 0 if status == 'complete' else 2
     except KeyboardInterrupt:
         write(root/'status.json',dict(status='interrupted',active=0,resume='last committed iteration'))
         return 2
@@ -387,9 +391,10 @@ def _train_locked(args, config, root):
             wandb_run.finish()
     if completed_episodes < args.min_completed_episodes:
         raise ValueError('Training ended before the required complete sessions')
-    write(root/'status.json',dict(status='complete',iteration=args.iterations,active=0,
+    status = 'complete' if best > -float('inf') else 'no_valid_checkpoint'
+    write(root/'status.json',dict(status=status,iteration=args.iterations,active=0,
         completed_episodes=completed_episodes,failed=0))
-    return 0
+    return 0 if status == 'complete' else 2
 
 
 def main(argv=None):
