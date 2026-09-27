@@ -187,6 +187,14 @@ class TradingRuntime:
             strategy is None or not strategy.automatic
         ):
             raise ValueError("Backtest and Debug require an automatic Strategy")
+        from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+        if (config.strategy_id, config.strategy_revision) == (STRATEGY_ID, STRATEGY_NUMBER):
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            # Numbered Strategy 1 is published only for typed fixed Backtest.
+            # No direct Live, Paper, Replay, Debug, or SQLite constructor may
+            # bypass that authority while the typed live path is unfinished.
+            if config.mode != RunMode.BACKTEST or not isinstance(journal, BacktestMemoryJournal):
+                raise RuntimeError("Strategy 1 requires the typed fixed Backtest journal")
         self.config = config
         self.run_id = config.resolved_run_id()
         self.broker = broker

@@ -8,6 +8,7 @@ from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from src.backend.real_live_trading_service import ibkr_order_payload
@@ -29,6 +30,23 @@ from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, Simulat
 
 
 TS = datetime(2026, 7, 13, 14, 0, tzinfo=timezone.utc)
+
+
+class StrategyOneAuthorityTests(unittest.TestCase):
+    def test_numbered_strategy_rejects_every_legacy_runtime_and_sqlite_journal(self):
+        from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+
+        strategy = SimpleNamespace(
+            strategy_id=STRATEGY_ID, revision=STRATEGY_NUMBER, automatic=True)
+        sqlite_without_file = object.__new__(TradingJournal)
+        for mode in (RunMode.LIVE, RunMode.PAPER, RunMode.REPLAY,
+                     RunMode.BACKTEST_DEBUG, RunMode.BACKTEST):
+            with self.subTest(mode=mode), self.assertRaisesRegex(
+                    RuntimeError, "typed fixed Backtest journal"):
+                TradingRuntime(
+                    RunConfig(mode, STRATEGY_ID, STRATEGY_NUMBER,
+                              ("DU123",), TS.date()),
+                    object(), strategy, sqlite_without_file)
 
 
 def quote(*, bid: float, ask: float, bid_size: float = 100, ask_size: float = 100, sequence: int = 1) -> QuoteEvent:
