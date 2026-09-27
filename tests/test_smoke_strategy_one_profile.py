@@ -45,6 +45,28 @@ def test_completed_profile_reports_wall_and_writer_units(capsys):
     ]
 
 
+def test_completed_profile_reports_compound_prepare_and_publish(capsys):
+    controller = SimpleNamespace(
+        _stage_timings={},
+        _journal_writer_final_metrics={
+            "committed_units": 1, "committed_event_rows": 2,
+            "failed_units": 0, "failed": False,
+            "queue_depth": 0, "queue_capacity": 8,
+            "publish_ns_total": 3_000_000_000,
+            "publish_ns_max": 3_000_000_000,
+            "compound_prepare_ns_total": 1_000_000_000,
+            "compound_publish_ns_total": 2_000_000_000,
+            "publish_by_unit": {"V4CompoundBatch": {
+                "units": 1, "event_rows": 2,
+                "publish_ns_total": 3_000_000_000,
+                "publish_ns_max": 3_000_000_000}},
+        },
+    )
+    _print_completed_profile(controller)
+    assert "  Compound commit: prepare_s=1.000 publish_s=2.000" in (
+        capsys.readouterr().out)
+
+
 @pytest.mark.parametrize("change", [
     {"failed_units": 1}, {"failed": True}, {"queue_depth": 1},
     {"committed_units": 0},

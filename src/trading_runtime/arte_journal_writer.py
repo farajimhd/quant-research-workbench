@@ -3443,6 +3443,8 @@ class ArteJournalWriter:
         self._publish_ns_total = 0
         self._publish_ns_max = 0
         self._publish_by_unit: dict[str, dict[str, int]] = {}
+        self._compound_prepare_ns_total = 0
+        self._compound_publish_ns_total = 0
         self._thread = Thread(target=self._run, name="arte-journal-writer", daemon=False)
         self._thread.start()
 
@@ -3479,6 +3481,8 @@ class ArteJournalWriter:
                 "publish_ns_max": self._publish_ns_max,
                 "publish_by_unit": {name: dict(values) for name, values
                                     in self._publish_by_unit.items()},
+                "compound_prepare_ns_total": self._compound_prepare_ns_total,
+                "compound_publish_ns_total": self._compound_publish_ns_total,
                 "failed": self._error is not None,
             }
 
@@ -3963,6 +3967,7 @@ class ArteJournalWriter:
                     held = following
                     break
             started_ns = perf_counter_ns()
+            compound_timings_ns: dict[str, int] = {}
             try:
                 if self._error is not None:
                     raise RuntimeError("Typed journal writer failed earlier") from self._error
@@ -3989,7 +3994,9 @@ class ArteJournalWriter:
                 if isinstance(group[0][0], V4CompoundBatch):
                     from .arte_journal_compound_v4 import publish_compound_v4
 
-                    committed_id = publish_compound_v4(self._client, group[0][0])
+                    committed_id = publish_compound_v4(
+                        self._client, group[0][0],
+                        timings_ns=compound_timings_ns)
                 elif isinstance(group[0][0], V4RiskActionBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_risk_action_batch_v4,
@@ -4169,6 +4176,10 @@ class ArteJournalWriter:
                     self._committed_event_rows += event_rows
                     self._publish_ns_total += elapsed_ns
                     self._publish_ns_max = max(self._publish_ns_max, elapsed_ns)
+                    self._compound_prepare_ns_total += compound_timings_ns.get(
+                        "prepare", 0)
+                    self._compound_publish_ns_total += compound_timings_ns.get(
+                        "publish", 0)
                     family = type(group[0][0]).__name__
                     by_unit = self._publish_by_unit.setdefault(
                         family, {"units": 0, "event_rows": 0, "publish_ns_total": 0,

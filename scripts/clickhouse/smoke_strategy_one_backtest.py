@@ -71,6 +71,11 @@ def _print_completed_profile(controller) -> None:
           f"worker_s={metrics['publish_ns_total'] / 1e9:.3f} "
           f"max_unit_s={metrics['publish_ns_max'] / 1e9:.3f} "
           f"queue_capacity={metrics['queue_capacity']}", flush=True)
+    if (metrics.get("compound_prepare_ns_total")
+            or metrics.get("compound_publish_ns_total")):
+        print("  Compound commit: "
+              f"prepare_s={metrics['compound_prepare_ns_total'] / 1e9:.3f} "
+              f"publish_s={metrics['compound_publish_ns_total'] / 1e9:.3f}", flush=True)
     by_unit = metrics.get("publish_by_unit")
     if (not isinstance(by_unit, dict)
             or sum(row["units"] for row in by_unit.values())

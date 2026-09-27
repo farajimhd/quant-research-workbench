@@ -8,6 +8,7 @@ must still verify the complete mixed family graph before advancing Keeper.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter_ns
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 from uuid import UUID
@@ -323,9 +324,19 @@ def prepare_compound_v4_families(
     return base_families, families
 
 
-def publish_compound_v4(client: Any, compound: V4CompoundBatch) -> str:
+def publish_compound_v4(
+    client: Any, compound: V4CompoundBatch, *,
+    timings_ns: dict[str, int] | None = None,
+) -> str:
     """Commit a mixed normalized prefix only after its full family graph seals."""
     from .arte_journal_commit_v4 import _publish_sealed_batch_v4
 
+    started_ns = perf_counter_ns()
     base_families, families = prepare_compound_v4_families(client, compound)
-    return _publish_sealed_batch_v4(client, compound.base, base_families, families)
+    prepared_ns = perf_counter_ns()
+    committed_id = _publish_sealed_batch_v4(
+        client, compound.base, base_families, families)
+    if timings_ns is not None:
+        timings_ns["prepare"] = prepared_ns - started_ns
+        timings_ns["publish"] = perf_counter_ns() - prepared_ns
+    return committed_id
