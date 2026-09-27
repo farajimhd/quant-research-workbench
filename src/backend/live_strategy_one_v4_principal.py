@@ -76,6 +76,7 @@ class LiveV4PrincipalPlan:
     select_arte: frozenset[str]
     insert_arte: frozenset[str]
     select_system: frozenset[str]
+    select_reference: frozenset[tuple[str, str]]
 
     def grants(self) -> tuple[str, ...]:
         return tuple(
@@ -83,6 +84,8 @@ class LiveV4PrincipalPlan:
              for name in sorted(self.select_arte)]
             + [f"GRANT INSERT ON arte.{name} TO {self.principal}"
                for name in sorted(self.insert_arte)]
+            + [f"GRANT SELECT ON {database}.{name} TO {self.principal}"
+               for database, name in sorted(self.select_reference)]
             + [f"GRANT SELECT ON system.{name} TO {self.principal}"
                for name in sorted(self.select_system)])
 
@@ -102,6 +105,7 @@ def desired_plan() -> LiveV4PrincipalPlan:
         writable,
         frozenset({"storage_policies", "tables", "columns", "parts",
                    "data_skipping_indices"}),
+        frozenset({("q_live", "market_stock_split_v1")}),
     )
 
 
@@ -115,7 +119,8 @@ def live_v4_preflight(client: Any) -> None:
     # contract is separately checked by journal_permission_preflight.
     journal_permission_preflight(
         client, journal_tables=plan.insert_arte,
-        read_only_tables=plan.select_arte - plan.insert_arte - MARKET_READ_TABLES)
+        read_only_tables=plan.select_arte - plan.insert_arte - MARKET_READ_TABLES,
+        reference_read_tables=plan.select_reference)
     if client.execute("SELECT currentUser()").strip() != PRINCIPAL:
         raise RuntimeError("Live V4 credential authenticates as another principal")
 

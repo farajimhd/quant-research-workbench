@@ -1,6 +1,7 @@
 import pytest
 
 from src.backend import live_strategy_one_v4_principal as live
+from scripts.clickhouse import provision_strategy_one_live_v4_runner as provision
 from scripts.clickhouse.provision_backtest_v4_runner import desired_plan as backtest_plan
 from src.trading_runtime.keeper_session import ManagedKeeperSession
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
@@ -43,11 +44,13 @@ def test_live_v4_plan_is_dedicated_exact_and_excludes_backtest_writes():
             "live_strategy_one_approval_v1"} <= plan.select_arte
     assert not plan.insert_arte.intersection({
         "bars_v1", "indicators_v1", "liquidity_100ms_v1"})
+    assert plan.select_reference == frozenset({("q_live", "market_stock_split_v1")})
     grants = plan.grants()
     assert len(grants) == len(set(grants))
     assert all(" TO strategy_one_live_v4_runner" in grant for grant in grants)
     assert not any(" ON arte.* " in grant or "GRANT CREATE" in grant
                    for grant in grants)
+    assert provision.main([]) == 0
 
 
 def test_preflight_uses_exact_plan_and_checks_principal(monkeypatch):
@@ -63,8 +66,44 @@ def test_preflight_uses_exact_plan_and_checks_principal(monkeypatch):
     assert calls[1][1]["journal_tables"] == plan.insert_arte
     assert calls[1][1]["read_only_tables"] == (
         plan.select_arte - plan.insert_arte - live.MARKET_READ_TABLES)
+    assert calls[1][1]["reference_read_tables"] == plan.select_reference
     with pytest.raises(RuntimeError, match="another principal"):
         live.live_v4_preflight(Client("backtest_v4_runner"))
+
+
+def test_live_v4_provisioner_grants_only_the_exact_plan(monkeypatch):
+    class Admin:
+        def __init__(self):
+            self.queries = []
+
+        def execute(self, sql):
+            self.queries.append(sql)
+            if sql == "SELECT currentUser()":
+                return "admin"
+            if "system.users" in sql:
+                return "0"
+            return ""
+
+    admin = Admin()
+    writer = Client()
+    checked = []
+    monkeypatch.setattr(provision, "storage_preflight",
+                        lambda *_args, **_kwargs: checked.append("storage"))
+    monkeypatch.setattr(provision, "verify_tables",
+                        lambda *_args: checked.append("configuration"))
+    monkeypatch.setattr(provision, "live_v4_preflight",
+                        lambda client: checked.append("principal"))
+    provision.apply_with_clients(
+        admin=admin, credential=lambda **kwargs: "x" * 48,
+        client_factory=lambda user, password: writer)
+    grants = [sql for sql in admin.queries if sql.startswith("GRANT ")]
+    assert set(grants) == set(live.desired_plan().grants())
+    assert len(grants) == len(live.desired_plan().grants())
+    assert sum(sql.startswith("CREATE USER ") for sql in admin.queries) == 1
+    assert not any("INSERT INTO" in sql or "CREATE TABLE" in sql
+                   for sql in admin.queries)
+    assert checked == ["storage", "configuration", "storage", "principal"]
+    assert writer.closed
 
 
 def test_client_factory_requires_current_keeper_and_closes_on_failure(monkeypatch):
