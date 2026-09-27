@@ -293,6 +293,20 @@ def test_cold_preparation_rejects_admission_proof_gap_before_recovery(monkeypatc
             expected_code_hash="b" * 64))
 
 
+def test_cold_preparation_rejects_untyped_core_dispatch_before_recovery(monkeypatch):
+    monkeypatch.setattr(bootstrap, "verify_live_sync_cold_start",
+                        lambda **_kwargs: pytest.fail("cold recovery reached"))
+    with pytest.raises(ValueError, match="typed approved release"):
+        asyncio.run(bootstrap.prepare_strategy_one_live_cold_start(
+            run_id=RUN, read_client=object(), core_dispatch=object(),
+            sync_dispatch=object(), keeper=object(), allocator=object(),
+            allocation=object(), release=_release(),
+            admission_authority=_cold_admission_pair()[1],
+            approval_reader=SimpleNamespace(read_head=lambda _mode: None),
+            profiles=(), cutoff_at=datetime.now(timezone.utc), broker=object(),
+            expected_code_hash="b" * 64))
+
+
 def test_cold_preparation_rejects_code_drift_before_state_recovery(monkeypatch):
     release = _release()
     core, admission = _cold_admission_pair()

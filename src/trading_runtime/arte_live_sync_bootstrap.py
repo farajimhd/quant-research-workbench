@@ -487,7 +487,7 @@ async def prepare_strategy_one_live_cold_start(
     if (not isinstance(release, CertifiedStrategyOneConfiguration)
             or not callable(getattr(approval_reader, "read_head", None))
             or not isinstance(admission_authority, KeeperAdmissionEpochAuthority)
-            or admission_authority.client is not core_dispatch.keeper
+            or admission_authority.client is not getattr(core_dispatch, "keeper", None)
             or type(expected_code_hash) is not str
             or re.fullmatch(r"[0-9a-f]{64}", expected_code_hash) is None):
         raise ValueError("Strategy 1 cold start requires a typed approved release")
