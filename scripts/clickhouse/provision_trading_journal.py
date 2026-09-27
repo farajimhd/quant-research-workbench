@@ -32,6 +32,7 @@ from src.backend.live_signal_journal_preflight import (
     staged_grants, staged_live_signal_storage_preflight,
 )
 from src.backend.live_plan_membership import TABLES as LIVE_PLAN_MEMBERSHIP_TABLES
+from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABLES
 
 
 PRINCIPAL = "trading_journal_writer"
@@ -204,7 +205,8 @@ def _admin_client(url: str) -> ClickHouseHttpClient:
 def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
               staged_live_plan_membership: bool = False,
               fixed_backtest_v2: bool = False,
-              staged_live_signal_only: bool = False) -> None:
+              staged_live_signal_only: bool = False,
+              oms_execution_tactic_only: bool = False) -> None:
     if platform.node().upper() != "DESKTOP-SAAI85T":
         raise RuntimeError("Provisioning must run on DESKTOP-SAAI85T")
     if not SECRET_ROOT.is_dir():
@@ -227,6 +229,30 @@ def provision(url: str, *, apply: bool, staged_live_signal: bool = False,
     if present not in {"0", "1"}:
         raise RuntimeError("ClickHouse principal inventory is inconsistent")
     print(f"Journal principal: {'present' if present == '1' else 'absent'}")
+    if oms_execution_tactic_only:
+        if any((staged_live_signal, staged_live_signal_only,
+                staged_live_plan_membership, fixed_backtest_v2)):
+            raise ValueError("OMS tactic grants cannot be combined with another profile")
+        if present != "1":
+            raise RuntimeError("OMS tactic grants require an existing journal principal")
+        grants = tuple(
+            f"GRANT SELECT, INSERT ON arte.{table.name} TO {PRINCIPAL}"
+            for table in OMS_TACTIC_TABLES)
+        print(f"Required grants: {len(grants)} exact OMS tactic table grants")
+        if not apply:
+            print("Plan only; no credential or ClickHouse state changed")
+            return
+        storage_preflight(client, tables=OMS_TACTIC_TABLES)
+        password = _credential(SECRET_PATH, account_exists=True)
+        writer = ClickHouseHttpClient(url, PRINCIPAL, password, timeout_seconds=20)
+        if writer.execute("SELECT currentUser()").strip() != PRINCIPAL:
+            raise RuntimeError("Journal credential authenticated as the wrong user")
+        for statement in grants:
+            client.execute(statement)
+        storage_preflight(writer, tables=OMS_TACTIC_TABLES)
+        fixed_backtest_v2_preflight(writer)
+        print("OMS tactic grants verified; no legacy or market grants changed")
+        return
     if staged_live_signal_only:
         if staged_live_signal or staged_live_plan_membership or fixed_backtest_v2:
             raise ValueError("Signal-only grants cannot be combined with another profile")
@@ -299,6 +325,8 @@ def main() -> int:
                         help="also grant preprovisioned typed dispatch/completion tables")
     parser.add_argument("--staged-live-signal-only", action="store_true",
                         help="grant only preprovisioned live-signal tables; leave all other grants unchanged")
+    parser.add_argument("--oms-execution-tactic-only", action="store_true",
+                        help="grant only preprovisioned normalized OMS tactic tables")
     parser.add_argument("--inspect-effective-grants", action="store_true",
                         help="print the existing journal principal's effective grants without changes")
     parser.add_argument("--staged-live-plan-membership", action="store_true",
@@ -330,7 +358,8 @@ def main() -> int:
                   staged_live_signal=args.staged_live_signal,
                   staged_live_plan_membership=args.staged_live_plan_membership,
                   fixed_backtest_v2=args.fixed_backtest_v2,
-                  staged_live_signal_only=args.staged_live_signal_only)
+                  staged_live_signal_only=args.staged_live_signal_only,
+                  oms_execution_tactic_only=args.oms_execution_tactic_only)
     except Exception as exc:
         print(f"Journal provisioning failed: {exc}", file=sys.stderr)
         return 1

@@ -97,6 +97,51 @@ def test_signal_only_plan_does_not_reconcile_legacy_grants(
                             fixed_backtest_v2=True)
 
 
+def test_oms_tactic_grants_are_opt_in_and_exact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.trading_runtime.arte_oms_tactic_schema import TABLES
+
+    class Admin:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql):
+            self.calls.append(sql)
+            if sql.startswith("SELECT count() FROM system.users"):
+                return "1\n"
+            return ""
+
+    class Writer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def execute(self, sql):
+            assert sql == "SELECT currentUser()"
+            return provision.PRINCIPAL
+
+    admin = Admin()
+    checked = []
+    monkeypatch.setattr(provision.platform, "node", lambda: "DESKTOP-SAAI85T")
+    monkeypatch.setattr(provision, "SECRET_ROOT", tmp_path)
+    monkeypatch.setattr(provision, "_admin_client", lambda _url: admin)
+    monkeypatch.setattr(provision, "_credential", lambda *_args, **_kwargs: "private")
+    monkeypatch.setattr(provision, "ClickHouseHttpClient", Writer)
+    monkeypatch.setattr(provision, "storage_preflight",
+                        lambda _client, *, tables: checked.append(tables))
+    monkeypatch.setattr(provision, "fixed_backtest_v2_preflight",
+                        lambda _writer: None)
+    provision.provision("http://127.0.0.1:8123", apply=False,
+                        oms_execution_tactic_only=True)
+    assert len(admin.calls) == 1
+    provision.provision("http://127.0.0.1:8123", apply=True,
+                        oms_execution_tactic_only=True)
+    assert admin.calls[2:] == [
+        f"GRANT SELECT, INSERT ON arte.{table.name} TO {provision.PRINCIPAL}"
+        for table in TABLES]
+    assert checked == [TABLES, TABLES]
+
+
 def test_signal_only_apply_preserves_existing_v2_grant_surface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
