@@ -42,7 +42,11 @@ def _profile(rows: list[dict]) -> tuple[str, ...]:
         if (str(UUID(str(row["prior_batch_id"]))) != previous_id
                 or first != previous_sequence + 1 or last - first + 1 != size
                 or not 1 <= size <= 512):
-            raise ValueError("V4 commit headers are not one contiguous bounded chain")
+            raise ValueError(
+                "V4 commit header differs from the diagnostic's chain/batch bound: "
+                f"first={first} expected_first={previous_sequence + 1} "
+                f"last={last} events={size} bound=512 "
+                f"prior_matches={str(UUID(str(row['prior_batch_id']))) == previous_id}")
         cursor = str(row["source_cursor"])
         changes += cursor != previous_cursor
         previous_id, previous_sequence, previous_cursor = batch_id, last, cursor
