@@ -23,7 +23,7 @@ from src.backend.signal_dispatch_registered_publication import (
 from src.backend.signal_dispatch_typed_cursor import (
     verify_dispatch_cursor, verify_dispatch_intents,
 )
-from src.trading_runtime.arte_journal_schema import journal_permission_preflight
+from src.trading_runtime.arte_journal_schema import fixed_backtest_v2_preflight
 
 
 class _Receipt(Future[str]):
@@ -45,7 +45,7 @@ class RegisteredDispatchCursorWriter:
         self.run_id = dispatch_run_id(session_key, configuration_revision_id)
         if preflight is None:
             staged_live_signal_storage_preflight(client)
-            journal_permission_preflight(client)
+            fixed_backtest_v2_preflight(client)
         else:
             preflight(client)
         gate, _ = dispatch._read(self.run_id)
