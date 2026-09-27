@@ -105,6 +105,10 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
     class Client:
         def __init__(self):
             self.queries = []
+            self.closed = False
+
+        def close(self):
+            self.closed = True
 
         def execute(self, sql):
             self.queries.append(sql)
@@ -189,6 +193,23 @@ def test_lazy_v7_cache_replays_only_completed_pinned_seconds(monkeypatch):
                         session=date(2026, 8, 18), client=Client())
     late.context("TEST", as_of=completed, price=10.0)
     assert late._streams["TEST"].engine.bars_processed == 1
+
+    primary = Client()
+    seed_readers = []
+    def seed_reader():
+        reader = Client()
+        seed_readers.append(reader)
+        return reader
+    prepared = FixedV7Cache(market_plan=market, seed_plan=v7,
+                            session=date(2026, 8, 18), client=primary)
+    assert prepared.preload_seeds(("TEST",), client_factory=seed_reader,
+                                  max_workers=2) == 1
+    assert len(seed_readers) == 1 and seed_readers[0].closed
+    assert not prepared.has_stream("TEST")
+    assert prepared.strategy_one_levels("TEST", as_of=before) == ()
+    assert prepared.has_stream("TEST")
+    assert not any("structural_" in query for query in primary.queries)
+    assert prepared._streams["TEST"].engine.bars_processed == 0
 
 
 @pytest.mark.parametrize("horizon_ms", (300_000, 900_000))

@@ -72,7 +72,9 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch):
     monkeypatch.setattr(subject, "build_certified_strategy_one_scheduler", build)
     reader = SimpleNamespace(close=lambda: calls.append("reader_closed"))
     monkeypatch.setattr(subject, "StrategyOneCausalEvidence",
-                        lambda **_kwargs: SimpleNamespace())
+                        lambda **_kwargs: SimpleNamespace(v7=SimpleNamespace(
+                            preload_seeds=lambda *_args, **_kwargs:
+                            calls.append("seed_preloaded"))))
     monkeypatch.setattr(subject, "StrategyOneManagementRunner",
                         lambda **_kwargs: SimpleNamespace())
 
@@ -101,7 +103,8 @@ def test_composition_prunes_before_market_read_and_closes_reader(monkeypatch):
         client_factory=lambda: reader, before_boundary=boundary,
         finish_boundary=boundary))
     assert result == "complete"
-    assert calls == ["scheduler_built", "executed", "scheduler_closed", "reader_closed"]
+    assert calls == ["scheduler_built", "seed_preloaded", "executed",
+                     "scheduler_closed", "reader_closed"]
 
 
 @pytest.mark.parametrize("active", [(), ("AAA",)])

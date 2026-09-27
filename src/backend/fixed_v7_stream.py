@@ -6,6 +6,8 @@ products. Structural projections are reused until the engine revision changes.
 from __future__ import annotations
 
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import date, datetime
 from math import prod
 from time import perf_counter
@@ -144,6 +146,7 @@ class FixedV7Cache:
         if not expected_tickers or set(self._coverage) != expected_tickers:
             raise ValueError("V7 seed plan does not cover the certified ticker population")
         self._streams: dict[str, FixedV7Stream] = {}
+        self._preloaded_streams: dict[str, FixedV7Stream] = {}
         self._last_loaded_second_ms: dict[str, int] = {}
         self._last_observed_second_ms: dict[str, int] = {}
         self._last_completed_second_rows: dict[str, Mapping[str, Any]] = {}
@@ -153,6 +156,49 @@ class FixedV7Cache:
     def has_stream(self, ticker: str) -> bool:
         """True after this session's private book has been loaded and caught up."""
         return ticker in self._streams
+
+    def preload_seeds(self, tickers: Sequence[str], *,
+                      client_factory: Callable[[], Any],
+                      max_workers: int = 4) -> int:
+        """Load only prior-session books in bounded read-only ticker lanes.
+
+        A preloaded book is not active and cannot observe current-day bars or
+        appear in strategy evidence until its normal causal activation.
+        """
+        symbols = tuple(tickers)
+        if (not symbols or len(set(symbols)) != len(symbols)
+                or set(symbols) - self._coverage.keys()
+                or any(ticker in self._streams or ticker in self._preloaded_streams
+                       for ticker in symbols)
+                or not callable(client_factory)
+                or type(max_workers) is not int or not 1 <= max_workers <= 16):
+            raise ValueError("V7 seed preloading requires distinct certified tickers")
+        # Do not hold an unbounded collection of dormant observation books.
+        # The ordinary lazy route remains correct for larger populations.
+        if len(symbols) > 64:
+            return 0
+
+        def prepare(ticker: str) -> tuple[str, FixedV7Stream]:
+            client = client_factory()
+            if client is None or not callable(getattr(client, "close", None)):
+                raise TypeError("V7 seed lane needs a closable read client")
+            with closing(client):
+                seed = load_seed(client, ticker=ticker, session=self.session,
+                                 coverage=self._coverage[ticker])
+                splits = split_evidence(client, ticker=ticker,
+                                        seed_session=date.fromisoformat(seed["session"]),
+                                        session=self.session)
+            return ticker, FixedV7Stream(
+                seed, ticker=ticker, session=self.session,
+                splits=splits, consume_seed=True)
+
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(symbols)),
+                                thread_name_prefix="v7-seed-read") as pool:
+            prepared = dict(pool.map(prepare, symbols))
+        if len(prepared) != len(symbols):
+            raise RuntimeError("V7 seed preloading lost a ticker")
+        self._preloaded_streams.update(prepared)
+        return len(prepared)
 
     def last_completed_price_second(self, ticker: str) -> Mapping[str, Any] | None:
         """Return the already-consumed 1s row, never a prefetched future bar."""
@@ -240,15 +286,17 @@ class FixedV7Cache:
             pinned = self._coverage.get(ticker)
             if pinned is None:
                 raise ValueError("V7 seed ticker is outside the certified population")
-            seed_started = perf_counter() if self._stage_time is not None else 0.0
-            seed = load_seed(self.client, ticker=ticker, session=self.session, coverage=pinned)
-            splits = split_evidence(self.client, ticker=ticker,
-                                    seed_session=date.fromisoformat(seed["session"]),
-                                    session=self.session)
-            stream = FixedV7Stream(seed, ticker=ticker, session=self.session,
-                                   splits=splits, consume_seed=True)
-            if self._stage_time is not None:
-                self._stage_time("strategy_one_v7_seed", seed_started)
+            stream = self._preloaded_streams.pop(ticker, None)
+            if stream is None:
+                seed_started = perf_counter() if self._stage_time is not None else 0.0
+                seed = load_seed(self.client, ticker=ticker, session=self.session, coverage=pinned)
+                splits = split_evidence(self.client, ticker=ticker,
+                                        seed_session=date.fromisoformat(seed["session"]),
+                                        session=self.session)
+                stream = FixedV7Stream(seed, ticker=ticker, session=self.session,
+                                       splits=splits, consume_seed=True)
+                if self._stage_time is not None:
+                    self._stage_time("strategy_one_v7_seed", seed_started)
         else:
             after_ms = self._last_loaded_second_ms[ticker]
         def consume(row: Mapping[str, Any]) -> None:

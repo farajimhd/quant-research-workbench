@@ -6,10 +6,12 @@ persisted products; the broker and Portfolio/OMS alone mutate financial state.
 """
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from contextlib import closing
 from datetime import date
 from math import isfinite
+from time import perf_counter
 from typing import Any, Awaitable, Callable, Sequence
 
 import numpy as np
@@ -162,6 +164,13 @@ async def run_certified_strategy_one_session(
                 pivot_plan=pivots, hod_plan=hod,
                 session=date.fromisoformat(projected.sessions[0]), client=reader,
                 stage_time=stage_time)
+            if len(selected) <= 64:
+                seed_started = perf_counter() if stage_time is not None else 0.0
+                await asyncio.to_thread(
+                    evidence.v7.preload_seeds, selected,
+                    client_factory=client_factory, max_workers=max_workers)
+                if stage_time is not None:
+                    stage_time("strategy_one_v7_seed_preload", seed_started)
             manager = StrategyOneManagementRunner(
                 runtime=runtime, evidence=evidence,
                 tick_for_ticker=ticks.__getitem__)
