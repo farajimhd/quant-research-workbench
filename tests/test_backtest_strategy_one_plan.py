@@ -1,5 +1,6 @@
 """Strategy 1 launch certifies all producer seals before journal publication."""
 from types import SimpleNamespace
+from threading import Barrier
 
 import pytest
 
@@ -46,22 +47,31 @@ def test_full_session_seals_are_checked_before_a_launch_bundle(monkeypatch):
     v7 = {"token": seeds.token, "catalog_hash": seeds.catalog_hash,
           "provisional": seeds.provisional}
     calls = []
-    reader = SimpleNamespace(close=lambda: calls.append("closed"))
-    monkeypatch.setattr(subject, "certify_candidate_plan",
-                        lambda *_args, **_kwargs: candidate)
-    monkeypatch.setattr(subject, "certify_identity_plan",
-                        lambda *_args, **_kwargs: identity)
+    def reader_factory():
+        reader = SimpleNamespace(close=lambda: calls.append("closed"))
+        return reader
+    first_wave = Barrier(2, timeout=5)
+    second_wave = Barrier(3, timeout=5)
+    def first(result):
+        def run(*_args, **_kwargs):
+            first_wave.wait()
+            return result
+        return run
+    def second(result):
+        def run(*_args, **_kwargs):
+            second_wave.wait()
+            return result
+        return run
+    monkeypatch.setattr(subject, "certify_candidate_plan", first(candidate))
+    monkeypatch.setattr(subject, "certify_identity_plan", first(identity))
     monkeypatch.setattr(subject, "strategy_one_v7_tickers",
                         lambda _prepared: ("AAA",))
     monkeypatch.setattr(subject, "project_market_day_plan",
                         lambda _market, selected: market if selected == ("AAA",) else None)
     monkeypatch.setattr(PriceLevelPlan, "projected", lambda self, _: self)
-    monkeypatch.setattr(subject, "certify_pivot_plan",
-                        lambda *_args, **_kwargs: pivot)
-    monkeypatch.setattr(subject, "load_strategy_one_activations",
-                        lambda *_args, **_kwargs: activation)
-    monkeypatch.setattr(subject, "certified_seed_plan",
-                        lambda *_args: seeds)
+    monkeypatch.setattr(subject, "certify_pivot_plan", second(pivot))
+    monkeypatch.setattr(subject, "load_strategy_one_activations", second(activation))
+    monkeypatch.setattr(subject, "certified_seed_plan", second(seeds))
     monkeypatch.setattr(subject, "certify_hod_plan",
                         lambda *_args, **_kwargs: hod)
     monkeypatch.setattr(subject, "certify_entry_evidence_plan",
@@ -69,14 +79,14 @@ def test_full_session_seals_are_checked_before_a_launch_bundle(monkeypatch):
 
     plan = subject.certify_strategy_one_fixed_plans(
         market, prices, market_pins=pins, v7_pins=v7,
-        client_factory=lambda: reader)
+        client_factory=reader_factory)
     assert plan.entry is entry and plan.prices is prices and plan.identities is identity
-    assert calls == ["closed"]
+    assert calls == ["closed"] * 7
 
     calls.clear()
     with pytest.raises(ValueError, match="entry evidence seal changed"):
         subject.certify_strategy_one_fixed_plans(
             market, prices,
             market_pins={**pins, "strategy_one_entry_token": "wrong"},
-            v7_pins=v7, client_factory=lambda: reader)
-    assert calls == ["closed"]
+            v7_pins=v7, client_factory=reader_factory)
+    assert calls == ["closed"] * 7

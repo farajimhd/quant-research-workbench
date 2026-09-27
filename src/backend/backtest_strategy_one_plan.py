@@ -6,6 +6,7 @@ replaces the certified parent population or writes ARTE market products.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
@@ -69,16 +70,26 @@ def certify_strategy_one_fixed_plans(
             or market_pins.get("token") != market.token
             or market_pins.get("price_level_plan_token") != prices.token):
         raise ValueError("Strategy 1 launch lacks pinned 100ms market and price plans")
-    reader = client_factory()
-    if reader is None or not callable(getattr(reader, "close", None)):
-        raise TypeError("Strategy 1 launch needs a closable read-only client")
-    with closing(reader):
-        identities = certify_identity_plan(market, client=reader)
+    def read(operation, *args, **kwargs):
+        reader = client_factory()
+        if reader is None or not callable(getattr(reader, "close", None)):
+            raise TypeError("Strategy 1 launch needs a closable read-only client")
+        with closing(reader):
+            return operation(*args, reader, **kwargs)
+
+    # Separate clients prevent concurrent use of one HTTP socket. The pool is
+    # bounded, and dependent seals are checked only after their inputs pass.
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="strategy-one-seals") as pool:
+        identity_future = pool.submit(
+            read, lambda plan, reader: certify_identity_plan(plan, client=reader), market)
+        candidate_future = pool.submit(
+            read, lambda plan, reader: certify_candidate_plan(
+                plan, candidate_rule_digest=RULE_DIGEST,
+                through_boundary_ms=57_600_000, client=reader), market)
+        identities = identity_future.result()
         if identities.token != market_pins.get("strategy_one_identity_token"):
             raise ValueError("Strategy 1 dated broker identity seal changed")
-        candidates = certify_candidate_plan(
-            market, candidate_rule_digest=RULE_DIGEST,
-            through_boundary_ms=57_600_000, client=reader)
+        candidates = candidate_future.result()
         if (candidates.token != market_pins.get("strategy_one_candidate_token")
                 or candidates.candidate_rule_digest != market_pins.get(
                     "strategy_one_candidate_rule_digest")
@@ -90,28 +101,34 @@ def certify_strategy_one_fixed_plans(
             raise RuntimeError("Strategy 1 zero-candidate terminal authority is not typed")
         execution = project_market_day_plan(market, selected)
         projected_prices = prices.projected(execution)
-        pivots = certify_pivot_plan(
-            market, session_date=market.sessions[0],
-            candidate_tickers=selected, client=reader)
+        pivot_future = pool.submit(
+            read, lambda plan, reader: certify_pivot_plan(
+                plan, session_date=plan.sessions[0],
+                candidate_tickers=selected, client=reader), market)
+        activation_future = pool.submit(
+            read, lambda plan, reader: load_strategy_one_activations(
+                plan, candidates, client=reader), market)
+        seed_future = pool.submit(read, certified_seed_plan, execution)
+        pivots = pivot_future.result()
         if pivots.token != market_pins.get("strategy_one_pivot_token"):
             raise ValueError("Strategy 1 pivot seal changed")
-        activations = load_strategy_one_activations(
-            market, candidates, client=reader)
+        activations = activation_future.result()
         if activations.token != market_pins.get("strategy_one_activation_token"):
             raise ValueError("Strategy 1 activation seal changed")
-        seeds = certified_seed_plan(execution, reader)
+        seeds = seed_future.result()
         if (seeds.token != v7_pins.get("token")
                 or seeds.catalog_hash != v7_pins.get("catalog_hash")
                 or seeds.provisional != v7_pins.get("provisional")):
             raise ValueError("Strategy 1 V7 seed seal changed")
-        hod = certify_hod_plan(market, candidates, seeds, client=reader)
-        if hod.token != market_pins.get("strategy_one_hod_token"):
-            raise ValueError("Strategy 1 HOD seal changed")
-        entry = certify_entry_evidence_plan(
-            market, candidates, activations, pivots, hod, seeds,
-            client=reader)
-        if entry.token != market_pins.get("strategy_one_entry_token"):
-            raise ValueError("Strategy 1 entry evidence seal changed")
+    hod = read(lambda plan, reader: certify_hod_plan(
+        plan, candidates, seeds, client=reader), market)
+    if hod.token != market_pins.get("strategy_one_hod_token"):
+        raise ValueError("Strategy 1 HOD seal changed")
+    entry = read(lambda plan, reader: certify_entry_evidence_plan(
+        plan, candidates, activations, pivots, hod, seeds,
+        client=reader), market)
+    if entry.token != market_pins.get("strategy_one_entry_token"):
+        raise ValueError("Strategy 1 entry evidence seal changed")
     return StrategyOneFixedPlans(
         market, identities, execution, projected_prices, candidates, activations,
         pivots, seeds, hod, entry)
