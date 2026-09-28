@@ -482,7 +482,8 @@ def _train_locked(args, config, root):
         wandb_run = init_wandb(entity=args.wandb_entity,project=args.wandb_project,
             run_name=args.run_name,config=manifest,run_dir=root/'wandb',mode=args.wandb_mode,
             timeout_seconds=60,run_id=wandb_id,
-            resume_mode='must' if args.resume else 'never',capture_console=False)
+            resume_mode=('must' if (root/'wandb_run.json').exists() else 'allow')
+                if args.resume else 'never',capture_console=False)
         write(root/'wandb_run.json',dict(id=wandb_id,project=args.wandb_project,
             entity=args.wandb_entity,url=getattr(wandb_run,'url',None),mode=args.wandb_mode))
         synced_path = root/'wandb_synced.json'
