@@ -31,7 +31,8 @@ def _release():
         "d" * 64, {"strategy": {
             "strategy_id": STRATEGY_ID, "strategy_number": 1,
             "revision": 1, "execution_interval": "100ms"},
-            "run_plan": {"run_plan_id": "plan-1"}})
+            "run_plan": {"run_plan_id": "plan-1",
+                         "activation": {"event_policy": "new_occurrences"}}})
 
 
 def _cold_admission_pair():
@@ -219,6 +220,25 @@ def test_cold_preparation_composes_approval_recovery_and_broker_audit(monkeypatc
         cold, portfolio, (), audit, 2)
     assert calls == ["cold", "release", "approval", "admission", "portfolio", "oms",
                      "broker", "fenced", "release", "approval", "fenced"]
+
+
+def test_cold_preparation_rejects_replayed_activation_before_recovery(monkeypatch):
+    release = _release()
+    release = replace(release, payload={**release.payload,
+        "run_plan": {"run_plan_id": "plan-1",
+                     "activation": {"event_policy": "latest_session_occurrence"}}})
+    core, admission = _cold_admission_pair()
+    monkeypatch.setattr(bootstrap, "verify_live_sync_cold_start",
+                        lambda **_kwargs: pytest.fail("cold recovery must not start"))
+    with pytest.raises(ValueError, match="new-occurrence activation"):
+        asyncio.run(bootstrap.prepare_strategy_one_live_cold_start(
+            run_id=RUN, read_client=object(), core_dispatch=core,
+            sync_dispatch=object(), keeper=object(), allocator=object(),
+            allocation=object(), release=release,
+            admission_authority=admission,
+            approval_reader=SimpleNamespace(read_head=lambda _mode: None),
+            profiles=(), cutoff_at=datetime.now(timezone.utc), broker=object(),
+            expected_code_hash="b" * 64))
 
 
 def test_cold_preparation_rejects_changed_approval_after_broker_audit(monkeypatch):

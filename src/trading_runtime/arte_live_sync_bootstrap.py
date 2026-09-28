@@ -522,6 +522,14 @@ async def prepare_strategy_one_live_cold_start(
             or type(expected_code_hash) is not str
             or re.fullmatch(r"[0-9a-f]{64}", expected_code_hash) is None):
         raise ValueError("Strategy 1 cold start requires a typed approved release")
+    run_plan = (release.payload.get("run_plan")
+                if isinstance(release.payload, Mapping) else None)
+    activation = (run_plan.get("activation")
+                  if isinstance(run_plan, Mapping) else None)
+    if (not isinstance(activation, Mapping)
+            or activation.get("event_policy") != "new_occurrences"):
+        raise ValueError(
+            "Strategy 1 live cold start requires new-occurrence activation")
     cold = verify_live_sync_cold_start(
         run_id=run_id, read_client=read_client,
         core_dispatch=core_dispatch, sync_dispatch=sync_dispatch,
