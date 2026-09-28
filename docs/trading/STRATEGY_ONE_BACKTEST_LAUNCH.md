@@ -127,3 +127,14 @@ liquidity rows and a 0.198s sparse load. Its cold terminal page independently
 verified sequence 2,217, the market cursor, the same $10,297.95 flat account,
 and no limitations. The three unprofiled runs cluster near 32s; the sparse
 worker ceiling is not the dominant bottleneck for this session.
+
+Terminal-phase instrumentation on another full-market Aug 18 run
+(`8f5bbb79-eecd-4e01-a59f-b01952b4d870`) measured 32.561s execution
+and 7.532s terminal confirmation. Of that terminal time, 5.433s fenced
+the prior completed-market cursor and its queued typed journal/snapshot work,
+2.091s awaited the final ClickHouse account-snapshot receipt, and runtime
+finish/capture took under 0.01s. The writer committed 10 units and 2,217
+events with zero failures. A fresh terminal-page read verified the complete
+sequence and cursor, the same flat account balance, and no limitations. This
+wait is a durability/causality fence after the engine has advanced, not
+SQLite or run-local disk I/O on the hot path.
