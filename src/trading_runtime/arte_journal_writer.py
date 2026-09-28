@@ -503,6 +503,23 @@ class V4BrokerAcknowledgementBatch:
 
 
 @dataclass(frozen=True, slots=True)
+class V5BrokerAcknowledgementBatch:
+    """One live broker reply and its normalized scalar detail."""
+
+    base: TypedJournalBatch
+    acknowledgement: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.base, TypedJournalBatch)
+                or self.base.status != "running"
+                or len(self.base.events) != 1
+                or not isinstance(self.acknowledgement, Mapping)):
+            raise ValueError("V5 broker acknowledgement requires one running event")
+        object.__setattr__(self, "acknowledgement",
+                           MappingProxyType(dict(self.acknowledgement)))
+
+
+@dataclass(frozen=True, slots=True)
 class V4OrderCancelBatch:
     """One cancellation command or broker outcome with exact scalar detail."""
 
@@ -569,6 +586,7 @@ def _sealed_families(
     v3_portfolio_allocation_fill_ids: tuple[str, ...] = (),
     v3_reconciliation: bool = False,
     v4_broker_ack_ids: tuple[str, ...] = (),
+    v5_broker_ack_ids: tuple[str, ...] = (),
     v4_allocation_ids: tuple[str, ...] = (),
     v4_order_cancel_ids: tuple[str, ...] = (),
     v4_order_reprice_ids: tuple[str, ...] = (),
@@ -741,6 +759,17 @@ def _sealed_families(
             if identity in details_by_record:
                 raise ValueError("Journal event has multiple typed detail families")
             details_by_record[identity] = ACKNOWLEDGEMENT.name
+    if v5_broker_ack_ids:
+        if v4_broker_ack_ids:
+            raise ValueError("Journal batch mixed V4 and V5 broker replies")
+        expected_details = {**expected_details,
+                            ("broker", "order_acknowledgement"):
+                                ACKNOWLEDGEMENT_V5.name}
+        for record_id in v5_broker_ack_ids:
+            identity = str(UUID(str(record_id)))
+            if identity in details_by_record:
+                raise ValueError("Journal event has multiple typed detail families")
+            details_by_record[identity] = ACKNOWLEDGEMENT_V5.name
     if v4_allocation_ids:
         expected_details = {**expected_details,
             ("portfolio_management", "portfolio_allocation"):
@@ -3421,6 +3450,7 @@ class ArteJournalWriter:
                   | V4StrategyOneEntryBatch | V4PortfolioAllocationBatch
                   | V4ReservationReasonBatch
                   | V4BrokerAcknowledgementBatch
+                  | V5BrokerAcknowledgementBatch
                   | V4OrderCancelBatch | V4OrderRepriceBatch | V4RiskActionBatch
                   | V4ProtectionChangeBatch
                   | V4ProtectionReconciliationBatch
@@ -3636,6 +3666,24 @@ class ArteJournalWriter:
                 self._queue.put_nowait((unit, receipt))
             except Full as exc:
                 raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_broker_acknowledgement_v5(
+            self, unit: V5BrokerAcknowledgementBatch) -> Future[str]:
+        """Queue a live-only normalized broker reply without caller-side I/O."""
+        if (self._journal_profile != "live_v4"
+                or not isinstance(unit, V5BrokerAcknowledgementBatch)
+                or unit.base.run_id != self._run_id):
+            raise ValueError("V5 broker reply requires its pinned live writer")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V5 broker reply writer is closed or failed")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V5 journal queue is full; stop admission") from exc
             self._accepted_writes = True
             return receipt
 
@@ -3982,6 +4030,7 @@ class ArteJournalWriter:
                                             V4PortfolioAllocationBatch,
                                             V4ReservationReasonBatch,
                                             V4BrokerAcknowledgementBatch,
+                                            V5BrokerAcknowledgementBatch,
                                             V4OrderCancelBatch,
                                             V4OrderRepriceBatch,
                                             V4RiskActionBatch,
@@ -4043,6 +4092,14 @@ class ArteJournalWriter:
                     )
                     unit = group[0][0]
                     committed_id = publish_broker_acknowledgement_batch_v4(
+                        self._client, unit.base,
+                        acknowledgement=unit.acknowledgement)
+                elif isinstance(group[0][0], V5BrokerAcknowledgementBatch):
+                    from src.trading_runtime.arte_journal_commit_v4 import (
+                        publish_broker_acknowledgement_batch_v5,
+                    )
+                    unit = group[0][0]
+                    committed_id = publish_broker_acknowledgement_batch_v5(
                         self._client, unit.base,
                         acknowledgement=unit.acknowledgement)
                 elif isinstance(group[0][0], V4StrategyOneEntryBatch):

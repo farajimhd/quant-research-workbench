@@ -7,7 +7,7 @@ cannot invent the client order ID or silently discard an unfamiliar field.
 """
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import date, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 from typing import Any, Mapping
 from uuid import UUID
@@ -113,3 +113,42 @@ def project_broker_acknowledgement_v5(
         "encrypt_message": (None if encryption is None else int(encryption)),
         "decision_to_submit_ms": _duration(decision_to_submit_ms),
     })
+
+
+def broker_acknowledgement_batch_v5(
+    record: JournalRecord, *, provider: str, client_order_id: str,
+    order_group_id: str, intent_id: str, response: Mapping[str, Any],
+    decision_to_submit_ms: float | None, run_month: date, attempt_id: str,
+    batch_id: str, prior_batch_id: str, source_cursor: str,
+    correlation_id: str, causation_id: str,
+):
+    """Build one live reply family without allowing a detached parent event."""
+    from src.trading_runtime.arte_journal_writer import (
+        TypedJournalBatch, V5BrokerAcknowledgementBatch,
+    )
+
+    UUID(attempt_id)
+    UUID(prior_batch_id)
+    if (run_month.day != 1 or record.sequence < 1 or not source_cursor
+            or not correlation_id or not causation_id):
+        raise ValueError("V5 broker reply has an invalid batch envelope")
+    detail = project_broker_acknowledgement_v5(
+        record, provider=provider, client_order_id=client_order_id,
+        order_group_id=order_group_id, intent_id=intent_id,
+        response=response, batch_id=batch_id,
+        decision_to_submit_ms=decision_to_submit_ms)
+    event = {
+        "record_id": record.record_id, "run_id": record.run_id,
+        "event_month": detail["event_month"], "attempt_id": attempt_id,
+        "batch_id": batch_id, "sequence": record.sequence,
+        "account_id": record.account_id,
+        "event_time": record.event_time.astimezone(timezone.utc).isoformat(),
+        "recorded_at": record.recorded_at.astimezone(timezone.utc).isoformat(),
+        "category": record.category, "entity_type": record.entity_type,
+        "entity_id": record.entity_id, "correlation_id": correlation_id,
+        "causation_id": causation_id,
+    }
+    base = TypedJournalBatch(
+        record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        record.sequence, record.sequence, source_cursor, "running", (event,))
+    return V5BrokerAcknowledgementBatch(base, detail)

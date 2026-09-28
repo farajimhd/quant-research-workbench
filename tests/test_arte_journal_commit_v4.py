@@ -15,6 +15,7 @@ from src.trading_runtime.arte_journal_commit_v4 import (
     _publish_typed_batch_v4,
     load_verified_commit_v4, load_verified_v4_prefix, prepare_commit_v4,
     publish_base_typed_batch_v4, publish_broker_acknowledgement_batch_v4,
+    publish_broker_acknowledgement_batch_v5,
     publish_terminal_typed_batch_v4,
     verify_commit_v4,
 )
@@ -30,6 +31,9 @@ from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from src.trading_runtime.arte_journal_projection import commission_revision_batch
 from src.trading_runtime.arte_broker_acknowledgement_v4 import (
     ACKNOWLEDGEMENT, broker_acknowledgement_batch_v4,
+)
+from src.trading_runtime.arte_broker_acknowledgement_v5 import (
+    ACKNOWLEDGEMENT_V5, broker_acknowledgement_batch_v5,
 )
 from src.trading_runtime.arte_protection_change_v4 import protection_change_batch_v4
 from src.backend.backtest_protection_change_v3 import TABLES as PROTECTION_CHANGE_TABLES
@@ -602,6 +606,93 @@ def test_v4_broker_acknowledgement_is_fenced_and_cold_verified():
     with pytest.raises(RuntimeError, match="row hash"):
         load_verified_commit_v4(
             client, run_id=source.run_id, batch_id=unit.base.batch_id)
+
+
+def test_live_v5_acknowledgement_requires_lease_and_is_cold_verified():
+    at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
+    response = {"order_id": "1001", "order_status": "PreSubmitted",
+                "encrypt_message": "1"}
+    source = JournalRecord(
+        str(UUID(int=194)), "run-live-ack", 1, at, at,
+        "broker", "order_acknowledgement", "1001", "DU1",
+        {**response, "order_group_id": "group-1",
+         "decision_to_submit_ms": 1.25})
+    unit = broker_acknowledgement_batch_v5(
+        source, provider="ibkr_cpapi", client_order_id="coid-1",
+        order_group_id="group-1", intent_id="intent-1", response=response,
+        decision_to_submit_ms=1.25, run_month=date(2026, 8, 1),
+        attempt_id=str(UUID(int=195)), batch_id=str(UUID(int=196)),
+        prior_batch_id=str(UUID(int=0)), source_cursor="2026-08-18:31000",
+        correlation_id="correlation-1", causation_id="causation-1")
+    client = attached_v4_client()
+    with pytest.raises(RuntimeError, match="live Keeper lease"):
+        publish_broker_acknowledgement_batch_v5(
+            client, unit.base, acknowledgement=unit.acknowledgement)
+    assert client.inserts == []
+    client.live_v4_lease = SimpleNamespace(
+        run_id=source.run_id, assert_current=lambda: None)
+    assert publish_broker_acknowledgement_batch_v5(
+        client, unit.base, acknowledgement=unit.acknowledgement) == unit.base.batch_id
+    assert client.inserts == ["trading_event_v1", ACKNOWLEDGEMENT_V5.name,
+                              "trading_commit_family_v4", "trading_commit_v4"]
+    verified, families = load_verified_commit_v4(
+        client, run_id=source.run_id, batch_id=unit.base.batch_id)
+    assert verified["family_count"] == 2
+    assert {row["family_name"] for row in families} == {
+        "trading_event_v1", ACKNOWLEDGEMENT_V5.name}
+    client.tables[ACKNOWLEDGEMENT_V5.name][0]["order_status"] = "Inactive"
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_verified_commit_v4(
+            client, run_id=source.run_id, batch_id=unit.base.batch_id)
+
+
+def test_live_v5_acknowledgement_uses_nonblocking_writer_lane(monkeypatch):
+    from src.backend import live_strategy_one_v4_principal as live_principal
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from tests.test_live_signal_completion_keeper import FakeKazoo
+
+    at = datetime(2026, 8, 18, 8, 0, 31, tzinfo=timezone.utc)
+    response = {"order_id": "1002", "order_status": "Submitted",
+                "encrypt_message": "0"}
+    source = JournalRecord(
+        str(UUID(int=197)), "run-live-ack-writer", 1, at, at,
+        "broker", "order_acknowledgement", "1002", "DU1",
+        {**response, "order_group_id": "group-2",
+         "decision_to_submit_ms": None})
+    unit = broker_acknowledgement_batch_v5(
+        source, provider="ibkr_cpapi", client_order_id="coid-2",
+        order_group_id="group-2", intent_id="intent-2", response=response,
+        decision_to_submit_ms=None, run_month=date(2026, 8, 1),
+        attempt_id=str(UUID(int=198)), batch_id=str(UUID(int=199)),
+        prior_batch_id=str(UUID(int=0)), source_cursor="2026-08-18:31000",
+        correlation_id="correlation-2", causation_id="causation-2")
+    client = attached_v4_client()
+    keeper_client = FakeKazoo()
+    keeper_client.add_listener = lambda listener: None
+    keeper_client.remove_listener = lambda listener: None
+    keeper_client.stop = lambda: None
+    keeper_client.close = lambda: None
+    session = ManagedKeeperSession(keeper_client)
+    session._on_state("CONNECTED")
+    lease = live_principal.LiveV4KeeperLease.acquire(
+        session, run_id=source.run_id, owner_id="live-ack-writer-test")
+    client.live_v4_lease = lease
+    monkeypatch.setattr(live_principal, "live_v4_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_v4_preflight", lambda _client: None)
+    monkeypatch.setattr(writer_module, "_verify_run_identity",
+                        lambda _client, _run: {
+                            "mode": "live", "account_ids": ("DU1",)})
+    writer = ArteJournalWriter(
+        client, run_id=source.run_id, journal_profile="live_v4",
+        coalesce_batches=False)
+    try:
+        receipt = writer.submit_broker_acknowledgement_v5(unit)
+        assert receipt.result(timeout=5) == unit.base.batch_id
+        assert load_verified_v4_prefix(client, source.run_id).last_sequence == 1
+    finally:
+        writer.close()
+        lease.release()
+        session.close()
 
 
 def test_v4_family_retry_rejects_mixed_keeper_transport_versions():

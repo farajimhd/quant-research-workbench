@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.arte_strategy_one_entry_schema import ENTRY_EVIDENCE
 from src.trading_runtime.arte_broker_acknowledgement_v4 import ACKNOWLEDGEMENT
+from src.trading_runtime.arte_broker_acknowledgement_v5 import ACKNOWLEDGEMENT_V5
 from src.trading_runtime.arte_order_cancel_v4 import CANCEL
 from src.trading_runtime.arte_order_reprice_v4 import REPRICE
 from src.trading_runtime.arte_portfolio_allocation_v4 import (
@@ -341,7 +342,8 @@ def _load_verified_details_v4(
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
-                    ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name, CANCEL.name,
+                    ENTRY_EVIDENCE.name, ACKNOWLEDGEMENT.name,
+                    ACKNOWLEDGEMENT_V5.name, CANCEL.name,
                     REPRICE.name,
                     V4_ALLOCATION.name, RESERVATION_REASON.name,
                     "trading_portfolio_reservation_event_v1",
@@ -387,7 +389,8 @@ def _load_verified_details_v4(
                                               events[parent_id], run_id, batch_id)
         except ValueError as exc:
             raise RuntimeError("V4 Strategy 1 entry evidence differs from its parent") from exc
-    acknowledgements = related_rows.get(ACKNOWLEDGEMENT.name, ())
+    acknowledgements = (*related_rows.get(ACKNOWLEDGEMENT.name, ()),
+                        *related_rows.get(ACKNOWLEDGEMENT_V5.name, ()))
     seen_ack = set()
     for row in acknowledgements:
         record_id = str(UUID(str(row["record_id"])))
@@ -694,6 +697,14 @@ def publish_broker_acknowledgement_batch_v4(client, batch, *, acknowledgement) -
         client, batch, broker_acknowledgement_row=acknowledgement)
 
 
+def publish_broker_acknowledgement_batch_v5(client, batch, *, acknowledgement) -> str:
+    """Commit one live scalar reply under the same V4 family fence."""
+    if getattr(client, "live_v4_lease", None) is None:
+        raise RuntimeError("V5 broker acknowledgement requires the live Keeper lease")
+    return _publish_typed_batch_v4(
+        client, batch, broker_acknowledgement_v5_row=acknowledgement)
+
+
 def publish_order_cancel_batch_v4(client, batch, *, cancellation) -> str:
     """Commit one cancellation command/result and its exact scalar detail."""
     return _publish_typed_batch_v4(
@@ -867,6 +878,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                             portfolio_allocation_row=None,
                             reservation_reason_rows=(),
                             broker_acknowledgement_row=None,
+                            broker_acknowledgement_v5_row=None,
                             order_cancel_row=None,
                             order_reprice_row=None,
                             risk_action_row=None,
@@ -904,7 +916,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
             strategy_one_entry_rows, portfolio_allocation_row,
             oms_tactic_rows,
             reservation_reason_rows,
-            broker_acknowledgement_row, order_cancel_row,
+            broker_acknowledgement_row, broker_acknowledgement_v5_row,
+            order_cancel_row,
             order_reprice_row,
             risk_action_row,
             protection_change_row, protection_reconciliation_row,
@@ -985,6 +998,28 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
                 or ack["ticker"] != ack["ticker"].upper()):
             raise ValueError("V4 broker acknowledgement differs from its parent")
         ack_rows = (ack,)
+    ack_v5_rows = ()
+    if broker_acknowledgement_v5_row is not None:
+        if (len(batch.events) != 1
+                or (batch.events[0]["category"], batch.events[0]["entity_type"])
+                   != ("broker", "order_acknowledgement")
+                or not isinstance(broker_acknowledgement_v5_row, Mapping)):
+            raise ValueError("V5 broker acknowledgement has an invalid event envelope")
+        ack_v5 = typed_row(ACKNOWLEDGEMENT_V5.name, {
+            key: value for key, value in broker_acknowledgement_v5_row.items()
+            if key != "content_hash"})
+        event = batch.events[0]
+        if ("content_hash" in broker_acknowledgement_v5_row
+                and ack_v5["content_hash"] !=
+                    broker_acknowledgement_v5_row["content_hash"]
+                or str(UUID(str(ack_v5["record_id"]))) !=
+                   str(UUID(str(event["record_id"])))
+                or ack_v5["run_id"] != batch.run_id
+                or str(UUID(str(ack_v5["batch_id"]))) != batch.batch_id
+                or ack_v5["event_month"] != event["event_month"]
+                or ack_v5["broker_order_id"] != event["entity_id"]):
+            raise ValueError("V5 broker acknowledgement differs from its parent")
+        ack_v5_rows = (ack_v5,)
     cancel_rows = ()
     if order_cancel_row is not None:
         if (len(batch.events) != 1 or not isinstance(order_cancel_row, Mapping)
@@ -1140,6 +1175,7 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
             run_id=batch.run_id, batch_id=batch.batch_id)
     base_families = _sealed_families(
         batch, v4_broker_ack_ids=tuple(row["record_id"] for row in ack_rows),
+        v5_broker_ack_ids=tuple(row["record_id"] for row in ack_v5_rows),
         v4_allocation_ids=tuple(row["record_id"] for row in allocation_rows),
         v4_order_cancel_ids=tuple(row["record_id"] for row in cancel_rows),
         v4_order_reprice_ids=tuple(row["record_id"] for row in reprice_rows),
@@ -1193,6 +1229,8 @@ def _publish_typed_batch_v4(client, batch, *, strategy_one_entry_rows=(),
         families += ((RESERVATION_REASON.name, reason_rows),)
     if ack_rows:
         families += ((ACKNOWLEDGEMENT.name, ack_rows),)
+    if ack_v5_rows:
+        families += ((ACKNOWLEDGEMENT_V5.name, ack_v5_rows),)
     if cancel_rows:
         families += ((CANCEL.name, cancel_rows),)
     if reprice_rows:
