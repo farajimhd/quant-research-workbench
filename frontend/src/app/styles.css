@@ -5003,7 +5003,7 @@ button {
   border: 0;
   background: transparent;
   background-color: transparent;
-  color: #050505;
+  color: var(--text-primary);
   opacity: 0.46;
   padding: 0 6px;
   font-size: 12px;
@@ -5012,7 +5012,7 @@ button {
 .chart-timeframe-row .timeframe-button:hover {
   background: transparent;
   background-color: transparent;
-  color: #050505;
+  color: var(--text-primary);
   opacity: 0.72;
 }
 
@@ -5025,7 +5025,7 @@ button {
 .chart-timeframe-row .timeframe-button.active {
   background: transparent;
   background-color: transparent;
-  color: #050505;
+  color: var(--text-primary);
   font-weight: 750;
   opacity: 1;
 }

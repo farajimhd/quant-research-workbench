@@ -44,11 +44,11 @@
 .backtest-run-history header p, .backtest-run-history small { color: var(--muted-foreground); }
 .backtest-run-history small { display: block; margin-top: 4px; }
 .backtest-history-scroll { overflow-x: auto; margin: 12px 0; }
-.backtest-run-history table { width: 100%; min-width: 760px; border-collapse: collapse; text-align: left; font-size: 12px; }
-.backtest-run-history :is(th, td) { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
-.backtest-run-history th { font-weight: 600; white-space: nowrap; }
-.backtest-run-history td { max-width: 260px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.backtest-run-history td:nth-child(4) { min-width: 80px; overflow-wrap: normal; }
+.backtest-run-history > .backtest-history-scroll table { width: 100%; min-width: 760px; border-collapse: collapse; text-align: left; font-size: 12px; }
+.backtest-run-history > .backtest-history-scroll :is(th, td) { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.backtest-run-history > .backtest-history-scroll th { font-weight: 600; white-space: nowrap; }
+.backtest-run-history > .backtest-history-scroll td { max-width: 260px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.backtest-run-history > .backtest-history-scroll td:nth-child(4) { min-width: 80px; overflow-wrap: normal; }
 .backtest-history-actions { display: flex; gap: 6px; }
 .backtest-history-actions button { white-space: nowrap; }
 .backtest-run-history [role="alert"] { color: var(--destructive); }
@@ -65,11 +65,11 @@
 .backtest-v4-direct-review .backtest-v4-review { border: 1px solid var(--border); border-radius: 8px; margin: 0; padding: 16px; }
 .backtest-v4-review :is(header, footer) { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .backtest-v4-review header p { color: var(--muted-foreground); }
-.backtest-v4-review table { width: 100%; min-width: 760px; border-collapse: collapse; text-align: left; font-size: 12px; }
-.backtest-v4-review :is(th, td) { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
-.backtest-v4-review th { font-weight: 600; white-space: nowrap; }
-.backtest-v4-review td { max-width: 260px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.backtest-v4-review td small { display: block; color: var(--muted-foreground); margin-top: 4px; }
+.backtest-v4-review > .backtest-history-scroll table { width: 100%; min-width: 760px; border-collapse: collapse; text-align: left; font-size: 12px; }
+.backtest-v4-review > .backtest-history-scroll :is(th, td) { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.backtest-v4-review > .backtest-history-scroll th { font-weight: 600; white-space: nowrap; }
+.backtest-v4-review > .backtest-history-scroll td { max-width: 260px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.backtest-v4-review > .backtest-history-scroll td small { display: block; color: var(--muted-foreground); margin-top: 4px; }
 .backtest-v4-review [role="alert"] { color: var(--destructive); }
 .backtest-v4-review h3 { margin: 0; font-size: 15px; }
 .backtest-v4-review h4 { margin: 18px 0 4px; font-size: 13px; }
@@ -88,8 +88,8 @@
 .backtest-v4-chart-controls input:not([type="checkbox"]) { width: 100px; }
 .backtest-v4-chart-source { color: var(--muted-foreground); font-size: 12px; }
 @media (max-width: 1100px) {
-  .backtest-run-history :is(th, td):last-child { position: sticky; right: 0; background: var(--surface); min-width: 170px; border-left: 1px solid var(--border); }
-  .backtest-v4-review :is(th, td):last-child { position: static; border-left: 0; }
+  .backtest-run-history > .backtest-history-scroll :is(th, td):last-child { position: sticky; right: 0; background: var(--surface); min-width: 170px; border-left: 1px solid var(--border); }
+  .backtest-v4-review > .backtest-history-scroll :is(th, td):last-child { position: static; border-left: 0; }
 }
 
 .historical-canvas-run-state.historical-backtest-progress {
