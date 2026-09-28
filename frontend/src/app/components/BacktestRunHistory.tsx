@@ -39,7 +39,7 @@ export function BacktestRunHistory({ onReview, onResumed }: {
     // Defer dispatch past React's development mount/cleanup probe. History
     // remains independent of the setup form's readiness and warmup requests.
     const timer = window.setTimeout(() => {
-      void api<{ rows: RunRow[] }>("/api/trading/backtest/runs", { signal: controller.signal, timeoutMs: 60_000 })
+      void api<{ rows: RunRow[] }>("/api/trading/backtest/runs?strategy_one_only=true", { signal: controller.signal, timeoutMs: 60_000 })
       .then(result => {
         if (controller.signal.aborted) return;
         setRows([...result.rows].sort((a, b) => createdTime(b.created_at) - createdTime(a.created_at) || b.run_id.localeCompare(a.run_id)));

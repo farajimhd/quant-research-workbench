@@ -186,7 +186,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         let listedV4 = false;
         try {
           const history = await api<{ rows: Array<{ run_id: string; journal_backend?: string; v4_review_available?: boolean }> }>(
-            "/api/trading/backtest/runs", { signal: controller.signal, timeoutMs: 60_000 });
+            "/api/trading/backtest/runs?strategy_one_only=true", { signal: controller.signal, timeoutMs: 60_000 });
           const selected = history.rows.find(row => row.run_id === selectedRunId);
           listedV4 = selected?.journal_backend === "arte_typed_journal_v4" && selected.v4_review_available === true;
         } catch {
@@ -221,7 +221,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     if (!run?.run_id) { setActiveRunIdentity(null); return; }
     const controller = new AbortController();
     setActiveRunIdentity(null);
-    void api<{ rows: BacktestRunIdentity[] }>("/api/trading/backtest/runs", { signal: controller.signal, timeoutMs: 60_000 })
+    void api<{ rows: BacktestRunIdentity[] }>("/api/trading/backtest/runs?strategy_one_only=true", { signal: controller.signal, timeoutMs: 60_000 })
       .then((payload) => {
         if (!controller.signal.aborted) setActiveRunIdentity(payload.rows.find((row) => row.run_id === run.run_id) ?? null);
       })

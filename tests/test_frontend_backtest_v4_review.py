@@ -56,7 +56,7 @@ class BacktestV4ReviewUITests(unittest.TestCase):
 
                         def handle(route):
                             url = route.request.url
-                            if url.endswith("/api/trading/backtest/runs"):
+                            if url.split("?", 1)[0].endswith("/api/trading/backtest/runs"):
                                 payload = history
                             elif "/v4-terminal-page" in url:
                                 payload = review
@@ -114,7 +114,7 @@ class BacktestV4ReviewUITests(unittest.TestCase):
                             url = route.request.url
                             if "/canvas" in url or "/results" in url or "/comparison" in url:
                                 state["legacy_requests"].append(url)
-                            if url.endswith("/api/trading/backtest/runs"):
+                            if url.split("?", 1)[0].endswith("/api/trading/backtest/runs"):
                                 payload = {"rows": [{"run_id": run_id,
                                     "strategy_name": "Strategy 1", "strategy_revision": 1,
                                     "journal_backend": "arte_typed_journal_v4",

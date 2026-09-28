@@ -112,6 +112,59 @@ def test_service_lists_v4_without_run_directory_or_sqlite(
     assert not (tmp_path / RUN).exists()
 
 
+def test_strategy_one_history_never_scans_legacy_run_directories(monkeypatch, tmp_path):
+    from src.backend import replay_run_service
+    from src.trading_runtime import arte_journal_writer
+
+    recorded = {
+        "run_id": RUN, "status": "completed", "mode": "backtest",
+        "journal_backend": "arte_typed_journal_v4",
+        "created_at": "2026-09-26T01:02:03+00:00",
+    }
+
+    class Client:
+        def close(self):
+            pass
+
+    monkeypatch.delenv("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", raising=False)
+    monkeypatch.setenv("BACKTEST_V4_RUNNER_CREDENTIAL_FILE", "private-runner.env")
+    monkeypatch.setattr(arte_journal_writer, "backtest_v4_operator_client_from_env",
+                        Client)
+    monkeypatch.setattr(history, "load_strategy_one_v4_history",
+                        lambda _client: [recorded])
+    monkeypatch.setattr(replay_run_service, "_durable_run_selection",
+                        lambda *_a: pytest.fail("Legacy run directory was read"))
+    (tmp_path / "legacy-run").mkdir()
+    assert replay_run_service.ReplayRunService(runtime_root=tmp_path).list(
+        include_durable=True, strategy_one_only=True) == [recorded]
+
+
+def test_strategy_one_history_filters_resident_legacy_runs(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from src.backend import replay_run_service
+
+    strategy_one = {
+        "mode": "backtest", "strategy_id": "early-squeeze-strategy",
+        "strategy_revision": 1, "created_at": "2026-09-28T01:00:00+00:00",
+    }
+    legacy = {**strategy_one, "strategy_revision": 350}
+    monkeypatch.delenv("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", raising=False)
+    monkeypatch.delenv("BACKTEST_V4_RUNNER_CREDENTIAL_FILE", raising=False)
+    monkeypatch.setattr(replay_run_service, "_replay_run_list_projection",
+                        lambda snapshot, **_k: snapshot)
+    monkeypatch.setattr(replay_run_service, "_run_selection_projection",
+                        lambda row, _revision: row)
+    service = replay_run_service.ReplayRunService(runtime_root=tmp_path)
+    for run_id, row in ((RUN, strategy_one), ("legacy-run", legacy)):
+        service._runs[run_id] = SimpleNamespace(
+            run_id=run_id,
+            definition=SimpleNamespace(configuration_revision={}),
+            stream_snapshot=lambda row=row, run_id=run_id: {**row, "run_id": run_id},
+        )
+    assert [row["run_id"] for row in service.list(
+        include_durable=True, strategy_one_only=True)] == [RUN]
+
+
 def test_terminal_resident_v4_run_uses_durable_saved_review(monkeypatch, tmp_path):
     from types import SimpleNamespace
     from src.backend import replay_run_service

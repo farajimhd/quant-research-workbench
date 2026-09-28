@@ -9332,7 +9332,8 @@ class ReplayRunService:
             raise KeyError(run_id)
         return controller
 
-    def list(self, *, include_durable: bool = False) -> list[dict[str, Any]]:
+    def list(self, *, include_durable: bool = False,
+             strategy_one_only: bool = False) -> list[dict[str, Any]]:
         rows = {
             controller.run_id: _run_selection_projection(
                 _replay_run_list_projection(controller.stream_snapshot(), resident=True),
@@ -9340,6 +9341,16 @@ class ReplayRunService:
             )
             for controller in self._runs.values()
         }
+        if strategy_one_only:
+            from src.trading_runtime.strategy_one_contract import (
+                STRATEGY_ID, STRATEGY_NUMBER,
+            )
+            rows = {
+                run_id: row for run_id, row in rows.items()
+                if (row.get("mode") == RunMode.BACKTEST.value
+                    and row.get("strategy_id") == STRATEGY_ID
+                    and row.get("strategy_revision") == STRATEGY_NUMBER)
+            }
         if include_durable and (os.environ.get("BACKTEST_V4_RUNNER_CREDENTIAL_FILE")
                                 or os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_USER")):
             from src.backend.backtest_v4_history import load_strategy_one_v4_history
@@ -9362,7 +9373,7 @@ class ReplayRunService:
                                    durable.get("configuration_content_hash")):
                             raise RuntimeError("Resident Backtest conflicts with durable V4 run")
                         rows[durable["run_id"]] = durable
-        if include_durable and self.runtime_root.is_dir():
+        if include_durable and not strategy_one_only and self.runtime_root.is_dir():
             for run_dir in self.runtime_root.iterdir():
                 if not run_dir.is_dir() or run_dir.name in rows:
                     continue

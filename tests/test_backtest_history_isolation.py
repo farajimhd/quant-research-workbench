@@ -26,7 +26,8 @@ class BacktestHistoryIsolationTests(IsolatedAsyncioTestCase):
             with patch.object(backtest_run_service, "list", return_value=rows) as listing:
                 result = await asyncio.wait_for(trading_backtest_runs(), timeout=2)
                 self.assertEqual(result, {"schema_version": 1, "rows": rows, "row_count": 1})
-                listing.assert_called_once_with(include_durable=True)
+                listing.assert_called_once_with(
+                    include_durable=True, strategy_one_only=False)
                 self.assertFalse(preparation.done())
         finally:
             release.set()
