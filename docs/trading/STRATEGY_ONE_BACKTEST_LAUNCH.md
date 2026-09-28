@@ -79,4 +79,13 @@ Both cold profiles included a Keeper connection drop during Kazoo session
 shutdown, with 11.615s and 12.592s spent in `ManagedKeeperSession.close`.
 These profiled values are not the uninstrumented app latency above. The
 probe used plan-only mode and inserted no market or journal rows. The
-repeatable Keeper close cost remains a preflight optimization target.
+repeatable Keeper close cost motivated a process-local, read-only Keeper
+transport in commit `70d0a0d51`. It retains no certificate or lease, rereads
+the attestation on every preflight, and retires disconnected sessions only
+after their current readers exit. A fresh-process, unprofiled plan-only check
+with that code took 19.987s cold; a separate profiled check took 33.634s cold
+and 3.335s warm. These are observations under different instrumentation and
+load, not a controlled claim of seconds saved. Kazoo still logs the connection
+drop while closing at process exit; the Backtest request no longer waits for
+that per-preflight close. The existing app backend must restart to load this
+new source.
