@@ -103,6 +103,12 @@ global prefix only after **all** contributing INSERTs and receipts through that
 sequence are acknowledged; parallel writer completion cannot advance it past a
 gap. Cold recovery rechecks the exact persisted rows against those receipts,
 then projects per-ticker reducer state only within the verified prefix.
+The per-ticker reorder lane can place nonconsecutive global arrival sequences
+in one ClickHouse batch. A receipt must therefore identify the exact member
+sequences (or an equivalent normalized membership relation), not merely its
+minimum, maximum, and count. The bounded in-memory acknowledgement tracker
+accepts sparse sets and advances only through individually acknowledged
+sequences; it is not connected to publication or live admission yet.
 
 Each process incarnation needs a fresh producer epoch in the canonical row and
 receipt identity. A delayed INSERT from an older incarnation must never be
