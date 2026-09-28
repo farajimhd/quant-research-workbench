@@ -1,7 +1,8 @@
 """Inactive proof-bound cold adapter for normalized live plan membership.
 
-This does not authorize startup: a production typed approved-configuration
-proof is not yet available, and receipt/assignment/broker admission is separate.
+This does not authorize startup: an approved-configuration proof can now be
+rechecked against typed ARTE and Keeper, but membership publication and the
+receipt/assignment/broker admission gates remain separate.
 """
 from __future__ import annotations
 

@@ -1,8 +1,9 @@
 """Inactive control-plane publication for typed live plan membership.
 
 No active route uses this module. Its caller must supply independently
-attested approved-configuration and source-cursor proofs; current SQLite
-approved releases and mutable watchlist snapshots are not acceptable proofs.
+attested approved-configuration and source-cursor proofs; SQLite releases and
+mutable watchlist snapshots are not acceptable proofs. A read-only typed
+approved-configuration proof exists, but no startup admission is implied.
 """
 from __future__ import annotations
 
