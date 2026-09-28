@@ -1902,6 +1902,14 @@ def journal_permission_preflight(
             raise ValueError("Plan membership read authority is partial")
         else:
             journal |= membership_names
+    from src.backend.live_strategy_one_assignment import TABLE as assignment_table
+    if any(f"ON arte.{assignment_table.name} " in line for line in grant_lines):
+        # Assignment publication is a separate producer operation, but the
+        # staged workstation profile grants its one operational fact table to
+        # this principal. It is never a Backtest market-data write authority.
+        storage_preflight(client, tables=(assignment_table,))
+        if assignment_table.name not in read_only_tables:
+            journal.add(assignment_table.name)
     from .arte_oms_tactic_schema import TABLES as oms_tactic_tables
     tactic_names = {table.name for table in oms_tactic_tables}
     if any(f"ON arte.{name} " in line for line in grant_lines

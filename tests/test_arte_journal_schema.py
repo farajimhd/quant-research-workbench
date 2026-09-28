@@ -277,6 +277,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
 ) -> None:
     from src.backend import live_signal_journal_preflight as staged_profile
     from src.backend.live_plan_membership import TABLES as membership_tables
+    from src.backend.live_strategy_one_assignment import TABLE as assignment_table
     from src.trading_runtime.arte_oms_tactic_schema import TABLES as tactic_tables
     from src.trading_runtime import strategy_one_configuration_tree as strategy_config
     from src.backend.live_strategy_one_approval import TABLE as strategy_approval
@@ -300,6 +301,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
         staged = False
         membership = False
         membership_read_only = False
+        assignment = False
         tactic = False
         strategy_read_grants: frozenset[str] = frozenset()
         reference = False
@@ -318,6 +320,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                 assert "name IN (" in sql
                 tables = (market | journal | (staged_journal if self.staged else set())
                           | (membership_journal if self.membership else set())
+                          | ({"strategy_one_live_assignment_v1"} if self.assignment else set())
                           | (tactic_journal if self.tactic else set())
                           | set(self.strategy_read_grants))
                 return "\n".join(json.dumps({"name": name}) for name in sorted(tables))
@@ -326,6 +329,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
             if sql == "SHOW GRANTS FINAL":
                 writable = (journal | (staged_journal if self.staged else set())
                             | (membership_journal if self.membership and not self.membership_read_only else set())
+                            | ({"strategy_one_live_assignment_v1"} if self.assignment else set())
                             | (tactic_journal if self.tactic else set()))
                 grants = [*(f"GRANT SELECT, INSERT ON arte.{name} TO journal_writer"
                             for name in sorted(writable)),
@@ -353,6 +357,7 @@ def test_journal_principal_cannot_write_market_or_change_schema(
                     return "1\n"
                 writable = (journal | (staged_journal if self.staged else set())
                             | (membership_journal if self.membership and not self.membership_read_only else set())
+                            | ({"strategy_one_live_assignment_v1"} if self.assignment else set())
                             | (tactic_journal if self.tactic else set()))
                 if privilege == "SELECT" and scope.removeprefix("arte.") in market | writable | self.strategy_read_grants | (membership_journal if self.membership and self.membership_read_only else set()):
                     return "1\n"
@@ -411,6 +416,11 @@ def test_journal_principal_cannot_write_market_or_change_schema(
             client, read_only_tables=frozenset({next(iter(membership_journal))}))
     client.membership = False
     client.membership_read_only = False
+    checked_membership.clear()
+    client.assignment = True
+    journal_permission_preflight(client)
+    assert checked_membership == [(assignment_table,)]
+    client.assignment = False
     checked_membership.clear()
     client.tactic = True
     journal_permission_preflight(client)
