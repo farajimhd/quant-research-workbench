@@ -76,7 +76,13 @@ def test_history_requires_bounded_limit(monkeypatch):
         history.load_strategy_one_v4_history(object(), limit=101)
 
 
-def test_service_lists_v4_without_run_directory_or_sqlite(monkeypatch, tmp_path):
+@pytest.mark.parametrize("credential_key,credential_value", [
+    ("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", "backtest_v4_runner"),
+    ("BACKTEST_V4_RUNNER_CREDENTIAL_FILE", "private-runner.env"),
+])
+def test_service_lists_v4_without_run_directory_or_sqlite(
+    monkeypatch, tmp_path, credential_key, credential_value,
+):
     from src.backend import replay_run_service
     from src.trading_runtime import arte_journal_writer
 
@@ -91,7 +97,9 @@ def test_service_lists_v4_without_run_directory_or_sqlite(monkeypatch, tmp_path)
         def close(self):
             closed.append(True)
 
-    monkeypatch.setenv("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", "backtest_v4_runner")
+    monkeypatch.delenv("BACKTEST_V4_RUNNER_CLICKHOUSE_USER", raising=False)
+    monkeypatch.delenv("BACKTEST_V4_RUNNER_CREDENTIAL_FILE", raising=False)
+    monkeypatch.setenv(credential_key, credential_value)
     monkeypatch.setattr(arte_journal_writer, "backtest_v4_operator_client_from_env",
                         Client)
     monkeypatch.setattr(history, "load_strategy_one_v4_history",

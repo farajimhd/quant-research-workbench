@@ -9340,7 +9340,8 @@ class ReplayRunService:
             )
             for controller in self._runs.values()
         }
-        if include_durable and os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_USER"):
+        if include_durable and (os.environ.get("BACKTEST_V4_RUNNER_CREDENTIAL_FILE")
+                                or os.environ.get("BACKTEST_V4_RUNNER_CLICKHOUSE_USER")):
             from src.backend.backtest_v4_history import load_strategy_one_v4_history
             from src.trading_runtime.arte_journal_writer import (
                 backtest_v4_operator_client_from_env,
