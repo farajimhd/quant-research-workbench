@@ -243,8 +243,10 @@ def publish_unit(writer: Any, reader: Any, item: DerivedV7TickerDay, *,
     for offset in range(0, len(item.intervals), clock_batch_size):
         values = ",".join(
             f"({base},{literal(row.level_id)},{row.ordinal},"
-            f"{row.valid_from_ms},{row.valid_to_ms},{repr(row.lower)},"
-            f"{repr(row.upper)},{literal(row.role)},"
+            f"{row.valid_from_ms},{row.valid_to_ms},"
+            f"reinterpretAsFloat64(toUInt64({_bits(row.lower)})),"
+            f"reinterpretAsFloat64(toUInt64({_bits(row.upper)})),"
+            f"{literal(row.role)},"
             f"{literal(row.transition_from or 'none')},"
             f"{row.confirmed_at_ms},{int(row.historical)})"
             for row in item.intervals[offset:offset + clock_batch_size])

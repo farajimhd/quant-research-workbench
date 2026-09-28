@@ -66,6 +66,7 @@ def test_v7_coverage_is_last_after_bounded_exact_child_readback(monkeypatch):
             else "interval" if "INSERT INTO arte.strategy_one_v7_level_interval_v1" in sql
             else "coverage" for sql in writer.sqls] == [
                 "clock", "clock", "interval", "interval", "coverage"]
+    assert all("reinterpretAsFloat64(toUInt64(" in sql for sql in writer.sqls[2:4])
     assert publication.publish_unit(writer, writer, expected,
                                     attempt_id=str(UUID(int=22))) == "already_published"
     assert len(writer.sqls) == 5
