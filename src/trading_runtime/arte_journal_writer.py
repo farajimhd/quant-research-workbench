@@ -3621,6 +3621,11 @@ class ArteJournalWriter:
     def journal_profile(self) -> str:
         return self._journal_profile
 
+    @property
+    def live_v4_lease(self) -> Any | None:
+        """Expose the writer's pinned owner fence to its broker command lane."""
+        return self._live_v4_lease
+
     def metrics(self) -> dict[str, Any]:
         """Cheap control-plane snapshot; never waits for the persistence worker."""
         with self._metrics_lock:

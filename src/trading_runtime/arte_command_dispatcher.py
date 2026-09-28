@@ -103,6 +103,9 @@ class ArteCommandDispatcher:
         self._live_v4 = profile == "live_v4"
         if self._live_v4 and not callable(getattr(writer, "submit_base_v4", None)):
             raise ValueError("Live V4 command lane requires its explicit family writer")
+        self._live_lease = getattr(writer, "live_v4_lease", None) if self._live_v4 else None
+        if self._live_v4 and not callable(getattr(self._live_lease, "assert_current", None)):
+            raise ValueError("Live V4 command lane requires its pinned Keeper lease")
         self._writer = writer
         self._broker = broker
         self._queue: asyncio.Queue[_PendingCommand | None] = asyncio.Queue(maxsize=capacity)
@@ -119,11 +122,17 @@ class ArteCommandDispatcher:
             raise RuntimeError("Command dispatcher cannot start twice")
         self._starting = True
         try:
+            if self._live_v4:
+                if self._live_lease.run_id != run_id:
+                    raise ValueError("Live V4 command lease differs from run")
+                await asyncio.to_thread(self._live_lease.assert_current)
             audit = await audit_committed_commands(client, self._broker, run_id)
             if self._closed:
                 raise RuntimeError("Command dispatcher closed during recovery audit")
             if audit.run_id != run_id or not audit.admission_safe:
                 raise RuntimeError("Command dispatcher requires complete OMS recovery")
+            if self._live_v4:
+                await asyncio.to_thread(self._live_lease.assert_current)
             self._audited_run_id = run_id
             self._task = asyncio.create_task(self._run(), name="arte-command-dispatcher")
         finally:
@@ -190,6 +199,10 @@ class ArteCommandDispatcher:
                 committed_id = await asyncio.wrap_future(receipt)
                 if UUID(str(committed_id)) != UUID(pending.batch.batch_id):
                     raise RuntimeError("Committed command receipt differs from submitted batch")
+                if self._live_v4:
+                    # A receipt under an old owner cannot dispatch a new
+                    # broker side effect after a Keeper takeover.
+                    await asyncio.to_thread(self._live_lease.assert_current)
                 response = await self._broker.place_orders(
                     pending.account_id, list(pending.orders),
                 )

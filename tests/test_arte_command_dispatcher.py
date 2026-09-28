@@ -63,6 +63,17 @@ class _Writer:
 class _LiveV4Writer(_Writer):
     journal_profile = "live_v4"
 
+    class Lease:
+        run_id = "live:DU1"
+        current = True
+        def assert_current(self):
+            if not self.current:
+                raise RuntimeError("Live V4 Keeper lease lost")
+
+    def __init__(self):
+        super().__init__()
+        self.live_v4_lease = self.Lease()
+
     def submit(self, batch):
         raise AssertionError("Live V4 must not use legacy journal publication")
 
@@ -151,11 +162,42 @@ def test_live_v4_command_uses_explicit_family_receipt(monkeypatch) -> None:
     asyncio.run(scenario())
 
 
+def test_live_v4_lost_owner_after_receipt_never_sends_order(monkeypatch) -> None:
+    _install_audit(monkeypatch)
+    async def scenario() -> None:
+        writer, broker = _LiveV4Writer(), _Broker()
+        dispatcher = ArteCommandDispatcher(writer, broker)
+        await dispatcher.start(None, "live:DU1")
+        batch, request = _strategy_one_command()
+        ticket = dispatcher.submit(batch, "DU1", (request,))
+        await asyncio.wait_for(writer.submitted.wait(), 1)
+        writer.live_v4_lease.current = False
+        writer.receipts[0].set_result(batch.batch_id)
+        with pytest.raises(RuntimeError, match="lease lost"):
+            await ticket
+        assert broker.calls == []
+        with pytest.raises(RuntimeError, match="broker reconciliation"):
+            await dispatcher.close()
+    asyncio.run(scenario())
+
+
 def test_live_command_rejects_backtest_v4_writer() -> None:
     class BacktestWriter(_Writer):
         journal_profile = "backtest_v4"
     with pytest.raises(ValueError, match="Backtest V4"):
         ArteCommandDispatcher(BacktestWriter(), _Broker())
+
+
+def test_live_v4_command_rejects_foreign_keeper_run(monkeypatch) -> None:
+    _install_audit(monkeypatch)
+    async def scenario() -> None:
+        writer = _LiveV4Writer()
+        writer.live_v4_lease.run_id = "live:other"
+        dispatcher = ArteCommandDispatcher(writer, _Broker())
+        with pytest.raises(ValueError, match="lease differs"):
+            await dispatcher.start(None, "live:DU1")
+        await dispatcher.close()
+    asyncio.run(scenario())
 
 
 def test_wrong_valid_receipt_never_sends_order(monkeypatch) -> None:
