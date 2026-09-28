@@ -204,3 +204,16 @@ order outcomes match. Its one additional event was a periodic
 larger costs are active-ticker first-row/reconciliation reads and the final
 ClickHouse durability fence; no source-table write or run-local journal was
 introduced by read-ahead.
+
+The same read-ahead code also completed the full Aug 19 premarket twice:
+`d99a0a45-061d-42ea-86ee-647c004ddfa7` in 28.725s and
+`92149cc7-88c6-446a-95b3-8867f7c7a431` in 30.365s, after 27.333s and
+24.319s cold preflight. Each processed 6,809 persisted liquidity rows and
+passed the causal audit with 45 intents and no backdated descendants. Cold
+comparison matched the final account, all 45 portfolio decisions and intents,
+97 executions and commissions, 39 order commands, and journal event-kind
+counts. The older pre-read-ahead run `5116ec93-bc36-454c-bd49-d56b8254e1c3`
+had matching financial outcomes but a different code hash and `decided_at`
+values; it is not same-code replay equality. Aug 19's active-ticker first-row
+reads took 5.5–5.7s and terminal durability about 6.2–6.4s, now larger than
+its 0.46–0.48s scheduler cost.
