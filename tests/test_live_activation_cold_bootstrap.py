@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from src.backend.live_activation_cold_bootstrap import (
-    _audit_source_orphans, ActivationRecoveryUnfenced,
+    _audit_source_orphans, _BoundedSourceCommits, ActivationRecoveryUnfenced,
     audit_activation_checkpoint_under_cooperative_fences,
     audit_receipt_defined_activation_prefix_under_fences,
     _cold_recover_activation_checkpoint_under_fence,
@@ -34,6 +34,8 @@ from src.trading_runtime.arte_strategy_one_activation_schema import (
     strategy_one_activation_table,
 )
 from src.backend.signal_dispatch_insert_dispatch import dispatch_run_id
+from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
+from src.backend.signal_stream_typed_cursor import COMMIT as SOURCE_COMMIT
 from tests.test_arte_activation_projection import _MemoryClient
 from tests.test_live_signal_work_completion import Keeper, Storage
 from tests.test_signal_dispatch_typed_cursor import ColdStorage
@@ -41,6 +43,24 @@ from tests.test_signal_dispatch_typed_cursor import ColdStorage
 
 SESSION = date(2026, 9, 24)
 EVENT_ID = "a" * 64
+
+
+def test_strategy_one_cold_source_inventory_never_reads_shared_tables() -> None:
+    class ReadClient:
+        def __init__(self):
+            self.queries = []
+        def execute(self, sql):
+            self.queries.append(sql)
+            return ""
+    client = ReadClient()
+    bounded = _BoundedSourceCommits(object(), client, limit=2, strategy_one=True)
+    assert bounded.list_cursor_commits(session_key=SESSION.isoformat()) == []
+    _audit_source_orphans(client, session_key=SESSION.isoformat(),
+                          head_sequence=0, max_occurrences=1,
+                          strategy_one=True)
+    assert client.queries
+    assert f"FROM arte.{strategy_one_signal_table(SOURCE_COMMIT.name)} " in client.queries[0]
+    assert all("FROM arte.trading_strategy_one_" in sql for sql in client.queries)
 
 
 class Authority:
@@ -445,7 +465,8 @@ def test_strategy_one_cold_audit_closes_all_insert_gates_before_source_read(
             events.append("source-verified")
     class Dispatch:
         def close_for_cold(self, run_id):
-            assert run_id == dispatch_run_id(SESSION.isoformat(), "approved-1")
+            assert run_id == dispatch_run_id(
+                SESSION.isoformat(), "approved-1", strategy_one=True)
             events.append("dispatch-closed")
     class Completion:
         def close_for_cold(self):
@@ -523,7 +544,8 @@ def test_registered_empty_strategy_one_session_has_no_activation_watch() -> None
                 configuration_revision="", source_revision="")
     class Dispatch:
         def close_for_cold(self, run_id):
-            assert run_id == dispatch_run_id(SESSION.isoformat(), "approved-1")
+            assert run_id == dispatch_run_id(
+                SESSION.isoformat(), "approved-1", strategy_one=True)
         def assert_cold_receipts(self, run_id, receipts):
             assert receipts == {}
     class Completion:

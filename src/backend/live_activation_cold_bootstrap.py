@@ -34,22 +34,26 @@ from src.trading_runtime.arte_activation_insert_dispatch import (
 from src.backend.signal_dispatch_insert_dispatch import (
     SignalDispatchInsertDispatch, dispatch_run_id,
 )
+from src.backend.strategy_one_live_signal_schema import strategy_one_signal_table
 
 
 class _BoundedSourceCommits:
     """Use exact-column LIMIT before typed cursor hydration, never unbounded list."""
 
-    def __init__(self, storage: Any, client: Any, *, limit: int) -> None:
+    def __init__(self, storage: Any, client: Any, *, limit: int,
+                 strategy_one: bool = False) -> None:
         if not callable(getattr(client, "execute", None)):
             raise TypeError("source commit read requires ClickHouse client")
         self._storage, self._client, self._limit = storage, client, limit
+        self._table = (strategy_one_signal_table(SOURCE_COMMIT.name)
+                       if strategy_one else SOURCE_COMMIT.name)
         self._commits: list[dict[str, Any]] | None = None
 
     def list_cursor_commits(self, *, session_key: str) -> list[dict[str, Any]]:
         if self._commits is None:
             columns = ",".join(name for name, _ in SOURCE_COMMIT.columns)
             rows = _rows(self._client,
-                f"SELECT {columns} FROM arte.{SOURCE_COMMIT.name} "
+                f"SELECT {columns} FROM arte.{self._table} "
                 f"WHERE session_key={_literal(session_key)} "
                 f"ORDER BY batch_sequence LIMIT {self._limit} FORMAT JSONEachRow")
             if len(rows) >= self._limit:
@@ -65,11 +69,14 @@ class _BoundedSourceCommits:
 
 
 def _distinct_source_values(client: Any, table: Any, *, session_key: str,
-                            column: str, limit: int) -> set[Any]:
+                            column: str, limit: int,
+                            strategy_one: bool = False) -> set[Any]:
     if column not in {name for name, _ in table.columns}:
         raise ValueError("source audit column is not in typed table")
+    physical = (strategy_one_signal_table(table.name) if strategy_one
+                else table.name)
     rows = _rows(client,
-        f"SELECT DISTINCT {column} FROM arte.{table.name} "
+        f"SELECT DISTINCT {column} FROM arte.{physical} "
         f"WHERE session_key={_literal(session_key)} "
         f"ORDER BY {column} LIMIT {limit} FORMAT JSONEachRow")
     if len(rows) >= limit:
@@ -83,27 +90,32 @@ def _distinct_source_values(client: Any, table: Any, *, session_key: str,
 
 
 def _audit_source_orphans(client: Any, *, session_key: str,
-                          head_sequence: int, max_occurrences: int) -> None:
+                          head_sequence: int, max_occurrences: int,
+                          strategy_one: bool = False) -> None:
     """Reject any source row outside committed sequence/event identities."""
     sequences = set(range(1, head_sequence + 1))
     for table in (SOURCE_COMMIT, STATE_DELTA, OCCURRENCE_REF, ADMISSION_DELTA):
         observed = _distinct_source_values(
             client, table, session_key=session_key,
-            column="batch_sequence", limit=head_sequence + 2)
+            column="batch_sequence", limit=head_sequence + 2,
+            strategy_one=strategy_one)
         if not observed <= sequences:
             raise ValueError("source table has uncommitted or invalid batch")
     referenced = _distinct_source_values(
         client, OCCURRENCE_REF, session_key=session_key,
-        column="event_id", limit=max_occurrences + 1)
+        column="event_id", limit=max_occurrences + 1,
+        strategy_one=strategy_one)
     parents = _distinct_source_values(
         client, SOURCE_PARENT, session_key=session_key,
-        column="event_id", limit=max_occurrences + 1)
+        column="event_id", limit=max_occurrences + 1,
+        strategy_one=strategy_one)
     if parents != referenced:
         raise ValueError("source occurrence parents differ from committed references")
     for table in (SOURCE_RULE, SOURCE_COLUMN, SOURCE_FIELD):
         children = _distinct_source_values(
             client, table, session_key=session_key,
-            column="event_id", limit=max_occurrences + 1)
+            column="event_id", limit=max_occurrences + 1,
+            strategy_one=strategy_one)
         if not children <= referenced:
             raise ValueError("source occurrence has orphan child rows")
 
@@ -292,7 +304,8 @@ def _cold_recover_activation_checkpoint_under_fence(
         # Pending HTTP responses prevent their respective barriers from closing.
         source_fence = registered_source.acquire_bootstrap_barrier()
         registered_dispatch.close_for_cold(
-            dispatch_run_id(session_key, configuration_revision_id))
+            dispatch_run_id(session_key, configuration_revision_id,
+                            strategy_one=activation_run_id != ACTIVATION_RUN_ID))
         registered_completion.close_for_cold()
         activation_dispatch.close_for_cold(activation_run_id)
     first = source_keeper.read_head(session_key)
@@ -311,7 +324,8 @@ def _cold_recover_activation_checkpoint_under_fence(
         raise ActivationRecoveryUnfenced(
             "Signal Stream registered INSERT prefix differs from Keeper head")
     bounded_storage = _BoundedSourceCommits(
-        source_storage, source_commit_client, limit=max_source_batches + 1)
+        source_storage, source_commit_client, limit=max_source_batches + 1,
+        strategy_one=activation_run_id != ACTIVATION_RUN_ID)
     recovered = recover_committed_head(
         bounded_storage, session_key=session_key,
         configuration_revision=configuration_revision_id,
@@ -335,7 +349,8 @@ def _cold_recover_activation_checkpoint_under_fence(
     _audit_source_orphans(
         source_commit_client, session_key=session_key,
         head_sequence=first.batch_sequence,
-        max_occurrences=max_source_occurrences)
+        max_occurrences=max_source_occurrences,
+        strategy_one=activation_run_id != ACTIVATION_RUN_ID)
     activation_reader = (read_attested_activation_prefix if receipt_defined
                          else cold_audit_activation_watches)
     reader_kwargs = dict(session_date=session_date,
