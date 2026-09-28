@@ -28,6 +28,7 @@ LEVEL = V7LevelInterval("level-1", 0, 0, 57_600_001, 10.0, 10.2,
 class Reader:
     def __init__(self, *, changed_hash=False):
         self.changed_hash = changed_hash
+        self.child_reads = 0
 
     def execute(self, sql):
         assert "strategy_one_v7_coverage_v1" in sql
@@ -45,6 +46,7 @@ class Reader:
         }) + "\n"
 
     def iter_arrow_record_batches(self, sql):
+        self.child_reads += 1
         if "strategy_one_v7_clock_v1" in sql:
             yield pa.record_batch(
                 [["TEST"], [DERIVATION_ATTEMPT], [1000]],
@@ -94,3 +96,23 @@ def test_changed_clock_hash_blocks_certificate(monkeypatch):
         store.certify_v7_interval_plan(
             market, seeds, session_date=DAY, candidate_tickers=("TEST",),
             client=Reader(changed_hash=True))
+
+
+def test_unchanged_physical_inventory_reuses_verified_arrays(monkeypatch):
+    import research.mlops.clickhouse as clickhouse
+    monkeypatch.setattr(store, "verify_tables", lambda _client: None)
+    monkeypatch.setattr(clickhouse, "ClickHouseHttpClient", Reader)
+    fingerprint = ["stable"]
+    monkeypatch.setattr(store, "product_inventory_fingerprint",
+                        lambda *_args: fingerprint[0])
+    monkeypatch.setattr(store, "V7_INTERVAL_PLAN_CACHE",
+                        store.FingerprintPlanCache())
+    market, seeds = plans()
+    reader = Reader()
+    first = store.certify_v7_interval_plan(
+        market, seeds, session_date=DAY, candidate_tickers=("TEST",),
+        client=reader)
+    second = store.certify_v7_interval_plan(
+        market, seeds, session_date=DAY, candidate_tickers=("TEST",),
+        client=reader)
+    assert first is second and reader.child_reads == 2

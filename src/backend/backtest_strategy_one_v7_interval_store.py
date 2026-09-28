@@ -14,6 +14,9 @@ from typing import Any, Sequence
 from uuid import UUID
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan
+from src.backend.backtest_market_plan_cache import (
+    FingerprintPlanCache, product_inventory_fingerprint,
+)
 from src.backend.structural_v7_seed import CertifiedSeedPlan
 from src.market_engine.derived_trade_policy import POLICY
 from src.trading_runtime.strategy_one_v7 import PROVISIONAL_SEED_POLICY
@@ -27,6 +30,9 @@ from src.trading_runtime.strategy_one_v7_intervals import (
 
 
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
+V7_INTERVAL_PLAN_CACHE = FingerprintPlanCache()
+_TABLE_NAMES = tuple(table.split(".", 1)[1] for table in (
+    CLOCK_TABLE, INTERVAL_TABLE, COVERAGE_TABLE))
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +109,17 @@ def certify_v7_interval_plan(
             or not callable(getattr(client, "iter_arrow_record_batches", None))):
         raise ValueError("Strategy 1 V7 interval scope is not certified")
     verify_tables(client)
+    from research.mlops.clickhouse import ClickHouseHttpClient
+    cache_key = sha256("\0".join((
+        market.token, seeds.token, session_date, PRODUCT_DIGEST,
+        *candidate_tickers)).encode()).hexdigest()
+    before = None
+    if isinstance(client, ClickHouseHttpClient):
+        before = product_inventory_fingerprint(client, _TABLE_NAMES)
+        cached = V7_INTERVAL_PLAN_CACHE.get(cache_key, before)
+        if (cached is not None and
+                product_inventory_fingerprint(client, _TABLE_NAMES) == before):
+            return cached
     bar_attempts = {unit.ticker: str(UUID(unit.attempt_id))
                     for unit in market.units if unit.stage == "bars"
                     and unit.session_date == session_date}
@@ -212,6 +229,12 @@ def certify_v7_interval_plan(
         for value in (ticker, unit.attempt_id, unit.clock_hash,
                       unit.interval_hash):
             token.update(value.encode()); token.update(b"\0")
-    return CertifiedV7IntervalPlan(
+    result = CertifiedV7IntervalPlan(
         market.build_id, session_date, tuple(coverage),
         tuple(validated_clocks), tuple(validated_intervals), token.hexdigest())
+    if before is not None:
+        after = product_inventory_fingerprint(client, _TABLE_NAMES)
+        if after != before:
+            raise RuntimeError("Strategy 1 V7 interval parts changed during cold read")
+        V7_INTERVAL_PLAN_CACHE.put(cache_key, after, result)
+    return result
