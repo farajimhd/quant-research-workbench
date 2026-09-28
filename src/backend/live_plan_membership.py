@@ -70,6 +70,7 @@ class RecoveredPlanMembership:
     assignments: tuple[PinnedAssignmentMember, ...]
     watches: tuple[PlanWatchMember, ...]
     head_hash: str
+    publication_id: str = ""
 
 
 def _hash(value: Any) -> str:
@@ -326,7 +327,9 @@ def recover_attested_plan_membership(
     if keeper.read_head(configuration_revision_id=configuration_revision_id,
                         session_key=session_key) != first:
         raise RuntimeError("plan membership Keeper head changed during cold read")
-    return RecoveredPlanMembership(result, result_watches, first[1])
+    return RecoveredPlanMembership(
+        result, result_watches, first[1],
+        _publication_id(accepted[first[0]]["publication_id"]))
 
 
 class TypedPlanMembershipAuthority:
@@ -355,7 +358,7 @@ class TypedPlanMembershipAuthority:
                         for row in recovered.watches if row.run_plan_id == run_plan_id)
         return AttestedPlanMembership(
             configuration_revision_id, run_plan_id, recovered.assignments,
-            watches, recovered.head_hash)
+            watches, recovered.head_hash, recovered.publication_id)
 
     def head_hash(self, *, configuration_revision_id: str,
                   run_plan_id: str) -> str:

@@ -45,6 +45,7 @@ class AttestedPlanMembership:
     assignments: tuple[PinnedAssignmentMember, ...]
     activated_watches: tuple[PinnedWatch, ...]
     head_hash: str
+    publication_id: str = ""
 
 
 class PlanMembershipAuthority(Protocol):
