@@ -79,7 +79,7 @@ Both cold profiles included a Keeper connection drop during Kazoo session
 shutdown, with 11.615s and 12.592s spent in `ManagedKeeperSession.close`.
 These profiled values are not the uninstrumented app latency above. The
 probe used plan-only mode and inserted no market or journal rows. The
-repeatable Keeper close cost motivated a process-local, read-only Keeper
+profiled Keeper close cost motivated a process-local, read-only Keeper
 transport in commit `70d0a0d51`. It retains no certificate or lease, rereads
 the attestation on every preflight, and retires disconnected sessions only
 after their current readers exit. A fresh-process, unprofiled plan-only check
@@ -87,8 +87,9 @@ with that code took 19.987s cold; a separate profiled check took 33.634s cold
 and 3.335s warm. These are observations under different instrumentation and
 load, not a controlled claim of seconds saved. Kazoo still logs the connection
 drop while closing at process exit; the Backtest request no longer waits for
-that per-preflight close. The existing app backend must restart to load this
-new source.
+that per-preflight close. A later unprofiled run measured Keeper close at
+0.105s; the profiled cumulative shutdown time is not evidence of a practical
+Keeper bottleneck.
 
 After syncing that source and restarting the workstation backend, the actual
 `POST /api/trading/historical-preflight` route returned `ready=true` with no
@@ -96,3 +97,12 @@ blocked checks for the full Aug 18 04:00–09:30 ET market. The first request
 took 23.202s and the identical warm request took 2.640s. These are route
 latencies, not Backtest execution times. The backend remained healthy on
 port 8000 after both requests; no Backtest run was created.
+
+A further unprofiled full-market Aug 18 run, using the same 100ms contract,
+completed execution in 31.818s after a 23.143s cold preflight. Run
+`b6c36e59-fd62-4a65-9c66-a047490f38b9` processed 7,381 persisted
+liquidity rows. Its measured terminal journal confirmation took 7.814s,
+while writer close took 0.001s and Keeper close took 0.105s. The asynchronous
+writer committed 10 units and 2,217 event rows with zero failures. A fresh
+`v4-terminal-page` request independently confirmed completed status, verified
+sequence 2,217 and market cursor, a flat account, and no review limitations.
