@@ -830,9 +830,10 @@ def iter_candidate_market_rows(
 def iter_persisted_v7_seconds(
     plan: CertifiedMarketDayPlan, *, session_date: str, ticker: str,
     through_boundary_ms: int, client=None, after_boundary_ms: int = 0,
+    columnar: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """Read only completed pinned 1s bars needed for lazy intraday V7 catch-up."""
-    if (type(after_boundary_ms) is not int
+    if (type(columnar) is not bool or type(after_boundary_ms) is not int
             or not 0 <= after_boundary_ms <= through_boundary_ms
             or after_boundary_ms % 1_000
             or not 0 <= through_boundary_ms <= 57_600_000):
@@ -856,13 +857,25 @@ def iter_persisted_v7_seconds(
         f"AND resolution_ms=1000 AND bucket_index>="
         f"{(after_boundary_ms + SESSION_OPEN_OFFSET_MS) // 1_000} "
         f"AND bucket_index<{completed_count} "
-        "ORDER BY bucket_index FORMAT JSONEachRow"
+        "ORDER BY bucket_index FORMAT "
+        + ("ArrowStream" if columnar else "JSONEachRow")
     )
     active = client or readonly_clickhouse_client(v3_read_principal=True)
     source = None
     try:
-        source = active.iter_json_each_row(query)
-        yield from source
+        if columnar:
+            source = active.iter_arrow_record_batches(query)
+            for batch in source:
+                if batch.schema.names != [
+                    "ticker", "resolution_ms", "bucket_index", "price_valid",
+                    "extremes_valid", "open_int", "high_int", "low_int",
+                    "close_int", "volume",
+                ]:
+                    raise ValueError("V7 Arrow columns differ from pinned bar projection")
+                yield from batch.to_pylist()
+        else:
+            source = active.iter_json_each_row(query)
+            yield from source
     finally:
         if source is not None:
             close_source = getattr(source, "close", None)

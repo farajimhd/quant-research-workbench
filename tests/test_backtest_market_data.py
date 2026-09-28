@@ -537,6 +537,38 @@ class BacktestMarketDataTests(unittest.TestCase):
         source.close()
         self.assertEqual(closed, [True])
 
+    def test_v7_columnar_catch_up_preserves_projection_and_closes_stream(self) -> None:
+        import pyarrow as pa
+
+        plan = self._plan()
+        closed = []
+        names = [
+            "ticker", "resolution_ms", "bucket_index", "price_valid",
+            "extremes_valid", "open_int", "high_int", "low_int",
+            "close_int", "volume",
+        ]
+        batch = pa.record_batch([
+            ["SUGP"], [1000], [14400], [1], [1],
+            [100000], [101000], [99000], [100500], [10],
+        ], names=names)
+
+        class ColumnarClient:
+            def iter_arrow_record_batches(self, sql):
+                assert sql.endswith("FORMAT ArrowStream")
+                try:
+                    yield batch
+                    yield batch
+                finally:
+                    closed.append(True)
+
+        source = iter_persisted_v7_seconds(
+            plan, session_date="2026-08-18", ticker="SUGP",
+            through_boundary_ms=1000, client=ColumnarClient(), columnar=True,
+        )
+        self.assertEqual(next(source)["close_int"], 100500)
+        source.close()
+        self.assertEqual(closed, [True])
+
     def test_changed_persisted_hash_fails_preflight(self) -> None:
         plan = self._plan()
         with self.assertRaisesRegex(ValueError, "integrity changed"):
