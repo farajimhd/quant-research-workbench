@@ -47,6 +47,25 @@ durable replay/snapshot contract yet, and sparse final buckets lack a source
 watermark publication path. It is therefore not an order-admission permit;
 live order admission remains disabled.
 
+The existing `/snapshot/compact-events/{ticker}` and market-page snapshots
+read a bounded in-memory buffer and explicitly report cursor expiration; they
+are not restart authority. `q_live.events` is the durable canonical live-event
+table, but the current QMD coverage ledger aggregates a session/partition,
+not a contiguous per-ticker source cursor. A cold SELECT of events can rebuild
+a reducer, but cannot by itself prove that no source event was omitted before
+its endpoint. The reorder worker also has a wall-time forced flush; that is
+not a source completeness watermark and must not be used to finish sparse
+100 ms buckets. The reducer exposes only event-closed output today.
+
+The producer must add a normalized, per-ticker durable progress certificate
+or use an equally authoritative upstream ordered watermark. Recovery then
+SELECTs canonical events only through that certificate, replays the same
+reducer off the realtime path, joins the stream from the certified cursor
+without a gap, and reconciles typed journal, OMS, portfolio, and broker heads
+before admitting orders. Do not infer completeness from wall clock, a recent
+event, a session-wide count, or the in-memory snapshot. Backtest remains
+SELECT-only on its separate certified `arte` products.
+
 The consumer joins this completed liquidity row with the closed indicator
 pairs by session, ticker, resolution, and completed boundary. A 100 ms
 decision is eligible only after all required input products for that boundary

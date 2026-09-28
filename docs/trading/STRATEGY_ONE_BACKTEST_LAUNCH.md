@@ -138,3 +138,7 @@ events with zero failures. A fresh terminal-page read verified the complete
 sequence and cursor, the same flat account balance, and no limitations. This
 wait is a durability/causality fence after the engine has advanced, not
 SQLite or run-local disk I/O on the hot path.
+The same run's read-only commit-header profile found six V4 commits for all
+2,217 events, with no singleton commit. The two manager and two broker-match
+snapshot units are separately attested recovery state; removing them merely
+to lower the measured wall time would weaken the current journal contract.
