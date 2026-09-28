@@ -20,6 +20,7 @@ class SignalCursorAttestor:
         if not owner_id or type(epoch) is not int or epoch < 1:
             raise ValueError("typed Signal Stream Keeper claim is invalid")
         self._keeper = keeper
+        self.strategy_one = keeper.strategy_one
         self._owner_id = owner_id
         self._epoch = epoch
         self._heads: dict[str, SessionHead] = {}

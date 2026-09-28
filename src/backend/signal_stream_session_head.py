@@ -11,6 +11,7 @@ from hashlib import sha256
 from typing import Any
 
 ROOT = "/trading/signal-stream-session/v1"
+STRATEGY_ONE_ROOT = "/trading/strategy-one-signal-stream-session/v1"
 GENESIS_HASH = "0" * 64
 
 
@@ -64,19 +65,28 @@ def _head_bytes(sequence: int, cursor_hash: str, configuration: str,
 
 
 class SignalSessionHeadKeeper:
-    """Persistent CAS head and epoch plus ephemeral exclusive session holder."""
+    """Persistent CAS head and epoch plus ephemeral exclusive session holder.
 
-    def __init__(self, client: Any, *, endpoint: str) -> None:
+    Strategy 1 uses a distinct namespace so a generic stream cannot attest
+    or acquire its session merely because both use the same trading date.
+    """
+
+    def __init__(self, client: Any, *, endpoint: str,
+                 strategy_one: bool = False) -> None:
         if endpoint != "127.0.0.1:9181":
             raise ValueError("Signal Stream Keeper requires local loopback endpoint")
+        if type(strategy_one) is not bool:
+            raise ValueError("Signal Stream Keeper table scope is invalid")
         self._client = client
+        self.strategy_one = strategy_one
 
     def _connected(self) -> None:
         if not getattr(self._client, "connected", False) or self._client.client_id is None:
             raise RuntimeError("Signal Stream Keeper session is unavailable")
 
     def _base(self, session_key: str) -> str:
-        return f"{ROOT}/{sha256(_session(session_key).encode()).hexdigest()}"
+        root = STRATEGY_ONE_ROOT if self.strategy_one else ROOT
+        return f"{root}/{sha256(_session(session_key).encode()).hexdigest()}"
 
     def _initialize(self, session_key: str) -> str:
         self._connected()

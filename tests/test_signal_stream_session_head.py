@@ -67,3 +67,15 @@ def test_keeper_head_rejects_remote_endpoint_and_invalid_identity() -> None:
     keeper = SignalSessionHeadKeeper(FakeKazoo(), endpoint="127.0.0.1:9181")
     with pytest.raises(ValueError, match="owner"):
         keeper.acquire(SESSION, owner_id="bad\nowner")
+
+
+def test_strategy_one_keeper_head_is_isolated_from_generic_signal_stream() -> None:
+    client = FakeKazoo()
+    generic = SignalSessionHeadKeeper(client, endpoint="127.0.0.1:9181")
+    numbered = SignalSessionHeadKeeper(
+        client, endpoint="127.0.0.1:9181", strategy_one=True)
+    assert generic._base(SESSION) != numbered._base(SESSION)
+    assert generic.acquire(SESSION, owner_id="generic") == 1
+    assert numbered.acquire(SESSION, owner_id="numbered") == 1
+    assert generic.read_head(SESSION).batch_sequence == 0
+    assert numbered.read_head(SESSION).batch_sequence == 0

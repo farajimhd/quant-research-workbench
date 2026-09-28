@@ -89,3 +89,21 @@ def test_source_proof_rejects_scope_and_commit_overflow(monkeypatch):
             object(), Client([{}, {}, {}]), keeper, session_key=SESSION,
             configuration_revision="config-1", source_revision="source-1",
             catalogs={}, max_batches=2)
+
+
+def test_strategy_one_source_proof_requires_isolated_storage_and_keeper(monkeypatch):
+    _recover(monkeypatch)
+    keeper, client = Keeper(), Client()
+    keeper.strategy_one = True
+    storage = type("IsolatedStorage", (), {"strategy_one": True})()
+    proof = cold_attested_signal_source_cursor(
+        storage, client, keeper, session_key=SESSION,
+        configuration_revision="config-1", source_revision="source-1",
+        catalogs={}, max_batches=2, strategy_one=True)
+    assert proof.content_hash == HASH
+    assert "arte.trading_strategy_one_" in client.queries[0]
+    with pytest.raises(ValueError, match="scope differ"):
+        cold_attested_signal_source_cursor(
+            object(), Client(), keeper, session_key=SESSION,
+            configuration_revision="config-1", source_revision="source-1",
+            catalogs={}, strategy_one=True)

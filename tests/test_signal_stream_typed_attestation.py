@@ -40,6 +40,23 @@ def test_receipt_requires_exact_keeper_attested_cold_head() -> None:
     second.close()
 
 
+def test_registered_numbered_source_rejects_generic_keeper_attestor() -> None:
+    storage = FakeStorage()
+    storage.registered_transport = True
+    storage.strategy_one = True
+    generic = SignalSessionHeadKeeper(FakeKazoo(), endpoint="127.0.0.1:9181")
+    with pytest.raises(ValueError, match="scope differ"):
+        TypedSignalPublicationQueue(
+            storage, attestor=SignalCursorAttestor(
+                generic, owner_id="worker-1", epoch=1))
+    isolated = SignalSessionHeadKeeper(
+        FakeKazoo(), endpoint="127.0.0.1:9181", strategy_one=True)
+    publisher = TypedSignalPublicationQueue(
+        storage, attestor=SignalCursorAttestor(
+            isolated, owner_id="worker-1", epoch=1))
+    publisher.close()
+
+
 def test_lost_owner_after_clickhouse_readback_never_receives_ack() -> None:
     storage = FakeStorage()
     keeper = SignalSessionHeadKeeper(FakeKazoo(), endpoint="127.0.0.1:9181")

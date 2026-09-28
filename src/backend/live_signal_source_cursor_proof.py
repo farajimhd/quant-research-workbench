@@ -1,7 +1,8 @@
 """Inactive, read-only Signal Stream source proof for plan membership.
 
 The proof covers a Keeper-attested typed cursor prefix, not SQLite state or a
-mutable current watchlist. It does not make the typed producer safe to enable.
+mutable current watchlist. Numbered Strategy 1 must select its isolated ARTE
+families and Keeper head together. This does not enable the typed producer.
 """
 from __future__ import annotations
 
@@ -34,6 +35,7 @@ def cold_attested_signal_source_cursor(
     keeper: SignalSessionHeadKeeper, *, session_key: str,
     configuration_revision: str, source_revision: str,
     catalogs: Mapping[str, Any], max_batches: int = 100_000,
+    strategy_one: bool = False,
 ) -> AttestedSignalSourceCursorProof:
     """Verify an exact bounded typed prefix under a stable Keeper head.
 
@@ -42,12 +44,18 @@ def cold_attested_signal_source_cursor(
     """
     if type(max_batches) is not int or not 1 <= max_batches <= 100_000:
         raise ValueError("Signal Stream source cursor batch bound is invalid")
+    if (type(strategy_one) is not bool
+            or getattr(storage, "strategy_one", False) is not strategy_one
+            or getattr(keeper, "strategy_one", False) is not strategy_one):
+        raise ValueError("Signal Stream source storage and Keeper scope differ")
     first = keeper.read_head(session_key)
     if (first.session_key != session_key or not 1 <= first.batch_sequence <= max_batches
             or first.configuration_revision != configuration_revision
             or first.source_revision != source_revision):
         raise ValueError("Signal Stream Keeper head differs from source proof scope")
-    bounded = _BoundedSourceCommits(storage, commit_client, limit=max_batches + 1)
+    bounded = _BoundedSourceCommits(
+        storage, commit_client, limit=max_batches + 1,
+        strategy_one=strategy_one)
     recovered = recover_committed_head(
         bounded, session_key=session_key,
         configuration_revision=configuration_revision,

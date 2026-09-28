@@ -169,6 +169,10 @@ class TypedSignalPublicationQueue:
             raise ValueError("typed Signal Stream publication capacity must be positive")
         if getattr(storage, "registered_transport", False) and attestor is None:
             raise ValueError("registered Signal Stream source requires Keeper head attestation")
+        if (getattr(storage, "registered_transport", False)
+                and getattr(storage, "strategy_one", False)
+                is not getattr(attestor, "strategy_one", False)):
+            raise ValueError("registered Signal Stream source and Keeper table scope differ")
         self._storage = storage
         self._attestor = attestor
         self._capacity = capacity
